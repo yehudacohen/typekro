@@ -10,6 +10,7 @@ import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
+import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
@@ -51,8 +52,13 @@ import { synthesizeNestedCompositionStatus } from './nested-composition-status.j
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
 import { generateInstanceName, getSingletonInstanceName } from './shared-utilities.js';
+import {
+  assertNoDeployedSingletonSpecDrift,
+  assertNoDiscoveredSingletonSpecDrift,
+  singletonSpecFingerprintAnnotationValue,
+} from './singleton-owner-drift.js';
 import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
-import { stableSerialize } from '../singleton/singleton.js';
+import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 
 /**
@@ -80,6 +86,7 @@ export class DirectResourceFactoryImpl<
   private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
+  private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private readonly logger = getComponentLogger('direct-factory');
   private readonly clientManager: KubernetesClientManager;
@@ -171,7 +178,7 @@ export class DirectResourceFactoryImpl<
    */
   async deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[]; instanceNameOverride?: string }
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
@@ -198,7 +205,7 @@ export class DirectResourceFactoryImpl<
     }
 
     // Track the deployed instance
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = opts?.instanceNameOverride ?? this.generateInstanceName(spec);
     this.deployedInstances.set(instanceName, instance);
 
     return instance;
@@ -1071,6 +1078,35 @@ export class DirectResourceFactoryImpl<
     return this.reExecutedStatus;
   }
 
+  private reExecuteSingletonStatus(
+    singletonDefinition: SingletonDefinitionRecord,
+    liveStatusMap: Map<string, Record<string, unknown>>
+  ): Record<string, unknown> | undefined {
+    const compositionFn = (singletonDefinition.composition as unknown as {
+      _compositionFn?: (spec: unknown) => unknown;
+    })._compositionFn;
+
+    if (!compositionFn) {
+      return undefined;
+    }
+
+    const singletonContext = createCompositionContext('singleton-re-execution', {
+      deduplicateIds: true,
+      isReExecution: true,
+    });
+    singletonContext.liveStatusMap = liveStatusMap;
+
+    const status = runWithCompositionContext(singletonContext, () =>
+      compositionFn(singletonDefinition.spec)
+    );
+
+    if (status && typeof status === 'object' && !Array.isArray(status)) {
+      return status as Record<string, unknown>;
+    }
+
+    return undefined;
+  }
+
   /**
    * Re-execute the composition with live status data from deployed resources.
    *
@@ -1101,6 +1137,7 @@ export class DirectResourceFactoryImpl<
       // synthesize status entries from child resources' live data.
       const probeContext = createCompositionContext('re-execution-probe', {
         deduplicateIds: true,
+        isReExecution: true,
       });
       probeContext.liveStatusMap = liveStatusMap;
 
@@ -1138,6 +1175,28 @@ export class DirectResourceFactoryImpl<
         const synthesizedStatus = enrichedMap.get(baseId);
         if (synthesizedStatus && !enrichedMap.has(aliasName)) {
           enrichedMap.set(aliasName, synthesizedStatus);
+        }
+      }
+
+      const singletonDefinitions = new Map<string, SingletonDefinitionRecord>();
+      for (const definition of this.singletonDefinitions) {
+        singletonDefinitions.set(definition.key, definition);
+      }
+      for (const definition of probeContext.singletonDefinitions?.values() ?? []) {
+        singletonDefinitions.set(definition.key, definition);
+      }
+
+      for (const definition of singletonDefinitions.values()) {
+        const singletonResourceId = getSingletonResourceId(definition.key);
+        if (enrichedMap.has(singletonResourceId)) {
+          continue;
+        }
+
+        const singletonStatus =
+          this.singletonOwnerStatuses.get(singletonResourceId) ??
+          this.reExecuteSingletonStatus(definition, liveStatusMap);
+        if (singletonStatus) {
+          enrichedMap.set(singletonResourceId, singletonStatus);
         }
       }
 
@@ -1396,7 +1455,7 @@ export class DirectResourceFactoryImpl<
       // For schema: __KUBERNETES_REF___schema___{fieldPath}__
       // The fieldPath for schema refs is like "spec.baseName" or "spec.nested.field"
       const resolvedString = resource.replace(
-        /__KUBERNETES_REF___schema___(.+?)__/g,
+        new RegExp(KUBERNETES_REF_SCHEMA_MARKER_SOURCE, 'g'),
         (_match, fieldPath) => {
           // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
           const pathParts = fieldPath.split('.');
@@ -1577,32 +1636,168 @@ export class DirectResourceFactoryImpl<
       }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
 
       try {
-        let existingInstance: (Enhanced<unknown, unknown> & { spec?: unknown }) | undefined;
-        try {
-          const existingInstances = await singletonFactory.getInstances();
-          existingInstance = existingInstances.find((instance) => instance.metadata?.name === singletonInstanceName) as
-            | (Enhanced<unknown, unknown> & { spec?: unknown })
-            | undefined;
-        } catch {
-          // Best-effort reuse only; deploy below will create the owner if needed.
-        }
-
-        if (existingInstance) {
-          const existingFingerprint = stableSerialize(existingInstance.spec);
-          if (existingFingerprint !== definition.specFingerprint) {
-            throw new Error(
-              `Singleton config drift detected for ${definition.key}. ` +
-              'An existing singleton owner boundary has a different deployed spec.'
+        const existingInstances = await singletonFactory.getInstances();
+        assertNoDeployedSingletonSpecDrift(
+          definition,
+          singletonInstanceName,
+          existingInstances
+        );
+        if ('createResourceGraphForInstance' in singletonFactory && existingInstances.length === 0) {
+          const discovered = await this.getDeploymentEngine().loadDeploymentByInstance({
+            factoryName: singletonFactory.name,
+            instanceName: singletonInstanceName,
+          });
+          const driftCheck = assertNoDiscoveredSingletonSpecDrift(
+            definition,
+            singletonInstanceName,
+            discovered?.resources ?? []
+          );
+          if (driftCheck.hasLegacyUnfingerprintedResources) {
+            const legacyStatus = this.reExecuteSingletonStatusFromDiscoveredResources(
+              definition,
+              discovered?.resources ?? []
             );
+            if (legacyStatus) {
+              this.singletonOwnerStatuses.set(getSingletonResourceId(definition.key), legacyStatus);
+            }
+            this.logger.warn('Skipping direct singleton owner reconciliation for legacy resources without a spec fingerprint', {
+              singletonId: definition.id,
+              singletonKey: definition.key,
+              singletonInstanceName,
+              registryNamespace: definition.registryNamespace,
+            });
+            continue;
           }
-          continue;
         }
 
-        await singletonFactory.deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
+        const deployedSingleton = await singletonFactory.deploy(definition.spec, {
+          instanceNameOverride: singletonInstanceName,
+          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
+        });
+        const singletonStatus = (deployedSingleton as { status?: unknown }).status;
+        if (singletonStatus && typeof singletonStatus === 'object' && !Array.isArray(singletonStatus)) {
+          this.singletonOwnerStatuses.set(
+            getSingletonResourceId(definition.key),
+            singletonStatus as Record<string, unknown>
+          );
+        }
       } finally {
         await singletonFactory.dispose?.();
       }
     }
+  }
+
+  private reExecuteSingletonStatusFromDiscoveredResources(
+    definition: SingletonDefinitionRecord,
+    resources: Array<{ id: string; manifest?: unknown }>
+  ): Record<string, unknown> | null {
+    if (resources.length === 0) return null;
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+    const localIdsByLiveIdentity = this.getSingletonLocalIdsByLiveIdentity(definition);
+    const singletonInstanceName = getSingletonInstanceName(definition.id);
+    for (const resource of resources) {
+      const manifest = resource.manifest;
+      const status =
+        manifest && typeof manifest === 'object' && 'status' in manifest
+          ? (manifest as { status?: unknown }).status
+          : undefined;
+      const statusRecord =
+        status && typeof status === 'object' && !Array.isArray(status)
+          ? (status as Record<string, unknown>)
+          : {};
+
+      for (const id of this.getSingletonStatusAliases(resource.id, manifest, singletonInstanceName, localIdsByLiveIdentity)) {
+        liveStatusMap.set(id, statusRecord);
+      }
+    }
+
+    return this.reExecuteSingletonStatus(definition, liveStatusMap) ?? null;
+  }
+
+  private getSingletonLocalIdsByLiveIdentity(
+    definition: SingletonDefinitionRecord
+  ): Map<string, string> {
+    const compositionFn = (definition.composition as unknown as {
+      _compositionFn?: (spec: unknown) => unknown;
+    })._compositionFn;
+    const idsByIdentity = new Map<string, string>();
+    if (!compositionFn) return idsByIdentity;
+
+    const probeContext = createCompositionContext('singleton-status-discovery-probe', {
+      deduplicateIds: true,
+      isReExecution: true,
+    });
+    runWithCompositionContext(probeContext, () => compositionFn(definition.spec));
+
+    for (const [id, resource] of Object.entries(probeContext.resources)) {
+      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
+      if (identity) idsByIdentity.set(identity, id);
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      if (namespaceAgnosticIdentity) idsByIdentity.set(namespaceAgnosticIdentity, id);
+    }
+
+    return idsByIdentity;
+  }
+
+  private getSingletonStatusAliases(
+    discoveredId: string,
+    manifest: unknown,
+    singletonInstanceName: string,
+    localIdsByLiveIdentity: Map<string, string>
+  ): string[] {
+    const aliases = new Set<string>([discoveredId]);
+    const annotationId =
+      manifest && typeof manifest === 'object'
+        ? (manifest as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations?.['typekro.io/resource-id']
+        : undefined;
+    if (annotationId) aliases.add(annotationId);
+
+    const derivedId = this.deriveLocalIdFromDirectGraphId(
+      discoveredId,
+      singletonInstanceName,
+      localIdsByLiveIdentity.values()
+    );
+    if (derivedId) aliases.add(derivedId);
+
+    if (manifest && typeof manifest === 'object') {
+      const resource = manifest as { kind?: string; metadata?: { name?: string; namespace?: string } };
+      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      const localId =
+        (identity ? localIdsByLiveIdentity.get(identity) : undefined) ??
+        (namespaceAgnosticIdentity ? localIdsByLiveIdentity.get(namespaceAgnosticIdentity) : undefined);
+      if (localId) aliases.add(localId);
+    }
+
+    return [...aliases];
+  }
+
+  private deriveLocalIdFromDirectGraphId(
+    id: string,
+    singletonInstanceName: string,
+    candidateLocalIds: Iterable<string> = []
+  ): string | undefined {
+    const prefix = `${toCamelCase(singletonInstanceName)}Resource`;
+    const match = id.match(new RegExp(`^${prefix}\\d+(.+)$`));
+    if (!match?.[1]) return undefined;
+    const suffix = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+    const normalizedSuffix = suffix.toLowerCase();
+    for (const candidate of candidateLocalIds) {
+      if (
+        candidate === suffix ||
+        candidate.toLowerCase() === normalizedSuffix ||
+        toCamelCase(candidate).toLowerCase() === normalizedSuffix
+      ) {
+        return candidate;
+      }
+    }
+    return suffix;
+  }
+
+  private getLiveIdentityKey(kind?: string, name?: string, namespace?: string): string | undefined {
+    if (!kind || !name) return undefined;
+    return `${kind}/${namespace ?? ''}/${name}`;
   }
 }
 

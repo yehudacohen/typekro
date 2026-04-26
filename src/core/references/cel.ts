@@ -1,6 +1,6 @@
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getInnerCelPath } from '../serialization/cel-references.js';
@@ -296,7 +296,7 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
   if (str.includes('__KUBERNETES_REF_')) {
     const parts: string[] = [];
     let lastIndex = 0;
-    const pattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+    const pattern = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
     let m: RegExpExecArray | null = pattern.exec(str);
     while (m !== null) {
       if (m.index > lastIndex) {

@@ -1014,6 +1014,129 @@ describe('T9 — outer RGD never references inner-only schema fields (I4)', () =
     expect(specFields).not.toContain('innerMode');
     expect(specFields).not.toContain('innerName');
   });
+
+  it('maps inner nullish defaults through the nested call-site spec path', () => {
+    const innerWithMappedDefault = kubernetesComposition(
+      {
+        name: 't9-inner-mapped-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerMappedDefault',
+        spec: type({
+          innerName: 'string',
+          settings: {
+            'mode?': 'string',
+          },
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({
+          name: spec.innerName,
+          image: spec.settings?.mode ?? 'nginx:alpine',
+          id: 'mappedDefaultDeploy',
+        });
+        return { ready: true };
+      }
+    );
+
+    const outerWithMappedDefault = kubernetesComposition(
+      {
+        name: 't9-outer-mapped-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterMappedDefault',
+        spec: type({
+          name: 'string',
+          processing: {
+            enabled: 'boolean',
+          },
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const inner = innerWithMappedDefault({
+          innerName: spec.name,
+          settings: spec.processing,
+        });
+        return { ready: inner.status.ready };
+      }
+    );
+
+    const parsed = parseRgd(outerWithMappedDefault.toYaml());
+    const processing = parsed.spec.schema.spec.processing as Record<string, unknown>;
+
+    expect(processing.mode).toBe('string | default="nginx:alpine"');
+    expect(parsed.spec.schema.spec).not.toHaveProperty('settings');
+    expect(collectStrings(parsed).some((value) => value.includes('schema.spec.settings'))).toBe(false);
+    expect(collectStrings(parsed).some((value) => value.includes('schema.spec.processing.mode'))).toBe(true);
+  });
+
+  it('maps root nested spec forwarding defaults to the outer root schema', () => {
+    const innerRootDefault = kubernetesComposition(
+      {
+        name: 't9-inner-root-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerRootDefault',
+        spec: type({ name: 'string', 'mode?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({ name: spec.name, image: spec.mode ?? 'nginx:root', id: 'rootDefaultDeploy' });
+        return { ready: true };
+      }
+    );
+
+    const outerRootDefault = kubernetesComposition(
+      {
+        name: 't9-outer-root-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterRootDefault',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const inner = innerRootDefault(spec);
+        return { ready: inner.status.ready };
+      }
+    );
+
+    const parsed = parseRgd(outerRootDefault.toYaml());
+    expect(parsed.spec.schema.spec.mode).toBe('string | default="nginx:root"');
+  });
+
+  it('maps direct nested spec forwarding defaults under the forwarded parent path', () => {
+    const innerDirectDefault = kubernetesComposition(
+      {
+        name: 't9-inner-direct-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerDirectDefault',
+        spec: type({ enabled: 'boolean', 'mode?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({ name: 'direct-default', image: spec.mode ?? 'nginx:direct', id: 'directDefaultDeploy' });
+        return { ready: spec.enabled };
+      }
+    );
+
+    const outerDirectDefault = kubernetesComposition(
+      {
+        name: 't9-outer-direct-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterDirectDefault',
+        spec: type({ processing: { enabled: 'boolean' } }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const inner = innerDirectDefault(spec.processing);
+        return { ready: inner.status.ready };
+      }
+    );
+
+    const parsed = parseRgd(outerDirectDefault.toYaml());
+    const processing = parsed.spec.schema.spec.processing as Record<string, unknown>;
+    expect(processing.mode).toBe('string | default="nginx:direct"');
+    expect(parsed.spec.schema.spec).not.toHaveProperty('mode');
+  });
 });
 
 // =============================================================================
@@ -1307,6 +1430,192 @@ describe('T13 — nested CelExpression resource refs resolve through nested-id r
     expect(data?.direct).toContain('schema.spec.name');
     expect(data?.templated).toContain('prefix-');
     expect(data?.templated).not.toContain('inner.status.appUrl');
+  });
+});
+
+describe('T14 — template-literal status strings resolve nested ref markers', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't14-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T14Inner',
+      spec: type({ name: 'string' }),
+      status: type({ appUrl: 'string' }),
+    },
+    (spec) => {
+      const deployment = Deployment({ name: spec.name, image: 'nginx', id: 't14Deploy' });
+      return { appUrl: `ready-${deployment.status.readyReplicas}` };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't14-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T14Outer',
+      spec: type({ name: 'string' }),
+      status: type({ url: 'string' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      return { url: `${inner.status.appUrl}` };
+    }
+  );
+
+  it('does not leak virtual nested ids in template-literal status strings', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const statusStrings = collectStrings(parsed.spec.schema.status);
+    const allStatus = statusStrings.join('\n');
+    const ids = getResourceIds(parsed);
+    const danglingRefs = extractResourceStatusRefs(parsed).filter(({ id }) => !ids.has(id));
+
+    expect(allStatus).not.toContain('inner.status.appUrl');
+    expect(allStatus).not.toContain('__KUBERNETES_REF_inner');
+    expect(danglingRefs).toEqual([]);
+    expect(allStatus).toContain('.status.readyReplicas');
+  });
+});
+
+describe('T15 — nested status KRO mixed templates are not double wrapped', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't15-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T15Inner',
+      spec: type({ name: 'string' }),
+      status: type({ appUrl: 'string' }),
+    },
+    (spec) => {
+      const deployment = Deployment({ name: spec.name, image: 'nginx', id: 't15Deploy' });
+      return { appUrl: `http://${deployment.status.readyReplicas}` };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't15-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T15Outer',
+      spec: type({ name: 'string' }),
+      status: type({ url: 'string' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      return { url: inner.status.appUrl };
+    }
+  );
+
+  it('emits the mixed template directly instead of wrapping it in another CEL expression', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const url = parsed.spec.schema.status?.url as string | undefined;
+
+    expect(url).toContain('http://${');
+    expect(url).not.toContain('${http://${');
+  });
+});
+
+describe('T15b — nested literal string status serializes as a CEL string literal', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't15b-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T15bInner',
+      spec: type({ name: 'string' }),
+      status: type({ phase: 'string' }),
+    },
+    (spec) => {
+      Deployment({ name: spec.name, image: 'nginx', id: 't15bDeploy' });
+      return { phase: 'Ready' };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't15b-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T15bOuter',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      ConfigMap({ name: `${spec.name}-phase`, data: { phase: inner.status.phase }, id: 'phaseConfig' });
+      return { ready: true };
+    }
+  );
+
+  it('does not emit a bare identifier for the literal string', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const config = parsed.spec.resources.find((resource) => resource.id === 'phaseConfig');
+    expect(config).toBeDefined();
+    const phase = (config?.template?.data as Record<string, unknown>).phase as string;
+
+    expect(phase).toContain('"Ready"');
+    expect(phase).not.toBe('${Ready}');
+  });
+});
+
+describe('T16 — dynamic nested status marker strings rewrite schema refs for KRO status', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't16-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T16Inner',
+      spec: type({ name: 'string' }),
+      status: type({ appUrl: 'string' }),
+    },
+    (spec) => {
+      const deployment = Deployment({ name: spec.name, image: 'nginx', id: 't16Deploy' });
+      return { appUrl: `http://${spec.name}-${deployment.status.readyReplicas}` };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't16-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T16Outer',
+      spec: type({ name: 'string' }),
+      status: type({ url: 'string' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      return { url: inner.status.appUrl };
+    }
+  );
+
+  const templatedOuterComp = kubernetesComposition(
+    {
+      name: 't16-templated-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T16TemplatedOuter',
+      spec: type({ name: 'string' }),
+      status: type({ url: 'string' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      return { url: `${inner.status.appUrl}` };
+    }
+  );
+
+  it('does not leave schema.spec refs in dynamic KRO status mixed templates', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const url = parsed.spec.schema.status?.url as string | undefined;
+
+    expect(url).toContain('http://${string(spec.name)}-');
+    expect(url).toContain('.status.readyReplicas');
+    expect(url).not.toContain('schema.spec.name');
+    expect(url).not.toContain('__KUBERNETES_REF_');
+  });
+
+  it('does not leave schema.spec refs when the nested status is inside a template literal', () => {
+    const parsed = parseRgd(templatedOuterComp.toYaml());
+    const url = parsed.spec.schema.status?.url as string | undefined;
+
+    expect(url).toContain('http://${string(spec.name)}-');
+    expect(url).toContain('.status.readyReplicas');
+    expect(url).not.toContain('schema.spec.name');
+    expect(url).not.toContain('__KUBERNETES_REF_');
   });
 });
 

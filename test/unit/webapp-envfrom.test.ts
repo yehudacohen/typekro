@@ -57,4 +57,59 @@ describe('webAppWithProcessing envFrom', () => {
       secretRef: { name: 'my-secrets' },
     });
   });
+
+  it('passes Inngest resource overrides through to the HelmRelease', () => {
+    const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
+    const graph = factory.createResourceGraphForInstance({
+      name: 'test-app',
+      app: { image: 'nginx:alpine' },
+      database: { storageSize: '1Gi' },
+      processing: {
+        eventKey: 'test',
+        signingKey: 'test',
+        resources: {
+          requests: { cpu: '50m', memory: '128Mi' },
+          limits: { cpu: '250m', memory: '256Mi' },
+        },
+      },
+    });
+
+    const inngestRelease = graph.resources.find((r) => {
+      const name = String(r.manifest?.metadata?.name ?? '');
+      return name === 'test-app-inngest' && r.manifest?.kind === 'HelmRelease';
+    });
+    expect(inngestRelease).toBeDefined();
+
+    const values = (inngestRelease!.manifest as any)?.spec?.values;
+    expect(values?.resources).toEqual({
+      requests: { cpu: '50m', memory: '128Mi' },
+      limits: { cpu: '250m', memory: '256Mi' },
+    });
+  });
+
+  it('scopes the Inngest HelmRepository name by app namespace', () => {
+    const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
+    const graph = factory.createResourceGraphForInstance({
+      name: 'test-app',
+      namespace: 'app-ns',
+      app: { image: 'nginx:alpine' },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+
+    const repository = graph.resources.find((r) => {
+      const name = String(r.manifest?.metadata?.name ?? '');
+      return name === 'test-app-app-ns-inngest-repo' && r.manifest?.kind === 'HelmRepository';
+    });
+    expect(repository).toBeDefined();
+
+    const release = graph.resources.find((r) => {
+      const name = String(r.manifest?.metadata?.name ?? '');
+      return name === 'test-app-inngest' && r.manifest?.kind === 'HelmRelease';
+    });
+    expect(release).toBeDefined();
+    expect((release!.manifest as any)?.spec?.chart?.spec?.sourceRef?.name).toBe(
+      'test-app-app-ns-inngest-repo'
+    );
+  });
 });

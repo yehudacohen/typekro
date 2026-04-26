@@ -85,7 +85,8 @@ describe('synthesizeNestedCompositionStatus', () => {
 
     // inner1 found with 1 child (childA), childB not in map so not counted
     expect(enriched.has('inner1')).toBe(true);
-    expect(enriched.get('inner1')?.ready).toBe(true);
+    expect(enriched.get('inner1')?.ready).toBe(false);
+    expect(enriched.get('inner1')?.phase).toBe('Installing');
   });
 
   it('should use knownNestedIds for precise identification (no digit heuristic)', () => {

@@ -59,6 +59,10 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
     eventKey: 'deadbeef0123456789abcdef01234567',
     signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
     replicas: 1,
+    resources: {
+      requests: { cpu: '50m', memory: '128Mi' },
+      limits: { cpu: '250m', memory: '256Mi' },
+    },
     sdkUrl: ['http://testapp:80/api/inngest'],
   },
 });
@@ -242,10 +246,15 @@ describe('WebAppWithProcessing KRO Mode', () => {
   });
 
   afterAll(async () => {
-    // Full KRO finalizer cleanup can take several minutes and makes this
-    // integration appear hung even after the deploy assertion passed.
-    // For test teardown, issue namespace deletion and let Kubernetes/KRO
-    // finish the graph cleanup asynchronously in the background.
+    // Delete the KRO instance first so the controller follows the graph and
+    // removes child resources before namespace teardown.
+    if (kroFactory) {
+      try {
+        await kroFactory.deleteInstance('testapp');
+      } catch (e) {
+        console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+      }
+    }
     try {
       await cleanupNamespace(appNamespace, kubeConfig);
     } catch (e) {

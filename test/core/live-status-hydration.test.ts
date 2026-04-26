@@ -22,6 +22,7 @@ import {
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
 import { synthesizeNestedCompositionStatus } from '../../src/core/deployment/nested-composition-status.js';
+import { createSchemaProxy } from '../../src/core/references/schema-proxy.js';
 import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
 import { simple } from '../../src/factories/simple/index.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
@@ -606,9 +607,24 @@ describe('Live Status Hydration', () => {
       );
 
       expect(String(serialized.prefixedUrl)).toContain('prefix-${');
-      expect(String(serialized.prefixedUrl)).toContain('string(schema.spec.name)');
+      expect(String(serialized.prefixedUrl)).toContain('string(spec.name)');
       expect(String(serialized.prefixedUrl)).not.toContain('nested.status.appUrl');
       expect(String(serialized.prefixedUrl)).not.toContain('__KUBERNETES_REF_nested');
+    });
+
+    it('should rewrite direct schema KubernetesRefs for KRO status expressions', () => {
+      const schema = createSchemaProxy<{ namespace: string }, Record<string, never>>();
+      const serialized = serializeStatusMappingsToCel({
+        namespace: schema.spec.namespace,
+        details: {
+          namespace: schema.spec.namespace,
+        },
+      });
+
+      expect(serialized.namespace).toBe('${spec.namespace}');
+      expect((serialized.details as Record<string, string>).namespace).toBe('${spec.namespace}');
+      expect(JSON.stringify(serialized)).not.toContain('__schema__');
+      expect(JSON.stringify(serialized)).not.toContain('schema.spec');
     });
   });
 

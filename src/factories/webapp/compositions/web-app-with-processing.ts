@@ -252,6 +252,7 @@ export const webAppWithProcessing = kubernetesComposition(
     // KRO reconciliation (KRO waits for external refs to exist before creating
     // dependent resources, but the Secret only exists after CNPG bootstraps).
     const dbSecretName = `${spec.name}-db-${dbOwner}`;
+    const inngestRepositoryName = `${spec.name}-${ns}-inngest-repo`;
 
     // ── Inngest (with external DB + cache) ──────────────────────────────
 
@@ -262,6 +263,7 @@ export const webAppWithProcessing = kubernetesComposition(
     const inngestBootstrapApp = inngestBootstrap({
       name: `${spec.name}-inngest`,
       namespace: ns,
+      repositoryName: inngestRepositoryName,
       inngest: {
         eventKey: spec.processing.eventKey,
         signingKey: spec.processing.signingKey,
@@ -272,6 +274,7 @@ export const webAppWithProcessing = kubernetesComposition(
       postgresql: { enabled: false },
       redis: { enabled: false },
       replicaCount: inngestReplicas,
+      ...(spec.processing.resources ? { resources: spec.processing.resources } : {}),
       // Deploy Inngest pods in the same namespace as CNPG (for Secret access)
       // and inject the real postgres URI from the CNPG Secret via secretKeyRef.
       customValues: {

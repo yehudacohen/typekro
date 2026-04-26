@@ -24,6 +24,10 @@ const logger = getComponentLogger('deployers');
 export class DirectTypeKroDeployer implements TypeKroDeployer {
   constructor(private engine: import('../core/deployment/engine.js').DirectDeploymentEngine) {}
 
+  async dispose(): Promise<void> {
+    await this.engine.dispose();
+  }
+
   /**
    * Create a ResourceGraph for a single resource
    * This helper function reduces duplication between deploy and delete operations
@@ -73,6 +77,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     const resourceGraph = this.createResourceGraph(resourceWithEvaluator);
 
     const deploymentOptions = {
+      ...options,
       mode: 'direct' as const,
       namespace: options.namespace || 'default',
       waitForReady: options.waitForReady ?? true,
@@ -125,6 +130,10 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
  */
 export class KroTypeKroDeployer implements TypeKroDeployer {
   constructor(private engine: import('../core/deployment/engine.js').DirectDeploymentEngine) {}
+
+  async dispose(): Promise<void> {
+    await this.engine.dispose();
+  }
 
   async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
     // Convert single resource to ResourceGraph for DirectDeploymentEngine

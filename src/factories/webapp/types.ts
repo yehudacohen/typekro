@@ -15,6 +15,11 @@ import { type } from 'arktype';
 import { CnpgBootstrapConfigSchema } from '../cnpg/types.js';
 import { ValkeyBootstrapConfigSchema } from '../valkey/types.js';
 
+const resourceRequirementsSchemaShape = {
+  'requests?': { 'cpu?': 'string', 'memory?': 'string' },
+  'limits?': { 'cpu?': 'string', 'memory?': 'string' },
+} as const;
+
 // ============================================================================
 // Config Schemas (source of truth) + Inferred Types
 // ============================================================================
@@ -89,6 +94,8 @@ export const WebAppWithProcessingConfigSchema = type({
     'sdkUrl?': 'string[]',
     /** Number of Inngest server replicas (default: 1). */
     'replicas?': 'number',
+    /** Pod resource requirements for the Inngest server. */
+    'resources?': resourceRequirementsSchemaShape,
   },
   /**
    * CloudNativePG operator install settings. The composition uses

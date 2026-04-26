@@ -23,6 +23,9 @@ export interface TypeKroDeployer {
    * Delete a TypeKro resource from Kubernetes
    */
   delete<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<void>;
+
+  /** Dispose any underlying clients owned by this deployer. */
+  dispose?(): Promise<void>;
 }
 
 /**
@@ -55,13 +58,13 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
    */
   kubeConfigOptions?: SerializableKubeConfigOptions;
 
+  /** Optional preconfigured deployer. When set, the provider must not create its own kube client. */
+  deployer?: TypeKroDeployer;
+
   /**
    * Optional deployment options
    */
-  options?: {
-    waitForReady?: boolean;
-    timeout?: number;
-  };
+  options?: Partial<Omit<DeploymentOptions, 'mode' | 'namespace'>>;
 }
 
 /**

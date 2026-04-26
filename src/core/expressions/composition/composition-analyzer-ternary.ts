@@ -122,7 +122,8 @@ function walkObjectForTernaries(
               overrides = [];
               result.templateOverrides.set(resourceId, overrides);
             }
-            const conditionExpr = `${statusRef.variableName}.status.${statusRef.statusField}`;
+            const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+            const conditionExpr = `${statusResourceId}.status.${statusRef.statusField}`;
             for (const path of allPaths) {
               const trueValue = trueFields.get(path) ?? 'omit()';
               const falseValue = falseFields.get(path) ?? 'omit()';

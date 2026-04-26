@@ -397,6 +397,8 @@ export interface SchemaDefinition<
 > {
   apiVersion: string;
   kind: string;
+  /** Custom API group for the generated CRD. Defaults to Kro's `kro.run`. */
+  group?: string;
   spec: Type<TSpec>;
   status: Type<TStatus>;
 }

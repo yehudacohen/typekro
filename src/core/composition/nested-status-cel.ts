@@ -15,7 +15,8 @@
  */
 
 import { getComponentLogger } from '../logging/index.js';
-import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
+import { escapeCelString } from '../../utils/cel-escape.js';
 
 const logger = getComponentLogger('nested-status-cel');
 
@@ -124,7 +125,7 @@ function extractExpressionString(
     return `${ref.resourceId}.${ref.fieldPath}`;
   }
   if (typeof value === 'string') {
-    return value;
+    return isLikelyCelString(value) ? value : `"${escapeCelString(value)}"`;
   }
   if (typeof value === 'number') {
     // NaN comparisons (`proxy >= 1`) produce false in Phase A; if we see
@@ -154,6 +155,16 @@ function extractExpressionString(
   return undefined;
 }
 
+function isLikelyCelString(value: string): boolean {
+  if (value.includes('__KUBERNETES_REF_') || value.includes('${')) return true;
+  if (/^(?:true|false|null)$/.test(value)) return true;
+  if (/^[A-Za-z_$][\w$]*\.(?:metadata|status|spec)\./.test(value)) return true;
+  if (/\.(?:exists|all|exists_one|map|filter)\s*\(/.test(value)) return true;
+  if (/\s(?:==|!=|>=|<=|>|<|&&|\|\||\+|-|\*|\/|\?|:)\s/.test(value)) return true;
+  if (/^(?:has|size|string|int|double|bool)\(.+\)$/.test(value)) return true;
+  return false;
+}
+
 /** Type guard: does `phaseBFallback` carry a Phase B `expression` field? */
 function phaseBHasExpression(
   phaseBFallback: unknown
@@ -181,7 +192,12 @@ export function remapVariableNames(
   innerResourceIds: string[],
   preserveVariables?: ReadonlySet<string>
 ): string {
+  const lambdaVariables = extractCelLambdaVariables(exprStr);
+  const shouldPreserveVariable = (id: string): boolean =>
+    preserveVariables?.has(id) === true || lambdaVariables.has(id);
+
   const remapResourceId = (id: string): string | undefined => {
+    if (shouldPreserveVariable(id)) return undefined;
     if (innerResourceIds.includes(id) || id === 'schema') return id;
 
     const lower = id.toLowerCase();
@@ -193,8 +209,6 @@ export function remapVariableNames(
       return candidate === lower || candidate === normalizedLower;
     });
     if (exactLower) return exactLower;
-
-    if (preserveVariables?.has(id)) return undefined;
 
     // 2. Single resource — only treat minified/local shorthand names as
     // unambiguous. Named variables like `inner` or `inngest` may refer to
@@ -247,10 +261,19 @@ export function remapVariableNames(
     return remapped ? `${remapped}.${section}.` : match;
   });
 
-  return dottedRemapped.replace(/__KUBERNETES_REF_([^_]+)_([a-zA-Z0-9.$]+)__/g, (match, id, fieldPath) => {
+  return dottedRemapped.replace(new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g'), (match, id, fieldPath) => {
     const remapped = remapResourceId(id);
     return remapped ? `__KUBERNETES_REF_${remapped}_${fieldPath}__` : match;
   });
+}
+
+function extractCelLambdaVariables(exprStr: string): Set<string> {
+  const variables = new Set<string>();
+  const lambdaPattern = /\.(?:exists|all|exists_one|map|filter)\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g;
+  for (const match of exprStr.matchAll(lambdaPattern)) {
+    if (match[1]) variables.add(match[1]);
+  }
+  return variables;
 }
 
 /**

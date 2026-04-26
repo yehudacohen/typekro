@@ -24,6 +24,7 @@ describe('DirectTypeKroDeployer', () => {
         })
       ),
       deleteResource: mock(() => Promise.resolve()),
+      dispose: mock(() => Promise.resolve()),
       k8sApi: {
         create: mock(() => Promise.resolve({ body: {} })),
         read: mock(() => Promise.resolve({ body: {} })),
@@ -69,6 +70,34 @@ describe('DirectTypeKroDeployer', () => {
       mockEngine = createMockEngine();
       // Create deployer to ensure it's properly initialized
       new DirectTypeKroDeployer(mockEngine);
+    });
+
+    it('preserves TypeKro deployment metadata options', async () => {
+      const testDeployment = createTestDeployment('metadata-options', 1);
+      const deployer = new DirectTypeKroDeployer(mockEngine);
+
+      await deployer.deploy(testDeployment, {
+        mode: 'alchemy',
+        namespace: 'test-ns',
+        factoryName: 'alchemy-factory',
+        instanceName: 'alchemy-instance',
+        singletonSpecFingerprint: 'sha256:test',
+      });
+
+      const options = mockEngine.deploy.mock.calls[0]?.[1];
+      expect(options.factoryName).toBe('alchemy-factory');
+      expect(options.instanceName).toBe('alchemy-instance');
+      expect(options.singletonSpecFingerprint).toBe('sha256:test');
+      expect(options.namespace).toBe('test-ns');
+      expect(options.mode).toBe('direct');
+    });
+
+    it('disposes the underlying deployment engine', async () => {
+      const deployer = new DirectTypeKroDeployer(mockEngine);
+
+      await deployer.dispose();
+
+      expect(mockEngine.dispose).toHaveBeenCalledTimes(1);
     });
 
     it('should use readiness evaluator from factory-created resources', () => {

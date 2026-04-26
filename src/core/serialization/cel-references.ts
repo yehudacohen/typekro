@@ -10,6 +10,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
@@ -169,9 +170,10 @@ function generateCelExpression(
  *   - Resource ref:  `__KUBERNETES_REF_<resourceId>_<fieldPath>__`
  *   - Schema ref:    `__KUBERNETES_REF___schema___<fieldPath>__`
  *
- * `resourceId` is `__schema__` for schema refs, or a single underscore-free
- * identifier for resource refs. `fieldPath` is a dot-separated identifier
- * sequence like "spec.name" or "status.workers.$item.name".
+ * `resourceId` is `__schema__` for schema refs, or a marker-safe resource id
+ * with optional single `_` segments. `fieldPath` is a dot-separated identifier
+ * sequence like "spec.name", "status.image_tag", or
+ * "status.workers.$item.name".
  *
  * Two flavors are needed:
  *  - `MARKER_PATTERN_SOURCE` is the non-global base pattern. Create a fresh
@@ -186,8 +188,8 @@ function generateCelExpression(
  * `RegExp(MARKER_PATTERN_SOURCE, 'g')` wherever global matching is needed —
  * avoids the stateful-lastIndex footgun of a module-level `/g` regex.
  */
-const MARKER_PATTERN_SOURCE = '__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__';
-const MARKER_PATTERN_FULL = /^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/;
+const MARKER_PATTERN_SOURCE = KUBERNETES_REF_MARKER_SOURCE;
+const MARKER_PATTERN_FULL = new RegExp(`^${MARKER_PATTERN_SOURCE}$`);
 
 /**
  * Convert a marker substring captured from {@link MARKER_PATTERN_G} (or
@@ -740,18 +742,17 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
       );
     }
     // Bare CelExpression — may be a single schema.spec.X reference (possibly
-    // wrapped in `string(...)`). Apply omit() wrapping only when the whole
-    // expression is exactly one schema.spec.<field> (or string() of one),
-    // and <field> is a top-level optional field.
+    // wrapped in `string(...)`). Delegate any single schema ref to
+    // maybeWrapWithOmit so nested optional ancestors get the same guard chain
+    // as KubernetesRef objects.
     const expr = resolveNestedCompositionRefs(obj.expression, context?.nestedStatusCel, context?.resourceIds);
-    const bareField = /^schema\.spec\.([A-Za-z_$][\w$]*)$/.exec(expr)?.[1];
-    if (bareField && context?.omitFields?.has(bareField)) {
-      return `\${${maybeWrapWithOmit(expr, false, context.omitFields)}}`;
+    const bareRef = /^schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.exec(expr)?.[0];
+    if (bareRef) {
+      return `\${${maybeWrapWithOmit(bareRef, false, context?.omitFields)}}`;
     }
-    const stringField = /^string\(schema\.spec\.([A-Za-z_$][\w$]*)\)$/.exec(expr)?.[1];
-    if (stringField && context?.omitFields?.has(stringField)) {
-      const innerPath = `schema.spec.${stringField}`;
-      return `\${${maybeWrapWithOmit(innerPath, true, context.omitFields)}}`;
+    const stringRef = /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(expr)?.[1];
+    if (stringRef) {
+      return `\${${maybeWrapWithOmit(stringRef, true, context?.omitFields)}}`;
     }
     return finalizeCelForKro(expr, context?.nestedStatusCel, context);
   }
@@ -868,6 +869,14 @@ export function serializeStatusMappingsToCel(
    */
   function rewriteSchemaRefsForKroStatus(expr: string): string {
     let out = expr.replace(
+      /__schema__\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
+      '$1'
+    );
+    out = out.replace(
+      /__schema__\.spec\.([a-zA-Z0-9_.]+)/g,
+      'spec.$1'
+    );
+    out = out.replace(
       /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
       '$1'
     );
@@ -880,6 +889,7 @@ export function serializeStatusMappingsToCel(
         return _match;
       }
     );
+    out = out.replace(/schema\.spec\.([a-zA-Z_$][\w$]*)/g, 'spec.$1');
     return out;
   }
 
@@ -895,7 +905,12 @@ export function serializeStatusMappingsToCel(
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
-      return convertKubernetesRefMarkersTocel(resolved);
+      return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
+    }
+    if (resolved.includes('${')) {
+      // Already a KRO mixed-template value. Do not wrap it again as
+      // `${http://${...}}`, which is invalid CEL/YAML for status fields.
+      return rewriteSchemaRefsForKroStatus(resolved);
     }
     return `\${${rewriteSchemaRefsForKroStatus(resolved)}}`;
   }
@@ -915,10 +930,11 @@ export function serializeStatusMappingsToCel(
         }
       }
 
-      // Unresolved nested composition ref — emit as-is for backward
-      // compatibility. Downstream validation will flag it if the virtual
-      // id doesn't correspond to a real resource.
-      return `\${${ref.resourceId}.${ref.fieldPath}}`;
+      // Unresolved ref — still run through the status-expression finalizer so
+      // direct schema refs (`__schema__.spec.x`) become KRO status refs (`spec.x`).
+      // Downstream validation will flag virtual ids that don't correspond to a
+      // real resource.
+      return statusFieldFromExpression(`${ref.resourceId}.${ref.fieldPath}`);
     }
 
     if (isCelExpression(value)) {
@@ -942,8 +958,8 @@ export function serializeStatusMappingsToCel(
       if (value.includes('__KUBERNETES_REF_')) {
         // Resolve nested refs first (substitution is a no-op on pure marker
         // strings but handles mixed forms), then convert markers to KRO CEL.
-        const resolved = resolveNestedCompositionRefs(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
-        return convertKubernetesRefMarkersTocel(resolved);
+        const resolved = resolveNestedRefMarkers(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
+        return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
       }
       return `\${"${value}"}`;
     }

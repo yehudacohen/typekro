@@ -89,6 +89,9 @@ export const SCOPES_ANNOTATION = 'typekro.io/scopes';
 /** Annotation carrying dependency ids as a JSON array of strings. */
 export const DEPENDS_ON_ANNOTATION = 'typekro.io/depends-on';
 
+/** Annotation carrying the immutable singleton owner spec fingerprint. */
+export const SINGLETON_SPEC_FINGERPRINT_ANNOTATION = 'typekro.io/singleton-spec-fingerprint';
+
 // ── Tagging context and API ───────────────────────────────────────────────
 
 /**
@@ -116,6 +119,8 @@ export interface TagContext {
    * Used for reverse-topological deletion reconstruction.
    */
   dependencies?: string[];
+  /** Fingerprint for singleton owner resources. */
+  singletonSpecFingerprint?: string;
 }
 
 /**
@@ -159,6 +164,9 @@ export function applyTypekroTags(manifest: KubernetesResource, ctx: TagContext):
   }
   if (ctx.dependencies && ctx.dependencies.length > 0) {
     metadata.annotations[DEPENDS_ON_ANNOTATION] = JSON.stringify(ctx.dependencies);
+  }
+  if (ctx.singletonSpecFingerprint) {
+    metadata.annotations[SINGLETON_SPEC_FINGERPRINT_ANNOTATION] = ctx.singletonSpecFingerprint;
   }
 }
 

@@ -23,9 +23,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
-import { materializeSingletonOwnerResourcesForKroYaml } from '../../src/core/serialization/singleton-owner-yaml.js';
 import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
-import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
 import { ConfigMap, Deployment, Ingress, Service } from '../../src/factories/simple/index.js';
 import { Cel, externalRef, kubernetesComposition, singleton } from '../../src/index.js';
 
@@ -465,6 +463,41 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(replicas).toContain('?');
         expect(replicas).toContain('3');
         expect(replicas).toContain('1');
+      });
+
+      it('resource-status object ternary uses resource id instead of JS variable name', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'resource-status-object-ternary',
+            apiVersion: 'v1alpha1',
+            kind: 'ResourceStatusObjectTernaryTest',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const cacheDep = Deployment({
+              name: `${spec.name}-cache`,
+              image: spec.image,
+              id: 'cache',
+            });
+            ConfigMap({
+              name: `${spec.name}-config`,
+              data: cacheDep.status.ready
+                ? { CACHE_MODE: 'redis' }
+                : { CACHE_MODE: 'memory' },
+              id: 'config',
+            });
+            const app = Deployment({ name: `${spec.name}-app`, image: spec.image, id: 'app' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const config = findResource(parsed, 'config');
+        const strings = JSON.stringify(config.template);
+
+        expect(strings).toContain('cache.status.ready');
+        expect(strings).not.toContain('cacheDep.status.ready');
       });
 
       it('compile-time literal stays as literal inside forEach body', () => {
@@ -1546,6 +1579,36 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       expect(extRefResource!.externalRef.metadata.namespace).toBe('platform-system');
     });
 
+    it('externalRef metadata preserves schema proxy values', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'extref-schema-metadata',
+          apiVersion: 'v1alpha1',
+          kind: 'ExtRefSchemaMetadataTest',
+          spec: type({ configName: 'string', namespace: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          externalRef({
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: {
+              name: spec.configName,
+              namespace: spec.namespace,
+            },
+            id: 'schemaConfig',
+          });
+          return { ready: true };
+        }
+      );
+
+      const parsed = parseRgdYaml(graph.toYaml());
+      const extRefResource = parsed.spec.resources.find((r) => r.externalRef !== undefined);
+
+      expect(extRefResource?.externalRef.metadata.name).toContain('schema.spec.configName');
+      expect(extRefResource?.externalRef.metadata.namespace).toContain('schema.spec.namespace');
+    });
+
     it('externalRef resource has NO template field in YAML', () => {
       const graph = kubernetesComposition(
         {
@@ -1758,18 +1821,18 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
       const parsed = parseRgdYaml(graph.toYaml());
       const resourceIds = parsed.spec.resources.map((resource) => resource.id);
-      const ownerBoundary = parsed.spec.resources.find(
+      const ownerRef = parsed.spec.resources.find(
         (resource) =>
-          resource.template?.kind === 'SharedBootstrapInlineCheck' &&
-          resource.template?.metadata?.name === 'platform-bootstrap' &&
-          resource.template?.metadata?.namespace === 'typekro-singletons'
+          resource.externalRef?.kind === 'SharedBootstrapInlineCheck' &&
+          resource.externalRef?.metadata?.name === 'platform-bootstrap' &&
+          resource.externalRef?.metadata?.namespace === 'typekro-singletons'
       );
 
       expect(resourceIds).not.toContain('bootstrapApp');
-      expect(ownerBoundary?.id).toBeDefined();
+      expect(ownerRef?.id).toBeDefined();
     });
 
-    it('singleton(...) emits a self-contained owner boundary and registry namespace in KRO YAML', () => {
+    it('singleton(...) emits an externalRef instead of owning the singleton boundary in KRO YAML', () => {
       const sharedBootstrap = kubernetesComposition(
         {
           name: 'shared-bootstrap-owner-boundary',
@@ -1804,28 +1867,31 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const parsed = parseRgdYaml(graph.toYaml());
-      const namespaceResource = parsed.spec.resources.find(
-        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
+      const ownerRef = parsed.spec.resources.find(
+        (resource) =>
+          resource.externalRef?.kind === 'SharedBootstrapOwnerBoundary' &&
+          resource.externalRef?.metadata?.name === 'stable-shared-id' &&
+          resource.externalRef?.metadata?.namespace === 'typekro-singletons'
       );
       const ownerBoundary = parsed.spec.resources.find(
-        (resource) =>
-          resource.template?.kind === 'SharedBootstrapOwnerBoundary' &&
-          resource.template?.metadata?.name === 'stable-shared-id' &&
-          resource.template?.metadata?.namespace === 'typekro-singletons'
+        (resource) => resource.template?.kind === 'SharedBootstrapOwnerBoundary'
+      );
+      const namespaceResource = parsed.spec.resources.find(
+        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
       );
       const expectedOwnerId = getSingletonResourceId(
         'platform.typekro.test/v1alpha1/SharedBootstrapOwnerBoundary:shared-bootstrap-owner-boundary#stable-shared-id'
       );
 
-      expect(namespaceResource).toBeDefined();
-      expect(ownerBoundary).toBeDefined();
-      expect(ownerBoundary?.id).toBe(expectedOwnerId);
-      expect(ownerBoundary?.template?.spec?.name).toContain('shared-human-name');
-      expect(ownerBoundary?.template?.metadata?.name).toBe('stable-shared-id');
-      expect(ownerBoundary?.template?.metadata?.namespace).toBe('typekro-singletons');
+      expect(namespaceResource).toBeUndefined();
+      expect(ownerBoundary).toBeUndefined();
+      expect(ownerRef).toBeDefined();
+      expect(ownerRef?.id).toBe(expectedOwnerId);
+      expect(ownerRef?.externalRef?.metadata?.name).toBe('stable-shared-id');
+      expect(ownerRef?.externalRef?.metadata?.namespace).toBe('typekro-singletons');
     });
 
-    it('factory(kro).toYaml() also emits the singleton owner boundary and registry namespace', () => {
+    it('factory(kro).toYaml() also emits the singleton boundary as an externalRef', () => {
       const sharedBootstrap = kubernetesComposition(
         {
           name: 'shared-bootstrap-factory-owner-boundary',
@@ -1860,25 +1926,29 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const parsed = parseRgdYaml(graph.factory('kro').toYaml());
-      const namespaceResource = parsed.spec.resources.find(
-        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
+      const ownerRef = parsed.spec.resources.find(
+        (resource) =>
+          resource.externalRef?.kind === 'SharedBootstrapFactoryOwnerBoundary' &&
+          resource.externalRef?.metadata?.name === 'stable-shared-id' &&
+          resource.externalRef?.metadata?.namespace === 'typekro-singletons'
       );
       const ownerBoundary = parsed.spec.resources.find(
-        (resource) =>
-          resource.template?.kind === 'SharedBootstrapFactoryOwnerBoundary' &&
-          resource.template?.metadata?.name === 'stable-shared-id' &&
-          resource.template?.metadata?.namespace === 'typekro-singletons'
+        (resource) => resource.template?.kind === 'SharedBootstrapFactoryOwnerBoundary'
+      );
+      const namespaceResource = parsed.spec.resources.find(
+        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
       );
       const expectedOwnerId = getSingletonResourceId(
         'platform.typekro.test/v1alpha1/SharedBootstrapFactoryOwnerBoundary:shared-bootstrap-factory-owner-boundary#stable-shared-id'
       );
 
-      expect(namespaceResource).toBeDefined();
-      expect(ownerBoundary).toBeDefined();
-      expect(ownerBoundary?.id).toBe(expectedOwnerId);
+      expect(namespaceResource).toBeUndefined();
+      expect(ownerBoundary).toBeUndefined();
+      expect(ownerRef).toBeDefined();
+      expect(ownerRef?.id).toBe(expectedOwnerId);
     });
 
-    it('emits distinct singleton owner resources when different compositions reuse the same id', () => {
+    it('emits distinct singleton externalRefs when different compositions reuse the same id', () => {
       const bootstrapA = kubernetesComposition(
         {
           name: 'shared-a',
@@ -1925,14 +1995,14 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
       const parsed = parseRgdYaml(graph.factory('kro').toYaml());
       const ownerKinds = parsed.spec.resources
-        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.template?.kind))
-        .map((resource) => resource.template?.kind)
+        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
+        .map((resource) => resource.externalRef?.kind)
         .sort();
 
       expect(ownerKinds).toEqual(['SharedBootstrapA', 'SharedBootstrapB']);
       const ownerRefs = parsed.spec.resources
-        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.template?.kind))
-        .map((resource) => `${resource.template?.kind}:${resource.template?.metadata?.name}`)
+        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
+        .map((resource) => `${resource.externalRef?.kind}:${resource.externalRef?.metadata?.name}`)
         .sort();
       expect(ownerRefs).toEqual([
         'SharedBootstrapA:stable-id',
@@ -1940,58 +2010,59 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       ]);
     });
 
-    it('emits distinct singleton boundary resource ids when sanitized keys would otherwise collide', () => {
-      const resourcesWithKeys: Record<string, ParsedRgdResource['template']> = {};
-      const singletonDefinitions = [
+    it('singleton externalRefs honor custom group with version-only apiVersion', () => {
+      const bootstrapA = kubernetesComposition(
         {
-          id: 'stable/id',
-          key: 'platform.typekro.test/v1alpha1|SharedPunctuationA|shared.ns-a|stable/id',
-          specFingerprint: 'fingerprint-a',
-          registryNamespace: 'shared.ns-a',
-          composition: {
-            _definition: {
-              apiVersion: 'platform.typekro.test/v1alpha1',
-              kind: 'SharedPunctuationA',
-            },
-          },
-          spec: { name: 'alpha' },
+          name: 'shared-bootstrap-a',
+          apiVersion: 'v1alpha1',
+          group: 'platform-a.example.com',
+          kind: 'SharedBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
         },
+        () => ({ ready: true })
+      );
+      const bootstrapB = kubernetesComposition(
         {
-          id: 'stable-id',
-          key: 'platform.typekro.test/v1alpha1|SharedPunctuationB|shared-ns-a|stable-id',
-          specFingerprint: 'fingerprint-b',
-          registryNamespace: 'shared-ns-a',
-          composition: {
-            _definition: {
-              apiVersion: 'platform.typekro.test/v1alpha1',
-              kind: 'SharedPunctuationB',
-            },
-          },
-          spec: { name: 'beta' },
+          name: 'shared-bootstrap-b',
+          apiVersion: 'v1alpha1',
+          group: 'platform-b.example.com',
+          kind: 'SharedBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
         },
-      ] satisfies SingletonDefinitionRecord[];
+        () => ({ ready: true })
+      );
 
-      materializeSingletonOwnerResourcesForKroYaml(resourcesWithKeys, singletonDefinitions);
+      const graph = kubernetesComposition(
+        {
+          name: 'singleton-custom-group-check',
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonCustomGroupCheck',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const sharedA = singleton(bootstrapA, { id: 'stable-id', spec: { name: `${spec.name}-a` } });
+          const sharedB = singleton(bootstrapB, { id: 'stable-id', spec: { name: `${spec.name}-b` } });
+          return { ready: sharedA.status.ready && sharedB.status.ready };
+        }
+      );
 
-      const resourceIds = Object.keys(resourcesWithKeys).sort();
-      const ownerIds = singletonDefinitions.map((definition) => getSingletonResourceId(definition.key)).sort();
-      const namespaceIds = resourceIds.filter((id) => id.startsWith('singletonNamespace'));
+      const parsed = parseRgdYaml(graph.factory('kro').toYaml());
+      const refs = parsed.spec.resources
+        .filter((resource) => resource.externalRef?.kind === 'SharedBootstrap')
+        .map((resource) => ({
+          apiVersion: resource.externalRef?.apiVersion,
+          id: resource.id,
+        }))
+        .sort((a, b) => String(a.apiVersion).localeCompare(String(b.apiVersion)));
 
-      expect(ownerIds).toHaveLength(2);
-      expect(new Set(ownerIds).size).toBe(2);
-      expect(ownerIds.every((id) => id in resourcesWithKeys)).toBe(true);
-      expect(namespaceIds).toHaveLength(2);
-      expect(new Set(namespaceIds).size).toBe(2);
-
-      const namespaceNames = namespaceIds
-        .map((id) => resourcesWithKeys[id]?.metadata?.name)
-        .sort();
-      expect(namespaceNames).toEqual(['shared-ns-a', 'shared.ns-a']);
-
-      const ownerKinds = ownerIds
-        .map((id) => resourcesWithKeys[id]?.kind)
-        .sort();
-      expect(ownerKinds).toEqual(['SharedPunctuationA', 'SharedPunctuationB']);
+      expect(refs.map((ref) => ref.apiVersion)).toEqual([
+        'platform-a.example.com/v1alpha1',
+        'platform-b.example.com/v1alpha1',
+      ]);
+      expect(new Set(refs.map((ref) => ref.id)).size).toBe(2);
     });
   });
 
@@ -2019,6 +2090,75 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
       const parsed = parseRgdYaml(graph.toYaml());
       expect(parsed.spec.schema.group).toBe('platform.example.com');
+    });
+
+    it('factory RGD YAML preserves custom schema group', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'schema-group-factory',
+          apiVersion: 'v1alpha1',
+          kind: 'GroupFactoryTest',
+          group: 'platform.example.com',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: {}, id: 'config' });
+          return { ready: true };
+        }
+      );
+
+      const graphYaml = parseRgdYaml(graph.toYaml());
+      const factoryYaml = parseRgdYaml(graph.factory('kro').toYaml());
+      expect(factoryYaml.spec.schema.group).toBe('platform.example.com');
+      expect(factoryYaml.spec.schema.group).toBe(graphYaml.spec.schema.group);
+    });
+
+    it('slashful apiVersion emits matching schema group in graph and factory RGD YAML', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'schema-slashful-group',
+          apiVersion: 'platform.example.com/v1alpha1',
+          kind: 'SlashfulGroupTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: {}, id: 'config' });
+          return { ready: true };
+        }
+      );
+
+      const graphYaml = parseRgdYaml(graph.toYaml());
+      const factoryYaml = parseRgdYaml(graph.factory('kro').toYaml());
+      expect(graphYaml.spec.schema.apiVersion).toBe('v1alpha1');
+      expect(factoryYaml.spec.schema.apiVersion).toBe('v1alpha1');
+      expect(graphYaml.spec.schema.group).toBe('platform.example.com');
+      expect(factoryYaml.spec.schema.group).toBe('platform.example.com');
+    });
+
+    it('factory instance YAML uses custom schema group in apiVersion', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'schema-group-instance',
+          apiVersion: 'v1alpha1',
+          kind: 'GroupInstanceTest',
+          group: 'platform.example.com',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: {}, id: 'config' });
+          return { ready: true };
+        }
+      );
+
+      const parsed = yaml.load(graph.factory('kro').toYaml({ name: 'demo' })) as {
+        apiVersion: string;
+        kind: string;
+      };
+      expect(parsed.apiVersion).toBe('platform.example.com/v1alpha1');
+      expect(parsed.kind).toBe('GroupInstanceTest');
     });
 
     it('group defaults to kro.run when not specified', () => {

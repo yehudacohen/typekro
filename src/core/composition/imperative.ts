@@ -84,6 +84,107 @@ export function computeMergedId(
   return `${baseId}${innerResourceId.charAt(0).toUpperCase()}${innerResourceId.slice(1)}`;
 }
 
+function createNestedReExecutionLiveStatusMap(
+  parentLiveStatusMap: Map<string, Record<string, unknown>>,
+  baseId: string,
+): Map<string, Record<string, unknown>> {
+  const hasPrefixedChildren = [...parentLiveStatusMap.keys()].some((key) => {
+    const boundaryChar = key[baseId.length];
+    return key.startsWith(baseId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar);
+  });
+
+  return new Proxy(parentLiveStatusMap, {
+    get(target, prop, receiver) {
+      if (prop !== 'get' && prop !== 'has') {
+        return Reflect.get(target, prop, receiver);
+      }
+
+      return (resourceId: string) => {
+        const directValue = target[prop](resourceId);
+        if (prop === 'has' ? directValue : directValue !== undefined) {
+          return directValue;
+        }
+
+        const mergedId = `${baseId}${resourceId.charAt(0).toUpperCase()}${resourceId.slice(1)}`;
+        const mergedValue = target[prop](mergedId);
+        if (prop === 'has' ? mergedValue : mergedValue !== undefined) {
+          return mergedValue;
+        }
+
+        return hasPrefixedChildren ? (prop === 'has' ? false : undefined) : target[prop](baseId);
+      };
+    },
+  });
+}
+
+function collectNestedSpecMappings(
+  value: unknown,
+  pathPrefix = '',
+  mappings: Record<string, string> = {}
+): Record<string, string> {
+  if (
+    pathPrefix === '' &&
+    value &&
+    typeof value === 'object' &&
+    (value as { __schemaProxyBasePath?: unknown }).__schemaProxyBasePath === 'spec'
+  ) {
+    mappings[''] = '';
+    return mappings;
+  }
+
+  if (isKubernetesRef(value) && value.resourceId === '__schema__') {
+    if (value.fieldPath === 'spec') {
+      mappings[pathPrefix] = '';
+    } else if (value.fieldPath.startsWith('spec.')) {
+      mappings[pathPrefix] = value.fieldPath.slice('spec.'.length);
+    }
+    return mappings;
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return mappings;
+  }
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    collectNestedSpecMappings(child, pathPrefix ? `${pathPrefix}.${key}` : key, mappings);
+  }
+
+  return mappings;
+}
+
+function remapNestedSpecPath(path: string, mappings: Record<string, string>): string | undefined {
+  if (Object.hasOwn(mappings, '')) {
+    const mappedPrefix = mappings[''];
+    return mappedPrefix ? `${mappedPrefix}.${path}` : path;
+  }
+
+  const matches = Object.keys(mappings)
+    .filter((prefix) => path === prefix || path.startsWith(`${prefix}.`))
+    .sort((left, right) => right.length - left.length);
+
+  const prefix = matches[0];
+  if (prefix === undefined) return undefined;
+  const mappedPrefix = mappings[prefix];
+  if (!mappedPrefix) return undefined;
+  return `${mappedPrefix}${path.slice(prefix.length)}`;
+}
+
+function remapNestedSpecMappings(
+  innerMappings: Record<string, string>,
+  outerMappings: Record<string, string>
+): Record<string, string> {
+  const remapped: Record<string, string> = {};
+
+  for (const [innerPath, currentPath] of Object.entries(innerMappings)) {
+    const outerPath = remapNestedSpecPath(currentPath, outerMappings);
+    if (outerPath) {
+      remapped[innerPath] = outerPath;
+    }
+  }
+
+  return remapped;
+}
+
 export function enableCompositionDebugging(): void {
   CompositionDebugger.enableDebugMode();
 }
@@ -271,6 +372,30 @@ function executeNestedCompositionWithSpec<
     isNestedCall: true,
   });
 
+  // Get the instance number for this composition call before executing the
+  // inner body so re-execution can expose parent live-status entries under the
+  // inner composition's local child resource ids.
+  const instanceNumber = ++parentContext.compositionInstanceCounter;
+
+  // For composition names ending with '-composition', use the base name for resource IDs
+  // This enables variable name mapping like worker1, worker2, etc.
+  // The base name is converted to camelCase to produce valid CEL identifiers
+  // (hyphens are not valid in CEL, e.g., 'inngest-bootstrap1' would be parsed
+  // as 'inngest' minus 'bootstrap1').
+  let baseName = compositionName;
+  if (baseName.endsWith('-composition')) {
+    baseName = baseName.slice(0, -'-composition'.length);
+  }
+  baseName = toCamelCase(baseName);
+  const baseId = `${baseName}${instanceNumber}`;
+
+  if (parentContext.isReExecution && parentContext.liveStatusMap) {
+    executionContext.liveStatusMap = createNestedReExecutionLiveStatusMap(
+      parentContext.liveStatusMap,
+      baseId,
+    );
+  }
+
   // Execute the composition with the provided spec.
   //
   // During re-execution (direct-mode deploy), skip the full
@@ -299,21 +424,6 @@ function executeNestedCompositionWithSpec<
       spec // Pass the actual spec
     );
   });
-
-  // Get the instance number for this composition call
-  const instanceNumber = ++parentContext.compositionInstanceCounter;
-
-  // For composition names ending with '-composition', use the base name for resource IDs
-  // This enables variable name mapping like worker1, worker2, etc.
-  // The base name is converted to camelCase to produce valid CEL identifiers
-  // (hyphens are not valid in CEL, e.g., 'inngest-bootstrap1' would be parsed
-  // as 'inngest' minus 'bootstrap1').
-  let baseName = compositionName;
-  if (baseName.endsWith('-composition')) {
-    baseName = baseName.slice(0, -'-composition'.length);
-  }
-  baseName = toCamelCase(baseName);
-  const baseId = `${baseName}${instanceNumber}`;
 
   // Validate: nested composition IDs must not contain hyphens because
   // synthesizeNestedCompositionStatus uses hyphen-delimited segment
@@ -344,6 +454,14 @@ function executeNestedCompositionWithSpec<
     parentContext.nestedCompositionFns = new Map();
   }
   parentContext.nestedCompositionFns.set(baseId, compositionFn);
+
+  const nestedSpecMappings = collectNestedSpecMappings(spec);
+  if (Object.keys(nestedSpecMappings).length > 0) {
+    if (!parentContext.nestedCompositionSpecMappings) {
+      parentContext.nestedCompositionSpecMappings = new Map();
+    }
+    parentContext.nestedCompositionSpecMappings.set(baseId, nestedSpecMappings);
+  }
 
   if (!parentContext.nestedStatusSnapshots) {
     parentContext.nestedStatusSnapshots = new Map();
@@ -480,6 +598,19 @@ function executeNestedCompositionWithSpec<
     for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
       if (!parentContext.nestedCompositionFns?.has(innerBaseId)) {
         parentContext.nestedCompositionFns?.set(innerBaseId, innerFn);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionSpecMappings && Object.keys(nestedSpecMappings).length > 0) {
+    if (!parentContext.nestedCompositionSpecMappings) {
+      parentContext.nestedCompositionSpecMappings = new Map();
+    }
+    for (const [innerBaseId, innerMappings] of executionContext.nestedCompositionSpecMappings) {
+      if (parentContext.nestedCompositionSpecMappings.has(innerBaseId)) continue;
+      const remapped = remapNestedSpecMappings(innerMappings, nestedSpecMappings);
+      if (Object.keys(remapped).length > 0) {
+        parentContext.nestedCompositionSpecMappings.set(innerBaseId, remapped);
       }
     }
   }
@@ -928,6 +1059,10 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // full rationale.
           if (context.nestedCompositionFns && context.nestedCompositionFns.size > 0) {
             Reflect.set(capturedStatus, '__nestedCompositionFns', context.nestedCompositionFns);
+          }
+
+          if (context.nestedCompositionSpecMappings && context.nestedCompositionSpecMappings.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionSpecMappings', context.nestedCompositionSpecMappings);
           }
 
           const resourceBuildEnd = Date.now();

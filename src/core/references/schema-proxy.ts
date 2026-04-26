@@ -318,6 +318,10 @@ function createSchemaMagicProxy<T extends object>(
         return obj[prop as keyof T];
       }
 
+      if (prop === '__schemaProxyBasePath') {
+        return basePath;
+      }
+
       // Always return a schema reference for any string property access.
       // Thread the child's JSON node through when the shape is known so
       // nested access carries the right sub-schema all the way down.

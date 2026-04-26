@@ -6,6 +6,7 @@
  */
 
 import * as yaml from 'js-yaml';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { getMetadataField } from '../metadata/resource-metadata.js';
 import { escapeRegExp } from '../../utils/helpers.js';
 import {
@@ -320,7 +321,7 @@ function resolveReadyWhen(
 function convertRefMarkersInString(str: string): string {
   // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
-  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+  const refPattern = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
 
   return str.replace(refPattern, (_match, resourceId: string, fieldPath: string) => {
     if (resourceId === '__schema__') {
@@ -534,6 +535,11 @@ function buildResourceEntry(
   const isExternalRef = readNonEnumerable<boolean>(resource, '__externalRef');
 
   if (isExternalRef) {
+    const forEach = readForEachDimensions(resource);
+    if (forEach && forEach.length > 0) {
+      throw new Error(`Resource '${id}' cannot use both externalRef and forEach`);
+    }
+
     // externalRef resources: emit externalRef metadata, NOT template.
     // Use Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's get trap
     // and read the actual underlying values. Going through the proxy would cause
@@ -547,15 +553,17 @@ function buildResourceEntry(
     // Process marker strings in metadata values to convert them to CEL expressions.
     // externalRef metadata.name may contain __KUBERNETES_REF__ markers from template
     // literals (e.g., `${spec.name}-db-${dbOwner}`).
-    const rawName = typeof rawMeta?.name === 'string' ? rawMeta.name : '';
-    const rawNamespace = typeof rawMeta?.namespace === 'string' ? rawMeta.namespace : undefined;
+    const rawName = rawMeta && 'name' in rawMeta ? rawMeta.name : '';
+    const rawNamespace = rawMeta && 'namespace' in rawMeta ? rawMeta.namespace : undefined;
+    const processedName = processResourceReferences(rawName, context);
+    const processedNamespace = processResourceReferences(rawNamespace, context);
     const extRef: KroExternalRef = {
       apiVersion: String(apiVersionDesc?.value ?? ''),
       kind: String(kindDesc?.value ?? ''),
       metadata: {
-        name: String(processResourceReferences(rawName, context)),
-        ...(rawNamespace && {
-          namespace: String(processResourceReferences(rawNamespace, context)),
+        name: String(processedName ?? ''),
+        ...(rawNamespace !== undefined && processedNamespace !== undefined && {
+          namespace: String(processedNamespace),
         }),
       },
     };

@@ -15,6 +15,7 @@
 import type { TypeKroLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import type { Enhanced } from '../types/index.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 
 function isMarkerString(value: string): boolean {
   return value.includes('__KUBERNETES_REF_');
@@ -49,6 +50,10 @@ function filterConcreteNestedStatusFields(value: unknown): unknown {
   }
 
   if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  if (isKubernetesRef(value) || isCelExpression(value)) {
     return undefined;
   }
 
@@ -95,6 +100,10 @@ function isChildOfNestedId(
   }) ?? false;
 }
 
+function isDeployableNestedChild(resource: Enhanced<unknown, unknown>): boolean {
+  return Reflect.get(resource, '__externalRef') !== true;
+}
+
 /**
  * Synthesize status entries for nested compositions and return an enriched
  * live status map that includes both the original resource statuses and
@@ -127,7 +136,14 @@ export function synthesizeNestedCompositionStatus(
   }
 
   for (const parentId of knownNestedIds) {
-    const childCount = Object.entries(probeResources).filter(([resourceKey, resource]) =>
+    const expectedChildCount = Object.entries(probeResources).filter(([, resource]) =>
+      isDeployableNestedChild(resource)
+    ).filter(([resourceKey, resource]) =>
+      isChildOfNestedId(resourceKey, resource, parentId)
+    ).length;
+    const visibleChildCount = Object.entries(probeResources).filter(([, resource]) =>
+      isDeployableNestedChild(resource)
+    ).filter(([resourceKey, resource]) =>
       isChildOfNestedId(resourceKey, resource, parentId) && liveStatusMap.has(resourceKey)
     ).length;
 
@@ -137,28 +153,29 @@ export function synthesizeNestedCompositionStatus(
     const snapshotPhase = isPlainObject(filteredSnapshot) ? filteredSnapshot.phase : undefined;
     const snapshotFailed = isPlainObject(filteredSnapshot) ? filteredSnapshot.failed : undefined;
 
-    if (childCount === 0 && !isPlainObject(filteredSnapshot)) {
+    if (expectedChildCount === 0 && !isPlainObject(filteredSnapshot)) {
       continue;
     }
 
     const snapshotIndicatesFailure = snapshotFailed === true || snapshotPhase === 'Failed';
+    const allExpectedChildrenVisible = expectedChildCount > 0 && visibleChildCount === expectedChildCount;
 
     // All resources in liveStatusMap passed waitForReady, so if we found
     // children, the parent is ready unless the preserved nested snapshot
     // already recorded a failure state we must not mask.
     const synthesizedStatus: Record<string, unknown> = {
       ...(isPlainObject(filteredSnapshot) ? filteredSnapshot : {}),
-      ready: childCount > 0
+      ready: allExpectedChildrenVisible
         ? snapshotIndicatesFailure
           ? (typeof snapshotReady === 'boolean' ? snapshotReady : false)
           : true
         : typeof snapshotReady === 'boolean' ? snapshotReady : false,
-      phase: childCount > 0
+      phase: allExpectedChildrenVisible
         ? snapshotIndicatesFailure
           ? (typeof snapshotPhase === 'string' ? snapshotPhase : 'Failed')
           : 'Ready'
         : typeof snapshotPhase === 'string' ? snapshotPhase : 'Installing',
-      failed: childCount > 0
+      failed: allExpectedChildrenVisible
         ? snapshotIndicatesFailure
           ? true
           : false
@@ -170,8 +187,9 @@ export function synthesizeNestedCompositionStatus(
 
     logger.debug('Synthesized nested composition status', {
       parentId,
-      ready: childCount > 0,
-      childCount,
+      ready: allExpectedChildrenVisible,
+      visibleChildCount,
+      expectedChildCount,
     });
   }
 

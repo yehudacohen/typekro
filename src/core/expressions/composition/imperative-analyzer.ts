@@ -7,6 +7,7 @@
 
 import { Parser } from 'acorn';
 import * as estraverse from 'estraverse';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../../shared/brands.js';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { Cel } from '../../references/cel.js';
@@ -475,7 +476,7 @@ function convertTemplateLiteralContent(content: string): string {
   // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
   return content.replace(
-    /__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g,
+    new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'),
     (_match, resourceId, fieldPath) => {
       if (resourceId === '__schema__') {
         return `schema.${fieldPath}`;
@@ -504,7 +505,7 @@ function convertStringWithKubernetesRefs(source: string): string {
   // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
   const parts: string[] = [];
-  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g;
+  const refPattern = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
   let lastIndex = 0;
   let match: RegExpExecArray | null = refPattern.exec(content);
 

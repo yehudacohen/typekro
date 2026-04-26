@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { createCompositionContext, runWithCompositionContext } from '../../src/core/composition/context.js';
 import { kubernetesComposition, simple } from '../../src/index.js';
 import type {
   CallableComposition,
@@ -129,6 +130,25 @@ describe('singleton API', () => {
 
     expect('spec' in result).toBe(true);
     expect('dependsOn' in result).toBe(false);
+  });
+
+  it('returns a reference handle during re-execution without capturing owner resources', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+    const context = createCompositionContext('singleton-reexecution-test', {
+      deduplicateIds: true,
+      isReExecution: true,
+    });
+
+    const result = runWithCompositionContext(context, () =>
+      singleton(operator, {
+        id: 'platform-operator',
+        spec: { name: 'cnpg-operator', namespace: 'cnpg-system' },
+      })
+    );
+
+    expect('spec' in result).toBe(false);
+    expect(Object.keys(context.resources)).not.toContain('operatorDeployment');
   });
 
   it('nested composition handles expose dependsOn only when called inside a parent composition', () => {

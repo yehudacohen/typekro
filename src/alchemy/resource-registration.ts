@@ -14,6 +14,7 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
+import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
@@ -89,18 +90,20 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
       }
 
       try {
-        // Create kubeconfig and deployer using centralized provider
-        const kc = _createClientProvider(props, 'deployment');
-        const deployer = await _createDeployer(kc, props.deploymentStrategy);
+        const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
 
-        // Deploy resource and create result
-        const { resourceProperties } = await _deployAndCreateResult(props, deployer);
+        try {
+          // Deploy resource and create result
+          const { resourceProperties } = await _deployAndCreateResult(props, deployer);
 
-        // Log deployment success
-        _logDeploymentSuccess(alchemyLogger, alchemyType, props, resourceProperties, this);
+          // Log deployment success
+          _logDeploymentSuccess(alchemyLogger, alchemyType, props, resourceProperties, this);
 
-        // Execute Alchemy context function
-        return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
+          // Execute Alchemy context function
+          return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
+        } finally {
+          await dispose();
+        }
       } catch (error: unknown) {
         alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
         throw error;
@@ -164,6 +167,24 @@ async function _createDeployer<_T extends Enhanced<unknown, unknown>>(
   }
 }
 
+async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  phase: string
+): Promise<{ deployer: TypeKroDeployer; dispose: () => Promise<void> }> {
+  if (props.deployer) {
+    return { deployer: props.deployer, dispose: async () => {} };
+  }
+
+  const kc = _createClientProvider(props, phase);
+  const deployer = await _createDeployer(kc, props.deploymentStrategy);
+  return {
+    deployer,
+    dispose: async () => {
+      await deployer.dispose?.();
+    },
+  };
+}
+
 /**
  * Handle resource deletion phase
  */
@@ -172,10 +193,8 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger
 ): Promise<TypeKroResource<T>> {
+  const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
-    const kc = _createClientProvider(props, 'delete');
-    const deployer = await _createDeployer(kc, props.deploymentStrategy);
-
     await deployer.delete(props.resource, {
       mode: 'alchemy' as const,
       namespace: props.namespace,
@@ -183,6 +202,8 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
     });
   } catch (error: unknown) {
     logger.error('Error deleting resource', ensureError(error));
+  } finally {
+    await dispose();
   }
   return context.destroy();
 }
@@ -194,14 +215,11 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   deployer: TypeKroDeployer
 ): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
+  const deploymentOptions = buildAlchemyDeploymentOptions(props);
+
   // Deploy using the created deployer - pass the original resource with KubernetesRef objects
   // The deployer will handle reference resolution internally
-  const deployedResource = await deployer.deploy(props.resource, {
-    mode: 'alchemy' as const,
-    namespace: props.namespace,
-    waitForReady: props.options?.waitForReady ?? true,
-    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
-  });
+  const deployedResource = await deployer.deploy(props.resource, deploymentOptions);
 
   // Create clean, serializable versions for Alchemy storage.
   // We use JSON.parse(JSON.stringify()) deliberately instead of structuredClone because:
@@ -223,6 +241,24 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   };
 
   return { resourceProperties };
+}
+
+export function buildAlchemyDeploymentOptions<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): DeploymentOptions {
+  const {
+    waitForReady,
+    timeout,
+    ...deploymentMetadataOptions
+  } = props.options ?? {};
+
+  return {
+    mode: 'alchemy' as const,
+    namespace: props.namespace,
+    ...deploymentMetadataOptions,
+    waitForReady: waitForReady ?? true,
+    timeout: timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+  };
 }
 
 /**

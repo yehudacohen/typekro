@@ -201,6 +201,7 @@ export class ResourceApplier {
       resourceId,
       ...(scopes.length > 0 && { scopes }),
       ...(dependencies.length > 0 && { dependencies }),
+      ...(options.singletonSpecFingerprint && { singletonSpecFingerprint: options.singletonSpecFingerprint }),
     });
   }
 

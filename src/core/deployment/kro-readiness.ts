@@ -135,6 +135,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
 
       // Check what status fields are expected by looking at the ResourceGraphDefinition
       let expectedCustomStatusFields = false;
+      let expectedStatusKeys: string[] = [];
       try {
         const rgdResponse = await customObjectsApi.getClusterCustomObject({
           group: 'kro.run',
@@ -144,12 +145,14 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         });
         const rgd = rgdResponse as RGDManifest;
         const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
-        const rgdStatusKeys = Object.keys(rgdStatusSchema);
-        expectedCustomStatusFields = rgdStatusKeys.length > 0;
+        expectedStatusKeys = Object.keys(rgdStatusSchema).filter(
+          (key) => !basicKroFields.includes(key)
+        );
+        expectedCustomStatusFields = expectedStatusKeys.length > 0;
 
         readinessLogger.debug('ResourceGraphDefinition status schema check', {
           rgdName,
-          rgdStatusKeys,
+          rgdStatusKeys: expectedStatusKeys,
           expectedCustomStatusFields,
         });
       } catch (error: unknown) {
@@ -168,6 +171,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         isSynced,
         hasCustomStatusFields,
         expectedCustomStatusFields,
+        expectedStatusKeys,
         statusKeys,
       });
 
@@ -179,7 +183,9 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       // user-defined `status.ready === true` as the stronger health signal.
       const statusReadyField = status.ready;
       const hasReadyField = typeof statusReadyField === 'boolean';
-      const hasExpectedCustomStatus = hasCustomStatusFields || !expectedCustomStatusFields;
+      const hasExpectedCustomStatus =
+        expectedStatusKeys.length === 0 ||
+        expectedStatusKeys.every((key) => Object.prototype.hasOwnProperty.call(status, key));
       const hasPositiveCustomReady = hasReadyField && statusReadyField === true;
       const isReady =
         isActive &&
@@ -191,6 +197,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           instanceName,
           hasCustomStatusFields,
           expectedCustomStatusFields,
+          expectedStatusKeys,
         });
         return;
       }
@@ -213,6 +220,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         state,
         isSynced,
         hasCustomStatusFields,
+        expectedStatusKeys,
       });
     } catch (error: unknown) {
       // Re-throw CRDInstanceError as-is

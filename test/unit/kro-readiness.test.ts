@@ -313,6 +313,49 @@ describe('waitForKroInstanceReady', () => {
 
       expect(mockK8sApi.read).toHaveBeenCalledTimes(3);
     });
+
+    it('keeps polling until all expected custom status fields are present', async () => {
+      mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
+        spec: {
+          schema: {
+            status: {
+              ready: { type: 'boolean' },
+              components: { type: 'object' },
+            },
+          },
+        },
+      });
+
+      let callCount = 0;
+      mockK8sApi.read.mockImplementation(() => {
+        callCount++;
+        if (callCount < 3) {
+          return Promise.resolve(
+            kroInstance({
+              state: 'ACTIVE',
+              conditions: [{ type: 'Ready', status: 'True' }],
+              components: { database: true },
+            })
+          );
+        }
+        return Promise.resolve(
+          kroInstance({
+            state: 'ACTIVE',
+            conditions: [{ type: 'Ready', status: 'True' }],
+            ready: true,
+            components: { database: true, app: true },
+          })
+        );
+      });
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+        )
+      ).resolves.toBeUndefined();
+
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(3);
+    });
   });
 
   // ---------------------------------------------------------------------------

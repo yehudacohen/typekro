@@ -94,6 +94,14 @@ describe('remapVariableNames', () => {
     );
     expect(result).toBe('deployment.metadata.name');
   });
+
+  it('does not remap CEL lambda variables through the single-resource fast path', () => {
+    const result = remapVariableNames(
+      'items.exists(c, c.status.ready == true) && d.status.ready',
+      ['realResource']
+    );
+    expect(result).toBe('items.exists(c, c.status.ready == true) && realResource.status.ready');
+  });
 });
 
 describe('recoverGarbledExpression', () => {
@@ -192,6 +200,23 @@ describe('extractNestedStatusCel', () => {
       }
     );
     expect(mappings['__nestedStatus:inner1:version']).toBe('schema.spec.version');
+  });
+
+  it('quotes dotted literal string values instead of treating them as CEL paths', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        region: 'prod.us',
+        phase: 'Ready.OK',
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['deployment'],
+        registerMapping: (k, v) => { mappings[k] = v; },
+      }
+    );
+    expect(mappings['__nestedStatus:inner1:region']).toBe('"prod.us"');
+    expect(mappings['__nestedStatus:inner1:phase']).toBe('"Ready.OK"');
   });
 
   it('should skip internal fields', () => {

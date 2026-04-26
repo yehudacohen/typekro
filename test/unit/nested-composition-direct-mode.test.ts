@@ -19,6 +19,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { Cel } from '../../src/core/references/cel.js';
+import { externalRef } from '../../src/core/references/external-refs.js';
 import { singleton } from '../../src/core/singleton/singleton.js';
 import {
   createCompositionContext,
@@ -291,6 +292,228 @@ describe('Nested Composition Direct Mode', () => {
           ['innerBootstrap1', { readyReplicas: 1 }],
           ['worker', { readyReplicas: 1 }],
         ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+    });
+
+    it('reExecuteWithLiveStatus resolves nested status fields backed by child resource status', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; clusterIP: string } | null;
+      }
+
+      const innerChildStatus = kubernetesComposition(
+        {
+          name: 'inner-child-status',
+          kind: 'InnerChildStatus',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', clusterIP: 'string' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: `${spec.name}-deploy`,
+            image: 'nginx',
+            id: 'deployment',
+          });
+          const service = simple.Service({
+            name: `${spec.name}-svc`,
+            selector: { app: spec.name },
+            ports: [{ port: 80, targetPort: 8080 }],
+            id: 'service',
+          });
+
+          return {
+            ready: deployment.status.readyReplicas >= 1,
+            clusterIP: service.status.clusterIP,
+          };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-child-status',
+          kind: 'OuterChildStatus',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', clusterIP: 'string' }),
+        },
+        (spec) => {
+          const inner = innerChildStatus({ name: spec.name });
+          return {
+            ready: inner.status.ready,
+            clusterIP: inner.status.clusterIP,
+          };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['innerChildStatus1Deployment', { readyReplicas: 1 }],
+          ['innerChildStatus1Service', { clusterIP: '10.96.0.42' }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.clusterIP).toBe('10.96.0.42');
+      expect(typeof status?.clusterIP).toBe('string');
+    });
+
+    it('reExecuteWithLiveStatus treats nested statusless children as visible during recovery', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; serviceName: string } | null;
+      }
+
+      const innerStatusless = kubernetesComposition(
+        {
+          name: 'inner-statusless',
+          kind: 'InnerStatusless',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', serviceName: 'string' }),
+        },
+        (spec) => {
+          const service = simple.Service({
+            name: `${spec.name}-svc`,
+            selector: { app: spec.name },
+            ports: [{ port: 80, targetPort: 80 }],
+            id: 'service',
+          });
+
+          return {
+            ready: true,
+            serviceName: String(service.metadata.name),
+          };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-statusless-recovery',
+          kind: 'OuterStatuslessRecovery',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', serviceName: 'string' }),
+        },
+        (spec) => {
+          const inner = innerStatusless({ name: spec.name });
+          return {
+            ready: inner.status.ready,
+            serviceName: inner.status.serviceName,
+          };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['innerStatusless1Service', {}],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.serviceName).toBe('myapp-svc');
+    });
+
+    it('reExecuteWithLiveStatus ignores external refs when synthesizing nested readiness', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const innerWithExternal = kubernetesComposition(
+        {
+          name: 'inner-with-external',
+          kind: 'InnerWithExternal',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          externalRef({
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: 'shared-config', namespace: 'platform' },
+            id: 'externalConfig',
+          });
+          const deploy = simple.Deployment({
+            name: spec.name,
+            image: 'nginx',
+            id: 'deploy',
+          });
+
+          return { ready: deploy.status.readyReplicas >= 1 };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-external-recovery',
+          kind: 'OuterExternalRecovery',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = innerWithExternal({ name: spec.name });
+          return { ready: inner.status.ready };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([['innerWithExternal1Deploy', { readyReplicas: 1 }]]),
+      );
+
+      expect(status?.ready).toBe(true);
+    });
+
+    it('runs the direct nested probe in re-execution mode', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const nested = kubernetesComposition(
+        {
+          name: 'inner-reexec-probe',
+          kind: 'InnerReexecProbe',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        () => ({
+          ready: !!getCurrentCompositionContext().isReExecution,
+        }),
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-reexec-probe',
+          kind: 'OuterReexecProbe',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = nested({ name: spec.name });
+          return { ready: inner.status.ready };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map(),
       );
 
       expect(status).not.toBeNull();

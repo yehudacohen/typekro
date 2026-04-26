@@ -70,6 +70,7 @@ export class DirectDeploymentStrategy<
         factoryName: this.factoryName,
         instanceName,
         ...(opts?.targetScopes !== undefined && { targetScopes: opts.targetScopes }),
+        ...(opts?.singletonSpecFingerprint && { singletonSpecFingerprint: opts.singletonSpecFingerprint }),
       };
 
       // Pass closures to deployment engine for level-based execution
@@ -241,14 +242,18 @@ export class DirectDeploymentStrategy<
         });
 
         const status = (liveResource as Record<string, unknown>).status;
+        const annotationId =
+          (resource.manifest.metadata as { annotations?: Record<string, string> } | undefined)
+            ?.annotations?.[RESOURCE_ID_ANNOTATION];
+        const originalId = getResourceId(resource.manifest) || annotationId || resource.id;
+
         if (status && typeof status === 'object') {
-          const annotationId =
-            (resource.manifest.metadata as { annotations?: Record<string, string> } | undefined)
-              ?.annotations?.[RESOURCE_ID_ANNOTATION];
-          const originalId = annotationId || getResourceId(resource.manifest) || resource.id;
           return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
         }
-        return null;
+
+        // Statusless resources (Service, ConfigMap, Secret, etc.) still count as
+        // successfully visible children for nested-composition recovery.
+        return { originalId, deployedId: resource.id, kind: resource.kind, status: {} };
       })
     );
 

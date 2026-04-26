@@ -14,6 +14,7 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
@@ -43,7 +44,6 @@ import { validateResourceGraphDefinition } from '../validation/cel-validator.js'
 import { optimizeStatusMappings } from './cel-optimizer.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
-import { materializeSingletonOwnerResourcesForKroYaml } from './singleton-owner-yaml.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
@@ -1270,7 +1270,7 @@ function celValueRepr(value: unknown): string {
  * its bare CEL path form: `schema.spec.X` or `resources.X.field`.
  */
 function markerStringToCelBare(str: string): string {
-  const m = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  const m = str.match(new RegExp(`^${KUBERNETES_REF_MARKER_SOURCE}$`));
   if (!m) return markerStringToCelExpr(str);
   const [, resourceId, fieldPath] = m;
   return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
@@ -1282,8 +1282,9 @@ function markerStringToCelBare(str: string): string {
  * embedding inside a CEL ternary.
  */
 function markerStringToCelExpr(str: string): string {
+  const markerSource = KUBERNETES_REF_MARKER_SOURCE;
   // Fast path: whole string is a single marker
-  const singleMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  const singleMatch = str.match(new RegExp(`^${markerSource}$`));
   if (singleMatch) {
     const [, resourceId, fieldPath] = singleMatch;
     return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
@@ -1292,7 +1293,7 @@ function markerStringToCelExpr(str: string): string {
   // Slow path: interleave literal text and markers via CEL string concatenation
   const parts: string[] = [];
   let lastIndex = 0;
-  const pattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+  const pattern = new RegExp(markerSource, 'g');
   let m: RegExpExecArray | null = pattern.exec(str);
   while (m !== null) {
     if (m.index > lastIndex) {
@@ -1544,6 +1545,7 @@ function createTypedResourceGraph<
   const schemaDefinition: SchemaDefinition<TSpec, TStatus> = {
     apiVersion: definition.apiVersion || 'v1alpha1',
     kind: definition.kind,
+    ...(definition.group && { group: definition.group }),
     spec: definition.spec,
     status: definition.status,
   };
@@ -1606,6 +1608,12 @@ function createTypedResourceGraph<
     analyzedStatusMappings,
     evaluationContext
   );
+  for (const metadataKey of ['__originalCompositionFn', '__nestedCompositionFns', '__nestedCompositionSpecMappings']) {
+    const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
+    if (descriptor) {
+      Object.defineProperty(optimizedStatusMappings, metadataKey, descriptor);
+    }
+  }
 
   if (optimizations.length > 0) {
     serializationLogger.info('CEL expression optimizations applied', { optimizations });
@@ -1725,12 +1733,6 @@ function createTypedResourceGraph<
       const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
       const nestedStatusCel: Record<string, string> =
         (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
-
-      materializeSingletonOwnerResourcesForKroYaml(
-        resourcesWithKeys,
-        (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })
-          ._singletonDefinitions
-      );
 
       serializationLogger.debug('Nested status CEL extraction', {
         hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,

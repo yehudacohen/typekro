@@ -29,6 +29,7 @@ import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../s
 export interface DeployStrategyOptions {
   targetScopes?: string[];
   instanceNameOverride?: string;
+  singletonSpecFingerprint?: string;
 }
 
 export interface DeploymentStrategy<

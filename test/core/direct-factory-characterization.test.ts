@@ -21,10 +21,17 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import type { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
 import { createDirectResourceFactory } from '../../src/core/deployment/direct-factory.js';
+import {
+  RESOURCE_ID_ANNOTATION,
+  SINGLETON_SPEC_FINGERPRINT_ANNOTATION,
+} from '../../src/core/deployment/resource-tagging.js';
 import { getSingletonInstanceName } from '../../src/core/deployment/shared-utilities.js';
-import { getResourceId } from '../../src/core/metadata/index.js';
-import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import type { SchemaDefinition, KroCompatibleType } from '../../src/core/types/serialization.js';
+import { getSingletonResourceId, singleton } from '../../src/core/singleton/singleton.js';
+import { DirectDeploymentStrategy } from '../../src/core/deployment/strategies/direct-strategy.js';
+import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
+import { getResourceId, setResourceId } from '../../src/core/metadata/index.js';
+import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index.js';
+import type { KroCompatibleType, SchemaDefinition } from '../../src/core/types/serialization.js';
 import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +60,33 @@ const DEFAULT_SPEC: TestSpec = {
   replicas: 3,
   port: 8080,
 };
+
+describe('DirectResourceFactory: deployed instance tracking', () => {
+  it('stores overridden instance names under the override key', async () => {
+    const factory = createDirectResourceFactory(
+      'tracking-test',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'TrackingTest',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    const deployedInstance = { metadata: { name: 'custom-instance' } };
+    (factory as unknown as Record<string, unknown>).getDeploymentStrategy = () => ({
+      deploy: async () => deployedInstance,
+    });
+
+    await factory.deploy(DEFAULT_SPEC, { instanceNameOverride: 'custom-instance' });
+
+    const deployedInstances = (factory as unknown as { deployedInstances: Map<string, unknown> }).deployedInstances;
+    expect(deployedInstances.get('custom-instance')).toBe(deployedInstance);
+    expect(deployedInstances.has('my-app')).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helper: create a standard test factory via toResourceGraph
@@ -252,7 +286,87 @@ describe('DirectFactory: singleton owner boundaries', () => {
     expect(getSingletonInstanceName('platform_operator')).toBe('platform-operator');
   });
 
-  it('fails fast when an in-memory singleton owner has drifted spec', async () => {
+  it('hydrates singleton references from the deployed singleton owner status', async () => {
+    type OwnerSpec = KroCompatibleType & { name: string };
+    type OwnerStatus = KroCompatibleType & { ready: boolean; endpoint: string };
+    const singletonKey = 'kro.run/v1alpha1/SingletonBootstrap:singleton-bootstrap#platform-bootstrap';
+    const deployedOwnerStatus = { ready: true, endpoint: 'http://owner-live:80' };
+
+    const fakeOwnerComposition = Object.assign(
+      (() => ({ ready: false, endpoint: 'unreachable' })) as unknown as (spec: OwnerSpec) => OwnerStatus,
+      {
+        _definition: {
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonBootstrap',
+          name: 'singleton-bootstrap',
+        },
+        factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
+          expect(mode).toBe('direct');
+          expect(options?.namespace).toBe('typekro-singletons');
+          return {
+            async getInstances() {
+              return [];
+            },
+            async deploy() {
+              return { status: deployedOwnerStatus };
+            },
+            async dispose() {},
+          };
+        },
+      }
+    );
+
+    const consumer = kubernetesComposition(
+      {
+        name: 'singleton-status-consumer',
+        kind: 'SingletonStatusConsumer',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean', endpoint: 'string' }),
+      },
+      (spec) => {
+        const shared = singleton(fakeOwnerComposition as never, {
+          id: 'platform-bootstrap',
+          spec: { name: `${spec.name}-shared` },
+        });
+        const worker = simple.Deployment({
+          name: `${spec.name}-worker`,
+          image: 'nginx',
+          id: 'worker',
+        });
+
+        return {
+          ready: shared.status.ready && worker.status.readyReplicas >= 1,
+          endpoint: shared.status.endpoint,
+        };
+      }
+    );
+
+    const factory = consumer.factory('direct', { namespace: 'test-ns' }) as DirectResourceFactoryImpl<
+      { name: string },
+      { ready: boolean; endpoint: string }
+    >;
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+    await ensureSingletonOwners({ name: 'app' });
+
+    const status = factory.reExecuteWithLiveStatus(
+      { name: 'app' },
+      new Map([['worker', { readyReplicas: 1 }]])
+    );
+
+    expect(status?.ready).toBe(true);
+    expect(status?.endpoint).toBe(deployedOwnerStatus.endpoint);
+    expect(
+      ((factory as unknown as { singletonOwnerStatuses: Map<string, Record<string, unknown>> })
+        .singletonOwnerStatuses).get(getSingletonResourceId(singletonKey))
+    ).toEqual(deployedOwnerStatus);
+  });
+
+  it('rejects deployed singleton owner spec drift before reconciling', async () => {
+    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
     const fakeComposition = {
       factory() {
         return {
@@ -264,8 +378,9 @@ describe('DirectFactory: singleton owner boundaries', () => {
               },
             ];
           },
-          async deploy() {
-            throw new Error('should not deploy drifted singleton');
+          async deploy(spec: { name: string }, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
           },
           async dispose() {},
         };
@@ -305,7 +420,511 @@ describe('DirectFactory: singleton owner boundaries', () => {
 
     (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
 
-    await expect(ensureSingletonOwners({ name: 'consumer' })).rejects.toThrow(/Singleton config drift detected/);
+    await expect(ensureSingletonOwners({ name: 'consumer' })).rejects.toThrow(
+      /Singleton config drift detected/
+    );
+
+    expect(deployCalls).toHaveLength(0);
+  });
+
+  it('reconciles existing singleton owners when the deployed spec matches', async () => {
+    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
+    const fakeComposition = {
+      factory() {
+        return {
+          async getInstances() {
+            return [
+              {
+                metadata: { name: 'stable-singleton-id' },
+                spec: { name: 'same-name' },
+              },
+            ];
+          },
+          async deploy(spec: { name: string }, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+          async dispose() {},
+        };
+      },
+    };
+
+    const schema: SchemaDefinition<{ name: string }, { ready: boolean }> = {
+      apiVersion: 'v1alpha1',
+      kind: 'SingletonConsumer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    };
+
+    const factory = createDirectResourceFactory(
+      'singleton-consumer',
+      {},
+      schema,
+      undefined,
+      {
+        namespace: 'default',
+        singletonDefinitions: [
+          {
+            id: 'stable-singleton-id',
+            key: 'SingletonBootstrap:stable-singleton-id',
+            specFingerprint: '{"name":"same-name"}',
+            registryNamespace: 'shared-system',
+            composition: fakeComposition as never,
+            spec: { name: 'same-name' },
+          } satisfies SingletonDefinitionRecord,
+        ],
+      }
+    ) as unknown as DirectResourceFactoryImpl<{ name: string }, { ready: boolean }>;
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
+    await ensureSingletonOwners({ name: 'consumer' });
+
+    expect(deployCalls).toHaveLength(1);
+    expect(deployCalls[0]?.spec).toEqual({ name: 'same-name' });
+    expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
+  });
+
+  it('rejects cross-process direct singleton owner spec drift discovered from resource tags', async () => {
+    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
+    const fakeComposition = {
+      factory() {
+        return {
+          name: 'singleton-owner-factory',
+          async getInstances() {
+            return [];
+          },
+          createResourceGraphForInstance() {
+            return { resources: [], dependencyGraph: {}, name: 'fake' };
+          },
+          async deploy(spec: { name: string }, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+          async dispose() {},
+        };
+      },
+    };
+
+    const schema: SchemaDefinition<{ name: string }, { ready: boolean }> = {
+      apiVersion: 'v1alpha1',
+      kind: 'SingletonConsumer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    };
+
+    const factory = createDirectResourceFactory(
+      'singleton-consumer',
+      {},
+      schema,
+      undefined,
+      {
+        namespace: 'default',
+        singletonDefinitions: [
+          {
+            id: 'stable-singleton-id',
+            key: 'SingletonBootstrap:stable-singleton-id',
+            specFingerprint: '{"name":"new-name"}',
+            registryNamespace: 'shared-system',
+            composition: fakeComposition as never,
+            spec: { name: 'new-name' },
+          } satisfies SingletonDefinitionRecord,
+        ],
+      }
+    ) as unknown as DirectResourceFactoryImpl<{ name: string }, { ready: boolean }>;
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+    (factory as unknown as Record<string, unknown>).deploymentEngine = {
+      async loadDeploymentByInstance() {
+        return {
+          resources: [
+            {
+              id: 'old-resource',
+              kind: 'ConfigMap',
+              name: 'old-resource',
+              namespace: 'shared-system',
+              status: 'deployed',
+              deployedAt: new Date(),
+              manifest: {
+                apiVersion: 'v1',
+                kind: 'ConfigMap',
+                metadata: {
+                  name: 'old-resource',
+                  namespace: 'shared-system',
+                  annotations: {
+                    [SINGLETON_SPEC_FINGERPRINT_ANNOTATION]: 'fnv64:old-spec',
+                  },
+                },
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    await expect(ensureSingletonOwners({ name: 'consumer' })).rejects.toThrow(
+      /Singleton config drift detected/
+    );
+
+    expect(deployCalls).toHaveLength(0);
+  });
+
+  it('does not falsely reject legacy direct singleton resources without spec fingerprints', async () => {
+    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
+    const fakeComposition = Object.assign(
+      () => ({ ready: false }),
+      {
+        _definition: {
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonBootstrap',
+          name: 'singleton-bootstrap',
+        },
+        _compositionFn: () => ({
+          ready: getCurrentCompositionContext().liveStatusMap?.get('legacy-resource')?.ready === true,
+        }),
+        factory() {
+          return {
+            name: 'singleton-owner-factory',
+            async getInstances() {
+              return [];
+            },
+            createResourceGraphForInstance() {
+              return { resources: [], dependencyGraph: {}, name: 'fake' };
+            },
+            async deploy(spec: { name: string }, opts?: Record<string, unknown>) {
+              deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+              return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+            },
+            async dispose() {},
+          };
+        },
+      }
+    );
+
+    const schema: SchemaDefinition<{ name: string }, { ready: boolean }> = {
+      apiVersion: 'v1alpha1',
+      kind: 'SingletonConsumer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    };
+
+    const factory = createDirectResourceFactory(
+      'singleton-consumer',
+      {},
+      schema,
+      undefined,
+      {
+        namespace: 'default',
+        singletonDefinitions: [
+          {
+            id: 'stable-singleton-id',
+            key: 'SingletonBootstrap:stable-singleton-id',
+            specFingerprint: '{"name":"new-name"}',
+            registryNamespace: 'shared-system',
+            composition: fakeComposition as never,
+            spec: { name: 'new-name' },
+          } satisfies SingletonDefinitionRecord,
+        ],
+      }
+    ) as unknown as DirectResourceFactoryImpl<{ name: string }, { ready: boolean }>;
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+    (factory as unknown as Record<string, unknown>).deploymentEngine = {
+      async loadDeploymentByInstance() {
+        return {
+          resources: [
+            {
+              id: 'legacy-resource',
+              kind: 'ConfigMap',
+              name: 'legacy-resource',
+              namespace: 'shared-system',
+              status: 'deployed',
+              deployedAt: new Date(),
+              manifest: {
+                apiVersion: 'v1',
+                kind: 'ConfigMap',
+                status: { ready: true },
+                metadata: {
+                  name: 'legacy-resource',
+                  namespace: 'shared-system',
+                  annotations: {},
+                },
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    await ensureSingletonOwners({ name: 'consumer' });
+
+    expect(deployCalls).toHaveLength(0);
+    expect(
+      ((factory as unknown as { singletonOwnerStatuses: Map<string, Record<string, unknown>> })
+        .singletonOwnerStatuses).get(getSingletonResourceId('SingletonBootstrap:stable-singleton-id'))
+    ).toEqual({ ready: true });
+  });
+
+  it('recovers parent singleton status from legacy unfingerprinted owner resources', async () => {
+    const fakeComposition = Object.assign(
+      () => ({ ready: false }),
+      {
+        _definition: {
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonBootstrap',
+          name: 'singleton-bootstrap',
+        },
+        _compositionFn: () => ({
+          ready: getCurrentCompositionContext().liveStatusMap?.get('legacy-resource')?.ready === true,
+        }),
+        factory() {
+          return {
+            name: 'singleton-owner-factory',
+            async getInstances() {
+              return [];
+            },
+            createResourceGraphForInstance() {
+              return { resources: [], dependencyGraph: {}, name: 'fake' };
+            },
+            async deploy() {
+              throw new Error('legacy singleton owner should not be redeployed');
+            },
+            async dispose() {},
+          };
+        },
+      }
+    );
+
+    const consumer = kubernetesComposition(
+      {
+        name: 'legacy-singleton-consumer',
+        kind: 'LegacySingletonConsumer',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const shared = singleton(fakeComposition as never, {
+          id: 'stable-singleton-id',
+          spec: { name: `${spec.name}-shared` },
+        });
+        return { ready: shared.status.ready };
+      }
+    );
+
+    const factory = consumer.factory('direct', { namespace: 'default' }) as DirectResourceFactoryImpl<
+      { name: string },
+      { ready: boolean }
+    >;
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+    (factory as unknown as Record<string, unknown>).deploymentEngine = {
+      async loadDeploymentByInstance() {
+        return {
+          resources: [
+            {
+              id: 'legacy-resource',
+              kind: 'ConfigMap',
+              name: 'legacy-resource',
+              namespace: 'typekro-singletons',
+              status: 'deployed',
+              deployedAt: new Date(),
+              manifest: {
+                apiVersion: 'v1',
+                kind: 'ConfigMap',
+                status: { ready: true },
+                metadata: {
+                  name: 'legacy-resource',
+                  namespace: 'typekro-singletons',
+                  annotations: {},
+                },
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+    await ensureSingletonOwners({ name: 'consumer' });
+
+    const status = factory.reExecuteWithLiveStatus({ name: 'consumer' }, new Map());
+
+    expect(status?.ready).toBe(true);
+  });
+
+  it('recovers legacy singleton status when discovery only has generated deploy graph ids', async () => {
+    const fakeComposition = Object.assign(
+      () => ({ ready: false }),
+      {
+        _definition: {
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonBootstrap',
+          name: 'singleton-bootstrap',
+        },
+        _compositionFn: () => {
+          simple.ConfigMap({ name: 'legacy-resource', data: {}, id: 'localDb' });
+          return {
+            ready: getCurrentCompositionContext().liveStatusMap?.get('localDb')?.ready === true,
+          };
+        },
+        factory() {
+          return {
+            name: 'singleton-owner-factory',
+            async getInstances() {
+              return [];
+            },
+            createResourceGraphForInstance() {
+              return { resources: [], dependencyGraph: {}, name: 'fake' };
+            },
+            async deploy() {
+              throw new Error('legacy singleton owner should not be redeployed');
+            },
+            async dispose() {},
+          };
+        },
+      }
+    );
+
+    const consumer = kubernetesComposition(
+      {
+        name: 'legacy-singleton-generated-id-consumer',
+        kind: 'LegacySingletonGeneratedIdConsumer',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const shared = singleton(fakeComposition as never, {
+          id: 'stable-singleton-id',
+          spec: { name: `${spec.name}-shared` },
+        });
+        return { ready: shared.status.ready };
+      }
+    );
+
+    const factory = consumer.factory('direct', { namespace: 'default' }) as DirectResourceFactoryImpl<
+      { name: string },
+      { ready: boolean }
+    >;
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+    (factory as unknown as Record<string, unknown>).deploymentEngine = {
+      async loadDeploymentByInstance() {
+        return {
+          resources: [
+            {
+              id: 'stableSingletonIdResource0Localdb',
+              kind: 'ConfigMap',
+              name: 'legacy-resource',
+              namespace: 'typekro-singletons',
+              status: 'deployed',
+              deployedAt: new Date(),
+              manifest: {
+                apiVersion: 'v1',
+                kind: 'ConfigMap',
+                status: { ready: true },
+                metadata: {
+                  // Deliberately does not match the probed local resource identity.
+                  // This forces recovery through the generated deploy graph id
+                  // suffix (`Localdb` -> local id `localDb`).
+                  name: 'stale-resource',
+                  namespace: 'typekro-singletons',
+                  annotations: {
+                    [RESOURCE_ID_ANNOTATION]: 'stableSingletonIdResource0Localdb',
+                  },
+                },
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+    await ensureSingletonOwners({ name: 'consumer' });
+
+    const status = factory.reExecuteWithLiveStatus({ name: 'consumer' }, new Map());
+
+    expect(status?.ready).toBe(true);
+  });
+});
+
+describe('DirectDeploymentStrategy: live status hydration ids', () => {
+  it('keys live statuses by composition-local resource id before deployed graph id annotations', async () => {
+    const manifest = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: {
+        name: 'demo',
+        namespace: 'default',
+        annotations: {
+          [RESOURCE_ID_ANNOTATION]: 'deployedGraphId',
+        },
+      },
+    };
+    setResourceId(manifest, 'compositionLocalId');
+
+    const strategy = new DirectDeploymentStrategy(
+      'factory',
+      'default',
+      {
+        apiVersion: 'v1alpha1',
+        kind: 'HydrationIdCheck',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      undefined,
+      undefined,
+      {},
+      {
+        getKubernetesApi() {
+          return {
+            async read() {
+              return { status: { ready: true } };
+            },
+          };
+        },
+      } as never,
+      {
+        createResourceGraphForInstance() {
+          return { name: 'unused', resources: [], dependencyGraph: {} as never };
+        },
+      }
+    );
+
+    const buildLiveStatusMap = getPrivateMethod(strategy, 'buildLiveStatusMap') as (
+      deploymentResult: unknown
+    ) => Promise<Map<string, Record<string, unknown>>>;
+
+    const liveStatusMap = await buildLiveStatusMap({
+      resources: [
+        {
+          id: 'deployedGraphId',
+          kind: 'ConfigMap',
+          name: 'demo',
+          namespace: 'default',
+          manifest,
+          status: 'deployed',
+          deployedAt: new Date(),
+        },
+      ],
+    });
+
+    expect(liveStatusMap.get('compositionLocalId')).toEqual({ ready: true });
+    expect(liveStatusMap.has('deployedGraphId')).toBe(false);
   });
 });
 

@@ -127,7 +127,11 @@ export class AlchemyDeploymentStrategy<
    * @returns Promise<DeploymentResult> - Comprehensive deployment result with individual resource tracking
    * @throws Error - If Alchemy scope validation fails or critical deployment errors occur
    */
-  protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
+  protected async executeDeployment(
+    spec: TSpec,
+    instanceName: string,
+    opts?: import('./base-strategy.js').DeployStrategyOptions
+  ): Promise<DeploymentResult> {
     try {
       // Validate alchemy scope is available and properly configured
       validateAlchemyScope(this.alchemyScope, 'Alchemy deployment');
@@ -218,6 +222,10 @@ export class AlchemyDeploymentStrategy<
                 options: {
                   waitForReady: this.factoryOptions.waitForReady ?? false, // Default to false for faster tests
                   timeout: this.factoryOptions.timeout ?? DEFAULT_READINESS_TIMEOUT,
+                  factoryName: this.factoryName,
+                  instanceName,
+                  ...(opts?.targetScopes !== undefined && { targetScopes: opts.targetScopes }),
+                  ...(opts?.singletonSpecFingerprint && { singletonSpecFingerprint: opts.singletonSpecFingerprint }),
                 },
               });
 

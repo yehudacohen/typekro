@@ -58,7 +58,7 @@ export const inngestBootstrap = kubernetesComposition(
   (spec: InngestBootstrapConfig) => {
     const resolvedNamespace = spec.namespace || 'inngest';
     const resolvedVersion = spec.version || DEFAULT_INNGEST_VERSION;
-    const repositoryName = `${spec.name}-inngest-repo`;
+    const repositoryName = spec.repositoryName || `${spec.name}-inngest-repo`;
 
     // Build the config for the mapper. Cannot spread the magic proxy directly —
     // nested proxy objects don't survive Object.assign. Access fields explicitly

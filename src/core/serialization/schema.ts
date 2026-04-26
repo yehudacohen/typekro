@@ -8,6 +8,7 @@
 
 import type { Type } from 'arktype';
 import { escapeCelString } from '../../utils/cel-escape.js';
+import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
@@ -22,6 +23,7 @@ import { separateStatusFields } from '../validation/cel-validator.js';
 import { serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
+const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
 
 function deriveResourceIdAliases(resourceId: string): string[] {
   const aliases: string[] = [];
@@ -379,9 +381,10 @@ function extractDefaultsByComparison(
   // value is a transformation, not a default — e.g., `\`has-${spec.extra}\``
   // produces `"has-<marker>"` which is NOT a default for `extra`.
   const exactMarkerMatch = proxyStr?.match(
-    /^__KUBERNETES_REF___schema___spec\.(\w+(?:\.\w+)*)__$/
+    new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`)
   );
-  if (exactMarkerMatch) {
+  const exactFieldPath = exactMarkerMatch?.[1];
+  if (exactFieldPath?.startsWith('spec.')) {
     if (
       typeof defaultsVal === 'string' ||
       typeof defaultsVal === 'number' ||
@@ -392,7 +395,7 @@ function extractDefaultsByComparison(
       // (template-literal propagation), NaN (arithmetic-coercion
       // propagation), and the sentinel itself.
       if (isSentinelDerivedValue(defaultsVal)) return;
-      const fieldKey = exactMarkerMatch[1];
+      const fieldKey = exactFieldPath.slice('spec.'.length);
       if (fieldKey) {
         result[fieldKey] = defaultsVal;
       }
@@ -483,15 +486,16 @@ function extractTernaryConditionals(
 
   if (proxyStr && defaultsStr && proxyStr !== defaultsStr && proxyStr.length > defaultsStr.length) {
     // Find all __KUBERNETES_REF__ markers in the proxy string
-    const markerPattern = /__KUBERNETES_REF___schema___spec\.(\w+(?:\.\w+)*)__/g;
+    const markerPattern = new RegExp(SCHEMA_MARKER_PATTERN_SOURCE, 'g');
     let match: RegExpExecArray | null = markerPattern.exec(proxyStr);
 
     while (match !== null) {
-      const field = match[1];
-      if (!field) {
+      const fieldPath = match[1];
+      if (!fieldPath?.startsWith('spec.')) {
         match = markerPattern.exec(proxyStr);
         continue;
       }
+      const field = fieldPath.slice('spec.'.length);
       const marker = match[0];
 
       // Only optional fields can be ternary-controlled. Required fields always
@@ -728,6 +732,39 @@ function addMissingDefaultFields(
   }
 }
 
+function remapDefaultPath(path: string, mappings: Record<string, string>): string | undefined {
+  if (Object.hasOwn(mappings, '')) {
+    const mappedPrefix = mappings[''];
+    return mappedPrefix ? `${mappedPrefix}.${path}` : path;
+  }
+
+  const matches = Object.keys(mappings)
+    .filter((prefix) => path === prefix || path.startsWith(`${prefix}.`))
+    .sort((left, right) => right.length - left.length);
+
+  const prefix = matches[0];
+  if (prefix === undefined) return undefined;
+  const mappedPrefix = mappings[prefix];
+  if (!mappedPrefix) return undefined;
+  return `${mappedPrefix}${path.slice(prefix.length)}`;
+}
+
+function remapNullishDefaults(
+  defaults: Record<string, string | number | boolean>,
+  mappings: Record<string, string>
+): Record<string, string | number | boolean> {
+  const remapped: Record<string, string | number | boolean> = {};
+
+  for (const [path, value] of Object.entries(defaults)) {
+    const mappedPath = remapDefaultPath(path, mappings);
+    if (mappedPath) {
+      remapped[mappedPath] = value;
+    }
+  }
+
+  return remapped;
+}
+
 /**
  * Collect optional spec fields that don't have | default= annotations.
  * These fields need omit() wrapping in resource templates (KRO 0.9+)
@@ -820,6 +857,7 @@ export function arktypeToKroSchema(
   schemaDefinition: {
     apiVersion: string;
     kind: string;
+    group?: string;
     spec: Type;
     status: Type;
   },
@@ -883,10 +921,20 @@ export function arktypeToKroSchema(
   const nestedFnsRaw = statusMappings
     ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionFns')?.value
     : undefined;
+  const nestedSpecMappingsRaw = statusMappings
+    ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionSpecMappings')?.value
+    : undefined;
   if (nestedFnsRaw instanceof Map) {
-    for (const fn of nestedFnsRaw.values()) {
+    for (const [baseId, fn] of nestedFnsRaw) {
       if (typeof fn !== 'function') continue;
-      const innerDefaults = extractNullishDefaults(fn.toString());
+      const specMappings = nestedSpecMappingsRaw instanceof Map
+        ? nestedSpecMappingsRaw.get(baseId)
+        : undefined;
+      if (!specMappings || typeof specMappings !== 'object') continue;
+      const innerDefaults = remapNullishDefaults(
+        extractNullishDefaults(fn.toString()),
+        specMappings as Record<string, string>
+      );
       // Non-destructive: don't overwrite existing outer defaults.
       applyNullishDefaults(specFields, innerDefaults, false);
       // Also add any fields the outer doesn't declare — the inner's
@@ -970,10 +1018,16 @@ export function arktypeToKroSchema(
   const schemaApiVersion = schemaDefinition.apiVersion.includes('/')
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
     : schemaDefinition.apiVersion;
+  const schemaGroup = schemaDefinition.group ?? (
+    schemaDefinition.apiVersion.includes('/')
+      ? schemaDefinition.apiVersion.split('/')[0]
+      : undefined
+  );
 
   const schema: KroSimpleSchemaWithMetadata = {
     apiVersion: schemaApiVersion,
     kind: schemaDefinition.kind,
+    ...(schemaGroup && { group: schemaGroup }),
     spec: specFields,
     status: {
       ...statusCelExpressions,

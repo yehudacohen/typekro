@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import {
+  buildAlchemyDeploymentOptions,
   clearRegisteredTypes,
   DirectTypeKroDeployer,
   ensureResourceTypeRegistered,
@@ -149,6 +150,33 @@ describe('Dynamic Alchemy Resource Registration', () => {
       // Note: We can't easily inspect registered types, so we'll test behavior instead
       // The fact that ensureResourceTypeRegistered didn't throw means it worked
       expect(true).toBe(true);
+    });
+
+    it('forwards TypeKro deployment metadata options to injected deployers', async () => {
+      const deployOptions = buildAlchemyDeploymentOptions({
+        resource: mockDeployment,
+        namespace: 'test-ns',
+        deploymentStrategy: 'direct',
+        options: {
+          waitForReady: false,
+          timeout: 1234,
+          factoryName: 'alchemy-factory',
+          instanceName: 'alchemy-instance',
+          targetScopes: ['cluster'],
+          singletonSpecFingerprint: 'sha256:test',
+        },
+      });
+
+      expect(deployOptions).toMatchObject({
+        mode: 'alchemy',
+        namespace: 'test-ns',
+        waitForReady: false,
+        timeout: 1234,
+        factoryName: 'alchemy-factory',
+        instanceName: 'alchemy-instance',
+        targetScopes: ['cluster'],
+        singletonSpecFingerprint: 'sha256:test',
+      });
     });
   });
 

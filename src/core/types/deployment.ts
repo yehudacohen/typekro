@@ -254,6 +254,9 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
   /** Instance identifier — see `factoryName`. */
   instanceName?: string;
 
+  /** Internal singleton owner spec fingerprint stamped onto direct-mode resources. */
+  singletonSpecFingerprint?: string;
+
   /**
    * Scope-targeted deployment. When set, only resources whose effective
    * scopes match this filter are deployed. Resources outside the filter
@@ -718,7 +721,7 @@ export interface ResourceFactory<
   // Core deployment - single method handles all cases
   deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[]; instanceNameOverride?: string }
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management

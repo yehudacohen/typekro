@@ -79,6 +79,8 @@ export interface CompositionContext {
    */
   // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
   nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
+  /** Map of nested composition baseId -> inner spec path prefix to parent spec path prefix. */
+  nestedCompositionSpecMappings?: Map<string, Record<string, string>>;
   /** Map of nested composition baseId -> returned status snapshot. */
   nestedStatusSnapshots?: Map<string, Record<string, unknown>>;
   /** Singleton definitions collected while executing the composition. */

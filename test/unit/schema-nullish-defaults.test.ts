@@ -7,6 +7,10 @@
 
 import { beforeAll, describe, expect, it } from 'bun:test';
 import { extractNullishDefaults } from '../../src/core/serialization/schema.js';
+import {
+  KUBERNETES_REF_MARKER_PATTERN,
+  KUBERNETES_REF_MARKER_SOURCE,
+} from '../../src/shared/brands.js';
 
 describe('Schema Nullish Defaults', () => {
   describe('extractNullishDefaults (fn.toString regex)', () => {
@@ -156,6 +160,30 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
+    it('converts markers with underscores in resource ids and field paths', () => {
+      const marker = '__KUBERNETES_REF_my_db_status.image_tag__';
+      const result = processResourceReferences(marker, ctx([]));
+      expect(result).toBe('${my_db.status.image_tag}');
+    });
+
+    it('converts mixed marker strings with underscores in ids and paths', () => {
+      const marker = 'image=__KUBERNETES_REF_my_db_status.image_tag__';
+      const result = processResourceReferences(marker, ctx([]));
+      expect(result).toBe('image=${string(my_db.status.image_tag)}');
+    });
+
+    it('uses shared marker grammar for schema, underscore, and adjacent mixed markers', () => {
+      const mixed =
+        '__KUBERNETES_REF___schema___spec.name____KUBERNETES_REF_my_db_status.image_tag__';
+      const matches = [...mixed.matchAll(new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'))];
+
+      expect(matches.map((match) => [match[1], match[2]])).toEqual([
+        ['__schema__', 'spec.name'],
+        ['my_db', 'status.image_tag'],
+      ]);
+      expect(KUBERNETES_REF_MARKER_PATTERN.exec('__KUBERNETES_REF___schema___spec.name__')).toBeNull();
+    });
+
     it('wraps CelExpression objects that are a single schema.spec.<field>', async () => {
       // The Cel.expr() path also needs omit wrapping when the expression
       // is a single schema ref (e.g., from a status builder that passes
@@ -172,6 +200,24 @@ describe('Schema Nullish Defaults', () => {
       const result = processResourceReferences(expr, ctx(['baseUrl']));
       expect(result).toBe(
         '${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}'
+      );
+    });
+
+    it('wraps nested CelExpression schema refs under an optional ancestor', async () => {
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('schema.spec.database.storageClass');
+      const result = processResourceReferences(expr, ctx(['database']));
+      expect(result).toBe(
+        '${has(schema.spec.database) && has(schema.spec.database.storageClass) ? schema.spec.database.storageClass : omit()}'
+      );
+    });
+
+    it('wraps nested string CelExpression schema refs under an optional ancestor', async () => {
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('string(schema.spec.database.storageClass)');
+      const result = processResourceReferences(expr, ctx(['database']));
+      expect(result).toBe(
+        '${has(schema.spec.database) && has(schema.spec.database.storageClass) ? string(schema.spec.database.storageClass) : omit()}'
       );
     });
 

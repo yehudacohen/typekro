@@ -15,10 +15,12 @@ import { toCamelCase } from '../../utils/string.js';
 
 interface SingletonCompositionMetadata {
   apiVersion?: string;
+  group?: string;
   kind?: string;
   name?: string;
   _definition?: {
     apiVersion?: string;
+    group?: string;
     kind?: string;
     name?: string;
   };
@@ -26,6 +28,14 @@ interface SingletonCompositionMetadata {
 
 const singletonDefinitionsByComposition = new WeakMap<object, Map<string, SingletonDefinitionRecord>>();
 export const DEFAULT_SINGLETON_NAMESPACE = 'typekro-singletons';
+
+function getSingletonApiVersion(compositionRecord: SingletonCompositionMetadata): string {
+  const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
+  if (rawApiVersion.includes('/')) return rawApiVersion;
+
+  const group = String(compositionRecord._definition?.group ?? compositionRecord.group ?? 'kro.run');
+  return `${group}/${rawApiVersion}`;
+}
 
 function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   composition: CallableComposition<TSpec, TStatus>,
@@ -62,8 +72,7 @@ function getSingletonFactoryIdentity<TSpec extends KroCompatibleType, TStatus ex
   composition: CallableComposition<TSpec, TStatus>,
 ): string {
   const compositionRecord = composition as unknown as SingletonCompositionMetadata;
-  const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
-  const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
+  const apiVersion = getSingletonApiVersion(compositionRecord);
   const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'unknown');
   const name = String(compositionRecord._definition?.name ?? compositionRecord.name ?? 'unknown');
   return `${apiVersion}/${kind}:${name}`;
@@ -148,7 +157,7 @@ function defineSingleton<TSpec extends KroCompatibleType, TStatus extends KroCom
     context.singletonDefinitions.set(key, definitionRecord as SingletonDefinitionRecord);
   }
 
-  if (context && !context.isReExecution) {
+  if (context) {
     return useSingleton(composition, input.id, DEFAULT_SINGLETON_NAMESPACE);
   }
 
@@ -173,8 +182,7 @@ function useSingleton<TSpec extends KroCompatibleType, TStatus extends KroCompat
 ): SingletonReferenceHandle<TStatus> {
   const key = getSingletonKey(composition, id);
   const compositionRecord = composition as unknown as SingletonCompositionMetadata;
-  const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
-  const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
+  const apiVersion = getSingletonApiVersion(compositionRecord);
   const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'unknown');
   const statusRef = externalRef<TSpec, TStatus>({
     apiVersion,

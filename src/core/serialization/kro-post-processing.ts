@@ -1,4 +1,5 @@
 import { escapeCelString as escapeCelStringLiteral } from '../../utils/cel-escape.js';
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 
 /**
  * KRO YAML Post-Processing Utilities
@@ -50,7 +51,7 @@ export function applyTernaryConditionalsToResources(
       // Split the matched section on markers so we can separately handle
       // LITERAL text (needs CEL string-literal escaping) and CEL REFERENCES
       // (must NOT be escaped — they're emitted as `string(ref)` concatenation).
-      const markerRe = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+      const markerRe = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
       let celTruthy = '';
       let lastIndex = 0;
       let m: RegExpExecArray | null = markerRe.exec(matchedSection);
