@@ -1266,6 +1266,82 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(resource.includeWhen).toContain('${schema.spec.ingress.enabled}');
       });
 
+      it('string-marker includeWhen resolves nested status with serialization context', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'include-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'include-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedIncludeConfig' })
+              .withIncludeWhen(`${nested.status.ready}`);
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'nestedIncludeConfig');
+
+        expect(resource.includeWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.includeWhen?.[0]).not.toContain('status.ready}');
+      });
+
+      it('KubernetesRef includeWhen resolves nested status with serialization context', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'include-ref-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeRefNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerRefApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'include-ref-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeRefNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedRefIncludeConfig' })
+              .withIncludeWhen(nested.status.ready);
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'nestedRefIncludeConfig');
+
+        expect(resource.includeWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.includeWhen?.[0]).not.toContain('status.ready}');
+      });
+
       it('multiple .withIncludeWhen() produces multiple entries (AND)', () => {
         const graph = kubernetesComposition(
           {
@@ -1502,6 +1578,44 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(resource.readyWhen![0]).toBe(
           '${helm.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
         );
+      });
+
+      it('KubernetesRef readyWhen resolves nested status with serialization context', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'ready-ref-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyRefNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerReadyApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-ref-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyRefNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyApp' })
+              .withReadyWhen(nested.status.ready);
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'outerReadyApp');
+
+        expect(resource.readyWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.readyWhen?.[0]).not.toContain('status.ready}');
       });
     });
 

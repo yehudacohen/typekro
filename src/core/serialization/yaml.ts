@@ -6,7 +6,6 @@
  */
 
 import * as yaml from 'js-yaml';
-import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { getMetadataField } from '../metadata/resource-metadata.js';
 import { escapeRegExp } from '../../utils/helpers.js';
 import {
@@ -33,7 +32,7 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';
-import { getInnerCelPath, processResourceReferences } from './cel-references.js';
+import { getInnerCelPath, normalizeRefMarkersToCelPaths, processResourceReferences } from './cel-references.js';
 import { generateKroSchema } from './schema.js';
 
 /**
@@ -110,16 +109,16 @@ function readTemplateOverrides(
  *  - string (already CEL) → pass-through
  *  - string with __KUBERNETES_REF__ markers → convert markers to CEL
  */
-function convertIncludeWhenValueToCel(value: unknown): string | undefined {
+function convertIncludeWhenValueToCel(value: unknown, context: SerializationContext): string | undefined {
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return convertRefMarkersInString(value);
+      return convertRefMarkersInString(value, context);
     }
     return value;
   }
 
   if (isKubernetesRef(value)) {
-    const celPath = getInnerCelPath(value);
+    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
     return `\${${celPath}}`;
   }
 
@@ -142,14 +141,14 @@ function convertIncludeWhenValueToCel(value: unknown): string | undefined {
  *  - An array of the above
  *  - undefined (no condition)
  */
-function resolveIncludeWhen(raw: unknown): string[] | undefined {
+function resolveIncludeWhen(raw: unknown, context: SerializationContext): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
 
   const items = Array.isArray(raw) ? raw : [raw];
   const celStrings: string[] = [];
 
   for (const item of items) {
-    const cel = convertIncludeWhenValueToCel(item);
+    const cel = convertIncludeWhenValueToCel(item, context);
     if (cel) celStrings.push(cel);
   }
 
@@ -256,7 +255,8 @@ function convertReadyWhenCallbackToCel(
 function convertReadyWhenValueToCel(
   value: unknown,
   resourceId: string,
-  hasForEach: boolean
+  hasForEach: boolean,
+  context: SerializationContext
 ): string | undefined {
   // Callback function — parse source to extract CEL expression
   if (typeof value === 'function') {
@@ -266,7 +266,7 @@ function convertReadyWhenValueToCel(
   }
 
   if (isKubernetesRef(value)) {
-    const celPath = getInnerCelPath(value);
+    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
     return `\${${celPath}}`;
   }
 
@@ -276,7 +276,7 @@ function convertReadyWhenValueToCel(
 
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return `\${${convertRefMarkersInString(value)}}`;
+      return `\${${convertRefMarkersInString(value, context)}}`;
     }
     return value;
   }
@@ -293,7 +293,8 @@ function convertReadyWhenValueToCel(
 function resolveReadyWhen(
   raw: unknown,
   resourceId: string,
-  hasForEach: boolean
+  hasForEach: boolean,
+  context: SerializationContext
 ): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
 
@@ -301,7 +302,7 @@ function resolveReadyWhen(
   const celStrings: string[] = [];
 
   for (const item of items) {
-    const cel = convertReadyWhenValueToCel(item, resourceId, hasForEach);
+    const cel = convertReadyWhenValueToCel(item, resourceId, hasForEach, context);
     if (cel) celStrings.push(cel);
   }
 
@@ -318,17 +319,8 @@ function resolveReadyWhen(
  * Input:  "__KUBERNETES_REF_web_status.readyReplicas__ > 0"
  * Output: "web.status.readyReplicas > 0"
  */
-function convertRefMarkersInString(str: string): string {
-  // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
-  // For schema: __KUBERNETES_REF___schema___{fieldPath}__
-  const refPattern = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
-
-  return str.replace(refPattern, (_match, resourceId: string, fieldPath: string) => {
-    if (resourceId === '__schema__') {
-      return `schema.${fieldPath}`;
-    }
-    return `${resourceId}.${fieldPath}`;
-  });
+function convertRefMarkersInString(str: string, context: SerializationContext): string {
+  return normalizeRefMarkersToCelPaths(str, context);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +564,7 @@ function buildResourceEntry(
 
     // externalRef can still have includeWhen (but NOT forEach — mutually exclusive)
     const rawIncludeWhen = readIncludeWhen(resource);
-    const includeWhen = resolveIncludeWhen(rawIncludeWhen);
+    const includeWhen = resolveIncludeWhen(rawIncludeWhen, context);
     if (includeWhen) {
       entry.includeWhen = includeWhen;
     }
@@ -633,14 +625,14 @@ function buildResourceEntry(
 
   // includeWhen — conditional resource creation (convert raw values to CEL)
   const rawIncludeWhen = readIncludeWhen(resource);
-  const includeWhen = resolveIncludeWhen(rawIncludeWhen);
+  const includeWhen = resolveIncludeWhen(rawIncludeWhen, context);
   if (includeWhen) {
     entry.includeWhen = includeWhen;
   }
 
   // readyWhen — resource readiness conditions (convert callbacks/refs to CEL)
   const rawReadyWhen = readReadyWhen(resource);
-  const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach);
+  const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach, context);
   if (readyWhen) {
     entry.readyWhen = readyWhen;
   }

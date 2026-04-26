@@ -493,6 +493,25 @@ describe('KroTypeKroDeployer', () => {
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
+  it('throws when KRO custom resource deletion does not complete before timeout', async () => {
+    const mockEngine = createMockEngine() as any;
+    mockEngine.getKubernetesApi = mock(() => ({
+      delete: mock(() => Promise.resolve()),
+      read: mock(() => Promise.resolve({ body: {} })),
+    }));
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const kroInstance = {
+      apiVersion: 'test.kro.run/v1alpha1',
+      kind: 'TestApp',
+      metadata: { name: 'stuck-app', namespace: 'test-ns' },
+      spec: {},
+    } as any;
+
+    await expect(
+      deployer.delete(kroInstance, { mode: 'kro', namespace: 'test-ns', timeout: 0 })
+    ).rejects.toThrow('KRO resource deletion did not complete');
+  });
+
   it('does not destroy Alchemy state when resource deletion fails', async () => {
     const testDeployment = deployment({
       metadata: { name: 'delete-failure-test', namespace: 'default' },

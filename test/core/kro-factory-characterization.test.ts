@@ -141,17 +141,21 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
       }) as unknown as KubernetesResource,
     };
     const providerCalls: Array<{ id: string; input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> } }> = [];
+    const events: string[] = [];
+    const deleteHooks: Array<unknown> = [];
 
     const factory = createKroResourceFactory('alchemyExternalRef', resources, makeSchema(), {}, {
       alchemyScope: {},
       hydrateStatus: false,
       rgdProvider: (rgd) => rgd as unknown as Enhanced<Record<string, unknown>, Record<string, unknown>>,
       alchemyBridge: {
-        createDeployer(engine: unknown) {
+        createDeployer(engine: unknown, options?: { deleteInstance?: (name: string) => Promise<void> }) {
+          deleteHooks.push(options?.deleteInstance);
           return engine;
         },
         ensureResourceTypeRegistered() {
           return async (id: string, input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> }) => {
+            events.push(`provider:${input.resource.kind}`);
             providerCalls.push({ id, input });
           };
         },
@@ -167,6 +171,9 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     const readinessCalls: Array<{ instanceName: string; timeout: number }> = [];
     (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {
       ensuredTargetNamespace = true;
+    };
+    (factory as unknown as Record<string, unknown>).waitForCRDReadyWithEngine = async () => {
+      events.push('crd-ready');
     };
     (factory as unknown as Record<string, unknown>).waitForKroInstanceReady = async (
       instanceName: string,
@@ -200,6 +207,9 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     expect(rgdCall?.input.deployer).toBeDefined();
     expect(instanceCall?.input.deployer).toBeDefined();
     expect(instanceCall?.input.options?.waitForReady).toBe(false);
+    expect(events).toEqual(['provider:ResourceGraphDefinition', 'crd-ready', 'provider:TestApp']);
+    expect(deleteHooks).toHaveLength(1);
+    expect(typeof deleteHooks[0]).toBe('function');
     expect(readinessCalls).toEqual([{ instanceName: 'demo', timeout: 600000 }]);
   });
 

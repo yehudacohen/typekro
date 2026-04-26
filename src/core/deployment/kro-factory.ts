@@ -828,9 +828,11 @@ export class KroResourceFactoryImpl<
       DeploymentMode.KRO
     );
     const deployer = this.alchemyBridge
-      ? this.alchemyBridge.createDeployer(kroEngine)
+      ? this.alchemyBridge.createDeployer(kroEngine, {
+          deleteInstance: (name: string) => this.deleteInstanceForAlchemy(name),
+        })
       : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine, {
-          deleteInstance: (name: string) => this.deleteInstance(name),
+          deleteInstance: (name: string) => this.deleteInstanceForAlchemy(name),
         });
 
     try {
@@ -858,6 +860,7 @@ export class KroResourceFactoryImpl<
           timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
         },
       });
+      await this.waitForCRDReadyWithEngine(kroEngine);
 
       // 2. Create instance via alchemy (once per deploy call)
       await this.ensureTargetNamespace();
@@ -1156,6 +1159,21 @@ export class KroResourceFactoryImpl<
     // Namespaces are resources in the composition's dependency graph.
     // KRO's finalizer processing handles deleting all child resources
     // (including Namespaces) via its applyset — no manual cleanup needed.
+  }
+
+  private async deleteInstanceForAlchemy(name: string): Promise<void> {
+    await this.deleteInstance(name);
+    const instances = await this.getInstances();
+    const stillExists = instances.some((instance) => instance.metadata?.name === name);
+    if (stillExists) {
+      throw new CRDInstanceError(
+        `KRO instance ${name} deletion is still in progress after timeout`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        name,
+        'deletion'
+      );
+    }
   }
 
   /**

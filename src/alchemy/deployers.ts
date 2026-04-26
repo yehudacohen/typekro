@@ -249,5 +249,10 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       namespace,
       timeout,
     });
+    throw new ResourceDeploymentError(
+      name,
+      resource.kind || 'Unknown',
+      new Error(`KRO resource deletion did not complete within ${timeout}ms`)
+    );
   }
 }

@@ -58,6 +58,7 @@ await factory.deploy({
 |-------|------|---------|-------------|
 | `name` | `string` | required | Instance name |
 | `namespace` | `string` | `'searxng'` | Target namespace |
+| `enabled` | `boolean` | `true` | When `false`, direct mode creates no SearXNG resources; KRO mode gates resources with `includeWhen` so disabled instances reconcile without creating the workload |
 | `image` | `string` | `'searxng/searxng:2026.3.29-7ac4ff39f'` | Container image (pinned to avoid breaking config changes between releases) |
 | `replicas` | `number` | `1` | Number of replicas |
 | `instanceName` | `string` | `name` | Displayed in the UI |
@@ -90,7 +91,7 @@ await factory.deploy({
 
 ## Rate Limiter
 
-SearXNG has a built-in rate limiter that uses Redis/Valkey. Pass a `redisUrl` to enable it:
+SearXNG has a built-in rate limiter that uses Redis/Valkey. Pass both `redisUrl` and `server.limiter: true` to enable it in the bootstrap composition:
 
 ```typescript
 await factory.deploy({
@@ -100,11 +101,7 @@ await factory.deploy({
 });
 ```
 
-The composition automatically configures `redis.url` in settings.yml when `redisUrl` is provided.
-
-### Auto-enable behavior
-
-When you pass `redisUrl` without explicitly setting `server.limiter`, the limiter is **automatically enabled**. This matches the expectation that most users who provision Redis for SearXNG want rate limiting. If you want Redis for another reason (e.g., as a shared cache backend) but don't want rate limiting, pass `server.limiter: false` explicitly:
+The bootstrap composition automatically configures `redis.url` in settings.yml when `redisUrl` is provided, but it does not infer rate limiting from that URL. If you want Redis for another reason (e.g., as a shared cache backend) but don't want rate limiting, omit `server.limiter` or pass `server.limiter: false` explicitly:
 
 ```typescript
 await factory.deploy({
@@ -114,7 +111,7 @@ await factory.deploy({
 });
 ```
 
-The override is one-way — an explicit `false` always wins over the auto-enable. `undefined` or a missing `limiter` field triggers the auto-enable.
+The lower-level `buildSearxngSettings()` helper still auto-enables the limiter when `redisUrl` is provided and `server.limiter` is omitted. The bootstrap composition does not use that helper for KRO-compatible templating, so set `server.limiter: true` explicitly when deploying with the composition.
 
 ## Using with Web App Composition
 

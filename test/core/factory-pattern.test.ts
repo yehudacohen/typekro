@@ -232,6 +232,10 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
+
+        async dispose() {
+          // Mock implementation
+        },
       };
 
       expect(mockFactory.mode).toBe('direct');
@@ -274,6 +278,10 @@ describe('Factory Pattern Types', () => {
             instanceCount: 0,
             health: 'healthy',
           };
+        },
+
+        async dispose() {
+          // Mock implementation
         },
 
         // Direct-specific methods
@@ -340,6 +348,10 @@ describe('Factory Pattern Types', () => {
           };
         },
 
+        async dispose() {
+          // Mock implementation
+        },
+
         // Kro-specific methods
         async getRGDStatus() {
           return {
@@ -394,6 +406,10 @@ describe('Factory Pattern Types', () => {
             instanceCount: 0,
             health: 'healthy',
           };
+        },
+
+        async dispose() {
+          // Mock implementation
         },
 
         async getRGDStatus() {
@@ -455,6 +471,10 @@ describe('Factory Pattern Types', () => {
           };
         },
 
+        async dispose() {
+          // Mock implementation
+        },
+
         async getRGDStatus() {
           return {
             name: 'test-rgd',
@@ -503,6 +523,10 @@ describe('Factory Pattern Types', () => {
             instanceCount: 0,
             health: 'healthy',
           };
+        },
+
+        async dispose() {
+          // Mock implementation
         },
 
         async rollback() {

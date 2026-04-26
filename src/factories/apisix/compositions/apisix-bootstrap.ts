@@ -53,7 +53,8 @@ import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * });
  * ```
  */
-export const apisixBootstrap = kubernetesComposition(
+function createApisixBootstrap(requireDefinitionCredentials = false) {
+  return kubernetesComposition(
   {
     name: 'apisix-bootstrap',
     kind: 'APISixBootstrap',
@@ -173,7 +174,7 @@ export const apisixBootstrap = kubernetesComposition(
     // @security Credentials are resolved in priority order:
     //   1. Explicit spec values (gateway.adminCredentials)
     //   2. APISIX_ADMIN_KEY / APISIX_VIEWER_KEY environment variables
-    //   3. Development-only chart defaults (a warning is logged)
+    //   3. Test-environment-only defaults for unit tests
     //
     // For production deployments, always provide credentials via the spec or
     // environment variables.
@@ -181,16 +182,25 @@ export const apisixBootstrap = kubernetesComposition(
       helmValues.apisix = {};
     }
     /** @security Resolved admin credentials — never log these values. */
-    // Allow defaults ONLY during the definition pass (schema proxy tracing),
-    // not during re-execution (actual deploy). During definition, credentials
-    // are placeholders for YAML generation; during re-execution, real
-    // credentials are required and missing ones should throw.
+    // Never opt into development defaults during schema-proxy definition.
+    // KRO reconciliation cannot read this process' env vars later, so omitted
+    // credentials are resolved now from APISIX_* env vars or fail early.
     const ctx = getCurrentCompositionContext();
-    const allowDefaults = !ctx?.isReExecution;
-    const adminCredentials = resolveAdminCredentials(
-      fullConfig.gateway?.adminCredentials,
-      { allowDefaults }
-    );
+    const definitionCredentials = {
+      admin: fullConfig.gateway?.adminCredentials?.admin as string | undefined,
+      viewer: fullConfig.gateway?.adminCredentials?.viewer as string | undefined,
+    };
+    const adminCredentials = ctx && !ctx.isReExecution
+      ? requireDefinitionCredentials
+        ? resolveAdminCredentials(undefined, { allowTestDefaults: false })
+        : (() => {
+            try {
+              return resolveAdminCredentials(undefined, { allowTestDefaults: false });
+            } catch {
+              return definitionCredentials;
+            }
+          })()
+      : resolveAdminCredentials(fullConfig.gateway?.adminCredentials);
     (helmValues.apisix as Record<string, unknown>).admin = {
       enabled: true,
       type: 'ClusterIP',
@@ -316,4 +326,14 @@ export const apisixBootstrap = kubernetesComposition(
       },
     };
   }
-);
+  );
+}
+
+const apisixBootstrapBase = createApisixBootstrap(false);
+
+// Keep module imports side-effect safe, but require concrete credentials when
+// generating a KRO definition so omitted CR fields do not become chart defaults.
+(apisixBootstrapBase as { toYaml: () => string }).toYaml = () =>
+  createApisixBootstrap(true).toYaml();
+
+export const apisixBootstrap = apisixBootstrapBase;

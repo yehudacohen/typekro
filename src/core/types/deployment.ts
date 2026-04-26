@@ -643,6 +643,12 @@ export type ResourceGraphDefinitionProvider = (rgd: {
   [key: string]: unknown;
 }) => Enhanced<Record<string, unknown>, Record<string, unknown>>;
 
+/** Options passed when creating an Alchemy-backed Kro deployer. */
+export interface AlchemyKroDeployerOptions {
+  /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
+  deleteInstance?: (name: string) => Promise<void>;
+}
+
 /**
  * Alchemy integration bridge.
  *
@@ -652,7 +658,7 @@ export type ResourceGraphDefinitionProvider = (rgd: {
  */
 export interface AlchemyBridge {
   /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
-  createDeployer(engine: unknown): unknown;
+  createDeployer(engine: unknown, options?: AlchemyKroDeployerOptions): unknown;
   /** Register a resource type in alchemy's global provider registry. */
   ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): unknown;
   /** Generate a deterministic alchemy resource ID. */

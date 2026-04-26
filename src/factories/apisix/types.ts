@@ -63,9 +63,10 @@ export interface APISixBootstrapConfig {
      * Admin API credentials for the APISIX Admin API.
      *
      * Override the chart defaults for production deployments. When omitted,
-     * credentials are resolved from `APISIX_ADMIN_KEY` / `APISIX_VIEWER_KEY`
-     * environment variables, falling back to well-known chart defaults (with a
-     * warning) for local development only.
+     * direct deployments resolve credentials from `APISIX_ADMIN_KEY` /
+     * `APISIX_VIEWER_KEY`. KRO definition generation resolves those env vars
+     * immediately or fails early, because KRO cannot read this process'
+     * environment during later CR reconciliation.
      *
      * @security These values are sensitive. Do not commit them to source control.
      * Prefer environment variables or a secrets manager.
@@ -216,6 +217,10 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'enabled?': 'boolean',
       'servicePort?': 'number',
       'containerPort?': 'number',
+    },
+    'adminCredentials?': {
+      'admin?': 'string',
+      'viewer?': 'string',
     },
   },
 

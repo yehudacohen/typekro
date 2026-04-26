@@ -4,7 +4,7 @@
  * Resolves APISIX admin API credentials from (in order of priority):
  * 1. Explicit configuration via `gateway.adminCredentials`
  * 2. Environment variables (`APISIX_ADMIN_KEY`, `APISIX_VIEWER_KEY`)
- * 3. Test-environment-only defaults (throws in production if no credentials provided)
+ * 3. Test-environment-only defaults (throws outside tests if no credentials provided)
  *
  * @security This module handles sensitive admin API keys. Never log resolved
  * credential values. In production, always provide credentials via the spec
@@ -51,7 +51,7 @@ export interface ResolvedAdminCredentials {
  * 1. Values provided explicitly via the `specCredentials` parameter (from
  *    `gateway.adminCredentials` in the bootstrap spec).
  * 2. Environment variables `APISIX_ADMIN_KEY` / `APISIX_VIEWER_KEY`.
- * 3. Development-only defaults identical to the upstream chart defaults.
+ * 3. Test-only defaults identical to the upstream chart defaults.
  *    A warning is emitted to stderr the first time these are used.
  *
  * @security Callers must never log the returned credential values.
@@ -61,11 +61,11 @@ export interface ResolvedAdminCredentials {
  */
 export function resolveAdminCredentials(
   specCredentials?: { admin?: string; viewer?: string } | undefined,
-  options?: { allowDefaults?: boolean }
+  options?: { allowTestDefaults?: boolean }
 ): ResolvedAdminCredentials {
-  const allowDefaults = options?.allowDefaults;
-  const admin = resolveKey(specCredentials?.admin, 'APISIX_ADMIN_KEY', DEV_DEFAULT_ADMIN_KEY, allowDefaults);
-  const viewer = resolveKey(specCredentials?.viewer, 'APISIX_VIEWER_KEY', DEV_DEFAULT_VIEWER_KEY, allowDefaults);
+  const allowTestDefaults = options?.allowTestDefaults ?? true;
+  const admin = resolveKey(specCredentials?.admin, 'APISIX_ADMIN_KEY', DEV_DEFAULT_ADMIN_KEY, allowTestDefaults);
+  const viewer = resolveKey(specCredentials?.viewer, 'APISIX_VIEWER_KEY', DEV_DEFAULT_VIEWER_KEY, allowTestDefaults);
 
   return { admin, viewer };
 }
@@ -75,7 +75,12 @@ export function resolveAdminCredentials(
  *
  * @internal
  */
-function resolveKey(specValue: string | undefined, envVarName: string, devDefault: string, allowDefaults?: boolean): string {
+function resolveKey(
+  specValue: string | undefined,
+  envVarName: string,
+  devDefault: string,
+  allowTestDefaults: boolean
+): string {
   // 1. Explicit spec value takes highest priority
   if (specValue) {
     return specValue;
@@ -87,14 +92,12 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     return envValue;
   }
 
-  // 3. Default credentials — allowed in test environments and when the
-  //    caller explicitly opts in via allowDefaults (e.g., during
-  //    composition definition where the values are placeholders).
-  if (!isTestEnvironment() && !allowDefaults) {
+  // 3. Default credentials — allowed only in test environments.
+  if (!isTestEnvironment() || !allowTestDefaults) {
     throw new TypeKroError(
       `APISIX admin credentials not configured. ` +
         `Set the ${envVarName} environment variable or pass gateway.adminCredentials in the spec. ` +
-        `Default credentials are only permitted in test environments (NODE_ENV=test or VITEST=true).`,
+        `Default credentials are only permitted in test environments (NODE_ENV=test or VITEST=true) and are disabled during KRO definition generation.`,
       'APISIX_CREDENTIALS_MISSING'
     );
   }
