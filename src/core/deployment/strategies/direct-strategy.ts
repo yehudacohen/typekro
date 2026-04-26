@@ -44,7 +44,10 @@ export class DirectDeploymentStrategy<
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
     public resourceResolver: {
-      createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
+      createResourceGraphForInstance(
+        spec: TSpec,
+        instanceNameOverride?: string
+      ): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
       reExecuteWithLiveStatus?(spec: TSpec, liveStatusMap: Map<string, Record<string, unknown>>): TStatus | null;
     } // Resource resolution logic
@@ -59,7 +62,10 @@ export class DirectDeploymentStrategy<
   ): Promise<DeploymentResult> {
     try {
       // Create resource graph for this instance
-      const resourceGraph = this.resourceResolver.createResourceGraphForInstance(spec);
+      const resourceGraph = this.resourceResolver.createResourceGraphForInstance(
+        spec,
+        opts?.instanceNameOverride
+      );
 
       // Create deployment options. Tag the options with factoryName +
       // instanceName so the engine stamps every resource with ownership
@@ -375,7 +381,6 @@ function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: un
   if (
     isCelExpression(currentValue)
     || isKubernetesRef(currentValue)
-    || containsKubernetesRefs(currentValue)
     || looksLikeExpressionObject
   ) {
     return reExecutedValue ?? currentValue;
@@ -404,6 +409,9 @@ function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: un
 
   return currentValue;
 }
+
+/** Internal test hook for status artifact merge semantics. */
+export const mergeResolvedStatusArtifactsForTest = mergeResolvedStatusArtifacts;
 
 function repairReadyFromResolvedComponents<T>(
   status: T,

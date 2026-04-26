@@ -9,7 +9,10 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import type { DeploymentResult } from '../../src/core/types/deployment.js';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
-import { DirectDeploymentStrategy } from '../../src/core/deployment/strategies/direct-strategy.js';
+import {
+  DirectDeploymentStrategy,
+  mergeResolvedStatusArtifactsForTest,
+} from '../../src/core/deployment/strategies/direct-strategy.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('DirectResourceFactory Status Hydration', () => {
@@ -25,6 +28,32 @@ describe('DirectResourceFactory Status Hydration', () => {
     url: 'string',
     readyReplicas: 'number%1',
     ready: 'boolean',
+  });
+
+  describe('Status artifact merging', () => {
+    it('preserves resolved live siblings when replacing nested artifacts', () => {
+      const merged = mergeResolvedStatusArtifactsForTest(
+        {
+          components: {
+            database: {
+              endpoint: 'live-db-rw.default.svc',
+              ready: { expression: 'database.status.ready' },
+            },
+          },
+        },
+        {
+          components: {
+            database: {
+              endpoint: 'fallback-db-rw.default.svc',
+              ready: true,
+            },
+          },
+        }
+      ) as { components: { database: { endpoint: string; ready: boolean } } };
+
+      expect(merged.components.database.endpoint).toBe('live-db-rw.default.svc');
+      expect(merged.components.database.ready).toBe(true);
+    });
   });
 
   describe('Status Builder Integration', () => {

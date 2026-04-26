@@ -1711,7 +1711,11 @@ function createTypedResourceGraph<
       }
     },
 
-    toYaml(): string {
+    toYaml(spec?: TSpec): string {
+      if (spec !== undefined) {
+        return this.factory('kro').toYaml(spec);
+      }
+
       // Apply composition body analysis results (guard: only once)
       if (compositionAnalysis && !analysisState.appliedToResources) {
         analysisState.appliedToResources = true;

@@ -1600,6 +1600,50 @@ describe('T14 — template-literal status strings resolve nested ref markers', (
   });
 });
 
+describe('T14b — schema refs in nested status remain schema refs', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't14b-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T14bInner',
+      spec: type({ name: 'string' }),
+      status: type({ name: 'string' }),
+    },
+    (spec) => {
+      Deployment({ name: spec.name, image: 'nginx', id: 't14bDeploy' });
+      return { name: spec.name };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't14b-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T14bOuter',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    },
+    (spec) => {
+      const _inner = innerComp({ name: spec.name });
+      ConfigMap({
+        name: `${spec.name}-consumer`,
+        data: { nestedName: Cel.expr<string>('inner.status.name') },
+        id: 't14bConsumer',
+      });
+      return { ready: true };
+    }
+  );
+
+  it('does not remap __schema__ to the sole inner resource id', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const consumer = parsed.spec.resources.find((resource) => resource.id === 't14bConsumer');
+    const data = consumer?.template?.data as Record<string, string> | undefined;
+
+    expect(data?.nestedName).toContain('schema.spec.name');
+    expect(data?.nestedName).not.toContain('t14bDeploy.spec.name');
+  });
+});
+
 describe('T15 — nested status KRO mixed templates are not double wrapped', () => {
   const innerComp = kubernetesComposition(
     {

@@ -305,8 +305,8 @@ export interface ResourceStatus {
  * `ReadinessEvaluator<V1Deployment>`). For CRD-based resources without
  * a typed client, pass `any` explicitly: `ReadinessEvaluator<any>`.
  *
- * @typeParam T - The live resource type. Defaults to `unknown` to encourage
- *   explicit typing; use `any` for untyped CRD resources.
+ * @typeParam T - The live resource type. Defaults to `any` for compatibility;
+ *   use an explicit concrete resource type for stronger checking.
  */
 // biome-ignore lint/suspicious/noExplicitAny: evaluator parameter types are intentionally resource-specific and heterogeneous.
 export type ReadinessEvaluator<T = any> = {

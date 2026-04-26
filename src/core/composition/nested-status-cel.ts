@@ -198,6 +198,7 @@ export function remapVariableNames(
 
   const remapResourceId = (id: string): string | undefined => {
     if (shouldPreserveVariable(id)) return undefined;
+    if (id === '__schema__') return 'schema';
     if (innerResourceIds.includes(id) || id === 'schema') return id;
 
     const lower = id.toLowerCase();

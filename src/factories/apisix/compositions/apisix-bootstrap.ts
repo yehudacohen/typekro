@@ -333,7 +333,13 @@ const apisixBootstrapBase = createApisixBootstrap(false);
 
 // Keep module imports side-effect safe, but require concrete credentials when
 // generating a KRO definition so omitted CR fields do not become chart defaults.
-(apisixBootstrapBase as { toYaml: () => string }).toYaml = () =>
-  createApisixBootstrap(true).toYaml();
+(apisixBootstrapBase as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
+  spec?: APISixBootstrapConfig
+) => {
+  if (spec !== undefined) {
+    return createApisixBootstrap(false).factory('kro').toYaml(spec);
+  }
+  return createApisixBootstrap(true).toYaml();
+};
 
 export const apisixBootstrap = apisixBootstrapBase;

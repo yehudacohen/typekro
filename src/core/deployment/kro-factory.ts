@@ -10,6 +10,7 @@ import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
@@ -63,6 +64,7 @@ import {
   generateInstanceName,
   getSingletonInstanceName,
   pluralizeKind,
+  validateAlchemyScope,
   validateSpec,
 } from './shared-utilities.js';
 import {
@@ -810,13 +812,10 @@ export class KroResourceFactoryImpl<
     instanceNameOverride?: string,
     singletonSpecFingerprint?: string,
   ): Promise<Enhanced<TSpec, TStatus>> {
-    if (!this.alchemyScope) {
-      throw new ResourceGraphFactoryError(
-        'Alchemy scope is required for alchemy deployment',
-        this.name,
-        'deployment'
-      );
-    }
+    validateAlchemyScope(this.alchemyScope, 'KRO Alchemy deployment');
+    const alchemyScope = this.alchemyScope as Scope & {
+      run<T>(fn: () => Promise<T>): Promise<T>;
+    };
 
     // Use static registration functions
 
@@ -827,13 +826,8 @@ export class KroResourceFactoryImpl<
       undefined,
       DeploymentMode.KRO
     );
-    const deployer = this.alchemyBridge
-      ? this.alchemyBridge.createDeployer(kroEngine, {
-          deleteInstance: (name: string) => this.deleteInstanceForAlchemy(name),
-        })
-      : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine, {
-          deleteInstance: (name: string) => this.deleteInstanceForAlchemy(name),
-        });
+    const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
+    const kroDeletion = this.createAlchemyKroDeletionOptions();
 
     try {
       // 1. Ensure RGD is deployed via alchemy (once per factory). Reuse the
@@ -850,15 +844,18 @@ export class KroResourceFactoryImpl<
       const RGDProvider = bridge.ensureResourceTypeRegistered(rgdEnhanced);
       const rgdId = bridge.createAlchemyResourceId(rgdEnhanced, this.namespace);
 
-      await RGDProvider(rgdId, {
-        resource: rgdEnhanced,
-        namespace: this.namespace,
-        deploymentStrategy: 'kro' as const,
-        deployer: deployer,
-        options: {
-          waitForReady: true,
-          timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
-        },
+      await alchemyScope.run(async () => {
+        await RGDProvider(rgdId, {
+          resource: rgdEnhanced,
+          namespace: this.namespace,
+          deploymentStrategy: 'kro' as const,
+          kubeConfigOptions,
+          kroDeletion,
+          options: {
+            waitForReady: true,
+            timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
+          },
+        });
       });
       await this.waitForCRDReadyWithEngine(kroEngine);
 
@@ -878,15 +875,18 @@ export class KroResourceFactoryImpl<
       const CRDInstanceProvider = bridge.ensureResourceTypeRegistered(crdAsEnhanced);
       const instanceId = bridge.createAlchemyResourceId(crdAsEnhanced, this.namespace);
 
-      await CRDInstanceProvider(instanceId, {
-        resource: crdAsEnhanced,
-        namespace: this.namespace,
-        deploymentStrategy: 'kro' as const,
-        deployer: deployer,
-        options: {
-          waitForReady: false,
-          timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
-        },
+      await alchemyScope.run(async () => {
+        await CRDInstanceProvider(instanceId, {
+          resource: crdAsEnhanced,
+          namespace: this.namespace,
+          deploymentStrategy: 'kro' as const,
+          kubeConfigOptions,
+          kroDeletion,
+          options: {
+            waitForReady: false,
+            timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+          },
+        });
       });
 
       if (this.factoryOptions.waitForReady ?? true) {
@@ -1021,6 +1021,7 @@ export class KroResourceFactoryImpl<
     // later to decide whether to tear down the RGD/CRD or preserve
     // them for KRO to continue finalizer processing in the background.
     let instanceDeleted = false;
+    let deletionTimedOut = false;
 
     try {
       // Delete the instance. KRO's controller processes kro.run/finalizer,
@@ -1064,13 +1065,10 @@ export class KroResourceFactoryImpl<
         }
       }
       if (!instanceDeleted) {
-        // KRO is still processing the finalizer. Don't throw — the deletion
-        // IS in progress. The `instanceDeleted` flag feeds into the
-        // `hasRemainingInstances` check below: when the poll timed out,
-        // we treat the stuck instance as still existing and preserve the
-        // RGD so KRO can keep processing the finalizer in the background.
-        // Deleting the RGD while KRO is mid-finalizer would orphan the
-        // kro.run/finalizer on the CR, permanently blocking cleanup.
+        // KRO is still processing the finalizer. Treat the stuck instance as
+        // remaining so the RGD is preserved, then surface failure to callers.
+        // Deleting the RGD while KRO is mid-finalizer would orphan cleanup.
+        deletionTimedOut = true;
         this.logger.warn('Instance deletion still in progress after timeout', {
           name,
           timeout,
@@ -1081,7 +1079,9 @@ export class KroResourceFactoryImpl<
     } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number }; message?: string };
       const errorCode = k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
-      if (errorCode !== 404) {
+      if (errorCode === 404) {
+        instanceDeleted = true;
+      } else {
         throw new CRDInstanceError(
           `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
           this.schemaDefinition.apiVersion,
@@ -1156,24 +1156,66 @@ export class KroResourceFactoryImpl<
       });
     }
 
-    // Namespaces are resources in the composition's dependency graph.
-    // KRO's finalizer processing handles deleting all child resources
-    // (including Namespaces) via its applyset — no manual cleanup needed.
-  }
-
-  private async deleteInstanceForAlchemy(name: string): Promise<void> {
-    await this.deleteInstance(name);
-    const instances = await this.getInstances();
-    const stillExists = instances.some((instance) => instance.metadata?.name === name);
-    if (stillExists) {
+    if (deletionTimedOut) {
       throw new CRDInstanceError(
-        `KRO instance ${name} deletion is still in progress after timeout`,
+        `KRO instance ${name} deletion did not complete within ${this.factoryOptions.timeout ?? 300000}ms`,
         this.schemaDefinition.apiVersion,
         this.schemaDefinition.kind,
         name,
         'deletion'
       );
     }
+
+    // Namespaces are resources in the composition's dependency graph.
+    // KRO's finalizer processing handles deleting all child resources
+    // (including Namespaces) via its applyset — no manual cleanup needed.
+  }
+
+  private extractKubeConfigOptionsForAlchemy(): Record<string, unknown> {
+    const kc = this.getKubeConfig();
+    const cluster = kc.getCurrentCluster();
+    const user = typeof kc.getCurrentUser === 'function' ? kc.getCurrentUser() : undefined;
+    const context = typeof kc.getCurrentContext === 'function' ? kc.getCurrentContext() : undefined;
+    const finalSkipTLS = this.factoryOptions.skipTLSVerify === true
+      ? true
+      : (cluster?.skipTLSVerify ?? false);
+
+    return {
+      skipTLSVerify: finalSkipTLS,
+      ...(cluster?.server && { server: cluster.server }),
+      ...(context && { context }),
+      ...(cluster && {
+        cluster: {
+          name: cluster.name,
+          server: cluster.server,
+          skipTLSVerify: finalSkipTLS,
+          ...(cluster.caData && { caData: cluster.caData }),
+          ...(cluster.caFile && { caFile: cluster.caFile }),
+        },
+      }),
+      ...(user && {
+        user: {
+          name: user.name,
+          ...(user.token && { token: user.token }),
+          ...(user.certData && { certData: user.certData }),
+          ...(user.certFile && { certFile: user.certFile }),
+          ...(user.keyData && { keyData: user.keyData }),
+          ...(user.keyFile && { keyFile: user.keyFile }),
+        },
+      }),
+    };
+  }
+
+  private createAlchemyKroDeletionOptions(): KroDeletionOptions {
+    return {
+      apiVersion: this.schemaDefinition.apiVersion,
+      kind: this.schemaDefinition.kind,
+      ...(this.schemaDefinition.group && { group: this.schemaDefinition.group }),
+      namespace: this.namespace,
+      rgdName: this.rgdName,
+      ...(this.discoveredPlural && { plural: this.discoveredPlural }),
+      timeout: this.factoryOptions.timeout ?? 300000,
+    };
   }
 
   /**

@@ -17,6 +17,7 @@ import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js
 import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
+import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
 
@@ -152,19 +153,24 @@ function _createClientProvider<T extends Enhanced<unknown, unknown>>(
 /**
  * Create the appropriate deployer based on the deployment strategy
  */
-async function _createDeployer<_T extends Enhanced<unknown, unknown>>(
+async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   kc: import('@kubernetes/client-node').KubeConfig,
-  strategy: 'direct' | 'kro'
+  props: TypeKroResourceProps<T>
 ): Promise<TypeKroDeployer> {
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
   const engine = new DirectDeploymentEngine(kc);
 
-  if (strategy === 'direct') {
+  if (props.deploymentStrategy === 'direct') {
     return new DirectTypeKroDeployer(engine);
-  } else {
-    return new KroTypeKroDeployer(engine);
   }
+
+  const kroDeletion = props.kroDeletion;
+  return new KroTypeKroDeployer(engine, kroDeletion ? {
+    deleteInstance: (name: string) => deleteKroInstanceFinalizerSafe(kc, name, kroDeletion),
+    shouldSkipRgdDelete: () => hasKroInstances(kc, kroDeletion),
+    deleteResourceGraphDefinition: () => deleteKroDefinition(kc, kroDeletion),
+  } : {});
 }
 
 async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
@@ -176,7 +182,7 @@ async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
   }
 
   const kc = _createClientProvider(props, phase);
-  const deployer = await _createDeployer(kc, props.deploymentStrategy);
+  const deployer = await _createDeployer(kc, props);
   return {
     deployer,
     dispose: async () => {

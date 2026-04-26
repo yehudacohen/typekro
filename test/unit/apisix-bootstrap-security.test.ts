@@ -52,4 +52,38 @@ describe('APISIX bootstrap credential serialization', () => {
       }
     }
   });
+
+  it('preserves toYaml(spec) for explicit credential custom resources', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    delete process.env.APISIX_ADMIN_KEY;
+    delete process.env.APISIX_VIEWER_KEY;
+
+    try {
+      const yaml = apisixBootstrap.toYaml({
+        name: 'apisix',
+        gateway: {
+          adminCredentials: {
+            admin: 'spec-admin-key',
+            viewer: 'spec-viewer-key',
+          },
+        },
+      });
+
+      expect(yaml).toContain('kind: APISixBootstrap');
+      expect(yaml).toContain('spec-admin-key');
+      expect(yaml).toContain('spec-viewer-key');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
 });

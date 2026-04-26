@@ -227,11 +227,18 @@ function normalizeMarkerString(str: string, context?: SerializationContext): str
 
 /** Convert marker strings to bare CEL paths using the full serialization context. */
 export function normalizeRefMarkersToCelPaths(str: string, context?: SerializationContext): string {
-  return resolveNestedCompositionRefs(
-    normalizeMarkerString(str, context),
+  const withNestedMarkers = resolveNestedRefMarkers(
+    str,
+    context?.nestedStatusCel,
+    context?.resourceIds,
+    context
+  );
+  const withNestedStatus = resolveNestedCompositionRefs(
+    withNestedMarkers,
     context?.nestedStatusCel,
     context?.resourceIds
   );
+  return normalizeMarkerString(withNestedStatus, context);
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import { type } from 'arktype';
 import * as yaml from 'js-yaml';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import { createKroResourceFactory } from '../../src/core/deployment/kro-factory.js';
+import { waitForKroInstanceReady } from '../../src/core/deployment/kro-readiness.js';
 import { singletonSpecFingerprintAnnotationValue } from '../../src/core/deployment/singleton-owner-drift.js';
 import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import { ValidationError } from '../../src/core/errors.js';
@@ -27,6 +28,37 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/bra
 // ---------------------------------------------------------------------------
 // Test helpers & types
 // ---------------------------------------------------------------------------
+
+describe('Kro readiness polling', () => {
+  it('does not trust stale status.ready when Kro Ready condition is false', async () => {
+    const k8sApi = {
+      read: async () => ({
+        status: {
+          state: 'ACTIVE',
+          ready: true,
+          conditions: [{ type: 'Ready', status: 'False', message: 'cluster mutated' }],
+        },
+      }),
+    };
+    const customObjectsApi = {
+      getClusterCustomObject: async () => ({
+        spec: { schema: { status: { ready: 'boolean' } } },
+      }),
+    };
+
+    await expect(waitForKroInstanceReady({
+      instanceName: 'stale-ready',
+      timeout: 1,
+      pollInterval: 0,
+      k8sApi: k8sApi as never,
+      customObjectsApi: customObjectsApi as never,
+      namespace: 'default',
+      apiVersion: 'example.com/v1alpha1',
+      kind: 'Example',
+      rgdName: 'example',
+    })).rejects.toThrow('Timeout waiting for Kro instance stale-ready');
+  });
+});
 
 /** Concrete spec type matching the default test schema */
 interface TestSpec {
@@ -131,6 +163,21 @@ function getPrivateMethod(
 }
 
 describe('KroResourceFactory: Alchemy RGD serialization', () => {
+  it('validates injected Alchemy scope before provider execution', async () => {
+    const factory = createKroResourceFactory('alchemyInvalidScope', {}, makeSchema(), {}, {
+      alchemyScope: {},
+      hydrateStatus: false,
+    });
+
+    const deployWithAlchemy = getPrivateMethod(factory, 'deployWithAlchemy') as (
+      spec: TestSpec,
+      instanceNameOverride?: string
+    ) => Promise<unknown>;
+
+    await expect(deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo'))
+      .rejects.toThrow('KRO Alchemy deployment: Alchemy scope is invalid');
+  });
+
   it('preserves externalRef entries when deploying the RGD through Alchemy', async () => {
     const resources: Record<string, KubernetesResource> = {
       platformConfig: externalRef({
@@ -140,21 +187,49 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
         id: 'platformConfig',
       }) as unknown as KubernetesResource,
     };
-    const providerCalls: Array<{ id: string; input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> } }> = [];
+    const providerCalls: Array<{
+      id: string;
+      input: {
+        resource: Record<string, unknown>;
+        deployer?: unknown;
+        deploymentStrategy?: string;
+        kubeConfigOptions?: Record<string, unknown>;
+        kroDeletion?: Record<string, unknown>;
+        options?: Record<string, unknown>;
+      };
+    }> = [];
     const events: string[] = [];
-    const deleteHooks: Array<unknown> = [];
+    let insideAlchemyScope = false;
 
     const factory = createKroResourceFactory('alchemyExternalRef', resources, makeSchema(), {}, {
-      alchemyScope: {},
+      alchemyScope: {
+        run: async (fn: () => Promise<unknown>) => {
+          events.push('scope:start');
+          insideAlchemyScope = true;
+          try {
+            return await fn();
+          } finally {
+            insideAlchemyScope = false;
+            events.push('scope:end');
+          }
+        },
+      } as any,
       hydrateStatus: false,
       rgdProvider: (rgd) => rgd as unknown as Enhanced<Record<string, unknown>, Record<string, unknown>>,
       alchemyBridge: {
-        createDeployer(engine: unknown, options?: { deleteInstance?: (name: string) => Promise<void> }) {
-          deleteHooks.push(options?.deleteInstance);
-          return engine;
+        createDeployer() {
+          throw new Error('KRO Alchemy props must not carry live deployer objects');
         },
         ensureResourceTypeRegistered() {
-          return async (id: string, input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> }) => {
+          return async (id: string, input: {
+            resource: Record<string, unknown>;
+            deployer?: unknown;
+            deploymentStrategy?: string;
+            kubeConfigOptions?: Record<string, unknown>;
+            kroDeletion?: Record<string, unknown>;
+            options?: Record<string, unknown>;
+          }) => {
+            expect(insideAlchemyScope).toBe(true);
             events.push(`provider:${input.resource.kind}`);
             providerCalls.push({ id, input });
           };
@@ -204,12 +279,29 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     expect(ensuredTargetNamespace).toBe(true);
     expect(rgdCall?.input.deploymentStrategy).toBe('kro');
     expect(instanceCall?.input.deploymentStrategy).toBe('kro');
-    expect(rgdCall?.input.deployer).toBeDefined();
-    expect(instanceCall?.input.deployer).toBeDefined();
+    expect(rgdCall?.input.deployer).toBeUndefined();
+    expect(instanceCall?.input.deployer).toBeUndefined();
+    expect(rgdCall?.input.kubeConfigOptions).toMatchObject({
+      server: 'https://example.invalid',
+      skipTLSVerify: false,
+    });
+    expect(instanceCall?.input.kroDeletion).toMatchObject({
+      apiVersion: 'v1alpha1',
+      kind: 'TestApp',
+      namespace: 'default',
+      rgdName: 'alchemy-external-ref',
+      timeout: 300000,
+    });
     expect(instanceCall?.input.options?.waitForReady).toBe(false);
-    expect(events).toEqual(['provider:ResourceGraphDefinition', 'crd-ready', 'provider:TestApp']);
-    expect(deleteHooks).toHaveLength(1);
-    expect(typeof deleteHooks[0]).toBe('function');
+    expect(events).toEqual([
+      'scope:start',
+      'provider:ResourceGraphDefinition',
+      'scope:end',
+      'crd-ready',
+      'scope:start',
+      'provider:TestApp',
+      'scope:end',
+    ]);
     expect(readinessCalls).toEqual([{ instanceName: 'demo', timeout: 600000 }]);
   });
 

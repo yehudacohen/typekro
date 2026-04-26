@@ -123,7 +123,7 @@ function convertIncludeWhenValueToCel(value: unknown, context: SerializationCont
   }
 
   if (isCelExpression(value)) {
-    return `\${${value.expression}}`;
+    return `\${${normalizeRefMarkersToCelPaths(value.expression, context)}}`;
   }
 
   // Fallback — coerce to string
@@ -271,7 +271,7 @@ function convertReadyWhenValueToCel(
   }
 
   if (isCelExpression(value)) {
-    return `\${${value.expression}}`;
+    return `\${${normalizeRefMarkersToCelPaths(value.expression, context)}}`;
   }
 
   if (typeof value === 'string') {

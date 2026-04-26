@@ -243,9 +243,11 @@ export interface ResourceGraphWithDeployment {
   toDryRun(options?: DeploymentOptions): Promise<DeploymentResult>;
 
   /**
-   * Generates the ResourceGraphDefinition YAML string.
+   * Generates the ResourceGraphDefinition YAML string, or a custom resource
+   * instance YAML string when a spec is provided.
    */
   toYaml(): string;
+  toYaml(spec: KroCompatibleType): string;
 }
 
 /**

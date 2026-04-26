@@ -213,6 +213,17 @@ describe('DirectFactory: __resourceId preservation', () => {
 });
 
 describe('DirectFactory: singleton owner boundaries', () => {
+  it('uses singleton instance override when generating owner resource graph ids', async () => {
+    const factory = await createTestFactory('singleton-id-override');
+    const graph = factory.createResourceGraphForInstance(
+      { name: 'spec-derived-name', image: 'nginx:latest', replicas: 1, port: 8080 },
+      'stable-singleton-id'
+    );
+
+    expect(graph.resources[0]?.id).toStartWith('stableSingletonIdResource0');
+    expect(graph.resources[0]?.id).not.toStartWith('specDerivedNameResource0');
+  });
+
   it('ensures singleton owners in direct mode using the singleton id as instance name', async () => {
     type OwnerSpec = KroCompatibleType & {
       name: string;

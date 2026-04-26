@@ -180,7 +180,7 @@ describe('AlchemyDeploymentStrategy', () => {
         // Expected to fail on import, but should have called createResourceGraphForInstance
         expect(
           mockBaseStrategy.resourceResolver.createResourceGraphForInstance
-        ).toHaveBeenCalledWith(spec);
+        ).toHaveBeenCalledWith(spec, 'test-instance');
       }
     });
 
@@ -216,7 +216,7 @@ describe('AlchemyDeploymentStrategy', () => {
         // Should process all resources
         expect(
           mockBaseStrategy.resourceResolver.createResourceGraphForInstance
-        ).toHaveBeenCalledWith(spec);
+        ).toHaveBeenCalledWith(spec, 'multi-instance');
       }
     });
   });
@@ -239,7 +239,8 @@ describe('AlchemyDeploymentStrategy', () => {
       ) as Record<string, unknown>;
 
       expect(mockBaseStrategy.resourceResolver.createResourceGraphForInstance).toHaveBeenCalledWith(
-        spec
+        spec,
+        'test-instance'
       );
       expect(resourceGraph.name).toBe('test-instance');
       expect(resourceGraph.resources).toHaveLength(2);

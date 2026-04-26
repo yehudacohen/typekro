@@ -1342,6 +1342,79 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(resource.includeWhen?.[0]).not.toContain('status.ready}');
       });
 
+      it('CelExpression includeWhen resolves nested status with serialization context', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'include-cel-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeCelNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerCelApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'include-cel-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeCelNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedCelIncludeConfig' })
+              .withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'nestedCelIncludeConfig');
+
+        expect(resource.includeWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.includeWhen?.[0]).not.toContain('status.ready}');
+      });
+
+      it('CelExpression includeWhen normalizes schema markers from nested status', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'include-cel-marker-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeCelMarkerInner',
+            spec: type({ enabled: 'boolean' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => ({ ready: spec.enabled })
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'include-cel-marker-context',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeCelMarkerContext',
+            spec: type({ name: 'string', enabled: 'boolean' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ enabled: spec.enabled });
+            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedCelMarkerConfig' })
+              .withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'nestedCelMarkerConfig');
+
+        expect(resource.includeWhen?.[0]).toContain('schema.spec.enabled');
+        expect(resource.includeWhen?.[0]).not.toContain('__KUBERNETES_REF_');
+      });
+
       it('multiple .withIncludeWhen() produces multiple entries (AND)', () => {
         const graph = kubernetesComposition(
           {
@@ -1616,6 +1689,79 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         expect(resource.readyWhen?.[0]).toContain('status.readyReplicas');
         expect(resource.readyWhen?.[0]).not.toContain('status.ready}');
+      });
+
+      it('CelExpression readyWhen resolves nested status with serialization context', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'ready-cel-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyCelNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerReadyCelApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-cel-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyCelNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyCelApp' })
+              .withReadyWhen(Cel.expr<boolean>(nested.status.ready));
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'outerReadyCelApp');
+
+        expect(resource.readyWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.readyWhen?.[0]).not.toContain('status.ready}');
+      });
+
+      it('CelExpression readyWhen normalizes schema markers from nested status', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'ready-cel-marker-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyCelMarkerInner',
+            spec: type({ enabled: 'boolean' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => ({ ready: spec.enabled })
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-cel-marker-context',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyCelMarkerContext',
+            spec: type({ name: 'string', image: 'string', enabled: 'boolean' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ enabled: spec.enabled });
+            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyCelMarkerApp' })
+              .withReadyWhen(Cel.expr<boolean>(nested.status.ready));
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'outerReadyCelMarkerApp');
+
+        expect(resource.readyWhen?.[0]).toContain('schema.spec.enabled');
+        expect(resource.readyWhen?.[0]).not.toContain('__KUBERNETES_REF_');
       });
     });
 

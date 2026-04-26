@@ -150,7 +150,7 @@ const app = await appFactory.deploy({
 | Field | Type | Description |
 |-------|------|-------------|
 | `ready` | `boolean` | All replicas ready |
-| `phase` | `'Ready' \| 'Installing'` | Current phase |
+| `phase` | `'Ready' \| 'Installing' \| 'Disabled'` | Current phase |
 | `failed` | `boolean` | Deployment failed |
 | `url` | `string` | Internal service URL |
 

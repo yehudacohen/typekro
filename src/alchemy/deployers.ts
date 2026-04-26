@@ -21,6 +21,10 @@ const logger = getComponentLogger('deployers');
 interface KroTypeKroDeployerOptions {
   /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
   deleteInstance?: (name: string) => Promise<void>;
+  /** True when an RGD still has live instances and must be preserved. */
+  shouldSkipRgdDelete?: (rgdName: string) => Promise<boolean>;
+  /** Delete the RGD and generated CRD when no CR instance exists. */
+  deleteResourceGraphDefinition?: (rgdName: string) => Promise<void>;
 }
 
 function getKubernetesErrorCode(error: unknown): number | undefined {
@@ -200,10 +204,27 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     options: DeploymentOptions
   ): Promise<void> {
     if (resource.kind === 'ResourceGraphDefinition') {
-      logger.debug('Skipping Alchemy RGD delete; KRO instance deletion owns finalizer-safe cleanup', {
+      if (this.deployerOptions.deleteInstance) {
+        const shouldSkip = await this.deployerOptions.shouldSkipRgdDelete?.(resource.metadata?.name || 'unnamed') ?? true;
+        if (shouldSkip) {
+          logger.debug('Skipping Alchemy RGD delete; KRO instance deletion owns finalizer-safe cleanup', {
+            name: resource.metadata?.name,
+          });
+          return;
+        }
+
+        logger.debug('Deleting Alchemy RGD because no KRO instances exist', {
+          name: resource.metadata?.name,
+        });
+        if (this.deployerOptions.deleteResourceGraphDefinition) {
+          await this.deployerOptions.deleteResourceGraphDefinition(resource.metadata?.name || 'unnamed');
+          return;
+        }
+      }
+
+      logger.debug('Deleting Alchemy RGD without finalizer-safe instance hook', {
         name: resource.metadata?.name,
       });
-      return;
     }
 
     const name = resource.metadata?.name || 'unnamed';

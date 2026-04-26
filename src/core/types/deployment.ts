@@ -465,6 +465,7 @@ export interface TypedResourceGraph<
 
   // Utility methods
   toYaml(): string;
+  toYaml(spec: TSpec): string;
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
 }
 
@@ -755,7 +756,7 @@ export interface DirectResourceFactory<
   toDryRun(spec: TSpec): Promise<DeploymentResult>;
   toYaml(spec: TSpec): string;
   /** Build the resolved resource graph for an instance spec. */
-  createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
+  createResourceGraphForInstance(spec: TSpec, instanceNameOverride?: string): DeploymentResourceGraph;
 }
 
 export interface KroResourceFactory<

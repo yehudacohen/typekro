@@ -330,19 +330,20 @@ interface DeploymentResult {
 
 ## Status Types
 
-### `ReadinessEvaluator<T>`
+### `ReadinessEvaluator<T = any>`
 
 Function type for custom readiness evaluation.
 
 ```typescript
-type ReadinessEvaluator<T extends KubernetesResource> = (
+type ReadinessEvaluator<T = any> = (
   resource: T
-) => ResourceStatus | Promise<ResourceStatus>
+) => ResourceStatus
 
 interface ResourceStatus {
   ready: boolean;
   reason?: string;
   message?: string;
+  details?: Record<string, unknown>;
 }
 ```
 

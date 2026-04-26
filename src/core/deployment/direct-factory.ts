@@ -866,11 +866,14 @@ export class DirectResourceFactoryImpl<
   /**
    * Create a resource graph for a specific instance
    */
-  public createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph {
+  public createResourceGraphForInstance(
+    spec: TSpec,
+    instanceNameOverride?: string
+  ): DeploymentResourceGraph {
     const dependencyResolver = new DependencyResolver();
     const resolvedResources = this.resolveResourcesForSpec(spec);
 
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = instanceNameOverride ?? this.generateInstanceName(spec);
     const resourceArray = Object.values(resolvedResources).map((resource, index) => {
       this.logger.debug('Processing resource for ID generation', {
         index,

@@ -638,6 +638,18 @@ describe('Schema Nullish Defaults', () => {
       expect(yaml).toContain('schema.spec.enabled != false');
     });
 
+    it('KRO mode: disabled status does not require gated deployment resources', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? true');
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? \\"Disabled\\"');
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? false');
+      expect(yaml).toContain('\\"http://\\" + spec.name');
+    });
+
     it('Direct mode: bootstrap does not auto-enable limiter when only redisUrl is provided', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
@@ -656,6 +668,21 @@ describe('Schema Nullish Defaults', () => {
 
       expect(settingsYaml).toContain('url: redis://valkey:6379/0');
       expect(settingsYaml).toContain('limiter: false');
+    });
+
+    it('Direct mode: default-enabled bootstrap creates a non-empty generated secret', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({ name: 'searxng' });
+      const secret = graph.resources.find(
+        (resource) => resource.manifest.kind === 'Secret' &&
+          resource.manifest.metadata?.name === 'searxng-secret'
+      );
+      const stringData = secret?.manifest.stringData as Record<string, string> | undefined;
+
+      expect(stringData?.secret_key).toBe('change-me-in-production');
     });
   });
 

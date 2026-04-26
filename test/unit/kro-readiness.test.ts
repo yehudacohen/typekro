@@ -155,7 +155,7 @@ describe('waitForKroInstanceReady', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('resolves when custom status.ready is true even if Kro Ready condition is stale false', async () => {
+    it('does not trust custom status.ready when Kro Ready condition is stale false', async () => {
       mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
         spec: { schema: { status: { ready: { type: 'boolean' }, supervisorReady: { type: 'boolean' } } } },
       });
@@ -176,9 +176,14 @@ describe('waitForKroInstanceReady', () => {
 
       await expect(
         waitForKroInstanceReady(
-          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 1,
+            pollInterval: 0,
+          })
         )
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow(DeploymentTimeoutError);
     });
   });
 

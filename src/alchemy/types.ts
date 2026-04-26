@@ -9,6 +9,7 @@ import type { Resource as AlchemyResource } from 'alchemy';
 import type { KubernetesClientConfig } from '../core/kubernetes/client-provider.js';
 import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
+import type { KroDeletionOptions } from './kro-delete.js';
 
 /**
  * Centralized deployment interface that abstracts deployment logic
@@ -58,8 +59,11 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
    */
   kubeConfigOptions?: SerializableKubeConfigOptions;
 
-  /** Optional preconfigured deployer. When set, the provider must not create its own kube client. */
+  /** Optional preconfigured deployer. Runtime-only; do not rely on this surviving Alchemy rehydration. */
   deployer?: TypeKroDeployer;
+
+  /** Serializable metadata used to preserve finalizer-safe KRO teardown after Alchemy rehydration. */
+  kroDeletion?: KroDeletionOptions;
 
   /**
    * Optional deployment options

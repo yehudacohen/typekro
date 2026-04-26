@@ -36,6 +36,8 @@ import {
   SearxngBootstrapStatusSchema,
 } from '../types.js';
 
+const DEFAULT_SEARXNG_SECRET_KEY = 'change-me-in-production';
+
 /**
  * Return a copy of the server config with `secret_key` removed. The field
  * is delivered via a dedicated K8s Secret, not via the Deployment spec —
@@ -197,7 +199,7 @@ ${redisSection}`;
           },
           type: 'Opaque',
           stringData: {
-            secret_key: spec.server?.secret_key as string,
+            secret_key: spec.server?.secret_key ?? DEFAULT_SEARXNG_SECRET_KEY,
           },
           id: 'searxngSecret',
         });
@@ -264,20 +266,30 @@ ${redisSection}`;
 
     // ── Status ─────────────────────────────────────────────────────────
 
+    const disabledCondition = 'has(schema.spec.enabled) && schema.spec.enabled == false';
+    const urlExpression = `"http://" + schema.spec.name + "." + (has(schema.spec.namespace) ? schema.spec.namespace : "searxng") + ":${port}"`;
+
     return {
       ready: Cel.expr<boolean>(
+        `${disabledCondition} ? true : `,
         deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "True")'
       ),
-      phase: Cel.expr<'Ready' | 'Installing'>(
+      phase: Cel.expr<'Ready' | 'Installing' | 'Disabled'>(
+        `${disabledCondition} ? "Disabled" : (`,
         deployment.status.conditions,
-        '.exists(c, c.type == "Available" && c.status == "True") ? "Ready" : "Installing"'
+        '.exists(c, c.type == "Available" && c.status == "True") ? "Ready" : "Installing")'
       ),
       failed: Cel.expr<boolean>(
+        `${disabledCondition} ? false : `,
         deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "False")'
       ),
-      url: `http://${spec.name}.${resolvedNamespace}:${port}`,
+      url: Cel.expr<string>(
+        `${disabledCondition} ? "" : (`,
+        deployment.status.conditions,
+        `.exists(c, true) ? ${urlExpression} : ${urlExpression})`
+      ),
     };
   }
 );

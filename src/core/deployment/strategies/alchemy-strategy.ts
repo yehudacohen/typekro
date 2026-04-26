@@ -356,7 +356,10 @@ export class AlchemyDeploymentStrategy<
           resolverType: baseStrategy.resourceResolver.constructor?.name,
         });
 
-        const resourceGraph = baseStrategy.resourceResolver.createResourceGraphForInstance(spec);
+        const resourceGraph = baseStrategy.resourceResolver.createResourceGraphForInstance(
+          spec,
+          instanceName
+        );
         this.logger.info('Created resource graph from base strategy', {
           resourceCount: resourceGraph.resources.length,
           resourceIds: resourceGraph.resources.map((r) => r.id),
