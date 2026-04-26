@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { webAppWithProcessing } from '../../src/factories/webapp/compositions/web-app-with-processing.js';
+import { WebAppWithProcessingConfigSchema } from '../../src/factories/webapp/types.js';
 
 describe('webAppWithProcessing envFrom', () => {
   it('always mounts inngest credentials Secret via envFrom', () => {
@@ -111,5 +112,44 @@ describe('webAppWithProcessing envFrom', () => {
     expect((release!.manifest as any)?.spec?.chart?.spec?.sourceRef?.name).toBe(
       'test-app-app-ns-inngest-repo'
     );
+  });
+
+  it('accepts envFrom entries with exactly one source ref', () => {
+    const secretResult = WebAppWithProcessingConfigSchema({
+      name: 'test-app',
+      app: { image: 'nginx:alpine', envFrom: [{ secretRef: { name: 'my-secrets' } }] },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+    const configMapResult = WebAppWithProcessingConfigSchema({
+      name: 'test-app',
+      app: { image: 'nginx:alpine', envFrom: [{ configMapRef: { name: 'my-config' } }] },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+
+    expect('summary' in (secretResult as object)).toBe(false);
+    expect('summary' in (configMapResult as object)).toBe(false);
+  });
+
+  it('rejects envFrom entries with both or neither source refs', () => {
+    const bothResult = WebAppWithProcessingConfigSchema({
+      name: 'test-app',
+      app: {
+        image: 'nginx:alpine',
+        envFrom: [{ secretRef: { name: 'my-secrets' }, configMapRef: { name: 'my-config' } }],
+      },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+    const neitherResult = WebAppWithProcessingConfigSchema({
+      name: 'test-app',
+      app: { image: 'nginx:alpine', envFrom: [{}] },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+
+    expect('summary' in (bothResult as object)).toBe(true);
+    expect('summary' in (neitherResult as object)).toBe(true);
   });
 });

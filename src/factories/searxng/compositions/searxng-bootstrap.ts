@@ -60,20 +60,22 @@ export const searxngBootstrap = kubernetesComposition(
     const resolvedNamespace = spec.namespace ?? 'searxng';
     const resolvedImage = spec.image ?? DEFAULT_SEARXNG_IMAGE;
     const port = DEFAULT_SEARXNG_PORT;
+    let deployment: ReturnType<typeof searxng> | undefined;
 
-    // ── Namespace ──────────────────────────────────────────────────────
+    if (spec.enabled !== false) {
+      // ── Namespace ──────────────────────────────────────────────────────
 
-    const _ns = namespace({
-      metadata: {
-        name: resolvedNamespace,
-        labels: {
-          'app.kubernetes.io/name': 'searxng',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/managed-by': 'typekro',
+      const _ns = namespace({
+        metadata: {
+          name: resolvedNamespace,
+          labels: {
+            'app.kubernetes.io/name': 'searxng',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
         },
-      },
-      id: 'searxngNamespace',
-    });
+        id: 'searxngNamespace',
+      });
 
     // ── Settings ConfigMap ─────────────────────────────────────────────
     //
@@ -114,44 +116,44 @@ export const searxngBootstrap = kubernetesComposition(
     // the secret is delivered via a dedicated K8s Secret resource that
     // the Deployment mounts with `valueFrom.secretKeyRef`. See the
     // Secret block below.
-    const redisSection = spec.redisUrl
-      ? `\nredis:\n  url: ${spec.redisUrl}`
-      : '';
+      const redisSection = spec.redisUrl
+        ? `\nredis:\n  url: ${spec.redisUrl}`
+        : '';
 
     // Build search formats: use spec.search.formats in direct mode (real array),
     // fall back to defaults in KRO mode (the proxy isn't a real array, so
     // `Array.isArray()` returns false and the literal default list is emitted).
     // TODO(typekro#array-cel): once CEL template support for arrays lands,
     // this can emit `${spec.search.formats}` in KRO mode too.
-    const searchFormats = Array.isArray(spec.search?.formats)
-      ? spec.search.formats.map((f: string) => `    - ${f}`).join('\n')
-      : '    - html\n    - json';
+      const searchFormats = Array.isArray(spec.search?.formats)
+        ? spec.search.formats.map((f: string) => `    - ${f}`).join('\n')
+        : '    - html\n    - json';
 
-    const settingsYaml =
-      typeof spec.settingsYaml === 'string'
-        ? spec.settingsYaml
-        : `use_default_settings: true
+      const settingsYaml =
+        typeof spec.settingsYaml === 'string'
+          ? spec.settingsYaml
+          : `use_default_settings: true
 server:
   limiter: ${spec.server?.limiter ?? false}
 search:
   formats:
 ${searchFormats}
 ${redisSection}`;
-    const configMapName = `${spec.name}-config`;
+      const configMapName = `${spec.name}-config`;
 
-    const _config = configMap({
-      metadata: {
-        name: configMapName,
-        namespace: resolvedNamespace,
-        labels: {
-          'app.kubernetes.io/name': 'searxng',
-          'app.kubernetes.io/component': 'config',
-          'app.kubernetes.io/managed-by': 'typekro',
+      const _config = configMap({
+        metadata: {
+          name: configMapName,
+          namespace: resolvedNamespace,
+          labels: {
+            'app.kubernetes.io/name': 'searxng',
+            'app.kubernetes.io/component': 'config',
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
         },
-      },
-      data: { 'settings.yml': settingsYaml },
-      id: 'searxngConfig',
-    });
+        data: { 'settings.yml': settingsYaml },
+        id: 'searxngConfig',
+      });
 
     // ── Secret (SEARXNG_SECRET delivery) ───────────────────────────────
     //
@@ -179,27 +181,27 @@ ${redisSection}`;
     // instead of the actual user-supplied secret, baking a broken value
     // into the RGD. The low-level `secret()` factory passes `stringData`
     // through untouched so KRO can resolve it at reconcile time.
-    const secretName = `${spec.name}-secret`;
+      const secretName = `${spec.name}-secret`;
 
-    if (!spec.secretKeyRef) {
-      secret({
-        metadata: {
-          name: secretName,
-          namespace: resolvedNamespace,
-          labels: {
-            'app.kubernetes.io/name': 'searxng',
-            'app.kubernetes.io/instance': spec.name,
-            'app.kubernetes.io/component': 'secret',
-            'app.kubernetes.io/managed-by': 'typekro',
+      if (!spec.secretKeyRef) {
+        secret({
+          metadata: {
+            name: secretName,
+            namespace: resolvedNamespace,
+            labels: {
+              'app.kubernetes.io/name': 'searxng',
+              'app.kubernetes.io/instance': spec.name,
+              'app.kubernetes.io/component': 'secret',
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
           },
-        },
-        type: 'Opaque',
-        stringData: {
-          secret_key: spec.server?.secret_key as string,
-        },
-        id: 'searxngSecret',
-      });
-    }
+          type: 'Opaque',
+          stringData: {
+            secret_key: spec.server?.secret_key as string,
+          },
+          id: 'searxngSecret',
+        });
+      }
 
     // ── Deployment ─────────────────────────────────────────────────────
     //
@@ -212,57 +214,67 @@ ${redisSection}`;
     // conditionals in the final RGD — in KRO mode the user's CR value
     // for `spec.secretKeyRef` selects between the external Secret and
     // the auto-created one at reconcile time.
-    const _deployment = searxng({
-      name: spec.name,
-      namespace: resolvedNamespace,
-      spec: {
-        image: resolvedImage,
-        replicas: spec.replicas ?? 1,
-        instanceName: spec.instanceName ?? spec.name,
-        baseUrl: spec.baseUrl ?? `http://${spec.name}:${port}/`,
-        configMapName,
-        // Strip secret_key before passing server config through — the
-        // plaintext stops here and is delivered exclusively via the
-        // Secret resource above.
-        ...(spec.server && {
-          server: stripSecretKey(spec.server),
-        }),
-        secretKeyRef: {
-          name: spec.secretKeyRef ? spec.secretKeyRef.name : secretName,
-          key: spec.secretKeyRef ? spec.secretKeyRef.key : 'secret_key',
+      deployment = searxng({
+        name: spec.name,
+        namespace: resolvedNamespace,
+        spec: {
+          image: resolvedImage,
+          replicas: spec.replicas ?? 1,
+          instanceName: spec.instanceName ?? spec.name,
+          baseUrl: spec.baseUrl ?? `http://${spec.name}:${port}/`,
+          configMapName,
+          // Strip secret_key before passing server config through — the
+          // plaintext stops here and is delivered exclusively via the
+          // Secret resource above.
+          ...(spec.server && {
+            server: stripSecretKey(spec.server),
+          }),
+          secretKeyRef: {
+            name: spec.secretKeyRef ? spec.secretKeyRef.name : secretName,
+            key: spec.secretKeyRef ? spec.secretKeyRef.key : 'secret_key',
+          },
+          env: spec.env,
+          resources: spec.resources,
         },
-        env: spec.env,
-        resources: spec.resources,
-      },
-      id: 'searxngDeployment',
-    });
+        id: 'searxngDeployment',
+      });
 
     // ── Service ────────────────────────────────────────────────────────
 
-    simple.Service({
-      name: spec.name,
-      namespace: resolvedNamespace,
-      selector: {
-        'app.kubernetes.io/name': 'searxng',
-        'app.kubernetes.io/instance': spec.name,
-      },
-      ports: [{ port, targetPort: port, name: 'http' }],
-      id: 'searxngService',
-    });
+      simple.Service({
+        name: spec.name,
+        namespace: resolvedNamespace,
+        selector: {
+          'app.kubernetes.io/name': 'searxng',
+          'app.kubernetes.io/instance': spec.name,
+        },
+        ports: [{ port, targetPort: port, name: 'http' }],
+        id: 'searxngService',
+      });
+    }
+
+    if (!deployment) {
+      return {
+        ready: true,
+        phase: 'Disabled' as const,
+        failed: false,
+        url: '',
+      };
+    }
 
     // ── Status ─────────────────────────────────────────────────────────
 
     return {
       ready: Cel.expr<boolean>(
-        _deployment.status.conditions,
+        deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "True")'
       ),
       phase: Cel.expr<'Ready' | 'Installing'>(
-        _deployment.status.conditions,
+        deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "True") ? "Ready" : "Installing"'
       ),
       failed: Cel.expr<boolean>(
-        _deployment.status.conditions,
+        deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "False")'
       ),
       url: `http://${spec.name}.${resolvedNamespace}:${port}`,

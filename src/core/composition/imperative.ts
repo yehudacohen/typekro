@@ -166,8 +166,12 @@ function remapNestedSpecPath(path: string, mappings: Record<string, string>): st
   const prefix = matches[0];
   if (prefix === undefined) return undefined;
   const mappedPrefix = mappings[prefix];
-  if (!mappedPrefix) return undefined;
-  return `${mappedPrefix}${path.slice(prefix.length)}`;
+  if (mappedPrefix === undefined) return undefined;
+  const suffix = path.slice(prefix.length);
+  if (mappedPrefix === '') {
+    return suffix.startsWith('.') ? suffix.slice(1) : suffix;
+  }
+  return `${mappedPrefix}${suffix}`;
 }
 
 function remapNestedSpecMappings(
@@ -178,7 +182,7 @@ function remapNestedSpecMappings(
 
   for (const [innerPath, currentPath] of Object.entries(innerMappings)) {
     const outerPath = remapNestedSpecPath(currentPath, outerMappings);
-    if (outerPath) {
+    if (outerPath !== undefined) {
       remapped[innerPath] = outerPath;
     }
   }

@@ -745,8 +745,12 @@ function remapDefaultPath(path: string, mappings: Record<string, string>): strin
   const prefix = matches[0];
   if (prefix === undefined) return undefined;
   const mappedPrefix = mappings[prefix];
-  if (!mappedPrefix) return undefined;
-  return `${mappedPrefix}${path.slice(prefix.length)}`;
+  if (mappedPrefix === undefined) return undefined;
+  const suffix = path.slice(prefix.length);
+  if (mappedPrefix === '') {
+    return suffix.startsWith('.') ? suffix.slice(1) : suffix;
+  }
+  return `${mappedPrefix}${suffix}`;
 }
 
 function remapNullishDefaults(
@@ -757,7 +761,7 @@ function remapNullishDefaults(
 
   for (const [path, value] of Object.entries(defaults)) {
     const mappedPath = remapDefaultPath(path, mappings);
-    if (mappedPath) {
+    if (mappedPath !== undefined) {
       remapped[mappedPath] = value;
     }
   }

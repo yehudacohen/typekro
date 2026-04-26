@@ -614,6 +614,29 @@ describe('Schema Nullish Defaults', () => {
       // on failure; a successful result is a plain object without it.
       expect('summary' in (bad as object)).toBe(true);
     });
+
+    it('Direct mode: enabled false creates no SearXNG resources', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'disabled-search',
+        enabled: false,
+      });
+
+      expect(graph.resources).toHaveLength(0);
+    });
+
+    it('KRO mode: enabled false gates SearXNG resources with includeWhen', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      expect(yaml).toContain('includeWhen');
+      expect(yaml).toContain('schema.spec.enabled != false');
+    });
   });
 
   describe('resolveDefaultsByReExecution failure handling', () => {

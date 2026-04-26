@@ -194,7 +194,7 @@ export type SearxngBootstrapConfig = typeof SearxngBootstrapConfigSchema.infer;
 
 export const SearxngBootstrapStatusSchema = type({
   ready: 'boolean',
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Disabled"',
   failed: 'boolean',
   /** The internal service URL. */
   url: 'string',

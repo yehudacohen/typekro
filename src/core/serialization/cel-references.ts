@@ -546,7 +546,8 @@ function substituteNestedRefsOnce(
 function resolveNestedRefMarkers(
   str: string,
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  context?: SerializationContext
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return str;
@@ -557,11 +558,11 @@ function resolveNestedRefMarkers(
     const fieldPath = path.replace(/^status\./, '');
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined) return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel);
+      if (strictInnerExpr !== undefined) return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
       return match;
     }
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
-    if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel);
+    if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel, context);
     return match;
   });
 }
@@ -595,14 +596,15 @@ const BARE_LITERAL_PATTERN = /^\s*(-?\d+(?:\.\d+)?|true|false|null)\s*$/;
  */
 function innerExprToYamlSegment(
   innerExpr: string,
-  nestedStatusCel: Record<string, string>
+  nestedStatusCel: Record<string, string>,
+  context?: SerializationContext
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
-  const resolved = resolveNestedCompositionRefs(innerExpr, nestedStatusCel);
+  const resolved = resolveNestedCompositionRefs(innerExpr, nestedStatusCel, context?.resourceIds);
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
-    return convertKubernetesRefMarkersTocel(resolved);
+    return convertKubernetesRefMarkersTocel(resolved, context);
   }
   if (resolved.includes('${')) {
     // Already a KRO template (from Cel.template) — pass through.
@@ -764,7 +766,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   // remaining markers (schema refs and direct resource refs) are converted
   // to KRO mixed-template form.
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel, context?.resourceIds);
+    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel, context?.resourceIds, context);
     if (resolved.includes('__KUBERNETES_REF_')) {
       return convertKubernetesRefMarkersTocel(resolved, context);
     }

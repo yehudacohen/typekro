@@ -202,11 +202,15 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
     });
   } catch (error: unknown) {
     logger.error('Error deleting resource', ensureError(error));
+    throw error;
   } finally {
     await dispose();
   }
   return context.destroy();
 }
+
+/** Internal test hook for deletion semantics. */
+export const handleResourceDeletionForTest = _handleResourceDeletion;
 
 /**
  * Deploy resource and create deployment result

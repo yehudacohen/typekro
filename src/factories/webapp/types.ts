@@ -20,6 +20,14 @@ const resourceRequirementsSchemaShape = {
   'limits?': { 'cpu?': 'string', 'memory?': 'string' },
 } as const;
 
+const envFromSourceSchema = type({
+  secretRef: { name: 'string' },
+  'configMapRef?': 'never',
+}).or({
+  configMapRef: { name: 'string' },
+  'secretRef?': 'never',
+});
+
 // ============================================================================
 // Config Schemas (source of truth) + Inferred Types
 // ============================================================================
@@ -58,7 +66,7 @@ export const WebAppWithProcessingConfigSchema = type({
      * `INNGEST_EVENT_KEY` or `INNGEST_SIGNING_KEY`, it will take
      * precedence (last-write-wins in K8s envFrom ordering).
      */
-    'envFrom?': type({ 'secretRef?': { name: 'string' }, 'configMapRef?': { name: 'string' } }).array(),
+    'envFrom?': envFromSourceSchema.array(),
   },
   /** PostgreSQL database settings. */
   database: {

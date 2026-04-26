@@ -6,6 +6,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from '../../src/alchemy/deployers.js';
+import { handleResourceDeletionForTest } from '../../src/alchemy/resource-registration.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
@@ -456,5 +457,75 @@ describe('KroTypeKroDeployer', () => {
     expect(graph.resources).toHaveLength(1);
     expect(graph.dependencyGraph.getNodes().size).toBe(1);
     expect(graph.dependencyGraph.hasNode(graph.resources[0].id)).toBe(true);
+  });
+
+  it('uses the factory deleteInstance hook for KRO custom resource deletion', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deleteInstance = mock(() => Promise.resolve());
+    const deployer = new KroTypeKroDeployer(mockEngine, { deleteInstance });
+    const kroInstance = {
+      apiVersion: 'test.kro.run/v1alpha1',
+      kind: 'TestApp',
+      metadata: { name: 'test-app', namespace: 'test-ns' },
+      spec: {},
+    } as any;
+
+    await deployer.delete(kroInstance, { mode: 'kro', namespace: 'test-ns' });
+
+    expect(deleteInstance).toHaveBeenCalledWith('test-app');
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('does not delete ResourceGraphDefinitions directly during Alchemy teardown', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deleteInstance = mock(() => Promise.resolve());
+    const deployer = new KroTypeKroDeployer(mockEngine, { deleteInstance });
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'test-app' },
+      spec: {},
+    } as any;
+
+    await deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' });
+
+    expect(deleteInstance).not.toHaveBeenCalled();
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('does not destroy Alchemy state when resource deletion fails', async () => {
+    const testDeployment = deployment({
+      metadata: { name: 'delete-failure-test', namespace: 'default' },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: 'delete-failure-test' } },
+        template: {
+          metadata: { labels: { app: 'delete-failure-test' } },
+          spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] },
+        },
+      },
+    });
+    const destroy = mock(() => ({ destroyed: true }));
+    const deployer = {
+      delete: mock(() => Promise.reject(new Error('delete failed'))),
+    };
+    const logger = {
+      error: mock(() => undefined),
+    } as any;
+
+    await expect(
+      handleResourceDeletionForTest(
+        { destroy } as any,
+        {
+          resource: testDeployment,
+          namespace: 'test-ns',
+          deploymentStrategy: 'direct',
+          deployer,
+        } as any,
+        logger
+      )
+    ).rejects.toThrow('delete failed');
+
+    expect(destroy).not.toHaveBeenCalled();
   });
 });

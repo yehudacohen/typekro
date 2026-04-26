@@ -18,6 +18,20 @@ import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');
 
+interface KroTypeKroDeployerOptions {
+  /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
+  deleteInstance?: (name: string) => Promise<void>;
+}
+
+function getKubernetesErrorCode(error: unknown): number | undefined {
+  const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number } };
+  return k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Direct deployment implementation using TypeKro's DirectDeploymentEngine
  */
@@ -129,7 +143,10 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
  * This leverages the same underlying deployment engine for consistency
  */
 export class KroTypeKroDeployer implements TypeKroDeployer {
-  constructor(private engine: import('../core/deployment/engine.js').DirectDeploymentEngine) {}
+  constructor(
+    private engine: import('../core/deployment/engine.js').DirectDeploymentEngine,
+    private readonly deployerOptions: KroTypeKroDeployerOptions = {}
+  ) {}
 
   async dispose(): Promise<void> {
     await this.engine.dispose();
@@ -182,18 +199,55 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     resource: T,
     options: DeploymentOptions
   ): Promise<void> {
-    // Create a DeployedResource for the deleteResource method
-    const deployedResource = {
-      id: getResourceId(resource, 'unnamed'),
+    if (resource.kind === 'ResourceGraphDefinition') {
+      logger.debug('Skipping Alchemy RGD delete; KRO instance deletion owns finalizer-safe cleanup', {
+        name: resource.metadata?.name,
+      });
+      return;
+    }
+
+    const name = resource.metadata?.name || 'unnamed';
+    if (this.deployerOptions.deleteInstance) {
+      await this.deployerOptions.deleteInstance(name);
+      return;
+    }
+
+    const namespace = options.namespace || resource.metadata?.namespace || 'default';
+    const k8sApi = this.engine.getKubernetesApi();
+    const deleteTarget = {
+      apiVersion: resource.apiVersion,
       kind: resource.kind || 'Unknown',
-      name: resource.metadata?.name || 'unnamed',
-      namespace: options.namespace || resource.metadata?.namespace || 'default',
-      manifest: resource,
-      status: 'deployed' as const,
-      deployedAt: new Date(),
+      metadata: { name, namespace },
     };
 
-    // Use the engine's unified deleteResource method
-    await this.engine.deleteResource(deployedResource);
+    try {
+      await k8sApi.delete(deleteTarget as any);
+    } catch (error: unknown) {
+      if (getKubernetesErrorCode(error) !== 404) {
+        throw error;
+      }
+      return;
+    }
+
+    const timeout = options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      try {
+        await k8sApi.read(deleteTarget as any);
+      } catch (error: unknown) {
+        if (getKubernetesErrorCode(error) === 404) {
+          return;
+        }
+        throw error;
+      }
+      await delay(2000);
+    }
+
+    logger.warn('KRO resource deletion still in progress; preserving RGD/CRD for finalizer processing', {
+      kind: resource.kind,
+      name,
+      namespace,
+      timeout,
+    });
   }
 }

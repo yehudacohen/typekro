@@ -1173,6 +1173,94 @@ describe('T9 — outer RGD never references inner-only schema fields (I4)', () =
     expect(processing.image).toBe('string | default="nginx:constant"');
     expect(parsed.spec.schema.spec).not.toHaveProperty('image');
   });
+
+  it('maps chained nested defaults through an outer-root forwarded object', () => {
+    const inner = kubernetesComposition(
+      {
+        name: 't9-inner-root-chain-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerRootChainDefault',
+        spec: type({ 'mode?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({ name: 'root-chain-default', image: spec.mode ?? 'nginx:root-chain', id: 'rootChainDeploy' });
+        return { ready: true };
+      }
+    );
+
+    const middle = kubernetesComposition(
+      {
+        name: 't9-middle-root-chain-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9MiddleRootChainDefault',
+        spec: type({ cfg: { 'mode?': 'string' } }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const innerResult = inner({ mode: spec.cfg.mode });
+        return { ready: innerResult.status.ready };
+      }
+    );
+
+    const outer = kubernetesComposition(
+      {
+        name: 't9-outer-root-chain-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterRootChainDefault',
+        spec: type({ 'mode?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const middleResult = middle({ cfg: spec });
+        return { ready: middleResult.status.ready };
+      }
+    );
+
+    const parsed = parseRgd(outer.toYaml());
+    expect(parsed.spec.schema.spec.mode).toBe('string | default="nginx:root-chain"');
+    expect(collectStrings(parsed).some((value) => value.includes('schema.spec.cfg'))).toBe(false);
+  });
+
+  it('preserves optional schema omit context when converting nested template status markers', () => {
+    const inner = kubernetesComposition(
+      {
+        name: 't9-inner-optional-template-status',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerOptionalTemplateStatus',
+        spec: type({ 'suffix?': 'string' }),
+        status: type({ label: 'string' }),
+      },
+      (spec) => ({
+        label: `${spec.suffix}`,
+      })
+    );
+
+    const outer = kubernetesComposition(
+      {
+        name: 't9-outer-optional-template-status',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterOptionalTemplateStatus',
+        spec: type({ 'suffix?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const innerResult = inner({ suffix: spec.suffix });
+        ConfigMap({
+          name: 'optional-template-status',
+          data: { label: `${innerResult.status.label}` },
+          id: 'optionalTemplateConfig',
+        });
+        return { ready: true };
+      }
+    );
+
+    const parsed = parseRgd(outer.toYaml());
+    const config = parsed.spec.resources.find((resource) => resource.id === 'optionalTemplateConfig');
+    const label = ((config?.template?.data as Record<string, unknown> | undefined)?.label ?? '') as string;
+    expect(label).toContain('has(schema.spec.suffix)');
+    expect(label).toContain('omit');
+  });
 });
 
 // =============================================================================

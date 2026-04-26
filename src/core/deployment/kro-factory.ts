@@ -829,7 +829,9 @@ export class KroResourceFactoryImpl<
     );
     const deployer = this.alchemyBridge
       ? this.alchemyBridge.createDeployer(kroEngine)
-      : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine);
+      : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine, {
+          deleteInstance: (name: string) => this.deleteInstance(name),
+        });
 
     try {
       // 1. Ensure RGD is deployed via alchemy (once per factory). Reuse the
