@@ -123,7 +123,11 @@ function walkObjectForTernaries(
               result.templateOverrides.set(resourceId, overrides);
             }
             const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
-            const conditionExpr = `${statusResourceId}.status.${statusRef.statusField}`;
+            const conditionExpr = statusRef.conditionExpression
+              ? statusRef.conditionExpression
+                  .split(`${statusRef.variableName}.status.`)
+                  .join(`${statusResourceId}.status.`)
+              : `${statusResourceId}.status.${statusRef.statusField}`;
             for (const path of allPaths) {
               const trueValue = trueFields.get(path) ?? 'omit()';
               const falseValue = falseFields.get(path) ?? 'omit()';
@@ -136,19 +140,8 @@ function walkObjectForTernaries(
           }
         }
 
-        // Extract the alternate value as a CEL literal (for simple literals)
-        let alternateCel: string | undefined;
-        const alt = ternary.alternate;
-        if (alt.type === 'Literal') {
-          const litVal = (alt as unknown as { value: unknown }).value;
-          if (typeof litVal === 'string') {
-            alternateCel = `"${litVal.replace(/"/g, '\\"')}"`;
-          } else if (typeof litVal === 'number' || typeof litVal === 'boolean') {
-            alternateCel = String(litVal);
-          } else if (litVal === null) {
-            alternateCel = '""';
-          }
-        }
+        const consequentCel = literalNodeToCel(ternary.consequent);
+        const alternateCel = literalNodeToCel(ternary.alternate);
 
         const entry: ResourceStatusTernary = {
           ...statusRef,
@@ -164,10 +157,29 @@ function walkObjectForTernaries(
           entry.alternateCel = alternateCel;
         }
         result.resourceStatusTernaries.push(entry);
+
+        if (fullPath && consequentCel && alternateCel && resourceId !== '__non_factory_call__') {
+          let overrides = result.templateOverrides.get(resourceId);
+          if (!overrides) {
+            overrides = [];
+            result.templateOverrides.set(resourceId, overrides);
+          }
+          const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+          const conditionExpr = statusRef.conditionExpression
+            ? statusRef.conditionExpression
+                .split(`${statusRef.variableName}.status.`)
+                .join(`${statusResourceId}.status.`)
+            : `${statusResourceId}.status.${statusRef.statusField}`;
+          overrides.push({
+            propertyPath: fullPath,
+            celExpression: `\${${conditionExpr} ? ${consequentCel} : ${alternateCel}}`,
+          });
+        }
         logger.debug('Detected resource-status ternary in factory argument', {
           resourceId,
           variableName: statusRef.variableName,
           statusField: statusRef.statusField,
+          conditionExpression: statusRef.conditionExpression,
           propertyPath: fullPath,
           alternateCel,
         });
@@ -217,6 +229,15 @@ function walkObjectForTernaries(
   }
 }
 
+function literalNodeToCel(node: ASTNode): string | undefined {
+  if (node.type !== 'Literal') return undefined;
+  const value = (node as unknown as { value: unknown }).value;
+  if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return '""';
+  return undefined;
+}
+
 function extractObjectLiteralLeaves(
   objectNode: ASTNode,
   parentPath: string,
@@ -251,15 +272,6 @@ function extractObjectLiteralLeaves(
   }
 
   return result;
-}
-
-function literalNodeToCel(node: ASTNode): string | undefined {
-  if (node.type !== 'Literal') return undefined;
-  const litVal = (node as unknown as { value: unknown }).value;
-  if (typeof litVal === 'string') return `"${litVal.replace(/"/g, '\\"')}"`;
-  if (typeof litVal === 'number' || typeof litVal === 'boolean') return String(litVal);
-  if (litVal === null) return '""';
-  return undefined;
 }
 
 /**

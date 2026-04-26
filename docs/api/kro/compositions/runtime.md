@@ -90,7 +90,7 @@ await factory.deploy({ name: 'my-app', image: 'nginx' });
 kubectl get pods -n flux-system
 
 # Check Kro controller
-kubectl get pods -n kro
+kubectl get pods -n kro-system
 
 # Check ResourceGraphDefinitions
 kubectl get rgd -A
@@ -105,7 +105,7 @@ kubectl get rgd -A
 kubectl logs -n flux-system deployment/helm-controller
 
 # Check Kro controller logs
-kubectl logs -n kro deployment/kro-controller-manager
+kubectl logs -n kro-system deployment/kro-controller-manager
 ```
 
 ### CRD Validation Errors

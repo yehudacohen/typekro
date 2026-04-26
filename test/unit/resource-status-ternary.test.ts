@@ -325,6 +325,7 @@ describe('Phase 2: referencesResourceStatus', () => {
     expect(ref).toBeDefined();
     expect(ref!.variableName).toBe('cache');
     expect(ref!.statusField).toBe('ready');
+    expect(ref!.conditionExpression).toBe('cache.status.ready');
   });
 
   it('rejects spec.cache.status as a spec ref', async () => {
@@ -780,6 +781,7 @@ describe('Phase 2: extractResourceStatusRef edge cases', () => {
     expect(ref).toBeDefined();
     expect(ref!.variableName).toBe('cache');
     expect(ref!.statusField).toBe('ready');
+    expect(ref!.conditionExpression).toBe('!cache.status.ready');
   });
 
   it('detects resource status ref with comparison: db.status.instances >= 1', async () => {
@@ -796,6 +798,7 @@ describe('Phase 2: extractResourceStatusRef edge cases', () => {
     expect(ref).toBeDefined();
     expect(ref!.variableName).toBe('db');
     expect(ref!.statusField).toBe('instances');
+    expect(ref!.conditionExpression).toBe('db.status.instances >= 1');
   });
 
   it('rejects schema as root variable', async () => {
@@ -918,6 +921,72 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     expect(yaml).toContain('CACHE_MODE');
     expect(yaml).toMatch(/cache\.status\.readyReplicas.*\?/s);
     expect(yaml).toContain('memory');
+  });
+
+  it('preserves comparison conditions in direct resource-status ternaries', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'comparison-ternary', kind: 'ComparisonTernary', spec: Spec, status: Status },
+      (_spec) => {
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+
+        simple.ConfigMap({
+          name: 'app-config',
+          id: 'appConfig',
+          data: {
+            DB_MODE: db.status.readyReplicas >= 1 ? 'postgres' : 'sqlite',
+          },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    expect(yaml).toContain('database.status.readyReplicas >= 1');
+    expect(yaml).toContain('postgres');
+    expect(yaml).toContain('sqlite');
+  });
+
+  it('conditionalizes multiple resources that share one resource-status condition', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'shared-condition-ternary', kind: 'SharedConditionTernary', spec: Spec, status: Status },
+      (_spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+
+        simple.ConfigMap({
+          name: 'first-config',
+          id: 'firstConfig',
+          data: { MODE: cache.status.ready ? 'redis' : 'memory' },
+        });
+        simple.ConfigMap({
+          name: 'second-config',
+          id: 'secondConfig',
+          data: { MODE: cache.status.ready ? 'redis' : 'memory' },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    const conditionCount = yaml.match(/cache\.status\.ready \?/g)?.length ?? 0;
+    expect(conditionCount).toBeGreaterThanOrEqual(2);
   });
 });
 

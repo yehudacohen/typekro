@@ -494,10 +494,12 @@ function processCompositionBodyAnalysis(
         (t) => t.callSiteResourceId && t.callSiteResourceId !== '__non_factory_call__'
       );
 
-      // Deduplicate by (variableName, statusField)
+      // Deduplicate by call site and condition. Conditionalization is scoped to
+      // one callSiteResourceId, so two resources using the same status condition
+      // must both be processed.
       const seenConditions = new Set<string>();
       const uniqueTernaries = directTernaries.filter((t) => {
-        const key = `${t.variableName}.${t.statusField}`;
+        const key = `${t.callSiteResourceId}:${t.variableName}:${t.conditionExpression ?? t.statusField}`;
         if (seenConditions.has(key)) return false;
         seenConditions.add(key);
         return true;
@@ -512,7 +514,11 @@ function processCompositionBodyAnalysis(
           ternary.variableName;
         if (!resourceIds.has(resId)) continue;
 
-        const conditionCel = `${resId}.status.${ternary.statusField}`;
+        const conditionCel = ternary.conditionExpression
+          ? ternary.conditionExpression
+              .split(`${ternary.variableName}.status.`)
+              .join(`${resId}.status.`)
+          : `${resId}.status.${ternary.statusField}`;
 
         // Build a targeted liveStatusMap flipping ONLY this one condition
         const invertedStatusMap = new Map<string, Record<string, unknown>>();

@@ -132,6 +132,23 @@ describe('webAppWithProcessing envFrom', () => {
     expect('summary' in (configMapResult as object)).toBe(false);
   });
 
+  it('accepts Kubernetes envFrom prefix and optional fields', () => {
+    const result = WebAppWithProcessingConfigSchema({
+      name: 'test-app',
+      app: {
+        image: 'nginx:alpine',
+        envFrom: [
+          { prefix: 'SECRET_', secretRef: { name: 'my-secrets', optional: true } },
+          { prefix: 'CONFIG_', configMapRef: { name: 'my-config', optional: false } },
+        ],
+      },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+
+    expect('summary' in (result as object)).toBe(false);
+  });
+
   it('rejects envFrom entries with both or neither source refs', () => {
     const bothResult = WebAppWithProcessingConfigSchema({
       name: 'test-app',

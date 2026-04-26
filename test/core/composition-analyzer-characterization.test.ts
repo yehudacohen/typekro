@@ -322,8 +322,9 @@ describe('analyzeCompositionBody: templateOverrides', () => {
     const ternary = analysisResult.resourceStatusTernaries.find((entry) => entry.variableName === 'db');
 
     expect(analysisResult.errors).toHaveLength(0);
-    expect(ternary?.statusField).toBe('conditions.exists(c, c.type == "Ready" && c.status == "True")');
-    expect(ternary?.statusField).not.toBe('conditions');
+    expect(ternary?.statusField).toBe('conditions');
+    expect(ternary?.conditionExpression).toBe('db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+    expect(ternary?.conditionExpression).not.toBe('db.status.conditions');
   });
 });
 

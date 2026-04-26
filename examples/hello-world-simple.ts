@@ -197,7 +197,7 @@ async function deploySimpleStack() {
     console.log('');
     console.log('🧹 To clean up:');
     console.log('  kubectl delete resourcegraphdefinition --all');
-    console.log('  kubectl delete namespace flux-system kro');
+    console.log('  kubectl delete namespace flux-system kro-system');
   } catch (error) {
     console.error('❌ Deployment failed:', error);
     process.exit(1);

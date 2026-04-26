@@ -21,10 +21,12 @@ const resourceRequirementsSchemaShape = {
 } as const;
 
 const envFromSourceSchema = type({
-  secretRef: { name: 'string' },
+  'prefix?': 'string',
+  secretRef: { name: 'string', 'optional?': 'boolean' },
   'configMapRef?': 'never',
 }).or({
-  configMapRef: { name: 'string' },
+  'prefix?': 'string',
+  configMapRef: { name: 'string', 'optional?': 'boolean' },
   'secretRef?': 'never',
 });
 
@@ -58,8 +60,9 @@ export const WebAppWithProcessingConfigSchema = type({
      * the container's `envFrom` field.
      *
      * **Each entry must have exactly one of** `secretRef` or `configMapRef`
-     * (not both, not neither). Kubernetes silently ignores empty entries
-     * and has implementation-defined behavior for dual-ref entries.
+     * (not both, not neither). `prefix` and source `optional` are supported
+     * to match Kubernetes `V1EnvFromSource` / `V1SecretEnvSource` /
+     * `V1ConfigMapEnvSource` behavior.
      *
      * Note: the composition prepends an inngest credentials Secret to
      * this array. If you provide your own Secret containing

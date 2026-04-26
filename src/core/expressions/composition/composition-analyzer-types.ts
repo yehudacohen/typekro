@@ -129,8 +129,10 @@ export interface ExpressionOverride {
 export interface ResourceStatusTernary {
   /** JS variable name from the source (e.g., `cache`) */
   variableName: string;
-  /** Status field path (e.g., `ready`, `instances`) */
+  /** Status field path to flip during inverted re-execution (e.g., `ready`, `instances`) */
   statusField: string;
+  /** Full CEL-ish condition from the ternary test, preserving comparisons and method calls. */
+  conditionExpression?: string;
   /**
    * Resource ID of the factory call containing this ternary.
    * For direct factory calls (e.g., `simple.Deployment({...})`), this

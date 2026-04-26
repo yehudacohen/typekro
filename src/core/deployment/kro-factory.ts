@@ -1126,6 +1126,7 @@ export class KroResourceFactoryImpl<
         const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
         if (errorCode !== 404) {
           this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
+          throw error;
         }
       }
 
@@ -1147,7 +1148,8 @@ export class KroResourceFactoryImpl<
         const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
         const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
         if (errorCode !== 404) {
-          this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
+          this.logger.warn('CRD cleanup failed', { crdName, error: ensureError(error).message });
+          throw error;
         }
       }
     } else {
@@ -2057,7 +2059,7 @@ export class KroResourceFactoryImpl<
       namespace: this.namespace,
       apiVersion,
       kind: this.schemaDefinition.kind,
-      rgdName: this.name,
+      rgdName: this.rgdName,
       factoryContext: this.name,
     });
   }

@@ -345,7 +345,7 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
 export function extractResourceStatusRef(
   node: ASTNode,
   specParamName: string
-): { variableName: string; statusField: string } | undefined {
+): { variableName: string; statusField: string; conditionExpression?: string } | undefined {
   const GLOBALS = new Set([
     'this', 'globalThis', 'window', 'console', 'process', 'Math', 'JSON',
     'Object', 'Array', 'String', 'Number', 'Boolean', 'Promise', 'Date',
@@ -355,7 +355,7 @@ export function extractResourceStatusRef(
     'module', 'exports', 'require', 'schema',
   ]);
 
-  let result: { variableName: string; statusField: string } | undefined;
+  let result: { variableName: string; statusField: string; conditionExpression?: string } | undefined;
   const memberPath = (member: ASTNode): string[] | undefined => {
     if (member.type === 'Identifier') return [getIdentifierName(member) ?? ''];
     const property = member.property as ASTNode | undefined;
@@ -377,6 +377,7 @@ export function extractResourceStatusRef(
     if (!variableName || variableName === specParamName || GLOBALS.has(variableName)) return undefined;
     return { variableName, statusField: path.slice(2).join('.') };
   };
+  const firstStatusSegment = (statusField: string): string => statusField.split('.')[0] ?? statusField;
   const literalToCel = (literal: Literal): string => {
     if (typeof literal.value === 'string') return JSON.stringify(literal.value);
     if (literal.value === null) return 'null';
@@ -424,7 +425,8 @@ export function extractResourceStatusRef(
           if (target && method) {
             result = {
               variableName: target.variableName,
-              statusField: `${target.statusField}.${method}(${call.arguments.map((arg) => expressionNodeToCel(arg)).join(', ')})`,
+              statusField: firstStatusSegment(target.statusField),
+              conditionExpression: expressionNodeToCel(node),
             };
             return estraverse.VisitorOption.Break;
           }
@@ -439,7 +441,11 @@ export function extractResourceStatusRef(
       ) {
         const access = statusAccess(astNode);
         if (access) {
-          result = access;
+          result = {
+            ...access,
+            statusField: firstStatusSegment(access.statusField),
+            conditionExpression: expressionNodeToCel(node),
+          };
           return estraverse.VisitorOption.Break;
         }
       }
