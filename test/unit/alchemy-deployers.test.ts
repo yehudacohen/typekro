@@ -520,6 +520,25 @@ describe('KroTypeKroDeployer', () => {
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
+  it('propagates ResourceGraphDefinition delete failures so Alchemy keeps retry state', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deleteResourceGraphDefinition = mock(() => Promise.reject(new Error('RBAC denied')));
+    const deployer = new KroTypeKroDeployer(mockEngine, {
+      deleteInstance: mock(() => Promise.resolve()),
+      shouldSkipRgdDelete: mock(() => Promise.resolve(false)),
+      deleteResourceGraphDefinition,
+    });
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'test-app' },
+      spec: {},
+    } as any;
+
+    await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toThrow('RBAC denied');
+    expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
+  });
+
   it('throws when KRO custom resource deletion does not complete before timeout', async () => {
     const mockEngine = createMockEngine() as any;
     mockEngine.getKubernetesApi = mock(() => ({

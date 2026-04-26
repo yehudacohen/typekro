@@ -83,6 +83,12 @@ const infrastructure = kubernetesComposition(definition, (spec) => {
 
 APISix bootstrap requires Flux CD installed in your cluster. See [Kro Runtime Bootstrap](/api/kro/compositions/runtime) for setup.
 
+## KRO YAML Credentials
+
+`apisixBootstrap.toYaml()` without a spec generates a ResourceGraphDefinition and requires concrete APISIX admin credentials. Set both `APISIX_ADMIN_KEY` and `APISIX_VIEWER_KEY` in the environment before calling it, or pass `gateway.adminCredentials` when generating a custom resource with `toYaml(spec)`.
+
+Those credential values are embedded in the generated YAML because Helm values must be concrete at RGD generation time. Treat the output as secret material and avoid committing or logging it in release artifacts.
+
 ## Next Steps
 
 - [Kubernetes Factories](/api/kubernetes/) - Core Kubernetes resources

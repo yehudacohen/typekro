@@ -356,31 +356,91 @@ export function extractResourceStatusRef(
   ]);
 
   let result: { variableName: string; statusField: string } | undefined;
+  const memberPath = (member: ASTNode): string[] | undefined => {
+    if (member.type === 'Identifier') return [getIdentifierName(member) ?? ''];
+    const property = member.property as ASTNode | undefined;
+    if (
+      member.type === 'MemberExpression' &&
+      !member.computed &&
+      property?.type === 'Identifier'
+    ) {
+      const objectPath = memberPath(member.object as ASTNode);
+      const propertyName = getIdentifierName(property);
+      if (objectPath && propertyName) return [...objectPath, propertyName];
+    }
+    return undefined;
+  };
+  const statusAccess = (member: ASTNode): { variableName: string; statusField: string } | undefined => {
+    const path = memberPath(member);
+    if (!path || path.length < 3 || path[1] !== 'status') return undefined;
+    const variableName = path[0];
+    if (!variableName || variableName === specParamName || GLOBALS.has(variableName)) return undefined;
+    return { variableName, statusField: path.slice(2).join('.') };
+  };
+  const literalToCel = (literal: Literal): string => {
+    if (typeof literal.value === 'string') return JSON.stringify(literal.value);
+    if (literal.value === null) return 'null';
+    return String(literal.value);
+  };
+  const expressionNodeToCel = (expr: ASTNode): string => {
+    if (expr.type === 'Identifier') return getIdentifierName(expr) ?? '';
+    if (expr.type === 'Literal') return literalToCel(expr as Literal);
+    if (expr.type === 'MemberExpression') return memberPath(expr)?.join('.') ?? '';
+    if (expr.type === 'BinaryExpression' || expr.type === 'LogicalExpression') {
+      const left = expressionNodeToCel(expr.left as ASTNode);
+      const right = expressionNodeToCel(expr.right as ASTNode);
+      const operator = String(expr.operator).replace('===', '==').replace('!==', '!=');
+      return `${left} ${operator} ${right}`;
+    }
+    if (expr.type === 'UnaryExpression') {
+      return `${expr.operator ?? ''}${expressionNodeToCel(expr.argument as ASTNode)}`;
+    }
+    if (expr.type === 'CallExpression') {
+      const call = expr as unknown as CallExpression;
+      const callee = call.callee;
+      if (callee.type === 'MemberExpression' && !callee.computed) {
+        const target = expressionNodeToCel(callee.object as ASTNode);
+        const method = getIdentifierName(callee.property as ASTNode) ?? '';
+        const args = call.arguments.map((arg) => expressionNodeToCel(arg)).join(', ');
+        return `${target}.${method}(${args})`;
+      }
+    }
+    if (expr.type === 'ArrowFunctionExpression') {
+      const param = (expr.params as ASTNode[] | undefined)?.[0];
+      const paramName = param?.type === 'Identifier' ? getIdentifierName(param) : undefined;
+      return `${paramName ?? '_'}, ${expressionNodeToCel(expr.body as ASTNode)}`;
+    }
+    return '';
+  };
   // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
-      // Match: X.status.Y where X is an Identifier
-      if (
-        n.type === 'MemberExpression' &&
-        !n.computed &&
-        n.property?.type === 'Identifier'
-      ) {
-        const obj = n.object;
-        if (
-          obj?.type === 'MemberExpression' &&
-          !obj.computed &&
-          obj.property?.type === 'Identifier' &&
-          getIdentifierName(obj.property) === 'status' &&
-          obj.object?.type === 'Identifier'
-        ) {
-          const varName = getIdentifierName(obj.object);
-          if (varName && varName !== specParamName && !GLOBALS.has(varName)) {
+      const astNode = n as unknown as ASTNode;
+      if (astNode.type === 'CallExpression') {
+        const call = astNode as unknown as CallExpression;
+        if (call.callee.type === 'MemberExpression' && !call.callee.computed) {
+          const target = statusAccess(call.callee.object as ASTNode);
+          const method = getIdentifierName(call.callee.property as ASTNode);
+          if (target && method) {
             result = {
-              variableName: varName,
-              statusField: getIdentifierName(n.property) ?? '',
+              variableName: target.variableName,
+              statusField: `${target.statusField}.${method}(${call.arguments.map((arg) => expressionNodeToCel(arg)).join(', ')})`,
             };
             return estraverse.VisitorOption.Break;
           }
+        }
+      }
+
+      // Match: X.status.Y where X is an Identifier
+      if (
+        astNode.type === 'MemberExpression' &&
+        !astNode.computed &&
+        (astNode.property as ASTNode | undefined)?.type === 'Identifier'
+      ) {
+        const access = statusAccess(astNode);
+        if (access) {
+          result = access;
+          return estraverse.VisitorOption.Break;
         }
       }
       return undefined;
@@ -407,7 +467,7 @@ export function findFactoryCallsInSubtree(node: ASTNode): FactoryCallInfo[] {
         const call = astNode as CallExpression;
         const id = extractFactoryId(call);
         if (id) {
-          calls.push({ id, factoryName: extractFactoryName(call) });
+          calls.push({ id, factoryName: extractFactoryName(call), node: call });
         }
       }
       return undefined;

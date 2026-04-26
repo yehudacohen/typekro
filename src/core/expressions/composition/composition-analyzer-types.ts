@@ -200,6 +200,7 @@ export interface ASTAnalysisResult {
 export interface FactoryCallInfo {
   id: string;
   factoryName: string;
+  node: CallExpression;
 }
 
 /**

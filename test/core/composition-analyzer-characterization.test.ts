@@ -301,6 +301,30 @@ describe('analyzeCompositionBody: templateOverrides', () => {
     // Verify templateOverrides map exists (content varies by transpiler)
     expect(analysisResult.templateOverrides).toBeDefined();
   });
+
+  it('preserves full resource status collection calls in ternary conditions', () => {
+    function fn(spec: any) {
+      const db = Deployment({ id: 'db', name: 'db' });
+      return {
+        app: ConfigMap({
+          id: 'app',
+          name: spec.name,
+          data: {
+            phase: db.status.conditions.exists((c: any) => c.type === 'Ready' && c.status === 'True')
+              ? 'ready'
+              : 'waiting',
+          },
+        }),
+      };
+    }
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['db', 'app']));
+    const ternary = analysisResult.resourceStatusTernaries.find((entry) => entry.variableName === 'db');
+
+    expect(analysisResult.errors).toHaveLength(0);
+    expect(ternary?.statusField).toBe('conditions.exists(c, c.type == "Ready" && c.status == "True")');
+    expect(ternary?.statusField).not.toBe('conditions');
+  });
 });
 
 // ===========================================================================

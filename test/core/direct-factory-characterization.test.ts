@@ -86,6 +86,33 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     expect(deployedInstances.get('custom-instance')).toBe(deployedInstance);
     expect(deployedInstances.has('my-app')).toBe(false);
   });
+
+  it('validates parent spec before singleton owner discovery', async () => {
+    const StrictSpecSchema = type({ name: '"expected"' });
+    const StrictStatusSchema = type({ ready: 'boolean' });
+    const factory = createDirectResourceFactory(
+      'invalid-parent-test',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'InvalidParentTest',
+        spec: StrictSpecSchema,
+        status: StrictStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    let singletonDiscoveryCalls = 0;
+    (factory as unknown as Record<string, unknown>).ensureSingletonOwners = async () => {
+      singletonDiscoveryCalls++;
+    };
+
+    await expect(
+      factory.deploy({ name: 'bad' } as never)
+    ).rejects.toThrow('Invalid spec');
+
+    expect(singletonDiscoveryCalls).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1201,6 +1201,8 @@ export class KroResourceFactoryImpl<
           ...(user.certFile && { certFile: user.certFile }),
           ...(user.keyData && { keyData: user.keyData }),
           ...(user.keyFile && { keyFile: user.keyFile }),
+          ...((user as { exec?: object }).exec ? { exec: (user as { exec?: object }).exec } : {}),
+          ...((user as { authProvider?: object }).authProvider ? { authProvider: (user as { authProvider?: object }).authProvider } : {}),
         },
       }),
     };
@@ -1854,7 +1856,7 @@ export class KroResourceFactoryImpl<
 
     // Post-process: re-execute the composition with live cluster data to fill
     // in status fields that neither static evaluation nor KRO could provide.
-    if (this.factoryOptions.compositionFn) {
+    if (this.factoryOptions.hydrateStatus !== false && this.factoryOptions.compositionFn) {
       try {
         const liveStatus = await this.reExecuteWithLiveStatus(spec);
         if (liveStatus) {

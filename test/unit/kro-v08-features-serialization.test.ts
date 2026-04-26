@@ -1691,6 +1691,44 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(resource.readyWhen?.[0]).not.toContain('status.ready}');
       });
 
+      it('string readyWhen with nested status markers is not double wrapped', () => {
+        const inner = kubernetesComposition(
+          {
+            name: 'ready-string-nested-inner',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyStringNestedInner',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerReadyStringApp' });
+            return { ready: app.status.readyReplicas > 0 };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-string-nested-context',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyStringNestedContext',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const nested = inner({ name: spec.name, image: spec.image });
+            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyStringApp' })
+              .withReadyWhen(`${nested.status.ready}`);
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'outerReadyStringApp');
+
+        expect(resource.readyWhen?.[0]).toContain('status.readyReplicas');
+        expect(resource.readyWhen?.[0]).not.toContain('${${');
+      });
+
       it('CelExpression readyWhen resolves nested status with serialization context', () => {
         const inner = kubernetesComposition(
           {

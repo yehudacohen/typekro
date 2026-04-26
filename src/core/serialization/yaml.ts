@@ -276,7 +276,8 @@ function convertReadyWhenValueToCel(
 
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return `\${${convertRefMarkersInString(value, context)}}`;
+      const converted = convertRefMarkersInString(value, context);
+      return converted.includes('${') ? converted : `\${${converted}}`;
     }
     return value;
   }

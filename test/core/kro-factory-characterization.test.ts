@@ -163,6 +163,31 @@ function getPrivateMethod(
 }
 
 describe('KroResourceFactory: Alchemy RGD serialization', () => {
+  it('preserves exec and authProvider auth in serialized Alchemy kubeconfig options', () => {
+    const factory = createKroResourceFactory('alchemyExecAuth', {}, makeSchema(), {}, {
+      hydrateStatus: false,
+    });
+    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
+      getCurrentCluster: () => ({ name: 'cluster', server: 'https://example.invalid' }),
+      getCurrentContext: () => 'ctx',
+      getCurrentUser: () => ({
+        name: 'user',
+        exec: { command: 'aws', args: ['eks', 'get-token'] },
+        authProvider: { name: 'gcp', config: { 'access-token': 'token' } },
+      }),
+    });
+
+    const extractKubeConfigOptionsForAlchemy = getPrivateMethod(
+      factory as unknown as KroResourceFactory<TestSpec, TestStatus>,
+      'extractKubeConfigOptionsForAlchemy'
+    ) as () => { user?: { exec?: unknown; authProvider?: unknown } };
+
+    const options = extractKubeConfigOptionsForAlchemy();
+
+    expect(options.user?.exec).toEqual({ command: 'aws', args: ['eks', 'get-token'] });
+    expect(options.user?.authProvider).toEqual({ name: 'gcp', config: { 'access-token': 'token' } });
+  });
+
   it('validates injected Alchemy scope before provider execution', async () => {
     const factory = createKroResourceFactory('alchemyInvalidScope', {}, makeSchema(), {}, {
       alchemyScope: {},
@@ -1128,6 +1153,51 @@ describe('KroResourceFactory: factory creation smoke tests', () => {
 });
 
 describe('KroResourceFactory: mixed status hydration', () => {
+  it('does not perform live status re-execution when hydrateStatus is false', async () => {
+    interface HydrationSpec {
+      name: string;
+    }
+
+    interface HydrationStatus {
+      url: string;
+    }
+
+    const factory = createKroResourceFactory<HydrationSpec, HydrationStatus>(
+      'kro-hydration-disabled',
+      {},
+      {
+        apiVersion: 'v1alpha1',
+        kind: 'KroHydrationDisabled',
+        spec: type({ name: 'string' }),
+        status: type({ url: 'string' }),
+      },
+      { url: 'http://__KUBERNETES_REF___schema___spec.name__' },
+      { namespace: 'default', compositionFn: () => ({ url: 'live-value' }), hydrateStatus: false }
+    );
+
+    let liveReExecutionCalls = 0;
+    const factoryRecord = factory as unknown as Record<string, unknown>;
+    factoryRecord.separateStatusFields = async () => ({
+      staticFields: { url: 'http://__KUBERNETES_REF___schema___spec.name__' },
+      dynamicFields: {},
+    });
+    factoryRecord.evaluateStaticFields = async () => ({ url: 'http://demo' });
+    factoryRecord.reExecuteWithLiveStatus = async () => {
+      liveReExecutionCalls++;
+      return { url: 'live-value' };
+    };
+
+    const createEnhancedProxyWithMixedHydration = getPrivateMethod(
+      factory as unknown as KroResourceFactory<TestSpec, TestStatus>,
+      'createEnhancedProxyWithMixedHydration'
+    ) as (spec: HydrationSpec, instanceName: string) => Promise<{ status: HydrationStatus }>;
+
+    const instance = await createEnhancedProxyWithMixedHydration({ name: 'demo' }, 'demo');
+
+    expect(instance.status.url).toBe('http://demo');
+    expect(liveReExecutionCalls).toBe(0);
+  });
+
   it('overrides stale static fields with live re-execution results while preserving dynamic fields', async () => {
     interface HydrationSpec {
       name: string;

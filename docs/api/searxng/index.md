@@ -73,7 +73,7 @@ await factory.deploy({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `secret_key` | `string` | — | Session encryption key |
+| `secret_key` | `string` | `'change-me-in-production'` when no `secretKeyRef` is set | Session encryption key used for the auto-created Secret. Provide a real value or external `secretKeyRef` for production |
 | `limiter` | `boolean` | — | Enable built-in rate limiter |
 | `bind_address` | `string` | `'0.0.0.0:8080'` | Bind address |
 | `method` | `string` | `'GET'` | HTTP method |

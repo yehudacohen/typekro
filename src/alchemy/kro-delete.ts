@@ -112,10 +112,11 @@ export async function deleteKroDefinition(
     });
   } catch (error: unknown) {
     if (getKubernetesErrorCode(error) !== 404) {
-      logger.warn('Alchemy KRO RGD cleanup failed', {
+      logger.error('Alchemy KRO RGD cleanup failed', ensureError(error), {
         rgdName: options.rgdName,
         error: ensureError(error).message,
       });
+      throw error;
     }
   }
 
@@ -129,10 +130,11 @@ export async function deleteKroDefinition(
     });
   } catch (error: unknown) {
     if (getKubernetesErrorCode(error) !== 404) {
-      logger.debug('Alchemy KRO CRD cleanup failed (non-critical)', {
+      logger.error('Alchemy KRO CRD cleanup failed', ensureError(error), {
         crdName,
         error: ensureError(error).message,
       });
+      throw error;
     }
   }
 }

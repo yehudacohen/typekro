@@ -51,7 +51,7 @@ import { DirectDeploymentEngine } from './engine.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
-import { generateInstanceName, getSingletonInstanceName } from './shared-utilities.js';
+import { generateInstanceName, getSingletonInstanceName, validateSpec } from './shared-utilities.js';
 import {
   assertNoDeployedSingletonSpecDrift,
   assertNoDiscoveredSingletonSpecDrift,
@@ -183,6 +183,11 @@ export class DirectResourceFactoryImpl<
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
       hasStatusBuilder: !!this.statusBuilder,
+    });
+
+    validateSpec(spec, this.schemaDefinition, {
+      kind: this.schemaDefinition.kind,
+      name: this.name,
     });
 
     // Use the consolidated deployment strategy

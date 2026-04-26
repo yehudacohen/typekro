@@ -513,6 +513,7 @@ export function walkExpression(
   const calls = findFactoryCallsInSubtree(node);
   for (const call of calls) {
     registerResourceControlFlow(call.id, call.factoryName, ctx, result);
+    analyzeFactoryArgTernaries(call.node, call.id, fullSource, specParamName, result);
   }
 }
 

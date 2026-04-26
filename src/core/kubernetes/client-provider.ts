@@ -140,6 +140,8 @@ export interface KubernetesClientConfig {
     certFile?: string;
     keyData?: string;
     keyFile?: string;
+    exec?: unknown;
+    authProvider?: unknown;
   };
 
   /**
@@ -726,6 +728,8 @@ export class KubernetesClientProvider {
           ...(config.user.certFile && { certFile: config.user.certFile }),
           ...(config.user.keyData && { keyData: config.user.keyData }),
           ...(config.user.keyFile && { keyFile: config.user.keyFile }),
+          ...(config.user.exec ? { exec: config.user.exec } : {}),
+          ...(config.user.authProvider ? { authProvider: config.user.authProvider } : {}),
         },
       ];
 

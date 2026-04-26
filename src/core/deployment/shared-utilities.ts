@@ -24,10 +24,20 @@ export function validateSpec<TSpec extends KroCompatibleType, TStatus extends Kr
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
   context?: { kind?: string; name?: string }
 ): void {
-  const validationResult = schemaDefinition.spec(spec);
-  if (validationResult instanceof Error) {
+  const validationResult = schemaDefinition.spec(spec) as unknown;
+  const validationMessage = validationResult instanceof Error
+    ? validationResult.message
+    : validationResult &&
+        typeof validationResult === 'object' &&
+        (validationResult as { ' arkKind'?: unknown })[' arkKind'] === 'errors'
+      ? (validationResult as { summary?: string; message?: string }).message ??
+        (validationResult as { summary?: string; message?: string }).summary ??
+        String(validationResult)
+      : null;
+
+  if (validationMessage) {
     throw new ValidationError(
-      `Invalid spec: ${validationResult.message}`,
+      `Invalid spec: ${validationMessage}`,
       context?.kind ?? 'Unknown',
       context?.name ?? 'unknown',
       'spec',

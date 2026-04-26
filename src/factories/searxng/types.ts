@@ -150,11 +150,12 @@ export const SearxngBootstrapConfigSchema = type({
   /** Base URL for the instance. */
   'baseUrl?': 'string',
   /**
-   * Server configuration. When `secret_key` is provided AND `secretKeyRef`
-   * is NOT provided, the bootstrap composition automatically creates a
-   * dedicated K8s Secret (`{name}-secret`) and mounts it via
-   * `valueFrom.secretKeyRef` on the Deployment — the plaintext value
-   * never appears in the Deployment spec.
+   * Server configuration. When `secretKeyRef` is NOT provided, the bootstrap
+   * composition automatically creates a dedicated K8s Secret (`{name}-secret`)
+   * and mounts it via `valueFrom.secretKeyRef` on the Deployment. The Secret
+   * uses `server.secret_key` when supplied, otherwise the explicit placeholder
+   * default `change-me-in-production`; production deployments should provide
+   * `server.secret_key` or an external `secretKeyRef`.
    */
   'server?': serverConfigShape,
   /**
@@ -165,7 +166,7 @@ export const SearxngBootstrapConfigSchema = type({
    * one through to the Deployment via `valueFrom.secretKeyRef`. In KRO
    * mode this is resolved via `has(schema.spec.secretKeyRef)` so the
    * user can decide per-instance whether to provide an external ref or
-   * fall back to the auto-created Secret from `server.secret_key`.
+   * fall back to the auto-created Secret.
    */
   'secretKeyRef?': {
     name: 'string',
