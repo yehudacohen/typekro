@@ -20,6 +20,7 @@ import {
   analyzeCompositionBody,
   applyAnalysisToResources,
 } from '../expressions/composition/composition-analyzer.js';
+import { remapResourceStatusReferences } from '../expressions/composition/composition-analyzer-helpers.js';
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { setResourceId } from '../metadata/index.js';
@@ -515,9 +516,10 @@ function processCompositionBodyAnalysis(
         if (!resourceIds.has(resId)) continue;
 
         const conditionCel = ternary.conditionExpression
-          ? ternary.conditionExpression
-              .split(`${ternary.variableName}.status.`)
-              .join(`${resId}.status.`)
+          ? remapResourceStatusReferences(
+              ternary.conditionExpression,
+              new Map(compositionAnalysis.variableToResourceId).set(ternary.variableName, resId)
+            )
           : `${resId}.status.${ternary.statusField}`;
 
         // Build a targeted liveStatusMap flipping ONLY this one condition

@@ -456,6 +456,22 @@ export function extractResourceStatusRef(
   return result;
 }
 
+/**
+ * Rewrite every `<jsVariable>.status.` reference in a CEL-ish condition to its
+ * serialized KRO resource ID. Compound conditions can reference more than the
+ * primary variable captured by `extractResourceStatusRef`.
+ */
+export function remapResourceStatusReferences(
+  conditionExpression: string,
+  variableToResourceId: Map<string, string>
+): string {
+  let remapped = conditionExpression;
+  for (const [variableName, resourceId] of variableToResourceId) {
+    remapped = remapped.split(`${variableName}.status.`).join(`${resourceId}.status.`);
+  }
+  return remapped;
+}
+
 // ---------------------------------------------------------------------------
 // Factory call search
 // ---------------------------------------------------------------------------

@@ -955,6 +955,39 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     expect(yaml).toContain('sqlite');
   });
 
+  it('remaps every resource variable in compound direct resource-status ternaries', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'compound-remap-ternary', kind: 'CompoundRemapTernary', spec: Spec, status: Status },
+      (_spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'appCache' });
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+
+        simple.ConfigMap({
+          name: 'app-config',
+          id: 'appConfig',
+          data: {
+            STORAGE_MODE: cache.status.ready && db.status.readyReplicas >= 1 ? 'postgres' : 'memory',
+          },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    expect(yaml).toContain('appCache.status.ready && database.status.readyReplicas >= 1');
+    expect(yaml).not.toContain('cache.status.ready');
+    expect(yaml).not.toContain('db.status.readyReplicas');
+  });
+
   it('conditionalizes multiple resources that share one resource-status condition', async () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'

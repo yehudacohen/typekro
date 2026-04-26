@@ -16,6 +16,7 @@ import {
   getSource,
   isCompileTimeLiteral,
   referencesSpec,
+  remapResourceStatusReferences,
 } from './composition-analyzer-helpers.js';
 import type {
   ASTAnalysisResult,
@@ -124,9 +125,10 @@ function walkObjectForTernaries(
             }
             const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
             const conditionExpr = statusRef.conditionExpression
-              ? statusRef.conditionExpression
-                  .split(`${statusRef.variableName}.status.`)
-                  .join(`${statusResourceId}.status.`)
+              ? remapResourceStatusReferences(
+                  statusRef.conditionExpression,
+                  new Map(result.variableToResourceId).set(statusRef.variableName, statusResourceId)
+                )
               : `${statusResourceId}.status.${statusRef.statusField}`;
             for (const path of allPaths) {
               const trueValue = trueFields.get(path) ?? 'omit()';
@@ -166,9 +168,10 @@ function walkObjectForTernaries(
           }
           const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
           const conditionExpr = statusRef.conditionExpression
-            ? statusRef.conditionExpression
-                .split(`${statusRef.variableName}.status.`)
-                .join(`${statusResourceId}.status.`)
+            ? remapResourceStatusReferences(
+                statusRef.conditionExpression,
+                new Map(result.variableToResourceId).set(statusRef.variableName, statusResourceId)
+              )
             : `${statusResourceId}.status.${statusRef.statusField}`;
           overrides.push({
             propertyPath: fullPath,
