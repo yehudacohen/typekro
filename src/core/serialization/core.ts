@@ -23,7 +23,7 @@ import {
 import { remapResourceStatusReferences } from '../expressions/composition/composition-analyzer-helpers.js';
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
-import { setResourceId } from '../metadata/index.js';
+import { getMetadataField, setResourceId } from '../metadata/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
 import type {
@@ -474,32 +474,24 @@ function processCompositionBodyAnalysis(
       // ── Resource-status ternary compilation (Phases 3+4) ────────────
       //
       // When the AST detects ternaries conditioned on resource status
-      // fields (e.g., `cache.status.ready ? 'redis' : 'memory'`), the
-      // proxy run takes the truthy branch because KubernetesRef proxies
-      // are always truthy in JS. To emit the CEL conditional, we
-      // re-execute the composition with `liveStatusMap` injecting falsy
-      // values for the targeted resources. The diff between the proxy
-      // run and the inverted run reveals which template fields changed.
+      // fields (e.g., `cache.status.ready ? 'redis' : 'memory'`), proxy
+      // JS evaluation does not necessarily match CEL truth evaluation.
+      // To emit the CEL conditional, re-execute explicit true and false
+      // branches using `liveStatusMap`, then diff those branch outputs.
       //
-      // To avoid false positives (other fields changing due to the
-      // status flip), we only diff the SPECIFIC resources identified
-      // by `callSiteResourceId` (for direct factory calls) or all
-      // inner resources (for cross-composition calls).
-      // Only process direct-factory ternaries (where callSiteResourceId
-      // is known). Cross-composition ternaries (callSiteResourceId
-      // undefined) can't be scoped to a single resource, and the full
-      // re-execution produces false positives because the flipped status
-      // value changes the entire composition's behavior. Use dependsOn
-      // + Cel.cond for cross-composition ordering instead.
-      const directTernaries = compositionAnalysis.resourceStatusTernaries.filter(
-        (t) => t.callSiteResourceId && t.callSiteResourceId !== '__non_factory_call__'
+      // To avoid false positives (other fields changing due to the status
+      // flip), direct factory calls diff only `callSiteResourceId`; nested
+      // composition call arguments diff only resources registered under known
+      // nested composition base IDs.
+      const resourceStatusTernaries = compositionAnalysis.resourceStatusTernaries.filter(
+        (t) => t.callSiteResourceId !== '__non_factory_call__'
       );
 
       // Deduplicate by call site and condition. Conditionalization is scoped to
       // one callSiteResourceId, so two resources using the same status condition
       // must both be processed.
       const seenConditions = new Set<string>();
-      const uniqueTernaries = directTernaries.filter((t) => {
+      const uniqueTernaries = resourceStatusTernaries.filter((t) => {
         const key = `${t.callSiteResourceId}:${t.variableName}:${t.conditionExpression ?? t.statusField}`;
         if (seenConditions.has(key)) return false;
         seenConditions.add(key);
@@ -522,40 +514,45 @@ function processCompositionBodyAnalysis(
             )
           : `${resId}.status.${ternary.statusField}`;
 
-        // Build a targeted liveStatusMap flipping ONLY this one condition
-        const invertedStatusMap = new Map<string, Record<string, unknown>>();
-        invertedStatusMap.set(resId, { [ternary.statusField]: false });
-
-        const invertedCtx = createCompositionContext('resource-status-inverted');
-        invertedCtx.liveStatusMap = invertedStatusMap;
-
-        const invertedSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
-          (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
-          (schemaDefinition as { status?: { json?: unknown } } | undefined)?.status?.json
+        const trueCtx = runResourceStatusBranch(
+          originalCompositionFnForAnalysis,
+          schemaDefinition,
+          compositionAnalysis,
+          ternary,
+          true
         );
-
-        runWithCompositionContext(invertedCtx, () => {
-          runInStatusBuilderContext(() => {
-            originalCompositionFnForAnalysis(invertedSchema.spec);
-          });
-        });
+        const falseCtx = runResourceStatusBranch(
+          originalCompositionFnForAnalysis,
+          schemaDefinition,
+          compositionAnalysis,
+          ternary,
+          false
+        );
 
         // Diff ONLY the targeted resource(s)
         const targetIds = ternary.callSiteResourceId
           ? [ternary.callSiteResourceId]
-          : Object.keys(invertedCtx.resources);
+          : getNestedResourceStatusTargetIds(
+              trueCtx.resources,
+              trueCtx.nestedCompositionIds
+            );
 
         for (const id of targetIds) {
-          const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
-          const invertedRes = invertedCtx.resources[id] as unknown as
+          const targetRes = resourcesWithKeys[id] as unknown as
             | Record<string, unknown>
             | undefined;
-          if (proxyRes && invertedRes) {
-            walkAndConditionalizeResourceStatus(proxyRes, invertedRes, conditionCel);
+          const trueRes = trueCtx.resources[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          const falseRes = falseCtx.resources[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          if (targetRes && trueRes && falseRes) {
+            applyResourceStatusBranchDiff(targetRes, trueRes, falseRes, conditionCel);
           }
         }
 
-        serializationLogger.debug('Resource-status inverted run applied', {
+        serializationLogger.debug('Resource-status branch runs applied', {
           conditionCel,
           targetIds,
         });
@@ -1037,72 +1034,176 @@ function isLeafValue(v: unknown): boolean {
   );
 }
 
-/**
- * Walk two resource trees in parallel (proxy-run vs resource-status-inverted
- * run) and replace differing leaves with a CEL conditional.
- */
-function walkAndConditionalizeResourceStatus(
-  proxyRes: Record<string, unknown>,
-  invertedRes: Record<string, unknown>,
+function runResourceStatusBranch(
+  compositionFn: (spec: KroCompatibleType) => unknown,
+  schemaDefinition: { spec: { json?: unknown } } | undefined,
+  analysis: ASTAnalysisResult,
+  ternary: ASTAnalysisResult['resourceStatusTernaries'][number],
+  desiredConditionValue: boolean
+) {
+  const branchCtx = createCompositionContext('resource-status-branch', {
+    isReExecution: true,
+  });
+  branchCtx.liveStatusMap = createResourceStatusBranchMap(
+    analysis,
+    ternary,
+    desiredConditionValue
+  );
+
+  const branchSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+    (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
+    (schemaDefinition as { status?: { json?: unknown } } | undefined)?.status?.json
+  );
+
+  runWithCompositionContext(branchCtx, () => {
+    runInStatusBuilderContext(() => {
+      compositionFn(branchSchema.spec);
+    });
+  });
+
+  return branchCtx;
+}
+
+function createResourceStatusBranchMap(
+  analysis: ASTAnalysisResult,
+  ternary: ASTAnalysisResult['resourceStatusTernaries'][number],
+  desiredConditionValue: boolean
+): Map<string, Record<string, unknown>> {
+  const conditionExpression = ternary.conditionExpression ?? `${ternary.variableName}.status.${ternary.statusField}`;
+  const statusRefs = collectStatusRefs(conditionExpression);
+  if (statusRefs.length === 0) {
+    statusRefs.push({ variableName: ternary.variableName, statusField: ternary.statusField });
+  }
+
+  const statusMap = new Map<string, Record<string, unknown>>();
+  for (const statusRef of statusRefs) {
+    const resourceId = analysis.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+    const topLevelStatusField = statusRef.statusField.split('.')[0] ?? statusRef.statusField;
+    const existing = statusMap.get(resourceId) ?? {};
+    existing[topLevelStatusField] = getBranchStatusValue(
+      conditionExpression,
+      `${statusRef.variableName}.status.${statusRef.statusField}`,
+      desiredConditionValue
+    );
+    statusMap.set(resourceId, existing);
+  }
+
+  return statusMap;
+}
+
+function collectStatusRefs(conditionExpression: string): Array<{ variableName: string; statusField: string }> {
+  const refs: Array<{ variableName: string; statusField: string }> = [];
+  const seen = new Set<string>();
+  const statusRefPattern = /\b([A-Za-z_$][\w$]*)\.status\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+
+  for (const match of conditionExpression.matchAll(statusRefPattern)) {
+    const variableName = match[1];
+    const statusField = match[2];
+    if (!variableName || !statusField) continue;
+
+    const key = `${variableName}:${statusField}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ variableName, statusField });
+  }
+
+  return refs;
+}
+
+function getBranchStatusValue(
+  conditionExpression: string,
+  statusRefExpression: string,
+  desiredConditionValue: boolean
+): unknown {
+  const escapedRef = statusRefExpression.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const comparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(>=|>|<=|<|==|!=)\\s*(-?\\d+(?:\\.\\d+)?)`)
+  );
+  if (comparison?.[1] && comparison[2] !== undefined) {
+    const operator = comparison[1];
+    const numberValue = Number(comparison[2]);
+    if (operator === '>=') return desiredConditionValue ? numberValue : numberValue - 1;
+    if (operator === '>') return desiredConditionValue ? numberValue + 1 : numberValue;
+    if (operator === '<=') return desiredConditionValue ? numberValue : numberValue + 1;
+    if (operator === '<') return desiredConditionValue ? numberValue - 1 : numberValue;
+    if (operator === '==') return desiredConditionValue ? numberValue : numberValue + 1;
+    if (operator === '!=') return desiredConditionValue ? numberValue + 1 : numberValue;
+  }
+
+  const negatedRef = new RegExp(`!\\s*${escapedRef}(?![A-Za-z0-9_$.])`).test(conditionExpression);
+  return negatedRef ? !desiredConditionValue : desiredConditionValue;
+}
+
+function applyResourceStatusBranchDiff(
+  targetRes: Record<string, unknown>,
+  trueRes: Record<string, unknown>,
+  falseRes: Record<string, unknown>,
   conditionCel: string
 ): void {
-  for (const key of new Set([...Object.keys(proxyRes), ...Object.keys(invertedRes)])) {
+  for (const key of new Set([...Object.keys(trueRes), ...Object.keys(falseRes)])) {
     if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
-    const pv = proxyRes[key];
-    const iv = invertedRes[key];
 
-    if (pv === undefined && iv !== undefined) {
-      const invertedRepr = celValueRepr(iv);
-      proxyRes[key] = `\${${conditionCel} ? omit() : ${invertedRepr}}`;
+    const tv = trueRes[key];
+    const fv = falseRes[key];
+
+    if (tv === undefined && fv !== undefined) {
+      const falseRepr = celValueRepr(fv);
+      targetRes[key] = `\${${conditionCel} ? omit() : ${falseRepr}}`;
       continue;
     }
 
-    if (iv === undefined && pv !== undefined) {
-      const proxyRepr = celValueRepr(pv);
-      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : omit()}`;
+    if (fv === undefined && tv !== undefined) {
+      const trueRepr = celValueRepr(tv);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : omit()}`;
       continue;
     }
 
-    if (pv === undefined || iv === undefined) continue;
+    if (tv === undefined || fv === undefined) continue;
 
-    // Treat CelExpression objects as atomic leaves — don't recurse into
-    // their internal properties (expression, __isTemplate, etc.).
-    if (isCelExpressionLike(pv) || isCelExpressionLike(iv)) {
-      if (!leafEquals(pv, iv)) {
-        const proxyRepr = celValueRepr(pv);
-        const invertedRepr = celValueRepr(iv);
-        proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
+    if (isCelExpressionLike(tv) || isCelExpressionLike(fv)) {
+      if (!leafEquals(tv, fv)) {
+        const trueRepr = celValueRepr(tv);
+        const falseRepr = celValueRepr(fv);
+        targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
       }
       continue;
     }
 
-    if (isPlainObject(pv) && isPlainObject(iv)) {
-      walkAndConditionalizeResourceStatus(pv, iv, conditionCel);
-    } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length === iv.length) {
-      for (let i = 0; i < pv.length; i++) {
-        if (isPlainObject(pv[i]) && isPlainObject(iv[i])) {
-          walkAndConditionalizeResourceStatus(
-            pv[i] as Record<string, unknown>,
-            iv[i] as Record<string, unknown>,
+    const targetValue = targetRes[key];
+    if (isPlainObject(tv) && isPlainObject(fv)) {
+      if (!isPlainObject(targetValue)) targetRes[key] = {};
+      applyResourceStatusBranchDiff(
+        targetRes[key] as Record<string, unknown>,
+        tv,
+        fv,
+        conditionCel
+      );
+    } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length === fv.length) {
+      if (!Array.isArray(targetValue)) targetRes[key] = [...tv];
+      const targetArray = targetRes[key] as unknown[];
+      for (let i = 0; i < tv.length; i++) {
+        if (isPlainObject(tv[i]) && isPlainObject(fv[i])) {
+          if (!isPlainObject(targetArray[i])) targetArray[i] = {};
+          applyResourceStatusBranchDiff(
+            targetArray[i] as Record<string, unknown>,
+            tv[i] as Record<string, unknown>,
+            fv[i] as Record<string, unknown>,
             conditionCel
           );
-        } else if (!leafEquals(pv[i], iv[i])) {
-          const proxyRepr = celValueRepr(pv[i]);
-          const invertedRepr = celValueRepr(iv[i]);
-          pv[i] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
+        } else if (!leafEquals(tv[i], fv[i])) {
+          const trueRepr = celValueRepr(tv[i]);
+          const falseRepr = celValueRepr(fv[i]);
+          targetArray[i] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
         }
       }
-    } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length !== iv.length) {
-      // Different-length arrays: the ternary's consequent and alternate
-      // produce arrays of different sizes. We can't element-wise diff
-      // these — treat the whole array as a leaf and emit a conditional.
-      const proxyRepr = celValueRepr(pv);
-      const invertedRepr = celValueRepr(iv);
-      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
-    } else if (!leafEquals(pv, iv)) {
-      const proxyRepr = celValueRepr(pv);
-      const invertedRepr = celValueRepr(iv);
-      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
+    } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length !== fv.length) {
+      const trueRepr = celValueRepr(tv);
+      const falseRepr = celValueRepr(fv);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+    } else if (!leafEquals(tv, fv)) {
+      const trueRepr = celValueRepr(tv);
+      const falseRepr = celValueRepr(fv);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
     }
   }
 }
@@ -1113,6 +1214,40 @@ function leafEquals(a: unknown, b: unknown): boolean {
     return String(a) === String(b);
   }
   return a === b;
+}
+
+function getNestedResourceStatusTargetIds(
+  resources: Record<string, Enhanced<unknown, unknown>>,
+  nestedCompositionIds: Set<string> | undefined
+): string[] {
+  if (!nestedCompositionIds || nestedCompositionIds.size === 0) return [];
+
+  return Object.entries(resources)
+    .filter(([resourceId, resource]) =>
+      [...nestedCompositionIds].some((nestedId) => isNestedCompositionChild(resourceId, resource, nestedId))
+    )
+    .map(([resourceId]) => resourceId);
+}
+
+function isNestedCompositionChild(
+  resourceId: string,
+  resource: Enhanced<unknown, unknown>,
+  nestedId: string
+): boolean {
+  if (resourceId === nestedId) return true;
+
+  const boundaryChar = resourceId[nestedId.length];
+  if (resourceId.startsWith(nestedId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar)) {
+    return true;
+  }
+
+  const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+  return aliases?.some((alias) => {
+    if (alias === nestedId) return true;
+
+    const aliasBoundaryChar = alias[nestedId.length];
+    return alias.startsWith(nestedId) && aliasBoundaryChar !== undefined && /[A-Z_-]/.test(aliasBoundaryChar);
+  }) ?? false;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

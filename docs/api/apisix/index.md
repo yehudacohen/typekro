@@ -93,7 +93,15 @@ const infrastructure = kubernetesComposition(definition, (spec) => {
   apisix.apisixBootstrap({
     name: 'apisix',
     namespace: 'apisix',
-    gateway: { type: 'LoadBalancer' },
+    gateway: {
+      type: 'LoadBalancer',
+      // Required for KRO YAML generation unless APISIX_ADMIN_KEY and
+      // APISIX_VIEWER_KEY are set in the generation environment.
+      adminCredentials: {
+        admin: 'replace-with-admin-key',
+        viewer: 'replace-with-viewer-key',
+      },
+    },
     replicaCount: spec.replicas,
     ingressController: { enabled: true },
   });

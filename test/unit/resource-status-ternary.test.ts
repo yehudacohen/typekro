@@ -650,6 +650,126 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     const workerSection = findResourceSection(lines, 'worker');
     expect(workerSection).toContain('value: production');
     expect(workerSection).not.toContain('cache.status');
+
+    const innerSection = findResourceSection(lines, 'innerVal1');
+    expect(innerSection).toContain('cache.status.ready');
+    expect(innerSection).toContain('connected');
+    expect(innerSection).toContain('disconnected');
+  });
+
+  it('nested composition resource-status ternaries handle comparison conditions', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-compare', kind: 'InnerCompare', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-compare', kind: 'OuterCompare', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+        innerComp({
+          name: spec.name,
+          val: db.status.readyReplicas >= 1 ? 'ready' : 'waiting',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerCompare1');
+    expect(innerSection).toContain('database.status.readyReplicas >= 1');
+    expect(innerSection).toContain('ready');
+    expect(innerSection).toContain('waiting');
+  });
+
+  it('nested composition resource-status ternaries handle negated conditions', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-negated', kind: 'InnerNegated', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-negated', kind: 'OuterNegated', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        innerComp({
+          name: spec.name,
+          val: !cache.status.ready ? 'cold' : 'warm',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerNegated1');
+    expect(innerSection).toContain('!cache.status.ready');
+    expect(innerSection).toContain('cold');
+    expect(innerSection).toContain('warm');
+  });
+
+  it('nested composition resource-status ternaries handle compound conditions', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-compound', kind: 'InnerCompound', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-compound', kind: 'OuterCompound', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+        innerComp({
+          name: spec.name,
+          val: cache.status.ready || db.status.ready ? 'available' : 'offline',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerCompound1');
+    expect(innerSection).toContain('cache.status.ready || database.status.ready');
+    expect(innerSection).toContain('available');
+    expect(innerSection).toContain('offline');
   });
 });
 

@@ -151,7 +151,7 @@ function Certificate(config: CertificateConfig): Enhanced<CertificateSpec, Certi
 ### ReadinessEvaluator Interface
 
 ```typescript
-type ReadinessEvaluator<T extends KubernetesResource = KubernetesResource> = (
+type ReadinessEvaluator<T = any> = (
   resource: T
 ) => ResourceStatus;
 
@@ -159,6 +159,7 @@ interface ResourceStatus {
   ready: boolean;
   reason?: string;   // Short reason code (e.g., 'MinimumReplicasAvailable')
   message?: string;  // Human-readable message
+  details?: Record<string, unknown>; // Additional debugging information
 }
 ```
 

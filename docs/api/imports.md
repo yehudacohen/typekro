@@ -157,7 +157,7 @@ import {
 import { createResource } from 'typekro';
 
 // Type guards
-import { isKubernetesRef, isCelExpression } from 'typekro';
+import { isKubernetesRef, isCelExpression } from 'typekro/advanced';
 
 // Debugging
 import { enableCompositionDebugging, getCompositionDebugLogs } from 'typekro';

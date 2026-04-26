@@ -21,7 +21,7 @@ Deploys a complete application stack with automatic wiring:
 |-----------|----------|---------------|
 | PostgreSQL | CNPG Cluster + PgBouncer Pooler | `DATABASE_URL` |
 | Cache | Valkey cluster | `VALKEY_URL`, `REDIS_URL` |
-| Workflow engine | Inngest (external DB mode) | `INNGEST_BASE_URL`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` |
+| Workflow engine | Inngest (external DB mode) | `INNGEST_BASE_URL`; credentials are injected from a generated Secret via `envFrom` |
 | Application | Deployment + Service | — |
 
 ### Quick Example
@@ -83,18 +83,22 @@ DATABASE_URL=postgresql://app@my-app-db-pooler:5432/myapp
 VALKEY_URL=redis://my-app-cache:6379
 REDIS_URL=redis://my-app-cache:6379
 INNGEST_BASE_URL=http://my-app-inngest:8288
-INNGEST_EVENT_KEY=<from config>
-INNGEST_SIGNING_KEY=<from config>
+INNGEST_EVENT_KEY=<from generated Secret>
+INNGEST_SIGNING_KEY=<from generated Secret>
 ```
 
-User-provided `app.env` values are merged on top, so you can override any of these.
+The composition creates an Inngest credentials Secret and prepends it to `app.envFrom`. User-provided `app.env` values are still merged on top of generated direct environment variables, so they can override direct values such as `DATABASE_URL` or `INNGEST_BASE_URL`.
 
 ### Status
 
 ```typescript
 instance.status.ready       // all components healthy
 instance.status.databaseUrl // postgresql://app@...-db-pooler:5432/...
+instance.status.databaseHost // ...-db-pooler
+instance.status.databasePort // 5432
 instance.status.cacheUrl    // redis://...-cache:6379
+instance.status.cacheHost   // ...-cache
+instance.status.cachePort   // 6379
 instance.status.inngestUrl  // http://...-inngest:8288
 instance.status.appUrl      // http://...:3000
 
@@ -126,6 +130,7 @@ instance.status.components.inngest   // Inngest ready
 | `processing.signingKey` | Yes | Inngest signing key (hex string) |
 | `processing.sdkUrl` | No | App SDK URLs for function sync |
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
+| `processing.resources` | No | CPU/memory requests and limits for the Inngest server |
 
 ### Prerequisites
 
@@ -138,7 +143,7 @@ singleton dependencies.
 - **Valkey** operator — bootstrapped by this composition
 
 ```typescript
-import { typeKroRuntimeBootstrap } from 'typekro/kro';
+import { typeKroRuntimeBootstrap } from 'typekro';
 
 // Install runtime first
 await typeKroRuntimeBootstrap().factory('direct', { ... }).deploy({ ... });

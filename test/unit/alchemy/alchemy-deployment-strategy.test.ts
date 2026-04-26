@@ -9,6 +9,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
+import { KubeConfig } from '@kubernetes/client-node';
 import { AlchemyDeploymentStrategy } from '../../../src/core/deployment/strategies/alchemy-strategy.js';
 import { DirectDeploymentStrategy } from '../../../src/core/deployment/strategies/direct-strategy.js';
 import type { FactoryOptions } from '../../../src/core/types/deployment.js';
@@ -282,6 +283,82 @@ describe('AlchemyDeploymentStrategy', () => {
       const options = strategyInternals(strategy).extractKubeConfigOptions();
       expect(options).toBeDefined();
       expect(typeof options).toBe('object');
+    });
+
+    it('preserves exec and authProvider user auth from direct Alchemy kubeconfig', () => {
+      const kubeConfig = new KubeConfig();
+      kubeConfig.loadFromOptions({
+        clusters: [{ name: 'exec-cluster', server: 'https://exec.example.com' }],
+        users: [
+          {
+            name: 'exec-user',
+            exec: { command: 'aws', args: ['eks', 'get-token'] },
+            authProvider: { name: 'gcp', config: { 'access-token': 'token' } },
+          },
+        ],
+        contexts: [{ name: 'exec-context', cluster: 'exec-cluster', user: 'exec-user' }],
+        currentContext: 'exec-context',
+      });
+
+      const strategyWithExecAuth = new AlchemyDeploymentStrategy(
+        'test-factory',
+        'default',
+        testSchema,
+        undefined,
+        undefined,
+        { ...factoryOptions, kubeConfig },
+        mockAlchemyScope,
+        mockBaseStrategy
+      );
+
+      const options = strategyInternals(strategyWithExecAuth).extractKubeConfigOptions() as {
+        user?: { exec?: unknown; authProvider?: unknown };
+      };
+
+      expect(options.user?.exec).toEqual({ command: 'aws', args: ['eks', 'get-token'] });
+      expect(options.user?.authProvider).toEqual({ name: 'gcp', config: { 'access-token': 'token' } });
+    });
+
+    it('preserves exec and authProvider user auth from base strategy kubeconfig fallback', () => {
+      const kubeConfig = new KubeConfig();
+      kubeConfig.loadFromOptions({
+        clusters: [{ name: 'base-exec-cluster', server: 'https://base-exec.example.com' }],
+        users: [
+          {
+            name: 'base-exec-user',
+            exec: { command: 'aws', args: ['eks', 'get-token', '--cluster-name', 'base'] },
+            authProvider: { name: 'oidc', config: { idp: 'issuer' } },
+          },
+        ],
+        contexts: [{ name: 'base-exec-context', cluster: 'base-exec-cluster', user: 'base-exec-user' }],
+        currentContext: 'base-exec-context',
+      });
+      const baseStrategyWithKubeConfig = Object.create(DirectDeploymentStrategy.prototype);
+      Object.assign(baseStrategyWithKubeConfig, {
+        ...mockBaseStrategy,
+        factoryOptions: { ...factoryOptions, kubeConfig },
+      });
+
+      const strategyWithBaseKubeConfig = new AlchemyDeploymentStrategy(
+        'test-factory',
+        'default',
+        testSchema,
+        undefined,
+        undefined,
+        (({ kubeConfig: _kc, ...rest }) => rest)({ ...factoryOptions, kubeConfig }),
+        mockAlchemyScope,
+        baseStrategyWithKubeConfig
+      );
+
+      const options = strategyInternals(strategyWithBaseKubeConfig).extractKubeConfigOptions() as {
+        user?: { exec?: unknown; authProvider?: unknown };
+      };
+
+      expect(options.user?.exec).toEqual({
+        command: 'aws',
+        args: ['eks', 'get-token', '--cluster-name', 'base'],
+      });
+      expect(options.user?.authProvider).toEqual({ name: 'oidc', config: { idp: 'issuer' } });
     });
 
     it('should handle missing kubeconfig gracefully', () => {

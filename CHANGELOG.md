@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING**: Default KRO version bumped from `0.8.5` to `0.9.1`. TypeKro's serialization pipeline now emits the KRO 0.9+ mixed-template CEL format (`literal${string(ref)}literal`) and uses the `CELOmitFunction` feature gate for `omit()` support. Existing clusters must upgrade KRO to 0.9.1+ with `--set config.featureGates.CELOmitFunction=true` (the `typekroRuntime` bootstrap sets this automatically). Running TypeKro 0.8+ against KRO 0.8.x will cause RGD validation failures at reconcile time.
+- **BREAKING**: Default KRO version bumped from `0.8.5` to `0.9.1`. TypeKro's serialization pipeline now emits the KRO 0.9+ mixed-template CEL format (`literal${string(ref)}literal`) and uses the `CELOmitFunction` feature gate for `omit()` support. Existing clusters must upgrade KRO to 0.9.1+ with `--set config.featureGates.CELOmitFunction=true` (the `typeKroRuntimeBootstrap` bootstrap sets this automatically). Running TypeKro 0.8+ against KRO 0.8.x will cause RGD validation failures at reconcile time.
 - **BREAKING**: Mixed-template CEL format — references embedded in template literals now emit as `${string(ref)}` wrapped rather than CEL string concatenation (`"literal" + ref + "literal"`). This requires KRO 0.9+.
 
 ### Fixed

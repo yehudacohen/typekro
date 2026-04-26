@@ -461,6 +461,10 @@ export class AlchemyDeploymentStrategy<
             ...(user.certFile && { certFile: user.certFile }),
             ...(user.keyData && { keyData: user.keyData }),
             ...(user.keyFile && { keyFile: user.keyFile }),
+            ...((user as { exec?: object }).exec ? { exec: (user as { exec?: object }).exec } : {}),
+            ...((user as { authProvider?: object }).authProvider
+              ? { authProvider: (user as { authProvider?: object }).authProvider }
+              : {}),
           },
         }),
       };
@@ -539,6 +543,10 @@ export class AlchemyDeploymentStrategy<
                   ...(user.certFile && { certFile: user.certFile }),
                   ...(user.keyData && { keyData: user.keyData }),
                   ...(user.keyFile && { keyFile: user.keyFile }),
+                  ...((user as { exec?: object }).exec ? { exec: (user as { exec?: object }).exec } : {}),
+                  ...((user as { authProvider?: object }).authProvider
+                    ? { authProvider: (user as { authProvider?: object }).authProvider }
+                    : {}),
                 },
               }),
             };
