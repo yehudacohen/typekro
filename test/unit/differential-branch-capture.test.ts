@@ -342,9 +342,32 @@ describe('Differential Branch Capture', () => {
 
       const yaml = composition.toYaml();
       expect(yaml).toContain('FEATURE_MODE');
-      expect(yaml.includes('has(schema.spec.feature)') || yaml.includes('schema.spec.feature ?')).toBe(true);
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
       expect(yaml).toContain('enabled');
       expect(yaml).toContain('disabled');
+    });
+
+    it('uses has() for optional spec refs in status ternaries', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'optional-status-ternary',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'OptionalStatusTernary',
+          spec: type({ name: 'string', 'feature?': 'boolean' }),
+          status: type({ mode: 'string' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: { ok: 'true' }, id: 'cfg' });
+          return { mode: spec.feature ? 'on' : 'off' };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
+      expect(yaml).toContain('on');
+      expect(yaml).toContain('off');
     });
 
     it('does not let unrelated optional object reads break hybrid capture when only one field drives control flow', () => {
@@ -392,7 +415,8 @@ describe('Differential Branch Capture', () => {
       expect(yaml).toContain('id: fallbackCfg');
       expect(yaml).toContain('schema.spec.secretRef.name');
       expect(yaml).toContain('FEATURE_MODE');
-      expect(yaml.includes('has(schema.spec.feature)') || yaml.includes('schema.spec.feature ?')).toBe(true);
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
     });
   });
 

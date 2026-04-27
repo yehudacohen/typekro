@@ -371,6 +371,12 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
     type: 'string',
     'clusterIP?': 'string',
     'externalIP?': 'string',
+    'ports?': type({
+      name: 'string',
+      port: 'number',
+      targetPort: 'number',
+      protocol: 'string',
+    }).array(),
   },
 
   // Ingress class information

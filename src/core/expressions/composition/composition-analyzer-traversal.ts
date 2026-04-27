@@ -288,7 +288,7 @@ export function walkStatement(
 
     case 'ReturnStatement': {
       // Analyze return statement for ternary expressions in status values
-      analyzeReturnStatementTernaries(node, fullSource, specParamName, result);
+      analyzeReturnStatementTernaries(node, fullSource, specParamName, result, ctx.optionalFieldNames);
       // Analyze return statement for collection aggregate expressions
       analyzeReturnCollectionAggregates(
         node,

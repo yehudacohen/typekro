@@ -89,6 +89,8 @@ INNGEST_SIGNING_KEY=<from generated Secret>
 
 The composition creates an Inngest credentials Secret and prepends it to `app.envFrom`. User-provided `app.env` values are still merged on top of generated direct environment variables, so they can override direct values such as `DATABASE_URL` or `INNGEST_BASE_URL`.
 
+In KRO mode, `processing.eventKey` and `processing.signingKey` are still plain custom-resource spec fields before TypeKro copies them into the generated Secret. Treat webapp custom resources as sensitive and restrict RBAC read access to those CRs.
+
 ### Status
 
 ```typescript
@@ -128,8 +130,8 @@ instance.status.components.inngest   // Inngest ready
 | `cache.replicas` | No | Replicas per shard (default: 0) |
 | `cache.volumePermissions` | No | Enable the Valkey volume permissions init container |
 | `cache.storageSize` | No | Storage size per Valkey shard (default: '1Gi') |
-| `processing.eventKey` | Yes | Inngest event key (hex string) |
-| `processing.signingKey` | Yes | Inngest signing key (hex string) |
+| `processing.eventKey` | Yes | Inngest event key (hex string); sensitive in KRO custom-resource specs |
+| `processing.signingKey` | Yes | Inngest signing key (hex string); sensitive in KRO custom-resource specs |
 | `processing.sdkUrl` | No | App SDK URLs for function sync |
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
 | `processing.resources` | No | CPU/memory requests and limits for the Inngest server |

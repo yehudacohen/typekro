@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
-import { APISixBootstrapConfigSchema } from '../../src/factories/apisix/types.js';
+import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
 
 describe('APISIX bootstrap credential serialization', () => {
   it('exposes gateway.ingress in the KRO config schema', () => {
@@ -75,6 +75,28 @@ describe('APISIX bootstrap credential serialization', () => {
       expect(result.dashboard?.enabled).toBe(true);
       expect(result.etcd?.replicaCount).toBe(1);
       expect(result.customValues).toEqual({ extra: { enabled: true } });
+    }
+  });
+
+  it('exposes gateway service ports in the KRO status schema', () => {
+    const result = APISixBootstrapStatusSchema({
+      ready: true,
+      phase: 'Ready',
+      gatewayReady: true,
+      ingressControllerReady: true,
+      dashboardReady: false,
+      etcdReady: true,
+      gatewayService: {
+        name: 'apisix-gateway',
+        namespace: 'apisix',
+        type: 'ClusterIP',
+        ports: [{ name: 'http', port: 80, targetPort: 9080, protocol: 'TCP' }],
+      },
+    });
+
+    expect(result).toHaveProperty('gatewayService');
+    if ('gatewayService' in result) {
+      expect(result.gatewayService?.ports?.[0]?.targetPort).toBe(9080);
     }
   });
 

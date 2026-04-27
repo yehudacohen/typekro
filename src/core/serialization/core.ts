@@ -14,7 +14,7 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
-import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
@@ -1332,10 +1332,10 @@ function isWalkableRecord(v: unknown): v is Record<string, unknown> {
 /** Duck-type check for CelExpression objects — avoids importing from cel.ts (cycle risk). */
 function isCelExpressionLike(v: unknown): boolean {
   if (typeof v !== 'object' || v === null) return false;
-  // CelExpression objects have a Symbol brand and an `expression` string property.
-  // Check for `expression` + `__isTemplate` as the identifying shape.
+  // Plain Cel.expr() objects carry the symbol brand; template expressions also
+  // carry `__isTemplate`. Support both shapes without importing cel.ts.
   return 'expression' in v && typeof (v as Record<string, unknown>).expression === 'string'
-    && '__isTemplate' in v;
+    && ((v as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true || '__isTemplate' in v);
 }
 
 /**

@@ -97,9 +97,17 @@ export const WebAppWithProcessingConfigSchema = type({
   },
   /** Inngest background processing settings. */
   processing: {
-    /** Inngest event authentication key (hex string, required). */
+    /**
+     * Inngest event authentication key (hex string, required).
+     * In KRO mode this value is part of the custom resource spec before being
+     * copied into a generated Secret; restrict read access to webapp CRs.
+     */
     eventKey: 'string',
-    /** Inngest request signing key (hex string, required). */
+    /**
+     * Inngest request signing key (hex string, required).
+     * In KRO mode this value is part of the custom resource spec before being
+     * copied into a generated Secret; restrict read access to webapp CRs.
+     */
     signingKey: 'string',
     /** SDK URLs to auto-sync functions from. */
     'sdkUrl?': 'string[]',

@@ -948,6 +948,33 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     expect(innerSection).toContain('off');
     expect(innerSection).toContain('on');
   });
+
+  it('resource-status branch diffs preserve plain Cel.expr branch values', async () => {
+    const { kubernetesComposition, Cel } = await import('../../src/index.js');
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({ name: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'plain-cel-branch', kind: 'PlainCelBranch', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        simple.ConfigMap({
+          name: spec.name,
+          id: 'cfg',
+          data: {
+            VALUE: cache.status.ready ? Cel.expr<string>('cache.status.phase') : 'fallback',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const cfgSection = findResourceSection(comp.toYaml().split('\n'), 'cfg');
+    expect(cfgSection).toContain('cache.status.ready ? cache.status.phase : \\"fallback\\"');
+    expect(cfgSection).not.toContain('"expression"');
+  });
 });
 
 // =============================================================================

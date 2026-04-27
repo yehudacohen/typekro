@@ -69,7 +69,9 @@ A Kubernetes resource enhanced with TypeKro functionality.
 ```typescript
 type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
-  dependsOn(dependency: unknown, condition?: unknown): void;
+  withIncludeWhen(condition: IncludeWhenCondition): Enhanced<TSpec, TStatus>;
+  withReadyWhen(condition: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
+  dependsOn(dependency: unknown): Enhanced<TSpec, TStatus>;
 }
 ```
 
@@ -173,11 +175,9 @@ interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
 A closure that executes during deployment phase.
 
 ```typescript
-type DeploymentClosure<T> = {
-  readonly [DEPLOYMENT_CLOSURE_BRAND]: true;
-  readonly name: string;
-  execute(context: DeploymentContext): Promise<T>;
-}
+type DeploymentClosure<T = AppliedResource[]> = (
+  deploymentContext: DeploymentContext
+) => Promise<T>
 ```
 
 **Used by:** `yamlFile()`, `yamlDirectory()`

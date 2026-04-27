@@ -199,7 +199,7 @@ function walkObjectForTernaries(
       const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
       if (!fullPath) continue;
 
-      const celExpr = expressionToCel(ternary, fullSource, specParamName);
+      const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
 
       let overrides = result.templateOverrides.get(resourceId);
       if (!overrides) {
@@ -288,7 +288,8 @@ export function analyzeReturnStatementTernaries(
   returnNode: ASTNode,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   const argument = (returnNode as ASTNode & { argument: ASTNode | null }).argument;
   if (!argument || argument.type !== 'ObjectExpression') return;
@@ -321,7 +322,7 @@ export function analyzeReturnStatementTernaries(
     if (!keyName) continue;
 
     // Convert the full ternary expression to CEL
-    const celExpr = expressionToCel(ternary, fullSource, specParamName);
+    const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
 
     result.statusOverrides.push({ propertyPath: keyName, celExpression: celExpr });
 

@@ -214,7 +214,7 @@ export function conditionToCel(
   // canonical presence check; a bare `schema.spec.X` used as a boolean
   // throws when X is absent.
   //
-  // Two passes:
+  // Three passes:
   //
   //   1. **Standalone bare ref** — the *entire* condition is a single
   //      `schema.spec.<path>` (or its negation). Rewrite to `has(...)`.
@@ -224,6 +224,11 @@ export function conditionToCel(
   //      and one side is a bare optional ref (e.g. the left operand
   //      of `spec.secrets && size(spec.secrets) > 0`). Wrap just that
   //      operand with `has()` so the compound evaluates safely.
+  //
+  //   3. **Bare ref as a ternary test** — full ternary expressions like
+  //      `spec.feature ? 'on' : 'off'` are converted as a whole, so the
+  //      optional ref is not the entire source string. Wrap the condition
+  //      operand before the `?`.
   //
   // In both passes, the check fires only when the top-level segment
   // of the referenced path is a declared optional field — required
@@ -265,6 +270,15 @@ export function conditionToCel(
       (match, operator, spacing, negation, path, topLevelField) => {
         if (optionalFieldNames.has(topLevelField)) {
           return `${operator}${spacing}${negation}has(${path})`;
+        }
+        return match;
+      }
+    );
+    source = source.replace(
+      /(^|[(:?,]\s*)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*\?)/g,
+      (match, leading, negation, path, topLevelField) => {
+        if (optionalFieldNames.has(topLevelField)) {
+          return `${leading}${negation}has(${path})`;
         }
         return match;
       }
@@ -603,8 +617,13 @@ export function extractSpecParamName(functionSource: string): string {
  * - Single quotes → double quotes
  * - Wraps in `${}`
  */
-export function expressionToCel(node: ASTNode, fullSource: string, specParamName: string): string {
-  return conditionToCel(node, fullSource, specParamName);
+export function expressionToCel(
+  node: ASTNode,
+  fullSource: string,
+  specParamName: string,
+  optionalFieldNames?: Set<string>
+): string {
+  return conditionToCel(node, fullSource, specParamName, optionalFieldNames);
 }
 
 /**
