@@ -242,7 +242,8 @@ describe('Schema Nullish Defaults', () => {
   describe('applyTernaryConditionalsToResources', () => {
     let applyTernaryConditionalsToResources: (
       resources: Record<string, unknown>,
-      conditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>
+      conditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>,
+      nestedStatusCel?: Record<string, string>
     ) => void;
 
     beforeAll(async () => {
@@ -270,6 +271,57 @@ describe('Schema Nullish Defaults', () => {
       const result = (resources.config.data as Record<string, string>)['settings.yml'];
       expect(result).toContain('has(schema.spec.redisUrl)');
       expect(result).toContain('string(schema.spec.redisUrl)');
+      expect(result).not.toContain('__KUBERNETES_REF__');
+    });
+
+    it('guards every segment for nested ternary condition fields', () => {
+      const resources = {
+        config: {
+          data: {
+            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
+          },
+        },
+      };
+
+      applyTernaryConditionalsToResources(resources, [
+        {
+          proxySection: '\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
+          falsyValue: '',
+          conditionField: 'cache.redisUrl',
+        },
+      ]);
+
+      const result = (resources.config.data as Record<string, string>)['settings.yml'];
+      expect(result).toContain(
+        'has(schema.spec.cache) && has(schema.spec.cache.redisUrl) ?'
+      );
+      expect(result).toContain('string(schema.spec.cache.redisUrl)');
+    });
+
+    it('resolves nested status markers inside conditional YAML sections', () => {
+      const resources = {
+        config: {
+          data: {
+            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF_inner_status.redisUrl__',
+          },
+        },
+      };
+
+      applyTernaryConditionalsToResources(
+        resources,
+        [
+          {
+            proxySection: '\nredis:\n  url: __KUBERNETES_REF_inner_status.redisUrl__',
+            falsyValue: '',
+            conditionField: 'cache.redisUrl',
+          },
+        ],
+        { '__nestedStatus:inner:redisUrl': 'schema.spec.cache.redisUrl' }
+      );
+
+      const result = (resources.config.data as Record<string, string>)['settings.yml'];
+      expect(result).toContain('string(schema.spec.cache.redisUrl)');
+      expect(result).not.toContain('inner.status.redisUrl');
       expect(result).not.toContain('__KUBERNETES_REF__');
     });
 

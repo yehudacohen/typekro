@@ -357,6 +357,30 @@ describe('analyzeCompositionBody: templateOverrides', () => {
     expect(ternary?.conditionExpression).toBe('db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
     expect(ternary?.conditionExpression).not.toBe('db.status.conditions');
   });
+
+  it('maps JavaScript some() to CEL exists() in resource-status ternary conditions', () => {
+    function fn(spec: any) {
+      const db = Deployment({ id: 'db', name: 'db' }) as any;
+      return {
+        app: ConfigMap({
+          id: 'app',
+          name: spec.name,
+          data: {
+            phase: db.status.conditions.some((c: any) => c.type === 'Ready' && c.status === 'True')
+              ? 'ready'
+              : 'waiting',
+          },
+        }),
+      };
+    }
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['db', 'app']));
+    const ternary = analysisResult.resourceStatusTernaries.find((entry) => entry.variableName === 'db');
+
+    expect(analysisResult.errors).toHaveLength(0);
+    expect(ternary?.conditionExpression).toBe('db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+    expect(ternary?.conditionExpression).not.toContain('.some(');
+  });
 });
 
 // ===========================================================================

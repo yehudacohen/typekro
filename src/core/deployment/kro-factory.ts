@@ -1174,6 +1174,11 @@ export class KroResourceFactoryImpl<
     }
 
     if (!hasRemainingInstances) {
+      // Prove the generated CRD can be cleaned up before deleting the RGD.
+      // If plural discovery is unavailable, preserving both avoids orphaning
+      // the generated CRD without its owning RGD.
+      const crdPlural = await this.requireCRDPluralForCleanup();
+
       // Delete the RGD after the instance is gone.
       try {
         await k8sApi.delete({
@@ -1195,7 +1200,6 @@ export class KroResourceFactoryImpl<
       // has allowCRDDeletion=false, so it won't clean up the CRD when the
       // RGD is deleted. Prefer the server-discovered plural over the
       // heuristic fallback so already-plural kinds clean up correctly.
-      const crdPlural = await this.requireCRDPluralForCleanup();
       const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
       try {
         await k8sApi.delete({
@@ -1438,7 +1442,8 @@ export class KroResourceFactoryImpl<
       if (kroSchema.__ternaryConditionals?.length) {
         applyTernaryConditionalsToResources(
           this.resources as Record<string, unknown>,
-          kroSchema.__ternaryConditionals
+          kroSchema.__ternaryConditionals,
+          kroSchema.__nestedStatusCel
         );
       }
     }

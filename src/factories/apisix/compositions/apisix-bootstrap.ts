@@ -149,6 +149,10 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
         enabled: spec.etcd?.enabled !== undefined ? spec.etcd.enabled : true,
         replicaCount: spec.etcd?.replicaCount || 1,
       },
+
+      ...(spec.apisix && { apisix: { ...spec.apisix } }),
+      ...(spec.dashboard && { dashboard: { ...spec.dashboard } }),
+      ...(spec.customValues && { customValues: { ...spec.customValues } }),
     };
 
     // Map configuration to Helm values for the main APISIX chart
@@ -249,8 +253,9 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
     });
 
     // Create HelmRepository for APISix charts
+    const repositoryName = 'apisix-repo';
     const _helmRepository = apisixHelmRepository({
-      name: 'apisix-repo',
+      name: repositoryName,
       namespace: DEFAULT_FLUX_NAMESPACE,
       url: 'https://charts.apiseven.com',
       interval: '1h',
@@ -268,6 +273,7 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       interval: '5m',
       timeout: '10m',
       values: helmValues,
+      repositoryName,
       id: 'apisixHelmRelease',
     });
 

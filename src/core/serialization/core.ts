@@ -2162,7 +2162,11 @@ function createTypedResourceGraph<
         analysisState.ternaryAndOmitApplied = true;
 
         if (kroSchema.__ternaryConditionals?.length) {
-          applyTernaryConditionalsToResources(resourcesWithKeys, kroSchema.__ternaryConditionals);
+          applyTernaryConditionalsToResources(
+            resourcesWithKeys,
+            kroSchema.__ternaryConditionals,
+            kroSchema.__nestedStatusCel
+          );
         }
       }
 

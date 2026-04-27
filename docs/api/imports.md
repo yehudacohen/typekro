@@ -8,8 +8,8 @@ All TypeKro import patterns in one place.
 // Main composition API
 import { kubernetesComposition, Cel, externalRef } from 'typekro';
 
-// Runtime bootstrap (for Kro mode)
-import { typeKroRuntimeBootstrap } from 'typekro';
+// Runtime bootstrap (for Kro mode) and shared-owner boundaries
+import { singleton, typeKroRuntimeBootstrap } from 'typekro';
 
 // Types (use 'import type' for type-only imports)
 import type { Enhanced, KubernetesRef, RefOrValue, CelExpression } from 'typekro';
@@ -105,8 +105,11 @@ import { certificate, clusterIssuer, issuer } from 'typekro/cert-manager';
 // Flux GitOps
 import { gitRepository } from 'typekro/flux';
 
-// APISix ingress
+// APISIX gateway
 import * as apisix from 'typekro/apisix';
+
+// SearXNG metasearch
+import { searxng, searxngBootstrap } from 'typekro/searxng';
 
 // External-DNS
 import * as externalDns from 'typekro/external-dns';
@@ -188,10 +191,12 @@ const AppSpec = type({
 | `externalRef` | `typekro` |
 | `createResource` | `typekro` |
 | `typeKroRuntimeBootstrap` | `typekro` |
+| `singleton` | `typekro` |
 | RBAC factories | `typekro` |
 | Cilium policies | `typekro/cilium` |
 | Cert-Manager | `typekro/cert-manager` |
 | Flux GitOps | `typekro/flux` |
+| SearXNG | `typekro/searxng` |
 | Types | `typekro` (with `import type`) |
 
 ## Enhanced Resource Methods

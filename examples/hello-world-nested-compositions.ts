@@ -235,19 +235,11 @@ const infrastructureStack = kubernetesComposition(
       policy: 'sync',
     });
 
-    // Deploy APISix ingress controller
+    // Deploy APISIX gateway. Standard Kubernetes Ingress reconciliation requires
+    // deploying an APISIX ingress controller separately.
     const apisixInstance = apisix.apisixBootstrap({
       name: 'apisix',
       namespace: 'apisix-system',
-      ingressController: {
-        enabled: true,
-        config: {
-          kubernetes: {
-            ingressClass: 'apisix',
-            namespace: 'apisix-system',
-          },
-        },
-      },
       gateway: {
         type: 'LoadBalancer',
         http: {
@@ -374,7 +366,8 @@ const webappStack = kubernetesComposition(
 
     const _ingress = simple.Ingress({
       name: `${spec.name}-ingress`,
-      ingressClassName: 'apisix', // Use APISix ingress class
+      // Requires a separately deployed APISIX ingress controller for this class.
+      ingressClassName: 'apisix',
       annotations: {
         // External-DNS annotations for automatic DNS record creation
         'external-dns.alpha.kubernetes.io/hostname': spec.domain,

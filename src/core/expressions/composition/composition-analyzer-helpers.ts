@@ -226,7 +226,7 @@ export function conditionToCel(
   source = source.replace(/(^|[^\w])!0(?=$|[^\w])/g, '$1true');
 
   source = source.replace(
-    /(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:(?:"[^"]*")|(?:'[^']*')))/g,
+    /(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:"[^"]*")|(?:'[^']*')|(?:schema\.spec\.[A-Za-z_$][\w$.]*))/g,
     (_match, basePath: string, tailPath: string, operator: string, rightValue: string) => {
       const { fullPath, present, missing } = optionalChainGuards(basePath, tailPath);
       if (operator === '!=') {
@@ -265,6 +265,16 @@ export function conditionToCel(
     /(schema\.spec\.[a-zA-Z0-9_.]+)\.length\b/g,
     'size($1)'
   );
+
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /size\((schema\.spec\.[a-zA-Z0-9_.]+)\)/g,
+      (match, path: string) => {
+        const guard = optionalTruthinessGuard(path, '');
+        return guard ? `(${guard} ? ${match} : 0)` : match;
+      }
+    );
+  }
 
   // Truthiness → has() for OPTIONAL fields only. JavaScript's
   // `if (spec.x)` means "the field is set" when x is optional, but
@@ -542,7 +552,8 @@ export function extractResourceStatusRef(
       const callee = call.callee;
       if (callee.type === 'MemberExpression' && !callee.computed) {
         const target = expressionNodeToCel(callee.object as ASTNode);
-        const method = getIdentifierName(callee.property as ASTNode) ?? '';
+        const methodName = getIdentifierName(callee.property as ASTNode) ?? '';
+        const method = methodName === 'some' ? 'exists' : methodName === 'every' ? 'all' : methodName;
         const args = call.arguments.map((arg) => expressionNodeToCel(arg)).join(', ');
         return `${target}.${method}(${args})`;
       }

@@ -147,7 +147,7 @@ export const webAppWithProcessing = kubernetesComposition(
         ...spec.cnpgOperator,
         name: spec.cnpgOperator?.name ?? 'cnpg-operator',
         namespace: spec.cnpgOperator?.namespace ?? 'cnpg-system',
-        installCRDs: true,
+        installCRDs: spec.cnpgOperator?.installCRDs ?? true,
       },
     });
 

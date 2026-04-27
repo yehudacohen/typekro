@@ -15,7 +15,7 @@ import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js'
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
-import { getEffectiveScopes } from './resource-tagging.js';
+import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 import type {
   DeployedResource,
   DeploymentError,
@@ -327,6 +327,9 @@ export class ResourceRollbackManager {
       .reverse()
       .filter((r) => {
         const scopes = getEffectiveScopes(r.manifest);
+        if (options.targetScopes !== undefined) {
+          return scopesMatchFilter(scopes, options.targetScopes);
+        }
         if (scopes.length > 0) {
           this.logger.debug('Skipping scoped resource during rollback', {
             resourceId: r.id,

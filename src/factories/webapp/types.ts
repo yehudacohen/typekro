@@ -135,12 +135,13 @@ export const WebAppWithProcessingConfigSchema = type({
    *
    * The defaults make the operator a shared cluster-level singleton:
    * multiple `webAppWithProcessing` instances converge on the same install.
-   * Override `name`/`namespace` when you need a distinct singleton identity.
+   * `name`/`namespace` customize the install target, but the singleton identity
+   * is fixed by this composition's `cnpg-operator` singleton id.
    */
   'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
   /**
    * Hyperspike Valkey operator install settings. Same singleton-consumption
-   * pattern as `cnpgOperator`. Defaults:
+   * pattern and fixed composition singleton identity as `cnpgOperator`. Defaults:
    *   name: 'valkey-operator'
    *   namespace: 'valkey-operator-system'
    *   shared: true

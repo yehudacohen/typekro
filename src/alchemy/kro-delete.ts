@@ -55,10 +55,22 @@ interface CustomObjectListApi {
   }): Promise<{ items?: Array<{ metadata?: { name?: unknown; namespace?: unknown } }> }>;
 }
 
-async function lookupCRDPlural(kubeConfig: KubeConfig, options: KroDeletionOptions): Promise<string | undefined> {
+export interface KubernetesObjectCleanupApi {
+  list(apiVersion: string, kind: string): Promise<unknown>;
+  delete(resource: {
+    apiVersion: string;
+    kind: string;
+    metadata: { name: string };
+  }): Promise<unknown>;
+}
+
+async function lookupCRDPlural(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectCleanupApi
+): Promise<string | undefined> {
   const logger = getComponentLogger('alchemy-kro-delete');
   try {
-    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
     const crds = (await k8sApi.list(
       'apiextensions.k8s.io/v1',
       'CustomResourceDefinition'
@@ -76,7 +88,14 @@ async function lookupCRDPlural(kubeConfig: KubeConfig, options: KroDeletionOptio
       kind: options.kind,
       error: ensureError(error).message,
     });
-    return undefined;
+    throw new CRDInstanceError(
+      `Cannot list CRDs to determine plural for ${options.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+      options.apiVersion,
+      options.kind,
+      '*',
+      'deletion',
+      ensureError(error)
+    );
   }
 }
 
@@ -87,13 +106,7 @@ async function listKroInstances(
 ): Promise<Array<{ metadata?: { name?: unknown; namespace?: unknown } }>> {
   const plural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
   if (!plural) {
-    throw new CRDInstanceError(
-      `Cannot determine CRD plural for ${options.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
-      options.apiVersion,
-      options.kind,
-      '*',
-      'deletion'
-    );
+    return [];
   }
 
   const response = await customApi.listClusterCustomObject({
@@ -116,20 +129,11 @@ export async function hasKroInstances(
 
 export async function deleteKroDefinition(
   kubeConfig: KubeConfig,
-  options: KroDeletionOptions
+  options: KroDeletionOptions,
+  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectCleanupApi
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-kro-delete');
-  const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-  const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
-  if (!crdPlural) {
-    throw new CRDInstanceError(
-      `Cannot determine CRD plural for ${options.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
-      options.apiVersion,
-      options.kind,
-      '*',
-      'deletion'
-    );
-  }
+  const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options, k8sApi);
 
   try {
     await k8sApi.delete({
@@ -145,6 +149,14 @@ export async function deleteKroDefinition(
       });
       throw error;
     }
+  }
+
+  if (!crdPlural) {
+    logger.debug('Alchemy KRO CRD already absent during RGD cleanup', {
+      kind: options.kind,
+      rgdName: options.rgdName,
+    });
+    return;
   }
 
   const crdName = `${crdPlural}.${getSchemaGroup(options)}`;

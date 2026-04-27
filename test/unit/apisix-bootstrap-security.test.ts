@@ -185,6 +185,62 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
+  it('wires the HelmRelease sourceRef to the created HelmRepository name', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    process.env.APISIX_ADMIN_KEY = 'env-admin-key';
+    process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
+
+    try {
+      const yaml = apisixBootstrap.toYaml();
+
+      expect(yaml).toContain('kind: HelmRepository');
+      expect(yaml).toContain('name: apisix-repo');
+      expect(yaml).toContain('sourceRef:');
+      expect(yaml).toContain('name: apisix-repo');
+      expect(yaml).not.toContain('name: apisix-bootstrap-repo');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
+  it('propagates public chart config fields into the Helm values template', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    process.env.APISIX_ADMIN_KEY = 'env-admin-key';
+    process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
+
+    try {
+      const yaml = apisixBootstrap.toYaml();
+
+      expect(yaml).toContain('apisix:');
+      expect(yaml).toContain('image: "${has(schema.spec.apisix) && has(schema.spec.apisix.image) ? schema.spec.apisix.image : omit()}"');
+      expect(yaml).toContain('dashboard:');
+      expect(yaml).toContain('enabled: "${has(schema.spec.dashboard) && has(schema.spec.dashboard.enabled) ? schema.spec.dashboard.enabled : omit()}"');
+      expect(yaml).toContain('schema.spec.customValues');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
   it('fails KRO YAML generation when credentials are omitted and env vars are unset', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;

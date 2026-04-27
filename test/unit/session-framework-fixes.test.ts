@@ -291,9 +291,9 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
 
     // Tell the helper that `secrets` is a declared optional field
     const cel = conditionToCel(body, source, 'spec', new Set(['secrets']));
-    // The LHS bare truthiness becomes `has(...)`, the RHS becomes `size(...) > 0`
+    // The LHS bare truthiness becomes `has(...)`, the RHS size read is guarded too.
     expect(cel).toContain('has(schema.spec.secrets)');
-    expect(cel).toContain('size(schema.spec.secrets) > 0');
+    expect(cel).toContain('(has(schema.spec.secrets) ? size(schema.spec.secrets) : 0) > 0');
     expect(cel).toContain('&&');
   });
 
@@ -313,6 +313,39 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
     expect(cel).not.toContain('has(');
     expect(cel).toContain('schema.spec.enabled');
     expect(cel).toContain('schema.spec.count > 0');
+  });
+
+  it('guards optional-chain comparisons against non-literal schema refs', async () => {
+    const { Parser } = await import('acorn');
+    const { conditionToCel } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-helpers.js'
+    );
+
+    const source = '(spec) => spec.secretRef?.name === spec.expectedName';
+    const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
+    const body = (ast as any).body[0].expression.body;
+
+    const cel = conditionToCel(body, source, 'spec', new Set(['secretRef']));
+    expect(cel).toContain('has(schema.spec.secretRef)');
+    expect(cel).toContain('has(schema.spec.secretRef.name)');
+    expect(cel).toContain('schema.spec.secretRef.name == schema.spec.expectedName');
+    expect(cel).not.toContain('?.');
+  });
+
+  it('guards optional collection size reads with has() before size()', async () => {
+    const { Parser } = await import('acorn');
+    const { conditionToCel } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-helpers.js'
+    );
+
+    const source = '(spec) => Object.keys(spec.labels).length > 0';
+    const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
+    const body = (ast as any).body[0].expression.body;
+
+    const cel = conditionToCel(body, source, 'spec', new Set(['labels']));
+    expect(cel).toContain('(has(schema.spec.labels) ? size(schema.spec.labels) : 0) > 0');
+    expect(cel).not.toContain('Object.keys');
+    expect(cel).not.toContain('.length');
   });
 });
 

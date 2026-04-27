@@ -5,13 +5,19 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { DirectTypeKroDeployer, KroTypeKroDeployer } from '../../src/alchemy/deployers.js';
-import { listKroInstancesForTest } from '../../src/alchemy/kro-delete.js';
+import {
+  DirectTypeKroDeployer,
+  KroTypeKroDeployer,
+  ResourceGraphDefinitionDeletionDeferredError,
+} from '../../src/alchemy/deployers.js';
+import { deleteKroDefinition, listKroInstancesForTest } from '../../src/alchemy/kro-delete.js';
 import {
   handleResourceDeletionForTest,
   inferKroDeletionOptionsForTest,
 } from '../../src/alchemy/resource-registration.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
+import { getMetadataField } from '../../src/core/metadata/index.js';
+import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
@@ -358,6 +364,19 @@ describe('DirectTypeKroDeployer', () => {
       // Should fall back to resource metadata namespace
       expect(deployedResource.namespace).toBe('default');
     });
+
+    it('restores cluster-scope metadata for JSON-restored cluster resources', async () => {
+      const ns = namespace({ metadata: { name: 'alchemy-direct-ns' } });
+      const restored = JSON.parse(JSON.stringify(ns));
+
+      await deployer.delete(restored, { mode: 'direct', namespace: 'default' });
+
+      const callArgs = mockEngine.deleteResource.mock.calls[0];
+      const deployedResource = callArgs[0];
+      expect(deployedResource.kind).toBe('Namespace');
+      expect(deployedResource.namespace).toBe('');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+    });
   });
 
   describe('TypeKroDeployer Interface Compliance', () => {
@@ -500,6 +519,34 @@ describe('KroTypeKroDeployer', () => {
     expect(instances[0]?.metadata?.namespace).toBe('apps-b');
   });
 
+  it('treats missing generated CRD as idempotent Alchemy KRO definition cleanup', async () => {
+    const deletes: Record<string, unknown>[] = [];
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      delete: mock((resource: Record<string, unknown>) => {
+        deletes.push(resource);
+        return Promise.resolve({});
+      }),
+    };
+
+    await deleteKroDefinition({} as any, {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+    }, k8sApi);
+
+    expect(k8sApi.list).toHaveBeenCalledWith('apiextensions.k8s.io/v1', 'CustomResourceDefinition');
+    expect(deletes).toEqual([
+      {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'test-app' },
+      },
+    ]);
+  });
+
   it('defers ResourceGraphDefinition state deletion while KRO instances still exist', async () => {
     const mockEngine = createMockEngine() as any;
     const deleteInstance = mock(() => Promise.resolve());
@@ -514,6 +561,9 @@ describe('KroTypeKroDeployer', () => {
 
     await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toThrow(
       'ResourceGraphDefinition deletion deferred'
+    );
+    await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toBeInstanceOf(
+      ResourceGraphDefinitionDeletionDeferredError
     );
 
     expect(deleteInstance).not.toHaveBeenCalled();
@@ -643,6 +693,40 @@ describe('KroTypeKroDeployer', () => {
 
     await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toThrow('RBAC denied');
     expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
+  });
+
+  it('keeps Alchemy state without failing when RGD deletion is deferred', async () => {
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'test-app' },
+      spec: {},
+    } as any;
+    const destroy = mock(() => ({ destroyed: true }));
+    const deployer = {
+      delete: mock(() => Promise.reject(new ResourceGraphDefinitionDeletionDeferredError('test-app'))),
+    };
+    const logger = {
+      debug: mock(() => undefined),
+      error: mock(() => undefined),
+    } as any;
+
+    const result = await handleResourceDeletionForTest(
+      { destroy, id: 'rgd-state' } as any,
+      {
+        resource: rgd,
+        namespace: 'test-ns',
+        deploymentStrategy: 'kro',
+        deployer,
+      } as any,
+      logger
+    );
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(result.resource).toBe(rgd);
+    expect(result.deployedResource).toBe(rgd);
+    expect(result.ready).toBe(false);
   });
 
   it('refuses generic KRO custom resource deletion without finalizer-safe metadata', async () => {

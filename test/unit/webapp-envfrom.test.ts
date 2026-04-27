@@ -139,6 +139,13 @@ describe('webAppWithProcessing envFrom', () => {
     expect(valuesJson).toContain('test-app-db-pooler');
   });
 
+  it('honors cnpgOperator.installCRDs false', () => {
+    const compositionFn = (webAppWithProcessing as any)._compositionFn as () => unknown;
+    expect(compositionFn.toString()).toContain(
+      'installCRDs: spec.cnpgOperator?.installCRDs ??'
+    );
+  });
+
   it('scopes the Inngest HelmRepository name by app namespace', () => {
     const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
     const graph = factory.createResourceGraphForInstance({

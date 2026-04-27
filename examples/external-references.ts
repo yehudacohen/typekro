@@ -283,19 +283,19 @@ const frontendComposition = kubernetesComposition(
     const cacheRef = webAppResources.cache; // 🪄 Magic proxy creates external ref
     const cacheServiceRef = webAppResources.cacheService; // 🪄 Magic proxy creates external ref
 
-    return {
-      // Create frontend resources that reference other compositions
-      frontend: Deployment({
-        name: 'frontend-app',  // Use static name to avoid KubernetesRef issues
-        image: schema.image,
-        env: {
-          // Cross-composition references work seamlessly in environment variables
-          DATABASE_URL: dbRef.status.connectionString,     // From databaseComposition
-          CACHE_HOST: cacheServiceRef.spec.clusterIP,      // From webAppComposition  
-          CACHE_PORT: '6379',
-        }
-      }),
+    // Create frontend resources that reference other compositions.
+    const _frontend = Deployment({
+      name: 'frontend-app',  // Use static name to avoid KubernetesRef issues
+      image: schema.image,
+      env: {
+        // Cross-composition references work seamlessly in environment variables
+        DATABASE_URL: dbRef.status.connectionString,     // From databaseComposition
+        CACHE_HOST: cacheServiceRef.spec.clusterIP,      // From webAppComposition
+        CACHE_PORT: '6379',
+      }
+    });
 
+    return {
       // Status builder can also use cross-composition references
       ready: true, // ✨ Natural JavaScript boolean
       databaseConnected: dbRef.status.ready,               // Cross-composition status check

@@ -16,7 +16,11 @@ import { createKubernetesClientProvider } from '../core/kubernetes/client-provid
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
-import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
+import {
+  DirectTypeKroDeployer,
+  KroTypeKroDeployer,
+  ResourceGraphDefinitionDeletionDeferredError,
+} from './deployers.js';
 import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
 import type { KroDeletionOptions } from './kro-delete.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
@@ -280,6 +284,20 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
       ...props.options,
     });
   } catch (error: unknown) {
+    if (error instanceof ResourceGraphDefinitionDeletionDeferredError) {
+      logger.debug('Deferring Alchemy state deletion for ResourceGraphDefinition', {
+        resourceName: props.resource.metadata?.name,
+        reason: error.message,
+      });
+      return {
+        ...context,
+        resource: props.resource,
+        namespace: props.namespace,
+        deployedResource: props.resource,
+        ready: false,
+        deployedAt: Date.now(),
+      } as unknown as TypeKroResource<T>;
+    }
     logger.error('Error deleting resource', ensureError(error));
     throw error;
   } finally {
