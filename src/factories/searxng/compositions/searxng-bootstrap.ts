@@ -16,12 +16,13 @@
  * await factory.deploy({
  *   name: 'searxng',
  *   search: { formats: ['html', 'json'] },
- *   server: { limiter: false, secret_key: 'change-me-in-production' },
+ *   server: { limiter: false, secret_key: process.env.SEARXNG_SECRET_KEY! },
  * });
  * ```
  */
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -35,8 +36,6 @@ import {
   SearxngBootstrapConfigSchema,
   SearxngBootstrapStatusSchema,
 } from '../types.js';
-
-const DEFAULT_SEARXNG_SECRET_KEY = 'change-me-in-production';
 
 /**
  * Return a copy of the server config with `secret_key` removed. The field
@@ -208,6 +207,16 @@ ${redisSection}`;
       const secretName = `${spec.name}-secret`;
 
       if (!spec.secretKeyRef) {
+        const secretKey = spec.server?.secret_key;
+        if (secretKey === undefined) {
+          throw new TypeKroError(
+            'searxngBootstrap requires server.secret_key or secretKeyRef when enabled. ' +
+              'Use secretKeyRef for production deployments managed by external secret tooling.',
+            'REQUIRED_CONFIG_MISSING',
+            { field: 'server.secret_key', alternative: 'secretKeyRef' }
+          );
+        }
+
         secret({
           metadata: {
             name: secretName,
@@ -221,7 +230,7 @@ ${redisSection}`;
           },
           type: 'Opaque',
           stringData: {
-            secret_key: spec.server?.secret_key ?? DEFAULT_SEARXNG_SECRET_KEY,
+            secret_key: secretKey,
           },
           id: 'searxngSecret',
         });
@@ -288,30 +297,23 @@ ${redisSection}`;
 
     // ── Status ─────────────────────────────────────────────────────────
 
-    const disabledCondition = 'has(schema.spec.enabled) && schema.spec.enabled == false';
-    const urlExpression = `"http://" + schema.spec.name + "." + (has(schema.spec.namespace) ? schema.spec.namespace : "searxng") + ":${port}"`;
-
     return {
       ready: Cel.expr<boolean>(
-        `${disabledCondition} ? true : `,
+        'has(schema.spec.enabled) && schema.spec.enabled == false ? true : ',
         deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "True")'
       ),
       phase: Cel.expr<'Ready' | 'Installing' | 'Disabled'>(
-        `${disabledCondition} ? "Disabled" : (`,
+        'has(schema.spec.enabled) && schema.spec.enabled == false ? "Disabled" : ',
         deployment.status.conditions,
-        '.exists(c, c.type == "Available" && c.status == "True") ? "Ready" : "Installing")'
+        '.exists(c, c.type == "Available" && c.status == "True") ? "Ready" : "Installing"'
       ),
       failed: Cel.expr<boolean>(
-        `${disabledCondition} ? false : `,
+        'has(schema.spec.enabled) && schema.spec.enabled == false ? false : ',
         deployment.status.conditions,
         '.exists(c, c.type == "Available" && c.status == "False")'
       ),
-      url: Cel.expr<string>(
-        `${disabledCondition} ? "" : (`,
-        deployment.status.conditions,
-        `.exists(c, true) ? ${urlExpression} : ${urlExpression})`
-      ),
+      url: `http://${spec.name}.${resolvedNamespace}:${port}`,
     };
   }
 );

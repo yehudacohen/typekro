@@ -317,6 +317,7 @@ function resolveDefaultsByReExecution(
 
     const defaults: Record<string, string | number | boolean> = {};
     const ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
+    const ternaryConditionFieldHints = extractTernaryConditionFieldHints(compositionFn.toString());
 
     // Match resources by RESOURCE ID rather than by insertion order. Compositions
     // that use `if (!spec.optional) { createResource(...) }` produce different
@@ -348,7 +349,13 @@ function resolveDefaultsByReExecution(
       const defaultsRes = defaultsMap.get(id);
       if (!defaultsRes) continue; // resource only in proxy run — skip
       extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
-      extractTernaryConditionals(proxyRes, defaultsRes, ternaryConditionals, optionalFieldNames);
+      extractTernaryConditionals(
+        proxyRes,
+        defaultsRes,
+        ternaryConditionals,
+        optionalFieldNames,
+        ternaryConditionFieldHints
+      );
     }
 
     const hasResults =
@@ -444,27 +451,19 @@ function extractDefaultsByComparison(
  * (from the previous newline-at-start-of-key to the marker's end) as a
  * ternary-controlled conditional.
  *
- * KNOWN LIMITATION — tested field must equal referenced field
- * ---------------------------------------------------------
- * The emitted `conditionField` is taken from the `__KUBERNETES_REF__`
- * marker inside the truthy branch — i.e., the field that the branch
- * REFERENCES. Under the hood, this function has no direct access to the
- * JavaScript ternary's TEST field because JS ternaries evaluate eagerly
- * and neither branch leaves a runtime trace of "which field was
- * tested". This works correctly for the overwhelmingly common case
- * where the tested field and the referenced field are the same:
+ * Ternary test-field hints
+ * ------------------------
+ * Re-execution only shows that a marker-containing section disappeared;
+ * it does not leave runtime metadata for the ternary TEST expression. The
+ * caller supplies a best-effort map derived from the composition source so
+ * common decoupled patterns can guard on the tested field:
  *
  *     spec.redisUrl ? `redis:\n  url: ${spec.redisUrl}` : ''
  *
- * but produces semantically wrong CEL for patterns like:
- *
  *     spec.enableRedis ? `redis:\n  url: ${spec.connectionString}` : ''
  *
- * ...where we would emit `has(schema.spec.connectionString)` instead of
- * `has(schema.spec.enableRedis)`. Compositions that need decoupled
- * test/reference fields should use an explicit `Cel.expr()` with the
- * correct `has()` expression until AST-based detection lands (tracked
- * in https://github.com/yehudacohen/typekro/issues/57).
+ * If no hint is available, we fall back to the referenced field, preserving
+ * the historical behavior for `spec.redisUrl ? ... ${spec.redisUrl} ...`.
  *
  * FRAGILE: this walks line-by-line through the proxy string and backs
  * through parent YAML keys by regex-matching `^\s*\w+:\s*$` and comparing
@@ -485,7 +484,8 @@ function extractTernaryConditionals(
   proxyVal: unknown,
   defaultsVal: unknown,
   result: ReExecutionResult['ternaryConditionals'],
-  optionalFieldNames: Set<string>
+  optionalFieldNames: Set<string>,
+  conditionFieldHints: ReadonlyMap<string, string>
 ): void {
   const proxyStr = typeof proxyVal === 'string' ? proxyVal : null;
   const defaultsStr = typeof defaultsVal === 'string' ? defaultsVal : null;
@@ -502,13 +502,14 @@ function extractTernaryConditionals(
         continue;
       }
       const field = fieldPath.slice('spec.'.length);
+      const conditionField = conditionFieldHints.get(field) ?? field;
       const marker = match[0];
 
       // Only optional fields can be ternary-controlled. Required fields always
       // have a value (the sentinel in the defaults run), so their markers are
       // always "absent" from the defaults string but they're substitutions,
       // not conditionals.
-      const topLevelField = field.split('.')[0];
+      const topLevelField = conditionField.split('.')[0];
       if (!topLevelField) {
         match = markerPattern.exec(proxyStr);
         continue;
@@ -572,7 +573,7 @@ function extractTernaryConditionals(
           result.push({
             proxySection,
             falsyValue: '',
-            conditionField: field,
+            conditionField,
           });
         }
       }
@@ -584,7 +585,13 @@ function extractTernaryConditionals(
   // Recurse into arrays and objects
   if (Array.isArray(proxyVal) && Array.isArray(defaultsVal)) {
     for (let i = 0; i < Math.min(proxyVal.length, defaultsVal.length); i++) {
-      extractTernaryConditionals(proxyVal[i], defaultsVal[i], result, optionalFieldNames);
+      extractTernaryConditionals(
+        proxyVal[i],
+        defaultsVal[i],
+        result,
+        optionalFieldNames,
+        conditionFieldHints
+      );
     }
     return;
   }
@@ -595,10 +602,38 @@ function extractTernaryConditionals(
         (proxyVal as Record<string, unknown>)[key],
         (defaultsVal as Record<string, unknown>)[key],
         result,
-        optionalFieldNames
+        optionalFieldNames,
+        conditionFieldHints
       );
     }
   }
+}
+
+function extractTernaryConditionFieldHints(source: string): Map<string, string> {
+  const hints = new Map<string, string>();
+  const ternaryTemplatePattern = /spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)\s*\?\s*`([\s\S]*?)`\s*:\s*(?:''|""|``)/g;
+  let match: RegExpExecArray | null = ternaryTemplatePattern.exec(source);
+  while (match) {
+    const conditionField = normalizeSpecFieldPath(match[1]);
+    const consequent = match[2] ?? '';
+    if (conditionField) {
+      const refPattern = /\$\{\s*spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)/g;
+      let refMatch: RegExpExecArray | null = refPattern.exec(consequent);
+      while (refMatch) {
+        const referencedField = normalizeSpecFieldPath(refMatch[1]);
+        if (referencedField && !hints.has(referencedField)) {
+          hints.set(referencedField, conditionField);
+        }
+        refMatch = refPattern.exec(consequent);
+      }
+    }
+    match = ternaryTemplatePattern.exec(source);
+  }
+  return hints;
+}
+
+function normalizeSpecFieldPath(path: string | undefined): string | undefined {
+  return path?.replace(/\?\./g, '.');
 }
 
 /**

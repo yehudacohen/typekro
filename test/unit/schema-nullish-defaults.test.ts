@@ -380,6 +380,35 @@ describe('Schema Nullish Defaults', () => {
       expect(yaml).toContain('string(schema.spec.cacheUrl)');
       expect(yaml).not.toContain('has(schema.spec.redisUrl)');
     });
+
+    it('guards conditional YAML sections with the ternary test field when it differs from the referenced field', async () => {
+      const { type } = await import('arktype');
+      const { kubernetesComposition, simple } = await import('../../src/index.js');
+
+      const composition = kubernetesComposition(
+        {
+          name: 'decoupled-ternary-test',
+          apiVersion: 'v1alpha1',
+          kind: 'DecoupledTernaryTest',
+          spec: type({ name: 'string', 'enableRedis?': 'boolean', connectionString: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.ConfigMap({
+            name: spec.name,
+            data: {
+              'settings.yml': `base: true${spec.enableRedis ? `\nredis:\n  url: ${spec.connectionString}` : ''}`,
+            },
+            id: 'settings',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('has(schema.spec.enableRedis)');
+      expect(yaml).not.toContain('has(schema.spec.connectionString) ?');
+    });
   });
 
   describe('Phase 1 / Phase 2 override precedence', () => {
@@ -731,10 +760,11 @@ describe('Schema Nullish Defaults', () => {
       const yaml: string = searxngBootstrap.toYaml();
 
       expect(yaml).toContain('includeWhen');
+      expect(yaml).toContain('!(has(schema.spec.enabled))');
       expect(yaml).toContain('schema.spec.enabled != false');
     });
 
-    it('KRO mode: disabled status does not require gated deployment resources', async () => {
+    it('KRO mode: status CEL guards disabled instances before deployment refs', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
@@ -743,7 +773,7 @@ describe('Schema Nullish Defaults', () => {
       expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? true');
       expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? \\"Disabled\\"');
       expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? false');
-      expect(yaml).toContain('\\"http://\\" + spec.name');
+      expect(yaml).toContain('searxngDeployment.status.conditions.exists');
     });
 
     it('Direct mode: bootstrap does not auto-enable limiter when only redisUrl is provided', async () => {
@@ -766,19 +796,33 @@ describe('Schema Nullish Defaults', () => {
       expect(settingsYaml).toContain('limiter: false');
     });
 
-    it('Direct mode: default-enabled bootstrap creates a non-empty generated secret', async () => {
+    it('Direct mode: default-enabled bootstrap requires an explicit secret source', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
       const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
-      const graph = factory.createResourceGraphForInstance({ name: 'searxng' });
+
+      expect(() => factory.createResourceGraphForInstance({ name: 'searxng' })).toThrow(
+        'requires server.secret_key or secretKeyRef'
+      );
+    });
+
+    it('Direct mode: generated secret uses the explicit server secret key', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'searxng',
+        server: { secret_key: 'test-secret' },
+      });
       const secret = graph.resources.find(
         (resource) => resource.manifest.kind === 'Secret' &&
           resource.manifest.metadata?.name === 'searxng-secret'
       );
       const stringData = secret?.manifest.stringData as Record<string, string> | undefined;
 
-      expect(stringData?.secret_key).toBe('change-me-in-production');
+      expect(stringData?.secret_key).toBe('test-secret');
     });
   });
 

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
+import { execSync } from 'node:child_process';
 import { type } from 'arktype';
 import {
   externalDnsHelmRelease,
@@ -12,6 +13,90 @@ import {
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from '../shared-kubeconfig.js';
+
+interface ResourceGraphInspectable {
+  createResourceGraphForInstance(spec: Record<string, unknown>): {
+    resources: Array<{
+      manifest: {
+        kind?: string;
+        spec?: { values?: Record<string, unknown> };
+      };
+    }>;
+  };
+}
+
+interface AwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
+function loadAwsCredentials(): AwsCredentials | undefined {
+  try {
+    execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
+    const envOutput = execSync('aws configure export-credentials --format env-no-export', {
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    const envMap = Object.fromEntries(
+      envOutput.trim().split('\n').map((line: string) => {
+        const eq = line.indexOf('=');
+        return [line.slice(0, eq), line.slice(eq + 1)];
+      })
+    );
+    const accessKeyId = envMap.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '';
+    const secretAccessKey = envMap.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '';
+    const sessionToken = envMap.AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN;
+
+    if (!accessKeyId || !secretAccessKey) return undefined;
+    return { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+function loadAwsCredentialsOrSkip(): AwsCredentials | undefined {
+  const credentials = loadAwsCredentials();
+  if (credentials) return credentials;
+
+  const message = 'no valid AWS credentials (run: aws sts get-caller-identity)';
+  if (process.env.REQUIRE_AWS_EXTERNAL_DNS === 'true') {
+    throw new Error(`External-DNS AWS integration is required, but ${message}`);
+  }
+
+  console.log(`⏭️  Skipping test: ${message}`);
+  return undefined;
+}
+
+async function installAwsCredentialsSecret(
+  kubeConfig: k8s.KubeConfig,
+  namespace: string,
+  credentials: AwsCredentials
+): Promise<void> {
+  await ensureNamespaceExists(namespace, kubeConfig);
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+
+  try {
+    await coreApi.deleteNamespacedSecret({
+      name: 'aws-route53-credentials',
+      namespace,
+    });
+  } catch (_e) {
+    // Secret may not exist from a prior run.
+  }
+
+  await coreApi.createNamespacedSecret({
+    namespace,
+    body: {
+      metadata: { name: 'aws-route53-credentials' },
+      stringData: {
+        'access-key-id': credentials.accessKeyId,
+        'secret-access-key': credentials.secretAccessKey,
+        ...(credentials.sessionToken ? { 'session-token': credentials.sessionToken } : {}),
+      },
+    } as k8s.V1Secret,
+  });
+}
 
 // Test schemas for integration testing
 const _ExternalDnsTestSpecSchema = type({
@@ -57,73 +142,12 @@ describeOrSkip('External-DNS Integration Tests', () => {
     const { externalDnsBootstrap } = await import(
       '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
     );
-    const { execSync } = require('node:child_process');
-
-    // Verify and export AWS credentials from any source (env vars, profiles, SSO, etc.)
-    let awsAccessKeyId: string;
-    let awsSecretAccessKey: string;
-    let awsSessionToken: string | undefined;
-    try {
-      execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
-      // Export resolved credentials (works with SSO, env vars, profiles, instance roles)
-      const envOutput = execSync('aws configure export-credentials --format env-no-export', {
-        encoding: 'utf-8', timeout: 10000,
-      });
-      const envMap = Object.fromEntries(
-        envOutput.trim().split('\n').map((line: string) => {
-          const eq = line.indexOf('=');
-          return [line.slice(0, eq), line.slice(eq + 1)];
-        })
-      );
-      awsAccessKeyId = envMap.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '';
-      awsSecretAccessKey = envMap.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '';
-      awsSessionToken = envMap.AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN;
-      if (!awsAccessKeyId || !awsSecretAccessKey) throw new Error('empty');
-    } catch {
-      console.log('⏭️  Skipping test: no valid AWS credentials (run: aws sts get-caller-identity)');
+    const credentials = loadAwsCredentialsOrSkip();
+    if (!credentials) {
       return;
     }
 
-    // Create the namespace first
-    const coreApi = createCoreV1ApiClient(kubeConfig);
-    try {
-      await coreApi.createNamespace({
-        body: { metadata: { name: 'external-dns' } },
-      });
-    } catch (_e) {
-      // Namespace may already exist
-    }
-
-    // Deploy the secret with real AWS credentials
-    // Use replace strategy to handle existing secrets from previous test runs
-    try {
-      // First try to delete existing secret
-      await coreApi.deleteNamespacedSecret({
-        name: 'aws-route53-credentials',
-        namespace: 'external-dns',
-      });
-    } catch (_e) {
-      // Secret may not exist, ignore
-    }
-
-    try {
-      await coreApi.createNamespacedSecret({
-        namespace: 'external-dns',
-        body: {
-          metadata: { name: 'aws-route53-credentials' },
-          stringData: {
-            'access-key-id': awsAccessKeyId,
-            'secret-access-key': awsSecretAccessKey,
-            ...(awsSessionToken ? { 'session-token': awsSessionToken } : {}),
-          },
-        } as k8s.V1Secret,
-      });
-    } catch (e: any) {
-      if (e.body?.code !== 409 && e.statusCode !== 409) {
-        // Ignore AlreadyExists errors (409)
-        throw e;
-      }
-    }
+    await installAwsCredentialsSecret(kubeConfig, 'external-dns', credentials);
 
     const directFactory = externalDnsBootstrap.factory('direct', {
       namespace: testNamespace,
@@ -201,87 +225,146 @@ describeOrSkip('External-DNS Integration Tests', () => {
     expect(release.spec.values?.dryRun).toBe(true);
   });
 
-  it.skip('should support dual deployment strategies', async () => {
-    // Test both kro and direct deployment strategies using proper bootstrap composition
-    // Note: Credentials secret already created in previous test
+  it('bootstrap should be provider-aware and forward advanced schema fields into Helm values', async () => {
     const { externalDnsBootstrap } = await import(
       '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
     );
 
-    // Test direct deployment strategy
     const directFactory = externalDnsBootstrap.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Wait for ready
-      timeout: 180000, // 3 minutes
+      waitForReady: false,
+      kubeConfig,
+    });
+    const graph = (directFactory as unknown as ResourceGraphInspectable).createResourceGraphForInstance({
+      name: 'external-dns-cloudflare-bootstrap',
+      namespace: 'external-dns',
+      provider: 'cloudflare',
+      domainFilters: ['cloudflare.example.com'],
+      policy: 'sync',
+      dryRun: true,
+      txtOwnerId: 'typekro-test',
+      interval: '30s',
+      logLevel: 'debug',
+    });
+
+    const helmRelease = graph.resources.find((resource) => resource.manifest.kind === 'HelmRelease')
+      ?.manifest;
+    const values = helmRelease?.spec?.values as Record<string, unknown> | undefined;
+
+    expect(values?.provider).toBe('cloudflare');
+    expect(values?.domainFilters).toEqual(['cloudflare.example.com']);
+    expect(values?.policy).toBe('sync');
+    expect(values?.dryRun).toBe(true);
+    expect(values?.txtOwnerId).toBe('typekro-test');
+    expect(values?.interval).toBe('30s');
+    expect(values?.logLevel).toBe('debug');
+    expect(values?.env).toBeUndefined();
+  });
+
+  it('bootstrap supports KRO paths with values emitted at spec.values', async () => {
+    const { externalDnsBootstrap } = await import(
+      '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
+    );
+
+    expect(() => externalDnsBootstrap.toYaml()).not.toThrow();
+    expect(() => externalDnsBootstrap.factory('kro')).not.toThrow();
+  });
+
+  it('bootstrap deploys through KRO and reconciles dynamic Helm values at runtime', async () => {
+    const credentials = loadAwsCredentialsOrSkip();
+    if (!credentials) {
+      return;
+    }
+
+    const { externalDnsBootstrap } = await import(
+      '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
+    );
+
+    const kroNamespace = `${testNamespace}-kro`;
+    const appNamespace = `${testNamespace}-runtime`;
+    const instanceName = 'external-dns-kro-values';
+    let deleteInstance: (() => Promise<unknown>) | undefined;
+
+    try {
+      await ensureNamespaceExists(kroNamespace, kubeConfig);
+      await installAwsCredentialsSecret(kubeConfig, appNamespace, credentials);
+
+      const kroFactory = externalDnsBootstrap.factory('kro', {
+        namespace: kroNamespace,
+        waitForReady: true,
+        timeout: 300000,
+        kubeConfig,
+      });
+      deleteInstance = () => kroFactory.deleteInstance(instanceName);
+
+      const instance = await kroFactory.deploy({
+        name: instanceName,
+        namespace: appNamespace,
+        provider: 'aws',
+        domainFilters: ['kro-runtime.example.com'],
+        policy: 'upsert-only',
+        dryRun: true,
+        txtOwnerId: 'typekro-kro-test',
+        interval: '1m',
+        logLevel: 'debug',
+      });
+
+      expect(instance.spec.provider).toBe('aws');
+      expect(instance.spec.domainFilters).toEqual(['kro-runtime.example.com']);
+      expect(instance.spec.dryRun).toBe(true);
+      expect(instance.status.ready).toBe(true);
+      expect(instance.status.dnsProvider).toBe('aws');
+      expect(instance.status.policy).toBe('upsert-only');
+    } finally {
+      if (deleteInstance) {
+        try {
+          await deleteInstance();
+        } catch (e) {
+          console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+        }
+      }
+      try {
+        await deleteNamespaceIfExists(appNamespace, kubeConfig);
+      } catch (_e) {
+        // Namespace cleanup is best-effort after failed deploys.
+      }
+      try {
+        await deleteNamespaceIfExists(kroNamespace, kubeConfig);
+      } catch (_e) {
+        // Namespace cleanup is best-effort after failed deploys.
+      }
+    }
+  }, 420000);
+
+  it('exposes direct and KRO strategies for bootstrap composition', async () => {
+    const { externalDnsBootstrap } = await import(
+      '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
+    );
+
+    const directFactory = externalDnsBootstrap.factory('direct', {
+      namespace: testNamespace,
+      waitForReady: false,
       kubeConfig: kubeConfig,
     });
 
-    // Test kro factory creation (but not deployment)
-    // NOTE: Kro deployment of HelmRelease with arbitrary spec.values is not supported
-    // because Kro requires a schema for all fields, and HelmRelease spec.values is arbitrary.
-    // This is a known limitation documented in external-manifest-compatibility.md
+    expect(directFactory.mode).toBe('direct');
+    expect(directFactory.namespace).toBe(testNamespace);
+
     const kroFactory = externalDnsBootstrap.factory('kro', {
       namespace: testNamespace,
-      waitForReady: true, // Wait for ready
-      timeout: 180000, // 3 minutes
+      waitForReady: false,
       kubeConfig: kubeConfig,
     });
-
-    // Both factories should be created successfully
-    expect(directFactory.mode).toBe('direct');
     expect(kroFactory.mode).toBe('kro');
-    expect(directFactory.namespace).toBe(testNamespace);
-    expect(kroFactory.namespace).toBe(testNamespace);
-
-    // Test direct deployment
-    const directInstance = await directFactory.deploy({
-      name: 'external-dns-dual-direct',
-      namespace: 'external-dns',
-      provider: 'aws',
-      domainFilters: ['dual-strategy.example.com'],
-      policy: 'upsert-only',
-      dryRun: true,
-    });
-
-    // Validate direct deployment structure and status
-    expect(directInstance).toBeDefined();
-    expect(directInstance.metadata.name).toBe('external-dns-dual-direct');
-    expect(directInstance.spec.provider).toBe('aws');
-    expect(directInstance.spec.dryRun).toBe(true);
-
-    // Skip Kro deployment test - Kro cannot handle HelmRelease with arbitrary spec.values
-    // The Kro controller fails with: "error getting field schema for path spec.values.dryRun"
-    // This is expected behavior - Kro requires schemas for all fields
-    console.log('⏭️  Skipping Kro deployment: HelmRelease spec.values not supported by Kro');
-
-    // Validate status fields
-    expect(directInstance.status).toBeDefined();
-    expect(typeof directInstance.status.ready).toBe('boolean');
-    expect(directInstance.status.dnsProvider).toBe('aws');
-    expect(directInstance.status.policy).toBe('upsert-only');
-    expect(directInstance.status.dryRun).toBe(true);
-
-    // Clean up
-    // await directFactory.deleteInstance('external-dns-dual-direct');
-  }, 360000); // 6 minute timeout for dual deployment (kro takes longer)
+  });
 
   it('should handle DNS record management correctly', async () => {
     // External-dns with provider: 'aws' requires valid AWS credentials to start.
     // The pod will crash-loop without them, causing a 180s timeout.
     // Use sts get-caller-identity to verify credentials from any source
     // (env vars, profiles, SSO, instance roles, etc.).
-    const { execSync } = require('node:child_process');
-    try {
-      execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
-    } catch {
-      throw new Error(
-        'Valid AWS credentials required for external-dns integration test.\n' +
-        'Options:\n' +
-        '  • aws sso login --profile <your-profile>\n' +
-        '  • export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...\n' +
-        '  • aws configure\n' +
-        'Verify with: aws sts get-caller-identity'
-      );
+    if (!loadAwsCredentialsOrSkip()) {
+      return;
     }
 
     const { externalDnsBootstrap } = await import(

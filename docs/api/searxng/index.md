@@ -36,7 +36,7 @@ const factory = searxngBootstrap.factory('direct', {
 
 await factory.deploy({
   name: 'searxng',
-  server: { secret_key: 'change-me-in-production', limiter: false },
+  server: { secret_key: process.env.SEARXNG_SECRET_KEY!, limiter: false },
   // search.formats only takes effect in direct mode — see "Known Limitations" above
   search: { formats: ['html', 'json'] },
 });
@@ -77,7 +77,7 @@ await factory.deploy({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `secret_key` | `string` | `'change-me-in-production'` when no `secretKeyRef` is set | Session encryption key used for the auto-created Secret. Provide a real value or external `secretKeyRef` for production |
+| `secret_key` | `string` | required unless `secretKeyRef` is set | Session encryption key used for the auto-created Secret |
 | `limiter` | `boolean` | — | Enable built-in rate limiter |
 | `bind_address` | `string` | `'0.0.0.0:8080'` | Bind address |
 | `method` | `string` | `'GET'` | HTTP method |
@@ -101,7 +101,7 @@ SearXNG has a built-in rate limiter that uses Redis/Valkey. Pass both `redisUrl`
 await factory.deploy({
   name: 'searxng',
   redisUrl: 'redis://valkey:6379/0',
-  server: { limiter: true },
+  server: { secret_key: process.env.SEARXNG_SECRET_KEY!, limiter: true },
 });
 ```
 
@@ -111,7 +111,7 @@ The bootstrap composition automatically configures `redis.url` in settings.yml w
 await factory.deploy({
   name: 'searxng',
   redisUrl: 'redis://valkey:6379/0',
-  server: { limiter: false }, // explicit opt-out — limiter stays off
+  server: { secret_key: process.env.SEARXNG_SECRET_KEY!, limiter: false },
 });
 ```
 
@@ -134,6 +134,7 @@ const search = await searchFactory.deploy({
   name: 'searxng',
   namespace: 'my-app',
   redisUrl: 'redis://my-app-cache:6379/0',
+  secretKeyRef: { name: 'searxng-secret', key: 'secret_key' },
   search: { formats: ['html', 'json'] }, // ⚠️ direct mode only — see "Known Limitations"
 });
 

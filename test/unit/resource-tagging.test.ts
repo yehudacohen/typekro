@@ -35,6 +35,7 @@ import {
   RESOURCE_ID_ANNOTATION,
   sanitiseLabelValue,
   SCOPES_ANNOTATION,
+  scopesMatchDeployTarget,
   scopesMatchFilter,
   type TagContext,
 } from '../../src/core/deployment/resource-tagging.js';
@@ -89,10 +90,10 @@ describe('applyTypekroTags', () => {
     expect(JSON.parse(ann)).toEqual(['cluster']);
   });
 
-  it('omits scopes annotation when scopes is empty', () => {
+  it('sets empty scopes annotation when scopes is empty to clear stale cluster state', () => {
     const manifest = makeManifest();
     applyTypekroTags(manifest, makeCtx({ scopes: [] }));
-    expect((manifest.metadata as any).annotations[SCOPES_ANNOTATION]).toBeUndefined();
+    expect(JSON.parse((manifest.metadata as any).annotations[SCOPES_ANNOTATION])).toEqual([]);
   });
 
   it('sets depends-on annotation when provided', () => {
@@ -288,6 +289,19 @@ describe('scopesMatchFilter', () => {
 
   it('still matches scoped resources when includeUnscoped is false', () => {
     expect(scopesMatchFilter(['cluster'], ['cluster'], false)).toBe(true);
+  });
+});
+
+describe('scopesMatchDeployTarget', () => {
+  it('matches only unscoped resources for an empty deploy target', () => {
+    expect(scopesMatchDeployTarget([], [])).toBe(true);
+    expect(scopesMatchDeployTarget(['cluster'], [])).toBe(false);
+  });
+
+  it('matches only explicitly targeted scopes for a non-empty deploy target', () => {
+    expect(scopesMatchDeployTarget([], ['cluster'])).toBe(false);
+    expect(scopesMatchDeployTarget(['cluster'], ['cluster'])).toBe(true);
+    expect(scopesMatchDeployTarget(['team:ops'], ['cluster'])).toBe(false);
   });
 });
 

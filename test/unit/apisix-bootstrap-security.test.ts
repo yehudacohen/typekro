@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
 import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
 import { mapAPISixConfigToHelmValues, validateAPISixHelmValues } from '../../src/factories/apisix/utils/helm-values-mapper.js';
+import { kubernetesComposition } from '../../src/index.js';
 
 describe('APISIX bootstrap credential serialization', () => {
   it('exposes gateway.ingress in the KRO config schema', () => {
@@ -241,6 +243,34 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
+  it('does not emit undeclared helmRelease status', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    process.env.APISIX_ADMIN_KEY = 'env-admin-key';
+    process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
+
+    try {
+      const yaml = apisixBootstrap.toYaml();
+      const statusStart = yaml.indexOf('    status:');
+      const resourcesStart = yaml.indexOf('\n  resources:', statusStart);
+      const statusBlock = yaml.slice(statusStart, resourcesStart);
+
+      expect(statusBlock).not.toContain('helmRelease:');
+      expect(statusBlock).toContain('ready:');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
   it('fails KRO YAML generation when credentials are omitted and env vars are unset', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;
@@ -273,6 +303,75 @@ describe('APISIX bootstrap credential serialization', () => {
       expect(() => apisixBootstrap.factory('kro').toYaml()).toThrow(
         'APISIX admin credentials not configured'
       );
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
+  it('fails nested KRO composition generation when credentials are omitted and env vars are unset', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    try {
+      delete process.env.APISIX_ADMIN_KEY;
+      delete process.env.APISIX_VIEWER_KEY;
+
+      expect(() => {
+        const parent = kubernetesComposition(
+          {
+            name: 'apisix-nested-security',
+            kind: 'ApisixNestedSecurity',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            apisixBootstrap({ name: spec.name });
+            return { ready: true };
+          }
+        );
+        parent.toYaml();
+      }).toThrow('APISIX admin credentials not configured');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
+  it('allows factory("kro").toYaml(spec) to use explicit deploy-time credentials', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    delete process.env.APISIX_ADMIN_KEY;
+    delete process.env.APISIX_VIEWER_KEY;
+
+    try {
+      const yaml = apisixBootstrap.factory('kro').toYaml({
+        name: 'apisix',
+        gateway: {
+          adminCredentials: {
+            admin: 'spec-admin-key',
+            viewer: 'spec-viewer-key',
+          },
+        },
+      });
+
+      expect(yaml).toContain('spec-admin-key');
+      expect(yaml).toContain('spec-viewer-key');
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;

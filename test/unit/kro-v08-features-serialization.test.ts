@@ -482,9 +482,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             });
             ConfigMap({
               name: `${spec.name}-config`,
-              data: cacheDep.status.ready
-                ? { CACHE_MODE: 'redis' }
-                : { CACHE_MODE: 'memory' },
+              data: cacheDep.status.ready ? { CACHE_MODE: 'redis' } : { CACHE_MODE: 'memory' },
               id: 'config',
             });
             const app = Deployment({ name: `${spec.name}-app`, image: spec.image, id: 'app' });
@@ -903,7 +901,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         const parsed = parseRgdYaml(graph.toYaml());
         const guarded = parsed.spec.resources.find((r) => r.id.startsWith('search1'));
-        const unguardedSamePrefix = parsed.spec.resources.find((r) => r.id.startsWith('searchAdmin'));
+        const unguardedSamePrefix = parsed.spec.resources.find((r) =>
+          r.id.startsWith('searchAdmin')
+        );
 
         expect(guarded?.includeWhen).toEqual(['${schema.spec.enabled}']);
         expect(unguardedSamePrefix).toBeDefined();
@@ -947,7 +947,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         );
 
         const parsed = parseRgdYaml(graph.toYaml());
-        const nestedDeployment = parsed.spec.resources.find((r) => r.id.startsWith('searchBootstrap'));
+        const nestedDeployment = parsed.spec.resources.find((r) =>
+          r.id.startsWith('searchBootstrap')
+        );
 
         expect(nestedDeployment).toBeDefined();
         expect(nestedDeployment!.includeWhen).toBeDefined();
@@ -1128,7 +1130,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         // Else-branch: includeWhen should be NEGATED
         expect(nonProdResource.includeWhen).toBeDefined();
-        expect(nonProdResource.includeWhen![0]).toContain('!(schema.spec.environment == "production")');
+        expect(nonProdResource.includeWhen![0]).toContain(
+          '!(schema.spec.environment == "production")'
+        );
         expect(nonProdResource.includeWhen![0]).not.toContain('!schema.spec.environment ==');
         expect(nonProdResource.includeWhen![0]).toContain(
           'schema.spec.environment == "production"'
@@ -1351,8 +1355,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedIncludeConfig' })
-              .withIncludeWhen(`${nested.status.ready}`);
+            ConfigMap({
+              name: `${spec.name}-cfg`,
+              data: { enabled: 'true' },
+              id: 'nestedIncludeConfig',
+            }).withIncludeWhen(`${nested.status.ready}`);
             return { ready: true };
           }
         );
@@ -1390,8 +1397,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedRefIncludeConfig' })
-              .withIncludeWhen(nested.status.ready);
+            ConfigMap({
+              name: `${spec.name}-cfg`,
+              data: { enabled: 'true' },
+              id: 'nestedRefIncludeConfig',
+            }).withIncludeWhen(nested.status.ready);
             return { ready: true };
           }
         );
@@ -1428,8 +1438,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedCelIncludeConfig' })
-              .withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
+            ConfigMap({
+              name: `${spec.name}-cfg`,
+              data: { enabled: 'true' },
+              id: 'nestedCelIncludeConfig',
+            }).withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
             return { ready: true };
           }
         );
@@ -1463,8 +1476,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ enabled: spec.enabled });
-            ConfigMap({ name: `${spec.name}-cfg`, data: { enabled: 'true' }, id: 'nestedCelMarkerConfig' })
-              .withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
+            ConfigMap({
+              name: `${spec.name}-cfg`,
+              data: { enabled: 'true' },
+              id: 'nestedCelMarkerConfig',
+            }).withIncludeWhen(Cel.expr<boolean>(nested.status.ready));
             return { ready: true };
           }
         );
@@ -1610,6 +1626,101 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         );
       });
 
+      it('.withReadyWhen with JavaScript some() maps to CEL exists()', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-some',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadySomeTest',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'someApp',
+            }).withReadyWhen(
+              (self: { status: { conditions: Array<{ type: string; status: string }> } }) =>
+                self.status.conditions.some((c) => c.type === 'Ready' && c.status === 'True')
+            );
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'someApp');
+
+        expect(resource.readyWhen![0]).toContain(
+          'someApp.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
+        );
+        expect(resource.readyWhen![0]).not.toContain('.some(');
+      });
+
+      it('.withReadyWhen with JavaScript every() maps to CEL all()', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-every',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyEveryTest',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'everyApp',
+            }).withReadyWhen(
+              (self: { status: { conditions: Array<{ type: string; status: string }> } }) =>
+                self.status.conditions.every((c) => c.status !== 'False')
+            );
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'everyApp');
+
+        expect(resource.readyWhen![0]).toContain(
+          'everyApp.status.conditions.all(c, c.status != "False")'
+        );
+        expect(resource.readyWhen![0]).not.toContain('.every(');
+      });
+
+      it('.withReadyWhen callback conversion preserves nested predicate parentheses', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'ready-nested-predicate',
+            apiVersion: 'v1alpha1',
+            kind: 'ReadyNestedPredicateTest',
+            spec: type({ name: 'string', image: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'nestedPredicateApp',
+            }).withReadyWhen(
+              (self: { status: { conditions: Array<{ type: string; status: string }> } }) =>
+                self.status.conditions.some(
+                  (c) => c.type === 'Ready' && (c.status === 'True' || c.status === 'Unknown')
+                )
+            );
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = findResource(parsed, 'nestedPredicateApp');
+
+        expect(resource.readyWhen![0]).toContain(
+          'nestedPredicateApp.status.conditions.exists(c, c.type == "Ready" && (c.status == "True" || c.status == "Unknown"))'
+        );
+        expect(resource.readyWhen![0]).not.toContain('.some(');
+      });
+
       it('multiple .withReadyWhen() produces multiple entries', () => {
         const graph = kubernetesComposition(
           {
@@ -1739,8 +1850,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyApp' })
-              .withReadyWhen(nested.status.ready);
+            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyApp' }).withReadyWhen(
+              nested.status.ready
+            );
             return { ready: true };
           }
         );
@@ -1762,7 +1874,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             status: type({ ready: 'boolean' }),
           },
           (spec) => {
-            const app = Deployment({ name: spec.name, image: spec.image, id: 'innerReadyStringApp' });
+            const app = Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'innerReadyStringApp',
+            });
             return { ready: app.status.readyReplicas > 0 };
           }
         );
@@ -1777,8 +1893,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyStringApp' })
-              .withReadyWhen(`${nested.status.ready}`);
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'outerReadyStringApp',
+            }).withReadyWhen(`${nested.status.ready}`);
             return { ready: true };
           }
         );
@@ -1815,8 +1934,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ name: spec.name, image: spec.image });
-            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyCelApp' })
-              .withReadyWhen(Cel.expr<boolean>(nested.status.ready));
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'outerReadyCelApp',
+            }).withReadyWhen(Cel.expr<boolean>(nested.status.ready));
             return { ready: true };
           }
         );
@@ -1850,8 +1972,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           },
           (spec) => {
             const nested = inner({ enabled: spec.enabled });
-            Deployment({ name: spec.name, image: spec.image, id: 'outerReadyCelMarkerApp' })
-              .withReadyWhen(Cel.expr<boolean>(nested.status.ready));
+            Deployment({
+              name: spec.name,
+              image: spec.image,
+              id: 'outerReadyCelMarkerApp',
+            }).withReadyWhen(Cel.expr<boolean>(nested.status.ready));
             return { ready: true };
           }
         );
@@ -2107,7 +2232,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             ready: true,
             endpoint: `http://${spec.name}:80`,
           };
-        },
+        }
       );
 
       const graph = kubernetesComposition(
@@ -2126,7 +2251,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             ready: shared.status.ready,
             endpoint: shared.status.endpoint,
           };
-        },
+        }
       );
 
       const parsed = parseRgdYaml(graph.toYaml());
@@ -2153,7 +2278,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             ready: true,
             endpoint: `http://${spec.name}:80`,
           };
-        },
+        }
       );
 
       const graph = kubernetesComposition(
@@ -2175,7 +2300,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
             ready: shared.status.ready,
             endpoint: shared.status.endpoint,
           };
-        },
+        }
       );
 
       const parsed = parseRgdYaml(graph.toYaml());
@@ -2203,7 +2328,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (spec) => {
           Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
           return { ready: true, endpoint: `http://${spec.name}:80` };
-        },
+        }
       );
 
       const graph = kubernetesComposition(
@@ -2222,7 +2347,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
           Deployment({ name: spec.name, image: spec.image, id: 'app' });
           return { ready: shared.status.ready, endpoint: shared.status.endpoint };
-        },
+        }
       );
 
       const parsed = parseRgdYaml(graph.toYaml());
@@ -2236,7 +2361,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (resource) => resource.template?.kind === 'SharedBootstrapOwnerBoundary'
       );
       const namespaceResource = parsed.spec.resources.find(
-        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
+        (resource) =>
+          resource.template?.kind === 'Namespace' &&
+          resource.template?.metadata?.name === 'typekro-singletons'
       );
       const expectedOwnerId = getSingletonResourceId(
         'platform.typekro.test/v1alpha1/SharedBootstrapOwnerBoundary:shared-bootstrap-owner-boundary#stable-shared-id'
@@ -2262,7 +2389,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (spec) => {
           Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
           return { ready: true, endpoint: `http://${spec.name}:80` };
-        },
+        }
       );
 
       const graph = kubernetesComposition(
@@ -2281,7 +2408,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
           Deployment({ name: spec.name, image: spec.image, id: 'app' });
           return { ready: shared.status.ready, endpoint: shared.status.endpoint };
-        },
+        }
       );
 
       const parsed = parseRgdYaml(graph.factory('kro').toYaml());
@@ -2295,7 +2422,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (resource) => resource.template?.kind === 'SharedBootstrapFactoryOwnerBoundary'
       );
       const namespaceResource = parsed.spec.resources.find(
-        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
+        (resource) =>
+          resource.template?.kind === 'Namespace' &&
+          resource.template?.metadata?.name === 'typekro-singletons'
       );
       const expectedOwnerId = getSingletonResourceId(
         'platform.typekro.test/v1alpha1/SharedBootstrapFactoryOwnerBoundary:shared-bootstrap-factory-owner-boundary#stable-shared-id'
@@ -2319,7 +2448,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (spec) => {
           Deployment({ name: `${spec.name}-a`, image: 'nginx', id: 'aApp' });
           return { ready: true };
-        },
+        }
       );
 
       const bootstrapB = kubernetesComposition(
@@ -2333,7 +2462,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         (spec) => {
           Deployment({ name: `${spec.name}-b`, image: 'nginx', id: 'bApp' });
           return { ready: true };
-        },
+        }
       );
 
       const graph = kubernetesComposition(
@@ -2345,28 +2474,35 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           status: type({ ready: 'boolean' }),
         },
         (spec) => {
-          const sharedA = singleton(bootstrapA, { id: 'stable-id', spec: { name: `${spec.name}-a` } });
-          const sharedB = singleton(bootstrapB, { id: 'stable-id', spec: { name: `${spec.name}-b` } });
+          const sharedA = singleton(bootstrapA, {
+            id: 'stable-id',
+            spec: { name: `${spec.name}-a` },
+          });
+          const sharedB = singleton(bootstrapB, {
+            id: 'stable-id',
+            spec: { name: `${spec.name}-b` },
+          });
           Deployment({ name: spec.name, image: spec.image, id: 'app' });
           return { ready: sharedA.status.ready && sharedB.status.ready };
-        },
+        }
       );
 
       const parsed = parseRgdYaml(graph.factory('kro').toYaml());
       const ownerKinds = parsed.spec.resources
-        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
+        .filter((resource) =>
+          ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind)
+        )
         .map((resource) => resource.externalRef?.kind)
         .sort();
 
       expect(ownerKinds).toEqual(['SharedBootstrapA', 'SharedBootstrapB']);
       const ownerRefs = parsed.spec.resources
-        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
+        .filter((resource) =>
+          ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind)
+        )
         .map((resource) => `${resource.externalRef?.kind}:${resource.externalRef?.metadata?.name}`)
         .sort();
-      expect(ownerRefs).toEqual([
-        'SharedBootstrapA:stable-id',
-        'SharedBootstrapB:stable-id',
-      ]);
+      expect(ownerRefs).toEqual(['SharedBootstrapA:stable-id', 'SharedBootstrapB:stable-id']);
     });
 
     it('singleton externalRefs honor custom group with version-only apiVersion', () => {
@@ -2402,8 +2538,14 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           status: type({ ready: 'boolean' }),
         },
         (spec) => {
-          const sharedA = singleton(bootstrapA, { id: 'stable-id', spec: { name: `${spec.name}-a` } });
-          const sharedB = singleton(bootstrapB, { id: 'stable-id', spec: { name: `${spec.name}-b` } });
+          const sharedA = singleton(bootstrapA, {
+            id: 'stable-id',
+            spec: { name: `${spec.name}-a` },
+          });
+          const sharedB = singleton(bootstrapB, {
+            id: 'stable-id',
+            spec: { name: `${spec.name}-b` },
+          });
           return { ready: sharedA.status.ready && sharedB.status.ready };
         }
       );
@@ -2473,6 +2615,27 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       expect(graphSchemaGroup).toBeDefined();
       expect(factoryYaml.spec.schema.group).toBe('platform.example.com');
       expect(factoryYaml.spec.schema.group).toBe(graphSchemaGroup as string);
+    });
+
+    it('factory RGD YAML preserves composition status overrides', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'status-override-factory',
+          apiVersion: 'v1alpha1',
+          kind: 'StatusOverrideFactoryTest',
+          spec: type({ name: 'string', replicas: 'number' }),
+          status: type({ phase: 'string' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: {}, id: 'config' });
+          return { phase: spec.replicas > 0 ? 'running' : 'stopped' };
+        }
+      );
+
+      const graphYaml = parseRgdYaml(graph.toYaml());
+      const factoryYaml = parseRgdYaml(graph.factory('kro').toYaml());
+      expect(factoryYaml.spec.schema.status?.phase).toBe(graphYaml.spec.schema.status?.phase);
+      expect(factoryYaml.spec.schema.status?.phase).toContain('spec.replicas');
     });
 
     it('slashful apiVersion emits matching schema group in graph and factory RGD YAML', () => {

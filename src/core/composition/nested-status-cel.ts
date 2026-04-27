@@ -46,14 +46,31 @@ export function extractNestedStatusCel(
 
     const fieldPath = pathPrefix ? `${pathPrefix}.${field}` : field;
 
+    if (Array.isArray(celExpr)) {
+      const exprStr = extractArrayExpressionString(celExpr, phaseBFallbackObj?.[field]);
+      if (exprStr) {
+        registerNestedStatusMapping(fieldPath, exprStr, ctx);
+      }
+
+      const phaseBArray = Array.isArray(phaseBFallbackObj?.[field])
+        ? (phaseBFallbackObj[field] as unknown[])
+        : undefined;
+      celExpr.forEach((item, index) => {
+        const fallbackItem = phaseBArray?.[index];
+        if (isTraversableStatusObject(item)) {
+          extractNestedStatusCel(
+            item,
+            ctx,
+            `${fieldPath}.${index}`,
+            isTraversableStatusObject(fallbackItem) ? fallbackItem : undefined
+          );
+        }
+      });
+      continue;
+    }
+
     // Recurse into nested objects (not CelExpression or KubernetesRef)
-    if (
-      celExpr &&
-      typeof celExpr === 'object' &&
-      !('expression' in celExpr) &&
-      !(KUBERNETES_REF_BRAND in (celExpr as Record<string | symbol, unknown>)) &&
-      !Array.isArray(celExpr)
-    ) {
+    if (isTraversableStatusObject(celExpr)) {
       const analyzedObj = celExpr as Record<string, unknown>;
       const phaseBSub = phaseBFallbackObj?.[field];
       const usePhaseB =
@@ -64,28 +81,65 @@ export function extractNestedStatusCel(
         Object.keys(phaseBSub as Record<string, unknown>).length > 0;
 
       const subObj = usePhaseB ? (phaseBSub as Record<string, unknown>) : analyzedObj;
-      const subPhaseBFallback = phaseBSub && typeof phaseBSub === 'object'
-        ? (phaseBSub as Record<string, unknown>)
-        : undefined;
+      const subPhaseBFallback =
+        phaseBSub && typeof phaseBSub === 'object'
+          ? (phaseBSub as Record<string, unknown>)
+          : undefined;
 
       extractNestedStatusCel(subObj, ctx, fieldPath, subPhaseBFallback);
       continue;
     }
 
     // Extract the expression string from the analyzed value
-    let exprStr = extractExpressionString(celExpr, phaseBFallbackObj?.[field]);
+    const exprStr = extractExpressionString(celExpr, phaseBFallbackObj?.[field]);
     if (!exprStr) continue;
 
-    // Re-map variable names to resource IDs
-    exprStr = remapVariableNames(exprStr, ctx.innerResourceIds, ctx.preserveVariables);
-
-    // Recover from garbled fn.toString output
-    exprStr = recoverGarbledExpression(exprStr, ctx.innerResourceIds);
-    if (!exprStr) continue;
-
-    const key = `__nestedStatus:${ctx.baseId}:${fieldPath}`;
-    ctx.registerMapping(key, exprStr);
+    registerNestedStatusMapping(fieldPath, exprStr, ctx);
   }
+}
+
+function registerNestedStatusMapping(
+  fieldPath: string,
+  exprStr: string,
+  ctx: NestedStatusCelContext
+): void {
+  const remapped = remapVariableNames(exprStr, ctx.innerResourceIds, ctx.preserveVariables);
+  const normalized = recoverGarbledExpression(remapped, ctx.innerResourceIds);
+  if (!normalized) return;
+
+  const key = `__nestedStatus:${ctx.baseId}:${fieldPath}`;
+  ctx.registerMapping(key, normalized);
+}
+
+function isTraversableStatusObject(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !('expression' in value) &&
+    !(KUBERNETES_REF_BRAND in (value as Record<string | symbol, unknown>))
+  );
+}
+
+function extractArrayExpressionString(
+  value: unknown[],
+  phaseBFallback: unknown
+): string | undefined {
+  const phaseBArray = Array.isArray(phaseBFallback) ? phaseBFallback : undefined;
+  const items = value.map((item, index) => extractExpressionString(item, phaseBArray?.[index]));
+
+  if (items.every((item): item is string => typeof item === 'string')) {
+    return `[${items.join(', ')}]`;
+  }
+
+  if (Array.isArray(phaseBFallback)) {
+    const fallbackItems = phaseBFallback.map((item) => extractExpressionString(item, undefined));
+    if (fallbackItems.every((item): item is string => typeof item === 'string')) {
+      return `[${fallbackItems.join(', ')}]`;
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -109,10 +163,7 @@ export function extractNestedStatusCel(
  *    literal directly — Phase B's stringified form (`"true"`, `"6379"`)
  *    is equivalent but adds a layer of indirection.
  */
-function extractExpressionString(
-  value: unknown,
-  phaseBFallback: unknown
-): string | undefined {
+function extractExpressionString(value: unknown, phaseBFallback: unknown): string | undefined {
   if (value && typeof value === 'object' && 'expression' in value) {
     return (value as { expression: string }).expression;
   }
@@ -123,6 +174,21 @@ function extractExpressionString(
   ) {
     const ref = value as { resourceId: string; fieldPath: string };
     return `${ref.resourceId}.${ref.fieldPath}`;
+  }
+  if (Array.isArray(value)) {
+    return extractArrayExpressionString(value, phaseBFallback);
+  }
+  if (isTraversableStatusObject(value)) {
+    const fallbackObj = isTraversableStatusObject(phaseBFallback) ? phaseBFallback : undefined;
+    const entries = Object.entries(value)
+      .filter(([key]) => !key.startsWith('__'))
+      .map(([key, entryValue]) => {
+        const entryExpr = extractExpressionString(entryValue, fallbackObj?.[key]);
+        return entryExpr ? `${JSON.stringify(key)}: ${entryExpr}` : undefined;
+      });
+    if (entries.every((entry): entry is string => typeof entry === 'string')) {
+      return `{${entries.join(', ')}}`;
+    }
   }
   if (typeof value === 'string') {
     return isLikelyCelString(value) ? value : `"${escapeCelString(value)}"`;
@@ -166,9 +232,7 @@ function isLikelyCelString(value: string): boolean {
 }
 
 /** Type guard: does `phaseBFallback` carry a Phase B `expression` field? */
-function phaseBHasExpression(
-  phaseBFallback: unknown
-): phaseBFallback is { expression: string } {
+function phaseBHasExpression(phaseBFallback: unknown): phaseBFallback is { expression: string } {
   return (
     !!phaseBFallback &&
     typeof phaseBFallback === 'object' &&
@@ -219,12 +283,11 @@ export function remapVariableNames(
     }
 
     // 3. Prefix match at camelCase boundary — must be unambiguous
-    const prefixMatches = innerResourceIds.filter(r =>
-      (r.toLowerCase().startsWith(lower) || r.toLowerCase().startsWith(normalizedLower)) &&
-      (
-        normalizedLower.length === r.length ||
-        /[A-Z_-]/.test(r[normalizedLower.length] ?? r[lower.length] ?? '')
-      )
+    const prefixMatches = innerResourceIds.filter(
+      (r) =>
+        (r.toLowerCase().startsWith(lower) || r.toLowerCase().startsWith(normalizedLower)) &&
+        (normalizedLower.length === r.length ||
+          /[A-Z_-]/.test(r[normalizedLower.length] ?? r[lower.length] ?? ''))
     );
     if (prefixMatches.length === 1) return prefixMatches[0];
 
@@ -233,7 +296,9 @@ export function remapVariableNames(
     const suffixMatches = innerResourceIds.filter((r) => {
       const lowerResource = r.toLowerCase();
       if (!lowerResource.endsWith(lower) && !lowerResource.endsWith(normalizedLower)) return false;
-      const matchedLength = lowerResource.endsWith(normalizedLower) ? normalizedLower.length : id.length;
+      const matchedLength = lowerResource.endsWith(normalizedLower)
+        ? normalizedLower.length
+        : id.length;
       const boundaryIndex = r.length - matchedLength;
       const boundaryChar = r[boundaryIndex];
       return boundaryIndex <= 0 || (boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar));
@@ -257,15 +322,21 @@ export function remapVariableNames(
     return undefined;
   };
 
-  const dottedRemapped = exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, section) => {
-    const remapped = remapResourceId(id);
-    return remapped ? `${remapped}.${section}.` : match;
-  });
+  const dottedRemapped = exprStr.replace(
+    /\b(\w+)\.(metadata|status|spec)\./g,
+    (match, id, section) => {
+      const remapped = remapResourceId(id);
+      return remapped ? `${remapped}.${section}.` : match;
+    }
+  );
 
-  return dottedRemapped.replace(new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g'), (match, id, fieldPath) => {
-    const remapped = remapResourceId(id);
-    return remapped ? `__KUBERNETES_REF_${remapped}_${fieldPath}__` : match;
-  });
+  return dottedRemapped.replace(
+    new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g'),
+    (match, id, fieldPath) => {
+      const remapped = remapResourceId(id);
+      return remapped ? `__KUBERNETES_REF_${remapped}_${fieldPath}__` : match;
+    }
+  );
 }
 
 function extractCelLambdaVariables(exprStr: string): Set<string> {
@@ -308,7 +379,7 @@ function extractCelLambdaVariables(exprStr: string): Set<string> {
  */
 export function buildNestedCompositionAliasTargets(
   compositionFnSource: string,
-  nestedCompositionIds: Set<string> | undefined,
+  nestedCompositionIds: Set<string> | undefined
 ): Record<string, string> {
   const aliasTargets: Record<string, string> = {};
   if (!nestedCompositionIds || nestedCompositionIds.size === 0) {
@@ -349,6 +420,23 @@ export function buildNestedCompositionAliasTargets(
     factoryCallPositions.set(factoryStem, positions);
   }
 
+  const chooseBaseIdForCall = (factoryStem: string, callPosition: number): string | undefined => {
+    const matchingBaseIds = stemToBaseIds.get(factoryStem);
+    if (!matchingBaseIds || matchingBaseIds.length === 0) return undefined;
+
+    const allCallPositions = factoryCallPositions.get(factoryStem) ?? [];
+    const callOrdinal = Math.max(
+      0,
+      allCallPositions.findIndex((position) => position === callPosition)
+    );
+
+    const effectiveIndex = allCallPositions.includes(callPosition)
+      ? callOrdinal
+      : allCallPositions.filter((position) => position < callPosition).length;
+
+    return matchingBaseIds[effectiveIndex] ?? matchingBaseIds.at(-1);
+  };
+
   // Find variable assignments. Match three forms:
   //  1. `const|let|var <varName> = <factoryName>(`
   //  2. `, <varName> = <factoryName>(` (comma-continuation in a single
@@ -359,13 +447,14 @@ export function buildNestedCompositionAliasTargets(
   //
   // Filter `.foo = bar()` shapes by requiring the LHS to be a bare
   // identifier with no preceding `.` or `?.`.
-  const assignPattern = /(?:(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*)([a-zA-Z_$][\w$]*)\s*=\s*((?:[a-zA-Z_$][\w$]*)(?:\s*(?:\?|)\.\s*[a-zA-Z_$][\w$]*)*)\s*\(/g;
+  const assignPattern =
+    /(?:(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*)([a-zA-Z_$][\w$]*)\s*=\s*((?:[a-zA-Z_$][\w$]*)(?:\s*(?:\?|)\.\s*[a-zA-Z_$][\w$]*)*)\s*\(/g;
   for (const m of compositionFnSource.matchAll(assignPattern)) {
-      const varName = m[1];
-      const factoryName = m[2];
-      if (!varName || !factoryName) continue;
-      const factoryStem = extractFactoryStem(factoryName);
-      if (!factoryStem) continue;
+    const varName = m[1];
+    const factoryName = m[2];
+    if (!varName || !factoryName) continue;
+    const factoryStem = extractFactoryStem(factoryName);
+    if (!factoryStem) continue;
     // Defensive: skip if the LHS is preceded by a `.` (would mean it's
     // a property assignment like `obj.field = factory()`). The regex
     // above doesn't allow this directly, but the boundary character
@@ -378,25 +467,35 @@ export function buildNestedCompositionAliasTargets(
     // resolution will take precedence and we don't want to shadow it.
     if (nestedCompositionIds.has(varName)) continue;
 
-    const matchingBaseIds = stemToBaseIds.get(factoryStem);
-    if (!matchingBaseIds || matchingBaseIds.length === 0) continue;
-
     const assignmentOffsetInMatch = m[0].indexOf(factoryName);
     const callPosition = (m.index ?? 0) + Math.max(0, assignmentOffsetInMatch);
-    const allCallPositions = factoryCallPositions.get(factoryStem) ?? [];
-    const callOrdinal = Math.max(
-      0,
-      allCallPositions.findIndex((position) => position === callPosition),
-    );
-
-    const effectiveIndex = allCallPositions.includes(callPosition)
-      ? callOrdinal
-      : allCallPositions.filter((position) => position < callPosition).length;
-
-    const baseId = matchingBaseIds[effectiveIndex] ?? matchingBaseIds.at(-1);
+    const baseId = chooseBaseIdForCall(factoryStem, callPosition);
     if (!baseId) continue;
 
     aliasTargets[varName] = baseId;
+  }
+
+  // Support status destructuring from nested composition handles:
+  //   const { status } = webAppWithProcessing(...); status.ready
+  //   const { status: appStatus } = webAppWithProcessing(...); appStatus.ready
+  // Direct `const { ready } = nested(...)` is intentionally not supported
+  // because `ready` is under the returned handle's `.status`, not top-level.
+  const statusDestructurePattern =
+    /(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*\{\s*status(?:\s*:\s*([a-zA-Z_$][\w$]*))?\s*\}\s*=\s*((?:[a-zA-Z_$][\w$]*)(?:\s*(?:\?|)\.\s*[a-zA-Z_$][\w$]*)*)\s*\(/g;
+  for (const m of compositionFnSource.matchAll(statusDestructurePattern)) {
+    const aliasName = m[1] || 'status';
+    const factoryName = m[2];
+    if (!factoryName) continue;
+    const factoryStem = extractFactoryStem(factoryName);
+    if (!factoryStem) continue;
+    if (nestedCompositionIds.has(aliasName)) continue;
+
+    const assignmentOffsetInMatch = m[0].indexOf(factoryName);
+    const callPosition = (m.index ?? 0) + Math.max(0, assignmentOffsetInMatch);
+    const baseId = chooseBaseIdForCall(factoryStem, callPosition);
+    if (!baseId) continue;
+
+    aliasTargets[aliasName] = baseId;
   }
 
   return aliasTargets;
@@ -410,7 +509,7 @@ export function buildNestedCompositionAliases(
   const aliases: Record<string, string> = {};
   const aliasTargets = buildNestedCompositionAliasTargets(
     compositionFnSource,
-    nestedCompositionIds,
+    nestedCompositionIds
   );
 
   for (const [varName, baseId] of Object.entries(aliasTargets)) {
@@ -433,12 +532,13 @@ export function buildNestedCompositionAliases(
   // "conservatively dynamic" warning in `cel-validator.ts` when a
   // nested ref fails to resolve at classification time). Common causes
   // when aliases come up empty:
-  //  - Composition source uses destructuring (`const { x } = factory()`)
+  //  - Composition source uses unsupported top-level destructuring (`const { x } = factory()`)
   //  - Composition source uses an IIFE wrapping the factory call
   //  - Imported factory was renamed (`import { x as y } from ...`)
   //  - Aggressive minifier renamed local variables
-  const hasAliasableContent =
-    Object.keys(existingMappings).some((k) => k.startsWith('__nestedStatus:'));
+  const hasAliasableContent = Object.keys(existingMappings).some((k) =>
+    k.startsWith('__nestedStatus:')
+  );
   if (hasAliasableContent && Object.keys(aliases).length === 0) {
     logger.debug(
       'buildNestedCompositionAliases produced no aliases — relying on field-name-uniqueness fallback for nested ref resolution',
@@ -466,7 +566,7 @@ export function recoverGarbledExpression(
   innerResourceIds: string[]
 ): string | undefined {
   const garbledMarkers = ['({', '=>', 'new ', 'Cel.expr('];
-  if (!garbledMarkers.some(m => exprStr.includes(m))) {
+  if (!garbledMarkers.some((m) => exprStr.includes(m))) {
     return exprStr; // Not garbled
   }
 
@@ -486,9 +586,7 @@ export function recoverGarbledExpression(
   let targetResource = firstInnerResource;
 
   if (varName && innerResourceIds.length > 1) {
-    const match = innerResourceIds.find(r =>
-      r.toLowerCase().startsWith(varName.toLowerCase())
-    );
+    const match = innerResourceIds.find((r) => r.toLowerCase().startsWith(varName.toLowerCase()));
     if (match) {
       targetResource = match;
     } else {

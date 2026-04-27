@@ -22,6 +22,7 @@ import {
   RESOURCE_ID_ANNOTATION,
   SCOPES_ANNOTATION,
 } from '../../src/core/deployment/resource-tagging.js';
+import { getMetadataField } from '../../src/core/metadata/index.js';
 
 /** Build a fake tagged K8s resource as it would appear from a list call. */
 function makeTaggedResource(opts: {
@@ -267,6 +268,82 @@ describe('discoverDeployedResourcesByInstance', () => {
     const manifest = result!.resources[0]!.manifest;
     const scopes = manifest.metadata?.annotations?.[SCOPES_ANNOTATION];
     expect(scopes).toBe('["cluster"]');
+  });
+
+  it('restores cluster-scope metadata from non-namespaced GVK hints', async () => {
+    const ns = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      name: 'app-ns',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'appNamespace',
+    });
+    delete (ns.metadata as { namespace?: string }).namespace;
+
+    const api = makeFakeK8sApi([ns]);
+    const result = await discoverDeployedResourcesByInstance(api, {
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      knownGvks: [{ apiVersion: 'v1', kind: 'Namespace', namespaced: false }],
+    });
+
+    expect(result).toBeDefined();
+    expect(result!.resources[0]!.namespace).toBe('');
+    expect(getMetadataField(result!.resources[0]!.manifest, 'scope')).toBe('cluster');
+  });
+
+  it('augments GVK hints with discovered CRD kinds', async () => {
+    const widget = makeTaggedResource({
+      apiVersion: 'example.io/v1',
+      kind: 'Widget',
+      name: 'my-widget',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'widget',
+    });
+    const api = {
+      list: async (
+        apiVersion: string,
+        kind: string,
+        _namespace?: string,
+        _pretty?: string,
+        _exact?: boolean,
+        _exportt?: boolean,
+        _fieldSelector?: string,
+        labelSelector?: string
+      ) => {
+        if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
+          return {
+            items: [
+              {
+                spec: {
+                  group: 'example.io',
+                  names: { kind: 'Widget' },
+                  scope: 'Namespaced',
+                  versions: [{ name: 'v1', served: true }],
+                },
+              },
+            ],
+          };
+        }
+        if (apiVersion === 'example.io/v1' && kind === 'Widget' && labelSelector?.includes('my-factory')) {
+          return { items: [widget] };
+        }
+        return { items: [] };
+      },
+    } as any;
+
+    const result = await discoverDeployedResourcesByInstance(api, {
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      knownGvks: [{ apiVersion: 'v1', kind: 'ConfigMap', namespaced: true }],
+    });
+
+    expect(result).toBeDefined();
+    expect(result!.resources.map((resource) => resource.id)).toEqual(['widget']);
   });
 
   it('deduplicates resources seen at multiple GVK versions', async () => {

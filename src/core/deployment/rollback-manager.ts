@@ -362,7 +362,7 @@ export class ResourceRollbackManager {
     const errors: DeploymentError[] = [];
 
     for (const resource of resources) {
-      if (resource.status === 'failed') continue;
+      if (resource.status === 'failed' && resource.applied !== true) continue;
 
       try {
         await this.deleteDeployedResource(resource);

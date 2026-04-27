@@ -98,7 +98,7 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
  * const search = searxng({
  *   name: 'my-searxng',
  *   spec: {
- *     server: { secret_key: 'change-me-in-production', limiter: false },
+ *     server: { secret_key: process.env.SEARXNG_SECRET_KEY!, limiter: false },
  *   },
  * });
  * ```

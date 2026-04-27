@@ -14,6 +14,7 @@ import type {
   DeploymentResourceGraph,
   DeploymentResult,
   FactoryOptions,
+  RollbackResult,
 } from '../../types/deployment.js';
 import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
@@ -53,6 +54,13 @@ export class DirectDeploymentStrategy<
     } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
+  }
+
+  async rollbackDeployment(
+    deploymentId: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<RollbackResult> {
+    return this.deploymentEngine.rollback(deploymentId, opts);
   }
 
   protected async executeDeployment(

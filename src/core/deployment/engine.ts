@@ -48,7 +48,11 @@ import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debu
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { logHandleSnapshot } from './handle-tracing.js';
-import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
+import {
+  getEffectiveScopes,
+  scopesMatchDeployTarget,
+  scopesMatchFilter,
+} from './resource-tagging.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -590,10 +594,15 @@ export class DirectDeploymentEngine {
     // 5. Create resolution context with resourceKeyMapping for cross-resource references
     // The resourceKeyMapping maps original resource IDs (like 'webappDeployment') to their manifests
     const resourceKeyMapping = new Map<string, unknown>();
+    const resourceIdToGraphId = new Map<string, string>();
+    const graphIdToResourceId = new Map<string, string>();
     for (const resource of graph.resources) {
       const manifest = resource.manifest as KubernetesResource;
       const originalResourceId = getResourceMetadataId(manifest);
+      resourceIdToGraphId.set(resource.id, resource.id);
+      graphIdToResourceId.set(resource.id, originalResourceId ?? resource.id);
       if (originalResourceId) {
+        resourceIdToGraphId.set(originalResourceId, resource.id);
         // Convert the Enhanced proxy to a plain object for reliable field extraction
         // The proxy's toJSON method returns a clean object without proxy behavior
         const plainManifest =
@@ -620,8 +629,12 @@ export class DirectDeploymentEngine {
       // `deploySingleResource` can stamp per-resource `depends-on`
       // annotations without the engine having to thread the graph
       // through every call site.
-      dependenciesForResource: (resourceId: string) =>
-        graph.dependencyGraph.getDependencies(resourceId),
+      dependenciesForResource: (resourceId: string) => {
+        const graphId = resourceIdToGraphId.get(resourceId) ?? resourceId;
+        return graph.dependencyGraph
+          .getDependencies(graphId)
+          .map((dependencyId) => graphIdToResourceId.get(dependencyId) ?? dependencyId);
+      },
     };
 
     return { enhancedPlan, context, resourceKeyMapping };
@@ -761,7 +774,7 @@ export class DirectDeploymentEngine {
       // `targetScopes` is undefined (the default), everything deploys.
       if (options.targetScopes !== undefined) {
         const resourceScopes = getEffectiveScopes(resource.manifest);
-        if (!scopesMatchFilter(resourceScopes, options.targetScopes)) {
+        if (!scopesMatchDeployTarget(resourceScopes, options.targetScopes)) {
           resourceLogger.debug('Skipping resource: scope does not match targetScopes', {
             resourceScopes,
             targetScopes: options.targetScopes,
@@ -833,10 +846,11 @@ export class DirectDeploymentEngine {
           deployedAt: new Date(),
           error: ensureError(error),
         };
+        const appliedResource = (error as { deployedResource?: DeployedResource }).deployedResource;
         return {
           success: false,
           resourceId,
-          deployedResource: failedResource,
+          deployedResource: appliedResource ?? failedResource,
           error: {
             resourceId,
             phase: 'deployment' as const,
@@ -1135,6 +1149,11 @@ export class DirectDeploymentEngine {
       resourceLogger
     );
 
+    // Reference resolution creates a plain object and can drop WeakMap metadata.
+    // Restore it before namespace application so custom cluster-scoped resources
+    // that rely on TypeKro scope metadata are not accidentally namespaced.
+    copyResourceMetadata(resource, resolvedRef);
+
     // 2. Apply namespace if specified, but only if resource doesn't already have one
     const resolvedResource = this.resourceApplier.applyNamespaceToResource(
       resolvedRef,
@@ -1142,9 +1161,8 @@ export class DirectDeploymentEngine {
       resourceLogger
     );
 
-    // Preserve metadata (readinessEvaluator, scope, resourceId, etc.) from the
-    // original Enhanced proxy onto the resolved resource. Reference resolution
-    // and namespace application create new plain objects, losing WeakMap entries.
+    // Preserve metadata again in case namespace application created another
+    // plain object.
     copyResourceMetadata(resource, resolvedResource);
 
     // 2.5. Apply typekro ownership metadata (labels + annotations) so the
@@ -1166,13 +1184,20 @@ export class DirectDeploymentEngine {
       namespace: resolvedResource.metadata?.namespace || 'default',
       manifest: resolvedResource,
       status: 'deployed',
+      applied: true,
       deployedAt: new Date(),
     };
 
     // 5. Wait for resource to be ready if requested
     if (options.waitForReady !== false) {
       resourceLogger.debug('Waiting for resource to be ready');
-      await this.waitForResourceReady(deployedResource, options, abortSignal);
+      try {
+        await this.waitForResourceReady(deployedResource, options, abortSignal);
+      } catch (error: unknown) {
+        deployedResource.status = 'failed';
+        deployedResource.error = ensureError(error);
+        throw Object.assign(ensureError(error), { deployedResource });
+      }
       deployedResource.status = 'ready';
     }
 

@@ -48,6 +48,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { DependencyGraph } from '../dependencies/graph.js';
 import { getComponentLogger } from '../logging/index.js';
+import { setMetadataField } from '../metadata/index.js';
 import type { DeployedResource, DeploymentStateRecord } from '../types/deployment.js';
 import type {
   CustomResourceDefinitionItem,
@@ -213,9 +214,10 @@ export async function discoverDeployedResourcesByInstance(
   }
 ): Promise<DeploymentStateRecord | undefined> {
   const labelSelector = buildFactoryInstanceSelector(opts);
+  const discoveredGvks = await discoverClusterGvks(k8sApi);
   const gvkTargets = opts.knownGvks?.length
-    ? opts.knownGvks
-    : await discoverClusterGvks(k8sApi);
+    ? mergeGvkTargets([...opts.knownGvks, ...discoveredGvks])
+    : discoveredGvks;
 
   const usingHint = !!opts.knownGvks?.length;
   logger.debug('Discovering deployed resources by label', {
@@ -253,6 +255,9 @@ export async function discoverDeployedResourcesByInstance(
         for (const item of items) {
           if (!item.apiVersion) (item as { apiVersion: string }).apiVersion = target.apiVersion;
           if (!item.kind) (item as { kind: string }).kind = target.kind;
+          if (!target.namespaced) {
+            setMetadataField(item, 'scope', 'cluster');
+          }
         }
         return items;
       } catch (err) {
@@ -306,6 +311,22 @@ export async function discoverDeployedResourcesByInstance(
   }
 
   return buildRecordFromResources(uniqueResources, opts);
+}
+
+function mergeGvkTargets(targets: GvkTarget[]): GvkTarget[] {
+  const merged = new Map<string, GvkTarget>();
+  for (const target of targets) {
+    const key = `${target.apiVersion}/${target.kind}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, target);
+      continue;
+    }
+    if (existing.namespaced && !target.namespaced) {
+      merged.set(key, target);
+    }
+  }
+  return Array.from(merged.values());
 }
 
 /**

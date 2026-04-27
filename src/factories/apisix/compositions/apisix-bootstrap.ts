@@ -198,16 +198,17 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       admin: fullConfig.gateway?.adminCredentials?.admin as string | undefined,
       viewer: fullConfig.gateway?.adminCredentials?.viewer as string | undefined,
     };
-    const adminCredentials = ctx && !ctx.isReExecution
-      ? requireDefinitionCredentials
-        ? resolveAdminCredentials(undefined, { allowTestDefaults: false })
-        : (() => {
-            try {
-              return resolveAdminCredentials(undefined, { allowTestDefaults: false });
-            } catch {
-              return definitionCredentials;
-            }
-          })()
+    const hasDefinitionCredentials =
+      typeof definitionCredentials.admin === 'string' &&
+      definitionCredentials.admin.length > 0 &&
+      typeof definitionCredentials.viewer === 'string' &&
+      definitionCredentials.viewer.length > 0;
+    const shouldRequireDefinitionCredentials =
+      requireDefinitionCredentials || (ctx?.isNestedCall === true && !ctx.isReExecution);
+    const adminCredentials = shouldRequireDefinitionCredentials
+      ? hasDefinitionCredentials
+        ? { admin: definitionCredentials.admin, viewer: definitionCredentials.viewer }
+        : resolveAdminCredentials(undefined, { allowTestDefaults: false })
       : resolveAdminCredentials(fullConfig.gateway?.adminCredentials);
     (helmValues.apisix as Record<string, unknown>).admin = {
       enabled: true,
@@ -311,8 +312,6 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
     }
 
     return {
-      helmRelease,
-
       ready: helmReady,
       phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'>(
         helmReady,
@@ -357,7 +356,17 @@ function apisixBootstrapFactory(
   | KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>
   | DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus> {
   if (mode === 'kro') {
-    return createApisixBootstrap(true).factory('kro', options);
+    const factory = createApisixBootstrap(false).factory('kro', options);
+    const originalToYaml = factory.toYaml.bind(factory);
+    (factory as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
+      spec?: APISixBootstrapConfig
+    ) => {
+      if (spec !== undefined) {
+        return originalToYaml(spec);
+      }
+      return createApisixBootstrap(true).factory('kro', options).toYaml();
+    };
+    return factory;
   }
   return originalFactory(mode, options);
 }

@@ -282,7 +282,9 @@ export type Enhanced<TSpec, TStatus> = Omit<
   /** Set readyWhen condition — callback `(self) => bool`, CEL expression, ref, or static boolean */
   withReadyWhen(condition: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
   /** Declare an unconditional ordering dependency on another resource. */
-  dependsOn(dependency: unknown): Enhanced<TSpec, TStatus>;
+  dependsOn(
+    dependency: string | KubernetesResource | { readonly __compositionId: string }
+  ): Enhanced<TSpec, TStatus>;
 };
 
 // =============================================================================

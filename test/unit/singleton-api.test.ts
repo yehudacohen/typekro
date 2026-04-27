@@ -115,7 +115,7 @@ describe('singleton API', () => {
     const shared = singleton.use(operator, 'platform-operator');
 
     expect(() => {
-      app.dependsOn(shared as unknown as object);
+      app.dependsOn(shared as never);
     }).toThrow(/singleton reference/i);
   });
 

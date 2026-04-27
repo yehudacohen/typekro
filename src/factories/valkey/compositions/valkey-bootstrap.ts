@@ -3,6 +3,8 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { clusterRole } from '../../kubernetes/rbac/cluster-role.js';
+import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
   DEFAULT_VALKEY_VERSION,
@@ -110,6 +112,106 @@ export const valkeyBootstrap = kubernetesComposition(
       id: 'valkeyHelmRelease',
     });
 
+    const _managerRole = clusterRole({
+      metadata: {
+        name: 'valkey-operator-manager-role',
+        labels: {
+          'app.kubernetes.io/name': 'valkey-operator',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/version': appVersion,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      rules: [
+        {
+          apiGroups: [''],
+          resources: ['configmaps', 'secrets', 'serviceaccounts', 'services'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroups: [''],
+          resources: ['pods'],
+          verbs: ['get', 'list', 'watch'],
+        },
+        {
+          apiGroups: [''],
+          resources: ['events'],
+          verbs: ['create', 'patch'],
+        },
+        {
+          apiGroups: ['apps'],
+          resources: ['deployments', 'statefulsets'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroups: ['policy'],
+          resources: ['poddisruptionbudgets'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroups: ['hyperspike.io'],
+          resources: ['valkeys'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroups: ['hyperspike.io'],
+          resources: ['valkeys/status'],
+          verbs: ['get', 'patch', 'update'],
+        },
+        {
+          apiGroups: ['hyperspike.io'],
+          resources: ['valkeys/finalizers'],
+          verbs: ['update'],
+        },
+        {
+          apiGroups: ['storage.k8s.io'],
+          resources: ['storageclasses'],
+          verbs: ['get', 'list', 'watch'],
+        },
+        {
+          apiGroups: ['cert-manager.io'],
+          resources: ['certificates'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroups: ['cert-manager.io'],
+          resources: ['clusterissuers', 'issuers'],
+          verbs: ['get', 'list', 'watch'],
+        },
+        {
+          apiGroups: ['monitoring.coreos.com'],
+          resources: ['servicemonitors'],
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+      ],
+      id: 'valkeyManagerRole',
+    });
+
+    const _managerRoleBinding = clusterRoleBinding({
+      metadata: {
+        name: `${spec.name}-${resolvedNamespace}-manager-rolebinding`,
+        labels: {
+          'app.kubernetes.io/name': 'valkey-operator',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/version': appVersion,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      roleRef: {
+        apiGroup: 'rbac.authorization.k8s.io',
+        kind: 'ClusterRole',
+        name: 'valkey-operator-manager-role',
+      },
+      subjects: [
+        {
+          kind: 'ServiceAccount',
+          name: 'valkey-operator-controller-manager',
+          namespace: resolvedNamespace,
+        },
+      ],
+      id: 'valkeyManagerRoleBinding',
+    });
+
     // Tag all resources with 'cluster' scope so factory-level
     // deleteInstance leaves the operator install intact. Callers can
     // opt in to tearing down shared infra with
@@ -118,6 +220,8 @@ export const valkeyBootstrap = kubernetesComposition(
       setMetadataField(_valkeyNamespace, 'scopes', ['cluster']);
       setMetadataField(_helmRepository, 'scopes', ['cluster']);
       setMetadataField(_helmRelease, 'scopes', ['cluster']);
+      setMetadataField(_managerRole, 'scopes', ['cluster']);
+      setMetadataField(_managerRoleBinding, 'scopes', ['cluster']);
     }
 
     // Status derived from HelmRelease conditions.

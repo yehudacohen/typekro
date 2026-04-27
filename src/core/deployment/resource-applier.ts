@@ -22,6 +22,7 @@ import { ensureError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
 import {
   copyResourceMetadata,
+  getMetadataField,
   getReadinessEvaluator,
 } from '../metadata/index.js';
 import type { ReferenceResolver } from '../references/index.js';
@@ -50,6 +51,17 @@ export class ResourceApplier {
     private referenceResolver: ReferenceResolver,
     _logger: TypeKroLogger
   ) {}
+
+  private buildResourceIdentityMetadata(resource: KubernetesResource): {
+    name: string;
+    namespace?: string;
+  } {
+    const name = resource.metadata?.name || '';
+    if (getMetadataField(resource as object, 'scope') === 'cluster') {
+      return { name };
+    }
+    return { name, namespace: resource.metadata?.namespace || 'default' };
+  }
 
   /**
    * Serialize a resource for sending to the Kubernetes API.
@@ -142,6 +154,16 @@ export class ResourceApplier {
       return resource;
     }
 
+    if (getMetadataField(resource as object, 'scope') === 'cluster') {
+      resourceLogger.debug('Skipping namespace application for cluster-scoped resource', {
+        kind: resource.kind,
+        name: resource.metadata.name,
+        targetNamespace: namespace,
+        kubernetesScope: 'cluster',
+      });
+      return resource;
+    }
+
     resourceLogger.debug('Applying namespace from deployment options', {
       targetNamespace: namespace,
       currentNamespace: resource.metadata.namespace,
@@ -199,9 +221,11 @@ export class ResourceApplier {
       deploymentId,
       factoryNamespace: options.namespace ?? context.namespace ?? 'default',
       resourceId,
-      ...(scopes.length > 0 && { scopes }),
+      scopes,
       ...(dependencies.length > 0 && { dependencies }),
-      ...(options.singletonSpecFingerprint && { singletonSpecFingerprint: options.singletonSpecFingerprint }),
+      ...(options.singletonSpecFingerprint && {
+        singletonSpecFingerprint: options.singletonSpecFingerprint,
+      }),
     });
   }
 
@@ -285,10 +309,7 @@ export class ResourceApplier {
           const result = await this.k8sApi.read({
             apiVersion: resolvedResource.apiVersion,
             kind: resolvedResource.kind,
-            metadata: {
-              name: resourceName,
-              namespace: resourceNamespace || 'default',
-            },
+            metadata: this.buildResourceIdentityMetadata(resolvedResource),
           });
           return result;
         } catch (readError: unknown) {
@@ -332,10 +353,7 @@ export class ResourceApplier {
           await this.k8sApi.delete({
             apiVersion: resolvedResource.apiVersion,
             kind: resolvedResource.kind,
-            metadata: {
-              name: resourceName,
-              namespace: resourceNamespace || 'default',
-            },
+            metadata: this.buildResourceIdentityMetadata(resolvedResource),
           });
 
           // Wait a moment for deletion to propagate
@@ -517,10 +535,7 @@ export class ResourceApplier {
       return await this.k8sApi.read({
         apiVersion: resource.apiVersion,
         kind: resource.kind,
-        metadata: {
-          name: resource.metadata?.name || '',
-          namespace: resource.metadata?.namespace || 'default',
-        },
+        metadata: this.buildResourceIdentityMetadata(resource),
       });
     } catch (error: unknown) {
       const apiError = error as KubernetesApiError;

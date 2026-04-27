@@ -213,7 +213,7 @@ const infrastructureStack = kubernetesComposition(
       id: 'awsCredentialsExternalDnsInfra',
     });
 
-    // For this demo, we'll deploy cert-manager and external-ds as nested compositions
+    // For this demo, we'll deploy cert-manager, external-dns, and APISIX as nested compositions.
     const certManagerInstance = certManager.certManagerBootstrap({
       name: 'cert-manager',
       namespace: 'cert-manager',

@@ -216,6 +216,21 @@ describe('conditionToCel optional field guards', () => {
 
     expect(cel).toBe('${schema.spec.required && has(schema.spec.optional)}');
   });
+
+  it('guards optional boolean comparisons that default to enabled', () => {
+    const source = '(spec) => spec.enabled !== false';
+    const conditionStart = source.indexOf('spec.enabled');
+    const conditionEnd = source.length;
+
+    const cel = conditionToCel(
+      { type: 'Identifier', range: [conditionStart, conditionEnd] },
+      source,
+      'spec',
+      new Set(['enabled'])
+    );
+
+    expect(cel).toBe('${(!(has(schema.spec.enabled)) || schema.spec.enabled != false)}');
+  });
 });
 
 // ===========================================================================
@@ -647,6 +662,29 @@ describe('applyAnalysisToResources', () => {
     expect(getForEach(resources.myDep)).toHaveLength(2);
   });
 
+  it('does not duplicate forEach metadata when analysis is applied repeatedly', () => {
+    const resources: Record<string, any> = {
+      myDep: { apiVersion: 'apps/v1', kind: 'Deployment' },
+    };
+    const analysis = makeAnalysis({
+      resources: new Map([
+        [
+          'myDep',
+          {
+            resourceId: 'myDep',
+            forEach: [{ variableName: 'region', source: '${schema.spec.regions}' }],
+            includeWhen: [],
+          },
+        ],
+      ]),
+    });
+
+    applyAnalysisToResources(resources, analysis);
+    applyAnalysisToResources(resources, analysis);
+
+    expect(getForEach(resources.myDep)).toEqual([{ region: '${schema.spec.regions}' }]);
+  });
+
   it('merges with existing includeWhen in WeakMap', () => {
     const resources: Record<string, any> = {
       opt: { apiVersion: 'apps/v1', kind: 'Deployment' },
@@ -671,6 +709,29 @@ describe('applyAnalysisToResources', () => {
 
     // Should merge both entries
     expect(getIncludeWhen(resources.opt)).toHaveLength(2);
+  });
+
+  it('does not duplicate includeWhen metadata when analysis is applied repeatedly', () => {
+    const resources: Record<string, any> = {
+      opt: { apiVersion: 'apps/v1', kind: 'Deployment' },
+    };
+    const analysis = makeAnalysis({
+      resources: new Map([
+        [
+          'opt',
+          {
+            resourceId: 'opt',
+            forEach: [],
+            includeWhen: [{ expression: '${schema.spec.enabled}' }],
+          },
+        ],
+      ]),
+    });
+
+    applyAnalysisToResources(resources, analysis);
+    applyAnalysisToResources(resources, analysis);
+
+    expect(getIncludeWhen(resources.opt)).toEqual(['${schema.spec.enabled}']);
   });
 
   it('does nothing for empty analysis', () => {

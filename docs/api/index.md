@@ -28,7 +28,7 @@ const webApp = kubernetesComposition(
 );
 ```
 
-### [toResourceGraph](./kubernetes-composition.md#toResourceGraph-api)
+### [toResourceGraph](./kubernetes-composition.md#toresourcegraph-api)
 
 The declarative API — separate resource builder and status builder with explicit CEL expressions.
 

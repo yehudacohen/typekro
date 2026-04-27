@@ -1,4 +1,5 @@
 import type { Enhanced, KubernetesCondition, ReadinessEvaluator } from '../../core/types/index.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
 import { createResource } from '../shared.js';
 
 export interface HelmRepositorySpec {
@@ -93,7 +94,7 @@ export function helmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      ...(config.namespace && { namespace: config.namespace }),
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url,

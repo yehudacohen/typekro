@@ -270,6 +270,38 @@ export function applyAnalysisToResources(
   resources: Record<string, unknown>,
   analysis: ASTAnalysisResult
 ): void {
+  const mergeForEachDimensions = (
+    existing: Record<string, string>[] | undefined,
+    additions: Record<string, string>[]
+  ): Record<string, string>[] => {
+    const merged = existing ? [...(Array.isArray(existing) ? existing : [existing])] : [];
+    const seen = new Set(merged.map((dimension) => JSON.stringify(dimension)));
+
+    for (const dimension of additions) {
+      const key = JSON.stringify(dimension);
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(dimension);
+      }
+    }
+
+    return merged;
+  };
+
+  const mergeIncludeWhen = (existing: unknown[] | undefined, additions: string[]): unknown[] => {
+    const merged = existing ? [...(Array.isArray(existing) ? existing : [existing])] : [];
+    const seen = new Set(merged.map((condition) => String(condition)));
+
+    for (const condition of additions) {
+      if (!seen.has(condition)) {
+        seen.add(condition);
+        merged.push(condition);
+      }
+    }
+
+    return merged;
+  };
+
   const matchesNestedCallResource = (actualId: string, callStem: string): boolean => {
     if (!actualId.startsWith(callStem)) return false;
     const instanceChar = actualId[callStem.length];
@@ -287,18 +319,14 @@ export function applyAnalysisToResources(
             [dim.variableName]: dim.source,
           }));
           const existing = getForEach(resource);
-          const merged = existing
-            ? [...(Array.isArray(existing) ? existing : [existing]), ...forEachDimensions]
-            : forEachDimensions;
+          const merged = mergeForEachDimensions(existing, forEachDimensions);
           setForEach(resource, merged);
         }
 
         if (controlFlow.includeWhen.length > 0) {
           const celStrings = controlFlow.includeWhen.map((c) => c.expression);
           const existing = getIncludeWhen(resource);
-          const merged = existing
-            ? [...(Array.isArray(existing) ? existing : [existing]), ...celStrings]
-            : celStrings;
+          const merged = mergeIncludeWhen(existing, celStrings);
           setIncludeWhen(resource, merged);
         }
       }
@@ -316,9 +344,7 @@ export function applyAnalysisToResources(
 
       // Merge with existing forEach if present (from explicit API)
       const existing = getForEach(resource);
-      const merged = existing
-        ? [...(Array.isArray(existing) ? existing : [existing]), ...forEachDimensions]
-        : forEachDimensions;
+      const merged = mergeForEachDimensions(existing, forEachDimensions);
 
       setForEach(resource, merged);
     }
@@ -329,9 +355,7 @@ export function applyAnalysisToResources(
 
       // Merge with existing includeWhen if present (from explicit .withIncludeWhen() calls)
       const existing = getIncludeWhen(resource);
-      const merged = existing
-        ? [...(Array.isArray(existing) ? existing : [existing]), ...celStrings]
-        : celStrings;
+      const merged = mergeIncludeWhen(existing, celStrings);
 
       setIncludeWhen(resource, merged);
     }

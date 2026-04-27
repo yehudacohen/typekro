@@ -44,8 +44,8 @@ export interface KroSimpleSchema {
   group?: string;
   /** Spec fields — nested objects represent KRO SimpleSchema nested types. */
   spec: Record<string, unknown>;
-  /** Status fields may be plain CEL expression strings or nested objects for nested status mappings. */
-  status?: Record<string, string | Record<string, unknown>>;
+  /** Status fields may be plain CEL expression strings, nested objects, or arrays for status mappings. */
+  status?: Record<string, string | Record<string, unknown> | unknown[]>;
 }
 
 /**

@@ -80,6 +80,16 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     expect(kroHelmRelease.spec?.chart?.spec?.chart).toBe('kro');
     expect(kroHelmRelease.spec?.chart?.spec?.version).toBe('0.4.0');
     expect(kroHelmRelease.spec?.chart?.spec?.sourceRef?.name).toBe('kro-helm-repo');
+    expect(typeof kroHelmRelease.spec?.chart?.spec?.sourceRef?.namespace).toBe('function');
+  });
+
+  it('uses spec namespace for Flux resources and Kro sourceRef in KRO templates', () => {
+    const bootstrap = typeKroRuntimeBootstrap();
+    const yaml = bootstrap.factory('kro').toYaml();
+
+    expect(yaml).toContain('namespace: ${schema.spec.namespace}');
+    expect(yaml).toContain('name: kro-helm-repo');
+    expect(yaml).not.toContain('namespace: flux-system');
   });
 
   it('should create factory successfully', async () => {
@@ -118,8 +128,8 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     expect(yaml).toContain('name: image-reflector-controller');
     expect(yaml).toContain('name: image-automation-controller');
 
-    // All should be in the flux-system namespace
-    expect(yaml).toMatch(/namespace: flux-system/g);
+    // KRO templates use the runtime instance namespace, not RGD metadata.namespace.
+    expect(yaml).toContain('namespace: ${schema.spec.namespace}');
   });
 
   describe('RBAC modes', () => {
@@ -233,8 +243,8 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
       const factory = bootstrap.factory('kro', { namespace: 'custom-ns' });
       const yaml = factory.toYaml();
 
-      // Service accounts should reference custom-ns
-      expect(yaml).toContain('namespace: custom-ns');
+      // Service accounts should reference the runtime instance namespace.
+      expect(yaml).toContain('namespace: ${schema.spec.namespace}');
     });
   });
 });

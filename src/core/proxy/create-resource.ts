@@ -578,7 +578,11 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
       // Extract resource ID from the dependency
       let depId: string | undefined;
+      if (typeof dependency === 'string' && dependency.length > 0) {
+        depId = dependency;
+      }
       if (
+        !depId &&
         typeof dependency === 'object' &&
         dependency !== null &&
         (dependency as { kind?: unknown }).kind === 'singleton-reference'
@@ -591,7 +595,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
         );
       }
       // Enhanced resource — read ID from metadata
-      depId = getMetadataResourceId(dependency as Record<string, unknown>);
+      depId ??= getMetadataResourceId(dependency as Record<string, unknown>);
       // NestedCompositionResource — read __compositionId.
       // NOTE: __compositionId is the execution name (e.g., "inngest-execution-3"),
       // NOT a KRO graph resource ID. When used as a dependsOn target, the
@@ -608,10 +612,11 @@ export function createResource<TSpec extends object, TStatus extends object>(
         }
       }
       if (!depId) {
-        debugLogger.warn('dependsOn: could not resolve resource ID from dependency', {
-          dependencyType: typeof dependency,
-        });
-        return this as Enhanced<TSpec, TStatus>;
+        throw new TypeKroError(
+          'Enhanced.dependsOn() target must be a resource, nested composition resource, or non-empty resource ID string.',
+          'INVALID_DEPENDENCY_TARGET',
+          { dependencyType: typeof dependency }
+        );
       }
 
       // Accumulate dependencies

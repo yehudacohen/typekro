@@ -110,11 +110,15 @@ describe('webAppWithProcessing envFrom', () => {
     expect(JSON.stringify(values)).not.toContain('signing-secret-value');
     expect(values?.inngest?.extraEnv).toContainEqual({
       name: 'INNGEST_EVENT_KEY',
-      valueFrom: { secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_EVENT_KEY' } },
+      valueFrom: {
+        secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_EVENT_KEY' },
+      },
     });
     expect(values?.inngest?.extraEnv).toContainEqual({
       name: 'INNGEST_SIGNING_KEY',
-      valueFrom: { secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_SIGNING_KEY' } },
+      valueFrom: {
+        secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_SIGNING_KEY' },
+      },
     });
   });
 
@@ -141,9 +145,7 @@ describe('webAppWithProcessing envFrom', () => {
 
   it('honors cnpgOperator.installCRDs false', () => {
     const compositionFn = (webAppWithProcessing as any)._compositionFn as () => unknown;
-    expect(compositionFn.toString()).toContain(
-      'installCRDs: spec.cnpgOperator?.installCRDs ??'
-    );
+    expect(compositionFn.toString()).toContain('installCRDs: spec.cnpgOperator?.installCRDs ??');
   });
 
   it('scopes the Inngest HelmRepository name by app namespace', () => {
@@ -234,5 +236,13 @@ describe('webAppWithProcessing envFrom', () => {
     expect(yaml).toContain('envFrom: "[]object"');
     expect(yaml).not.toContain('[object Object]');
     expect(yaml).not.toContain('enum="object,object"');
+  });
+
+  it('mounts generated credentials without KRO list concatenation', () => {
+    const yaml = webAppWithProcessing.toYaml();
+
+    expect(yaml).toContain('inngest-credentials');
+    expect(yaml).not.toContain('+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])');
+    expect(yaml).not.toContain('$item');
   });
 });

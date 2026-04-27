@@ -1,6 +1,7 @@
 import type { V1EnvFromSource } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { secret } from '../../kubernetes/config/secret.js';
@@ -355,15 +356,13 @@ export const webAppWithProcessing = kubernetesComposition(
       ...spec.app.env,
     };
 
-    // Merge user-provided envFrom with the inngest credentials Secret.
-    // The inngest Secret is listed FIRST so user-provided sources can
-    // override INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY if they provide
-    // their own Secret containing those keys (last-write-wins in K8s
-    // envFrom ordering).
-    const appEnvFrom: V1EnvFromSource[] = [
-      { secretRef: { name: inngestSecretName } },
-      ...((spec.app.envFrom ?? []) as V1EnvFromSource[]),
-    ];
+    // The inngest Secret is listed FIRST so user-provided envFrom sources can
+    // override INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY if they provide their
+    // own Secret containing those keys (last-write-wins in K8s envFrom ordering).
+    const userAppEnvFrom = spec.app.envFrom;
+    const appEnvFrom: V1EnvFromSource[] = isKubernetesRef(userAppEnvFrom)
+      ? [{ secretRef: { name: inngestSecretName } }]
+      : [{ secretRef: { name: inngestSecretName } }, ...(userAppEnvFrom ?? [])];
 
     const app = simple.Deployment({
       name: spec.name,

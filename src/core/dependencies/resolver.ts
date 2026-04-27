@@ -70,6 +70,27 @@ export class DependencyResolver {
           }
         }
       }
+
+      const explicitDependencies = getMetadataField(resource, 'dependsOn') as
+        | Array<{ resourceId: string }>
+        | undefined;
+      for (const dep of explicitDependencies ?? []) {
+        const targetId = graph.hasNode(dep.resourceId)
+          ? dep.resourceId
+          : originalIdToGraphId.get(dep.resourceId);
+        if (!targetId) {
+          throw new TypeKroError(
+            `dependsOn target '${dep.resourceId}' was not found in resource graph`,
+            'INVALID_DEPENDENCY_TARGET',
+            { sourceResourceId: resource.id, dependencyResourceId: dep.resourceId }
+          );
+        }
+        try {
+          graph.addEdge(resource.id, targetId);
+        } catch {
+          // Edge already exists — safe to ignore
+        }
+      }
     }
 
     // Detect implicit namespace dependencies: if a resource has metadata.namespace

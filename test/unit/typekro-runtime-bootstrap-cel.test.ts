@@ -19,7 +19,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       // Test that the bootstrap creates a valid factory
@@ -44,7 +44,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -79,7 +79,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
         const bootstrap = typeKroRuntimeBootstrap({
           namespace: 'flux-system',
           fluxVersion: 'v2.4.0',
-          kroVersion: '0.8.5',
+          kroVersion: '0.9.1',
         });
 
         const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -102,7 +102,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -123,7 +123,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -147,7 +147,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -168,7 +168,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -192,7 +192,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -215,7 +215,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.8.5',
+        kroVersion: '0.9.1',
       });
 
       // Test both factory types to ensure consistency

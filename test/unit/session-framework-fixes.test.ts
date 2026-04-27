@@ -981,10 +981,10 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     // No $item anywhere in the output
     expect(yamlStr).not.toContain('$item');
 
-    // The envFrom CEL should be clean
-    expect(yamlStr).toContain('has(schema.spec.app.envFrom)');
+    // The envFrom YAML should avoid Kro-invalid list concatenation between a
+    // literal Secret ref and the schema-typed optional envFrom array.
     expect(yamlStr).not.toContain('envFrom.$item');
-    expect(yamlStr).toContain('+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])');
+    expect(yamlStr).not.toContain('+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])');
 
     // The inngest credentials secret should still be wired
     expect(yamlStr).toContain('inngest-credentials');

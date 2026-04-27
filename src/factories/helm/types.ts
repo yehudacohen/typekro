@@ -25,6 +25,10 @@ export interface HelmReleaseSpec {
     timeout?: string;
     remediation?: { retries?: number };
   };
+  driftDetection?: {
+    mode: 'enabled' | 'warn' | 'disabled';
+    ignore?: Record<string, unknown>[];
+  };
 }
 
 export interface HelmReleaseStatus {

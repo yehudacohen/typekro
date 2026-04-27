@@ -64,10 +64,12 @@ export const WebAppWithProcessingConfigSchema = type({
      * to match Kubernetes `V1EnvFromSource` / `V1SecretEnvSource` /
      * `V1ConfigMapEnvSource` behavior.
      *
-     * Note: the composition prepends an inngest credentials Secret to
-     * this array. If you provide your own Secret containing
-     * `INNGEST_EVENT_KEY` or `INNGEST_SIGNING_KEY`, it will take
-     * precedence (last-write-wins in K8s envFrom ordering).
+     * Note: in direct deployments, the composition prepends an inngest
+     * credentials Secret to this array. If you provide your own Secret
+     * containing `INNGEST_EVENT_KEY` or `INNGEST_SIGNING_KEY`, it will take
+     * precedence (last-write-wins in K8s envFrom ordering). KRO deployments
+     * mount only the generated credentials Secret because typed list fields
+     * cannot be safely concatenated in ResourceGraphDefinition YAML.
      */
     'envFrom?': envFromSourceSchema.array(),
   },

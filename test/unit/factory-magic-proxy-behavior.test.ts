@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { helmRelease } from '../../src/factories/helm/helm-release.js';
+import { helmRepository } from '../../src/factories/helm/helm-repository.js';
 import { simple } from '../../src/index.js';
 import {
   asKubernetesRef,
@@ -20,6 +21,23 @@ import {
 } from '../utils/mock-factories.js';
 
 describe('Factory Magic Proxy Behavior', () => {
+  describe('helmRepository factory', () => {
+    it('defaults repository namespace to match HelmRelease sourceRef namespace', () => {
+      const repository = helmRepository({
+        name: 'example-repo',
+        url: 'https://charts.example.com',
+      });
+      const release = helmRelease({
+        name: 'example',
+        chart: { repository: 'https://charts.example.com', name: 'example' },
+        sourceRef: { name: 'example-repo' },
+      });
+
+      expect(repository.metadata?.namespace).toBe('flux-system');
+      expect(release.spec.chart.spec.sourceRef.namespace).toBe('flux-system');
+    });
+  });
+
   describe('helmRelease factory', () => {
     it('should create resources with KubernetesRef status fields, not static values', () => {
       const release = helmRelease({

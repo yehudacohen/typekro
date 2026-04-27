@@ -190,8 +190,8 @@ describe('YAML Generation Integration Test', () => {
     expect(parsedYaml.apiVersion).toBe('kro.run/v1alpha1');
     expect(parsedYaml.kind).toBe('ResourceGraphDefinition');
     expect(parsedYaml.metadata.name).toBe('production-webapp-stack');
-    // ResourceGraphDefinitions are cluster-scoped, so they use default namespace
-    expect(parsedYaml.metadata.namespace).toBe('default');
+    // ResourceGraphDefinitions are cluster-scoped, so they omit namespace.
+    expect(parsedYaml.metadata.namespace).toBeUndefined();
     expect(parsedYaml.spec).toBeDefined();
     expect(parsedYaml.spec.schema).toBeDefined();
     expect(parsedYaml.spec.resources).toBeDefined();

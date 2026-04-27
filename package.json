@@ -101,6 +101,7 @@
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
+    "test:integration:required": "REQUIRE_CLUSTER_TESTS=true ./scripts/run-integration-tests.sh",
     "test:integration:debug": "DEBUG_MODE=true ./scripts/run-integration-tests.sh",
     "typecheck": "bun run typecheck:lib && bun run typecheck:examples && bun run typecheck:tests",
     "typecheck:lib": "bun tsc --noEmit",

@@ -211,6 +211,21 @@ export function conditionToCel(
     };
   };
 
+  const optionalComparisonGuard = (
+    refPath: string,
+    operator: string,
+    rightValue: string
+  ): string | undefined => {
+    const present = optionalTruthinessGuard(refPath, '');
+    if (!present) return undefined;
+
+    if (operator === '!=') {
+      return `(!(${present}) || ${refPath} ${operator} ${rightValue})`;
+    }
+
+    return `(${present} && ${refPath} ${operator} ${rightValue})`;
+  };
+
   // Replace the spec parameter name with schema.spec
   // Must use word boundary to avoid replacing substrings
   // escapeRegExp prevents regex injection if specParamName contains metacharacters
@@ -242,6 +257,14 @@ export function conditionToCel(
       return negation ? `${leading}${missing} || !${fullPath}` : `${leading}${present} && ${fullPath}`;
     }
   );
+
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /(schema\.spec\.[A-Za-z_$][\w$.]*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:"[^"]*")|(?:'[^']*')|(?:schema\.spec\.[A-Za-z_$][\w$.]*))/g,
+      (match: string, refPath: string, operator: string, rightValue: string) =>
+        optionalComparisonGuard(refPath, operator, rightValue) ?? match
+    );
+  }
 
   // Kro CEL has no optional chaining syntax. Optional-chain expressions above
   // preserve JS missing-parent semantics; any remaining optional chains fall

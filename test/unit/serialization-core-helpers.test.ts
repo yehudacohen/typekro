@@ -31,6 +31,8 @@ import {
   mergePreservedCelExpressions,
   separateResourcesAndClosures,
 } from '../../src/core/serialization/core.js';
+import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
+import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 
 /**
  * Typed wrapper for separateResourcesAndClosures that accepts plain objects.
@@ -311,6 +313,23 @@ describe('detectAndPreserveCelExpressions', () => {
 
     // Arrays are skipped by design
     expect(result.hasExistingCel).toBe(false);
+  });
+
+  test('classifies status arrays containing CEL as dynamic', () => {
+    const celExpr = makeCelExpr('deployment.status.phase');
+
+    const result = separateStatusFields({ phases: [celExpr] });
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields.phases).toEqual([celExpr]);
+  });
+
+  test('serializes status arrays recursively', () => {
+    const result = serializeStatusMappingsToCel({
+      phases: [makeCelExpr('deployment.status.phase'), 'static'],
+    });
+
+    expect(result.phases).toEqual(['${deployment.status.phase}', '${"static"}']);
   });
 
   test('detects multiple CEL expressions', () => {

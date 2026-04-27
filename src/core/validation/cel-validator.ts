@@ -173,7 +173,11 @@ function requiresKroResolution(
     return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
 
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+  if (Array.isArray(value)) {
+    return value.some((v) => requiresKroResolution(v, nestedStatusCel, resourceIds));
+  }
+
+  if (typeof value === 'object' && value !== null) {
     return Object.values(value as Record<string, unknown>).some((v) =>
       requiresKroResolution(v, nestedStatusCel, resourceIds)
     );

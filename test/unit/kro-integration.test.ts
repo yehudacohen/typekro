@@ -195,14 +195,14 @@ describe('Kro Factory Integration', () => {
     expect(rgdError.reason).toBe('ResourceNotFound');
 
     expect(customResourceError.ready).toBe(false);
-    expect(customResourceError.reason).toBe('EvaluationError');
+    expect(customResourceError.reason).toBe('StatusMissing');
+    expect(customResourceError.details?.statusExists).toBe(false);
 
     expect(crdError.ready).toBe(false);
     expect(crdError.reason).toBe('EvaluationError');
 
     // Error details should be present for evaluation errors
     expect(crdError.details?.error).toBeDefined();
-    expect(customResourceError.details?.error).toBeDefined();
     expect(crdError.details?.error).toBeDefined();
   });
 

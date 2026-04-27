@@ -626,6 +626,16 @@ describe('Live Status Hydration', () => {
       expect(JSON.stringify(serialized)).not.toContain('__schema__');
       expect(JSON.stringify(serialized)).not.toContain('schema.spec');
     });
+
+    it('escapes plain string status values and preserves null literals', () => {
+      const serialized = serializeStatusMappingsToCel({
+        message: 'line 1\n"quoted"',
+        nothing: null,
+      });
+
+      expect(serialized.message).toBe('${"line 1\\n\\"quoted\\""}');
+      expect(serialized.nothing).toBe('${null}');
+    });
   });
 
   describe('KubernetesRef proxy type coercion (Symbol.toPrimitive)', () => {

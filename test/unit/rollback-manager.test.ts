@@ -135,6 +135,32 @@ describe('ResourceRollbackManager', () => {
       expect(deleteCalls[2]![0]!.metadata.name).toBe('app1-config'); // configmap last
     });
 
+    it('should rollback failed resources that were already applied', async () => {
+      const deployment1 = createTestDeployment('readiness-failed');
+      const deployedResources: DeployedResource[] = [
+        {
+          id: 'app',
+          kind: 'Deployment',
+          name: 'readiness-failed',
+          namespace: 'default',
+          manifest: deployment1,
+          status: 'failed',
+          applied: true,
+          deployedAt: new Date(),
+          error: new Error('timed out waiting for readiness'),
+        },
+      ];
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockRejectedValue(createK8sError('Not found', 404));
+
+      const result = await manager.rollbackDeployedResources(deployedResources, { mode: 'direct' });
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.rolledBackResources).toEqual(['Deployment/readiness-failed']);
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+    });
+
     it('should emit proper rollback events throughout the process', async () => {
       const deployment1 = createTestDeployment('test-app');
       const resources = [deployment1] as Enhanced<unknown, unknown>[];
@@ -178,7 +204,7 @@ describe('ResourceRollbackManager', () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it.skip('should wait for deletion completion when timeout is specified', async () => {
+    it('should wait for deletion completion when timeout is specified', async () => {
       const deployment1 = createTestDeployment('wait-for-deletion');
       const resources = [deployment1] as Enhanced<unknown, unknown>[];
 

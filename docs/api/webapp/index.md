@@ -87,7 +87,7 @@ INNGEST_EVENT_KEY=<from generated Secret>
 INNGEST_SIGNING_KEY=<from generated Secret>
 ```
 
-The composition creates an Inngest credentials Secret and prepends it to `app.envFrom`. User-provided `app.env` values are still merged on top of generated direct environment variables, so they can override direct values such as `DATABASE_URL` or `INNGEST_BASE_URL`.
+The composition creates an Inngest credentials Secret and prepends it to `app.envFrom` for direct deployments. In KRO mode, the generated Inngest credentials Secret is still mounted, but schema-provided `app.envFrom` entries are not merged into the generated Deployment because KRO cannot safely concatenate typed list fields. User-provided `app.env` values are still merged on top of generated direct environment variables, so they can override direct values such as `DATABASE_URL` or `INNGEST_BASE_URL`.
 
 In KRO mode, `processing.eventKey` and `processing.signingKey` are still plain custom-resource spec fields before TypeKro copies them into the generated Secret. Treat webapp custom resources as sensitive and restrict RBAC read access to those CRs.
 
@@ -120,7 +120,7 @@ instance.status.components.inngest   // Inngest ready
 | `app.port` | No | Container port (default: 3000) |
 | `app.replicas` | No | Replica count (default: 1) |
 | `app.env` | No | Extra env vars (merged with auto-wired ones) |
-| `app.envFrom` | No | Additional Secret/ConfigMap envFrom sources. TypeKro prepends the generated Inngest credentials Secret, so later entries can override only by defining the same env keys in a later source according to Kubernetes envFrom behavior |
+| `app.envFrom` | No | Additional Secret/ConfigMap envFrom sources for direct deployments. TypeKro prepends the generated Inngest credentials Secret, so later entries can override only by defining the same env keys in a later source according to Kubernetes envFrom behavior. In KRO mode, only the generated Inngest credentials Secret is mounted |
 | `database.storageSize` | Yes | PG storage (e.g., '50Gi') |
 | `database.instances` | No | PG replicas (default: 1) |
 | `database.storageClass` | No | Storage class |

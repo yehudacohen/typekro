@@ -31,6 +31,7 @@ export interface HelmReleaseConfig {
     kind?: 'HelmRepository';
   };
   values?: Record<string, unknown>;
+  driftDetection?: HelmReleaseSpec['driftDetection'];
   id?: string;
 }
 
@@ -163,6 +164,7 @@ export function helmRelease(
       // resources (e.g., Inngest waiting for Postgres/Redis to be ready).
       install: { timeout: '10m', remediation: { retries: 3 } },
       upgrade: { timeout: '10m', remediation: { retries: 3 } },
+      ...(config.driftDetection && { driftDetection: config.driftDetection }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);

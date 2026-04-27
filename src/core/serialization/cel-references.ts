@@ -10,6 +10,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { escapeCelString } from '../../utils/cel-escape.js';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -828,13 +829,13 @@ export function serializeStatusMappingsToCel(
   nestedStatusCel?: Record<string, string>,
   resourceIds?: Set<string>,
   resourceAliases?: ReadonlyMap<string, string>
-): Record<string, string | Record<string, unknown>> {
+): Record<string, string | Record<string, unknown> | unknown[]> {
   logger.debug('Serializing status mappings to CEL', {
     fieldCount: Object.keys(statusMappings).length,
     hasNestedStatusCel: !!nestedStatusCel,
     nestedStatusCelKeys: nestedStatusCel ? Object.keys(nestedStatusCel) : [],
   });
-  const celExpressions: Record<string, string | Record<string, unknown>> = {};
+  const celExpressions: Record<string, string | Record<string, unknown> | unknown[]> = {};
   const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
   const preserveVariables = new Set<string>();
   if (nestedStatusCel) {
@@ -933,7 +934,7 @@ export function serializeStatusMappingsToCel(
     return `\${${rewriteSchemaRefsForKroStatus(resolved)}}`;
   }
 
-  function serializeValue(value: unknown): string | Record<string, unknown> {
+  function serializeValue(value: unknown): string | Record<string, unknown> | unknown[] {
     if (isKubernetesRef(value)) {
       const ref = value as KubernetesRef<unknown> & { __nestedComposition?: boolean };
 
@@ -964,7 +965,11 @@ export function serializeStatusMappingsToCel(
       return statusFieldFromExpression(value.expression);
     }
 
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (Array.isArray(value)) {
+      return value.map((item) => serializeValue(item));
+    }
+
+    if (value && typeof value === 'object') {
       const nestedExpressions: Record<string, unknown> = {};
       for (const [key, nestedValue] of Object.entries(value)) {
         nestedExpressions[key] = serializeValue(nestedValue);
@@ -979,13 +984,16 @@ export function serializeStatusMappingsToCel(
         const resolved = resolveNestedRefMarkers(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
         return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
       }
-      return `\${"${value}"}`;
+      return `\${"${escapeCelString(value)}"}`;
     }
     if (typeof value === 'number') {
       return `\${${value}}`;
     }
     if (typeof value === 'boolean') {
       return `\${${value}}`;
+    }
+    if (value === null) {
+      return `\${null}`;
     }
 
     return `\${""}`;

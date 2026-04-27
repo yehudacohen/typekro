@@ -151,11 +151,9 @@ export const SearxngBootstrapConfigSchema = type({
   'baseUrl?': 'string',
   /**
    * Server configuration. When `secretKeyRef` is NOT provided, the bootstrap
-   * composition automatically creates a dedicated K8s Secret (`{name}-secret`)
-   * and mounts it via `valueFrom.secretKeyRef` on the Deployment. The Secret
-   * uses `server.secret_key` when supplied, otherwise the explicit placeholder
-   * default `change-me-in-production`; production deployments should provide
-   * `server.secret_key` or an external `secretKeyRef`.
+   * composition requires `server.secret_key`, creates a dedicated K8s Secret
+   * (`{name}-secret`), and mounts it via `valueFrom.secretKeyRef` on the
+   * Deployment.
    */
   'server?': serverConfigShape,
   /**

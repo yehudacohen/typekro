@@ -27,6 +27,8 @@ export interface DeployedResource {
   namespace: string;
   manifest: KubernetesResource;
   status: 'deployed' | 'ready' | 'failed';
+  /** True once the resource has been applied to the Kubernetes API. */
+  applied?: boolean;
   deployedAt: Date;
   error?: Error;
   alchemyResourceId?: string;
@@ -256,7 +258,7 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
   /** Instance identifier — see `factoryName`. */
   instanceName?: string;
 
-  /** Internal singleton owner spec fingerprint stamped onto direct-mode resources. */
+  /** @internal Singleton owner spec fingerprint stamped onto direct-mode resources. */
   singletonSpecFingerprint?: string;
 
   /**
@@ -495,7 +497,7 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly __resources: KubernetesResource[];
   /** Declare that this composition's resources depend on another resource being ready.
    * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
-  readonly dependsOn?: (dependency: unknown) => this;
+  readonly dependsOn: (dependency: string | KubernetesResource | { readonly __compositionId: string }) => this;
 }
 
 export interface SingletonHandleBase<TStatus> {
@@ -673,6 +675,8 @@ export interface AlchemyBridge {
  *
  * These fields are populated automatically when creating factories via
  * `TypedResourceGraph.factory()` and should never be set by library consumers.
+ *
+ * @internal
  */
 export interface InternalFactoryOptions {
   /** Re-execution function for the composition (internal use) */
@@ -711,6 +715,17 @@ export interface InternalFactoryOptions {
  */
 export interface FactoryOptions extends PublicFactoryOptions, InternalFactoryOptions {}
 
+/** Options exposed to library consumers for per-deploy behavior. */
+export interface ResourceFactoryDeployOptions {
+  targetScopes?: string[];
+}
+
+/** @internal Options used by singleton ownership plumbing during recursive deploys. */
+export interface InternalResourceFactoryDeployOptions extends ResourceFactoryDeployOptions {
+  instanceNameOverride?: string;
+  singletonSpecFingerprint?: string;
+}
+
 // Type mapping for factory selection
 export type FactoryForMode<
   TMode,
@@ -730,7 +745,7 @@ export interface ResourceFactory<
   // Core deployment - single method handles all cases
   deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[]; instanceNameOverride?: string; singletonSpecFingerprint?: string }
+    opts?: ResourceFactoryDeployOptions
   ): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management

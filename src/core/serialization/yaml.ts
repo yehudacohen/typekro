@@ -1,7 +1,8 @@
 /**
  * YAML generation functionality for Kro ResourceGraphDefinitions
  *
- * Supports Kro v0.8.x features: forEach, includeWhen, readyWhen, externalRef,
+ * Supports Kro 0.9.1+ ResourceGraphDefinition serialization, including
+ * forEach, includeWhen, readyWhen, externalRef, mixed-template CEL, omit(),
  * schema group, and allowBreakingChanges annotation.
  */
 
@@ -159,6 +160,124 @@ function resolveIncludeWhen(raw: unknown, context: SerializationContext): string
 // readyWhen → CEL conversion
 // ---------------------------------------------------------------------------
 
+const READY_WHEN_CALLBACK_METHODS = new Set(['exists', 'all', 'filter', 'map', 'some', 'every']);
+
+function findMatchingParen(source: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let escaped = false;
+
+  for (let i = openIndex; i < source.length; i++) {
+    const char = source[i];
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+
+    if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function normalizeArrowBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+
+  return trimmed
+    .replace(/^\{\s*(?:return\s+)?/, '')
+    .replace(/;?\s*\}\s*$/, '')
+    .trim();
+}
+
+function convertReadyWhenCallbackMethods(expression: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < expression.length) {
+    const dotIndex = expression.indexOf('.', index);
+    if (dotIndex === -1) {
+      result += expression.slice(index);
+      break;
+    }
+
+    result += expression.slice(index, dotIndex);
+
+    let cursor = dotIndex + 1;
+    while (/\s/.test(expression[cursor] ?? '')) cursor++;
+
+    const methodMatch = /^[a-zA-Z_$][a-zA-Z0-9_$]*/.exec(expression.slice(cursor));
+    if (!methodMatch || !READY_WHEN_CALLBACK_METHODS.has(methodMatch[0])) {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const method = methodMatch[0];
+    cursor += method.length;
+    while (/\s/.test(expression[cursor] ?? '')) cursor++;
+
+    if (expression[cursor] !== '(') {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const closeIndex = findMatchingParen(expression, cursor);
+    if (closeIndex === -1) {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const callbackSource = expression.slice(cursor + 1, closeIndex).trim();
+    const arrowIndex = callbackSource.indexOf('=>');
+    if (arrowIndex === -1) {
+      result += expression.slice(dotIndex, closeIndex + 1);
+      index = closeIndex + 1;
+      continue;
+    }
+
+    let param = callbackSource.slice(0, arrowIndex).trim();
+    param = param.replace(/^\(\s*/, '').replace(/\s*\)$/, '').trim();
+    const colonIndex = param.indexOf(':');
+    if (colonIndex !== -1) param = param.slice(0, colonIndex).trim();
+
+    if (!/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(param)) {
+      result += expression.slice(dotIndex, closeIndex + 1);
+      index = closeIndex + 1;
+      continue;
+    }
+
+    let body = normalizeArrowBody(callbackSource.slice(arrowIndex + 2));
+    body = body.replace(/===/g, '==').replace(/!==/g, '!=');
+    body = convertReadyWhenCallbackMethods(body);
+
+    const celMethod = method === 'some' ? 'exists' : method === 'every' ? 'all' : method;
+    result += `.${celMethod}(${param}, ${body})`;
+    index = closeIndex + 1;
+  }
+
+  return result;
+}
+
 /**
  * Convert a readyWhen callback function to a CEL expression string by parsing its source.
  *
@@ -222,20 +341,10 @@ function convertReadyWhenCallbackToCel(
   celExpr = celExpr.replace(/===/g, '==');
   celExpr = celExpr.replace(/!==/g, '!=');
 
-  // Convert JS arrow function callbacks inside .exists(), .filter(), .all(), .map()
-  // Pattern: .exists((c) => c.type === 'Ready' && c.status === 'True')
-  // → .exists(c, c.type == "Ready" && c.status == "True")
-  celExpr = celExpr.replace(
-    /\.\s*(exists|all|filter|map)\s*\(\s*\(?([a-zA-Z_$][a-zA-Z0-9_$]*)\)?\s*(?::\s*\w+)?\s*=>\s*([\s\S]+?)\)/g,
-    (_match, method: string, innerParam: string, innerBody: string) => {
-      let cleanBody = innerBody.trim();
-      // Fix operators in inner body too
-      cleanBody = cleanBody.replace(/===/g, '==').replace(/!==/g, '!=');
-      // Convert single quotes to double quotes for string literals
-      cleanBody = cleanBody.replace(/'([^']+)'/g, '"$1"');
-      return `.${method}(${innerParam}, ${cleanBody})`;
-    }
-  );
+  // Convert JS arrow function callbacks inside CEL macros and natural JS array
+  // helpers. Use a balanced scanner instead of a regex so nested parentheses in
+  // predicate bodies don't truncate the callback body.
+  celExpr = convertReadyWhenCallbackMethods(celExpr);
 
   // Convert remaining single-quoted strings to double-quoted for CEL
   celExpr = celExpr.replace(/'([^']+)'/g, '"$1"');
@@ -787,7 +896,7 @@ function buildResourceEntry(
 /**
  * Serializes resources to Kro YAML (ResourceGraphDefinition).
  *
- * Supports Kro v0.8.x features:
+ * Supports Kro 0.9.1+ features:
  * - externalRef: Resources marked with __externalRef emit `externalRef` instead of `template`
  * - includeWhen: Non-enumerable includeWhen arrays are emitted per resource
  * - readyWhen: Non-enumerable readyWhen arrays are emitted per resource
@@ -869,7 +978,6 @@ export function serializeResourceGraphToYaml(
   // 3. Build metadata with optional annotations
   const metadata: KroResourceGraphDefinition['metadata'] = {
     name,
-    namespace: options?.namespace || 'default',
   };
 
   if (options?.allowBreakingChanges) {

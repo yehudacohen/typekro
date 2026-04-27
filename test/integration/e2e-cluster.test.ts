@@ -7,7 +7,7 @@
  * 3. Verify Kro created the underlying Kubernetes resources
  * 4. Clean up: delete instance, delete RGD, delete namespace
  *
- * Requires: Kro v0.8.5 installed in the cluster (via Flux/Helm or manual install)
+ * Requires: Kro 0.9.1+ installed in the cluster (via Flux/Helm or manual install)
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';

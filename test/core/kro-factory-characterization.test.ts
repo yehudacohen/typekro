@@ -46,17 +46,19 @@ describe('Kro readiness polling', () => {
       }),
     };
 
-    await expect(waitForKroInstanceReady({
-      instanceName: 'stale-ready',
-      timeout: 1,
-      pollInterval: 0,
-      k8sApi: k8sApi as never,
-      customObjectsApi: customObjectsApi as never,
-      namespace: 'default',
-      apiVersion: 'example.com/v1alpha1',
-      kind: 'Example',
-      rgdName: 'example',
-    })).rejects.toThrow('Timeout waiting for Kro instance stale-ready');
+    await expect(
+      waitForKroInstanceReady({
+        instanceName: 'stale-ready',
+        timeout: 1,
+        pollInterval: 0,
+        k8sApi: k8sApi as never,
+        customObjectsApi: customObjectsApi as never,
+        namespace: 'default',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'Example',
+        rgdName: 'example',
+      })
+    ).rejects.toThrow('Timeout waiting for Kro instance stale-ready');
   });
 });
 
@@ -145,6 +147,22 @@ function makeCelExpr(expression: string): { expression: string; [k: symbol]: boo
   };
 }
 
+/** Create a branded KubernetesRef object */
+function makeKubeRef(
+  resourceId: string,
+  fieldPath: string
+): {
+  readonly [KUBERNETES_REF_BRAND]: true;
+  readonly resourceId: string;
+  readonly fieldPath: string;
+} {
+  return {
+    [KUBERNETES_REF_BRAND]: true,
+    resourceId,
+    fieldPath,
+  };
+}
+
 /**
  * Access a private method on a KroResourceFactory instance for characterization testing.
  * Uses a Record index signature cast rather than `any` to limit the type escape hatch.
@@ -164,9 +182,15 @@ function getPrivateMethod(
 
 describe('KroResourceFactory: Alchemy RGD serialization', () => {
   it('preserves exec and authProvider auth in serialized Alchemy kubeconfig options', () => {
-    const factory = createKroResourceFactory('alchemyExecAuth', {}, makeSchema(), {}, {
-      hydrateStatus: false,
-    });
+    const factory = createKroResourceFactory(
+      'alchemyExecAuth',
+      {},
+      makeSchema(),
+      {},
+      {
+        hydrateStatus: false,
+      }
+    );
     (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
       getCurrentCluster: () => ({ name: 'cluster', server: 'https://example.invalid' }),
       getCurrentContext: () => 'ctx',
@@ -185,22 +209,32 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     const options = extractKubeConfigOptionsForAlchemy();
 
     expect(options.user?.exec).toEqual({ command: 'aws', args: ['eks', 'get-token'] });
-    expect(options.user?.authProvider).toEqual({ name: 'gcp', config: { 'access-token': 'token' } });
+    expect(options.user?.authProvider).toEqual({
+      name: 'gcp',
+      config: { 'access-token': 'token' },
+    });
   });
 
   it('validates injected Alchemy scope before provider execution', async () => {
-    const factory = createKroResourceFactory('alchemyInvalidScope', {}, makeSchema(), {}, {
-      alchemyScope: {} as any,
-      hydrateStatus: false,
-    });
+    const factory = createKroResourceFactory(
+      'alchemyInvalidScope',
+      {},
+      makeSchema(),
+      {},
+      {
+        alchemyScope: {} as any,
+        hydrateStatus: false,
+      }
+    );
 
     const deployWithAlchemy = getPrivateMethod(factory, 'deployWithAlchemy') as (
       spec: TestSpec,
       instanceNameOverride?: string
     ) => Promise<unknown>;
 
-    await expect(deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo'))
-      .rejects.toThrow('KRO Alchemy deployment: Alchemy scope is invalid');
+    await expect(deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo')).rejects.toThrow(
+      'KRO Alchemy deployment: Alchemy scope is invalid'
+    );
   });
 
   it('preserves externalRef entries when deploying the RGD through Alchemy', async () => {
@@ -226,44 +260,54 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     const events: string[] = [];
     let insideAlchemyScope = false;
 
-    const factory = createKroResourceFactory('alchemyExternalRef', resources, makeSchema(), {}, {
-      alchemyScope: {
-        run: async (fn: () => Promise<unknown>) => {
-          events.push('scope:start');
-          insideAlchemyScope = true;
-          try {
-            return await fn();
-          } finally {
-            insideAlchemyScope = false;
-            events.push('scope:end');
-          }
+    const factory = createKroResourceFactory(
+      'alchemyExternalRef',
+      resources,
+      makeSchema(),
+      {},
+      {
+        alchemyScope: {
+          run: async (fn: () => Promise<unknown>) => {
+            events.push('scope:start');
+            insideAlchemyScope = true;
+            try {
+              return await fn();
+            } finally {
+              insideAlchemyScope = false;
+              events.push('scope:end');
+            }
+          },
+        } as any,
+        hydrateStatus: false,
+        rgdProvider: (rgd) =>
+          rgd as unknown as Enhanced<Record<string, unknown>, Record<string, unknown>>,
+        alchemyBridge: {
+          createDeployer() {
+            throw new Error('KRO Alchemy props must not carry live deployer objects');
+          },
+          ensureResourceTypeRegistered() {
+            return async (
+              id: string,
+              input: {
+                resource: Record<string, unknown>;
+                deployer?: unknown;
+                deploymentStrategy?: string;
+                kubeConfigOptions?: Record<string, unknown>;
+                kroDeletion?: Record<string, unknown>;
+                options?: Record<string, unknown>;
+              }
+            ) => {
+              expect(insideAlchemyScope).toBe(true);
+              events.push(`provider:${input.resource.kind}`);
+              providerCalls.push({ id, input });
+            };
+          },
+          createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string) {
+            return `${namespace ?? 'default'}:${resource.kind}:${resource.metadata.name}`;
+          },
         },
-      } as any,
-      hydrateStatus: false,
-      rgdProvider: (rgd) => rgd as unknown as Enhanced<Record<string, unknown>, Record<string, unknown>>,
-      alchemyBridge: {
-        createDeployer() {
-          throw new Error('KRO Alchemy props must not carry live deployer objects');
-        },
-        ensureResourceTypeRegistered() {
-          return async (id: string, input: {
-            resource: Record<string, unknown>;
-            deployer?: unknown;
-            deploymentStrategy?: string;
-            kubeConfigOptions?: Record<string, unknown>;
-            kroDeletion?: Record<string, unknown>;
-            options?: Record<string, unknown>;
-          }) => {
-            expect(insideAlchemyScope).toBe(true);
-            events.push(`provider:${input.resource.kind}`);
-            providerCalls.push({ id, input });
-          };
-        },
-        createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string) {
-          return `${namespace ?? 'default'}:${resource.kind}:${resource.metadata.name}`;
-        },
-      },
-    });
+      }
+    );
     (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
       getCurrentCluster: () => ({ server: 'https://example.invalid' }),
     });
@@ -277,7 +321,7 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     };
     (factory as unknown as Record<string, unknown>).waitForKroInstanceReady = async (
       instanceName: string,
-      timeout: number,
+      timeout: number
     ) => {
       readinessCalls.push({ instanceName, timeout });
     };
@@ -288,12 +332,18 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     ) => Promise<unknown>;
     await deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo');
 
-    const rgdCall = providerCalls.find((call) => call.input.resource.kind === 'ResourceGraphDefinition');
-    const rgd = rgdCall?.input.resource as {
-      spec?: { resources?: Array<{ id: string; externalRef?: unknown; template?: unknown }> };
-    } | undefined;
+    const rgdCall = providerCalls.find(
+      (call) => call.input.resource.kind === 'ResourceGraphDefinition'
+    );
+    const rgd = rgdCall?.input.resource as
+      | {
+          spec?: { resources?: Array<{ id: string; externalRef?: unknown; template?: unknown }> };
+        }
+      | undefined;
     const instanceCall = providerCalls.find((call) => call.input.resource.kind === 'TestApp');
-    const extRefResource = rgd?.spec?.resources?.find((resource) => resource.id === 'platformConfig');
+    const extRefResource = rgd?.spec?.resources?.find(
+      (resource) => resource.id === 'platformConfig'
+    );
 
     expect(extRefResource?.externalRef).toEqual({
       apiVersion: 'v1',
@@ -349,7 +399,10 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     };
 
     try {
-      const ensureRGDDeployed = getPrivateMethod(factory, 'ensureRGDDeployed') as () => Promise<void>;
+      const ensureRGDDeployed = getPrivateMethod(
+        factory,
+        'ensureRGDDeployed'
+      ) as () => Promise<void>;
       await ensureRGDDeployed();
       expect(disposed).toBe(true);
     } finally {
@@ -672,20 +725,28 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
   });
 
   it('uses custom group when apiVersion has no slash', () => {
-    const factory = makeFactory('myApp', {}, makeSchema({
-      apiVersion: 'v1alpha1',
-      group: 'platform.example.com',
-    }));
+    const factory = makeFactory(
+      'myApp',
+      {},
+      makeSchema({
+        apiVersion: 'v1alpha1',
+        group: 'platform.example.com',
+      })
+    );
     const yamlText = factory.toYaml({ name: 'test', replicas: 1 });
     const parsed = yaml.load(yamlText) as { apiVersion: string };
     expect(parsed.apiVersion).toBe('platform.example.com/v1alpha1');
   });
 
   it('looks up CRD plural using the custom group', async () => {
-    const factory = makeFactory('myApp', {}, makeSchema({
-      apiVersion: 'v1alpha1',
-      group: 'platform.example.com',
-    }));
+    const factory = makeFactory(
+      'myApp',
+      {},
+      makeSchema({
+        apiVersion: 'v1alpha1',
+        group: 'platform.example.com',
+      })
+    );
     (factory as unknown as Record<string, unknown>).createKubernetesObjectApi = () => ({
       list: async () => ({
         items: [
@@ -705,7 +766,9 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
       }),
     });
 
-    const lookupCRDPlural = getPrivateMethod(factory, 'lookupCRDPlural') as () => Promise<string | undefined>;
+    const lookupCRDPlural = getPrivateMethod(factory, 'lookupCRDPlural') as () => Promise<
+      string | undefined
+    >;
     await expect(lookupCRDPlural()).resolves.toBe('customtests');
   });
 
@@ -832,9 +895,15 @@ describe('KroResourceFactory: toYaml() singleton owner isolation', () => {
       spec: { name: 'shared-platform' },
     } satisfies SingletonDefinitionRecord;
 
-    const factory = createKroResourceFactory('singletonConsumer', resources, makeSchema(), {}, {
-      singletonDefinitions: [singletonDefinition],
-    });
+    const factory = createKroResourceFactory(
+      'singletonConsumer',
+      resources,
+      makeSchema(),
+      {},
+      {
+        singletonDefinitions: [singletonDefinition],
+      }
+    );
     const ownerId = getSingletonResourceId(singletonKey);
 
     const yaml = factory.toYaml();
@@ -937,6 +1006,46 @@ describe('KroResourceFactory: evaluateStaticCelExpression', () => {
     expect(result).toBe('web-service');
   });
 
+  it('evaluates has() checks for present and absent schema fields', () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticCelExpression');
+
+    expect(
+      evaluator(makeCelExpr('has(schema.spec.name) ? "present" : "absent"'), {
+        name: 'web',
+        replicas: 1,
+      })
+    ).toBe('present');
+
+    expect(
+      evaluator(makeCelExpr('has(schema.spec.optional) ? "present" : "absent"'), {
+        name: 'web',
+        replicas: 1,
+      })
+    ).toBe('absent');
+  });
+
+  it('evaluates string(), omit(), and schema .orValue() helpers', () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticCelExpression');
+
+    expect(
+      evaluator(makeCelExpr('string(schema.spec.replicas)'), { name: 'web', replicas: 3 })
+    ).toBe('3');
+    expect(
+      evaluator(makeCelExpr('schema.spec.optional.orValue("fallback")'), {
+        name: 'web',
+        replicas: 1,
+      })
+    ).toBe('fallback');
+    expect(
+      evaluator(makeCelExpr('has(schema.spec.optional) ? schema.spec.optional : omit()'), {
+        name: 'web',
+        replicas: 1,
+      })
+    ).toBeUndefined();
+  });
+
   it('QUIRK: returns expression string as-is for unparseable static literals', () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticCelExpression');
@@ -1027,6 +1136,31 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
     expect(result).toEqual({ url: 'web-service' });
   });
 
+  it('resolves raw schema KubernetesRef fields', async () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
+    const result = await evaluator(
+      {
+        name: makeKubeRef('__schema__', 'spec.name'),
+        replicas: makeKubeRef('__schema__', 'spec.replicas'),
+      },
+      { name: 'web', replicas: 3 }
+    );
+
+    expect(result).toEqual({ name: 'web', replicas: 3 });
+  });
+
+  it('resolves nested raw schema KubernetesRef fields', async () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
+    const result = await evaluator(
+      { databaseHost: makeKubeRef('__schema__', 'spec.database.host') },
+      { name: 'web', replicas: 1, database: { host: 'postgres.local' } }
+    );
+
+    expect(result).toEqual({ databaseHost: 'postgres.local' });
+  });
+
   it('evaluates inline ${...} CEL expression strings', async () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
@@ -1035,6 +1169,17 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
       { name: 'test', replicas: 5 }
     );
     expect(result).toEqual({ count: 5 });
+  });
+
+  it('evaluates inline ${...} strings with has() guards', async () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
+    const result = await evaluator(
+      { value: '${has(schema.spec.optional) ? schema.spec.optional : "fallback"}' },
+      { name: 'test', replicas: 5 }
+    );
+
+    expect(result).toEqual({ value: 'fallback' });
   });
 
   it('passes through primitive values unchanged', async () => {
@@ -1057,12 +1202,29 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
     expect(result).toEqual({ nested: { value: 'deep' } });
   });
 
-  it('passes through arrays without recursion', async () => {
+  it('recursively evaluates arrays', async () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
-    const arr = [1, 2, 3];
-    const result = await evaluator({ items: arr }, { name: 'test', replicas: 1 });
-    expect(result).toEqual({ items: arr });
+    const result = await evaluator(
+      {
+        items: [
+          makeKubeRef('__schema__', 'spec.name'),
+          { count: makeCelExpr('schema.spec.replicas') },
+        ],
+      },
+      { name: 'test', replicas: 4 }
+    );
+
+    expect(result).toEqual({ items: ['test', { count: 4 }] });
+  });
+
+  it('preserves non-schema KubernetesRef fields', async () => {
+    const factory = makeFactory('myApp');
+    const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
+    const ref = makeKubeRef('deployment', 'status.readyReplicas');
+    const result = await evaluator({ readyReplicas: ref }, { name: 'test', replicas: 1 });
+
+    expect(result).toEqual({ readyReplicas: ref });
   });
 
   it('QUIRK: accessing nonexistent spec fields returns undefined (no throw)', async () => {
@@ -1395,29 +1557,26 @@ describe('KroResourceFactory: mixed status hydration', () => {
     }
 
     const deployedOwnerStatus = { ready: true, endpoint: 'http://owner-live:80' };
-    const fakeOwnerComposition = Object.assign(
-      () => ({ ready: false, endpoint: 'unreachable' }),
-      {
-        _definition: {
-          apiVersion: 'v1alpha1',
-          kind: 'SingletonBootstrap',
-          name: 'singleton-bootstrap',
-        },
-        factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
-          expect(mode).toBe('kro');
-          expect(options?.namespace).toBe('typekro-singletons');
-          return {
-            async getInstances() {
-              return [];
-            },
-            async deploy() {
-              return { status: deployedOwnerStatus };
-            },
-            async dispose() {},
-          };
-        },
-      }
-    );
+    const fakeOwnerComposition = Object.assign(() => ({ ready: false, endpoint: 'unreachable' }), {
+      _definition: {
+        apiVersion: 'v1alpha1',
+        kind: 'SingletonBootstrap',
+        name: 'singleton-bootstrap',
+      },
+      factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
+        expect(mode).toBe('kro');
+        expect(options?.namespace).toBe('typekro-singletons');
+        return {
+          async getInstances() {
+            return [];
+          },
+          async deploy() {
+            return { status: deployedOwnerStatus };
+          },
+          async dispose() {},
+        };
+      },
+    });
 
     const parentFactory = createKroResourceFactory<ParentSpec, ParentStatus>(
       'kro-singleton-status-consumer',
@@ -1474,7 +1633,11 @@ describe('KroResourceFactory: live status resource identity resolution', () => {
     ) as (value: unknown, spec: TestSpec, fallback: string) => string;
 
     expect(
-      resolveLiveResourceIdentityValue('${schema.spec.name}-service', { name: 'demo', replicas: 1 }, 'fallback')
+      resolveLiveResourceIdentityValue(
+        '${schema.spec.name}-service',
+        { name: 'demo', replicas: 1 },
+        'fallback'
+      )
     ).toBe('demo-service');
     expect(
       resolveLiveResourceIdentityValue(
@@ -1515,7 +1678,11 @@ describe('KroResourceFactory: live status resource identity resolution', () => {
     };
 
     expect(
-      resolveLiveResourceIdentityValue(schemaNamespaceRef, { name: 'demo', replicas: 1 }, 'default-ns')
+      resolveLiveResourceIdentityValue(
+        schemaNamespaceRef,
+        { name: 'demo', replicas: 1 },
+        'default-ns'
+      )
     ).toBe('default-ns');
   });
 
@@ -1527,7 +1694,11 @@ describe('KroResourceFactory: live status resource identity resolution', () => {
     ) as (value: unknown, spec: TestSpec, fallback: string) => string;
 
     expect(
-      resolveLiveResourceIdentityValue('${service.status.clusterIP}', { name: 'demo', replicas: 1 }, 'fallback')
+      resolveLiveResourceIdentityValue(
+        '${service.status.clusterIP}',
+        { name: 'demo', replicas: 1 },
+        'fallback'
+      )
     ).toBe('fallback');
   });
 });
@@ -1596,14 +1767,18 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     const createCustomResourceInstance = getPrivateMethod(
       factory,
       'createCustomResourceInstance'
-    ) as (instanceName: string, spec: TestSpec, singletonSpecFingerprint?: string) => {
+    ) as (
+      instanceName: string,
+      spec: TestSpec,
+      singletonSpecFingerprint?: string
+    ) => {
       metadata: { annotations?: Record<string, string> };
     };
 
     const manifest = createCustomResourceInstance(
       'stable-singleton-id',
       { name: 'owner', replicas: 1 },
-      'fnv64:testfingerprint',
+      'fnv64:testfingerprint'
     );
 
     expect(manifest.metadata.annotations?.['typekro.io/singleton-spec-fingerprint']).toBe(
@@ -1616,11 +1791,17 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     const createCustomResourceInstance = getPrivateMethod(
       factory,
       'createCustomResourceInstance'
-    ) as (instanceName: string, spec: TestSpec) => {
+    ) as (
+      instanceName: string,
+      spec: TestSpec
+    ) => {
       metadata: { labels?: Record<string, string> };
     };
 
-    const manifest = createCustomResourceInstance('labelled-instance', { name: 'owner', replicas: 1 });
+    const manifest = createCustomResourceInstance('labelled-instance', {
+      name: 'owner',
+      replicas: 1,
+    });
 
     expect(manifest.metadata.labels).toMatchObject({
       'typekro.io/factory': 'instance-labels',
@@ -1733,7 +1914,9 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
       factory() {
         return {
           async getInstances() {
-            throw new Error('the server could not find the requested resource (get singletonowners.kro.run)');
+            throw new Error(
+              'the server could not find the requested resource (get singletonowners.kro.run)'
+            );
           },
           async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
             deployCalls.push({ spec, ...(opts ? { opts } : {}) });
@@ -1775,7 +1958,10 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
   });
 
   it('rejects deployed singleton owner spec drift before reconciling', async () => {
-    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
+    const deployCalls: Array<{
+      spec: { name: string };
+      opts?: Record<string, unknown> | undefined;
+    }> = [];
     const fakeComposition = {
       factory() {
         return {
@@ -1824,7 +2010,10 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
   });
 
   it('reconciles existing singleton owners when the deployed spec matches', async () => {
-    const deployCalls: Array<{ spec: { name: string }; opts?: Record<string, unknown> | undefined }> = [];
+    const deployCalls: Array<{
+      spec: { name: string };
+      opts?: Record<string, unknown> | undefined;
+    }> = [];
     const fakeComposition = {
       factory() {
         return {

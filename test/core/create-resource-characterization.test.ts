@@ -22,6 +22,7 @@ import {
 } from '../../src/core/composition/context.js';
 import { TypeKroError } from '../../src/core/errors.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
+import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
 import type { CelExpression } from '../../src/core/types/common.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
@@ -163,6 +164,17 @@ describe('createRefFactory (via ref property access)', () => {
     const ref = r.status.$optional.nested;
     expect(isKubernetesRef(ref)).toBe(true);
     expect(asKubernetesRef(ref).fieldPath).toBe('status.?optional.nested');
+  });
+
+  it('$ prefix marker strings are converted by the shared marker grammar', () => {
+    const r = createResource(makeResource());
+    const marker = r.status.$optionalField.toMarkerString();
+
+    expect(marker).toContain('status.?optionalField');
+    expect(processResourceReferences(marker, {
+      celPrefix: 'resources',
+      resourceIdStrategy: 'deterministic',
+    })).toBe('${deploymentMyApp.status.?optionalField}');
   });
 
   it('orValue() returns CelExpression with string default', () => {

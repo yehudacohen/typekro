@@ -81,9 +81,16 @@ export function isClusterAvailable(): boolean {
       return false;
     }
 
-    // Don't test connectivity here as it can cause TLS issues
-    // Just check if we have a valid cluster configuration
-    return true;
+    const kubectlCheck = Bun.spawnSync([
+      'kubectl',
+      '--request-timeout=5s',
+      'cluster-info',
+    ], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    return kubectlCheck.exitCode === 0;
   } catch (_error) {
     return false;
   }

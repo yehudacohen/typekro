@@ -87,6 +87,7 @@ export function cnpgHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
+    driftDetection: { mode: 'enabled' },
     values: {
       crds: { create: true },
       ...(config.values || {}),

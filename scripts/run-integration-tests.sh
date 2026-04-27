@@ -8,6 +8,7 @@ DEBUG_MODE=${DEBUG_MODE:-false}
 # Initialise variables referenced later so `set -u` doesn't blow up
 SKIP_CLUSTER_TESTS=${SKIP_CLUSTER_TESTS:-false}
 SKIP_CLUSTER_SETUP=${SKIP_CLUSTER_SETUP:-false}
+REQUIRE_CLUSTER_TESTS=${REQUIRE_CLUSTER_TESTS:-false}
 CREATE_CLUSTER=false
 
 echo "🚀 Starting Integration Test Suite..."
@@ -51,6 +52,18 @@ if ! docker info &> /dev/null; then
     SKIP_CLUSTER_TESTS=true
 else
     echo "✅ Docker is running"
+fi
+
+if [ "$SKIP_CLUSTER_TESTS" = "true" ] && [ "$REQUIRE_CLUSTER_TESTS" = "true" ]; then
+    echo "❌ Cluster integration tests are required, but prerequisites are missing."
+    echo "   Install kubectl/kind and start Docker, or unset REQUIRE_CLUSTER_TESTS."
+    exit 1
+fi
+
+if [ "$SKIP_CLUSTER_TESTS" = "true" ]; then
+    echo "⏭️  Skipping cluster integration tests because prerequisites are missing."
+    echo "   Set REQUIRE_CLUSTER_TESTS=true to fail instead of skipping."
+    exit 0
 fi
 
 echo ""

@@ -139,7 +139,7 @@ describe('RGD Metadata Validation', () => {
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');
       expect(yaml).toContain('name: test-app');
-      expect(yaml).toContain('namespace: test-namespace');
+      expect(yaml).not.toContain('namespace: test-namespace');
     });
 
     it('should generate RGD YAML with converted camelCase names', async () => {
@@ -150,7 +150,7 @@ describe('RGD Metadata Validation', () => {
 
       // Verify the YAML contains the converted name
       expect(yaml).toContain('name: test-app-name');
-      expect(yaml).toContain('namespace: test-namespace');
+      expect(yaml).not.toContain('namespace: test-namespace');
     });
   });
 

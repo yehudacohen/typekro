@@ -73,6 +73,9 @@ describe('Status Field Integration', () => {
     expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
     expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
     expect(yaml).toContain(
+      'url: http://${spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
+    );
+    expect(yaml).not.toContain(
       'url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
     );
 

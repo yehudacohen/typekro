@@ -10,7 +10,11 @@ import {
   KroTypeKroDeployer,
   ResourceGraphDefinitionDeletionDeferredError,
 } from '../../src/alchemy/deployers.js';
-import { deleteKroDefinition, listKroInstancesForTest } from '../../src/alchemy/kro-delete.js';
+import {
+  deleteKroDefinition,
+  deleteKroInstanceFinalizerSafeForTest,
+  listKroInstancesForTest,
+} from '../../src/alchemy/kro-delete.js';
 import {
   handleResourceDeletionForTest,
   inferKroDeletionOptionsForTest,
@@ -338,7 +342,7 @@ describe('DirectTypeKroDeployer', () => {
       deployer = new DirectTypeKroDeployer(mockEngine);
     });
 
-    it('should call engine.deleteResource with correct parameters', async () => {
+    it('uses the resource namespace when delete options have a different factory namespace', async () => {
       const testDeployment = createTestDeployment('delete-test', 2);
 
       await deployer.delete(testDeployment, { mode: 'direct', namespace: 'test-ns' });
@@ -350,7 +354,7 @@ describe('DirectTypeKroDeployer', () => {
 
       expect(deployedResource.kind).toBe('Deployment');
       expect(deployedResource.name).toBe('delete-test');
-      expect(deployedResource.namespace).toBe('test-ns');
+      expect(deployedResource.namespace).toBe('default');
     });
 
     it('should use resource namespace if options namespace not provided', async () => {
@@ -517,6 +521,200 @@ describe('KroTypeKroDeployer', () => {
 
     expect(listCalls).toEqual([{ group: 'example.com', version: 'v1alpha1', plural: 'testapps' }]);
     expect(instances[0]?.metadata?.namespace).toBe('apps-b');
+  });
+
+  it('deletes KRO instance then removes RGD and CRD when no instances remain', async () => {
+    const deletes: Record<string, any>[] = [];
+    let readCount = 0;
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      read: mock(() => {
+        readCount += 1;
+        if (readCount === 1) return Promise.resolve({ metadata: { name: 'test-app' } });
+        return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+      }),
+      delete: mock((resource: Record<string, any>) => {
+        deletes.push(resource);
+        return Promise.resolve({});
+      }),
+    };
+    const customApi = {
+      listClusterCustomObject: mock(() => Promise.resolve({ items: [] })),
+    };
+
+    await deleteKroInstanceFinalizerSafeForTest({} as any, 'test-app', {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+    }, {
+      k8sApi,
+      customApi,
+      sleep: mock(() => Promise.resolve()),
+    });
+
+    expect(k8sApi.read).toHaveBeenCalledTimes(2);
+    expect(customApi.listClusterCustomObject).toHaveBeenCalledWith({
+      group: 'example.com',
+      version: 'v1alpha1',
+      plural: 'testapps',
+    });
+    expect(deletes).toEqual([
+      {
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        metadata: { name: 'test-app', namespace: 'apps-a' },
+      },
+      {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'test-app' },
+      },
+      {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'testapps.example.com' },
+      },
+    ]);
+  });
+
+  it('preserves KRO RGD and CRD while other instances still exist', async () => {
+    const deletes: Record<string, any>[] = [];
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      read: mock(() => Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }))),
+      delete: mock((resource: Record<string, any>) => {
+        deletes.push(resource);
+        return Promise.resolve({});
+      }),
+    };
+    const customApi = {
+      listClusterCustomObject: mock(() =>
+        Promise.resolve({ items: [{ metadata: { name: 'other-app', namespace: 'apps-a' } }] })
+      ),
+    };
+
+    await deleteKroInstanceFinalizerSafeForTest({} as any, 'test-app', {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+    }, {
+      k8sApi,
+      customApi,
+      sleep: mock(() => Promise.resolve()),
+    });
+
+    expect(deletes).toEqual([
+      {
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        metadata: { name: 'test-app', namespace: 'apps-a' },
+      },
+    ]);
+  });
+
+  it('treats missing KRO instances as deleted before finalizer-safe cleanup', async () => {
+    const deletes: Record<string, any>[] = [];
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      read: mock(() => Promise.resolve({})),
+      delete: mock((resource: Record<string, any>) => {
+        deletes.push(resource);
+        if (resource.kind === 'TestApp') {
+          return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+        }
+        return Promise.resolve({});
+      }),
+    };
+    const customApi = {
+      listClusterCustomObject: mock(() => Promise.resolve({ items: [] })),
+    };
+
+    await deleteKroInstanceFinalizerSafeForTest({} as any, 'missing-app', {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+    }, {
+      k8sApi,
+      customApi,
+      sleep: mock(() => Promise.resolve()),
+    });
+
+    expect(k8sApi.read).not.toHaveBeenCalled();
+    expect(deletes.map((resource) => resource.kind)).toEqual([
+      'TestApp',
+      'ResourceGraphDefinition',
+      'CustomResourceDefinition',
+    ]);
+  });
+
+  it('fails without RGD cleanup when KRO instance deletion times out', async () => {
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      read: mock(() => Promise.resolve({ metadata: { name: 'test-app' } })),
+      delete: mock(() => Promise.resolve({})),
+    };
+    const customApi = {
+      listClusterCustomObject: mock(() => Promise.resolve({ items: [] })),
+    };
+
+    await expect(deleteKroInstanceFinalizerSafeForTest({} as any, 'test-app', {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+      timeout: 0,
+    }, {
+      k8sApi,
+      customApi,
+      sleep: mock(() => Promise.resolve()),
+    })).rejects.toThrow('deletion did not complete');
+
+    expect(k8sApi.delete).toHaveBeenCalledTimes(1);
+    expect(customApi.listClusterCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('propagates finalizer-safe RGD cleanup failures', async () => {
+    const deletes: Record<string, any>[] = [];
+    const k8sApi = {
+      list: mock(() => Promise.resolve({ items: [] })),
+      read: mock(() => Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }))),
+      delete: mock((resource: Record<string, any>) => {
+        deletes.push(resource);
+        if (resource.kind === 'ResourceGraphDefinition') {
+          return Promise.reject(Object.assign(new Error('RBAC denied'), { statusCode: 403 }));
+        }
+        return Promise.resolve({});
+      }),
+    };
+    const customApi = {
+      listClusterCustomObject: mock(() => Promise.resolve({ items: [] })),
+    };
+
+    await expect(deleteKroInstanceFinalizerSafeForTest({} as any, 'test-app', {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+    }, {
+      k8sApi,
+      customApi,
+      sleep: mock(() => Promise.resolve()),
+    })).rejects.toThrow('RBAC denied');
+
+    expect(deletes.map((resource) => resource.kind)).toEqual(['TestApp', 'ResourceGraphDefinition']);
   });
 
   it('treats missing generated CRD as idempotent Alchemy KRO definition cleanup', async () => {

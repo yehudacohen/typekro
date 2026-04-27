@@ -60,8 +60,22 @@ export interface KubernetesObjectCleanupApi {
   delete(resource: {
     apiVersion: string;
     kind: string;
-    metadata: { name: string };
+    metadata: { name: string; namespace?: string };
   }): Promise<unknown>;
+}
+
+export interface KubernetesObjectInstanceApi extends KubernetesObjectCleanupApi {
+  read(resource: {
+    apiVersion: string;
+    kind: string;
+    metadata: { name: string; namespace?: string };
+  }): Promise<unknown>;
+}
+
+export interface KroInstanceDeletionApis {
+  k8sApi: KubernetesObjectInstanceApi;
+  customApi?: CustomObjectListApi;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 async function lookupCRDPlural(
@@ -182,8 +196,19 @@ export async function deleteKroInstanceFinalizerSafe(
   name: string,
   options: KroDeletionOptions
 ): Promise<void> {
+  return deleteKroInstanceFinalizerSafeWithApis(kubeConfig, name, options, {
+    k8sApi: createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectInstanceApi,
+  });
+}
+
+async function deleteKroInstanceFinalizerSafeWithApis(
+  kubeConfig: KubeConfig,
+  name: string,
+  options: KroDeletionOptions,
+  apis: KroInstanceDeletionApis
+): Promise<void> {
   const logger = getComponentLogger('alchemy-kro-delete');
-  const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const { customApi, k8sApi, sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) } = apis;
   const apiVersion = getInstanceApiVersion(options);
   const timeout = options.timeout ?? 300000;
   let instanceDeleted = false;
@@ -204,7 +229,7 @@ export async function deleteKroInstanceFinalizerSafe(
           kind: options.kind,
           metadata: { name, namespace: options.namespace },
         });
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await sleep(2000);
       } catch (pollError: unknown) {
         if (getKubernetesErrorCode(pollError) === 404) {
           instanceDeleted = true;
@@ -214,7 +239,7 @@ export async function deleteKroInstanceFinalizerSafe(
           name,
           errorCode: getKubernetesErrorCode(pollError),
         });
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await sleep(2000);
       }
     }
     if (!instanceDeleted) {
@@ -252,7 +277,7 @@ export async function deleteKroInstanceFinalizerSafe(
 
   let hasRemainingInstances = false;
   try {
-    const instances = await listKroInstances(kubeConfig, options);
+    const instances = await listKroInstances(kubeConfig, options, customApi);
     hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, options.namespace);
   } catch (error: unknown) {
     logger.warn('Cannot list Alchemy KRO instances to check for shared RGD; preserving RGD', {
@@ -263,7 +288,10 @@ export async function deleteKroInstanceFinalizerSafe(
   }
 
   if (!hasRemainingInstances) {
-    await deleteKroDefinition(kubeConfig, options);
+    await deleteKroDefinition(kubeConfig, options, k8sApi);
   }
 
 }
+
+/** Internal test hook for finalizer-safe KRO instance deletion decisions. */
+export const deleteKroInstanceFinalizerSafeForTest = deleteKroInstanceFinalizerSafeWithApis;

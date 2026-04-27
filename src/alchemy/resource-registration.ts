@@ -38,8 +38,21 @@ interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   deployedAt: number;
 }
 
-// Global registry to track registered resource types
-const REGISTERED_TYPES = new Map<string, unknown>();
+// Process-global registry to track registered resource types. Some test and
+// runtime paths can load this module through different specifiers; anchoring the
+// cache on globalThis keeps provider identity stable for a given Alchemy type.
+const REGISTERED_TYPES_KEY = Symbol.for('typekro.alchemy.registeredTypes');
+const globalRegisteredTypes = globalThis as Record<symbol, unknown>;
+if (!globalRegisteredTypes[REGISTERED_TYPES_KEY]) {
+  globalRegisteredTypes[REGISTERED_TYPES_KEY] = new Map<string, unknown>();
+}
+const REGISTERED_TYPES = globalRegisteredTypes[REGISTERED_TYPES_KEY] as Map<string, unknown>;
+
+const REGISTERED_TYPE_NAMES_KEY = Symbol.for('typekro.alchemy.registeredTypeNames');
+if (!globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY]) {
+  globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] = new Set<string>();
+}
+const REGISTERED_TYPE_NAMES = globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] as Set<string>;
 
 /**
  * Dynamic registration function with full type safety
@@ -66,6 +79,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
   if (PROVIDERS.has(alchemyType)) {
     const existingProvider = PROVIDERS.get(alchemyType);
     REGISTERED_TYPES.set(alchemyType, existingProvider);
+    REGISTERED_TYPE_NAMES.add(alchemyType);
     return existingProvider;
   }
 
@@ -119,6 +133,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
 
   // Cache the registered provider
   REGISTERED_TYPES.set(alchemyType, ResourceProvider);
+  REGISTERED_TYPE_NAMES.add(alchemyType);
 
   return ResourceProvider;
 }
@@ -444,5 +459,9 @@ function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
  * Clear the registered types cache (useful for testing)
  */
 export function clearRegisteredTypes(): void {
+  for (const alchemyType of REGISTERED_TYPE_NAMES) {
+    PROVIDERS.delete(alchemyType);
+  }
   REGISTERED_TYPES.clear();
+  REGISTERED_TYPE_NAMES.clear();
 }

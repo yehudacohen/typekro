@@ -159,7 +159,32 @@ export class AlchemyDeploymentStrategy<
         graphName: resourceGraph.name,
       });
 
-      const directResult = await this.executeBaseDirectDeployment(spec, instanceName, opts);
+      let directResult: DeploymentResult;
+      try {
+        directResult = await this.executeBaseDirectDeployment(spec, instanceName, opts);
+      } catch (directDeploymentError: unknown) {
+        const error = ensureError(directDeploymentError);
+        this.logger.warn('Base direct deployment failed; preserving failure in Alchemy result', {
+          error: error.message,
+          resourceCount: resourceGraph.resources.length,
+        });
+
+        directResult = {
+          status: 'failed',
+          deploymentId: `alchemy-direct-failed-${instanceName}-${Date.now()}`,
+          resources: [],
+          dependencyGraph: resourceGraph.dependencyGraph,
+          duration: 0,
+          errors: resourceGraph.resources.map((resource) => ({
+            resourceId: resource.id,
+            phase: 'deployment' as const,
+            error: new Error(
+              `Direct deployment failed for ${resource.manifest.kind || 'Unknown'}/${resource.manifest.metadata?.name || 'unnamed'}: ${error.message}`
+            ),
+            timestamp: new Date(),
+          })),
+        };
+      }
       const directResourcesById = new Map(directResult.resources.map((resource) => [resource.id, resource]));
       const trackingDeployer: TypeKroDeployer = {
         deploy: async (resource) => resource,
@@ -309,10 +334,20 @@ export class AlchemyDeploymentStrategy<
         ...errors,
       ];
       const hasErrors = allErrors.length > 0;
-      const hasSuccesses = deployedResources.length > 0;
+      let hasSuccesses = deployedResources.length > 0;
+      let rolledBackAfterAlchemyFailure = false;
+
+      if (hasErrors && directResult.resources.length > 0) {
+        await this.rollbackBaseDirectDeployment(directResult);
+        deployedResources.length = 0;
+        hasSuccesses = false;
+        rolledBackAfterAlchemyFailure = true;
+      }
 
       let status: 'success' | 'failed' | 'partial';
-      if (hasSuccesses && !hasErrors) {
+      if (rolledBackAfterAlchemyFailure) {
+        status = 'failed';
+      } else if (hasSuccesses && !hasErrors) {
         status = 'success';
       } else if (!hasSuccesses && hasErrors) {
         status = 'failed';
@@ -332,7 +367,7 @@ export class AlchemyDeploymentStrategy<
 
       return {
         status,
-        deploymentId: `alchemy-${instanceName}-${Date.now()}`,
+        deploymentId: directResult.deploymentId,
         resources: deployedResources,
         dependencyGraph: resourceGraph.dependencyGraph,
         duration,
@@ -367,6 +402,37 @@ export class AlchemyDeploymentStrategy<
     }
 
     return strategy.executeDeployment(spec, instanceName, opts);
+  }
+
+  private async rollbackBaseDirectDeployment(directResult: DeploymentResult): Promise<void> {
+    const strategy = this.baseStrategy as unknown as {
+      rollbackDeployment?: (
+        deploymentId: string,
+        opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+      ) => Promise<unknown>;
+    };
+
+    if (typeof strategy.rollbackDeployment !== 'function') {
+      this.logger.warn('Alchemy registration failed after direct deployment, but base strategy cannot rollback', {
+        deploymentId: directResult.deploymentId,
+        resourceCount: directResult.resources.length,
+      });
+      return;
+    }
+
+    try {
+      const scopes = [...new Set(directResult.resources.flatMap((resource) => getEffectiveScopes(resource.manifest)))];
+      await strategy.rollbackDeployment(directResult.deploymentId, scopes.length > 0 ? { scopes } : undefined);
+      this.logger.info('Rolled back direct resources after Alchemy registration failure', {
+        deploymentId: directResult.deploymentId,
+        resourceCount: directResult.resources.length,
+      });
+    } catch (rollbackError: unknown) {
+      this.logger.error('Failed to rollback direct resources after Alchemy registration failure', ensureError(rollbackError), {
+        deploymentId: directResult.deploymentId,
+      });
+      throw rollbackError;
+    }
   }
 
   protected getStrategyMode(): 'direct' | 'kro' {

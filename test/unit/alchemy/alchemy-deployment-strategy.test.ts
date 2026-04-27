@@ -23,14 +23,21 @@ type MockAlchemyProviderProps = {
   options?: unknown;
 };
 
+type TestSpec = { name: string; replicas: number };
+type TestStatus = { phase: string };
+
 const alchemyProviderCalls: Array<{
   id: string;
   props: MockAlchemyProviderProps;
 }> = [];
+const failingProviderKinds = new Set<string>();
 
 mock.module('../../../src/alchemy/deployment.js', () => ({
   ensureResourceTypeRegistered: (resource: { kind?: string }) => {
     const provider = async (id: string, props: MockAlchemyProviderProps) => {
+      if (resource.kind && failingProviderKinds.has(resource.kind)) {
+        throw new Error(`Alchemy registration failed for ${resource.kind}`);
+      }
       alchemyProviderCalls.push({ id, props });
       return { id, ...props };
     };
@@ -43,17 +50,18 @@ mock.module('../../../src/alchemy/deployment.js', () => ({
 
 describe('AlchemyDeploymentStrategy', () => {
   // Mock alchemy scope
-  const createMockAlchemyScope = () => {
-    const runMock = mock(async (fn: () => Promise<any>) => {
+  const createMockAlchemyScope = (): Scope => {
+    const runMock = mock(async (fn: () => Promise<unknown>) => {
       return await fn();
     });
 
-    return {
+    const scopeMock = {
       run: runMock,
       // Add any other alchemy scope methods needed
       import: mock(async () => ({})),
       export: mock(async () => ({})),
     };
+    return scopeMock as unknown as Scope;
   };
 
   // Mock base strategy
@@ -79,7 +87,7 @@ describe('AlchemyDeploymentStrategy', () => {
       },
     ];
     const resourceResolver = {
-      createResourceGraphForInstance: mock((spec: any, instanceName?: string) => ({
+      createResourceGraphForInstance: mock((spec: TestSpec, instanceName?: string) => ({
         name: `${instanceName || spec?.name || 'test-instance'}-graph`,
         resources,
         dependencyGraph: { nodes: [], edges: [] },
@@ -108,6 +116,7 @@ describe('AlchemyDeploymentStrategy', () => {
           duration: 100,
         })
       ),
+      rollbackDeployment: mock(() => Promise.resolve({ status: 'success', rolledBackResources: [], errors: [], duration: 1 })),
       getStrategyMode: mock(() => 'direct' as const),
     });
 
@@ -132,12 +141,13 @@ describe('AlchemyDeploymentStrategy', () => {
     timeout: 30000,
   };
 
-  let mockAlchemyScope: any;
-  let mockBaseStrategy: any;
-  let strategy: AlchemyDeploymentStrategy<any, any>;
+  let mockAlchemyScope: ReturnType<typeof createMockAlchemyScope>;
+  let mockBaseStrategy: ReturnType<typeof createMockBaseStrategy>;
+  let strategy: AlchemyDeploymentStrategy<TestSpec, TestStatus>;
 
   beforeEach(() => {
     alchemyProviderCalls.length = 0;
+    failingProviderKinds.clear();
 
     const registry = ReadinessEvaluatorRegistry.getInstance();
     registry.clear();
@@ -322,11 +332,77 @@ describe('AlchemyDeploymentStrategy', () => {
         targetScopes: ['cluster'],
       });
       expect(result.dependencyGraph).toBe(dependencyGraph);
+      expect(result.deploymentId).toBe('direct-scoped-instance');
       expect(result.resources).toHaveLength(1);
       expect((result.resources as Array<{ id: string }>)[0]?.id).toBe('namespace-1');
       expect(alchemyProviderCalls).toHaveLength(1);
       expect(alchemyProviderCalls[0]?.props.resource.kind).toBe('Namespace');
       expect(alchemyProviderCalls[0]?.props.deployer).toBeDefined();
+    });
+
+    it('rolls back direct resources when Alchemy registration fails after deployment', async () => {
+      const spec = { name: 'test-app', replicas: 1 };
+      failingProviderKinds.add('Service');
+
+      const result = (await strategyInternals(strategy).executeDeployment(
+        spec,
+        'rollback-instance'
+      )) as Record<string, unknown>;
+
+      expect(result.status).toBe('failed');
+      expect(result.resources as unknown[]).toHaveLength(0);
+      expect(result.deploymentId).toBe('direct-test-instance');
+      expect(mockBaseStrategy.rollbackDeployment).toHaveBeenCalledWith(
+        'direct-test-instance',
+        undefined
+      );
+    });
+
+    it('rolls back scoped direct resources using their effective scopes', async () => {
+      const spec = { name: 'test-app', replicas: 1 };
+      const clusterResource = {
+        id: 'cluster-role-1',
+        manifest: {
+          apiVersion: 'rbac.authorization.k8s.io/v1',
+          kind: 'ClusterRole',
+          metadata: {
+            name: 'test-cluster-role',
+            annotations: { 'typekro.io/scopes': '["cluster"]' },
+          },
+        },
+      };
+
+      mockBaseStrategy.resourceResolver.createResourceGraphForInstance.mockReturnValue({
+        name: 'scoped-rollback-instance',
+        resources: [clusterResource],
+        dependencyGraph: { nodes: [], edges: [] },
+      });
+      mockBaseStrategy.executeDeployment.mockResolvedValue({
+        status: 'success',
+        deploymentId: 'direct-scoped-rollback-instance',
+        resources: [
+          {
+            id: clusterResource.id,
+            kind: clusterResource.manifest.kind,
+            name: clusterResource.manifest.metadata.name,
+            namespace: 'default',
+            manifest: clusterResource.manifest,
+            status: 'deployed' as const,
+            deployedAt: new Date(),
+          },
+        ],
+        dependencyGraph: { nodes: [], edges: [] },
+        errors: [],
+        duration: 25,
+      });
+      failingProviderKinds.add('ClusterRole');
+
+      await strategyInternals(strategy).executeDeployment(spec, 'scoped-rollback-instance');
+
+      expect(mockBaseStrategy.rollbackDeployment).toHaveBeenCalledWith(
+        'direct-scoped-rollback-instance',
+        { scopes: ['cluster'] }
+      );
     });
 
     it('does not register skipped target-scope resources as deployed Alchemy state', async () => {
@@ -661,20 +737,12 @@ describe('AlchemyDeploymentStrategy', () => {
 
       const spec = { name: 'test-app', replicas: 1 };
 
-      try {
-        const result = (await strategyInternals(strategy).executeDeployment(
-          spec,
-          'test-instance'
-        )) as Record<string, unknown>;
+      const result = (await strategyInternals(strategy).executeDeployment(
+        spec,
+        'test-instance'
+      )) as Record<string, unknown>;
 
-        if (result) {
-          // Should include alchemy-specific deployment ID format
-          expect(result.deploymentId).toMatch(/^alchemy-/);
-        }
-      } catch (_error) {
-        // Expected due to alchemy import issues in test environment
-        expect(mockBaseStrategy.resourceResolver.createResourceGraphForInstance).toHaveBeenCalled();
-      }
+      expect(result.deploymentId).toBe('direct-test-instance');
     });
   });
 });

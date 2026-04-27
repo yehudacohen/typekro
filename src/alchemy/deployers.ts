@@ -173,7 +173,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
-      namespace: isClusterScoped ? '' : options.namespace || resource.metadata?.namespace || 'default',
+      namespace: isClusterScoped ? '' : resource.metadata?.namespace || options.namespace || 'default',
       manifest: resource,
       status: 'deployed' as const,
       deployedAt: new Date(),
