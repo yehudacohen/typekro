@@ -54,6 +54,8 @@ export interface DeploymentContext {
   kubernetesApi?: KubernetesObjectApi;
   kubeConfig?: KubeConfig; // For operations that need direct API access (e.g., CRD patching)
   alchemyScope?: Scope;
+  /** True when a closure is being executed only to validate KRO compatibility. */
+  validationOnly?: boolean;
   namespace?: string;
   // Level-based execution context - enables future closure extensibility
   deployedResources: Map<string, DeployedResource>; // Resources available at this level

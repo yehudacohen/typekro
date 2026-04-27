@@ -20,6 +20,7 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 ## Known Limitations
 
 - **`search.formats` is direct-mode only.** In KRO mode the user-supplied `formats` array is currently ignored and the composition falls back to the literal default `['html', 'json']`. This is because KRO's CEL mixed templates don't yet support iterating a schema array into a YAML list. If you need a custom `formats` list, deploy via direct mode. Array-valued CEL templating is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) and this limitation will be removed once it lands.
+- **Optional generated settings fields are direct-mode only.** `server.bind_address`, `server.method`, `search.default_lang`, `search.autocomplete`, and `search.safe_search` are emitted into generated `settings.yml` when the spec is concrete. In KRO mode those optional fields are schema proxies, so the composition omits them rather than emitting invalid YAML for absent values.
 - **KRO 0.9.1+ required.** See [Requirements](#requirements) above.
 
 ## Quick Start
@@ -90,7 +91,7 @@ await factory.deploy({
 | `autocomplete` | `string` | — | Autocomplete provider |
 | `safe_search` | `number` | — | Safe search (0=off, 1=moderate, 2=strict) |
 
-> **Known limitation (KRO mode):** `search.formats` is a JavaScript array, and the composition serializes it by iterating the array at composition time. In **direct mode** the user-supplied value flows through correctly. In **KRO mode**, the field is a schema-proxy reference rather than a real array, so the composition can't enumerate it at composition time and falls back to the literal default `['html', 'json']`. `settingsYaml` is also direct-mode only because KRO mode sees it as a schema proxy, not a concrete string. If you need non-default formats, deploy via direct mode. Array-valued CEL templating support is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) — once it lands, this limitation will be removed.
+> **Known limitation (KRO mode):** `search.formats` is a JavaScript array, and the composition serializes it by iterating the array at composition time. In **direct mode** the user-supplied value flows through correctly. In **KRO mode**, the field is a schema-proxy reference rather than a real array, so the composition can't enumerate it at composition time and falls back to the literal default `['html', 'json']`. `settingsYaml` is also direct-mode only because KRO mode sees it as a schema proxy, not a concrete string. Optional generated settings fields (`server.bind_address`, `server.method`, `search.default_lang`, `search.autocomplete`, `search.safe_search`) are also direct-mode only. If you need non-default formats or optional settings fields, deploy via direct mode. Array-valued CEL templating support is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) — once it lands, this limitation will be removed.
 
 ## Rate Limiter
 

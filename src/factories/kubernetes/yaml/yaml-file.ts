@@ -460,6 +460,16 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
           manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
         }
 
+        if (deploymentContext.validationOnly) {
+          results.push({
+            kind: manifest.kind || 'Unknown',
+            name: manifest.metadata?.name || 'unknown',
+            namespace: manifest.metadata?.namespace || undefined,
+            apiVersion: manifest.apiVersion || 'v1',
+          });
+          continue;
+        }
+
         try {
           // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
           if (deploymentContext.alchemyScope) {

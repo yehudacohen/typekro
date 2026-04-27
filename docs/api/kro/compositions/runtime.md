@@ -44,10 +44,21 @@ interface TypeKroRuntimeConfig {
   namespace?: string;     // Target namespace (default: 'flux-system')
   fluxVersion?: string;   // Flux version (default: 'v2.7.5')
   kroVersion?: string;    // Kro version (default: '0.9.1')
+  rbac?: RbacMode;        // Flux controller RBAC mode (default: 'cluster-admin')
 }
+
+type RbacMode = 'cluster-admin' | 'scoped' | { clusterRoleRef: string };
 ```
 
 TypeKro requires KRO `0.9.1+` because generated ResourceGraphDefinitions use the `omit()` CEL function behind the `CELOmitFunction` feature gate.
+
+`rbac` controls the permissions granted to Flux controllers:
+
+| Value | Description |
+|-------|-------------|
+| `'cluster-admin'` | Default. Binds Flux controllers to the built-in `cluster-admin` ClusterRole for maximum compatibility |
+| `'scoped'` | Creates a narrower ClusterRole with the permissions TypeKro's bundled controllers need |
+| `{ clusterRoleRef: string }` | Binds Flux controllers to a pre-existing ClusterRole you manage |
 
 ### Example with Custom Versions
 
@@ -55,7 +66,8 @@ TypeKro requires KRO `0.9.1+` because generated ResourceGraphDefinitions use the
 const runtime = typeKroRuntimeBootstrap({
   namespace: 'flux-system',
   fluxVersion: 'v2.7.5',
-  kroVersion: '0.9.1'
+  kroVersion: '0.9.1',
+  rbac: 'scoped',
 });
 ```
 

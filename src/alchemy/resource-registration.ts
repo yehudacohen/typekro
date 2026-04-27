@@ -18,6 +18,7 @@ import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
+import type { KroDeletionOptions } from './kro-delete.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
 
@@ -165,13 +166,85 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
     return new DirectTypeKroDeployer(engine);
   }
 
-  const kroDeletion = props.kroDeletion;
+  const kroDeletion = props.kroDeletion ?? inferKroDeletionOptions(props);
   return new KroTypeKroDeployer(engine, kroDeletion ? {
     deleteInstance: (name: string) => deleteKroInstanceFinalizerSafe(kc, name, kroDeletion),
     shouldSkipRgdDelete: () => hasKroInstances(kc, kroDeletion),
     deleteResourceGraphDefinition: () => deleteKroDefinition(kc, kroDeletion),
   } : {});
 }
+
+function fullApiVersion(apiVersion: unknown, group: unknown): string | undefined {
+  if (typeof apiVersion !== 'string' || apiVersion.length === 0) return undefined;
+  if (apiVersion.includes('/')) return apiVersion;
+  return typeof group === 'string' && group.length > 0 ? `${group}/${apiVersion}` : apiVersion;
+}
+
+function apiGroup(apiVersion: unknown): string | undefined {
+  return typeof apiVersion === 'string' && apiVersion.includes('/')
+    ? apiVersion.split('/')[0]
+    : undefined;
+}
+
+function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): KroDeletionOptions | undefined {
+  if (props.deploymentStrategy !== 'kro') return undefined;
+
+  const resource = props.resource as {
+    apiVersion?: unknown;
+    kind?: unknown;
+    metadata?: {
+      name?: unknown;
+      namespace?: unknown;
+      labels?: Record<string, unknown>;
+    };
+    spec?: { schema?: { apiVersion?: unknown; group?: unknown; kind?: unknown } };
+  };
+
+  if (resource.kind === 'ResourceGraphDefinition') {
+    const schema = resource.spec?.schema;
+    const apiVersion = fullApiVersion(schema?.apiVersion, schema?.group);
+    if (
+      typeof resource.metadata?.name !== 'string' ||
+      typeof schema?.kind !== 'string' ||
+      !apiVersion
+    ) {
+      return undefined;
+    }
+
+    return {
+      apiVersion,
+      kind: schema.kind,
+      ...(typeof schema.group === 'string' && { group: schema.group }),
+      namespace: typeof resource.metadata.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+      rgdName: resource.metadata.name,
+      timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+    };
+  }
+
+  const rgdName = resource.metadata?.labels?.['typekro.io/rgd'];
+  if (
+    typeof rgdName !== 'string' ||
+    typeof resource.apiVersion !== 'string' ||
+    typeof resource.kind !== 'string'
+  ) {
+    return undefined;
+  }
+
+  const group = apiGroup(resource.apiVersion);
+  return {
+    apiVersion: resource.apiVersion,
+    kind: resource.kind,
+    ...(group && { group }),
+    namespace: typeof resource.metadata?.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+    rgdName,
+    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+  };
+}
+
+/** Internal test hook for legacy Alchemy KRO state rehydration. */
+export const inferKroDeletionOptionsForTest = inferKroDeletionOptions;
 
 async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,

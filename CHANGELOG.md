@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - APISIX admin credentials now configurable via `gateway.adminCredentials` in bootstrap config
 - New subpath entry points: `typekro/advanced` for internal/advanced APIs and `typekro/alchemy` for Alchemy integration
 - `arktypeToKroSchema` and `createWebService` added to main public API
-- `RbacMode`, `TypeKroRuntimeSpec`, `TypeKroRuntimeStatus` types added for TypeKro runtime compositions
+- `RbacMode` and `TypeKroRuntimeConfig` types added for TypeKro runtime compositions
 - Runtime typo detection for status field names (Levenshtein distance, debug mode only)
 - WeakMap-based resource metadata store replacing non-enumerable object properties
 - Factory registry with self-registration pattern replacing hardcoded allowlists

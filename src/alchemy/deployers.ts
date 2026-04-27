@@ -227,6 +227,9 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       logger.debug('Deleting Alchemy RGD without finalizer-safe instance hook', {
         name: resource.metadata?.name,
       });
+      throw new Error(
+        `ResourceGraphDefinition deletion requires finalizer-safe KRO metadata for ${resource.metadata?.name || 'unnamed'}`
+      );
     }
 
     const name = resource.metadata?.name || 'unnamed';

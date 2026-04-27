@@ -408,7 +408,11 @@ export function extractResourceStatusRef(
   const expressionNodeToCel = (expr: ASTNode): string => {
     if (expr.type === 'Identifier') return getIdentifierName(expr) ?? '';
     if (expr.type === 'Literal') return literalToCel(expr as Literal);
-    if (expr.type === 'MemberExpression') return memberPath(expr)?.join('.') ?? '';
+    if (expr.type === 'MemberExpression') {
+      const path = memberPath(expr);
+      if (!path) return '';
+      return path[0] === specParamName ? ['schema', ...path].join('.') : path.join('.');
+    }
     if (expr.type === 'BinaryExpression' || expr.type === 'LogicalExpression') {
       const left = expressionNodeToCel(expr.left as ASTNode);
       const right = expressionNodeToCel(expr.right as ASTNode);

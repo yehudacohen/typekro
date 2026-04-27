@@ -771,6 +771,75 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     expect(innerSection).toContain('available');
     expect(innerSection).toContain('offline');
   });
+
+  it('resource-status ternaries preserve schema refs in mixed conditions', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({ name: 'string', enabled: 'boolean' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'mixed-status-spec', kind: 'MixedStatusSpec', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        simple.Deployment({
+          name: spec.name,
+          image: 'nginx',
+          id: 'worker',
+          env: {
+            MODE: cache.status.ready || spec.enabled ? 'on' : 'off',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const workerSection = findResourceSection(comp.toYaml().split('\n'), 'worker');
+    expect(workerSection).toContain('cache.status.ready || schema.spec.enabled');
+    expect(workerSection).toContain('on');
+    expect(workerSection).toContain('off');
+  });
+
+  it('nested resource-status ternaries force mixed spec/status branches', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-mixed', kind: 'InnerMixed', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string', enabled: 'boolean' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-mixed', kind: 'OuterMixed', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        innerComp({
+          name: spec.name,
+          val: cache.status.ready || spec.enabled ? 'on' : 'off',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerMixed1');
+    expect(innerSection).toContain('cache.status.ready || schema.spec.enabled');
+    expect(innerSection).toContain('on');
+    expect(innerSection).toContain('off');
+  });
 });
 
 // =============================================================================

@@ -1054,10 +1054,17 @@ function runResourceStatusBranch(
     (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
     (schemaDefinition as { status?: { json?: unknown } } | undefined)?.status?.json
   );
+  const specOverrides = createSpecConditionOverrideMap(
+    ternary.conditionExpression,
+    desiredConditionValue
+  );
+  const branchSpec = specOverrides.size > 0
+    ? createSpecOverrideProxy(branchSchema.spec as Record<string, unknown>, specOverrides)
+    : branchSchema.spec;
 
   runWithCompositionContext(branchCtx, () => {
     runInStatusBuilderContext(() => {
-      compositionFn(branchSchema.spec);
+      compositionFn(branchSpec as KroCompatibleType);
     });
   });
 
@@ -1108,6 +1115,48 @@ function collectStatusRefs(conditionExpression: string): Array<{ variableName: s
   }
 
   return refs;
+}
+
+function createSpecConditionOverrideMap(
+  conditionExpression: string | undefined,
+  desiredConditionValue: boolean
+): Map<string, unknown> {
+  const overrides = new Map<string, unknown>();
+  if (!conditionExpression) return overrides;
+
+  const specRefPattern = /\b(?:schema\.)?spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+  for (const match of conditionExpression.matchAll(specRefPattern)) {
+    const specPath = match[1];
+    const fullRef = match[0];
+    if (!specPath || !fullRef || overrides.has(specPath)) continue;
+    overrides.set(specPath, getBranchStatusValue(conditionExpression, fullRef, desiredConditionValue));
+  }
+
+  return overrides;
+}
+
+function createSpecOverrideProxy(
+  target: Record<string, unknown>,
+  overrides: Map<string, unknown>,
+  path: string[] = []
+): Record<string, unknown> {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (typeof prop !== 'string') return Reflect.get(obj, prop, receiver);
+
+      const fullPath = [...path, prop].join('.');
+      if (overrides.has(fullPath)) return overrides.get(fullPath);
+
+      const hasNestedOverride = [...overrides.keys()].some((key) => key.startsWith(`${fullPath}.`));
+      const value = Reflect.get(obj, prop, receiver);
+      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
+        return createSpecOverrideProxy(value as Record<string, unknown>, overrides, [...path, prop]);
+      }
+      return value;
+    },
+    ownKeys: (obj) => Reflect.ownKeys(obj),
+    getOwnPropertyDescriptor: (obj, prop) => Reflect.getOwnPropertyDescriptor(obj, prop),
+  });
 }
 
 function getBranchStatusValue(

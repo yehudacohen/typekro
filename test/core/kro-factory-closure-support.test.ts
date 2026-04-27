@@ -139,14 +139,15 @@ describe('KroResourceFactory Closure Support', () => {
         ...(kubeConfig ? { kubeConfig } : {}),
       });
 
-      // Deploy should execute closures before creating RGD
-      // This will fail because the YAML file exists but deployment will fail
-      // The important thing is that closures are executed
+      // Deploy should execute closure validation before creating the RGD without
+      // trying to apply static YAML during the validation-only pass.
       try {
         await kroFactory.deploy({ name: 'test-app' });
       } catch (error) {
-        // Expected to fail - we just want to verify closures are executed
         expect(error).toBeInstanceOf(Error);
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain("Failed to validate closure 'config'");
+        expect(message).not.toContain('No deployment method available');
       }
     });
   });

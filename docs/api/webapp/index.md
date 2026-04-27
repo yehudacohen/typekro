@@ -126,11 +126,15 @@ instance.status.components.inngest   // Inngest ready
 | `database.owner` | No | DB owner (default: 'app') |
 | `cache.shards` | No | Valkey shards (default: 3) |
 | `cache.replicas` | No | Replicas per shard (default: 0) |
+| `cache.volumePermissions` | No | Enable the Valkey volume permissions init container |
+| `cache.storageSize` | No | Storage size per Valkey shard (default: '1Gi') |
 | `processing.eventKey` | Yes | Inngest event key (hex string) |
 | `processing.signingKey` | Yes | Inngest signing key (hex string) |
 | `processing.sdkUrl` | No | App SDK URLs for function sync |
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
 | `processing.resources` | No | CPU/memory requests and limits for the Inngest server |
+| `cnpgOperator` | No | CloudNativePG operator singleton settings; accepts the underlying CNPG bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared` |
+| `valkeyOperator` | No | Valkey operator singleton settings; accepts the underlying Valkey bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared` |
 
 ### Prerequisites
 

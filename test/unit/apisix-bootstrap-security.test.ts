@@ -1,7 +1,57 @@
 import { describe, expect, it } from 'bun:test';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
+import { APISixBootstrapConfigSchema } from '../../src/factories/apisix/types.js';
 
 describe('APISIX bootstrap credential serialization', () => {
+  it('exposes gateway.ingress in the KRO config schema', () => {
+    const result = APISixBootstrapConfigSchema({
+      name: 'apisix',
+      gateway: {
+        ingress: {
+          enabled: true,
+          annotations: { 'kubernetes.io/ingress.class': 'apisix' },
+          hosts: ['apisix.example.com'],
+          tls: [{ secretName: 'apisix-tls', hosts: ['apisix.example.com'] }],
+        },
+      },
+    });
+
+    expect(result).toHaveProperty('gateway');
+    if ('gateway' in result) {
+      expect(result.gateway?.ingress?.enabled).toBe(true);
+      expect(result.gateway?.ingress?.hosts).toEqual(['apisix.example.com']);
+    }
+  });
+
+  it('exposes public APISIX sections in the KRO config schema', () => {
+    const result = APISixBootstrapConfigSchema({
+      name: 'apisix',
+      apisix: {
+        image: { repository: 'apache/apisix', tag: '3.12.0', pullPolicy: 'IfNotPresent' },
+        resources: { requests: { cpu: '100m', memory: '128Mi' } },
+        config: { nginx_config: { error_log_level: 'warn' } },
+      },
+      dashboard: {
+        enabled: true,
+        image: { repository: 'apache/apisix-dashboard', tag: '3.0.1' },
+      },
+      etcd: {
+        enabled: true,
+        replicaCount: 1,
+        auth: { tls: { enabled: false } },
+      },
+      customValues: { extra: { enabled: true } },
+    });
+
+    expect(result).toHaveProperty('apisix');
+    if ('apisix' in result) {
+      expect(result.apisix?.image?.repository).toBe('apache/apisix');
+      expect(result.dashboard?.enabled).toBe(true);
+      expect(result.etcd?.replicaCount).toBe(1);
+      expect(result.customValues).toEqual({ extra: { enabled: true } });
+    }
+  });
+
   it('uses env credentials, not chart defaults, in KRO YAML when spec credentials are omitted', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;

@@ -131,15 +131,37 @@ export const searxngBootstrap = kubernetesComposition(
         ? spec.search.formats.map((f: string) => `    - ${f}`).join('\n')
         : '    - html\n    - json';
 
+      const serverSettings = [
+        `  limiter: ${spec.server?.limiter ?? false}`,
+        ...(typeof spec.server?.bind_address === 'string'
+          ? [`  bind_address: ${spec.server.bind_address}`]
+          : []),
+        ...(typeof spec.server?.method === 'string'
+          ? [`  method: ${spec.server.method}`]
+          : []),
+      ].join('\n');
+      const searchSettings = [
+        '  formats:',
+        searchFormats,
+        ...(typeof spec.search?.default_lang === 'string'
+          ? [`  default_lang: ${spec.search.default_lang}`]
+          : []),
+        ...(typeof spec.search?.autocomplete === 'string'
+          ? [`  autocomplete: ${spec.search.autocomplete}`]
+          : []),
+        ...(typeof spec.search?.safe_search === 'number'
+          ? [`  safe_search: ${spec.search.safe_search}`]
+          : []),
+      ].join('\n');
+
       const settingsYaml =
         typeof spec.settingsYaml === 'string'
           ? spec.settingsYaml
           : `use_default_settings: true
 server:
-  limiter: ${spec.server?.limiter ?? false}
+${serverSettings}
 search:
-  formats:
-${searchFormats}
+${searchSettings}
 ${redisSection}`;
       const configMapName = `${spec.name}-config`;
 

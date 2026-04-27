@@ -6,7 +6,10 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from '../../src/alchemy/deployers.js';
-import { handleResourceDeletionForTest } from '../../src/alchemy/resource-registration.js';
+import {
+  handleResourceDeletionForTest,
+  inferKroDeletionOptionsForTest,
+} from '../../src/alchemy/resource-registration.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
@@ -520,6 +523,68 @@ describe('KroTypeKroDeployer', () => {
     expect(shouldSkipRgdDelete).toHaveBeenCalledWith('test-app');
     expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('refuses generic ResourceGraphDefinition deletion without finalizer-safe metadata', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'legacy-app' },
+      spec: {},
+    } as any;
+
+    await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toThrow(
+      'ResourceGraphDefinition deletion requires finalizer-safe KRO metadata'
+    );
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('infers finalizer-safe KRO deletion metadata from legacy RGD state', () => {
+    const deletion = inferKroDeletionOptionsForTest({
+      resource: {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'legacy-app', namespace: 'apps' },
+        spec: { schema: { apiVersion: 'v1alpha1', group: 'example.com', kind: 'LegacyApp' } },
+      },
+      namespace: 'fallback-ns',
+      deploymentStrategy: 'kro',
+    } as any);
+
+    expect(deletion).toMatchObject({
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'LegacyApp',
+      namespace: 'apps',
+      rgdName: 'legacy-app',
+    });
+  });
+
+  it('infers finalizer-safe KRO deletion metadata from legacy instance state', () => {
+    const deletion = inferKroDeletionOptionsForTest({
+      resource: {
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'LegacyApp',
+        metadata: {
+          name: 'legacy-instance',
+          namespace: 'apps',
+          labels: { 'typekro.io/rgd': 'legacy-app' },
+        },
+        spec: {},
+      },
+      namespace: 'fallback-ns',
+      deploymentStrategy: 'kro',
+    } as any);
+
+    expect(deletion).toMatchObject({
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'LegacyApp',
+      namespace: 'apps',
+      rgdName: 'legacy-app',
+    });
   });
 
   it('propagates ResourceGraphDefinition delete failures so Alchemy keeps retry state', async () => {

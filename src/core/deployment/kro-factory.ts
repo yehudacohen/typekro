@@ -606,6 +606,7 @@ export class KroResourceFactoryImpl<
     // We need to execute them with a mock context to trigger validation
     const mockDeploymentContext: DeploymentContext = {
       // kubernetesApi intentionally omitted - not needed for validation
+      validationOnly: true,
       namespace: this.namespace,
       deployedResources: new Map(),
       resolveReference: async (ref: KubernetesRef) => {

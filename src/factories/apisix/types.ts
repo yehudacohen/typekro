@@ -14,6 +14,31 @@ import type {
   Toleration,
 } from '../cert-manager/types.js';
 
+const imageSchemaShape = {
+  'repository?': 'string',
+  'tag?': 'string',
+  'pullPolicy?': '"Always" | "IfNotPresent" | "Never"',
+} as const;
+
+const resourceRequirementsSchemaShape = {
+  'requests?': { 'cpu?': 'string', 'memory?': 'string' },
+  'limits?': { 'cpu?': 'string', 'memory?': 'string' },
+} as const;
+
+const envVarSchema = type({
+  name: 'string',
+  'value?': 'string',
+  'valueFrom?': 'object',
+});
+
+const authTlsSchemaShape = {
+  'enabled?': 'boolean',
+  'existingSecret?': 'string',
+  'certFilename?': 'string',
+  'keyFilename?': 'string',
+  'verify?': 'boolean',
+} as const;
+
 // APISix Bootstrap Configuration
 export interface APISixBootstrapConfig {
   // Basic configuration
@@ -218,6 +243,15 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'servicePort?': 'number',
       'containerPort?': 'number',
     },
+    'ingress?': {
+      'enabled?': 'boolean',
+      'annotations?': 'Record<string, string>',
+      'hosts?': 'string[]',
+      'tls?': type({
+        'secretName?': 'string',
+        'hosts?': 'string[]',
+      }).array(),
+    },
     'adminCredentials?': {
       'admin?': 'string',
       'viewer?': 'string',
@@ -227,13 +261,69 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   // Ingress Controller configuration
   'ingressController?': {
     'enabled?': 'boolean',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type('object').array(),
+    'affinity?': 'object',
+    'securityContext?': 'object',
+    'containerSecurityContext?': 'object',
     'extraArgs?': 'string[]',
+    'env?': envVarSchema.array(),
     'config?': {
+      'apisix?': {
+        'serviceNamespace?': 'string',
+        'serviceName?': 'string',
+        'servicePort?': 'number',
+        'adminAPIVersion?': 'string',
+      },
       'kubernetes?': {
+        'kubeconfig?': 'string',
+        'resyncInterval?': 'string',
         'ingressClass?': 'string',
+        'ingressVersion?': 'string',
+        'watchEndpointSlices?': 'boolean',
         'namespace?': 'string',
         'watchedNamespace?': 'string',
       },
+    },
+  },
+
+  // APISix configuration
+  'apisix?': {
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type('object').array(),
+    'affinity?': 'object',
+    'securityContext?': 'object',
+    'containerSecurityContext?': 'object',
+    'extraArgs?': 'string[]',
+    'env?': envVarSchema.array(),
+    'config?': 'Record<string, unknown>',
+  },
+
+  // Dashboard configuration
+  'dashboard?': {
+    'enabled?': 'boolean',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'config?': 'Record<string, unknown>',
+  },
+
+  // etcd configuration
+  'etcd?': {
+    'enabled?': 'boolean',
+    'replicaCount?': 'number',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'auth?': {
+      'rbac?': {
+        'create?': 'boolean',
+        'user?': 'string',
+        'password?': 'string',
+      },
+      'tls?': authTlsSchemaShape,
     },
   },
 
@@ -247,6 +337,9 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   'rbac?': {
     'create?': 'boolean',
   },
+
+  // Custom values override
+  'customValues?': 'Record<string, unknown>',
 });
 
 /**
