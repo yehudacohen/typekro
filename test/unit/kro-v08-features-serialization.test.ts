@@ -1300,6 +1300,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         const parsed = parseRgdYaml(graph.toYaml());
         const resource = findResource(parsed, 'nestedIncludeConfig');
 
+        expect(resource.includeWhen?.[0]).toContain('${');
         expect(resource.includeWhen?.[0]).toContain('status.readyReplicas');
         expect(resource.includeWhen?.[0]).not.toContain('status.ready}');
       });

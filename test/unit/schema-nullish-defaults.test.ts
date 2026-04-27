@@ -284,6 +284,50 @@ describe('Schema Nullish Defaults', () => {
 
       expect((resources.deploy.metadata as Record<string, string>).name).toBe('test');
     });
+
+    it('remaps nested composition ternary conditionals onto the outer schema', async () => {
+      const { type } = await import('arktype');
+      const { kubernetesComposition, simple } = await import('../../src/index.js');
+
+      const inner = kubernetesComposition(
+        {
+          name: 'inner-settings',
+          apiVersion: 'v1alpha1',
+          kind: 'InnerSettings',
+          spec: type({ name: 'string', 'redisUrl?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.ConfigMap({
+            name: `${spec.name}-settings`,
+            data: {
+              'settings.yml': `base: true${spec.redisUrl ? `\nredis:\n  url: ${spec.redisUrl}` : ''}`,
+            },
+            id: 'settings',
+          });
+          return { ready: true };
+        }
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-settings',
+          apiVersion: 'v1alpha1',
+          kind: 'OuterSettings',
+          spec: type({ name: 'string', 'cacheUrl?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          inner({ name: spec.name, redisUrl: spec.cacheUrl });
+          return { ready: true };
+        }
+      );
+
+      const yaml = outer.toYaml();
+      expect(yaml).toContain('has(schema.spec.cacheUrl)');
+      expect(yaml).toContain('string(schema.spec.cacheUrl)');
+      expect(yaml).not.toContain('has(schema.spec.redisUrl)');
+    });
   });
 
   describe('Phase 1 / Phase 2 override precedence', () => {

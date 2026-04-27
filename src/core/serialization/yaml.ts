@@ -112,7 +112,7 @@ function readTemplateOverrides(
 function convertIncludeWhenValueToCel(value: unknown, context: SerializationContext): string | undefined {
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return convertRefMarkersInString(value, context);
+      return `\${${convertRefMarkersInString(value, context)}}`;
     }
     return value;
   }

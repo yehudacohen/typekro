@@ -483,9 +483,7 @@ function processCompositionBodyAnalysis(
       // flip), direct factory calls diff only `callSiteResourceId`; nested
       // composition call arguments diff only resources registered under known
       // nested composition base IDs.
-      const resourceStatusTernaries = compositionAnalysis.resourceStatusTernaries.filter(
-        (t) => t.callSiteResourceId !== '__non_factory_call__'
-      );
+      const resourceStatusTernaries = compositionAnalysis.resourceStatusTernaries;
 
       // Deduplicate by call site and condition. Conditionalization is scoped to
       // one callSiteResourceId, so two resources using the same status condition
@@ -530,7 +528,7 @@ function processCompositionBodyAnalysis(
         );
 
         // Diff ONLY the targeted resource(s)
-        const targetIds = ternary.callSiteResourceId
+        const targetIds = ternary.callSiteResourceId && ternary.callSiteResourceId !== '__non_factory_call__'
           ? [ternary.callSiteResourceId]
           : getNestedResourceStatusTargetIds(
               trueCtx.resources,
@@ -1187,6 +1185,16 @@ function getBranchStatusValue(
     const stringValue = stringComparison[3];
     if (operator === '==') return desiredConditionValue ? stringValue : `__typekro_not_${stringValue}`;
     if (operator === '!=') return desiredConditionValue ? `__typekro_not_${stringValue}` : stringValue;
+  }
+
+  const booleanComparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(==|!=)\\s*(true|false)`)
+  );
+  if (booleanComparison?.[1] && booleanComparison[2] !== undefined) {
+    const operator = booleanComparison[1];
+    const booleanValue = booleanComparison[2] === 'true';
+    if (operator === '==') return desiredConditionValue ? booleanValue : !booleanValue;
+    if (operator === '!=') return desiredConditionValue ? !booleanValue : booleanValue;
   }
 
   const negatedRef = new RegExp(`!\\s*${escapedRef}(?![A-Za-z0-9_$.])`).test(conditionExpression);

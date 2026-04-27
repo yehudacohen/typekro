@@ -33,14 +33,26 @@ function getKubernetesErrorCode(error: unknown): number | undefined {
 }
 
 function shouldPreserveRgd(
-  instances: ReadonlyArray<{ metadata?: { name?: unknown } }>,
+  instances: ReadonlyArray<{ metadata?: { name?: unknown; namespace?: unknown } }>,
   targetName: string,
-  instanceDeleted: boolean
+  instanceDeleted: boolean,
+  targetNamespace: string
 ): boolean {
   const remaining = instanceDeleted
-    ? instances.filter((instance) => instance.metadata?.name !== targetName)
+    ? instances.filter((instance) => {
+        if (instance.metadata?.name !== targetName) return true;
+        return instance.metadata?.namespace !== targetNamespace;
+      })
     : instances;
   return remaining.length > 0;
+}
+
+interface CustomObjectListApi {
+  listClusterCustomObject(request: {
+    group: string;
+    version: string;
+    plural: string;
+  }): Promise<{ items?: Array<{ metadata?: { name?: unknown; namespace?: unknown } }> }>;
 }
 
 async function lookupCRDPlural(kubeConfig: KubeConfig, options: KroDeletionOptions): Promise<string | undefined> {
@@ -70,9 +82,9 @@ async function lookupCRDPlural(kubeConfig: KubeConfig, options: KroDeletionOptio
 
 async function listKroInstances(
   kubeConfig: KubeConfig,
-  options: KroDeletionOptions
-): Promise<Array<{ metadata?: { name?: unknown } }>> {
-  const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+  options: KroDeletionOptions,
+  customApi: CustomObjectListApi = createBunCompatibleCustomObjectsApi(kubeConfig) as CustomObjectListApi
+): Promise<Array<{ metadata?: { name?: unknown; namespace?: unknown } }>> {
   const plural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
   if (!plural) {
     throw new CRDInstanceError(
@@ -84,14 +96,16 @@ async function listKroInstances(
     );
   }
 
-  const response = await customApi.listNamespacedCustomObject({
+  const response = await customApi.listClusterCustomObject({
     group: getSchemaGroup(options),
     version: getSchemaVersion(options.apiVersion),
-    namespace: options.namespace,
     plural,
-  }) as { items?: Array<{ metadata?: { name?: unknown } }> };
+  });
   return response.items ?? [];
 }
+
+/** Internal test hook for cluster-wide KRO instance listing. */
+export const listKroInstancesForTest = listKroInstances;
 
 export async function hasKroInstances(
   kubeConfig: KubeConfig,
@@ -217,7 +231,7 @@ export async function deleteKroInstanceFinalizerSafe(
   let hasRemainingInstances = false;
   try {
     const instances = await listKroInstances(kubeConfig, options);
-    hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted);
+    hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, options.namespace);
   } catch (error: unknown) {
     logger.warn('Cannot list Alchemy KRO instances to check for shared RGD; preserving RGD', {
       rgdName: options.rgdName,

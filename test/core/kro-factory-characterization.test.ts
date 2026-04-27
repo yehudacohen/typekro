@@ -1642,6 +1642,29 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     );
   });
 
+  it('lists KRO instances cluster-wide before cleanup decisions', async () => {
+    const factory = makeFactory('cluster-wide-cleanup');
+    (factory as unknown as Record<string, unknown>).lookupCRDPlural = async () => 'testapps';
+    const listCalls: Record<string, unknown>[] = [];
+    (factory as unknown as Record<string, unknown>).createCustomObjectsApi = async () => ({
+      listClusterCustomObject: async (request: Record<string, unknown>) => {
+        listCalls.push(request);
+        return {
+          items: [{ metadata: { name: 'same-name', namespace: 'other-ns' } }],
+        };
+      },
+    });
+    const listInstancesForCleanup = getPrivateMethod(
+      factory,
+      'listInstancesForCleanup'
+    ) as () => Promise<Array<{ metadata?: { name?: unknown; namespace?: unknown } }>>;
+
+    const instances = await listInstancesForCleanup();
+
+    expect(listCalls).toEqual([{ group: 'kro.run', version: 'v1alpha1', plural: 'testapps' }]);
+    expect(instances[0]?.metadata?.namespace).toBe('other-ns');
+  });
+
   it('accepts existing KRO singleton owners when fingerprint annotation matches', async () => {
     interface OwnerSpec {
       name: string;

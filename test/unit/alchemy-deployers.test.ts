@@ -6,6 +6,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from '../../src/alchemy/deployers.js';
+import { listKroInstancesForTest } from '../../src/alchemy/kro-delete.js';
 import {
   handleResourceDeletionForTest,
   inferKroDeletionOptionsForTest,
@@ -477,6 +478,26 @@ describe('KroTypeKroDeployer', () => {
 
     expect(deleteInstance).toHaveBeenCalledWith('test-app');
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('lists Alchemy KRO instances cluster-wide for shared RGD checks', async () => {
+    const listCalls: Record<string, unknown>[] = [];
+    const instances = await listKroInstancesForTest({} as any, {
+      apiVersion: 'example.com/v1alpha1',
+      group: 'example.com',
+      kind: 'TestApp',
+      namespace: 'apps-a',
+      rgdName: 'test-app',
+      plural: 'testapps',
+    }, {
+      listClusterCustomObject: async (request: Record<string, unknown>) => {
+        listCalls.push(request);
+        return { items: [{ metadata: { name: 'same-name', namespace: 'apps-b' } }] };
+      },
+    });
+
+    expect(listCalls).toEqual([{ group: 'example.com', version: 'v1alpha1', plural: 'testapps' }]);
+    expect(instances[0]?.metadata?.namespace).toBe('apps-b');
   });
 
   it('defers ResourceGraphDefinition state deletion while KRO instances still exist', async () => {

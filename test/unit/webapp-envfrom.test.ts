@@ -88,6 +88,36 @@ describe('webAppWithProcessing envFrom', () => {
     });
   });
 
+  it('injects Inngest keys from Secret refs instead of HelmRelease values', () => {
+    const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
+    const graph = factory.createResourceGraphForInstance({
+      name: 'test-app',
+      app: { image: 'nginx:alpine' },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'event-secret-value', signingKey: 'signing-secret-value' },
+    });
+
+    const inngestRelease = graph.resources.find((r) => {
+      const name = String(r.manifest?.metadata?.name ?? '');
+      return name === 'test-app-inngest' && r.manifest?.kind === 'HelmRelease';
+    });
+    expect(inngestRelease).toBeDefined();
+
+    const values = (inngestRelease!.manifest as any)?.spec?.values;
+    expect(values?.inngest?.eventKey).toBeUndefined();
+    expect(values?.inngest?.signingKey).toBeUndefined();
+    expect(JSON.stringify(values)).not.toContain('event-secret-value');
+    expect(JSON.stringify(values)).not.toContain('signing-secret-value');
+    expect(values?.inngest?.extraEnv).toContainEqual({
+      name: 'INNGEST_EVENT_KEY',
+      valueFrom: { secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_EVENT_KEY' } },
+    });
+    expect(values?.inngest?.extraEnv).toContainEqual({
+      name: 'INNGEST_SIGNING_KEY',
+      valueFrom: { secretKeyRef: { name: 'test-app-inngest-credentials', key: 'INNGEST_SIGNING_KEY' } },
+    });
+  });
+
   it('scopes the Inngest HelmRepository name by app namespace', () => {
     const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
     const graph = factory.createResourceGraphForInstance({

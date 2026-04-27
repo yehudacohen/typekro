@@ -905,8 +905,48 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
 
     const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerString1');
     expect(innerSection).toContain('cache.status.phase == \\"Ready\\"');
+    expect(innerSection).toContain('?');
     expect(innerSection).toContain('on');
     expect(innerSection).toContain('off');
+  });
+
+  it('nested resource-status ternaries force boolean comparison branches', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-bool', kind: 'InnerBool', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-bool', kind: 'OuterBool', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        innerComp({
+          name: spec.name,
+          val: cache.status.ready === false ? 'off' : 'on',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerBool1');
+    expect(innerSection).toContain('cache.status.ready == false');
+    expect(innerSection).toContain('?');
+    expect(innerSection).toContain('off');
+    expect(innerSection).toContain('on');
   });
 });
 

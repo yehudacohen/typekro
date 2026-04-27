@@ -451,6 +451,12 @@ export function extractResourceStatusRef(
       return wrapOptionalSpecTruthiness(`${left} ${operator} ${right}`);
     }
     if (expr.type === 'UnaryExpression') {
+      const unary = expr as ASTNode & { operator?: string; argument?: ASTNode };
+      if (unary.operator === '!' && unary.argument?.type === 'Literal') {
+        const value = (unary.argument as Literal).value;
+        if (value === 0) return 'true';
+        if (value === 1) return 'false';
+      }
       return wrapOptionalSpecTruthiness(`${expr.operator ?? ''}${expressionNodeToCel(expr.argument as ASTNode)}`);
     }
     if (expr.type === 'CallExpression') {

@@ -280,7 +280,27 @@ export const webAppWithProcessing = kubernetesComposition(
       customValues: {
         namespace: { create: false, name: ns },
         inngest: {
+          eventKey: undefined,
+          signingKey: undefined,
           extraEnv: [
+            {
+              name: 'INNGEST_EVENT_KEY',
+              valueFrom: {
+                secretKeyRef: {
+                  name: `${spec.name}-inngest-credentials`,
+                  key: 'INNGEST_EVENT_KEY',
+                },
+              },
+            },
+            {
+              name: 'INNGEST_SIGNING_KEY',
+              valueFrom: {
+                secretKeyRef: {
+                  name: `${spec.name}-inngest-credentials`,
+                  key: 'INNGEST_SIGNING_KEY',
+                },
+              },
+            },
             {
               name: 'INNGEST_POSTGRES_URI',
               valueFrom: {

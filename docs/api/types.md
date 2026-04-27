@@ -69,7 +69,7 @@ A Kubernetes resource enhanced with TypeKro functionality.
 ```typescript
 type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
-  withDependencies(...deps: string[]): Enhanced<TSpec, TStatus>;
+  dependsOn(dependency: unknown, condition?: unknown): void;
 }
 ```
 

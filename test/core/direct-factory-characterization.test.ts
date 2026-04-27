@@ -155,6 +155,37 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     await expect(factory.deleteInstance('my-app')).rejects.toThrow('Cleanup incomplete');
     expect(deployedInstances.has('my-app')).toBe(true);
   });
+
+  it('throws when namespace deletion does not complete before timeout', async () => {
+    const factory = createDirectResourceFactory(
+      'namespace-timeout-test',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'NamespaceTimeoutTest',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    const waitForNamespaceDeletion = getPrivateMethod(
+      factory,
+      'waitForNamespaceDeletion'
+    ) as (
+      k8sApi: { read(request: Record<string, unknown>): Promise<unknown> },
+      namespaces: string[],
+      timeout: number
+    ) => Promise<void>;
+
+    await expect(
+      waitForNamespaceDeletion(
+        { read: mock(() => Promise.resolve({ body: {} })) },
+        ['stuck-ns'],
+        0
+      )
+    ).rejects.toThrow('Timed out waiting for namespace stuck-ns to be deleted');
+  });
 });
 
 // ---------------------------------------------------------------------------

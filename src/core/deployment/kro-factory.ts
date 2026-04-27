@@ -99,13 +99,19 @@ import {
  */
 export function shouldPreserveRgd(
   // Loose typing — the callers pass Enhanced<TSpec, TStatus>[] at runtime
-  // but this decision only reads `metadata.name` and tolerates undefined.
-  instances: ReadonlyArray<{ metadata?: { name?: unknown } }>,
+  // but this decision only reads `metadata.name` / `metadata.namespace`
+  // and tolerates undefined.
+  instances: ReadonlyArray<{ metadata?: { name?: unknown; namespace?: unknown } }>,
   targetName: string,
-  instanceDeleted: boolean
+  instanceDeleted: boolean,
+  targetNamespace?: string
 ): boolean {
   const others = instanceDeleted
-    ? instances.filter((i) => i.metadata?.name !== targetName)
+    ? instances.filter((i) => {
+        if (i.metadata?.name !== targetName) return true;
+        if (!targetNamespace) return false;
+        return i.metadata?.namespace !== targetNamespace;
+      })
     : instances;
   return others.length > 0;
 }
@@ -1012,6 +1018,33 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  private async listInstancesForCleanup(): Promise<Array<{ metadata?: { name?: unknown; namespace?: unknown } }>> {
+    const customApi = await this.createCustomObjectsApi();
+    const version = this.getSchemaVersion();
+    const plural = await this.requireCRDPluralForCleanup();
+
+    try {
+      const listResponse = await customApi.listClusterCustomObject({
+        group: this.getSchemaGroup(),
+        version,
+        plural,
+      });
+      const listResult = listResponse as {
+        items?: Array<{ metadata?: { name?: unknown; namespace?: unknown } }>;
+      };
+      return listResult.items ?? [];
+    } catch (error: unknown) {
+      throw new CRDInstanceError(
+        `Failed to list instances cluster-wide: ${ensureError(error).message}`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        '*',
+        'statusResolution',
+        ensureError(error)
+      );
+    }
+  }
+
   private async createCustomObjectsApi(): Promise<k8s.CustomObjectsApi> {
     const kubeConfig = this.getKubeConfig();
     // Use Bun-compatible API client to ensure proper TLS handling
@@ -1117,9 +1150,8 @@ export class KroResourceFactoryImpl<
     // instanceDeleted flag) — see {@link shouldPreserveRgd} for the rules.
     let hasRemainingInstances = false;
     try {
-      await this.requireCRDPluralForCleanup();
-      const instances = await this.getInstances();
-      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted);
+      const instances = await this.listInstancesForCleanup();
+      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, this.namespace);
     } catch (listError: unknown) {
       // Can't list instances — could be CRD gone (safe) or transient error
       // (unsafe to delete RGD). Default to preserving the RGD to avoid

@@ -775,6 +775,31 @@ function remapNullishDefaults(
   return remapped;
 }
 
+function schemaSpecMarker(path: string): string {
+  return `__KUBERNETES_REF___schema___spec.${path}__`;
+}
+
+function remapTernaryConditionals(
+  conditionals: TernaryConditional[],
+  mappings: Record<string, string>
+): TernaryConditional[] {
+  return conditionals.flatMap((conditional) => {
+    const conditionField = remapDefaultPath(conditional.conditionField, mappings);
+    if (conditionField === undefined) return [];
+
+    const proxySection = conditional.proxySection.replace(
+      new RegExp(SCHEMA_MARKER_PATTERN_SOURCE, 'g'),
+      (marker, fieldPath: string) => {
+        if (!fieldPath.startsWith('spec.')) return marker;
+        const remappedPath = remapDefaultPath(fieldPath.slice('spec.'.length), mappings);
+        return remappedPath === undefined ? marker : schemaSpecMarker(remappedPath);
+      }
+    );
+
+    return [{ ...conditional, conditionField, proxySection }];
+  });
+}
+
 /**
  * Collect optional spec fields that don't have | default= annotations.
  * These fields need omit() wrapping in resource templates (KRO 0.9+)
@@ -928,6 +953,7 @@ export function arktypeToKroSchema(
   // getOwnPropertyDescriptor to bypass the Enhanced proxy's get-trap
   // (same pattern as `__nestedStatusCel`). The descriptor's value is
   // the real Map, not a proxy.
+  const ternaryConditionals: TernaryConditional[] = [];
   const nestedFnsRaw = statusMappings
     ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionFns')?.value
     : undefined;
@@ -954,13 +980,14 @@ export function arktypeToKroSchema(
       const nestedResources = nestedResourcesRaw instanceof Map
         ? nestedResourcesRaw.get(baseId)
         : undefined;
-      const reExecutionDefaults = nestedDefinition && nestedResources
+      const reExecutionResult = nestedDefinition && nestedResources
         ? resolveDefaultsByReExecution(
             fn as (...args: unknown[]) => unknown,
             nestedDefinition.spec,
             nestedResources,
-          )?.defaults ?? {}
-        : {};
+          )
+        : undefined;
+      const reExecutionDefaults = reExecutionResult?.defaults ?? {};
       const innerDefaults = remapNullishDefaults(
         { ...extractedDefaults, ...reExecutionDefaults },
         specMappings as Record<string, string>
@@ -971,6 +998,12 @@ export function arktypeToKroSchema(
       // `?? <literal>` is the only signal we have that the field should
       // exist with a default.
       addMissingDefaultFields(specFields, innerDefaults);
+      ternaryConditionals.push(
+        ...remapTernaryConditionals(
+          reExecutionResult?.ternaryConditionals ?? [],
+          specMappings as Record<string, string>
+        )
+      );
     }
   }
 
@@ -979,7 +1012,6 @@ export function arktypeToKroSchema(
   // Phase 1 also annotated, Phase 2 wins. This corrects Phase 1 misfires
   // on edge cases (multi-line expressions, nested parens) without breaking
   // the common case where both phases agree.
-  let ternaryConditionals: TernaryConditional[] = [];
   if (typeof compositionFn === 'function' && resources) {
     const reExecutionResult = resolveDefaultsByReExecution(
       compositionFn as (...args: unknown[]) => unknown,
@@ -988,7 +1020,7 @@ export function arktypeToKroSchema(
     );
     if (reExecutionResult) {
       applyNullishDefaults(specFields, reExecutionResult.defaults, true);
-      ternaryConditionals = reExecutionResult.ternaryConditionals;
+      ternaryConditionals.push(...reExecutionResult.ternaryConditionals);
     }
   }
 

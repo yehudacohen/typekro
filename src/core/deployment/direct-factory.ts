@@ -464,6 +464,7 @@ export class DirectResourceFactoryImpl<
     for (const ns of namespaces) {
       // Each namespace gets its own timeout budget
       const nsStartTime = Date.now();
+      let deleted = false;
       while (Date.now() - nsStartTime < timeout) {
         try {
           await k8sApi.read({
@@ -478,15 +479,23 @@ export class DirectResourceFactoryImpl<
           const k8sErr = error as { statusCode?: number; body?: { code?: number } };
           if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
             this.logger.debug('Namespace fully deleted', { namespace: ns });
+            deleted = true;
             break;
           }
-          // Unexpected error — log and stop waiting for this namespace
+          // Unexpected error — fail loudly so callers do not assume cleanup completed.
           this.logger.warn('Error polling namespace deletion', {
             namespace: ns,
             error: ensureError(error).message,
           });
-          break;
+          throw error;
         }
+      }
+      if (!deleted) {
+        throw new ResourceGraphFactoryError(
+          `Timed out waiting for namespace ${ns} to be deleted after ${timeout}ms`,
+          this.name,
+          'cleanup'
+        );
       }
     }
   }

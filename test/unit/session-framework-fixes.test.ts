@@ -756,6 +756,20 @@ describe('#55 shouldPreserveRgd decision', () => {
     // which doesn't match our name → counted as a remaining instance.
     expect(result).toBe(true);
   });
+
+  it('preserves RGD when same-name instance remains in a different namespace', () => {
+    const result = shouldPreserveRgd(
+      [
+        { metadata: { name: 'myapp', namespace: 'apps-a' } },
+        { metadata: { name: 'myapp', namespace: 'apps-b' } },
+      ],
+      'myapp',
+      true,
+      'apps-a'
+    );
+
+    expect(result).toBe(true);
+  });
 });
 
 // =============================================================================
