@@ -3,7 +3,6 @@ import type { KubeConfig } from '@kubernetes/client-node';
 import { CRDInstanceError, ensureError } from '../core/errors.js';
 import { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../core/logging/index.js';
-import { pluralizeKind } from '../core/deployment/shared-utilities.js';
 
 export interface KroDeletionOptions {
   apiVersion: string;
@@ -74,20 +73,24 @@ async function listKroInstances(
   options: KroDeletionOptions
 ): Promise<Array<{ metadata?: { name?: unknown } }>> {
   const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-  const plural = options.plural ?? await lookupCRDPlural(kubeConfig, options) ?? pluralizeKind(options.kind);
-
-  try {
-    const response = await customApi.listNamespacedCustomObject({
-      group: getSchemaGroup(options),
-      version: getSchemaVersion(options.apiVersion),
-      namespace: options.namespace,
-      plural,
-    }) as { items?: Array<{ metadata?: { name?: unknown } }> };
-    return response.items ?? [];
-  } catch (error: unknown) {
-    if (getKubernetesErrorCode(error) === 404) return [];
-    throw error;
+  const plural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
+  if (!plural) {
+    throw new CRDInstanceError(
+      `Cannot determine CRD plural for ${options.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+      options.apiVersion,
+      options.kind,
+      '*',
+      'deletion'
+    );
   }
+
+  const response = await customApi.listNamespacedCustomObject({
+    group: getSchemaGroup(options),
+    version: getSchemaVersion(options.apiVersion),
+    namespace: options.namespace,
+    plural,
+  }) as { items?: Array<{ metadata?: { name?: unknown } }> };
+  return response.items ?? [];
 }
 
 export async function hasKroInstances(
@@ -103,6 +106,16 @@ export async function deleteKroDefinition(
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-kro-delete');
   const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
+  if (!crdPlural) {
+    throw new CRDInstanceError(
+      `Cannot determine CRD plural for ${options.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+      options.apiVersion,
+      options.kind,
+      '*',
+      'deletion'
+    );
+  }
 
   try {
     await k8sApi.delete({
@@ -120,7 +133,6 @@ export async function deleteKroDefinition(
     }
   }
 
-  const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options) ?? pluralizeKind(options.kind);
   const crdName = `${crdPlural}.${getSchemaGroup(options)}`;
   try {
     await k8sApi.delete({

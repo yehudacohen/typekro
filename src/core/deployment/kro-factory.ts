@@ -377,6 +377,22 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  private async requireCRDPluralForCleanup(): Promise<string> {
+    if (!this.discoveredPlural) {
+      this.discoveredPlural = await this.lookupCRDPlural();
+    }
+    if (!this.discoveredPlural) {
+      throw new CRDInstanceError(
+        `Cannot determine CRD plural for ${this.schemaDefinition.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        '*',
+        'deletion'
+      );
+    }
+    return this.discoveredPlural;
+  }
+
   private createKubernetesObjectApi(): k8s.KubernetesObjectApi {
     return createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
   }
@@ -973,7 +989,8 @@ export class KroResourceFactoryImpl<
       const bodyString =
         typeof k8sError.body === 'string' ? k8sError.body : JSON.stringify(k8sError.body || '');
 
-      if (
+      const canTreatNotFoundAsEmpty = !this.discoveredPlural;
+      if (canTreatNotFoundAsEmpty && (
         k8sError.message?.includes('not found') ||
         k8sError.message?.includes('404') ||
         bodyString.includes('not found') ||
@@ -981,7 +998,7 @@ export class KroResourceFactoryImpl<
         k8sError.statusCode === 404 ||
         String(error).includes('404') ||
         String(error).includes('not found')
-      ) {
+      )) {
         return [];
       }
       throw new CRDInstanceError(
@@ -1100,6 +1117,7 @@ export class KroResourceFactoryImpl<
     // instanceDeleted flag) — see {@link shouldPreserveRgd} for the rules.
     let hasRemainingInstances = false;
     try {
+      await this.requireCRDPluralForCleanup();
       const instances = await this.getInstances();
       hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted);
     } catch (listError: unknown) {
@@ -1135,8 +1153,7 @@ export class KroResourceFactoryImpl<
       // has allowCRDDeletion=false, so it won't clean up the CRD when the
       // RGD is deleted. Prefer the server-discovered plural over the
       // heuristic fallback so already-plural kinds clean up correctly.
-      const crdPlural =
-        this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
+      const crdPlural = await this.requireCRDPluralForCleanup();
       const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
       try {
         await k8sApi.delete({
@@ -1778,6 +1795,11 @@ export class KroResourceFactoryImpl<
       metadata: {
         name: instanceName,
         namespace: this.namespace,
+        labels: {
+          'typekro.io/factory': this.name,
+          'typekro.io/mode': this.mode,
+          'typekro.io/rgd': this.rgdName,
+        },
         ...(singletonSpecFingerprint ? {
           annotations: {
             'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint,

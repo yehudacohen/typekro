@@ -337,7 +337,7 @@ export function walkExpression(
     if (id) {
       registerResourceControlFlow(id, extractFactoryName(call), ctx, result);
       // Scan factory argument properties for ternary expressions that should become CEL
-      analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result);
+      analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result, ctx.optionalFieldNames);
     }
     return;
   }
@@ -360,7 +360,7 @@ export function walkExpression(
     }
     const firstArg = call.arguments[0];
     if (firstArg?.type === 'ObjectExpression') {
-      analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result);
+      analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result, ctx.optionalFieldNames);
     }
   }
 
@@ -528,7 +528,7 @@ export function walkExpression(
   const calls = findFactoryCallsInSubtree(node);
   for (const call of calls) {
     registerResourceControlFlow(call.id, call.factoryName, ctx, result);
-    analyzeFactoryArgTernaries(call.node, call.id, fullSource, specParamName, result);
+    analyzeFactoryArgTernaries(call.node, call.id, fullSource, specParamName, result, ctx.optionalFieldNames);
   }
 }
 

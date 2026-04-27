@@ -122,7 +122,7 @@ instance.status.components.inngest   // Inngest ready
 | `database.storageSize` | Yes | PG storage (e.g., '50Gi') |
 | `database.instances` | No | PG replicas (default: 1) |
 | `database.storageClass` | No | Storage class |
-| `database.database` | No | Database name (default: app name) |
+| `database.database` | No | Database name (default: `app`) |
 | `database.owner` | No | DB owner (default: 'app') |
 | `cache.shards` | No | Valkey shards (default: 3) |
 | `cache.replicas` | No | Replicas per shard (default: 0) |

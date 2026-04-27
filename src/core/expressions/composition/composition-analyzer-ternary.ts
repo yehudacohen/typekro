@@ -52,12 +52,13 @@ export function analyzeFactoryArgTernaries(
   resourceId: string,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   const firstArg = call.arguments[0];
   if (!firstArg || firstArg.type !== 'ObjectExpression') return;
 
-  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result);
+  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result, optionalFieldNames);
 }
 
 /**
@@ -78,7 +79,8 @@ function walkObjectForTernaries(
   resourceId: string,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   if (objectNode.type !== 'ObjectExpression') return;
   const properties = (objectNode as ASTNode & { properties: Property[] }).properties;
@@ -107,7 +109,7 @@ function walkObjectForTernaries(
       // a targeted template override without re-execution. For non-factory
       // calls (nested compositions), we record just the detection info for
       // the scoped re-execution approach (Phase 4).
-      const statusRef = extractResourceStatusRef(ternary.test, specParamName);
+      const statusRef = extractResourceStatusRef(ternary.test, specParamName, optionalFieldNames);
       if (statusRef) {
         // Build the property path for the override target
         const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
@@ -226,7 +228,8 @@ function walkObjectForTernaries(
         resourceId,
         fullSource,
         specParamName,
-        result
+        result,
+        optionalFieldNames
       );
     }
   }

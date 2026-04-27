@@ -366,7 +366,8 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
  */
 export function extractResourceStatusRef(
   node: ASTNode,
-  specParamName: string
+  specParamName: string,
+  optionalFieldNames?: Set<string>
 ): { variableName: string; statusField: string; conditionExpression?: string } | undefined {
   const GLOBALS = new Set([
     'this', 'globalThis', 'window', 'console', 'process', 'Math', 'JSON',
@@ -405,6 +406,36 @@ export function extractResourceStatusRef(
     if (literal.value === null) return 'null';
     return String(literal.value);
   };
+  const wrapOptionalSpecTruthiness = (source: string): string => {
+    if (!optionalFieldNames || optionalFieldNames.size === 0) return source;
+
+    const bareRefPattern = /^(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)\s*$/;
+    const bareMatch = bareRefPattern.exec(source);
+    if (bareMatch) {
+      const negation = bareMatch[1];
+      const path = bareMatch[2];
+      const topLevelField = bareMatch[3];
+      if (topLevelField && path && optionalFieldNames.has(topLevelField)) {
+        return `${negation}has(${path})`;
+      }
+    }
+
+    let wrapped = source.replace(
+      /(^|[\s(])(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
+      (match, leading, negation, path, topLevelField) => {
+        if (optionalFieldNames.has(topLevelField)) return `${leading}${negation}has(${path})`;
+        return match;
+      }
+    );
+    wrapped = wrapped.replace(
+      /(&&|\|\|)(\s+)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
+      (match, operator, spacing, negation, path, topLevelField) => {
+        if (optionalFieldNames.has(topLevelField)) return `${operator}${spacing}${negation}has(${path})`;
+        return match;
+      }
+    );
+    return wrapped;
+  };
   const expressionNodeToCel = (expr: ASTNode): string => {
     if (expr.type === 'Identifier') return getIdentifierName(expr) ?? '';
     if (expr.type === 'Literal') return literalToCel(expr as Literal);
@@ -417,10 +448,10 @@ export function extractResourceStatusRef(
       const left = expressionNodeToCel(expr.left as ASTNode);
       const right = expressionNodeToCel(expr.right as ASTNode);
       const operator = String(expr.operator).replace('===', '==').replace('!==', '!=');
-      return `${left} ${operator} ${right}`;
+      return wrapOptionalSpecTruthiness(`${left} ${operator} ${right}`);
     }
     if (expr.type === 'UnaryExpression') {
-      return `${expr.operator ?? ''}${expressionNodeToCel(expr.argument as ASTNode)}`;
+      return wrapOptionalSpecTruthiness(`${expr.operator ?? ''}${expressionNodeToCel(expr.argument as ASTNode)}`);
     }
     if (expr.type === 'CallExpression') {
       const call = expr as unknown as CallExpression;

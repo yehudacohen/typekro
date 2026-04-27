@@ -23,6 +23,32 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
+  it('exposes gateway.stream and serviceAccount annotations in the KRO config schema', () => {
+    const result = APISixBootstrapConfigSchema({
+      name: 'apisix',
+      gateway: {
+        stream: {
+          enabled: true,
+          only: false,
+          tcp: [9000],
+          udp: [9001],
+        },
+      },
+      serviceAccount: {
+        create: true,
+        annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123456789012:role/apisix' },
+      },
+    });
+
+    expect(result).toHaveProperty('gateway');
+    if ('gateway' in result) {
+      expect(result.gateway?.stream?.tcp).toEqual([9000]);
+      expect(result.serviceAccount?.annotations).toEqual({
+        'eks.amazonaws.com/role-arn': 'arn:aws:iam::123456789012:role/apisix',
+      });
+    }
+  });
+
   it('exposes public APISIX sections in the KRO config schema', () => {
     const result = APISixBootstrapConfigSchema({
       name: 'apisix',

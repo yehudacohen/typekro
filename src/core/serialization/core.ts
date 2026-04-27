@@ -1179,6 +1179,16 @@ function getBranchStatusValue(
     if (operator === '!=') return desiredConditionValue ? numberValue + 1 : numberValue;
   }
 
+  const stringComparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(==|!=)\\s*(['"])(.*?)\\2`)
+  );
+  if (stringComparison?.[1] && stringComparison[3] !== undefined) {
+    const operator = stringComparison[1];
+    const stringValue = stringComparison[3];
+    if (operator === '==') return desiredConditionValue ? stringValue : `__typekro_not_${stringValue}`;
+    if (operator === '!=') return desiredConditionValue ? `__typekro_not_${stringValue}` : stringValue;
+  }
+
   const negatedRef = new RegExp(`!\\s*${escapedRef}(?![A-Za-z0-9_$.])`).test(conditionExpression);
   return negatedRef ? !desiredConditionValue : desiredConditionValue;
 }

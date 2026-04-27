@@ -1611,6 +1611,37 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     );
   });
 
+  it('labels KRO custom resource instances with finalizer-safe deletion metadata', () => {
+    const factory = makeFactory('instance-labels', { namespace: 'shared-system' });
+    const createCustomResourceInstance = getPrivateMethod(
+      factory,
+      'createCustomResourceInstance'
+    ) as (instanceName: string, spec: TestSpec) => {
+      metadata: { labels?: Record<string, string> };
+    };
+
+    const manifest = createCustomResourceInstance('labelled-instance', { name: 'owner', replicas: 1 });
+
+    expect(manifest.metadata.labels).toMatchObject({
+      'typekro.io/factory': 'instance-labels',
+      'typekro.io/mode': 'kro',
+      'typekro.io/rgd': 'instance-labels',
+    });
+  });
+
+  it('requires discovered CRD plural before cleanup can delete shared definitions', async () => {
+    const factory = makeFactory('cleanup-no-plural');
+    (factory as unknown as Record<string, unknown>).lookupCRDPlural = async () => undefined;
+    const requireCRDPluralForCleanup = getPrivateMethod(
+      factory,
+      'requireCRDPluralForCleanup'
+    ) as () => Promise<string>;
+
+    await expect(requireCRDPluralForCleanup()).rejects.toThrow(
+      'Cannot determine CRD plural for TestApp; preserving RGD/CRD'
+    );
+  });
+
   it('accepts existing KRO singleton owners when fingerprint annotation matches', async () => {
     interface OwnerSpec {
       name: string;

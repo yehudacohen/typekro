@@ -69,6 +69,9 @@ function getKroTypeFromJson(node: unknown): string {
         return `map[string]${getKroTypeFromJson(indexEntry.value)}`;
       }
     }
+    if (nodeObj.domain === 'object' || nodeObj.required || nodeObj.optional) {
+      return 'object';
+    }
   }
 
   // Case 2: Array → union of literals
@@ -79,6 +82,9 @@ function getKroTypeFromJson(node: unknown): string {
       node.some((branch) => branch.unit === false)
     ) {
       return 'boolean';
+    }
+    if (node.some((branch) => !branch || typeof branch !== 'object' || !('unit' in branch))) {
+      return 'object';
     }
     const enumValues = node.map((branch) => {
       if (typeof branch.unit === 'string') {

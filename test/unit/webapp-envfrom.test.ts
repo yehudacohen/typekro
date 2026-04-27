@@ -169,4 +169,12 @@ describe('webAppWithProcessing envFrom', () => {
     expect('summary' in (bothResult as object)).toBe(true);
     expect('summary' in (neitherResult as object)).toBe(true);
   });
+
+  it('emits an object-array KRO schema for envFrom entries', () => {
+    const yaml = webAppWithProcessing.toYaml();
+
+    expect(yaml).toContain('envFrom: "[]object"');
+    expect(yaml).not.toContain('[object Object]');
+    expect(yaml).not.toContain('enum="object,object"');
+  });
 });

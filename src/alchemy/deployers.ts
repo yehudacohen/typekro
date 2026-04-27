@@ -238,6 +238,12 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       return;
     }
 
+    if (options.mode === 'kro') {
+      throw new Error(
+        `KRO resource deletion requires finalizer-safe metadata for ${resource.kind || 'Unknown'}/${name}`
+      );
+    }
+
     const namespace = options.namespace || resource.metadata?.namespace || 'default';
     const k8sApi = this.engine.getKubernetesApi();
     const deleteTarget = {

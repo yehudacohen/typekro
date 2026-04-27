@@ -243,6 +243,12 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'servicePort?': 'number',
       'containerPort?': 'number',
     },
+    'stream?': {
+      'enabled?': 'boolean',
+      'only?': 'boolean',
+      'tcp?': 'number[]',
+      'udp?': 'number[]',
+    },
     'ingress?': {
       'enabled?': 'boolean',
       'annotations?': 'Record<string, string>',
@@ -331,6 +337,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   'serviceAccount?': {
     'create?': 'boolean',
     'name?': 'string',
+    'annotations?': 'Record<string, string>',
   },
 
   // RBAC configuration

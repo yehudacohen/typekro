@@ -587,6 +587,24 @@ describe('KroTypeKroDeployer', () => {
     });
   });
 
+  it('does not infer finalizer-safe KRO deletion metadata from unlabeled legacy instances', () => {
+    const deletion = inferKroDeletionOptionsForTest({
+      resource: {
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'LegacyApp',
+        metadata: {
+          name: 'legacy-instance',
+          namespace: 'apps',
+        },
+        spec: {},
+      },
+      namespace: 'fallback-ns',
+      deploymentStrategy: 'kro',
+    } as any);
+
+    expect(deletion).toBeUndefined();
+  });
+
   it('propagates ResourceGraphDefinition delete failures so Alchemy keeps retry state', async () => {
     const mockEngine = createMockEngine() as any;
     const deleteResourceGraphDefinition = mock(() => Promise.reject(new Error('RBAC denied')));
@@ -606,12 +624,8 @@ describe('KroTypeKroDeployer', () => {
     expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
   });
 
-  it('throws when KRO custom resource deletion does not complete before timeout', async () => {
+  it('refuses generic KRO custom resource deletion without finalizer-safe metadata', async () => {
     const mockEngine = createMockEngine() as any;
-    mockEngine.getKubernetesApi = mock(() => ({
-      delete: mock(() => Promise.resolve()),
-      read: mock(() => Promise.resolve({ body: {} })),
-    }));
     const deployer = new KroTypeKroDeployer(mockEngine);
     const kroInstance = {
       apiVersion: 'test.kro.run/v1alpha1',
@@ -622,7 +636,8 @@ describe('KroTypeKroDeployer', () => {
 
     await expect(
       deployer.delete(kroInstance, { mode: 'kro', namespace: 'test-ns', timeout: 0 })
-    ).rejects.toThrow('KRO resource deletion did not complete');
+    ).rejects.toThrow('KRO resource deletion requires finalizer-safe metadata for TestApp/stuck-app');
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
   it('does not destroy Alchemy state when resource deletion fails', async () => {
