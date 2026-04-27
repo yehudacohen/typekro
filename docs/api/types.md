@@ -246,9 +246,11 @@ Values that can be assigned through the magic proxy system.
 type MagicAssignable<T> = 
   | T 
   | undefined 
+  | CelExpression<T>
   | KubernetesRef<T> 
   | KubernetesRef<T | undefined> 
-  | CelExpression<T>
+  | DeepKubernetesRef<T>
+  | DeepKubernetesRef<T | undefined>
 ```
 
 ### `MagicAssignableShape<T>`
@@ -295,7 +297,24 @@ interface FactoryOptions {
   timeout?: number;
   waitForReady?: boolean;
   progressCallback?: (event: DeploymentEvent) => void;
-  
+  hydrateStatus?: boolean;
+
+  // Alchemy integration
+  alchemyScope?: Scope;
+
+  // Kubernetes client configuration
+  kubeConfig?: KubeConfig;
+  skipTLSVerify?: boolean;
+
+  // Direct-mode deployment closures
+  closures?: Record<string, DeploymentClosure>;
+
+  // Automatic environment fixes
+  autoFix?: AutoFixConfig;
+
+  // Kubernetes API request timeouts
+  httpTimeouts?: HttpTimeoutConfig;
+
   // Event monitoring - stream control plane logs
   eventMonitoring?: {
     enabled?: boolean;
@@ -321,10 +340,13 @@ Result of a deployment operation.
 
 ```typescript
 interface DeploymentResult {
-  success: boolean;
-  deployedResources: DeployedResource[];
-  errors: Error[];
+  deploymentId: string;
+  resources: DeployedResource[];
+  dependencyGraph: DependencyGraph;
+  status: 'success' | 'partial' | 'failed';
+  errors: DeploymentError[];
   duration: number;
+  alchemyMetadata?: AlchemyDeploymentMetadata;
 }
 ```
 

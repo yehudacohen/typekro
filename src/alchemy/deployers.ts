@@ -36,6 +36,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isKroManagedDeletionMode(resource: Enhanced<any, any>, options: DeploymentOptions): boolean {
+  return (
+    resource.kind !== 'ResourceGraphDefinition' &&
+    (options.mode === 'kro' || options.mode === 'alchemy' || /(?:^|\.)kro\.run\//.test(resource.apiVersion ?? ''))
+  );
+}
+
 /**
  * Direct deployment implementation using TypeKro's DirectDeploymentEngine
  */
@@ -238,7 +245,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       return;
     }
 
-    if (options.mode === 'kro') {
+    if (isKroManagedDeletionMode(resource, options)) {
       throw new Error(
         `KRO resource deletion requires finalizer-safe metadata for ${resource.kind || 'Unknown'}/${name}`
       );

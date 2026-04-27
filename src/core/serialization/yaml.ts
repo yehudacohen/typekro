@@ -32,7 +32,7 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';
-import { getInnerCelPath, normalizeRefMarkersToCelPaths, processResourceReferences } from './cel-references.js';
+import { finalizeCelForKro, getInnerCelPath, normalizeRefMarkersToCelPaths, processResourceReferences } from './cel-references.js';
 import { generateKroSchema } from './schema.js';
 
 /**
@@ -390,12 +390,17 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
  */
 function stripOrphanedItemSentinels<T>(template: T): T {
   if (typeof template === 'string') {
+    const normalized = normalizeOptionalArrayConditional(template);
+    if (normalized !== undefined) return normalized as T;
     if (!template.includes('$item')) return template;
     // Match any path segment ending with .$item optionally followed by .field
-    return template.replace(/(\w[\w.]*)\.\$item(?:\.[a-zA-Z0-9_.]+)?/g, '$1') as T;
+    const stripped = template.replace(/(\w[\w.]*)\.\$item(?:\.[a-zA-Z0-9_.]+)?/g, '$1');
+    return (normalizeOptionalArrayConditional(stripped) ?? stripped) as T;
   }
 
   if (Array.isArray(template)) {
+    const collapsed = collapseOrphanedArraySpreads(template);
+    if (collapsed !== undefined) return collapsed as T;
     return template.map((item) => stripOrphanedItemSentinels(item)) as T;
   }
 
@@ -408,6 +413,92 @@ function stripOrphanedItemSentinels<T>(template: T): T {
   }
 
   return template;
+}
+
+function normalizeOptionalArrayConditional(value: string): string | undefined {
+  const match = value.match(/^\$\{has\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\) \? (\[.*), \1\] : (\[.*\])\}$/);
+  if (!match?.[1] || !match[2] || !match[3]) return undefined;
+  const [, basePath, truthyPrefix, fallbackList] = match;
+  if (`${truthyPrefix}]` !== fallbackList) return undefined;
+  return `\${${fallbackList} + (has(${basePath}) ? ${basePath} : [])}`;
+}
+
+function findOrphanedItemBase(value: unknown): string | undefined {
+  const serialized = JSON.stringify(value);
+  return serialized?.match(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.\$item/)?.[1];
+}
+
+function isDirectOrphanedItemElement(value: unknown, basePath: string): boolean {
+  if (typeof value === 'string') {
+    return value.includes('${') && value.includes(`${basePath}.$item`);
+  }
+  if (Array.isArray(value)) return value.every((item) => isDirectOrphanedItemElement(item, basePath));
+  if (value && typeof value === 'object') {
+    const entries = Object.values(value);
+    return entries.length > 0 && entries.every((entry) => isDirectOrphanedItemElement(entry, basePath));
+  }
+  return false;
+}
+
+function collapseOrphanedArraySpreads(items: unknown[]): string | undefined {
+  const parts: string[] = [];
+  let literals: unknown[] = [];
+  let sawSpread = false;
+
+  const flushLiterals = () => {
+    if (literals.length === 0) return;
+    parts.push(celValueForTemplate(literals));
+    literals = [];
+  };
+
+  for (const item of items) {
+    const basePath = findOrphanedItemBase(item);
+    if (!basePath || !isDirectOrphanedItemElement(item, basePath)) {
+      literals.push(stripOrphanedItemSentinels(item));
+      continue;
+    }
+
+    sawSpread = true;
+    flushLiterals();
+    const serialized = JSON.stringify(item) ?? '';
+    parts.push(serialized.includes(`has(${basePath})`) ? `(has(${basePath}) ? ${basePath} : [])` : basePath);
+  }
+
+  if (!sawSpread) return undefined;
+  flushLiterals();
+  return parts.length > 0 ? `\${${parts.join(' + ')}}` : undefined;
+}
+
+function celValueForTemplate(value: unknown): string {
+  if (typeof value === 'string') return celStringForTemplate(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `[${value.map(celValueForTemplate).join(', ')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).map(
+      ([key, entryValue]) => `${JSON.stringify(key)}: ${celValueForTemplate(entryValue)}`
+    );
+    return `{${entries.join(', ')}}`;
+  }
+  return 'null';
+}
+
+function celStringForTemplate(value: string): string {
+  const fullCel = value.match(/^\$\{(.+)\}$/);
+  if (fullCel?.[1]) return fullCel[1];
+  if (!value.includes('${')) return JSON.stringify(value);
+
+  const parts: string[] = [];
+  let cursor = 0;
+  const pattern = /\$\{([^}]+)\}/g;
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) parts.push(JSON.stringify(value.slice(cursor, index)));
+    if (match[1]) parts.push(`string(${match[1]})`);
+    cursor = index + match[0].length;
+  }
+  if (cursor < value.length) parts.push(JSON.stringify(value.slice(cursor)));
+  return parts.length > 0 ? parts.join(' + ') : '""';
 }
 
 // ---------------------------------------------------------------------------
@@ -427,24 +518,38 @@ function stripOrphanedItemSentinels<T>(template: T): T {
  */
 function applyTemplateOverrides(
   template: Record<string, unknown>,
-  overrides: Array<{ propertyPath: string; celExpression: string }>
+  overrides: Array<{ propertyPath: string; celExpression: string }>,
+  context: SerializationContext
 ): void {
   for (const { propertyPath, celExpression } of overrides) {
     const parts = propertyPath.split('.');
-    let target: Record<string, unknown> | undefined = template;
+    let target: Record<string, unknown> | unknown[] | undefined = template;
 
-    // Walk to the parent of the target property
+    // Walk to the parent of the target property. Object-branch ternaries can
+    // produce paths that only exist in the non-selected branch, so materialize
+    // missing containers instead of silently dropping those overrides.
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       if (!part) continue;
       if (!target) break;
-      const next = target[part];
-      if (next && typeof next === 'object' && !Array.isArray(next)) {
-        target = next as Record<string, unknown>;
+      const next = Array.isArray(target) && /^\d+$/.test(part)
+        ? target[Number(part)]
+        : (target as Record<string, unknown>)[part];
+      if (next && typeof next === 'object') {
+        target = next as Record<string, unknown> | unknown[];
       } else {
-        // Path doesn't exist in the template — skip this override
-        target = undefined;
-        break;
+        if (!celExpression.includes('omit()')) {
+          target = undefined;
+          break;
+        }
+        const nextPart = parts[i + 1];
+        const container: Record<string, unknown> | unknown[] = nextPart && /^\d+$/.test(nextPart) ? [] : {};
+        if (Array.isArray(target) && /^\d+$/.test(part)) {
+          target[Number(part)] = container;
+        } else {
+          (target as Record<string, unknown>)[part] = container;
+        }
+        target = container;
       }
     }
 
@@ -452,7 +557,12 @@ function applyTemplateOverrides(
 
     const lastKey = parts[parts.length - 1];
     if (lastKey) {
-      target[lastKey] = celExpression;
+      const finalized = finalizeCelForKro(celExpression, context.nestedStatusCel, context);
+      if (Array.isArray(target) && /^\d+$/.test(lastKey)) {
+        target[Number(lastKey)] = finalized;
+      } else {
+        (target as Record<string, unknown>)[lastKey] = finalized;
+      }
     }
   }
 }
@@ -621,7 +731,7 @@ function buildResourceEntry(
   // literals at runtime but should be CEL conditionals in the output.
   const templateOverrides = readTemplateOverrides(resource);
   if (templateOverrides && templateOverrides.length > 0 && entry.template) {
-    applyTemplateOverrides(entry.template as Record<string, unknown>, templateOverrides);
+    applyTemplateOverrides(entry.template as Record<string, unknown>, templateOverrides, context);
   }
 
   // includeWhen — conditional resource creation (convert raw values to CEL)

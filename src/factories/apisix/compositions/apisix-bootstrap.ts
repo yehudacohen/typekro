@@ -1,13 +1,17 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import { Cel } from '../../../core/references/cel.js';
+import type {
+  DirectResourceFactory,
+  KroResourceFactory,
+  PublicFactoryOptions,
+} from '../../../core/types/deployment.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
-import { createResource } from '../../shared.js';
 import { apisixHelmRelease, apisixHelmRepository } from '../resources/helm.js';
 import {
   type APISixBootstrapConfig,
+  type APISixBootstrapStatus,
   APISixBootstrapConfigSchema,
   APISixBootstrapStatusSchema,
 } from '../types.js';
@@ -17,12 +21,12 @@ import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
 /**
  * APISix Bootstrap Composition
  *
- * Creates a complete APISix ingress controller deployment using HelmRepository and HelmRelease resources.
- * Uses chart v2.13.0 which bundles the ingress controller as a subchart, so only one HelmRelease
- * is needed for the complete deployment (gateway + ingress controller + etcd).
+ * Creates a complete APISIX gateway deployment using HelmRepository and HelmRelease resources.
+ * Uses chart v2.13.0 for the APISIX gateway and etcd. The chart's ingress-controller
+ * subchart is intentionally disabled to avoid its duplicate ServiceAccount template conflict.
  *
  * Features:
- * - Complete APISix deployment (gateway, ingress controller, etcd)
+ * - Complete APISIX deployment (gateway and etcd)
  * - Configurable ingress class and gateway settings
  * - Production-ready defaults with customization options
  * - Status expressions for monitoring deployment health
@@ -109,7 +113,7 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
         },
       },
 
-      // Ingress Controller defaults
+    // Ingress config compatibility defaults. The chart subchart remains disabled below.
       ingressController: {
         ...spec.ingressController,
         enabled:
@@ -221,10 +225,9 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
     // the parent chart and subchart generate a SA with the same name (the subchart
     // template uses .Release.Name directly, not a fullname helper).
     //
-    // The ingress controller subchart is only needed for APISIX-specific CRD-based
-    // routing (ApisixRoute, ApisixUpstream, etc.). For standard Kubernetes Ingress
-    // resources (used by cert-manager HTTP-01 challenges), the APISIX gateway alone
-    // is sufficient — it processes standard Ingress objects natively.
+    // The ingress controller subchart is needed for both APISIX CRD-based routing
+    // and standard Kubernetes Ingress reconciliation. Deploy an ingress controller
+    // separately if this bootstrap should serve Kubernetes Ingress resources.
     //
     // We explicitly disable the subchart to avoid the ServiceAccount conflict.
     (helmValues as Record<string, unknown>)['ingress-controller'] = {
@@ -254,8 +257,8 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       id: 'apisixHelmRepository',
     });
 
-    // Create single HelmRelease for APISIX (gateway + ingress controller + etcd)
-    // Chart v2.13.0 bundles the ingress controller as a subchart dependency
+    // Create single HelmRelease for APISIX (gateway + etcd). The ingress-controller
+    // dependency is explicitly disabled in the chart values above.
     const helmRelease = apisixHelmRelease({
       name: actualName,
       namespace: DEFAULT_FLUX_NAMESPACE,
@@ -268,61 +271,62 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       id: 'apisixHelmRelease',
     });
 
-    // Create IngressClass for APISix gateway (processes standard Kubernetes Ingress objects natively).
-    // The controller identifier matches APISIX's built-in ingress handling — the ingress controller
-    // subchart is disabled (to avoid ServiceAccount conflicts), but APISIX gateway handles Ingress directly.
-    const _apisixIngressClass = createResource({
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'IngressClass',
-      metadata: {
-        name: ingressClass,
-        labels: {
-          'app.kubernetes.io/name': 'apisix',
-          'app.kubernetes.io/instance': actualName,
-          'app.kubernetes.io/version': actualVersion,
-          'app.kubernetes.io/managed-by': 'typekro',
-        },
-      },
-      spec: {
-        controller: 'apisix.apache.org/apisix-ingress-controller',
-      },
-      id: 'apisixIngressClass',
-    }).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
-
     // Return status with CEL expressions referencing HelmRelease conditions
     // Flux HelmRelease v2 uses conditions array (not a phase field).
     // We use CEL .exists() to check for the Ready condition.
+    const helmReady = Cel.expr<boolean>(
+      helmRelease.status.conditions,
+      '.exists(c, c.type == "Ready" && c.status == "True")'
+    );
+    const helmFailed = Cel.expr<boolean>(
+      helmRelease.status.conditions,
+      '.exists(c, c.type == "Ready" && c.status == "False")'
+    );
+    const helmReconciling = Cel.expr<boolean>(
+      helmRelease.status.conditions,
+      '.exists(c, c.type == "Reconciling" && c.status == "True")'
+    );
+    const gatewayServicePorts: NonNullable<APISixBootstrapStatus['gatewayService']>['ports'] = [];
+    if (fullConfig.gateway?.http?.enabled !== false) {
+      gatewayServicePorts.push({
+        name: 'http',
+        port: fullConfig.gateway?.http?.servicePort || 80,
+        targetPort: fullConfig.gateway?.http?.containerPort || 9080,
+        protocol: 'TCP',
+      });
+    }
+    if (fullConfig.gateway?.https?.enabled !== false) {
+      gatewayServicePorts.push({
+        name: 'https',
+        port: fullConfig.gateway?.https?.servicePort || 443,
+        targetPort: fullConfig.gateway?.https?.containerPort || 9443,
+        protocol: 'TCP',
+      });
+    }
+
     return {
       helmRelease,
 
-      ready: Cel.expr<boolean>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
+      ready: helmReady,
       phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+        helmReady,
+        ' ? "Ready" : ',
+        helmFailed,
+        ' ? "Failed" : ',
+        helmReconciling,
+        ' ? "Upgrading" : "Installing"'
       ),
-      gatewayReady: Cel.expr<boolean>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      ingressControllerReady: Cel.expr<boolean>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      dashboardReady: false,
-      etcdReady: false,
+      gatewayReady: helmReady,
+      // The APISIX ingress-controller subchart is intentionally disabled above,
+      // so this bootstrap does not reconcile standard Kubernetes Ingress by itself.
+      standardIngressReady: false,
+      dashboardReady: fullConfig.dashboard?.enabled === false ? true : helmReady,
+      etcdReady: fullConfig.etcd?.enabled === false ? true : helmReady,
       gatewayService: {
         name: `${actualName}-gateway`,
         namespace: actualNamespace,
         type: fullConfig.gateway?.type || 'NodePort',
-        clusterIP: '',
-        externalIP: '',
-      },
-      ingressClass: {
-        name: ingressClass,
-        controller: 'apisix.apache.org/apisix-ingress-controller',
+        ports: gatewayServicePorts,
       },
     };
   }
@@ -330,6 +334,30 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
 }
 
 const apisixBootstrapBase = createApisixBootstrap(false);
+
+const originalFactory = apisixBootstrapBase.factory.bind(apisixBootstrapBase);
+function apisixBootstrapFactory(
+  mode: 'kro',
+  options?: PublicFactoryOptions
+): KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
+function apisixBootstrapFactory(
+  mode: 'direct',
+  options?: PublicFactoryOptions
+): DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
+function apisixBootstrapFactory(
+  mode: 'kro' | 'direct',
+  options?: PublicFactoryOptions
+):
+  | KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>
+  | DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus> {
+  if (mode === 'kro') {
+    return createApisixBootstrap(true).factory('kro', options);
+  }
+  return originalFactory(mode, options);
+}
+
+(apisixBootstrapBase as { factory: typeof apisixBootstrapBase.factory }).factory =
+  apisixBootstrapFactory;
 
 // Keep module imports side-effect safe, but require concrete credentials when
 // generating a KRO definition so omitted CR fields do not become chart defaults.

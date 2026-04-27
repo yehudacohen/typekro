@@ -199,6 +199,7 @@ const AppSpec = type({
 All factory functions return `Enhanced` resources with these methods:
 
 ```typescript
+const database = Deployment({ id: 'database', name: 'database', image: 'postgres:16' });
 const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' });
 
 // Custom readiness evaluation
@@ -208,7 +209,7 @@ deploy.withReadinessEvaluator((resource) => ({
 }));
 
 // Explicit dependencies (when auto-detection isn't enough)
-deploy.withDependencies('database', 'configMap');
+deploy.dependsOn(database);
 ```
 
 See [Custom Integrations](/advanced/custom-integrations) for details on these methods.

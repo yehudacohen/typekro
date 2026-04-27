@@ -12,9 +12,34 @@ import { type } from 'arktype';
 import { KubeConfig } from '@kubernetes/client-node';
 import { AlchemyDeploymentStrategy } from '../../../src/core/deployment/strategies/alchemy-strategy.js';
 import { DirectDeploymentStrategy } from '../../../src/core/deployment/strategies/direct-strategy.js';
+import { ReadinessEvaluatorRegistry } from '../../../src/core/readiness/registry.js';
 import type { FactoryOptions } from '../../../src/core/types/deployment.js';
 import type { Scope } from '../../../src/core/types/schema.js';
 import { strategyInternals } from '../../utils/mock-factories.js';
+
+type MockAlchemyProviderProps = {
+  resource: { kind?: string; metadata?: { name?: string } };
+  deployer?: unknown;
+  options?: unknown;
+};
+
+const alchemyProviderCalls: Array<{
+  id: string;
+  props: MockAlchemyProviderProps;
+}> = [];
+
+mock.module('../../../src/alchemy/deployment.js', () => ({
+  ensureResourceTypeRegistered: (resource: { kind?: string }) => {
+    const provider = async (id: string, props: MockAlchemyProviderProps) => {
+      alchemyProviderCalls.push({ id, props });
+      return { id, ...props };
+    };
+    Object.defineProperty(provider, 'name', { value: `Mock${resource.kind ?? 'Resource'}Provider` });
+    return provider;
+  },
+  createAlchemyResourceId: (resource: { kind?: string; metadata?: { name?: string } }, namespace?: string) =>
+    `${namespace ?? 'default'}:${resource.kind ?? 'Unknown'}:${resource.metadata?.name ?? 'unnamed'}`,
+}));
 
 describe('AlchemyDeploymentStrategy', () => {
   // Mock alchemy scope
@@ -33,29 +58,30 @@ describe('AlchemyDeploymentStrategy', () => {
 
   // Mock base strategy
   const createMockBaseStrategy = () => {
+    const resources = [
+      {
+        id: 'deployment-1',
+        manifest: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'test-deployment', namespace: 'default' },
+          spec: { replicas: 1 },
+        },
+      },
+      {
+        id: 'service-1',
+        manifest: {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'test-service', namespace: 'default' },
+          spec: { type: 'ClusterIP' },
+        },
+      },
+    ];
     const resourceResolver = {
       createResourceGraphForInstance: mock((spec: any, instanceName?: string) => ({
         name: `${instanceName || spec?.name || 'test-instance'}-graph`,
-        resources: [
-          {
-            id: 'deployment-1',
-            manifest: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              metadata: { name: 'test-deployment', namespace: 'default' },
-              spec: { replicas: 1 },
-            },
-          },
-          {
-            id: 'service-1',
-            manifest: {
-              apiVersion: 'v1',
-              kind: 'Service',
-              metadata: { name: 'test-service', namespace: 'default' },
-              spec: { type: 'ClusterIP' },
-            },
-          },
-        ],
+        resources,
         dependencyGraph: { nodes: [], edges: [] },
       })),
     };
@@ -67,7 +93,17 @@ describe('AlchemyDeploymentStrategy', () => {
       executeDeployment: mock(() =>
         Promise.resolve({
           status: 'success',
-          deployedResources: [],
+          deploymentId: 'direct-test-instance',
+          resources: resources.map((resource) => ({
+            id: resource.id,
+            kind: resource.manifest.kind,
+            name: resource.manifest.metadata.name,
+            namespace: resource.manifest.metadata.namespace,
+            manifest: resource.manifest,
+            status: 'deployed' as const,
+            deployedAt: new Date(),
+          })),
+          dependencyGraph: { nodes: [], edges: [] },
           errors: [],
           duration: 100,
         })
@@ -101,6 +137,14 @@ describe('AlchemyDeploymentStrategy', () => {
   let strategy: AlchemyDeploymentStrategy<any, any>;
 
   beforeEach(() => {
+    alchemyProviderCalls.length = 0;
+
+    const registry = ReadinessEvaluatorRegistry.getInstance();
+    registry.clear();
+    registry.registerForKind('Deployment', () => ({ ready: true }));
+    registry.registerForKind('Service', () => ({ ready: true }));
+    registry.registerForKind('Namespace', () => ({ ready: true }));
+
     mockAlchemyScope = createMockAlchemyScope();
     mockBaseStrategy = createMockBaseStrategy();
 
@@ -219,6 +263,90 @@ describe('AlchemyDeploymentStrategy', () => {
           mockBaseStrategy.resourceResolver.createResourceGraphForInstance
         ).toHaveBeenCalledWith(spec, 'multi-instance');
       }
+    });
+
+    it('deploys the full graph once and registers only resources deployed by the direct strategy', async () => {
+      const spec = { name: 'test-app', replicas: 1 };
+      const dependencyGraph = {
+        nodes: ['namespace-1', 'deployment-1'],
+        edges: [['namespace-1', 'deployment-1']],
+      };
+      const namespaceResource = {
+        id: 'namespace-1',
+        manifest: {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'scoped-ns' },
+        },
+      };
+      const deploymentResource = {
+        id: 'deployment-1',
+        manifest: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'app', namespace: 'scoped-ns' },
+          spec: { replicas: 1 },
+        },
+      };
+
+      mockBaseStrategy.resourceResolver.createResourceGraphForInstance.mockReturnValue({
+        name: 'scoped-instance',
+        resources: [namespaceResource, deploymentResource],
+        dependencyGraph,
+      });
+      mockBaseStrategy.executeDeployment.mockImplementation(async () => ({
+        status: 'success',
+        deploymentId: 'direct-scoped-instance',
+        resources: [
+          {
+            id: namespaceResource.id,
+            kind: namespaceResource.manifest.kind,
+            name: namespaceResource.manifest.metadata.name,
+            namespace: 'default',
+            manifest: namespaceResource.manifest,
+            status: 'deployed' as const,
+            deployedAt: new Date(),
+          },
+        ],
+        dependencyGraph,
+        errors: [],
+        duration: 25,
+      }));
+
+      const result = (await strategyInternals(strategy).executeDeployment(spec, 'scoped-instance', {
+        targetScopes: ['cluster'],
+      })) as Record<string, unknown>;
+
+      expect(mockBaseStrategy.executeDeployment).toHaveBeenCalledTimes(1);
+      expect(mockBaseStrategy.executeDeployment).toHaveBeenCalledWith(spec, 'scoped-instance', {
+        targetScopes: ['cluster'],
+      });
+      expect(result.dependencyGraph).toBe(dependencyGraph);
+      expect(result.resources).toHaveLength(1);
+      expect((result.resources as Array<{ id: string }>)[0]?.id).toBe('namespace-1');
+      expect(alchemyProviderCalls).toHaveLength(1);
+      expect(alchemyProviderCalls[0]?.props.resource.kind).toBe('Namespace');
+      expect(alchemyProviderCalls[0]?.props.deployer).toBeDefined();
+    });
+
+    it('does not register skipped target-scope resources as deployed Alchemy state', async () => {
+      const spec = { name: 'test-app', replicas: 1 };
+      mockBaseStrategy.executeDeployment.mockResolvedValue({
+        status: 'success',
+        deploymentId: 'direct-skipped-instance',
+        resources: [],
+        dependencyGraph: { nodes: [], edges: [] },
+        errors: [],
+        duration: 10,
+      });
+
+      const result = (await strategyInternals(strategy).executeDeployment(spec, 'skipped-instance', {
+        targetScopes: ['cluster'],
+      })) as Record<string, unknown>;
+
+      expect(result.status).toBe('success');
+      expect(result.resources).toHaveLength(0);
+      expect(alchemyProviderCalls).toHaveLength(0);
     });
   });
 

@@ -778,7 +778,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(resource.includeWhen![0]).toContain('!schema.spec.disabled');
       });
 
-      it('if (spec.optional?.enabled !== false) lowers to includeWhen without optional chaining', () => {
+      it('if (spec.optional?.enabled !== false) preserves optional chaining include semantics', () => {
         const graph = kubernetesComposition(
           {
             name: 'include-optional-enabled',
@@ -805,6 +805,8 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         expect(resource).toBeDefined();
         expect(resource!.includeWhen).toBeDefined();
+        expect(resource!.includeWhen![0]).toContain('!has(schema.spec.searxng)');
+        expect(resource!.includeWhen![0]).toContain('!has(schema.spec.searxng.enabled)');
         expect(resource!.includeWhen![0]).toContain('schema.spec.searxng.enabled != false');
         expect(resource!.includeWhen![0]).not.toContain('?.');
       });
@@ -848,13 +850,70 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         expect(nestedDeployment).toBeDefined();
         expect(nestedDeployment!.includeWhen).toBeDefined();
+        expect(nestedDeployment!.includeWhen![0]).toContain('!has(schema.spec.search)');
+        expect(nestedDeployment!.includeWhen![0]).toContain('!has(schema.spec.search.enabled)');
         expect(nestedDeployment!.includeWhen![0]).toContain('schema.spec.search.enabled != false');
+      });
+
+      it('nested call includeWhen matching does not bleed into same-prefix compositions', () => {
+        const search = kubernetesComposition(
+          {
+            name: 'search',
+            apiVersion: 'v1alpha1',
+            kind: 'Search',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            ConfigMap({ name: spec.name, data: { app: 'search' }, id: 'cfg' });
+            return { ready: true };
+          }
+        );
+
+        const searchAdmin = kubernetesComposition(
+          {
+            name: 'search-admin',
+            apiVersion: 'v1alpha1',
+            kind: 'SearchAdmin',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            ConfigMap({ name: spec.name, data: { app: 'admin' }, id: 'cfg' });
+            return { ready: true };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'nested-prefix-include-when',
+            apiVersion: 'v1alpha1',
+            kind: 'NestedPrefixIncludeWhen',
+            spec: type({ name: 'string', enabled: 'boolean' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            if (spec.enabled) {
+              search({ name: `${spec.name}-search` });
+            }
+            searchAdmin({ name: `${spec.name}-admin` });
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const guarded = parsed.spec.resources.find((r) => r.id.startsWith('search1'));
+        const unguardedSamePrefix = parsed.spec.resources.find((r) => r.id.startsWith('searchAdmin'));
+
+        expect(guarded?.includeWhen).toEqual(['${schema.spec.enabled}']);
+        expect(unguardedSamePrefix).toBeDefined();
+        expect(unguardedSamePrefix?.includeWhen).toBeUndefined();
       });
 
       it('if guard around member-expression nested composition call applies includeWhen to nested resources', () => {
         const searchBootstrap = kubernetesComposition(
           {
-            name: 'search-bootstrap-member',
+            name: 'search-bootstrap',
             apiVersion: 'v1alpha1',
             kind: 'SearchBootstrapMember',
             spec: type({ name: 'string' }),
@@ -888,7 +947,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         );
 
         const parsed = parseRgdYaml(graph.toYaml());
-        const nestedDeployment = parsed.spec.resources.find((r) => r.id.startsWith('searchBootstrapMember'));
+        const nestedDeployment = parsed.spec.resources.find((r) => r.id.startsWith('searchBootstrap'));
 
         expect(nestedDeployment).toBeDefined();
         expect(nestedDeployment!.includeWhen).toBeDefined();
@@ -1029,7 +1088,7 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         // Else-branch: includeWhen should be the NEGATED condition
         expect(elseResource.includeWhen).toBeDefined();
-        expect(elseResource.includeWhen![0]).toContain('!schema.spec.monitoring');
+        expect(elseResource.includeWhen![0]).toContain('!(schema.spec.monitoring)');
       });
 
       it('if/else with equality produces negated equality on else-branch', () => {
@@ -1069,7 +1128,8 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         // Else-branch: includeWhen should be NEGATED
         expect(nonProdResource.includeWhen).toBeDefined();
-        expect(nonProdResource.includeWhen![0]).toContain('!');
+        expect(nonProdResource.includeWhen![0]).toContain('!(schema.spec.environment == "production")');
+        expect(nonProdResource.includeWhen![0]).not.toContain('!schema.spec.environment ==');
         expect(nonProdResource.includeWhen![0]).toContain(
           'schema.spec.environment == "production"'
         );
@@ -1197,9 +1257,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(fullMonitor.includeWhen![0]).toContain('schema.spec.monitoring');
         expect(fullMonitor.includeWhen![0]).not.toContain('!');
 
-        // ResourceB: includeWhen = [${!schema.spec.monitoring}]
+        // ResourceB: includeWhen = [${!(schema.spec.monitoring)}]
         expect(basicLogging.includeWhen).toBeDefined();
-        expect(basicLogging.includeWhen![0]).toContain('!schema.spec.monitoring');
+        expect(basicLogging.includeWhen![0]).toContain('!(schema.spec.monitoring)');
       });
 
       it('ternary VALUE in resource arg is NOT includeWhen', () => {

@@ -11,6 +11,8 @@ import type { APISixBootstrapConfig, APISixHelmValues } from '../types.js';
  * @returns Helm values object for the APISix chart
  */
 export function mapAPISixConfigToHelmValues(config: APISixBootstrapConfig): APISixHelmValues {
+  const gatewayValues = { ...(config.gateway ?? {}) };
+  delete (gatewayValues as { adminCredentials?: unknown }).adminCredentials;
   const helmValues: Partial<APISixHelmValues> = {
     // Installation configuration
     ...(config.installCRDs !== undefined && { installCRDs: config.installCRDs }),
@@ -22,7 +24,7 @@ export function mapAPISixConfigToHelmValues(config: APISixBootstrapConfig): APIS
     ...(config.replicaCount !== undefined && { replicaCount: config.replicaCount }),
 
     // Gateway configuration
-    ...(config.gateway && { gateway: config.gateway }),
+    ...(config.gateway && { gateway: gatewayValues }),
 
     // Ingress Controller configuration
     ...(config.ingressController && {
@@ -98,7 +100,7 @@ export function validateAPISixHelmValues(values: APISixHelmValues): string[] {
   // Check ingress controller configuration
   if (values.ingressController?.enabled === false) {
     warnings.push(
-      'Ingress controller is disabled. This will prevent ingress resources from being processed.'
+      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.'
     );
   }
 

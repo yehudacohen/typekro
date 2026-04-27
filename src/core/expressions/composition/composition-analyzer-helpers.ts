@@ -171,6 +171,46 @@ export function conditionToCel(
 ): string {
   let source = getSource(node, fullSource);
 
+  const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
+    if (!optionalFieldNames || optionalFieldNames.size === 0) return undefined;
+    const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(path);
+    const refPath = refMatch?.[1];
+    if (!refPath) return undefined;
+
+    const segments = refPath.split('.');
+    let shallowestOptionalIndex: number | undefined;
+    for (let i = 1; i <= segments.length; i++) {
+      const prefix = segments.slice(0, i).join('.');
+      if (optionalFieldNames.has(prefix)) {
+        shallowestOptionalIndex ??= i;
+      }
+    }
+    if (shallowestOptionalIndex === undefined) return undefined;
+
+    const guards: string[] = [];
+    for (let i = shallowestOptionalIndex; i <= segments.length; i++) {
+      guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+    }
+    const guard = guards.join(' && ');
+    return negation ? (guards.length === 1 ? `!${guard}` : `!(${guard})`) : guard;
+  };
+
+  const optionalChainGuards = (basePath: string, tailPath: string): { fullPath: string; present: string; missing: string } => {
+    const baseRef = basePath.replace(/^schema\.spec\./, '');
+    const fullRef = `${baseRef}.${tailPath}`;
+    const segments = fullRef.split('.');
+    const baseDepth = baseRef.split('.').length;
+    const guards: string[] = [];
+    for (let i = baseDepth; i <= segments.length; i++) {
+      guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+    }
+    return {
+      fullPath: `schema.spec.${fullRef}`,
+      present: guards.join(' && '),
+      missing: guards.map((guard) => `!${guard}`).join(' || '),
+    };
+  };
+
   // Replace the spec parameter name with schema.spec
   // Must use word boundary to avoid replacing substrings
   // escapeRegExp prevents regex injection if specParamName contains metacharacters
@@ -179,14 +219,34 @@ export function conditionToCel(
   // JS → CEL operator conversions
   source = source.replace(/===/g, '==');
   source = source.replace(/!==/g, '!=');
-  // Kro CEL has no optional chaining syntax. Presence checks are handled
-  // separately via has(...) wrapping for optional fields.
-  source = source.replace(/\?\./g, '.');
   // Bun/esbuild may minify booleans inside function source: `false` → `!1`,
   // `true` → `!0`. Normalize them back to plain CEL booleans for readability
   // and stable test output.
   source = source.replace(/(^|[^\w])!1(?=$|[^\w])/g, '$1false');
   source = source.replace(/(^|[^\w])!0(?=$|[^\w])/g, '$1true');
+
+  source = source.replace(
+    /(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:(?:"[^"]*")|(?:'[^']*')))/g,
+    (_match, basePath: string, tailPath: string, operator: string, rightValue: string) => {
+      const { fullPath, present, missing } = optionalChainGuards(basePath, tailPath);
+      if (operator === '!=') {
+        return `${missing} || ${fullPath} ${operator} ${rightValue}`;
+      }
+      return `${present} && ${fullPath} ${operator} ${rightValue}`;
+    }
+  );
+  source = source.replace(
+    /(^|[\s(])(!?)(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?=\s*(?:&&|\|\||\)|$))/g,
+    (_match, leading: string, negation: string, basePath: string, tailPath: string) => {
+      const { fullPath, present, missing } = optionalChainGuards(basePath, tailPath);
+      return negation ? `${leading}${missing} || !${fullPath}` : `${leading}${present} && ${fullPath}`;
+    }
+  );
+
+  // Kro CEL has no optional chaining syntax. Optional-chain expressions above
+  // preserve JS missing-parent semantics; any remaining optional chains fall
+  // through to normal has(...) wrapping where possible.
+  source = source.replace(/\?\./g, '.');
 
   // JS `Object.keys(X).length` → CEL `size(X)`. The `.length` on a map
   // enumeration is equivalent to the map's size in CEL. We convert the
@@ -246,9 +306,8 @@ export function conditionToCel(
   if (bareMatch) {
     const negation = bareMatch[1];
     const path = bareMatch[2];
-    const topLevelField = bareMatch[3];
-    if (topLevelField && optionalFieldNames?.has(topLevelField)) {
-      source = `${negation}has(${path})`;
+    if (path) {
+      source = optionalTruthinessGuard(path, negation ?? '') ?? source;
     }
   }
 
@@ -258,30 +317,15 @@ export function conditionToCel(
   if (optionalFieldNames && optionalFieldNames.size > 0) {
     source = source.replace(
       /(^|[\s(])(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
-      (match, leading, negation, path, topLevelField) => {
-        if (optionalFieldNames.has(topLevelField)) {
-          return `${leading}${negation}has(${path})`;
-        }
-        return match;
-      }
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
     );
     source = source.replace(
       /(&&|\|\|)(\s+)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
-      (match, operator, spacing, negation, path, topLevelField) => {
-        if (optionalFieldNames.has(topLevelField)) {
-          return `${operator}${spacing}${negation}has(${path})`;
-        }
-        return match;
-      }
+      (match, operator, spacing, negation, path) => `${operator}${spacing}${optionalTruthinessGuard(path, negation) ?? match.slice(`${operator}${spacing}`.length)}`
     );
     source = source.replace(
       /(^|[(:?,]\s*)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*\?)/g,
-      (match, leading, negation, path, topLevelField) => {
-        if (optionalFieldNames.has(topLevelField)) {
-          return `${leading}${negation}has(${path})`;
-        }
-        return match;
-      }
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
     );
   }
 
@@ -394,6 +438,9 @@ export function extractResourceStatusRef(
 
   let result: { variableName: string; statusField: string; conditionExpression?: string } | undefined;
   const memberPath = (member: ASTNode): string[] | undefined => {
+    if (member.type === 'ChainExpression') {
+      return memberPath((member as ASTNode & { expression?: ASTNode }).expression as ASTNode);
+    }
     if (member.type === 'Identifier') return [getIdentifierName(member) ?? ''];
     const property = member.property as ASTNode | undefined;
     if (
@@ -423,34 +470,51 @@ export function extractResourceStatusRef(
   const wrapOptionalSpecTruthiness = (source: string): string => {
     if (!optionalFieldNames || optionalFieldNames.size === 0) return source;
 
-    const bareRefPattern = /^(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)\s*$/;
+    const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
+      const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(path);
+      const refPath = refMatch?.[1];
+      if (!refPath) return undefined;
+
+      const segments = refPath.split('.');
+      let shallowestOptionalIndex: number | undefined;
+      for (let i = 1; i <= segments.length; i++) {
+        const prefix = segments.slice(0, i).join('.');
+        if (optionalFieldNames.has(prefix)) {
+          shallowestOptionalIndex ??= i;
+        }
+      }
+      if (shallowestOptionalIndex === undefined) return undefined;
+
+      const guards: string[] = [];
+      for (let i = shallowestOptionalIndex; i <= segments.length; i++) {
+        guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+      }
+      const guard = guards.join(' && ');
+      return negation ? (guards.length === 1 ? `!${guard}` : `!(${guard})`) : guard;
+    };
+
+    const bareRefPattern = /^(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)\s*$/;
     const bareMatch = bareRefPattern.exec(source);
     if (bareMatch) {
       const negation = bareMatch[1];
       const path = bareMatch[2];
-      const topLevelField = bareMatch[3];
-      if (topLevelField && path && optionalFieldNames.has(topLevelField)) {
-        return `${negation}has(${path})`;
-      }
+      if (path) return optionalTruthinessGuard(path, negation ?? '') ?? source;
     }
 
     let wrapped = source.replace(
-      /(^|[\s(])(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
-      (match, leading, negation, path, topLevelField) => {
-        if (optionalFieldNames.has(topLevelField)) return `${leading}${negation}has(${path})`;
-        return match;
-      }
+      /(^|[\s(])(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
     );
     wrapped = wrapped.replace(
-      /(&&|\|\|)(\s+)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
-      (match, operator, spacing, negation, path, topLevelField) => {
-        if (optionalFieldNames.has(topLevelField)) return `${operator}${spacing}${negation}has(${path})`;
-        return match;
-      }
+      /(&&|\|\|)(\s+)(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
+      (match, operator, spacing, negation, path) => `${operator}${spacing}${optionalTruthinessGuard(path, negation) ?? match.slice(`${operator}${spacing}`.length)}`
     );
     return wrapped;
   };
   const expressionNodeToCel = (expr: ASTNode): string => {
+    if (expr.type === 'ChainExpression') {
+      return expressionNodeToCel((expr as ASTNode & { expression?: ASTNode }).expression as ASTNode);
+    }
     if (expr.type === 'Identifier') return getIdentifierName(expr) ?? '';
     if (expr.type === 'Literal') return literalToCel(expr as Literal);
     if (expr.type === 'MemberExpression') {
@@ -657,5 +721,5 @@ export function factoryArgKeyToTemplatePath(key: string): string | undefined {
 export function negateCondition(condition: string): string {
   // Remove ${...} wrapper
   const inner = condition.replace(/^\$\{/, '').replace(/\}$/, '');
-  return `\${!${inner}}`;
+  return `\${!(${inner})}`;
 }

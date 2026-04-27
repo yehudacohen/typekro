@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-04-05
-
 ### Added
 
 - **SearXNG integration**: `searxngBootstrap` composition and `searxng()` factory for deploying the SearXNG metasearch engine. Supports auto-created Secret (from `server.secret_key`) or external `secretKeyRef` for Vault / external-secrets-operator workflows.
@@ -37,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 - The SearXNG factory's plaintext `server.secret_key` env-var delivery path is retained for direct-mode callers that manage their own secret injection, but using the `searxngBootstrap` composition (which auto-creates a K8s Secret) or providing an explicit `secretKeyRef` is strongly preferred. The plaintext path exposes the secret in `kubectl get deploy -o yaml` and should not be used in production.
+
+## [0.8.0] - 2026-04-05
 
 ## [0.5.0] - 2026-03-16
 

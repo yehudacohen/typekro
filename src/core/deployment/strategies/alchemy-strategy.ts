@@ -11,7 +11,9 @@ import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { hasResourceMetadata } from '../../metadata/index.js';
 import { ensureReadinessEvaluator } from '../../readiness/index.js';
+import { getEffectiveScopes } from '../resource-tagging.js';
 import type {
+  DeployedResource,
   DeploymentResourceGraph,
   DeploymentResult,
   FactoryOptions,
@@ -23,6 +25,7 @@ import type {
   Scope,
   StatusBuilder,
 } from '../../types/serialization.js';
+import type { TypeKroDeployer } from '../../../alchemy/types.js';
 import { validateAlchemyScope } from '../shared-utilities.js';
 import { BaseDeploymentStrategy, type DeploymentStrategy } from './base-strategy.js';
 import { DirectDeploymentStrategy } from './direct-strategy.js';
@@ -156,21 +159,18 @@ export class AlchemyDeploymentStrategy<
         graphName: resourceGraph.name,
       });
 
-      // No need to create deployer here - it will be created inside the Alchemy resource handler
+      const directResult = await this.executeBaseDirectDeployment(spec, instanceName, opts);
+      const directResourcesById = new Map(directResult.resources.map((resource) => [resource.id, resource]));
+      const trackingDeployer: TypeKroDeployer = {
+        deploy: async (resource) => resource,
+        delete: async () => {
+          // Alchemy direct mode is only registering state here; the base direct
+          // deployment already performed Kubernetes mutations.
+        },
+      };
 
-      // Process each resource in the resource graph individually for Alchemy registration
-      const deployedResources: Array<{
-        id: string;
-        kind: string;
-        name: string;
-        namespace: string;
-        manifest: KubernetesResource;
-        status: 'deployed' | 'ready' | 'failed';
-        deployedAt: Date;
-        alchemyResourceId: string;
-        alchemyResourceType: string;
-        error?: Error;
-      }> = [];
+      // Process each actually deployed resource in the graph for Alchemy state registration.
+      const deployedResources: DeployedResource[] = [];
       const errors: Array<{
         resourceId: string;
         error: Error;
@@ -191,6 +191,16 @@ export class AlchemyDeploymentStrategy<
 
       // Continue processing remaining resources when individual resources fail
       for (const resource of resourceGraph.resources) {
+        const directDeployedResource = directResourcesById.get(resource.id);
+        if (!directDeployedResource) {
+          this.logger.debug('Skipping Alchemy state registration for undeployed resource', {
+            resourceId: resource.id,
+            resourceScopes: getEffectiveScopes(resource.manifest),
+            targetScopes: opts?.targetScopes,
+          });
+          continue;
+        }
+
         try {
           this.logger.info('Processing resource for alchemy deployment', {
             resourceId: resource.id,
@@ -219,25 +229,19 @@ export class AlchemyDeploymentStrategy<
                 namespace: this.namespace,
                 deploymentStrategy: 'direct' as const,
                 kubeConfigOptions,
+                deployer: trackingDeployer,
                 options: {
                   waitForReady: this.factoryOptions.waitForReady ?? false, // Default to false for faster tests
                   timeout: this.factoryOptions.timeout ?? DEFAULT_READINESS_TIMEOUT,
                   factoryName: this.factoryName,
                   instanceName,
-                  ...(opts?.targetScopes !== undefined && { targetScopes: opts.targetScopes }),
                   ...(opts?.singletonSpecFingerprint && { singletonSpecFingerprint: opts.singletonSpecFingerprint }),
                 },
               });
 
               // Track the deployed resource
               deployedResources.push({
-                id: resource.id,
-                kind: resource.manifest.kind || 'Unknown',
-                name: resource.manifest.metadata?.name || 'unnamed',
-                namespace: this.namespace,
-                manifest: resource.manifest,
-                status: 'deployed' as const,
-                deployedAt: new Date(),
+                ...directDeployedResource,
                 alchemyResourceId: resourceId,
                 alchemyResourceType: ResourceProvider.name || 'unknown',
               });
@@ -294,7 +298,17 @@ export class AlchemyDeploymentStrategy<
 
       // Create comprehensive deployment result
       const duration = Date.now() - startTime;
-      const hasErrors = errors.length > 0;
+      const allErrors = [
+        ...(directResult.errors ?? []).map((error) => ({
+          ...error,
+          resourceKind: 'Unknown',
+          resourceName: error.resourceId,
+          alchemyResourceType: 'direct-deployment',
+          namespace: this.namespace,
+        })),
+        ...errors,
+      ];
+      const hasErrors = allErrors.length > 0;
       const hasSuccesses = deployedResources.length > 0;
 
       let status: 'success' | 'failed' | 'partial';
@@ -302,6 +316,8 @@ export class AlchemyDeploymentStrategy<
         status = 'success';
       } else if (!hasSuccesses && hasErrors) {
         status = 'failed';
+      } else if (!hasSuccesses && !hasErrors) {
+        status = directResult.status;
       } else {
         status = 'partial';
       }
@@ -309,7 +325,7 @@ export class AlchemyDeploymentStrategy<
       this.logger.info('Alchemy deployment completed', {
         status,
         successfulResources: deployedResources.length,
-        failedResources: errors.length,
+        failedResources: allErrors.length,
         totalResources: resourceGraph.resources.length,
         duration,
       });
@@ -320,7 +336,7 @@ export class AlchemyDeploymentStrategy<
         resources: deployedResources,
         dependencyGraph: resourceGraph.dependencyGraph,
         duration,
-        errors: errors.map((e) => ({
+        errors: allErrors.map((e) => ({
           resourceId: e.resourceId,
           error: e.error,
           phase: e.phase,
@@ -331,6 +347,26 @@ export class AlchemyDeploymentStrategy<
       this.logger.error('Alchemy deployment strategy failed', ensureError(error));
       throw error;
     }
+  }
+
+  private async executeBaseDirectDeployment(
+    spec: TSpec,
+    instanceName: string,
+    opts?: import('./base-strategy.js').DeployStrategyOptions
+  ): Promise<DeploymentResult> {
+    const strategy = this.baseStrategy as unknown as {
+      executeDeployment?: (
+        spec: TSpec,
+        instanceName: string,
+        opts?: import('./base-strategy.js').DeployStrategyOptions
+      ) => Promise<DeploymentResult>;
+    };
+
+    if (typeof strategy.executeDeployment !== 'function') {
+      throw new Error('Alchemy direct deployment requires a direct base strategy');
+    }
+
+    return strategy.executeDeployment(spec, instanceName, opts);
   }
 
   protected getStrategyMode(): 'direct' | 'kro' {

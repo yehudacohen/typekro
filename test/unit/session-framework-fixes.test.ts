@@ -846,6 +846,18 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
 
     // The static secret should still be present
     expect(yamlStr).toContain('static-secret');
+
+    const parsed = parseRgd(yamlStr);
+    const app = parsed.spec.resources.find((resource) => resource.id === 'app');
+    const template = app?.template as {
+      spec?: { template?: { spec?: { containers?: Array<{ envFrom?: unknown }> } } };
+    };
+    const envFrom = template.spec?.template?.spec?.containers?.[0]?.envFrom;
+
+    // The spread must be a CEL list splice, not a nested array element.
+    expect(typeof envFrom).toBe('string');
+    expect(envFrom).toContain('[{"secretRef": {"name": "static-secret"}}]');
+    expect(envFrom).toContain('+ (has(schema.spec.envFrom) ? schema.spec.envFrom : [])');
   });
 
   it('forEach resources preserve $item for later substitution', () => {
@@ -939,6 +951,7 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     // The envFrom CEL should be clean
     expect(yamlStr).toContain('has(schema.spec.app.envFrom)');
     expect(yamlStr).not.toContain('envFrom.$item');
+    expect(yamlStr).toContain('+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])');
 
     // The inngest credentials secret should still be wired
     expect(yamlStr).toContain('inngest-credentials');

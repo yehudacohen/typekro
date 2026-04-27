@@ -45,7 +45,7 @@ import {
  * - `DATABASE_URL` — points to the PgBouncer pooler
  * - `VALKEY_URL` / `REDIS_URL` — points to the Valkey service
  * - `INNGEST_BASE_URL` — points to the Inngest server
- * - `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` — from config
+ * - `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` — injected from a generated Secret via envFrom
  *
  * Resource dependencies are expressed through proxy references:
  * - Inngest references `cache.metadata.name` for the redis URI → deploys after Valkey
@@ -256,10 +256,10 @@ export const webAppWithProcessing = kubernetesComposition(
 
     // ── Inngest (with external DB + cache) ──────────────────────────────
 
-    // database.status.writeService creates an implicit deployment dependency:
-    // the dependency resolver detects the reference and adds a DAG edge,
-    // ensuring the database is ready BEFORE Inngest deploys. The actual
-    // postgres credentials are injected via the CNPG Secret (secretKeyRef below).
+    // The actual postgres credentials are injected via the CNPG Secret
+    // (secretKeyRef below). Use the deterministic pooler host here instead of
+    // database.status.writeService so nested compositions do not leak an inner
+    // resource status marker into the parent deployment graph.
     const inngestBootstrapApp = inngestBootstrap({
       name: `${spec.name}-inngest`,
       namespace: ns,
@@ -267,7 +267,7 @@ export const webAppWithProcessing = kubernetesComposition(
       inngest: {
         eventKey: spec.processing.eventKey,
         signingKey: spec.processing.signingKey,
-        postgres: { uri: `postgresql://${dbOwner}@${database.status.writeService}:5432/${dbName}` },
+        postgres: { uri: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}` },
         redis: { uri: `redis://${cache.metadata.name}:6379` },
         sdkUrl: spec.processing.sdkUrl,
       },
@@ -320,6 +320,8 @@ export const webAppWithProcessing = kubernetesComposition(
     // ref, so KRO sees no implicit dependency. dependsOn creates an
     // explicit readyWhen on inngest's leaf resource.
     inngestBootstrapApp.dependsOn?.(cache);
+    inngestBootstrapApp.dependsOn?.(database);
+    inngestBootstrapApp.dependsOn?.(dbPooler);
 
     // ── Inngest credentials Secret ──────────────────────────────────────
     //

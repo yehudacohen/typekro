@@ -37,12 +37,14 @@ import type {
   MagicAssignableShape,
   ResourceGraphDefinition,
   SchemaDefinition,
+  SerializationContext,
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
+import { finalizeCelForKro } from './cel-references.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
@@ -429,12 +431,13 @@ function processCompositionBodyAnalysis(
   if (originalCompositionFnForAnalysis) {
     try {
       const resourceIds = new Set(Object.keys(resourcesWithKeys));
-      const specJson = (schemaDefinition?.spec as { json?: unknown } | undefined)?.json as
-        | { optional?: { key: string }[] }
-        | undefined;
-      const optionalFieldNames = specJson
-        ? new Set((specJson.optional ?? []).map((p) => p.key))
-        : undefined;
+      const specJson = (schemaDefinition?.spec as { json?: unknown } | undefined)?.json;
+      const optionalFieldNames = specJson ? collectOptionalSpecPaths(specJson) : undefined;
+      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(
+        statusMappings,
+        '__nestedStatusCel'
+      );
+      const nestedStatusCel = nestedStatusDescriptor?.value as Record<string, string> | undefined;
       compositionAnalysis = analyzeCompositionBody(
         originalCompositionFnForAnalysis,
         resourceIds,
@@ -546,7 +549,14 @@ function processCompositionBodyAnalysis(
             | Record<string, unknown>
             | undefined;
           if (targetRes && trueRes && falseRes) {
-            applyResourceStatusBranchDiff(targetRes, trueRes, falseRes, conditionCel);
+            applyResourceStatusBranchDiff(
+              targetRes,
+              trueRes,
+              falseRes,
+              conditionCel,
+              nestedStatusCel,
+              resourceIds
+            );
           }
         }
 
@@ -637,7 +647,9 @@ function processCompositionBodyAnalysis(
                   baselineRes,
                   hybridRes,
                   singleFieldSet,
-                  fieldConditions
+                  fieldConditions,
+                  nestedStatusCel,
+                  resourceIds
                 );
               }
             }
@@ -704,17 +716,43 @@ function collectOverridableOptionalFields(
   schemaDefinition: { spec: { json?: unknown } },
   analysis: ASTAnalysisResult
 ): Set<string> {
-  const specJson = schemaDefinition.spec.json as
-    | { optional?: { key: string }[] }
-    | undefined;
+  const specJson = schemaDefinition.spec.json;
   if (!specJson) return new Set();
 
   const differentialFields = collectDifferentialOptionalFields(analysis);
   return new Set(
-    (specJson.optional ?? [])
-      .map((p) => p.key)
+    Array.from(collectOptionalSpecPaths(specJson))
       .filter((field) => differentialFields.has(field))
   );
+}
+
+function collectOptionalSpecPaths(schemaJson: unknown, prefix = ''): Set<string> {
+  const paths = new Set<string>();
+  if (!schemaJson || typeof schemaJson !== 'object') return paths;
+
+  const node = schemaJson as {
+    optional?: Array<{ key?: string; value?: unknown }>;
+    required?: Array<{ key?: string; value?: unknown }>;
+  };
+
+  for (const entry of node.optional ?? []) {
+    if (!entry.key) continue;
+    const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+    paths.add(path);
+    for (const childPath of collectOptionalSpecPaths(entry.value, path)) {
+      paths.add(childPath);
+    }
+  }
+
+  for (const entry of node.required ?? []) {
+    if (!entry.key) continue;
+    const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+    for (const childPath of collectOptionalSpecPaths(entry.value, path)) {
+      paths.add(childPath);
+    }
+  }
+
+  return paths;
 }
 
 function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<string> {
@@ -727,7 +765,7 @@ function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<str
   for (const controlFlow of analysis.resources.values()) {
     for (const condition of controlFlow.includeWhen) {
       const expression = condition.expression;
-      const matches = expression.matchAll(/schema\.spec\.([a-zA-Z0-9_]+)/g);
+      const matches = expression.matchAll(/schema\.spec\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)/g);
       for (const match of matches) {
         const field = match[1];
         if (field) {
@@ -740,39 +778,14 @@ function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<str
   return fields;
 }
 
-function setNestedOverrideValue(
-  target: Record<string, unknown>,
-  path: string,
-  value: unknown
-): void {
-  const segments = path.split('.');
-  let current = target;
-  for (let index = 0; index < segments.length - 1; index++) {
-    const segment = segments[index];
-    if (!segment) continue;
-    const existing = current[segment];
-    if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
-      current[segment] = {};
-    }
-    current = current[segment] as Record<string, unknown>;
-  }
-  const leafSegment = segments[segments.length - 1];
-  if (leafSegment) {
-    current[leafSegment] = value;
-  }
-}
-
 function collectHybridOverrideValues(analysis: ASTAnalysisResult): Map<string, unknown> {
   const overrideValues = new Map<string, unknown>();
 
   for (const [field, expression] of analysis.hybridOverrideConditions.entries()) {
-    const match = expression.match(/^schema\.spec\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_.]+)\s*!=\s*false$/);
-    const nestedPath = match?.[1];
-    if (!nestedPath || overrideValues.has(field)) continue;
-
-    const overrideObject: Record<string, unknown> = {};
-    setNestedOverrideValue(overrideObject, nestedPath, false);
-    overrideValues.set(field, overrideObject);
+    const match = expression.match(/^schema\.spec\.([a-zA-Z0-9_.]+)\s*!=\s*false$/);
+    const path = match?.[1];
+    if (!path || path !== field || overrideValues.has(field)) continue;
+    overrideValues.set(field, false);
   }
 
   return overrideValues;
@@ -843,20 +856,11 @@ function captureHybridRunResources(
       (schemaDefinition.spec as { json?: unknown } | undefined)?.json,
       (schemaDefinition.status as { json?: unknown } | undefined)?.json
     );
-    const hybridSpec = new Proxy(realSchema.spec as object, {
-      get(target, prop: string | symbol, receiver) {
-        if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return overrideValues.get(prop);
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-      has(target, prop: string | symbol) {
-        if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return overrideValues.has(prop);
-        }
-        return Reflect.has(target, prop);
-      },
-    });
+    const hybridSpec = createHybridSpecProxy(
+      realSchema.spec as Record<string, unknown>,
+      overriddenFields,
+      overrideValues
+    );
 
     const tempCtx = createCompositionContext('hybrid-capture');
     runWithCompositionContext(tempCtx, () => {
@@ -873,6 +877,46 @@ function captureHybridRunResources(
     // and the proxy-run resources are used as-is.
     return { captured: {}, overriddenFields: new Set(), overrideConditions: new Map() };
   }
+}
+
+function createHybridSpecProxy(
+  target: Record<string, unknown>,
+  overriddenFields: Set<string>,
+  overrideValues: Map<string, unknown>,
+  pathPrefix = ''
+): Record<string, unknown> {
+  return new Proxy(target, {
+    get(proxyTarget, prop: string | symbol, receiver) {
+      if (typeof prop !== 'string') {
+        return Reflect.get(proxyTarget, prop, receiver);
+      }
+
+      const path = pathPrefix ? `${pathPrefix}.${prop}` : prop;
+      if (overriddenFields.has(path)) {
+        return overrideValues.has(path) ? overrideValues.get(path) : undefined;
+      }
+
+      const hasNestedOverride = Array.from(overriddenFields).some((field) => field.startsWith(`${path}.`));
+      const value = Reflect.get(proxyTarget, prop, receiver);
+      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
+        return createHybridSpecProxy(value as Record<string, unknown>, overriddenFields, overrideValues, path);
+      }
+
+      return value;
+    },
+    has(proxyTarget, prop: string | symbol) {
+      if (typeof prop !== 'string') {
+        return Reflect.has(proxyTarget, prop);
+      }
+
+      const path = pathPrefix ? `${pathPrefix}.${prop}` : prop;
+      if (overriddenFields.has(path)) {
+        return overrideValues.has(path);
+      }
+
+      return Reflect.has(proxyTarget, prop);
+    },
+  }) as Record<string, unknown>;
 }
 
 function cloneResourceTree<T>(value: T): T {
@@ -938,9 +982,19 @@ function applyDifferentialFieldConditionals(
   baselineRes: Record<string, unknown>,
   hybridRes: Record<string, unknown>,
   overriddenFields: Set<string>,
-  overrideConditions: Map<string, string>
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): void {
-  walkAndConditionalize(currentRes, baselineRes, hybridRes, overriddenFields, overrideConditions);
+  walkAndConditionalize(
+    currentRes,
+    baselineRes,
+    hybridRes,
+    overriddenFields,
+    overrideConditions,
+    nestedStatusCel,
+    resourceIds
+  );
 }
 
 function walkAndConditionalize(
@@ -948,12 +1002,21 @@ function walkAndConditionalize(
   baseline: unknown,
   hybrid: unknown,
   overriddenFields: Set<string>,
-  overrideConditions: Map<string, string>
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): unknown {
   if (Array.isArray(current) && Array.isArray(baseline) && Array.isArray(hybrid)) {
     if (baseline.length !== hybrid.length) {
       return structuralEquals(current, baseline)
-        ? buildCelConditional(baseline, hybrid, overriddenFields, overrideConditions)
+        ? buildCelConditional(
+            baseline,
+            hybrid,
+            overriddenFields,
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
+          )
         : current;
     }
 
@@ -973,10 +1036,25 @@ function walkAndConditionalize(
       }
       if (isLeafValue(b) && isLeafValue(h)) {
         if (!leafEquals(b, h) && leafEquals(c, b)) {
-          current[i] = buildCelConditional(b, h, overriddenFields, overrideConditions);
+          current[i] = buildCelConditional(
+            b,
+            h,
+            overriddenFields,
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
+          );
         }
       } else {
-        const conditionalized = walkAndConditionalize(c, b, h, overriddenFields, overrideConditions);
+        const conditionalized = walkAndConditionalize(
+          c,
+          b,
+          h,
+          overriddenFields,
+          overrideConditions,
+          nestedStatusCel,
+          resourceIds
+        );
         if (conditionalized !== c) {
           current[i] = conditionalized;
         }
@@ -1004,11 +1082,21 @@ function walkAndConditionalize(
             b,
             h,
             overriddenFields,
-            overrideConditions
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
           );
         }
       } else {
-        const conditionalized = walkAndConditionalize(c, b, h, overriddenFields, overrideConditions);
+        const conditionalized = walkAndConditionalize(
+          c,
+          b,
+          h,
+          overriddenFields,
+          overrideConditions,
+          nestedStatusCel,
+          resourceIds
+        );
         if (conditionalized !== c) {
           (current as Record<string, unknown>)[key] = conditionalized;
         }
@@ -1027,6 +1115,7 @@ function isLeafValue(v: unknown): boolean {
     typeof v === 'string' ||
     typeof v === 'number' ||
     typeof v === 'boolean' ||
+    isCelExpressionLike(v) ||
     // KubernetesRef proxies register as functions (typeof fn is 'function')
     typeof v === 'function'
   );
@@ -1083,17 +1172,41 @@ function createResourceStatusBranchMap(
   const statusMap = new Map<string, Record<string, unknown>>();
   for (const statusRef of statusRefs) {
     const resourceId = analysis.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
-    const topLevelStatusField = statusRef.statusField.split('.')[0] ?? statusRef.statusField;
     const existing = statusMap.get(resourceId) ?? {};
-    existing[topLevelStatusField] = getBranchStatusValue(
+    setNestedBranchStatusValue(existing, statusRef.statusField, getBranchStatusValue(
       conditionExpression,
       `${statusRef.variableName}.status.${statusRef.statusField}`,
       desiredConditionValue
-    );
+    ));
     statusMap.set(resourceId, existing);
   }
 
   return statusMap;
+}
+
+function setNestedBranchStatusValue(
+  target: Record<string, unknown>,
+  statusField: string,
+  value: unknown
+): void {
+  const parts = statusField.split('.').filter(Boolean);
+  if (parts.length === 0) return;
+
+  let cursor = target;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (!part) continue;
+    const next = cursor[part];
+    if (!isPlainObject(next)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+
+  const leaf = parts[parts.length - 1];
+  if (leaf) {
+    cursor[leaf] = value;
+  }
 }
 
 function collectStatusRefs(conditionExpression: string): Array<{ variableName: string; statusField: string }> {
@@ -1205,7 +1318,9 @@ function applyResourceStatusBranchDiff(
   targetRes: Record<string, unknown>,
   trueRes: Record<string, unknown>,
   falseRes: Record<string, unknown>,
-  conditionCel: string
+  conditionCel: string,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): void {
   for (const key of new Set([...Object.keys(trueRes), ...Object.keys(falseRes)])) {
     if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
@@ -1214,13 +1329,13 @@ function applyResourceStatusBranchDiff(
     const fv = falseRes[key];
 
     if (tv === undefined && fv !== undefined) {
-      const falseRepr = celValueRepr(fv);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
       targetRes[key] = `\${${conditionCel} ? omit() : ${falseRepr}}`;
       continue;
     }
 
     if (fv === undefined && tv !== undefined) {
-      const trueRepr = celValueRepr(tv);
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
       targetRes[key] = `\${${conditionCel} ? ${trueRepr} : omit()}`;
       continue;
     }
@@ -1229,8 +1344,8 @@ function applyResourceStatusBranchDiff(
 
     if (isCelExpressionLike(tv) || isCelExpressionLike(fv)) {
       if (!leafEquals(tv, fv)) {
-        const trueRepr = celValueRepr(tv);
-        const falseRepr = celValueRepr(fv);
+        const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+        const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
         targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
       }
       continue;
@@ -1243,7 +1358,9 @@ function applyResourceStatusBranchDiff(
         targetRes[key] as Record<string, unknown>,
         tv,
         fv,
-        conditionCel
+        conditionCel,
+        nestedStatusCel,
+        resourceIds
       );
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length === fv.length) {
       if (!Array.isArray(targetValue)) targetRes[key] = [...tv];
@@ -1255,21 +1372,23 @@ function applyResourceStatusBranchDiff(
             targetArray[i] as Record<string, unknown>,
             tv[i] as Record<string, unknown>,
             fv[i] as Record<string, unknown>,
-            conditionCel
+            conditionCel,
+            nestedStatusCel,
+            resourceIds
           );
         } else if (!leafEquals(tv[i], fv[i])) {
-          const trueRepr = celValueRepr(tv[i]);
-          const falseRepr = celValueRepr(fv[i]);
+          const trueRepr = celValueRepr(tv[i], nestedStatusCel, resourceIds);
+          const falseRepr = celValueRepr(fv[i], nestedStatusCel, resourceIds);
           targetArray[i] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
         }
       }
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length !== fv.length) {
-      const trueRepr = celValueRepr(tv);
-      const falseRepr = celValueRepr(fv);
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
       targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
     } else if (!leafEquals(tv, fv)) {
-      const trueRepr = celValueRepr(tv);
-      const falseRepr = celValueRepr(fv);
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
       targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
     }
   }
@@ -1351,11 +1470,13 @@ function buildCelConditional(
   proxyValue: unknown,
   hybridValue: unknown,
   overriddenFields: Set<string>,
-  overrideConditions: Map<string, string>
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): string {
   const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
-  const proxyRepr = celValueRepr(proxyValue);
-  const hybridRepr = celValueRepr(hybridValue);
+  const proxyRepr = celValueRepr(proxyValue, nestedStatusCel, resourceIds);
+  const hybridRepr = celValueRepr(hybridValue, nestedStatusCel, resourceIds);
 
   const explicitCondition = overrideConditions.get(field);
   if (explicitCondition) {
@@ -1449,12 +1570,22 @@ function pickConditionField(
 // inline copy; the canonical implementation lives in utils/cel-escape.ts.
 import { escapeCelString as escapeCelLiteral } from '../../utils/cel-escape.js';
 
-function celValueRepr(value: unknown): string {
+function celValueRepr(
+  value: unknown,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): string {
   if (value === null || value === undefined) return '""';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   // CelExpression object — use the expression string directly.
   if (isCelExpressionLike(value)) {
-    return (value as { expression: string }).expression;
+    return unwrapKroExpression(
+      finalizeCelForKro(
+        (value as { expression: string }).expression,
+        nestedStatusCel,
+        createBranchCelContext(nestedStatusCel, resourceIds)
+      )
+    );
   }
   if (typeof value === 'function') {
     // KubernetesRef proxy — toString yields the marker token which we
@@ -1469,14 +1600,34 @@ function celValueRepr(value: unknown): string {
     return `"${escapeCelLiteral(value)}"`;
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => celValueRepr(item)).join(', ')}]`;
+    return `[${value.map((item) => celValueRepr(item, nestedStatusCel, resourceIds)).join(', ')}]`;
   }
   if (isPlainObject(value)) {
     return `{${Object.entries(value)
-      .map(([key, entryValue]) => `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue)}`)
+      .map(([key, entryValue]) => `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds)}`)
       .join(', ')}}`;
   }
   return '""';
+}
+
+function createBranchCelContext(
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds: ReadonlySet<string> | undefined
+): SerializationContext | undefined {
+  if (!nestedStatusCel && !resourceIds) return undefined;
+  return {
+    celPrefix: '',
+    resourceIdStrategy: 'deterministic',
+    ...(nestedStatusCel ? { nestedStatusCel } : {}),
+    ...(resourceIds ? { resourceIds } : {}),
+  };
+}
+
+function unwrapKroExpression(value: string): string {
+  if (value.startsWith('${') && value.endsWith('}') && value.indexOf('${', 2) === -1) {
+    return value.slice(2, -1);
+  }
+  return value;
 }
 
 /**

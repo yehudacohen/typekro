@@ -568,7 +568,7 @@ export interface AlchemyStrategyInternals {
   readonly schemaDefinition: unknown;
   readonly statusBuilder: unknown;
   readonly resourceKeys: unknown;
-  executeDeployment(spec: unknown, instanceName: string): Promise<unknown>;
+  executeDeployment(spec: unknown, instanceName: string, opts?: unknown): Promise<unknown>;
   getStrategyMode(): 'direct' | 'kro';
   createResourceGraphForInstance(spec: unknown, instanceName?: string): unknown;
   extractKubeConfigOptions(): Record<string, unknown>;

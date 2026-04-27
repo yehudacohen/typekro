@@ -1,7 +1,7 @@
 /**
- * APISix Ingress Controller Types
+ * APISIX Gateway Types
  *
- * Type definitions for APISix ingress controller bootstrap configuration
+ * Type definitions for APISIX gateway bootstrap configuration
  * following the same patterns as cert-manager types.
  */
 
@@ -102,8 +102,14 @@ export interface APISixBootstrapConfig {
     };
   };
 
-  // Ingress Controller configuration
+  // Ingress controller configuration compatibility. The bootstrap currently disables
+  // the APISIX chart subchart and configures standard Ingress through the gateway.
   ingressController?: {
+    /**
+     * Accepted for compatibility, but the APISIX chart subchart is currently
+     * disabled by the bootstrap composition to avoid a ServiceAccount conflict.
+     * Deploy an APISIX ingress controller separately if you need Kubernetes Ingress support.
+     */
     enabled?: boolean;
     image?: {
       repository?: string;
@@ -264,7 +270,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
     },
   },
 
-  // Ingress Controller configuration
+  // Ingress controller config compatibility. The bootstrap disables the subchart.
   'ingressController?': {
     'enabled?': 'boolean',
     'image?': imageSchemaShape,
@@ -360,7 +366,7 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
 
   // Component status
   gatewayReady: 'boolean',
-  ingressControllerReady: 'boolean',
+  standardIngressReady: 'boolean',
   dashboardReady: 'boolean',
   etcdReady: 'boolean',
 
@@ -394,7 +400,11 @@ export interface APISixBootstrapStatus {
 
   // Component status
   gatewayReady: boolean;
-  ingressControllerReady: boolean;
+  /**
+   * Whether this bootstrap configured standard Kubernetes Ingress reconciliation.
+   * This is false because the APISIX ingress-controller subchart is intentionally disabled.
+   */
+  standardIngressReady: boolean;
   dashboardReady: boolean;
   etcdReady: boolean;
 
@@ -478,7 +488,7 @@ export interface APISixHelmValues {
     };
   };
 
-  // Ingress Controller configuration
+  // Ingress controller config compatibility. The bootstrap disables the subchart.
   ingressController?: {
     enabled?: boolean;
     image?: {
@@ -529,8 +539,8 @@ export interface APISixHelmValues {
     extraArgs?: string[];
     env?: EnvVar[];
     config?: Record<string, unknown>;
-    // Admin service configuration (for ingress controller chart)
-    // This configures the init container to wait for the correct APISIX admin service
+    // Admin service configuration for consumers that still render the upstream
+    // ingress-controller chart separately from this bootstrap.
     adminService?: {
       namespace?: string;
       name?: string;

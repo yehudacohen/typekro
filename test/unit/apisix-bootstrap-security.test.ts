@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
 import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
+import { mapAPISixConfigToHelmValues, validateAPISixHelmValues } from '../../src/factories/apisix/utils/helm-values-mapper.js';
 
 describe('APISIX bootstrap credential serialization', () => {
   it('exposes gateway.ingress in the KRO config schema', () => {
@@ -83,7 +84,7 @@ describe('APISIX bootstrap credential serialization', () => {
       ready: true,
       phase: 'Ready',
       gatewayReady: true,
-      ingressControllerReady: true,
+      standardIngressReady: false,
       dashboardReady: false,
       etcdReady: true,
       gatewayService: {
@@ -98,6 +99,36 @@ describe('APISIX bootstrap credential serialization', () => {
     if ('gatewayService' in result) {
       expect(result.gatewayService?.ports?.[0]?.targetPort).toBe(9080);
     }
+  });
+
+  it('warns accurately when APISIX ingress controller reconciliation is disabled', () => {
+    const warnings = validateAPISixHelmValues({
+      ingressController: { enabled: false },
+      gateway: { http: { enabled: true } },
+    });
+
+    expect(warnings).toContain(
+      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.',
+    );
+    expect(warnings).not.toContain(
+      'Ingress controller is disabled. This will prevent ingress resources from being processed.'
+    );
+  });
+
+  it('omits gateway admin credentials from the generic gateway values path', () => {
+    const helmValues = mapAPISixConfigToHelmValues({
+      name: 'apisix',
+      gateway: {
+        adminCredentials: {
+          admin: 'admin-key',
+          viewer: 'viewer-key',
+        },
+        type: 'ClusterIP',
+      },
+    });
+
+    expect(helmValues.gateway).toEqual({ type: 'ClusterIP' });
+    expect(helmValues.gateway).not.toHaveProperty('adminCredentials');
   });
 
   it('uses env credentials, not chart defaults, in KRO YAML when spec credentials are omitted', () => {
@@ -129,6 +160,31 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
+  it('does not create IngressClass or advertise Ingress readiness when controller subchart is disabled', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    process.env.APISIX_ADMIN_KEY = 'env-admin-key';
+    process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
+
+    try {
+      const yaml = apisixBootstrap.toYaml();
+
+      expect(yaml).not.toContain('kind: IngressClass');
+      expect(yaml).not.toContain('apisixIngressClass');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
   it('fails KRO YAML generation when credentials are omitted and env vars are unset', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;
@@ -137,6 +193,30 @@ describe('APISIX bootstrap credential serialization', () => {
 
     try {
       expect(() => apisixBootstrap.toYaml()).toThrow('APISIX admin credentials not configured');
+    } finally {
+      if (originalAdmin === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdmin;
+      }
+      if (originalViewer === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewer;
+      }
+    }
+  });
+
+  it('fails factory("kro").toYaml() when credentials are omitted and env vars are unset', () => {
+    const originalAdmin = process.env.APISIX_ADMIN_KEY;
+    const originalViewer = process.env.APISIX_VIEWER_KEY;
+    delete process.env.APISIX_ADMIN_KEY;
+    delete process.env.APISIX_VIEWER_KEY;
+
+    try {
+      expect(() => apisixBootstrap.factory('kro').toYaml()).toThrow(
+        'APISIX admin credentials not configured'
+      );
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;

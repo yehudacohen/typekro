@@ -14,6 +14,7 @@ import {
 import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getMetadataField } from '../metadata/index.js';
 import { getEffectiveScopes } from './resource-tagging.js';
 import type {
   DeployedResource,
@@ -22,11 +23,7 @@ import type {
   DeploymentOptions,
   RollbackResult,
 } from '../types/deployment.js';
-import type {
-  Enhanced,
-  KubernetesResource,
-  KubernetesResourceHeader,
-} from '../types/kubernetes.js';
+import type { Enhanced, KubernetesResource, KubernetesResourceHeader } from '../types/kubernetes.js';
 import { isNotFoundError } from './k8s-helpers.js';
 
 /**
@@ -242,28 +239,23 @@ export class ResourceRollbackManager {
             }
           );
         }
-        if (!namespace) {
-          throw new TypeKroError(
-            `Resource namespace is required for deletion check: ${this.getResourceIdentifier(resource)}`,
-            'MISSING_RESOURCE_NAMESPACE',
-            {
-              resourceIdentifier: this.getResourceIdentifier(resource),
-              operation: 'deletion-check',
-            }
-          );
-        }
-
-        const readObject: KubernetesResourceHeader<KubernetesResource> = {
+        const readObject: {
+          apiVersion: string;
+          kind: string;
+          metadata: { name: string; namespace?: string };
+        } = {
           apiVersion: resource.apiVersion,
           kind: resource.kind,
-          metadata: { name, namespace },
+          metadata: { name },
         };
 
         if (namespace) {
           readObject.metadata.namespace = namespace;
         }
 
-        await this.k8sApi.read(readObject);
+        await this.k8sApi.read(
+          readObject as unknown as KubernetesResourceHeader<KubernetesResource>
+        );
 
         // Resource still exists, wait and try again
         await new Promise((resolve) => setTimeout(resolve, pollInterval));
@@ -409,15 +401,26 @@ export class ResourceRollbackManager {
       name: resource.name,
     });
 
+    const isClusterScoped = getMetadataField(resource.manifest, 'scope') === 'cluster';
+    const metadata = {
+      name: resource.name,
+      ...(isClusterScoped ? {} : { namespace: resource.namespace }),
+    };
+
     try {
-      await this.k8sApi.delete({
-        apiVersion: resource.manifest.apiVersion || '',
-        kind: resource.kind,
-        metadata: {
-          name: resource.name,
-          namespace: resource.namespace,
-        },
-      } as k8s.KubernetesObject);
+      try {
+        await this.k8sApi.delete({
+          apiVersion: resource.manifest.apiVersion || '',
+          kind: resource.kind,
+          metadata,
+        } as k8s.KubernetesObject);
+      } catch (error: unknown) {
+        if (isNotFoundError(error)) {
+          deleteLogger.debug('Resource already deleted');
+          return;
+        }
+        throw error;
+      }
 
       // Wait for resource to be deleted
       const timeout = DEFAULT_DELETE_TIMEOUT;
@@ -428,10 +431,7 @@ export class ResourceRollbackManager {
           await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
             kind: resource.kind,
-            metadata: {
-              name: resource.name,
-              namespace: resource.namespace,
-            },
+            metadata,
           });
 
           // Resource still exists, wait and try again

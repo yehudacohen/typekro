@@ -48,7 +48,16 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
 
   // Use real DirectDeploymentStrategy as base to get more realistic behavior
   const createRealBaseStrategy = () => {
-    const mockEngine = {} as unknown as DirectDeploymentEngine; // Mock DirectDeploymentEngine
+    const mockEngine = {
+      deploy: mock(async (resourceGraph: DeploymentResourceGraph) => ({
+        status: 'success' as const,
+        deploymentId: 'direct-test-deployment',
+        resources: [],
+        errors: [],
+        duration: 0,
+        dependencyGraph: resourceGraph.dependencyGraph,
+      })),
+    } as unknown as DirectDeploymentEngine;
     const mockResolver = {
       createResourceGraphForInstance: mock(
         (): DeploymentResourceGraph => ({
@@ -307,7 +316,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       // This is expected behavior when there are no resources to deploy
       expect(mockAlchemyScope.run).not.toHaveBeenCalled();
       expect(result.resources).toHaveLength(0);
-      expect(result.status).toBe('partial');
+      expect(result.status).toBe('success');
     });
 
     it('should handle dynamic import failures gracefully', async () => {

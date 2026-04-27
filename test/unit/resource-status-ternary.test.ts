@@ -871,6 +871,153 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     expect(workerSection).not.toContain('cache.status.ready && schema.spec.enabled');
   });
 
+  it('conditionToCel chains has() guards for nested optional spec truthiness', async () => {
+    const { Parser } = await import('acorn');
+    const { conditionToCel } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-helpers.js'
+    );
+
+    const source = 'spec.database.storageClass';
+    const ast = Parser.parse(source, { ecmaVersion: 'latest', ranges: true }) as unknown as {
+      body: Array<{ expression: unknown }>;
+    };
+
+    expect(
+      conditionToCel(
+        ast.body[0]?.expression as Parameters<typeof conditionToCel>[0],
+        source,
+        'spec',
+        new Set(['database'])
+      )
+    ).toBe('${has(schema.spec.database) && has(schema.spec.database.storageClass)}');
+  });
+
+  it('conditionToCel guards optional children under required parents', async () => {
+    const { Parser } = await import('acorn');
+    const { conditionToCel } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-helpers.js'
+    );
+
+    const source = 'spec.database.storageClass';
+    const ast = Parser.parse(source, { ecmaVersion: 'latest', ranges: true }) as unknown as {
+      body: Array<{ expression: unknown }>;
+    };
+
+    expect(
+      conditionToCel(
+        ast.body[0]?.expression as Parameters<typeof conditionToCel>[0],
+        source,
+        'spec',
+        new Set(['database.storageClass'])
+      )
+    ).toBe('${has(schema.spec.database.storageClass)}');
+  });
+
+  it('guards nested optional child fields discovered from schema analysis', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({
+      name: 'string',
+      database: {
+        storageSize: 'string',
+        'storageClass?': 'string',
+      },
+    });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'nested-optional-child', kind: 'NestedOptionalChild', spec: Spec, status: Status },
+      (spec) => {
+        if (spec.database.storageClass) {
+          simple.ConfigMap({
+            name: spec.name,
+            id: 'storageCfg',
+            data: { STORAGE_CLASS: spec.database.storageClass },
+          });
+        }
+        return { ready: true };
+      }
+    );
+
+    const cfgSection = findResourceSection(comp.toYaml().split('\n'), 'storageCfg');
+    expect(cfgSection).toContain('includeWhen');
+    expect(cfgSection).toContain('has(schema.spec.database.storageClass)');
+  });
+
+  it('resource-status ternaries guard optional children under required parents', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({
+      name: 'string',
+      database: {
+        'storageClass?': 'string',
+      },
+    });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'status-optional-child', kind: 'StatusOptionalChild', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        simple.Deployment({
+          name: spec.name,
+          image: 'nginx',
+          id: 'worker',
+          env: {
+            MODE: cache.status.ready && spec.database.storageClass ? 'on' : 'off',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const workerSection = findResourceSection(comp.toYaml().split('\n'), 'worker');
+    expect(workerSection).toContain('cache.status.ready && has(schema.spec.database.storageClass)');
+    expect(workerSection).not.toContain('cache.status.ready && schema.spec.database.storageClass');
+  });
+
+  it('resource-status ternaries handle optional-chain condition AST nodes', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({
+      name: 'string',
+      'database?': {
+        'storageClass?': 'string',
+      },
+    });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'status-optional-chain', kind: 'StatusOptionalChain', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        simple.Deployment({
+          name: spec.name,
+          image: 'nginx',
+          id: 'worker',
+          env: {
+            MODE: cache.status.ready && spec.database?.storageClass ? 'on' : 'off',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const workerSection = findResourceSection(comp.toYaml().split('\n'), 'worker');
+    expect(workerSection).toContain('has(schema.spec.database');
+    expect(workerSection).toContain('has(schema.spec.database.storageClass)');
+    expect(workerSection).not.toContain('&&  ?');
+  });
+
   it('nested resource-status ternaries force string comparison branches', async () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
@@ -949,6 +1096,45 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     expect(innerSection).toContain('on');
   });
 
+  it('nested resource-status ternaries preserve nested status object branches', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string', val: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-nested-status', kind: 'InnerNestedStatus', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep', env: { VAL: spec.val } });
+        return { ready: true };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-nested-status', kind: 'OuterNestedStatus', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+        innerComp({
+          name: spec.name,
+          val: (db.status as any).conditions.ready ? 'postgres' : 'sqlite',
+        });
+        return { ready: true };
+      }
+    );
+
+    const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerNestedStatus1');
+    expect(innerSection).toContain('database.status.conditions.ready');
+    expect(innerSection).toContain('?');
+    expect(innerSection).toContain('postgres');
+    expect(innerSection).toContain('sqlite');
+  });
+
   it('resource-status branch diffs preserve plain Cel.expr branch values', async () => {
     const { kubernetesComposition, Cel } = await import('../../src/index.js');
     const { simple } = await import('../../src/factories/simple/index.js');
@@ -974,6 +1160,179 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     const cfgSection = findResourceSection(comp.toYaml().split('\n'), 'cfg');
     expect(cfgSection).toContain('cache.status.ready ? cache.status.phase : \\"fallback\\"');
     expect(cfgSection).not.toContain('"expression"');
+  });
+
+  it('template overrides resolve nested composition status handles before YAML emission', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-status-handle', kind: 'InnerStatusHandle', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        const dep = simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep' });
+        return { ready: dep.status.readyReplicas >= 1 };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-status-handle', kind: 'OuterStatusHandle', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const nestedHandle = innerComp({ name: `${spec.name}-inner` });
+        simple.ConfigMap({
+          name: `${spec.name}-cfg`,
+          id: 'cfg',
+          data: {
+            MODE: nestedHandle.status.ready ? 'on' : 'off',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const cfgSection = findResourceSection(outerComp.toYaml().split('\n'), 'cfg');
+    expect(cfgSection).not.toContain('nestedHandle.status.ready');
+    expect(cfgSection).toContain('innerStatusHandle1.status.readyReplicas');
+    expect(cfgSection).toContain('? \\"on\\" : \\"off\\"');
+  });
+
+  it('resource-status branch diffs finalize nested status handles inside Cel.expr branches', async () => {
+    const { kubernetesComposition, Cel } = await import('../../src/index.js');
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const InnerSpec = type({ name: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-cel-branch', kind: 'InnerCelBranch', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        const dep = simple.Deployment({ name: spec.name, image: 'nginx', id: 'innerDep' });
+        return { ready: dep.status.readyReplicas >= 1 };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-cel-branch', kind: 'OuterCelBranch', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        innerComp({ name: `${spec.name}-inner` });
+        simple.ConfigMap({
+          name: `${spec.name}-cfg`,
+          id: 'cfg',
+          data: {
+            MODE: cache.status.ready
+              ? Cel.expr<string>('innerCelBranch1.status.ready ? "nested" : "pending"')
+              : 'fallback',
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const cfgSection = findResourceSection(outerComp.toYaml().split('\n'), 'cfg');
+    expect(cfgSection).not.toContain('innerCelBranch1.status.ready ?');
+    expect(cfgSection).toContain('innerCelBranch1.status.readyReplicas');
+    expect(cfgSection).toContain('cache.status.ready ?');
+  });
+});
+
+describe('Factory argument ternary analysis', () => {
+  it('walks object elements inside array factory arguments', async () => {
+    const { Parser } = await import('acorn');
+    const { analyzeFactoryArgTernaries } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-ternary.js'
+    );
+    const source = `Deployment({
+      name: "app",
+      ports: [{ name: "http", targetPort: spec.useCache ? 6379 : 8080 }],
+      id: "app"
+    })`;
+    const ast = Parser.parse(source, { ecmaVersion: 'latest', ranges: true }) as unknown as {
+      body: Array<{ expression: unknown }>;
+    };
+    const call = ast.body[0]?.expression;
+    const result = {
+      resources: new Map(),
+      hybridOverrideConditions: new Map(),
+      differentialConditionFields: new Set<string>(),
+      unregisteredFactories: [],
+      templateOverrides: new Map(),
+      _collectionVariables: new Map(),
+      statusOverrides: [],
+      resourceStatusTernaries: [],
+      variableToResourceId: new Map(),
+      errors: [],
+    };
+
+    analyzeFactoryArgTernaries(
+      call as Parameters<typeof analyzeFactoryArgTernaries>[0],
+      'app',
+      source,
+      'spec',
+      result,
+      new Set(['useCache'])
+    );
+
+    expect(result.templateOverrides.get('app')).toEqual([
+      {
+        propertyPath: 'spec.ports.0.targetPort',
+        celExpression: '${has(schema.spec.useCache) ? 6379 : 8080}',
+      },
+    ]);
+  });
+
+  it('walks direct ternary elements inside array factory arguments', async () => {
+    const { Parser } = await import('acorn');
+    const { analyzeFactoryArgTernaries } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-ternary.js'
+    );
+    const source = `Deployment({
+      name: "app",
+      args: [spec.enabled ? "--enabled" : "--disabled"],
+      id: "app"
+    })`;
+    const ast = Parser.parse(source, { ecmaVersion: 'latest', ranges: true }) as unknown as {
+      body: Array<{ expression: unknown }>;
+    };
+    const call = ast.body[0]?.expression;
+    const result = {
+      resources: new Map(),
+      hybridOverrideConditions: new Map(),
+      differentialConditionFields: new Set<string>(),
+      unregisteredFactories: [],
+      templateOverrides: new Map(),
+      _collectionVariables: new Map(),
+      statusOverrides: [],
+      resourceStatusTernaries: [],
+      variableToResourceId: new Map(),
+      errors: [],
+    };
+
+    analyzeFactoryArgTernaries(
+      call as Parameters<typeof analyzeFactoryArgTernaries>[0],
+      'app',
+      source,
+      'spec',
+      result,
+      new Set(['enabled'])
+    );
+
+    expect(result.templateOverrides.get('app')).toEqual([
+      {
+        propertyPath: 'spec.args.0',
+        celExpression: '${has(schema.spec.enabled) ? "--enabled" : "--disabled"}',
+      },
+    ]);
   });
 });
 
@@ -1262,6 +1621,73 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     expect(yaml).toContain('CACHE_MODE');
     expect(yaml).toMatch(/cache\.status\.readyReplicas.*\?/s);
     expect(yaml).toContain('memory');
+  });
+
+  it('preserves nested object paths that only exist in the false branch', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'false-branch-nested-key', kind: 'FalseBranchNestedKey', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+
+        simple.Deployment({
+          name: 'app',
+          image: spec.image,
+          id: 'app',
+          resources: cache.status.ready
+            ? {}
+            : {
+                limits: {
+                  cpu: '500m',
+                },
+              },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const appSection = findResourceSection(comp.toYaml().split('\n'), 'app');
+    expect(appSection).toContain('limits');
+    expect(appSection).toContain('cpu');
+    expect(appSection).toContain('cache.status.ready');
+    expect(appSection).toContain('500m');
+  });
+
+  it('preserves non-literal object branch leaves in resource-status ternaries', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'object-branch-ref', kind: 'ObjectBranchRef', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+        simple.ConfigMap({
+          name: 'app-config',
+          id: 'appConfig',
+          data: cache.status.ready
+            ? { IMAGE: spec.image }
+            : { IMAGE: 'fallback' },
+        });
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    expect(yaml).toContain('cache.status.ready ? schema.spec.image : \\"fallback\\"');
+    expect(yaml).not.toContain('cache.status.ready ? omit() : "fallback"');
   });
 
   it('preserves comparison conditions in direct resource-status ternaries', async () => {

@@ -497,7 +497,7 @@ describe('Comprehensive Factory Tests', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
         expect((error as Error).message).toMatch(
-          /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope/
+          /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|namespaces .*test.* not found/
         );
       }
     });

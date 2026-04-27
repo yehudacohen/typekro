@@ -228,6 +228,16 @@ export async function deleteKroInstanceFinalizerSafe(
     }
   }
 
+  if (deletionTimedOut) {
+    throw new CRDInstanceError(
+      `KRO instance ${name} deletion did not complete within ${timeout}ms`,
+      apiVersion,
+      options.kind,
+      name,
+      'deletion'
+    );
+  }
+
   let hasRemainingInstances = false;
   try {
     const instances = await listKroInstances(kubeConfig, options);
@@ -244,13 +254,4 @@ export async function deleteKroInstanceFinalizerSafe(
     await deleteKroDefinition(kubeConfig, options);
   }
 
-  if (deletionTimedOut) {
-    throw new CRDInstanceError(
-      `KRO instance ${name} deletion did not complete within ${timeout}ms`,
-      apiVersion,
-      options.kind,
-      name,
-      'deletion'
-    );
-  }
 }

@@ -118,6 +118,27 @@ describe('webAppWithProcessing envFrom', () => {
     });
   });
 
+  it('does not leak database status markers into Inngest Helm values', () => {
+    const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
+    const graph = factory.createResourceGraphForInstance({
+      name: 'test-app',
+      app: { image: 'nginx:alpine' },
+      database: { storageSize: '1Gi' },
+      processing: { eventKey: 'test', signingKey: 'test' },
+    });
+
+    const inngestRelease = graph.resources.find((r) => {
+      const name = String(r.manifest?.metadata?.name ?? '');
+      return name === 'test-app-inngest' && r.manifest?.kind === 'HelmRelease';
+    });
+    expect(inngestRelease).toBeDefined();
+
+    const valuesJson = JSON.stringify((inngestRelease!.manifest as any)?.spec?.values);
+    expect(valuesJson).not.toContain('__KUBERNETES_REF_database_status.writeService__');
+    expect(valuesJson).not.toContain('database.status.writeService');
+    expect(valuesJson).toContain('test-app-db-pooler');
+  });
+
   it('scopes the Inngest HelmRepository name by app namespace', () => {
     const factory = webAppWithProcessing.factory('direct', { namespace: 'test' });
     const graph = factory.createResourceGraphForInstance({

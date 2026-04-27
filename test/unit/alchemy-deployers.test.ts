@@ -661,6 +661,22 @@ describe('KroTypeKroDeployer', () => {
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
+  it('refuses Alchemy generic KRO custom resource deletion without finalizer-safe metadata', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const kroInstance = {
+      apiVersion: 'example.com/v1alpha1',
+      kind: 'TestApp',
+      metadata: { name: 'stuck-app', namespace: 'test-ns' },
+      spec: {},
+    } as any;
+
+    await expect(
+      deployer.delete(kroInstance, { mode: 'alchemy', namespace: 'test-ns', timeout: 0 } as any)
+    ).rejects.toThrow('KRO resource deletion requires finalizer-safe metadata for TestApp/stuck-app');
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
   it('does not destroy Alchemy state when resource deletion fails', async () => {
     const testDeployment = deployment({
       metadata: { name: 'delete-failure-test', namespace: 'default' },

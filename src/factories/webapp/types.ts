@@ -79,7 +79,7 @@ export const WebAppWithProcessingConfigSchema = type({
     storageSize: 'string',
     /** Storage class name (e.g. 'gp3', 'local-path'). */
     'storageClass?': 'string',
-    /** Database name to create (default: derived from app name). */
+    /** Database name to create (default: 'app'). */
     'database?': 'string',
     /** Database owner (default: 'app'). */
     'owner?': 'string',

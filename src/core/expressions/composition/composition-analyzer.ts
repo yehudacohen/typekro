@@ -72,13 +72,10 @@ function extractSpecMemberPath(node: ASTNode, specParamName: string): string | u
   return parentPath ? `${parentPath}.${propertyName}` : propertyName;
 }
 
-function collectTopLevelSpecFields(node: ASTNode, specParamName: string, fields: Set<string>): void {
+function collectSpecMemberPaths(node: ASTNode, specParamName: string, fields: Set<string>): void {
   const path = extractSpecMemberPath(node, specParamName);
   if (path) {
-    const [field] = path.split('.');
-    if (field) {
-      fields.add(field);
-    }
+    fields.add(path);
   }
 
   for (const value of Object.values(node)) {
@@ -86,14 +83,14 @@ function collectTopLevelSpecFields(node: ASTNode, specParamName: string, fields:
     if (Array.isArray(value)) {
       for (const entry of value) {
         if (entry && typeof entry === 'object' && 'type' in entry) {
-          collectTopLevelSpecFields(entry as ASTNode, specParamName, fields);
+          collectSpecMemberPaths(entry as ASTNode, specParamName, fields);
         }
       }
       continue;
     }
 
     if (typeof value === 'object' && 'type' in value) {
-      collectTopLevelSpecFields(value as ASTNode, specParamName, fields);
+      collectSpecMemberPaths(value as ASTNode, specParamName, fields);
     }
   }
 }
@@ -124,9 +121,8 @@ function collectHybridOverrideConditionsFromAst(
     if (left) {
       const path = extractSpecMemberPath(left, specParamName);
       if (path?.includes('.')) {
-        const [field] = path.split('.');
-        if (field && !result.hybridOverrideConditions.has(field)) {
-          result.hybridOverrideConditions.set(field, `schema.spec.${path} != false`);
+        if (!result.hybridOverrideConditions.has(path)) {
+          result.hybridOverrideConditions.set(path, `schema.spec.${path} != false`);
         }
       }
     }
@@ -135,12 +131,12 @@ function collectHybridOverrideConditionsFromAst(
   if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
     const testNode = (node as ASTNode & { test?: ASTNode }).test;
     if (testNode) {
-      collectTopLevelSpecFields(testNode, specParamName, result.differentialConditionFields);
+      collectSpecMemberPaths(testNode, specParamName, result.differentialConditionFields);
     }
   }
 
   if (node.type === 'LogicalExpression') {
-    collectTopLevelSpecFields(node, specParamName, result.differentialConditionFields);
+    collectSpecMemberPaths(node, specParamName, result.differentialConditionFields);
   }
 
   for (const value of Object.values(node)) {
@@ -274,11 +270,17 @@ export function applyAnalysisToResources(
   resources: Record<string, unknown>,
   analysis: ASTAnalysisResult
 ): void {
+  const matchesNestedCallResource = (actualId: string, callStem: string): boolean => {
+    if (!actualId.startsWith(callStem)) return false;
+    const instanceChar = actualId[callStem.length];
+    return instanceChar !== undefined && /\d/.test(instanceChar);
+  };
+
   for (const [resourceId, controlFlow] of analysis.resources) {
     if (resourceId.startsWith('__call__:')) {
       const callStem = resourceId.slice('__call__:'.length);
       for (const [actualId, resource] of Object.entries(resources)) {
-        if (!actualId.startsWith(callStem) || !resource || typeof resource !== 'object') continue;
+        if (!matchesNestedCallResource(actualId, callStem) || !resource || typeof resource !== 'object') continue;
 
         if (controlFlow.forEach.length > 0) {
           const forEachDimensions = controlFlow.forEach.map((dim) => ({

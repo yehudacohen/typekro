@@ -4,7 +4,7 @@
  * This test suite validates the APISIX bootstrap composition:
  * 1. Cleans orphaned APISIX cluster resources from previous runs
  * 2. Deploys APISIX via the apisixBootstrap composition
- * 3. Validates all resources (HelmRepository, HelmReleases, IngressClass) are created
+ * 3. Validates all resources (HelmRepository, HelmRelease) are created
  * 4. Validates APISIX pods are running
  * 5. Cleans up after itself
  */
@@ -35,7 +35,7 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
  * Clean orphaned APISIX cluster resources left from previous test runs.
  *
  * This removes:
- * - IngressClass 'apisix' (cluster-scoped)
+ * - IngressClass 'apisix' (cluster-scoped, from older bootstrap versions)
  * - APISIX CRDs (apisixclusterconfigs, apisixconsumers, etc.)
  * - Orphaned HelmRepositories in flux-system matching 'apisix'
  * - Orphaned HelmReleases in flux-system matching 'apisix'
@@ -338,7 +338,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     expect((apisixRepo!.spec as Record<string, unknown>).url).toBe('https://charts.apiseven.com');
     console.log('HelmRepository apisix-repo created and configured');
 
-    // Step 2: Verify single HelmRelease was created (v2.13.0 bundles ingress controller as subchart)
+    // Step 2: Verify single HelmRelease was created. The ingress-controller subchart is disabled.
     console.log('Verifying HelmRelease...');
     const releases = await customObjectsApi.listNamespacedCustomObject({
       group: 'helm.toolkit.fluxcd.io',
@@ -361,12 +361,15 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     expect(releaseSpec.targetNamespace).toBe(apisixNamespace);
     console.log('HelmRelease created with chart apisix@2.13.0');
 
-    // Step 3: Verify IngressClass was created
-    console.log('Verifying IngressClass...');
-    const ingressClass = await networkingApi.readIngressClass({ name: 'apisix' });
-    expect(ingressClass).toBeDefined();
-    expect(ingressClass.spec?.controller).toBe('apisix.apache.org/apisix-ingress-controller');
-    console.log('IngressClass apisix created with correct controller');
+    // Step 3: Verify this bootstrap did not create a misleading IngressClass
+    console.log('Verifying IngressClass is not created by APISIX gateway bootstrap...');
+    try {
+      await networkingApi.readIngressClass({ name: 'apisix' });
+      throw new Error('IngressClass apisix should not be created by APISIX gateway bootstrap');
+    } catch (error: unknown) {
+      const err = error as { statusCode?: number; body?: { reason?: string } };
+      expect(err.statusCode === 404 || err.body?.reason === 'NotFound').toBe(true);
+    }
 
     // Step 5: Verify APISIX pods are running in the target namespace
     console.log('Verifying APISIX pods...');
@@ -396,8 +399,27 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       '../../../src/factories/apisix/compositions/apisix-bootstrap.js'
     );
 
-    // Test YAML generation
-    const yaml = apisixBootstrap.toYaml();
+    const originalAdminKey = process.env.APISIX_ADMIN_KEY;
+    const originalViewerKey = process.env.APISIX_VIEWER_KEY;
+    process.env.APISIX_ADMIN_KEY = 'test-admin-key';
+    process.env.APISIX_VIEWER_KEY = 'test-viewer-key';
+
+    // Test YAML generation without relying on caller-provided credentials.
+    let yaml: string;
+    try {
+      yaml = apisixBootstrap.toYaml();
+    } finally {
+      if (originalAdminKey === undefined) {
+        delete process.env.APISIX_ADMIN_KEY;
+      } else {
+        process.env.APISIX_ADMIN_KEY = originalAdminKey;
+      }
+      if (originalViewerKey === undefined) {
+        delete process.env.APISIX_VIEWER_KEY;
+      } else {
+        process.env.APISIX_VIEWER_KEY = originalViewerKey;
+      }
+    }
 
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
@@ -448,13 +470,9 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       ready: true,
       phase: 'Ready' as const,
       gatewayReady: true,
-      ingressControllerReady: true,
+      standardIngressReady: false,
       dashboardReady: false,
       etcdReady: false,
-      ingressClass: {
-        name: 'apisix',
-        controller: 'apisix.apache.org/apisix-ingress',
-      },
     };
 
     const statusResult = APISixBootstrapStatusSchema(validStatus);

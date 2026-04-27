@@ -1,7 +1,7 @@
 /**
- * APISix Ingress Controller Factory
+ * APISIX Gateway Factory
  * 
- * Provides TypeKro compositions for deploying APISix ingress controller
+ * Provides TypeKro compositions for deploying the APISIX gateway
  * following the same patterns as cert-manager and external-dns factories.
  */
 

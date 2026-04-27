@@ -147,7 +147,7 @@ describe('Differential Branch Capture', () => {
       expect(internalSection).toContain('includeWhen');
       // One should be negated relative to the other.
       expect(externalSection).toContain('has(schema.spec.useExternalCache)');
-      expect(internalSection).toContain('!has(schema.spec.useExternalCache)');
+      expect(internalSection).toContain('!(has(schema.spec.useExternalCache))');
     });
   });
 

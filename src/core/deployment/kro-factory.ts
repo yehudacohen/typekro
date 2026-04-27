@@ -1117,7 +1117,7 @@ export class KroResourceFactoryImpl<
       }
       if (!instanceDeleted) {
         // KRO is still processing the finalizer. Treat the stuck instance as
-        // remaining so the RGD is preserved, then surface failure to callers.
+        // unsafe to clean up, so the RGD/CRD are preserved.
         // Deleting the RGD while KRO is mid-finalizer would orphan cleanup.
         deletionTimedOut = true;
         this.logger.warn('Instance deletion still in progress after timeout', {
@@ -1142,6 +1142,16 @@ export class KroResourceFactoryImpl<
           ensureError(error)
         );
       }
+    }
+
+    if (deletionTimedOut) {
+      throw new CRDInstanceError(
+        `KRO instance ${name} deletion did not complete within ${this.factoryOptions.timeout ?? 300000}ms`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        name,
+        'deletion'
+      );
     }
 
     // Only delete the RGD and CRD if no other instances remain. Multiple
@@ -1206,16 +1216,6 @@ export class KroResourceFactoryImpl<
       this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
         rgdName: this.rgdName,
       });
-    }
-
-    if (deletionTimedOut) {
-      throw new CRDInstanceError(
-        `KRO instance ${name} deletion did not complete within ${this.factoryOptions.timeout ?? 300000}ms`,
-        this.schemaDefinition.apiVersion,
-        this.schemaDefinition.kind,
-        name,
-        'deletion'
-      );
     }
 
     // Namespaces are resources in the composition's dependency graph.

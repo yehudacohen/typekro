@@ -192,14 +192,14 @@ const replicaReadiness: ReadinessEvaluator = (resource) => {
 
 ## Resource Dependencies
 
-Use `withDependencies()` to explicitly declare that a resource depends on other resources:
+Use `dependsOn()` to explicitly declare that a resource depends on other resources:
 
 ```typescript
 const app = Deployment({
   id: 'app',
   name: 'my-app',
   image: 'nginx'
-}).withDependencies('database', 'configMap');
+}).dependsOn('database').dependsOn('configMap');
 // App will wait for 'database' and 'configMap' resources to be ready
 ```
 
