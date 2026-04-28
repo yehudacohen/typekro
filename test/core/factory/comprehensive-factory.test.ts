@@ -487,6 +487,7 @@ describe('Comprehensive Factory Tests', () => {
       });
 
       // Test deployment with alchemy (should fail gracefully in test environment)
+      let deployError: unknown;
       try {
         await alchemyFactory.deploy({
           name: 'test-app',
@@ -495,10 +496,17 @@ describe('Comprehensive Factory Tests', () => {
           environment: 'development',
         });
       } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(
-          /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|namespaces .*test.* not found/
-        );
+        deployError = error;
+      }
+
+      expect(deployError).toBeInstanceOf(Error);
+      const message = (deployError as Error).message;
+      expect(message).toMatch(
+        /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|namespaces .*test.* not found|Cannot hydrate status for 'test-app': deployment failed|Failed to fetch resource metadata/
+      );
+
+      if (message.includes('Cannot hydrate status')) {
+        expect(message).toContain('Failed resources');
       }
     });
   });
