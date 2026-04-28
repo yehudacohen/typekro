@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -167,7 +167,7 @@
     "acorn": "8.15.0",
     "alchemy": "^0.62.3",
     "angular-expressions": "1.5.1",
-    "arktype": "^2.1.20",
+    "arktype": "^2.2.0",
     "cel-js": "^0.8.2",
     "estraverse": "^5.3.0",
     "ignore": "^7.0.5",

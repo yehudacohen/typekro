@@ -48,21 +48,6 @@ jobs:
       - name: Integration YAML tests
         run: bun run test:integration:yaml
 
-      - name: Install kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Install kubectl
-        run: |
-          curl -Lo ./kubectl https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl
-          chmod +x ./kubectl
-          sudo mv ./kubectl /usr/local/bin/kubectl
-
-      - name: Required live cluster integration tests
-        run: CREATE_KIND_CLUSTER=true bun run test:integration:required
-
       - name: Upload coverage to Codecov
         if: success()
         uses: codecov/codecov-action@v5

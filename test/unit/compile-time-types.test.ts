@@ -585,6 +585,52 @@ describe('MagicAssignableShape<T> compile-time types', () => {
 
     expect(true).toBe(true);
   });
+
+  test('MagicAssignableShape preserves magic proxy status field types', () => {
+    if (COMPILE_ONLY) {
+      type Status = { ready: boolean; readyReplicas: number; endpoint: string };
+      type DeploymentStatus = { readyReplicas: number; phase: string };
+      type ServiceStatus = { clusterIP: string; ready: boolean };
+
+      const deployment = phantom<Enhanced<{ replicas: number }, DeploymentStatus>>();
+      const service = phantom<Enhanced<Record<string, never>, ServiceStatus>>();
+
+      const _shape: MagicAssignableShape<Status> = {
+        ready: service.status.ready,
+        readyReplicas: deployment.status.readyReplicas,
+        endpoint: service.status.clusterIP,
+      };
+
+      const _wrongNumber: MagicAssignableShape<Status> = {
+        ready: true,
+        // @ts-expect-error — string status fields cannot satisfy number status fields
+        readyReplicas: deployment.status.phase,
+        endpoint: service.status.clusterIP,
+      };
+
+      const _wrongString: MagicAssignableShape<Status> = {
+        ready: true,
+        readyReplicas: deployment.status.readyReplicas,
+        // @ts-expect-error — number status fields cannot satisfy string status fields
+        endpoint: deployment.status.readyReplicas,
+      };
+
+      const _extraField: MagicAssignableShape<Status> = {
+        ready: true,
+        readyReplicas: deployment.status.readyReplicas,
+        endpoint: service.status.clusterIP,
+        // @ts-expect-error — status builders cannot return fields outside the status schema
+        phase: deployment.status.phase,
+      };
+
+      void _shape;
+      void _wrongNumber;
+      void _wrongString;
+      void _extraField;
+    }
+
+    expect(true).toBe(true);
+  });
 });
 
 // =============================================================================
