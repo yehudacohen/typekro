@@ -70,6 +70,11 @@ describe('Valkey Bootstrap Composition Tests', () => {
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
     expect(yaml).toContain('Ready');
     expect(yaml).toContain('Installing');
+    expect(yaml).toContain('kind: ClusterRole');
+    expect(yaml).toContain('name: valkey-operator-manager-role');
+    expect(yaml).toContain('kind: ClusterRoleBinding');
+    expect(yaml).toContain('name: valkey-operator-controller-manager');
+    expect(yaml).toContain('namespace: "${has(schema.spec.namespace) ? schema.spec.namespace');
   });
 
   it('should support both kro and direct deployment strategies', async () => {

@@ -1,0 +1,887 @@
+/**
+ * Regression tests for nested composition behavior in direct mode.
+ *
+ * These tests cover bugs found during real-world dogfooding where
+ * nested compositions produced CEL expressions, proxy artifacts, or
+ * missing kind fields instead of resolved values.
+ *
+ * Bug #1: CEL expressions leaked into resource metadata.name when an
+ *         inner composition used a ternary on an optional spec field.
+ * Bug #2: Cross-composition status references returned KubernetesRef
+ *         proxy objects instead of real strings (e.g., connection URLs).
+ * Bug #3: K8s list responses omit kind/apiVersion on individual items,
+ *         causing discovery to produce resources with kind='Unknown'.
+ * Bug #4: APISIX composition threw at module load time when
+ *         APISIX_ADMIN_KEY wasn't set, even for unrelated consumers.
+ */
+
+import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
+import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Cel } from '../../src/core/references/cel.js';
+import { externalRef } from '../../src/core/references/external-refs.js';
+import { singleton } from '../../src/core/singleton/singleton.js';
+import {
+  createCompositionContext,
+  runWithCompositionContext,
+  getCurrentCompositionContext,
+} from '../../src/core/composition/context.js';
+import { simple } from '../../src/factories/simple/index.js';
+import { secret } from '../../src/factories/kubernetes/config/secret.js';
+import { discoverDeployedResourcesByInstance } from '../../src/core/deployment/deployment-state-discovery.js';
+import type { GvkTarget } from '../../src/core/deployment/deployment-state-discovery.js';
+import {
+  FACTORY_NAME_ANNOTATION,
+  FACTORY_NAME_LABEL,
+  INSTANCE_NAME_ANNOTATION,
+  INSTANCE_NAME_LABEL,
+  MANAGED_BY_LABEL,
+  MANAGED_BY_VALUE,
+  RESOURCE_ID_ANNOTATION,
+  DEPLOYMENT_ID_ANNOTATION,
+  FACTORY_NAMESPACE_ANNOTATION,
+} from '../../src/core/deployment/resource-tagging.js';
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Build a minimal inner composition that has a conditional pattern
+ * (ternary on an optional field) — the exact pattern that triggered
+ * the CEL leak in direct mode.
+ */
+const innerComposition = kubernetesComposition(
+  {
+    name: 'inner-service',
+    kind: 'InnerService',
+    spec: type({
+      name: 'string',
+      'namespace?': 'string',
+      /** Optional external secret ref — triggers the ternary pattern. */
+      'externalSecretRef?': { name: 'string', key: 'string' },
+      'secretValue?': 'string',
+    }),
+    status: type({
+      ready: 'boolean',
+      serviceUrl: 'string',
+      secretName: 'string',
+    }),
+  },
+  (spec) => {
+    const ns = spec.namespace ?? 'default';
+    const autoSecretName = `${spec.name}-secret`;
+
+    // This conditional is the pattern that caused CEL leak:
+    // In KRO mode it should generate has(schema.spec.externalSecretRef)
+    // In direct mode it should just evaluate the JS ternary normally
+    if (!spec.externalSecretRef) {
+      secret({
+        metadata: { name: autoSecretName, namespace: ns },
+        stringData: { key: spec.secretValue ?? 'default-secret' },
+        id: 'innerSecret',
+      });
+    }
+
+    const deployment = simple.Deployment({
+      name: spec.name,
+      namespace: ns,
+      image: 'nginx:alpine',
+      env: {
+        SECRET_REF_NAME: spec.externalSecretRef
+          ? spec.externalSecretRef.name
+          : autoSecretName,
+      },
+      id: 'innerDeployment',
+    });
+
+    simple.Service({
+      name: spec.name,
+      namespace: ns,
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 80 }],
+      id: 'innerService',
+    });
+
+    return {
+      ready: deployment.status.readyReplicas >= 1,
+      serviceUrl: `http://${spec.name}.${ns}.svc:80`,
+      secretName: autoSecretName,
+    };
+  }
+);
+
+/**
+ * Build an outer composition that nests the inner one and reads
+ * its status values — the pattern that triggered the proxy leak.
+ */
+const outerComposition = kubernetesComposition(
+  {
+    name: 'outer-stack',
+    kind: 'OuterStack',
+    spec: type({
+      name: 'string',
+      'namespace?': 'string',
+      innerImage: 'string',
+    }),
+    status: type({
+      ready: 'boolean',
+      innerUrl: 'string',
+      workerDbUrl: 'string',
+    }),
+  },
+  (spec) => {
+    const ns = spec.namespace ?? 'default';
+
+    // Nest the inner composition
+    const inner = innerComposition({
+      name: `${spec.name}-inner`,
+      namespace: ns,
+      secretValue: 'my-secret',
+    });
+
+    // Create a worker deployment that reads the inner composition's
+    // status — this is the pattern that returned KubernetesRef proxies
+    // instead of real strings.
+    const worker = simple.Deployment({
+      name: `${spec.name}-worker`,
+      namespace: ns,
+      image: spec.innerImage,
+      env: {
+        SERVICE_URL: inner.status.serviceUrl,
+        SECRET_NAME: inner.status.secretName,
+      },
+      id: 'worker',
+    });
+
+    return {
+      ready: inner.status.ready && worker.status.readyReplicas >= 1,
+      innerUrl: inner.status.serviceUrl,
+      workerDbUrl: `http://${spec.name}-worker:8080`,
+    };
+  }
+);
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+describe('Nested Composition Direct Mode', () => {
+  describe('singleton direct mode', () => {
+    it('reExecuteWithLiveStatus evaluates singleton-backed nested status as real values', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; endpoint: string } | null;
+      }
+
+      const singletonBootstrap = kubernetesComposition(
+        {
+          name: 'singleton-bootstrap',
+          kind: 'SingletonBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: spec.name,
+            image: 'nginx',
+            id: 'singletonDeployment',
+          });
+
+          return {
+            ready: deployment.status.readyReplicas >= 1,
+            endpoint: `http://${spec.name}:80`,
+          };
+        },
+      );
+
+      const singletonConsumer = kubernetesComposition(
+        {
+          name: 'singleton-consumer',
+          kind: 'SingletonConsumer',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const shared = singleton(singletonBootstrap, {
+            id: 'platform-bootstrap',
+            spec: { name: `${spec.name}-shared` },
+          });
+          const worker = simple.Deployment({
+            name: `${spec.name}-worker`,
+            image: 'nginx',
+            id: 'worker',
+          });
+
+          return {
+            ready: shared.status.ready && worker.status.readyReplicas >= 1,
+            endpoint: shared.status.endpoint,
+          };
+        },
+      );
+
+      const factory = singletonConsumer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['singletonDeployment', { readyReplicas: 1 }],
+          ['singletonBootstrap1', { ready: true, endpoint: 'http://myapp-shared:80' }],
+          ['singletonBootstrap2', { ready: true, endpoint: 'http://myapp-shared:80' }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.endpoint).toBe('http://myapp-shared:80');
+    });
+  });
+
+  describe('Bug #0: framework must preserve nested status alias semantics in direct mode', () => {
+    it('reExecuteWithLiveStatus resolves aliased nested composition status in compound booleans', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const innerBootstrap = kubernetesComposition(
+        {
+          name: 'inner-bootstrap',
+          kind: 'InnerBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: `${spec.name}-inner`,
+            image: 'nginx',
+            id: 'innerDeployment',
+          });
+          return {
+            ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' >= 1'),
+          };
+        },
+      );
+
+      const outerAliasComp = kubernetesComposition(
+        {
+          name: 'outer-alias-test',
+          kind: 'OuterAliasTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = innerBootstrap({ name: spec.name });
+          const worker = simple.Deployment({
+            name: `${spec.name}-worker`,
+            image: 'nginx',
+            id: 'worker',
+          });
+          return {
+            ready: inner.status.ready && worker.status.readyReplicas >= 1,
+          };
+        },
+      );
+
+      const factory = outerAliasComp.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const spec = { name: 'myapp' };
+
+      const status = factory.reExecuteWithLiveStatus(
+        spec,
+        new Map([
+          ['innerBootstrap1', { readyReplicas: 1 }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+    });
+
+    it('reExecuteWithLiveStatus resolves nested status fields backed by child resource status', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; clusterIP: string } | null;
+      }
+
+      const innerChildStatus = kubernetesComposition(
+        {
+          name: 'inner-child-status',
+          kind: 'InnerChildStatus',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', clusterIP: 'string' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: `${spec.name}-deploy`,
+            image: 'nginx',
+            id: 'deployment',
+          });
+          const service = simple.Service({
+            name: `${spec.name}-svc`,
+            selector: { app: spec.name },
+            ports: [{ port: 80, targetPort: 8080 }],
+            id: 'service',
+          });
+
+          return {
+            ready: deployment.status.readyReplicas >= 1,
+            clusterIP: service.status.clusterIP,
+          };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-child-status',
+          kind: 'OuterChildStatus',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', clusterIP: 'string' }),
+        },
+        (spec) => {
+          const inner = innerChildStatus({ name: spec.name });
+          return {
+            ready: inner.status.ready,
+            clusterIP: inner.status.clusterIP,
+          };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['innerChildStatus1Deployment', { readyReplicas: 1 }],
+          ['innerChildStatus1Service', { clusterIP: '10.96.0.42' }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.clusterIP).toBe('10.96.0.42');
+      expect(typeof status?.clusterIP).toBe('string');
+    });
+
+    it('reExecuteWithLiveStatus treats nested statusless children as visible during recovery', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; serviceName: string } | null;
+      }
+
+      const innerStatusless = kubernetesComposition(
+        {
+          name: 'inner-statusless',
+          kind: 'InnerStatusless',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', serviceName: 'string' }),
+        },
+        (spec) => {
+          const service = simple.Service({
+            name: `${spec.name}-svc`,
+            selector: { app: spec.name },
+            ports: [{ port: 80, targetPort: 80 }],
+            id: 'service',
+          });
+
+          return {
+            ready: true,
+            serviceName: String(service.metadata.name),
+          };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-statusless-recovery',
+          kind: 'OuterStatuslessRecovery',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', serviceName: 'string' }),
+        },
+        (spec) => {
+          const inner = innerStatusless({ name: spec.name });
+          return {
+            ready: inner.status.ready,
+            serviceName: inner.status.serviceName,
+          };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['innerStatusless1Service', {}],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.serviceName).toBe('myapp-svc');
+    });
+
+    it('reExecuteWithLiveStatus ignores external refs when synthesizing nested readiness', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const innerWithExternal = kubernetesComposition(
+        {
+          name: 'inner-with-external',
+          kind: 'InnerWithExternal',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          externalRef({
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: 'shared-config', namespace: 'platform' },
+            id: 'externalConfig',
+          });
+          const deploy = simple.Deployment({
+            name: spec.name,
+            image: 'nginx',
+            id: 'deploy',
+          });
+
+          return { ready: deploy.status.readyReplicas >= 1 };
+        },
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-external-recovery',
+          kind: 'OuterExternalRecovery',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = innerWithExternal({ name: spec.name });
+          return { ready: inner.status.ready };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([['innerWithExternal1Deploy', { readyReplicas: 1 }]]),
+      );
+
+      expect(status?.ready).toBe(true);
+    });
+
+    it('runs the direct nested probe in re-execution mode', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const nested = kubernetesComposition(
+        {
+          name: 'inner-reexec-probe',
+          kind: 'InnerReexecProbe',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        () => ({
+          ready: !!getCurrentCompositionContext()?.isReExecution,
+        }),
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-reexec-probe',
+          kind: 'OuterReexecProbe',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = nested({ name: spec.name });
+          return { ready: inner.status.ready };
+        },
+      );
+
+      const factory = outer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map(),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+    });
+  });
+
+  describe('Bug #1: CEL expressions must not leak into resource names', () => {
+    it('produces real string names, not CEL has() expressions', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      expect(graph.resources.length).toBeGreaterThan(0);
+
+      for (const r of graph.resources) {
+        const name = String(r.manifest?.metadata?.name ?? '');
+        const ns = String(r.manifest?.metadata?.namespace ?? '');
+
+        // No CEL expressions in resource names
+        expect(name).not.toContain('${');
+        expect(name).not.toContain('has(');
+        expect(name).not.toContain('schema.spec');
+
+        // No CEL expressions in namespaces
+        expect(ns).not.toContain('${');
+        expect(ns).not.toContain('has(');
+        expect(ns).not.toContain('schema.spec');
+      }
+    });
+
+    it('resolves conditional resource names to their else-branch values', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // The inner secret should be named "myapp-inner-secret" (the autoSecretName)
+      const secretResource = graph.resources.find(
+        (r) => r.manifest?.kind === 'Secret'
+      );
+      expect(secretResource).toBeDefined();
+      expect(secretResource!.manifest?.metadata?.name).toBe('myapp-inner-secret');
+    });
+  });
+
+  describe('Bug #2: cross-composition status must resolve to real values', () => {
+    it('worker env vars contain real strings, not KubernetesRef proxies', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // Find the worker deployment
+      const workerDeploy = graph.resources.find((r) => {
+        const name = String(r.manifest?.metadata?.name ?? '');
+        return name.includes('worker');
+      });
+      expect(workerDeploy).toBeDefined();
+
+      // Check env vars on the worker container
+      const containers = (workerDeploy!.manifest as any)?.spec?.template?.spec?.containers;
+      expect(containers).toBeDefined();
+      expect(containers.length).toBeGreaterThan(0);
+
+      const env = containers[0].env as Array<{ name: string; value: string }>;
+      expect(env).toBeDefined();
+
+      const serviceUrlEnv = env.find((e) => e.name === 'SERVICE_URL');
+      const secretNameEnv = env.find((e) => e.name === 'SECRET_NAME');
+
+      expect(serviceUrlEnv).toBeDefined();
+      expect(secretNameEnv).toBeDefined();
+
+      // Must be real strings, not proxy artifacts
+      expect(serviceUrlEnv!.value).toBe('http://myapp-inner.test-ns.svc:80');
+      expect(secretNameEnv!.value).toBe('myapp-inner-secret');
+
+      // Must NOT contain proxy markers
+      expect(serviceUrlEnv!.value).not.toContain('__KUBERNETES_REF');
+      expect(secretNameEnv!.value).not.toContain('__KUBERNETES_REF');
+    });
+
+    it('status values are real strings during re-execution', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const compositionFn = (factory as any).factoryOptions?.compositionFn;
+      expect(compositionFn).toBeDefined();
+
+      const reCtx = createCompositionContext('re-exec-test', {
+        deduplicateIds: true,
+        isReExecution: true,
+      });
+
+      let status: any;
+      runWithCompositionContext(reCtx, () => {
+        status = compositionFn({
+          name: 'myapp',
+          namespace: 'test-ns',
+          innerImage: 'worker:latest',
+        });
+      });
+
+      expect(status).toBeDefined();
+
+      // innerUrl should be a real string
+      expect(typeof status.innerUrl).toBe('string');
+      expect(status.innerUrl).toBe('http://myapp-inner.test-ns.svc:80');
+
+      // Should NOT be a KubernetesRef proxy object
+      expect(typeof status.innerUrl).not.toBe('object');
+    });
+
+    it('direct factory reExecuteWithLiveStatus preserves nested static status snapshots', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string; namespace?: string; innerImage: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; innerUrl: string; workerDbUrl: string } | null;
+      }
+
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp', namespace: 'test-ns', innerImage: 'worker:latest' },
+        new Map([
+          ['inner1InnerDeployment', { readyReplicas: 1 }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.innerUrl).toBe('http://myapp-inner.test-ns.svc:80');
+      expect(status?.innerUrl).not.toContain('__KUBERNETES_REF_');
+    });
+  });
+
+  describe('Bug #3: discovery stamps kind/apiVersion on list items', () => {
+    it('stamps kind and apiVersion from the GVK target when missing on items', async () => {
+      // Mock K8s API that returns items WITHOUT kind/apiVersion
+      // (simulating real K8s list behavior)
+      const mockItem = {
+        metadata: {
+          name: 'test-deploy',
+          namespace: 'default',
+          labels: {
+            [MANAGED_BY_LABEL]: MANAGED_BY_VALUE,
+            [FACTORY_NAME_LABEL]: 'test-factory',
+            [INSTANCE_NAME_LABEL]: 'test-instance',
+          },
+          annotations: {
+            [FACTORY_NAME_ANNOTATION]: 'test-factory',
+            [INSTANCE_NAME_ANNOTATION]: 'test-instance',
+            [DEPLOYMENT_ID_ANNOTATION]: 'dep-1',
+            [RESOURCE_ID_ANNOTATION]: 'testDeploy',
+            [FACTORY_NAMESPACE_ANNOTATION]: 'default',
+          },
+          creationTimestamp: new Date(),
+        },
+        // NOTE: no kind or apiVersion — this is what real K8s list returns
+      };
+
+      const api = {
+        list: async (
+          apiVersion: string,
+          kind: string,
+          _ns?: string,
+          _p?: string,
+          _e?: boolean,
+          _x?: boolean,
+          _f?: string,
+          labelSelector?: string
+        ) => {
+          if (
+            apiVersion === 'apps/v1' &&
+            kind === 'Deployment' &&
+            labelSelector?.includes('test-factory')
+          ) {
+            return { items: [mockItem] };
+          }
+          return { items: [] };
+        },
+      } as any;
+
+      const knownGvks: GvkTarget[] = [
+        { apiVersion: 'apps/v1', kind: 'Deployment', namespaced: true },
+      ];
+
+      const record = await discoverDeployedResourcesByInstance(api, {
+        factoryName: 'test-factory',
+        instanceName: 'test-instance',
+        knownGvks,
+      });
+
+      expect(record).toBeDefined();
+      expect(record!.resources).toHaveLength(1);
+
+      // The discovery module should have stamped kind and apiVersion
+      const resource = record!.resources[0]!;
+      expect(resource.kind).toBe('Deployment');
+      expect(resource.manifest.apiVersion).toBe('apps/v1');
+      expect(resource.manifest.kind).toBe('Deployment');
+    });
+  });
+
+  describe('Bug #4: composition definition pass tolerates env checks', () => {
+    it('does not throw when a composition function checks getCurrentCompositionContext', () => {
+      // Simulate the APISIX pattern: a function that throws unless
+      // it detects it's running inside a composition definition pass
+      function resolveCredential(): string {
+        const ctx = getCurrentCompositionContext();
+        if (!ctx) {
+          throw new Error('Credential not configured');
+        }
+        return 'default-credential';
+      }
+
+      // This should NOT throw — the composition definition pass
+      // runs inside a composition context
+      expect(() => {
+        kubernetesComposition(
+          {
+            name: 'cred-test',
+            kind: 'CredTest',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            const _cred = resolveCredential();
+            const _deploy = simple.Deployment({
+              name: spec.name,
+              image: 'nginx',
+              id: 'app',
+            });
+            return { ready: true };
+          }
+        );
+      }).not.toThrow();
+    });
+  });
+
+  describe('Bug #5: resources referencing inner service names must deploy after them', () => {
+    it('worker deployment depends on inner service via implicit service-name detection', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // Find the worker deployment
+      const workerResource = graph.resources.find((r) => {
+        const name = String(r.manifest?.metadata?.name ?? '');
+        return name.includes('worker');
+      });
+      expect(workerResource).toBeDefined();
+
+      // Find the inner Service (named "myapp-inner")
+      const innerService = graph.resources.find((r) => {
+        return r.manifest?.kind === 'Service' &&
+          String(r.manifest?.metadata?.name ?? '') === 'myapp-inner';
+      });
+      expect(innerService).toBeDefined();
+
+      // The worker should depend on the inner service because its
+      // SERVICE_URL env var contains "myapp-inner" (the service name).
+      const workerDeps = graph.dependencyGraph.getDependencies(workerResource!.id);
+      const dependsOnInnerService = workerDeps.includes(innerService!.id);
+      expect(dependsOnInnerService).toBe(true);
+    });
+
+    it('does not create false-positive deps from substring matches', () => {
+      // Create a composition where one Deployment is named "app" and another
+      // has an image like "myapp:latest". The "app" substring in "myapp"
+      // should NOT create a dependency edge.
+      const shortNameComp = kubernetesComposition(
+        {
+          name: 'short-name-test',
+          kind: 'ShortNameTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (_spec) => {
+          simple.Deployment({
+            name: 'app',
+            image: 'nginx',
+            id: 'appDeploy',
+          });
+          simple.Deployment({
+            name: 'worker',
+            image: 'myapp:latest',
+            env: { SOME_VAR: 'happy-path' },
+            id: 'workerDeploy',
+          });
+          return { ready: true };
+        }
+      );
+
+      const factory = shortNameComp.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({ name: 'test' });
+
+      const worker = graph.resources.find((r) =>
+        String(r.manifest?.metadata?.name ?? '').includes('worker')
+      );
+      expect(worker).toBeDefined();
+
+      // "worker" should NOT depend on "app" — "myapp" and "happy" are
+      // substrings, not hostname references.
+      const workerDeps = graph.dependencyGraph.getDependencies(worker!.id);
+      const appResource = graph.resources.find((r) =>
+        r.manifest?.kind === 'Deployment' &&
+        String(r.manifest?.metadata?.name ?? '') === 'app'
+      );
+      if (appResource) {
+        expect(workerDeps.includes(appResource.id)).toBe(false);
+      }
+    });
+
+    it('resources without service-name references have no spurious dependencies', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // Find the inner Deployment
+      const innerDeploy = graph.resources.find((r) => {
+        return r.manifest?.kind === 'Deployment' &&
+          String(r.manifest?.metadata?.name ?? '') === 'myapp-inner';
+      });
+      expect(innerDeploy).toBeDefined();
+
+      // The inner deployment should NOT depend on the worker (no circular dep)
+      const innerDeps = graph.dependencyGraph.getDependencies(innerDeploy!.id);
+      const workerResource = graph.resources.find((r) =>
+        String(r.manifest?.metadata?.name ?? '').includes('worker')
+      );
+      expect(innerDeps.includes(workerResource!.id)).toBe(false);
+    });
+  });
+
+  describe('Bug #6: KRO YAML must inline nested composition status as real CEL', () => {
+    it('KRO YAML does not contain virtual nested composition IDs', () => {
+      // Generate KRO YAML from the outer composition.
+      // The outer composition's status references inner.status.serviceUrl
+      // which should be inlined as the actual value, not as
+      // "${innerService1.status.serviceUrl}" (virtual ID).
+      const yaml = (outerComposition as any).toYaml?.();
+      expect(yaml).toBeDefined();
+      expect(typeof yaml).toBe('string');
+
+      // The virtual ID "innerService1" should NOT appear in the YAML.
+      // Instead, the actual inner status values should be inlined.
+      expect(yaml).not.toContain('innerService1.status');
+
+      // The YAML should contain the actual resource references
+      // from the inner composition (e.g., innerDeployment, innerService)
+      // The inner composition returns:
+      //   serviceUrl: `http://${spec.name}.${ns}:80`
+      //   secretName: `${spec.name}-secret`
+      // These are spec-derived values, so they should appear as
+      // schema references or string literals in the CEL output.
+    });
+  });
+});

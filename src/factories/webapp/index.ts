@@ -13,10 +13,9 @@
  * exposes these URLs for debugging or wiring additional services.
  *
  * ## Prerequisites
- * The following operators must be installed in the cluster:
- * - CloudNativePG operator (`typekro/cnpg` bootstrap)
- * - Hyperspike Valkey operator (`typekro/valkey` bootstrap)
- * - Flux CD (for Inngest HelmRelease)
+ * Install the TypeKro runtime (Flux + KRO). The composition bootstraps the
+ * CloudNativePG and Hyperspike Valkey operators itself as shared singleton
+ * dependencies.
  *
  * @example
  * ```typescript

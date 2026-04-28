@@ -260,29 +260,46 @@ const frontendComposition = kubernetesComposition(
     }),
   },
   (schema) => {
+    const databaseResources = databaseComposition as unknown as {
+      database: {
+        status: {
+          connectionString: string;
+          ready: boolean;
+        };
+      };
+    };
+    const webAppResources = webAppComposition as unknown as {
+      cache: {
+        status: { readyReplicas: number };
+      };
+      cacheService: {
+        spec: { clusterIP: string };
+      };
+    };
+
     // ✨ Cross-composition magic proxy in action!
     // Access resources from other compositions as if they were properties
-    const dbRef = (databaseComposition as any).database;           // 🪄 Magic proxy creates external ref
-    const cacheRef = (webAppComposition as any).cache;           // 🪄 Magic proxy creates external ref  
-    const cacheServiceRef = (webAppComposition as any).cacheService; // 🪄 Magic proxy creates external ref
+    const dbRef = databaseResources.database; // 🪄 Magic proxy creates external ref
+    const cacheRef = webAppResources.cache; // 🪄 Magic proxy creates external ref
+    const cacheServiceRef = webAppResources.cacheService; // 🪄 Magic proxy creates external ref
+
+    // Create frontend resources that reference other compositions.
+    const _frontend = Deployment({
+      name: 'frontend-app',  // Use static name to avoid KubernetesRef issues
+      image: schema.image,
+      env: {
+        // Cross-composition references work seamlessly in environment variables
+        DATABASE_URL: dbRef.status.connectionString,     // From databaseComposition
+        CACHE_HOST: cacheServiceRef.spec.clusterIP,      // From webAppComposition
+        CACHE_PORT: '6379',
+      }
+    });
 
     return {
-      // Create frontend resources that reference other compositions
-      frontend: Deployment({
-        name: 'frontend-app',  // Use static name to avoid KubernetesRef issues
-        image: schema.image,
-        env: {
-          // Cross-composition references work seamlessly in environment variables
-          DATABASE_URL: dbRef.status.connectionString,     // From databaseComposition
-          CACHE_HOST: cacheServiceRef.spec.clusterIP,      // From webAppComposition  
-          CACHE_PORT: '6379',
-        }
-      }),
-
       // Status builder can also use cross-composition references
       ready: true, // ✨ Natural JavaScript boolean
       databaseConnected: dbRef.status.ready,               // Cross-composition status check
-      cacheConnected: cacheRef.status.readyReplicas,       // Cross-composition replica check
+      cacheConnected: cacheRef.status.readyReplicas > 0,   // Cross-composition replica check
     };
   }
 );

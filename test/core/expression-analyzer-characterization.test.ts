@@ -642,7 +642,6 @@ describe('CompositionExpressionAnalyzer', () => {
     it('handles null/undefined resource gracefully', () => {
       const analyzer = new CompositionExpressionAnalyzer();
 
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing null input for graceful handling
       const refs = analyzer.extractKubernetesRefsFromResource(null as any);
 
       expect(refs).toEqual([]);

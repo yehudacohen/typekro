@@ -14,10 +14,10 @@ import type { AnalysisContext, CelConversionResult } from '../analysis/analyzer.
  */
 export interface MagicProxyAnalysisContext extends AnalysisContext {
   /** Schema proxy instance for schema field references */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Available resource proxies */
-  resourceProxies?: Record<string, MagicProxy<any>>;
+  resourceProxies?: Record<string, MagicProxy<unknown>>;
 
   /** Whether to perform deep proxy analysis */
   deepAnalysis?: boolean;

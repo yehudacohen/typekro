@@ -262,12 +262,13 @@ export class CRDManager {
         );
 
         const crdItem = crdStatus as unknown as CustomResourceDefinitionItem;
+        const deletionTimestamp = crdItem?.metadata?.deletionTimestamp;
         const conditions = crdItem?.status?.conditions || [];
         const establishedCondition = conditions.find(
           (c: KubernetesCondition) => c.type === 'Established'
         );
 
-        if (establishedCondition?.status === 'True') {
+        if (establishedCondition?.status === 'True' && !deletionTimestamp) {
           logger.debug('CRD exists and is established', { crdName });
           return;
         }
@@ -275,6 +276,7 @@ export class CRDManager {
         logger.debug('CRD exists but not yet established, waiting...', {
           crdName,
           establishedStatus: establishedCondition?.status || 'unknown',
+          deleting: deletionTimestamp !== undefined,
         });
       } catch (error: unknown) {
         if (
@@ -309,5 +311,106 @@ export class CRDManager {
       timeout,
       'crd-establishment'
     );
+  }
+
+  /**
+   * Wait for a CRD to be created and established, discovered by (group, kind)
+   * rather than a pre-computed name.
+   *
+   * This is the correct path for KRO RGDs because KRO's server-side
+   * pluralization may not match any client-side heuristic. For example,
+   * already-plural kind names don't get an extra "s" suffix — only
+   * the CRD's `spec.names.plural` is authoritative.
+   *
+   * The method polls the full CRD list looking for one whose
+   * `spec.group` and `spec.names.kind` match, then delegates to
+   * {@link waitForCRDEstablishment} with the discovered name.
+   *
+   * @param kind - The resource kind (e.g., "WebAppWithProcessing")
+   * @param group - The CRD group (e.g., "kro.run")
+   * @param deploymentMode - The deployment mode for logging
+   * @param timeout - Max milliseconds to wait for the CRD to exist AND be established
+   * @param abortSignal - Optional abort signal for cancellation
+   * @throws {DeploymentTimeoutError} if the CRD is never discovered or never becomes Established within the timeout
+   */
+  async waitForCRDByKindAndGroup(
+    kind: string,
+    group: string,
+    deploymentMode: string,
+    timeout: number = DEFAULT_CRD_READY_TIMEOUT,
+    abortSignal?: AbortSignal
+  ): Promise<{ crdName: string; plural: string }> {
+    const logger = this.logger.child({ kind, group, timeout });
+    const startTime = Date.now();
+    const pollInterval = DEFAULT_POLL_INTERVAL;
+
+    logger.debug('Discovering CRD by kind and group');
+
+    // Phase 1: discover the CRD's actual name by listing CRDs and matching
+    // on (group, kind). KRO creates the CRD asynchronously after the RGD
+    // is accepted, so we poll.
+    let crdName: string | undefined;
+    let plural: string | undefined;
+    while (Date.now() - startTime < timeout) {
+      if (abortSignal?.aborted) {
+        throw new DOMException('Operation aborted', 'AbortError');
+      }
+
+      try {
+        const crds = await this.withAbortSignal(
+          this.k8sApi.list('apiextensions.k8s.io/v1', 'CustomResourceDefinition'),
+          abortSignal
+        );
+        const crdList = crds as unknown as CustomResourceDefinitionList;
+        const match = crdList?.items?.find((crd: CustomResourceDefinitionItem) => {
+          const spec = crd.spec;
+          return spec?.group === group && spec?.names?.kind === kind && !crd.metadata?.deletionTimestamp;
+        });
+        if (match?.metadata?.name && match.spec?.names?.plural) {
+          crdName = match.metadata.name;
+          plural = match.spec.names.plural;
+          logger.debug('CRD discovered', { crdName, plural });
+          break;
+        }
+      } catch (error: unknown) {
+        if (
+          error instanceof DOMException &&
+          (error.name === 'AbortError' || error.name === 'TimeoutError')
+        ) {
+          throw error;
+        }
+        logger.debug('CRD list failed, retrying...', {
+          error: ensureError(error).message,
+        });
+      }
+
+      try {
+        await this.abortableDelay(pollInterval, abortSignal);
+      } catch (error: unknown) {
+        if (
+          error instanceof DOMException &&
+          (error.name === 'AbortError' || error.name === 'TimeoutError')
+        ) {
+          throw error;
+        }
+      }
+    }
+
+    if (!crdName || !plural) {
+      throw new DeploymentTimeoutError(
+        `Timeout discovering CRD for kind "${kind}" in group "${group}" after ${timeout}ms`,
+        'CustomResourceDefinition',
+        `${kind}.${group}`,
+        timeout,
+        'crd-discovery'
+      );
+    }
+
+    // Phase 2: wait for the discovered CRD to become Established. Pass
+    // along the remaining timeout budget so total wait is bounded.
+    const remaining = Math.max(timeout - (Date.now() - startTime), pollInterval);
+    await this.waitForCRDReady(crdName, deploymentMode, remaining, abortSignal);
+
+    return { crdName, plural };
   }
 }

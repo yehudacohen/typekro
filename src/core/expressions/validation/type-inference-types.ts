@@ -148,10 +148,10 @@ export interface TypeInferenceMetadata {
  */
 export interface TypeInferenceContext {
   /** Available resources for type lookup */
-  availableResources: Record<string, Enhanced<any, any>>;
+  availableResources: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy for schema type lookup */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Factory type affects available functions */
   factoryType: 'direct' | 'kro';

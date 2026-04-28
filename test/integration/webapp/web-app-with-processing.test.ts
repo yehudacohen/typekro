@@ -20,13 +20,17 @@ setDefaultTimeout(600000);
 import type * as k8s from '@kubernetes/client-node';
 import type { Enhanced } from '../../../src/core/types/index.js';
 import type { ResourceFactory } from '../../../src/core/types/deployment.js';
-import { createBunCompatibleKubernetesObjectApi } from '../../../src/core/kubernetes/index.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import type {
   WebAppWithProcessingConfig,
   WebAppWithProcessingStatus,
 } from '../../../src/factories/webapp/types.js';
 import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+
+async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
+  const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+  await deleteNamespaceAndWait(namespace, kubeConfig, 120000);
+}
 
 // ── Shared test spec ─────────────────────────────────────────────────────
 
@@ -55,6 +59,10 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
     eventKey: 'deadbeef0123456789abcdef01234567',
     signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
     replicas: 1,
+    resources: {
+      requests: { cpu: '50m', memory: '128Mi' },
+      limits: { cpu: '250m', memory: '256Mi' },
+    },
     sdkUrl: ['http://testapp:80/api/inngest'],
   },
 });
@@ -152,7 +160,9 @@ describe('WebAppWithProcessing Direct Mode', () => {
   });
 
   afterAll(async () => {
-    // Use the factory's graph-based deletion
+    // Delete instance-scoped resources only. Shared operator resources
+    // (cnpg-system, valkey-operator-system) must persist for the KRO mode
+    // test — it needs the operator CRDs and webhook services.
     if (directFactory) {
       try {
         await directFactory.deleteInstance('testapp');
@@ -160,10 +170,9 @@ describe('WebAppWithProcessing Direct Mode', () => {
         console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
       }
     }
-    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     for (const ns of [factoryNamespace, appNamespace]) {
       try {
-        await deleteNamespaceIfExists(ns, kubeConfig);
+        await cleanupNamespace(ns, kubeConfig);
       } catch (e) {
         console.error(`⚠️ Namespace ${ns} cleanup failed:`, (e as Error).message);
       }
@@ -233,23 +242,12 @@ describe('WebAppWithProcessing KRO Mode', () => {
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
-    // Delete shared HelmRepository left by direct mode — KRO's applyset
-    // rejects resources that belong to a different applyset.
-    try {
-      const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-      await k8sApi.delete({
-        apiVersion: 'source.toolkit.fluxcd.io/v1',
-        kind: 'HelmRepository',
-        metadata: { name: 'inngest-repo', namespace: 'flux-system' },
-      } as any);
-    } catch { /* may not exist */ }
-
     await ensureNamespaceExists(kroNamespace, kubeConfig);
   });
 
   afterAll(async () => {
-    // The factory's deleteInstance handles the full cleanup graph:
-    // instance → wait for KRO finalizer → RGD → child namespaces
+    // Delete the KRO instance first so the controller follows the graph and
+    // removes child resources before namespace teardown.
     if (kroFactory) {
       try {
         await kroFactory.deleteInstance('testapp');
@@ -257,11 +255,13 @@ describe('WebAppWithProcessing KRO Mode', () => {
         console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
       }
     }
-
-    // Clean the factory namespace (the factory manages app namespaces internally)
-    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     try {
-      await deleteNamespaceIfExists(kroNamespace, kubeConfig);
+      await cleanupNamespace(appNamespace, kubeConfig);
+    } catch (e) {
+      console.error(`⚠️ Namespace ${appNamespace} cleanup failed:`, (e as Error).message);
+    }
+    try {
+      await cleanupNamespace(kroNamespace, kubeConfig);
     } catch (e) {
       console.error(`⚠️ Namespace ${kroNamespace} cleanup failed:`, (e as Error).message);
     }

@@ -224,9 +224,9 @@ export class ExpressionTypeValidator {
    * Validate KubernetesRef types during conversion
    */
   validateKubernetesRef(
-    ref: KubernetesRef<any>,
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>
+    ref: KubernetesRef<unknown>,
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
   ): TypeValidationResult {
     const errors: TypeValidationError[] = [];
     const warnings: TypeValidationWarning[] = [];
@@ -495,7 +495,7 @@ export class ExpressionTypeValidator {
    * Extract type information from schema proxy
    */
   private extractSchemaType(
-    _schemaProxy: SchemaProxy<any, any>,
+    _schemaProxy: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     _fieldPath: string
   ): TypeInfo | null {
     // This would integrate with the actual schema type system
@@ -507,7 +507,7 @@ export class ExpressionTypeValidator {
    * Extract type information from resource field
    */
   private extractResourceFieldType(
-    _resource: Enhanced<any, any>,
+    _resource: Enhanced<unknown, unknown>,
     _fieldPath: string
   ): TypeInfo | null {
     // This would integrate with the Enhanced type system
@@ -518,7 +518,7 @@ export class ExpressionTypeValidator {
   /**
    * Infer the type of a KubernetesRef
    */
-  private inferKubernetesRefType(ref: KubernetesRef<any>): TypeInfo {
+  private inferKubernetesRefType(ref: KubernetesRef<unknown>): TypeInfo {
     // Use the _type property if available
     if (ref._type) {
       return this.convertTypeToTypeInfo(ref._type);
@@ -629,6 +629,7 @@ export class TypeRegistry {
 /**
  * Utility functions for type safety integration
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: This module intentionally exposes a static utility namespace.
 export class TypeSafetyUtils {
   /**
    * Create TypeInfo from ArkType definition
@@ -646,7 +647,7 @@ export class TypeSafetyUtils {
   /**
    * Create TypeInfo for Enhanced resource types
    */
-  static fromEnhancedType(enhanced: Enhanced<any, any>): TypeInfo {
+  static fromEnhancedType(enhanced: Enhanced<unknown, unknown>): TypeInfo {
     // Extract type information from Enhanced wrapper
     return {
       typeName: enhanced.constructor.name,

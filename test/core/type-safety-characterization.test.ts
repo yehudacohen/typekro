@@ -399,7 +399,7 @@ describe('TypeRegistry', () => {
 
     const all = registry.getAvailableTypes();
 
-    expect(all['myVar']).toBeDefined();
+    expect(all.myVar).toBeDefined();
     expect(all['resources.deploy']).toBeDefined();
     expect(all['schema.spec.name']).toBeDefined();
   });

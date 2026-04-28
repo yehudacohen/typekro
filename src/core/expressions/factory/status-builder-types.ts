@@ -19,9 +19,9 @@ import type {
 /**
  * Status builder function type for analysis
  */
-export type StatusBuilderFunction<TSpec extends Record<string, any> = any, TStatus = any> = (
-  schema: SchemaProxy<TSpec, any>,
-  resources: Record<string, Enhanced<any, any>>
+export type StatusBuilderFunction<TSpec extends object = Record<string, unknown>, TStatus = unknown> = (
+  schema: SchemaProxy<TSpec, Record<string, unknown>>,
+  resources: Record<string, Enhanced<unknown, unknown>>
 ) => TStatus;
 
 /**

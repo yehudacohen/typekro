@@ -52,11 +52,11 @@ export function analyzeASTForMagicProxyPatterns(
   _expressionSource: string,
   context: MagicProxyAnalysisContext
 ): {
-  refs: KubernetesRef<any>[];
+  refs: KubernetesRef<unknown>[];
   analysisDepth: number;
   hasProxyObjects: boolean;
 } {
-  const refs: KubernetesRef<any>[] = [];
+  const refs: KubernetesRef<unknown>[] = [];
   let analysisDepth = 0;
   let hasProxyObjects = false;
 
@@ -95,7 +95,7 @@ export function analyzeASTForMagicProxyPatterns(
 export function extractKubernetesRefFromMemberExpression(
   memberExpr: MemberExpression,
   context: MagicProxyAnalysisContext
-): KubernetesRef<any> | null {
+): KubernetesRef<unknown> | null {
   try {
     // Build the field path from the member expression chain
     const fieldPath = buildFieldPathFromMemberExpression(memberExpr);

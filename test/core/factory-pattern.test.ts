@@ -232,6 +232,10 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
+
+        async dispose() {
+          // Mock implementation
+        },
       };
 
       expect(mockFactory.mode).toBe('direct');
@@ -276,6 +280,10 @@ describe('Factory Pattern Types', () => {
           };
         },
 
+        async dispose() {
+          // Mock implementation
+        },
+
         // Direct-specific methods
         async rollback() {
           return {
@@ -293,6 +301,10 @@ describe('Factory Pattern Types', () => {
 
         toYaml(_spec) {
           return 'mock deployment yaml';
+        },
+
+        createResourceGraphForInstance(_spec) {
+          return { name: 'test', resources: [], dependencyGraph: {} } as any;
         },
       };
 
@@ -334,6 +346,10 @@ describe('Factory Pattern Types', () => {
             instanceCount: 0,
             health: 'healthy',
           };
+        },
+
+        async dispose() {
+          // Mock implementation
         },
 
         // Kro-specific methods
@@ -390,6 +406,10 @@ describe('Factory Pattern Types', () => {
             instanceCount: 0,
             health: 'healthy',
           };
+        },
+
+        async dispose() {
+          // Mock implementation
         },
 
         async getRGDStatus() {
@@ -451,6 +471,10 @@ describe('Factory Pattern Types', () => {
           };
         },
 
+        async dispose() {
+          // Mock implementation
+        },
+
         async getRGDStatus() {
           return {
             name: 'test-rgd',
@@ -501,6 +525,10 @@ describe('Factory Pattern Types', () => {
           };
         },
 
+        async dispose() {
+          // Mock implementation
+        },
+
         async rollback() {
           return {
             deploymentId: 'test',
@@ -517,6 +545,10 @@ describe('Factory Pattern Types', () => {
 
         toYaml(_spec) {
           return 'yaml';
+        },
+
+        createResourceGraphForInstance(_spec) {
+          return { name: 'test', resources: [], dependencyGraph: {} } as any;
         },
       };
 

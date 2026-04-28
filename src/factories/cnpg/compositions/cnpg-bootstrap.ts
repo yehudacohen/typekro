@@ -3,6 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
 import { cnpgHelmRelease, cnpgHelmRepository } from '../resources/helm.js';
 import {
   type CnpgBootstrapConfig,
@@ -97,6 +98,34 @@ export const cnpgBootstrap = kubernetesComposition(
       id: 'cnpgHelmRelease',
     });
 
+    // Repair stale shared installs where the Helm-owned ClusterRoleBinding
+    // still points at an older operator namespace. Kubernetes allows multiple
+    // bindings to the same ClusterRole, and this supplemental binding keeps the
+    // operator service account functional after namespace moves/re-installs.
+    const supplementalClusterRoleBinding = clusterRoleBinding({
+      metadata: {
+        name: `${spec.name}-${resolvedNamespace}-cloudnative-pg-typekro-binding`,
+        labels: {
+          'app.kubernetes.io/name': 'cloudnative-pg',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      roleRef: {
+        apiGroup: 'rbac.authorization.k8s.io',
+        kind: 'ClusterRole',
+        name: 'cnpg-operator-cloudnative-pg',
+      },
+      subjects: [
+        {
+          kind: 'ServiceAccount',
+          name: 'cnpg-operator-cloudnative-pg',
+          namespace: resolvedNamespace,
+        },
+      ],
+      id: 'cnpgSupplementalClusterRoleBinding',
+    });
+
     // Tag all resources with 'cluster' scope so factory-level
     // deleteInstance leaves the operator install intact for other
     // consumers. Callers can explicitly tear down shared infra with
@@ -108,6 +137,7 @@ export const cnpgBootstrap = kubernetesComposition(
       setMetadataField(_cnpgNamespace, 'scopes', ['cluster']);
       setMetadataField(_helmRepository, 'scopes', ['cluster']);
       setMetadataField(_helmRelease, 'scopes', ['cluster']);
+      setMetadataField(supplementalClusterRoleBinding, 'scopes', ['cluster']);
     }
 
     // Status derived from HelmRelease conditions.

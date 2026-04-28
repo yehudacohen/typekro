@@ -21,6 +21,7 @@
  */
 
 import { evaluate, parse } from 'cel-js';
+import { escapeCelString } from '../../utils/cel-escape.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ensureError, TypeKroError } from '../errors.js';
@@ -226,13 +227,8 @@ export class CelEvaluator {
     };
   }
 
-  /**
-   * Escape a string for safe embedding in a CEL string literal.
-   * Prevents CEL injection by escaping quotes and backslashes.
-   */
-  private static escapeCelString(value: string): string {
-    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  }
+  /** @see {@link escapeCelString} from utils/cel-escape.ts */
+  private static escapeCelString = escapeCelString;
 
   /**
    * Validate a CEL predicate/expression fragment to prevent injection.

@@ -40,13 +40,13 @@ export interface ConditionalExpressionConfig {
 /**
  * Result of conditional expression processing
  */
-export interface ConditionalExpressionResult<T = any> {
+export interface ConditionalExpressionResult<T = unknown> {
   /** Processed expression */
   expression: T;
   /** Whether processing was performed */
   wasProcessed: boolean;
   /** Original expression before processing */
-  original: any;
+  original: unknown;
   /** Type of conditional expression */
   conditionalType: 'includeWhen' | 'readyWhen' | 'custom' | 'unknown';
   /** Context detection result */
@@ -61,7 +61,7 @@ export interface ConditionalExpressionResult<T = any> {
   };
   /** Debug information if enabled */
   debugInfo?: {
-    detectedReferences: KubernetesRef<any>[];
+    detectedReferences: KubernetesRef<unknown>[];
     processingSteps: string[];
   };
 }
@@ -492,7 +492,7 @@ export class ConditionalExpressionProcessor {
    * Generate CEL expression from KubernetesRef for conditional context
    */
   private generateConditionalCelFromRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     conditionalType: 'includeWhen' | 'readyWhen' | 'custom',
     _context: FactoryExpressionContext
   ): string {
@@ -523,7 +523,7 @@ export class ConditionalExpressionProcessor {
    * Check if expression is a boolean expression with KubernetesRef objects
    */
   private isBooleanExpressionWithRefs(
-    expression: any,
+    expression: unknown,
     detection: MagicProxyDetectionResult
   ): boolean {
     // This is a simplified check - in a real implementation, we'd parse the expression
@@ -538,7 +538,7 @@ export class ConditionalExpressionProcessor {
    * Check if expression is a complex conditional expression
    */
   private isComplexConditionalExpression(
-    expression: any,
+    expression: unknown,
     detection: MagicProxyDetectionResult
   ): boolean {
     return (
@@ -661,7 +661,7 @@ export class ConditionalExpressionProcessor {
    * Validate includeWhen expression
    */
   private validateIncludeWhenExpression(
-    expression: any,
+    expression: unknown,
     _detection: MagicProxyDetectionResult,
     _config: ConditionalExpressionConfig
   ): string[] {
@@ -684,7 +684,7 @@ export class ConditionalExpressionProcessor {
    * Validate readyWhen expression
    */
   private validateReadyWhenExpression(
-    expression: any,
+    expression: unknown,
     detection: MagicProxyDetectionResult,
     _config: ConditionalExpressionConfig
   ): string[] {
@@ -711,7 +711,7 @@ export class ConditionalExpressionProcessor {
    * Validate custom conditional expression
    */
   private validateCustomConditionalExpression(
-    expression: any,
+    expression: unknown,
     _detection: MagicProxyDetectionResult,
     _config: ConditionalExpressionConfig
   ): string[] {

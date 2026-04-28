@@ -20,6 +20,7 @@ import type {
 } from '../../src/core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
 import type { Scope } from '../../src/core/types/schema.js';
+import { clusterRole } from '../../src/factories/kubernetes/rbac/cluster-role.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 // ============================================================================
@@ -300,7 +301,7 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
 
       // Track when resource deployment happens via the create mock
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
-      mockK8sApi.create.mockImplementation((...args: unknown[]) => {
+      mockK8sApi.create.mockImplementation((..._args: unknown[]) => {
         executionOrder.push('resource:create');
         return Promise.resolve({
           metadata: { name: 'simple-resource', namespace: 'test-namespace' },
@@ -1188,6 +1189,86 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
       expect(result.status).toBe('success');
       expect(result.resources).toHaveLength(0);
       expect(result.errors).toHaveLength(0);
+    });
+
+    it('targetScopes cluster excludes unscoped resources', async () => {
+      const dependencyGraph = new DependencyGraph();
+      const clusterRoleResource = clusterRole({
+        id: 'clusterRole',
+        metadata: { name: 'cluster-role' },
+        rules: [],
+      }) as unknown as MockResource;
+      (clusterRoleResource as unknown as Record<string, unknown>).id = 'clusterRole';
+      const deploymentResource = createMockResource({
+        id: 'app',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'app', namespace: 'app-ns' },
+      });
+
+      dependencyGraph.addNode('clusterRole', clusterRoleResource);
+      dependencyGraph.addNode('app', deploymentResource);
+
+      const graph: DeploymentResourceGraph = {
+        name: 'target-scopes-graph',
+        resources: [
+          { id: 'clusterRole', manifest: clusterRoleResource },
+          { id: 'app', manifest: deploymentResource },
+        ],
+        dependencyGraph,
+      };
+
+      const result = await engine.deployWithClosures(
+        graph,
+        {},
+        { ...defaultOptions, targetScopes: ['cluster'] },
+        { name: 'test' }
+      );
+
+      expect(result.status).toBe('success');
+      expect(result.resources.map((resource) => resource.id)).toEqual(['clusterRole']);
+      expect(result.resources[0]?.kind).toBe('ClusterRole');
+      expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('targetScopes empty deploys only unscoped instance-private resources', async () => {
+      const dependencyGraph = new DependencyGraph();
+      const clusterRoleResource = clusterRole({
+        id: 'clusterRole',
+        metadata: { name: 'cluster-role' },
+        rules: [],
+      }) as unknown as MockResource;
+      (clusterRoleResource as unknown as Record<string, unknown>).id = 'clusterRole';
+      const deploymentResource = createMockResource({
+        id: 'app',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'app', namespace: 'app-ns' },
+      });
+
+      dependencyGraph.addNode('clusterRole', clusterRoleResource);
+      dependencyGraph.addNode('app', deploymentResource);
+
+      const graph: DeploymentResourceGraph = {
+        name: 'target-instance-scopes-graph',
+        resources: [
+          { id: 'clusterRole', manifest: clusterRoleResource },
+          { id: 'app', manifest: deploymentResource },
+        ],
+        dependencyGraph,
+      };
+
+      const result = await engine.deployWithClosures(
+        graph,
+        {},
+        { ...defaultOptions, targetScopes: [] },
+        { name: 'test' }
+      );
+
+      expect(result.status).toBe('success');
+      expect(result.resources.map((resource) => resource.id)).toEqual(['app']);
+      expect(result.resources[0]?.kind).toBe('Deployment');
+      expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
     });
   });
 });

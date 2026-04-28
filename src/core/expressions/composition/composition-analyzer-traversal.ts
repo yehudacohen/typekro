@@ -8,6 +8,7 @@
  */
 
 import { getComponentLogger } from '../../logging/index.js';
+import { toCamelCase } from '../../../utils/string.js';
 import {
   conditionToCel,
   extractFactoryId,
@@ -42,6 +43,28 @@ import type {
 } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('composition-analyzer');
+
+function extractConditionalCallName(node: ASTNode): string | undefined {
+  switch (node.type) {
+    case 'Identifier':
+      return (node as Identifier).name;
+    case 'MemberExpression': {
+      const member = node as MemberExpression;
+      return member.property.type === 'Identifier' ? (member.property as Identifier).name : undefined;
+    }
+    case 'ChainExpression': {
+      const expression = (node as ASTNode & { expression?: ASTNode }).expression;
+      return expression ? extractConditionalCallName(expression) : undefined;
+    }
+    case 'SequenceExpression': {
+      const expressions = (node as ASTNode & { expressions?: ASTNode[] }).expressions;
+      const last = expressions?.[expressions.length - 1];
+      return last ? extractConditionalCallName(last) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // AST traversal
@@ -98,6 +121,18 @@ export function walkStatement(
             if (resourceId) {
               result._collectionVariables.set(varName, { varName, resourceId });
               logger.debug('Tracked collection variable', { varName, resourceId });
+            }
+          }
+
+          // Track variable-to-resource-ID mapping for any call expression
+          // with an explicit `id` in its argument object. This enables the
+          // resource-status ternary compiler to resolve AST identifiers
+          // (e.g., `cache`) to KRO resource IDs.
+          if (decl.id.type === 'Identifier' && decl.init.type === 'CallExpression') {
+            const varName = (decl.id as Identifier).name;
+            const resId = extractFactoryId(decl.init as CallExpression);
+            if (resId) {
+              result.variableToResourceId.set(varName, resId);
             }
           }
         }
@@ -236,9 +271,24 @@ export function walkStatement(
       break;
     }
 
+    case 'TryStatement': {
+      const tryStmt = node as ASTNode & {
+        block: ASTNode & { body?: ASTNode[] };
+        finalizer?: ASTNode & { body?: ASTNode[] } | null;
+      };
+
+      if (tryStmt.block.body) {
+        walkBody(tryStmt.block.body, fullSource, specParamName, ctx, result);
+      }
+      if (tryStmt.finalizer?.body) {
+        walkBody(tryStmt.finalizer.body, fullSource, specParamName, ctx, result);
+      }
+      break;
+    }
+
     case 'ReturnStatement': {
       // Analyze return statement for ternary expressions in status values
-      analyzeReturnStatementTernaries(node, fullSource, specParamName, result);
+      analyzeReturnStatementTernaries(node, fullSource, specParamName, result, ctx.optionalFieldNames);
       // Analyze return statement for collection aggregate expressions
       analyzeReturnCollectionAggregates(
         node,
@@ -287,9 +337,31 @@ export function walkExpression(
     if (id) {
       registerResourceControlFlow(id, extractFactoryName(call), ctx, result);
       // Scan factory argument properties for ternary expressions that should become CEL
-      analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result);
+      analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result, ctx.optionalFieldNames);
     }
     return;
+  }
+
+  // Non-factory call expressions (member expressions like simple.Deployment,
+  // nested composition calls like inngestBootstrap, etc.): scan arguments
+  // for resource-status ternaries. These can't be handled via
+  // expressionToCel (template path is opaque across transformations), but
+  // the scoped re-execution in processCompositionBodyAnalysis captures
+  // them by flipping liveStatusMap. We just need to DETECT them here.
+  if (node.type === 'CallExpression' && !isFactoryCall(node)) {
+    const call = node as CallExpression;
+    // Extract id from the call arg if present (for member expression factories)
+    const callId = extractFactoryId(call) ?? '__non_factory_call__';
+    if (ctx.includeWhenStack.length > 0) {
+      const calleeName = extractConditionalCallName(call.callee);
+      if (calleeName) {
+        registerResourceControlFlow(`__call__:${toCamelCase(calleeName)}`, calleeName, ctx, result);
+      }
+    }
+    const firstArg = call.arguments[0];
+    if (firstArg?.type === 'ObjectExpression') {
+      analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result, ctx.optionalFieldNames);
+    }
   }
 
   // Array method chaining: spec.regions.map(region => Factory({...}))
@@ -456,6 +528,7 @@ export function walkExpression(
   const calls = findFactoryCallsInSubtree(node);
   for (const call of calls) {
     registerResourceControlFlow(call.id, call.factoryName, ctx, result);
+    analyzeFactoryArgTernaries(call.node, call.id, fullSource, specParamName, result, ctx.optionalFieldNames);
   }
 }
 

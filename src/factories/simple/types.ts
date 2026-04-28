@@ -8,6 +8,7 @@
 
 import type {
   V1Container,
+  V1EnvFromSource,
   V1IngressRule,
   V1IngressTLS,
   V1LabelSelector,
@@ -31,7 +32,17 @@ export interface DeploymentConfig {
   /** @default 1 */
   replicas?: number;
   namespace?: string;
+  /** Container command override (replaces the image's ENTRYPOINT). */
+  command?: string[];
+  /** Container args (appended to command or the image's ENTRYPOINT). */
+  args?: string[];
+  /** Environment variables as key-value pairs. */
   env?: Record<string, string>;
+  /**
+   * Inject all keys from a Secret or ConfigMap as env vars.
+   * Use `secretRef` or `configMapRef` per the Kubernetes spec.
+   */
+  envFrom?: V1EnvFromSource[];
   ports?: V1Container['ports'];
   resources?: V1ResourceRequirements;
   id?: string;

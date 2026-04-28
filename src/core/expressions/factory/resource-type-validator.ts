@@ -18,7 +18,7 @@ export interface ResourceTypeValidationResult {
   fieldPath: string;
 
   /** The KubernetesRef that was validated */
-  reference: KubernetesRef<any>;
+  reference: KubernetesRef<unknown>;
 
   /** Whether the type validation passed */
   valid: boolean;
@@ -38,10 +38,10 @@ export interface ResourceTypeValidationResult {
  */
 export interface ResourceTypeValidationContext {
   /** Available resources for validation */
-  availableResources?: Record<string, Enhanced<any, any>> | undefined;
+  availableResources?: Record<string, Enhanced<unknown, unknown>> | undefined;
 
   /** Schema proxy for schema validation */
-  schemaProxy?: SchemaProxy<any, any> | undefined;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>> | undefined;
 
   /** Type of schema being validated */
   schemaType?: string;
@@ -69,7 +69,7 @@ export interface ResourceTypeInfo {
  */
 export interface SchemaValidator {
   /** Validate a field in the schema */
-  validateField(fieldPath: string, expectedType?: any): SchemaFieldValidationResult;
+  validateField(fieldPath: string, expectedType?: unknown): SchemaFieldValidationResult;
 }
 
 /**
@@ -133,7 +133,7 @@ export class ResourceTypeValidator {
    * Validate a KubernetesRef for type correctness
    */
   validateKubernetesRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: ResourceTypeValidationContext
   ): ResourceTypeValidationResult {
     const result: ResourceTypeValidationResult = {
@@ -160,7 +160,7 @@ export class ResourceTypeValidator {
    * Validate a schema reference
    */
   private validateSchemaRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: ResourceTypeValidationContext,
     result: ResourceTypeValidationResult
   ): ResourceTypeValidationResult {
@@ -196,7 +196,7 @@ export class ResourceTypeValidator {
    * Validate a resource reference
    */
   private validateResourceRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: ResourceTypeValidationContext,
     result: ResourceTypeValidationResult
   ): ResourceTypeValidationResult {
@@ -257,7 +257,7 @@ export class ResourceTypeValidator {
    */
   private validateResourceFieldPath(
     fieldPath: string,
-    resource: Enhanced<any, any>
+    resource: Enhanced<unknown, unknown>
   ): FieldPathValidationResult {
     const parts = fieldPath.split('.');
 
@@ -344,8 +344,8 @@ export class ResourceTypeValidator {
    * Validate type compatibility between expected and actual types
    */
   private validateTypeCompatibility(
-    ref: KubernetesRef<any>,
-    resource: Enhanced<any, any>
+    ref: KubernetesRef<unknown>,
+    resource: Enhanced<unknown, unknown>
   ): TypeCompatibilityValidationResult {
     if (!ref._type) {
       // No expected type specified, assume compatible
@@ -400,7 +400,7 @@ export class ResourceTypeValidator {
   /**
    * Infer the type of a field from a resource
    */
-  private inferFieldType(fieldPath: string, _resource: Enhanced<any, any>): string | undefined {
+  private inferFieldType(fieldPath: string, _resource: Enhanced<unknown, unknown>): string | undefined {
     // Try to infer type from field path patterns
     if (
       fieldPath.includes('replicas') ||

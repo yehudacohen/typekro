@@ -461,7 +461,7 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
         },
       ];
 
-      scenarios.forEach(({ name, config }) => {
+      scenarios.forEach(({ name: _name, config }) => {
         const helmValues = mapCiliumConfigToHelmValues(config);
         expect(helmValues.cluster).toEqual(config.cluster);
 

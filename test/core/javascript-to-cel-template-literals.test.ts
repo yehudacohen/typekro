@@ -94,9 +94,9 @@ describe('JavaScript to CEL Template Literals', () => {
       const yaml = testComposition.toYaml();
 
       // Should include the message field as a CEL expression
-      // Note: deployment.metadata.name becomes schema.spec.name because it references the spec
+      // Note: deployment.metadata.name becomes spec.name because KRO status CEL runs in schema context.
       expect(yaml).toContain(
-        'message: ${"Deployment " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
+        'message: ${"Deployment " + spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
       );
 
       // Verify CEL template behavior separately
@@ -143,7 +143,7 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Should include the status field as a CEL expression
       expect(yaml).toContain(
-        'status: ${"App " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
+        'status: ${"App " + spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
       );
 
       // Verify CEL expression behavior separately
@@ -371,7 +371,7 @@ describe('JavaScript to CEL Template Literals', () => {
         'resourceOnlyMessage: ${"Deployment has " + deployment.status.readyReplicas + " replicas"}'
       );
       expect(yaml).toContain(
-        'mixedMessage: ${"App " + schema.spec.hostname + " has " + deployment.status.readyReplicas + " replicas"}'
+        'mixedMessage: ${"App " + spec.hostname + " has " + deployment.status.readyReplicas + " replicas"}'
       );
 
       // None should be treated as static fields

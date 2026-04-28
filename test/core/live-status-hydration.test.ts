@@ -16,10 +16,14 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Cel } from '../../src/index.js';
 import {
   createCompositionContext,
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
+import { synthesizeNestedCompositionStatus } from '../../src/core/deployment/nested-composition-status.js';
+import { createSchemaProxy } from '../../src/core/references/schema-proxy.js';
+import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
 import { simple } from '../../src/factories/simple/index.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
 
@@ -38,7 +42,7 @@ function testCrdResource(config: { name: string; namespace?: string; id?: string
       ...(config.id && { id: config.id }),
     },
     { scope: 'namespaced' }
-  );
+  ) as any;
 }
 
 // ─── Schemas ─────────────────────────────────────────────────────────────
@@ -46,6 +50,7 @@ function testCrdResource(config: { name: string; namespace?: string; id?: string
 const InnerStatusSchema = type({
   ready: 'boolean',
   phase: '"Ready" | "Installing"',
+  appUrl: 'string',
 });
 
 const InnerSpecSchema = type({
@@ -68,9 +73,17 @@ const innerComposition = kubernetesComposition(
       id: 'innerDeploy',
     });
 
+    simple.Service({
+      name: spec.name,
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 80 }],
+      id: 'innerService',
+    });
+
     return {
       ready: true, // static for testing — in real use this would be a status comparison
       phase: 'Ready' as const,
+      appUrl: `http://${spec.name}:80`,
     };
   }
 );
@@ -227,6 +240,111 @@ describe('Live Status Hydration', () => {
   });
 
   describe('Composition function body with live status (simulating reExecuteWithLiveStatus)', () => {
+    it('synthesizes nested static status fields while preserving live readiness fields', () => {
+      const outerFn = (spec: { name: string }) => {
+        const inner = innerComposition({ name: `${spec.name}-inner`, key: 'test' });
+        return { ready: inner.status.ready };
+      };
+
+      kubernetesComposition(
+        {
+          name: 'outer-nested-snapshot-test',
+          kind: 'OuterNestedSnapshotTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        outerFn
+      );
+
+      const probeCtx = createCompositionContext('nested-snapshot-probe', { deduplicateIds: true });
+      runWithCompositionContext(probeCtx, () => {
+        outerFn({ name: 'myapp' });
+      });
+
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        probeCtx.resources,
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        probeCtx.nestedCompositionIds,
+        probeCtx.nestedStatusSnapshots
+      );
+
+      expect(enrichedMap.get('inner1')).toEqual({
+        appUrl: 'http://myapp-inner:80',
+        ready: true,
+        phase: 'Ready',
+        failed: false,
+      });
+    });
+
+    it('filters unresolved nested status snapshot markers during synthesis', () => {
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        {
+          inner1InnerDeploy: testCrdResource({ name: 'x', id: 'innerDeploy' }),
+        },
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        new Set(['inner1']),
+        new Map([
+          ['inner1', {
+            appUrl: '__KUBERNETES_REF_inner1_status.appUrl__',
+            components: { app: true },
+          }],
+        ])
+      );
+
+      expect(enrichedMap.get('inner1')).toEqual({
+        components: { app: true },
+        ready: true,
+        phase: 'Ready',
+        failed: false,
+      });
+    });
+
+    it('resolves nested static status fields during live re-execution', () => {
+      const outerFn = (spec: { name: string }) => {
+        const inner = innerComposition({ name: `${spec.name}-inner`, key: 'test' });
+        return {
+          ready: inner.status.ready,
+          innerUrl: inner.status.appUrl,
+        };
+      };
+
+      kubernetesComposition(
+        {
+          name: 'outer-nested-static-test',
+          kind: 'OuterNestedStaticTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', innerUrl: 'string' }),
+        },
+        outerFn
+      );
+
+      const probeCtx = createCompositionContext('nested-static-probe', { deduplicateIds: true });
+      runWithCompositionContext(probeCtx, () => {
+        outerFn({ name: 'myapp' });
+      });
+
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        probeCtx.resources,
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        probeCtx.nestedCompositionIds,
+        probeCtx.nestedStatusSnapshots
+      );
+
+      const ctx = createCompositionContext('nested-static-reexecution', { deduplicateIds: true });
+      ctx.liveStatusMap = enrichedMap;
+
+      const status = runWithCompositionContext(ctx, () => {
+        return outerFn({ name: 'myapp' });
+      });
+
+      expect(status.ready).toBe(true);
+      expect(status.innerUrl).toBe('http://myapp-inner:80');
+      expect(status.innerUrl).not.toContain('__KUBERNETES_REF_');
+    });
+
     it('should resolve both spec-derived and status-derived fields with live data', () => {
       // Simulate what reExecuteWithLiveStatus does: create a context with liveStatusMap
       // and run the composition function body directly
@@ -359,6 +477,33 @@ describe('Live Status Hydration', () => {
       expect(status.components.cache).toBe(true);
       expect(status.components.inner).toBe(false);
     });
+
+    it('normalizes top-level ready from fully resolved component booleans', () => {
+      const ctx = createCompositionContext('component-normalization-test', { deduplicateIds: true });
+      ctx.liveStatusMap = new Map([
+        ['app', { readyReplicas: 1 }],
+        ['database', { ready: true }],
+      ]);
+
+      const status = runWithCompositionContext(ctx, () => {
+        const app = simple.Deployment({ name: 'myapp', image: 'nginx', id: 'app' });
+        const database = testCrdResource({ name: 'myapp-db', id: 'database' });
+
+        return {
+          // Simulate a composition-level false that can appear before the
+          // final merged component booleans are normalized.
+          ready: false,
+          components: {
+            app: app.status.readyReplicas >= 1,
+            database: database.status.ready === true,
+          },
+        };
+      });
+
+      expect(status.ready).toBe(false);
+      expect(status.components.app).toBe(true);
+      expect(status.components.database).toBe(true);
+    });
   });
 
   describe('KRO YAML generation (unaffected by live status)', () => {
@@ -449,6 +594,47 @@ describe('Live Status Hydration', () => {
       expect(yaml).toContain('writeService');
       expect(yaml).toContain('cache');
       expect(yaml).toContain('hostname');
+    });
+
+    it('should resolve nested refs inside status Cel.template expressions', () => {
+      const serialized = serializeStatusMappingsToCel(
+        {
+          prefixedUrl: Cel.template('prefix-%s', Cel.expr<string>('nested.status.appUrl')),
+        },
+        {
+          '__nestedStatus:nested:appUrl': '"http://" + string(schema.spec.name) + ":80"',
+        },
+      );
+
+      expect(String(serialized.prefixedUrl)).toContain('prefix-${');
+      expect(String(serialized.prefixedUrl)).toContain('string(spec.name)');
+      expect(String(serialized.prefixedUrl)).not.toContain('nested.status.appUrl');
+      expect(String(serialized.prefixedUrl)).not.toContain('__KUBERNETES_REF_nested');
+    });
+
+    it('should rewrite direct schema KubernetesRefs for KRO status expressions', () => {
+      const schema = createSchemaProxy<{ namespace: string }, Record<string, never>>();
+      const serialized = serializeStatusMappingsToCel({
+        namespace: schema.spec.namespace,
+        details: {
+          namespace: schema.spec.namespace,
+        },
+      });
+
+      expect(serialized.namespace).toBe('${spec.namespace}');
+      expect((serialized.details as Record<string, string>).namespace).toBe('${spec.namespace}');
+      expect(JSON.stringify(serialized)).not.toContain('__schema__');
+      expect(JSON.stringify(serialized)).not.toContain('schema.spec');
+    });
+
+    it('escapes plain string status values and preserves null literals', () => {
+      const serialized = serializeStatusMappingsToCel({
+        message: 'line 1\n"quoted"',
+        nothing: null,
+      });
+
+      expect(serialized.message).toBe('${"line 1\\n\\"quoted\\""}');
+      expect(serialized.nothing).toBe('${null}');
     });
   });
 

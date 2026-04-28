@@ -138,7 +138,7 @@ export class CelToJavaScriptMigrationHelper {
    * Recursively analyze object for CEL expressions that can be migrated
    */
   private analyzeObjectForMigration(
-    obj: any,
+    obj: unknown,
     suggestions: MigrationSuggestion[],
     path: string = ''
   ): void {

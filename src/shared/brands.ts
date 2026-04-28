@@ -36,18 +36,31 @@ export const NESTED_COMPOSITION_BRAND = Symbol.for('TypeKro.NestedComposition');
 export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableComposition');
 
 /**
+ * Brand symbol for singleton handles.
+ */
+export const SINGLETON_HANDLE_BRAND = Symbol.for('TypeKro.SingletonHandle');
+
+/**
  * Regex pattern for matching __KUBERNETES_REF__ marker strings in values.
  *
  * Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
- * - resourceId: camelCase with optional hyphens/digits (e.g., 'database', 'inngestBootstrap1')
- *   Hyphens are allowed for backward compatibility with older ID formats, though
- *   current convention enforces camelCase (toCamelCase in executeNestedCompositionWithSpec).
- * - fieldPath: dot-separated path with optional $ for iteration (e.g., 'status.ready', 'spec.workers.$item.name')
+ * - resourceId: marker-safe resource id with optional single `_` segments.
+ *   This permits underscores in resource ids while preventing matches from
+ *   consuming across the `__` marker terminator.
+ * - fieldPath: dot-separated path with optional single `_` and `$` segments.
+ *   Optional resource access uses Kro's `.?field` segment form.
+ *   (e.g., 'status.ready', 'status.?loadBalancer', 'spec.workers.$item.name')
  * - Excludes __schema__ refs via negative lookahead
  *
- * This pattern is the single source of truth — all marker detection/resolution
- * code must use this constant to stay in sync. Callers must create their own
- * RegExp via `new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g')` to avoid
- * stateful lastIndex issues with the global flag.
+ * This grammar is the single source of truth — all marker detection/resolution
+ * code must use these constants to stay in sync. Callers must create their own
+ * RegExp via `new RegExp(..., 'g')` to avoid stateful lastIndex issues with
+ * the global flag.
  */
-export const KUBERNETES_REF_MARKER_PATTERN = /(?:__KUBERNETES_REF_)(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/;
+export const KUBERNETES_REF_MARKER_RESOURCE_ID_SOURCE = '[a-zA-Z0-9$-]+(?:_[a-zA-Z0-9$-]+)*';
+export const KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE = '(?:spec|status|metadata|data)(?:(?:[.$]|\\.\\?)[a-zA-Z0-9$-]+(?:_[a-zA-Z0-9$-]+)*)*';
+export const KUBERNETES_REF_MARKER_SOURCE = `__KUBERNETES_REF_(__schema__|${KUBERNETES_REF_MARKER_RESOURCE_ID_SOURCE})_(${KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE})__`;
+export const KUBERNETES_REF_SCHEMA_MARKER_SOURCE = `__KUBERNETES_REF___schema___(${KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE})__`;
+export const KUBERNETES_REF_MARKER_PATTERN = new RegExp(
+  `(?:__KUBERNETES_REF_)(?!__schema__)(${KUBERNETES_REF_MARKER_RESOURCE_ID_SOURCE})_(${KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE})__`
+);

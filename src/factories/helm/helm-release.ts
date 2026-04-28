@@ -30,7 +30,8 @@ export interface HelmReleaseConfig {
     /** @default 'HelmRepository' */
     kind?: 'HelmRepository';
   };
-  values?: Record<string, any>;
+  values?: Record<string, unknown>;
+  driftDetection?: HelmReleaseSpec['driftDetection'];
   id?: string;
 }
 
@@ -163,6 +164,7 @@ export function helmRelease(
       // resources (e.g., Inngest waiting for Postgres/Redis to be ready).
       install: { timeout: '10m', remediation: { retries: 3 } },
       upgrade: { timeout: '10m', remediation: { retries: 3 } },
+      ...(config.driftDetection && { driftDetection: config.driftDetection }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);
@@ -230,7 +232,7 @@ export function simpleHelmChart(
   name: string,
   repository: string,
   chart: string,
-  values?: Record<string, any>
+  values?: Record<string, unknown>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   getComponentLogger('helm-release').warn(
     "simpleHelmChart() is deprecated. Use simple.HelmChart() instead — import { simple } from 'typekro'"

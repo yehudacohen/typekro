@@ -69,8 +69,8 @@ export type MagicAssignable<T> =
   | CelExpression<T>
   | KubernetesRef<T>
   | KubernetesRef<T | undefined>
-  | (T extends DeepKubernetesRef<any> ? never : DeepKubernetesRef<T>)
-  | (T extends DeepKubernetesRef<any> ? never : DeepKubernetesRef<T | undefined>);
+  | (T extends DeepKubernetesRef<unknown> ? never : DeepKubernetesRef<T>)
+  | (T extends DeepKubernetesRef<unknown> ? never : DeepKubernetesRef<T | undefined>);
 
 // Type assertion helpers for the magic proxy system
 export type MagicString = string | KubernetesRef<string> | CelExpression<string>;
@@ -118,7 +118,7 @@ export interface KubernetesRef<T = unknown> {
  * - KubernetesRef<number> | number → can be used in arithmetic
  * - KubernetesRef<string> | string → can be used in string operations
  */
-export type DeepKubernetesRef<T> = T extends any // Distributive conditional - enables proper union handling
+export type DeepKubernetesRef<T> = T extends unknown // Distributive conditional - enables proper union handling
   ? T extends boolean
     ? KubernetesRef<boolean> | boolean
     : T extends number

@@ -10,11 +10,13 @@
 import { getComponentLogger } from '../../logging/index.js';
 import {
   expressionToCel,
+  extractResourceStatusRef,
   factoryArgKeyToTemplatePath,
   findFactoryCallsInSubtree,
   getSource,
   isCompileTimeLiteral,
   referencesSpec,
+  remapResourceStatusReferences,
 } from './composition-analyzer-helpers.js';
 import type {
   ASTAnalysisResult,
@@ -26,6 +28,7 @@ import type {
   Literal,
   MemberExpression,
   Property,
+  ResourceStatusTernary,
 } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('composition-analyzer');
@@ -49,12 +52,13 @@ export function analyzeFactoryArgTernaries(
   resourceId: string,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   const firstArg = call.arguments[0];
   if (!firstArg || firstArg.type !== 'ObjectExpression') return;
 
-  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result);
+  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result, optionalFieldNames);
 }
 
 /**
@@ -75,7 +79,8 @@ function walkObjectForTernaries(
   resourceId: string,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   if (objectNode.type !== 'ObjectExpression') return;
   const properties = (objectNode as ASTNode & { properties: Property[] }).properties;
@@ -96,8 +101,111 @@ function walkObjectForTernaries(
     // Ternary value → emit template override at the full dotted path
     if (prop.value.type === 'ConditionalExpression') {
       const ternary = prop.value as ConditionalExpression;
-      if (!referencesSpec(ternary.test, specParamName)) continue;
       if (isCompileTimeLiteral(ternary.test)) continue;
+
+      // Check for resource-status ternary (e.g., cache.status.ready ? X : Y).
+      // For direct factory calls, we record the full ternary info (property
+      // path, alternate value) so processCompositionBodyAnalysis can construct
+      // a targeted template override without re-execution. For non-factory
+      // calls (nested compositions), we record just the detection info for
+      // the scoped re-execution approach (Phase 4).
+      const statusRef = extractResourceStatusRef(ternary.test, specParamName, optionalFieldNames);
+      if (statusRef) {
+        // Build the property path for the override target
+        const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
+        const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
+
+        if (fullPath && ternary.consequent.type === 'ObjectExpression' && ternary.alternate.type === 'ObjectExpression') {
+          const trueFields = extractObjectLiteralLeaves(
+            ternary.consequent,
+            fullPath,
+            fullSource,
+            specParamName,
+            result.variableToResourceId,
+            optionalFieldNames
+          );
+          const falseFields = extractObjectLiteralLeaves(
+            ternary.alternate,
+            fullPath,
+            fullSource,
+            specParamName,
+            result.variableToResourceId,
+            optionalFieldNames
+          );
+          const allPaths = new Set([...trueFields.keys(), ...falseFields.keys()]);
+          if (allPaths.size > 0) {
+            let overrides = result.templateOverrides.get(resourceId);
+            if (!overrides) {
+              overrides = [];
+              result.templateOverrides.set(resourceId, overrides);
+            }
+            const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+            const conditionExpr = statusRef.conditionExpression
+              ? remapResourceStatusReferences(
+                  statusRef.conditionExpression,
+                  new Map(result.variableToResourceId).set(statusRef.variableName, statusResourceId)
+                )
+              : `${statusResourceId}.status.${statusRef.statusField}`;
+            for (const path of allPaths) {
+              const trueValue = trueFields.get(path) ?? 'omit()';
+              const falseValue = falseFields.get(path) ?? 'omit()';
+              overrides.push({
+                propertyPath: path,
+                celExpression: `\${${conditionExpr} ? ${trueValue} : ${falseValue}}`,
+              });
+            }
+            continue;
+          }
+        }
+
+        const consequentCel = literalNodeToCel(ternary.consequent);
+        const alternateCel = literalNodeToCel(ternary.alternate);
+
+        const entry: ResourceStatusTernary = {
+          ...statusRef,
+        };
+        // Only set callSiteResourceId for direct factory calls
+        if (resourceId !== '__non_factory_call__') {
+          entry.callSiteResourceId = resourceId;
+        }
+        if (fullPath) {
+          entry.propertyPath = fullPath;
+        }
+        if (alternateCel) {
+          entry.alternateCel = alternateCel;
+        }
+        result.resourceStatusTernaries.push(entry);
+
+        if (fullPath && consequentCel && alternateCel && resourceId !== '__non_factory_call__') {
+          let overrides = result.templateOverrides.get(resourceId);
+          if (!overrides) {
+            overrides = [];
+            result.templateOverrides.set(resourceId, overrides);
+          }
+          const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+          const conditionExpr = statusRef.conditionExpression
+            ? remapResourceStatusReferences(
+                statusRef.conditionExpression,
+                new Map(result.variableToResourceId).set(statusRef.variableName, statusResourceId)
+              )
+            : `${statusResourceId}.status.${statusRef.statusField}`;
+          overrides.push({
+            propertyPath: fullPath,
+            celExpression: `\${${conditionExpr} ? ${consequentCel} : ${alternateCel}}`,
+          });
+        }
+        logger.debug('Detected resource-status ternary in factory argument', {
+          resourceId,
+          variableName: statusRef.variableName,
+          statusField: statusRef.statusField,
+          conditionExpression: statusRef.conditionExpression,
+          propertyPath: fullPath,
+          alternateCel,
+        });
+        continue;
+      }
+
+      if (!referencesSpec(ternary.test, specParamName)) continue;
 
       // Build the full property path. The top-level caller passes an empty
       // parentPath; nested calls pass the dotted path built so far.
@@ -105,7 +213,7 @@ function walkObjectForTernaries(
       const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
       if (!fullPath) continue;
 
-      const celExpr = expressionToCel(ternary, fullSource, specParamName);
+      const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
 
       let overrides = result.templateOverrides.get(resourceId);
       if (!overrides) {
@@ -134,10 +242,198 @@ function walkObjectForTernaries(
         resourceId,
         fullSource,
         specParamName,
-        result
+        result,
+        optionalFieldNames
+      );
+    }
+
+    // Nested arrays → recurse into object elements so factory args like
+    // `env: [{ name: 'MODE', value: status.ready ? 'on' : 'off' }]` get
+    // template overrides at `spec.env.0.value`.
+    if (prop.value.type === 'ArrayExpression') {
+      const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
+      const childPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
+      if (!childPath) continue;
+      walkArrayForTernaries(
+        prop.value,
+        childPath,
+        resourceId,
+        fullSource,
+        specParamName,
+        result,
+        optionalFieldNames
       );
     }
   }
+}
+
+function walkArrayForTernaries(
+  arrayNode: ASTNode,
+  parentPath: string,
+  resourceId: string,
+  fullSource: string,
+  specParamName: string,
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
+): void {
+  const elements = (arrayNode as ASTNode & { elements?: Array<ASTNode | null> }).elements;
+  if (!elements) return;
+
+  elements.forEach((element, index) => {
+    if (!element) return;
+    const elementPath = `${parentPath}.${index}`;
+    if (element.type === 'ConditionalExpression') {
+      const ternary = element as ConditionalExpression;
+      if (isCompileTimeLiteral(ternary.test)) return;
+
+      const statusRef = extractResourceStatusRef(ternary.test, specParamName, optionalFieldNames);
+      if (statusRef) {
+        const consequentCel = literalNodeToCel(ternary.consequent);
+        const alternateCel = literalNodeToCel(ternary.alternate);
+        if (consequentCel && alternateCel && resourceId !== '__non_factory_call__') {
+          let overrides = result.templateOverrides.get(resourceId);
+          if (!overrides) {
+            overrides = [];
+            result.templateOverrides.set(resourceId, overrides);
+          }
+          const statusResourceId = result.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+          const conditionExpr = statusRef.conditionExpression
+            ? remapResourceStatusReferences(
+                statusRef.conditionExpression,
+                new Map(result.variableToResourceId).set(statusRef.variableName, statusResourceId)
+              )
+            : `${statusResourceId}.status.${statusRef.statusField}`;
+          overrides.push({
+            propertyPath: elementPath,
+            celExpression: `\${${conditionExpr} ? ${consequentCel} : ${alternateCel}}`,
+          });
+        }
+        return;
+      }
+
+      if (referencesSpec(ternary.test, specParamName)) {
+        let overrides = result.templateOverrides.get(resourceId);
+        if (!overrides) {
+          overrides = [];
+          result.templateOverrides.set(resourceId, overrides);
+        }
+        overrides.push({
+          propertyPath: elementPath,
+          celExpression: expressionToCel(ternary, fullSource, specParamName, optionalFieldNames),
+        });
+      }
+    } else if (element.type === 'ObjectExpression') {
+      walkObjectForTernaries(
+        element,
+        elementPath,
+        resourceId,
+        fullSource,
+        specParamName,
+        result,
+        optionalFieldNames
+      );
+    } else if (element.type === 'ArrayExpression') {
+      walkArrayForTernaries(
+        element,
+        elementPath,
+        resourceId,
+        fullSource,
+        specParamName,
+        result,
+        optionalFieldNames
+      );
+    }
+  });
+}
+
+function literalNodeToCel(node: ASTNode): string | undefined {
+  if (node.type !== 'Literal') return undefined;
+  const value = (node as unknown as { value: unknown }).value;
+  if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return '""';
+  return undefined;
+}
+
+function extractObjectLiteralLeaves(
+  objectNode: ASTNode,
+  parentPath: string,
+  fullSource: string,
+  specParamName: string,
+  variableToResourceId: ReadonlyMap<string, string>,
+  optionalFieldNames?: Set<string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  if (objectNode.type !== 'ObjectExpression') return result;
+
+  const properties = (objectNode as ASTNode & { properties: Property[] }).properties;
+  for (const prop of properties) {
+    if (prop.type !== 'Property') continue;
+    const key = prop.key;
+    const keyName =
+      key.type === 'Identifier'
+        ? (key as Identifier).name
+        : key.type === 'Literal'
+          ? String((key as Literal).value)
+          : undefined;
+    if (!keyName) continue;
+
+    const fullPath = `${parentPath}.${keyName}`;
+    if (prop.value.type === 'ObjectExpression') {
+      for (const [nestedPath, value] of extractObjectLiteralLeaves(
+        prop.value,
+        fullPath,
+        fullSource,
+        specParamName,
+        variableToResourceId,
+        optionalFieldNames
+      )) {
+        result.set(nestedPath, value);
+      }
+      continue;
+    }
+
+    const value = branchValueNodeToCel(prop.value, fullSource, specParamName, variableToResourceId, optionalFieldNames);
+    if (value !== undefined) {
+      result.set(fullPath, value);
+    }
+  }
+
+  return result;
+}
+
+function branchValueNodeToCel(
+  node: ASTNode,
+  fullSource: string,
+  specParamName: string,
+  variableToResourceId: ReadonlyMap<string, string>,
+  optionalFieldNames?: Set<string>
+): string | undefined {
+  const literal = literalNodeToCel(node);
+  if (literal !== undefined) return literal;
+
+  if (node.type === 'CallExpression') {
+    const call = node as CallExpression;
+    const callee = call.callee as ASTNode & { property?: ASTNode };
+    const property = callee.property;
+    if (property?.type === 'Identifier' && (property as Identifier).name === 'expr') {
+      const parts = call.arguments
+        .map((arg) => {
+          const argLiteral = literalNodeToCel(arg);
+          if (argLiteral !== undefined) return argLiteral.replace(/^"|"$/g, '');
+          return expressionToCel(arg, fullSource, specParamName, optionalFieldNames)
+            .replace(/^\$\{/, '')
+            .replace(/\}$/, '');
+        })
+        .join('');
+      return remapResourceStatusReferences(parts, new Map(variableToResourceId));
+    }
+  }
+
+  const expression = expressionToCel(node, fullSource, specParamName, optionalFieldNames)
+    .replace(/^\$\{/, '')
+    .replace(/\}$/, '');
+  return remapResourceStatusReferences(expression, new Map(variableToResourceId));
 }
 
 /**
@@ -148,7 +444,8 @@ export function analyzeReturnStatementTernaries(
   returnNode: ASTNode,
   fullSource: string,
   specParamName: string,
-  result: ASTAnalysisResult
+  result: ASTAnalysisResult,
+  optionalFieldNames?: Set<string>
 ): void {
   const argument = (returnNode as ASTNode & { argument: ASTNode | null }).argument;
   if (!argument || argument.type !== 'ObjectExpression') return;
@@ -181,7 +478,7 @@ export function analyzeReturnStatementTernaries(
     if (!keyName) continue;
 
     // Convert the full ternary expression to CEL
-    const celExpr = expressionToCel(ternary, fullSource, specParamName);
+    const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
 
     result.statusOverrides.push({ propertyPath: keyName, celExpression: celExpr });
 
@@ -437,26 +734,27 @@ export function convertCollectionCallToCel(
 
   if (!resourceId && !chainedPrefix) return undefined;
   const base = chainedPrefix || resourceId;
+  if (!base) return undefined;
 
   switch (methodName) {
     case 'every': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.all(${lambda.lambdaVar}, ${lambda.body})`;
     }
     case 'some': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.exists(${lambda.lambdaVar}, ${lambda.body})`;
     }
     case 'filter': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.filter(${lambda.lambdaVar}, ${lambda.body})`;
     }
@@ -466,7 +764,7 @@ export function convertCollectionCallToCel(
       // If it's the factory-producing map, findFactoryMapCall would have returned the resourceId.
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.map(${lambda.lambdaVar}, ${lambda.body})`;
     }

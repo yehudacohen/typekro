@@ -8,8 +8,8 @@ All TypeKro import patterns in one place.
 // Main composition API
 import { kubernetesComposition, Cel, externalRef } from 'typekro';
 
-// Runtime bootstrap (for Kro mode)
-import { typeKroRuntimeBootstrap } from 'typekro';
+// Runtime bootstrap (for Kro mode) and shared-owner boundaries
+import { singleton, typeKroRuntimeBootstrap } from 'typekro';
 
 // Types (use 'import type' for type-only imports)
 import type { Enhanced, KubernetesRef, RefOrValue, CelExpression } from 'typekro';
@@ -105,8 +105,11 @@ import { certificate, clusterIssuer, issuer } from 'typekro/cert-manager';
 // Flux GitOps
 import { gitRepository } from 'typekro/flux';
 
-// APISix ingress
+// APISIX gateway
 import * as apisix from 'typekro/apisix';
+
+// SearXNG metasearch
+import { searxng, searxngBootstrap } from 'typekro/searxng';
 
 // External-DNS
 import * as externalDns from 'typekro/external-dns';
@@ -157,7 +160,7 @@ import {
 import { createResource } from 'typekro';
 
 // Type guards
-import { isKubernetesRef, isCelExpression } from 'typekro';
+import { isKubernetesRef, isCelExpression } from 'typekro/advanced';
 
 // Debugging
 import { enableCompositionDebugging, getCompositionDebugLogs } from 'typekro';
@@ -188,10 +191,12 @@ const AppSpec = type({
 | `externalRef` | `typekro` |
 | `createResource` | `typekro` |
 | `typeKroRuntimeBootstrap` | `typekro` |
+| `singleton` | `typekro` |
 | RBAC factories | `typekro` |
 | Cilium policies | `typekro/cilium` |
 | Cert-Manager | `typekro/cert-manager` |
 | Flux GitOps | `typekro/flux` |
+| SearXNG | `typekro/searxng` |
 | Types | `typekro` (with `import type`) |
 
 ## Enhanced Resource Methods
@@ -199,6 +204,7 @@ const AppSpec = type({
 All factory functions return `Enhanced` resources with these methods:
 
 ```typescript
+const database = Deployment({ id: 'database', name: 'database', image: 'postgres:16' });
 const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' });
 
 // Custom readiness evaluation
@@ -208,7 +214,7 @@ deploy.withReadinessEvaluator((resource) => ({
 }));
 
 // Explicit dependencies (when auto-detection isn't enough)
-deploy.withDependencies('database', 'configMap');
+deploy.dependsOn(database);
 ```
 
 See [Custom Integrations](/advanced/custom-integrations) for details on these methods.

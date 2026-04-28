@@ -17,7 +17,7 @@ import type { TypeInfo } from './type-safety.js';
  * Get field type from schema proxy
  */
 export function getSchemaFieldType(
-  _schemaProxy: SchemaProxy<any, any>,
+  _schemaProxy: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
   _fieldPath: string
 ): TypeInfo | undefined {
   // This would integrate with the actual schema type system
@@ -29,7 +29,7 @@ export function getSchemaFieldType(
  * Get field type from a resource
  */
 export function getResourceFieldType(
-  _resource: Enhanced<any, any>,
+  _resource: Enhanced<unknown, unknown>,
   fieldPath: string
 ): TypeInfo | undefined {
   // This would integrate with the Enhanced type system
@@ -90,7 +90,7 @@ export function getResourceFieldType(
 /**
  * Get available fields from a schema proxy
  */
-export function getAvailableSchemaFields(_schemaProxy: SchemaProxy<any, any>): string[] {
+export function getAvailableSchemaFields(_schemaProxy: SchemaProxy<Record<string, unknown>, Record<string, unknown>>): string[] {
   // This would extract available fields from the schema
   return ['spec.name', 'spec.replicas', 'status.ready', 'metadata.name'];
 }
@@ -98,7 +98,7 @@ export function getAvailableSchemaFields(_schemaProxy: SchemaProxy<any, any>): s
 /**
  * Get available fields from a resource
  */
-export function getAvailableResourceFields(resource: Enhanced<any, any>): string[] {
+export function getAvailableResourceFields(resource: Enhanced<unknown, unknown>): string[] {
   const resourceKind = resource.constructor.name;
 
   // Common fields for different resource types
@@ -246,7 +246,7 @@ export function findSimilarResourceNames(target: string, available: string[]): s
 /**
  * Check if a field is deprecated
  */
-export function isDeprecatedField(_resource: Enhanced<any, any>, fieldPath: string): boolean {
+export function isDeprecatedField(_resource: Enhanced<unknown, unknown>, fieldPath: string): boolean {
   // This would check against a registry of deprecated fields
   const deprecatedFields = ['spec.serviceAccount', 'spec.securityContext.runAsUser'];
   return deprecatedFields.some((deprecated) => fieldPath.startsWith(deprecated));
@@ -256,7 +256,7 @@ export function isDeprecatedField(_resource: Enhanced<any, any>, fieldPath: stri
  * Get replacement for a deprecated field
  */
 export function getFieldReplacement(
-  _resource: Enhanced<any, any>,
+  _resource: Enhanced<unknown, unknown>,
   fieldPath: string
 ): string | undefined {
   // This would provide replacement suggestions for deprecated fields
@@ -272,7 +272,7 @@ export function getFieldReplacement(
  * Check if accessing a field has performance implications
  */
 export function hasPerformanceImplications(
-  _resource: Enhanced<any, any>,
+  _resource: Enhanced<unknown, unknown>,
   fieldPath: string
 ): boolean {
   // This would identify fields that might have performance implications
@@ -283,7 +283,7 @@ export function hasPerformanceImplications(
 /**
  * Extract API version from a resource
  */
-export function getResourceApiVersion(_resource: Enhanced<any, any>): string | undefined {
+export function getResourceApiVersion(_resource: Enhanced<unknown, unknown>): string | undefined {
   // Extract API version from resource
   return 'v1'; // Placeholder
 }
@@ -291,7 +291,7 @@ export function getResourceApiVersion(_resource: Enhanced<any, any>): string | u
 /**
  * Extract kind from a resource
  */
-export function getResourceKind(resource: Enhanced<any, any>): string | undefined {
+export function getResourceKind(resource: Enhanced<unknown, unknown>): string | undefined {
   // Extract kind from resource
   return resource.constructor.name;
 }
@@ -299,7 +299,7 @@ export function getResourceKind(resource: Enhanced<any, any>): string | undefine
 /**
  * Get the result type from a reference chain
  */
-export function getChainResultType(refs: KubernetesRef<any>[]): TypeInfo | undefined {
+export function getChainResultType(refs: KubernetesRef<unknown>[]): TypeInfo | undefined {
   // Get the type of the final reference in the chain
   if (refs.length === 0) return undefined;
 

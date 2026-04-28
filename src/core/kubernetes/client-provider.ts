@@ -50,6 +50,15 @@ import {
   isBunRuntime,
 } from './bun-api-client.js';
 
+export interface KubernetesClientProviderDebugState {
+  initialized: boolean;
+  hasKubeConfig: boolean;
+  hasKubernetesApi: boolean;
+  clientCacheKeys: string[];
+  currentContext?: string | undefined;
+  server?: string | undefined;
+}
+
 /**
  * Retry configuration options for operations with exponential backoff
  */
@@ -131,6 +140,8 @@ export interface KubernetesClientConfig {
     certFile?: string;
     keyData?: string;
     keyFile?: string;
+    exec?: unknown;
+    authProvider?: unknown;
   };
 
   /**
@@ -305,7 +316,10 @@ export class KubernetesClientProvider {
    */
   getKubeConfig(): k8s.KubeConfig {
     this.ensureInitialized();
-    return this.kubeConfig!;
+    if (!this.kubeConfig) {
+      throw new Error('KubeConfig not initialized');
+    }
+    return this.kubeConfig;
   }
 
   /**
@@ -314,7 +328,10 @@ export class KubernetesClientProvider {
    */
   getKubernetesApi(): k8s.KubernetesObjectApi {
     this.ensureInitialized();
-    return this.k8sApi!;
+    if (!this.k8sApi) {
+      throw new Error('Kubernetes API not initialized');
+    }
+    return this.k8sApi;
   }
 
   /**
@@ -416,7 +433,10 @@ export class KubernetesClientProvider {
    */
   injectKubernetesApi(consumer: KubernetesApiConsumer): void {
     this.ensureInitialized();
-    consumer.setKubernetesApi(this.k8sApi!);
+    if (!this.k8sApi) {
+      throw new Error('Kubernetes API not initialized');
+    }
+    consumer.setKubernetesApi(this.k8sApi);
     this.logger.debug('Injected Kubernetes API client into consumer', {
       consumerType: consumer.constructor.name,
     });
@@ -427,7 +447,10 @@ export class KubernetesClientProvider {
    */
   injectKubeConfig(consumer: KubeConfigConsumer): void {
     this.ensureInitialized();
-    consumer.setKubeConfig(this.kubeConfig!);
+    if (!this.kubeConfig) {
+      throw new Error('KubeConfig not initialized');
+    }
+    consumer.setKubeConfig(this.kubeConfig);
     this.logger.debug('Injected KubeConfig into consumer', {
       consumerType: consumer.constructor.name,
     });
@@ -705,6 +728,8 @@ export class KubernetesClientProvider {
           ...(config.user.certFile && { certFile: config.user.certFile }),
           ...(config.user.keyData && { keyData: config.user.keyData }),
           ...(config.user.keyFile && { keyFile: config.user.keyFile }),
+          ...(config.user.exec ? { exec: config.user.exec } : {}),
+          ...(config.user.authProvider ? { authProvider: config.user.authProvider } : {}),
         },
       ];
 
@@ -980,6 +1005,32 @@ export class KubernetesClientProvider {
    */
   isInitialized(): boolean {
     return this.initialized && this.kubeConfig !== null && this.k8sApi !== null;
+  }
+
+  getDebugState(): KubernetesClientProviderDebugState {
+    const state: KubernetesClientProviderDebugState = {
+      initialized: this.initialized,
+      hasKubeConfig: this.kubeConfig !== null,
+      hasKubernetesApi: this.k8sApi !== null,
+      clientCacheKeys: [...this.clientCache.keys()],
+    };
+
+    if (this.kubeConfig?.getCurrentContext()) {
+      state.currentContext = this.kubeConfig.getCurrentContext();
+    }
+
+    if (this.kubeConfig?.getCurrentCluster()?.server) {
+      state.server = this.kubeConfig.getCurrentCluster()?.server;
+    }
+
+    return state;
+  }
+
+  dispose(): void {
+    this.logger.debug('Disposing Kubernetes client provider', {
+      providerState: this.getDebugState(),
+    });
+    this.reset();
   }
 
   /**

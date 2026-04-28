@@ -15,6 +15,7 @@ import {
   analyzeCompositionBody,
   applyAnalysisToResources,
 } from '../../src/core/expressions/composition/composition-analyzer.js';
+import { conditionToCel } from '../../src/core/expressions/composition/composition-analyzer-helpers.js';
 import type { ASTAnalysisResult as CompositionAnalysisResult } from '../../src/core/expressions/composition/composition-analyzer-types.js';
 import {
   getForEach,
@@ -39,6 +40,7 @@ function Deployment(_opts: Record<string, unknown>) {
 function ConfigMap(_opts: Record<string, unknown>) {
   return {};
 }
+const simple = { Deployment, ConfigMap };
 /* eslint-enable @typescript-eslint/no-unused-vars */
 
 // ===========================================================================
@@ -47,7 +49,7 @@ function ConfigMap(_opts: Record<string, unknown>) {
 
 describe('analyzeCompositionBody: basic', () => {
   it('returns empty result for function with no factory calls', () => {
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       const x = 1 + 2;
       return { value: x };
     };
@@ -75,7 +77,7 @@ describe('analyzeCompositionBody: basic', () => {
   });
 
   it('handles empty function body', () => {
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       // intentionally empty
     };
     const result = analyzeCompositionBody(fn, new Set());
@@ -149,7 +151,7 @@ describe('analyzeCompositionBody: if-statement includeWhen', () => {
 
   it('skips includeWhen for compile-time literal conditions', () => {
     const alwaysTrue = true;
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       const result: Record<string, any> = {};
       if (alwaysTrue) {
         result.always = Deployment({ id: 'always', name: 'always' });
@@ -184,6 +186,50 @@ describe('analyzeCompositionBody: ternary includeWhen', () => {
     // Both should have includeWhen conditions
     expect(redisFlow).toBeDefined();
     expect(memcachedFlow).toBeDefined();
+  });
+
+  it('detects ternary resource creation with member factory calls', () => {
+    const fn = (spec: any) => spec.enabled
+      ? simple.Deployment({ id: 'app', name: 'app' })
+      : undefined;
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['app']));
+    const appFlow = analysisResult.resources.get('app');
+
+    expect(appFlow).toBeDefined();
+    expect(appFlow?.includeWhen[0]?.expression).toBe('${schema.spec.enabled}');
+  });
+});
+
+describe('conditionToCel optional field guards', () => {
+  it('wraps optional bare RHS operands in compound conditions', () => {
+    const source = '(spec) => spec.required && spec.optional';
+    const conditionStart = source.indexOf('spec.required');
+    const conditionEnd = source.length;
+
+    const cel = conditionToCel(
+      { type: 'Identifier', range: [conditionStart, conditionEnd] },
+      source,
+      'spec',
+      new Set(['optional'])
+    );
+
+    expect(cel).toBe('${schema.spec.required && has(schema.spec.optional)}');
+  });
+
+  it('guards optional boolean comparisons that default to enabled', () => {
+    const source = '(spec) => spec.enabled !== false';
+    const conditionStart = source.indexOf('spec.enabled');
+    const conditionEnd = source.length;
+
+    const cel = conditionToCel(
+      { type: 'Identifier', range: [conditionStart, conditionEnd] },
+      source,
+      'spec',
+      new Set(['enabled'])
+    );
+
+    expect(cel).toBe('${(!(has(schema.spec.enabled)) || schema.spec.enabled != false)}');
   });
 });
 
@@ -301,6 +347,55 @@ describe('analyzeCompositionBody: templateOverrides', () => {
     // Verify templateOverrides map exists (content varies by transpiler)
     expect(analysisResult.templateOverrides).toBeDefined();
   });
+
+  it('preserves full resource status collection calls in ternary conditions', () => {
+    function fn(spec: any) {
+      const db = Deployment({ id: 'db', name: 'db' }) as any;
+      return {
+        app: ConfigMap({
+          id: 'app',
+          name: spec.name,
+          data: {
+            phase: db.status.conditions.exists((c: any) => c.type === 'Ready' && c.status === 'True')
+              ? 'ready'
+              : 'waiting',
+          },
+        }),
+      };
+    }
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['db', 'app']));
+    const ternary = analysisResult.resourceStatusTernaries.find((entry) => entry.variableName === 'db');
+
+    expect(analysisResult.errors).toHaveLength(0);
+    expect(ternary?.statusField).toBe('conditions');
+    expect(ternary?.conditionExpression).toBe('db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+    expect(ternary?.conditionExpression).not.toBe('db.status.conditions');
+  });
+
+  it('maps JavaScript some() to CEL exists() in resource-status ternary conditions', () => {
+    function fn(spec: any) {
+      const db = Deployment({ id: 'db', name: 'db' }) as any;
+      return {
+        app: ConfigMap({
+          id: 'app',
+          name: spec.name,
+          data: {
+            phase: db.status.conditions.some((c: any) => c.type === 'Ready' && c.status === 'True')
+              ? 'ready'
+              : 'waiting',
+          },
+        }),
+      };
+    }
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['db', 'app']));
+    const ternary = analysisResult.resourceStatusTernaries.find((entry) => entry.variableName === 'db');
+
+    expect(analysisResult.errors).toHaveLength(0);
+    expect(ternary?.conditionExpression).toBe('db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+    expect(ternary?.conditionExpression).not.toContain('.some(');
+  });
 });
 
 // ===========================================================================
@@ -381,7 +476,7 @@ describe('analyzeCompositionBody: nested control flow', () => {
 
 describe('analyzeCompositionBody: multiple resources', () => {
   it('tracks multiple distinct factory calls', () => {
-    const fn = (spec: any) => ({
+    const fn = (_spec: any) => ({
       frontend: Deployment({ id: 'frontend', name: 'web' }),
       backend: Deployment({ id: 'backend', name: 'api' }),
       config: ConfigMap({ id: 'config', name: 'app-config' }),
@@ -422,13 +517,15 @@ describe('applyAnalysisToResources', () => {
   ): CompositionAnalysisResult {
     return {
       resources: new Map(),
+      hybridOverrideConditions: new Map(),
+      differentialConditionFields: new Set(),
       unregisteredFactories: [],
       templateOverrides: new Map(),
       _collectionVariables: new Map(),
       statusOverrides: [],
       errors: [],
       ...overrides,
-    };
+    } as CompositionAnalysisResult;
   }
 
   it('attaches forEach via WeakMap metadata', () => {
@@ -565,6 +662,29 @@ describe('applyAnalysisToResources', () => {
     expect(getForEach(resources.myDep)).toHaveLength(2);
   });
 
+  it('does not duplicate forEach metadata when analysis is applied repeatedly', () => {
+    const resources: Record<string, any> = {
+      myDep: { apiVersion: 'apps/v1', kind: 'Deployment' },
+    };
+    const analysis = makeAnalysis({
+      resources: new Map([
+        [
+          'myDep',
+          {
+            resourceId: 'myDep',
+            forEach: [{ variableName: 'region', source: '${schema.spec.regions}' }],
+            includeWhen: [],
+          },
+        ],
+      ]),
+    });
+
+    applyAnalysisToResources(resources, analysis);
+    applyAnalysisToResources(resources, analysis);
+
+    expect(getForEach(resources.myDep)).toEqual([{ region: '${schema.spec.regions}' }]);
+  });
+
   it('merges with existing includeWhen in WeakMap', () => {
     const resources: Record<string, any> = {
       opt: { apiVersion: 'apps/v1', kind: 'Deployment' },
@@ -589,6 +709,29 @@ describe('applyAnalysisToResources', () => {
 
     // Should merge both entries
     expect(getIncludeWhen(resources.opt)).toHaveLength(2);
+  });
+
+  it('does not duplicate includeWhen metadata when analysis is applied repeatedly', () => {
+    const resources: Record<string, any> = {
+      opt: { apiVersion: 'apps/v1', kind: 'Deployment' },
+    };
+    const analysis = makeAnalysis({
+      resources: new Map([
+        [
+          'opt',
+          {
+            resourceId: 'opt',
+            forEach: [],
+            includeWhen: [{ expression: '${schema.spec.enabled}' }],
+          },
+        ],
+      ]),
+    });
+
+    applyAnalysisToResources(resources, analysis);
+    applyAnalysisToResources(resources, analysis);
+
+    expect(getIncludeWhen(resources.opt)).toEqual(['${schema.spec.enabled}']);
   });
 
   it('does nothing for empty analysis', () => {

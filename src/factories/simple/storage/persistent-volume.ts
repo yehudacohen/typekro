@@ -39,7 +39,7 @@ export function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvS
   } = config;
 
   // Determine the volume source
-  const volumeSource: any = {};
+  const volumeSource: Record<string, unknown> = {};
   if (hostPath) {
     volumeSource.hostPath = { path: hostPath };
   } else if (nfs) {

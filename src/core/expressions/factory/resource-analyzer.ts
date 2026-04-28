@@ -59,7 +59,7 @@ export interface ResourceAnalysisContext extends AnalysisContext {
   resourceConfig: Record<string, unknown>;
 
   /** Other resources available for cross-resource references */
-  availableResources?: Record<string, Enhanced<any, any>>;
+  availableResources?: Record<string, Enhanced<unknown, unknown>>;
 
   /** Whether to validate resource types during analysis */
   validateResourceTypes?: boolean;
@@ -76,7 +76,7 @@ export interface ResourceAnalysisResult {
   processedConfig: Record<string, unknown>;
 
   /** All KubernetesRef dependencies found in the configuration */
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
 
   /** Fields that required conversion */
   convertedFields: string[];
@@ -130,7 +130,7 @@ export class ResourceAnalyzer {
 
     try {
       // Deep analyze the configuration object
-      result.processedConfig = this.analyzeConfigObject(config, '', context, result);
+      result.processedConfig = this.analyzeConfigObject(config, '', context, result) as Record<string, unknown>;
 
       // Track dependencies automatically
       const _dependencyInfos = this.dependencyTracker.trackDependencies(
@@ -173,11 +173,11 @@ export class ResourceAnalyzer {
    * Recursively analyze a configuration object for KubernetesRef objects
    */
   private analyzeConfigObject(
-    obj: any,
+    obj: unknown,
     fieldPath: string,
     context: ResourceAnalysisContext,
     result: ResourceAnalysisResult
-  ): any {
+  ): unknown {
     if (obj === null || obj === undefined) {
       return obj;
     }
@@ -202,7 +202,7 @@ export class ResourceAnalyzer {
 
     // Handle objects
     if (typeof obj === 'object') {
-      const processedObj: any = {};
+      const processedObj: Record<string, unknown> = {};
 
       for (const [key, value] of Object.entries(obj)) {
         const currentFieldPath = fieldPath ? `${fieldPath}.${key}` : key;
@@ -224,11 +224,11 @@ export class ResourceAnalyzer {
    * Convert a KubernetesRef object in a resource configuration
    */
   private convertKubernetesRefInConfig(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     fieldPath: string,
     context: ResourceAnalysisContext,
     result: ResourceAnalysisResult
-  ): CelExpression | any {
+  ): CelExpression | unknown {
     try {
       // Track this dependency
       result.dependencies.push(ref);
@@ -333,7 +333,7 @@ export class ResourceAnalyzer {
    * Validate resource types for KubernetesRef objects
    */
   private validateResourceTypes(
-    dependencies: KubernetesRef<any>[],
+    dependencies: KubernetesRef<unknown>[],
     context: ResourceAnalysisContext
   ): ResourceTypeValidationResult[] {
     const validationContext: ResourceTypeValidationContext = {
@@ -415,7 +415,7 @@ export class ResourceAnalyzer {
    * Validate a single KubernetesRef for type correctness
    */
   validateKubernetesRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: ResourceTypeValidationContext
   ): ResourceTypeValidationResult {
     return this.typeValidator.validateKubernetesRef(ref, context);
@@ -447,11 +447,11 @@ export function analyzeResourceConfig(
  * This function integrates with existing factory functions to detect and convert
  * JavaScript expressions that contain KubernetesRef objects from the magic proxy system
  */
-export function analyzeFactoryResourceConfig<T extends Record<string, any>>(
+export function analyzeFactoryResourceConfig<T extends Record<string, unknown>>(
   resourceId: string,
   config: T,
-  availableResources: Record<string, Enhanced<any, any>>,
-  schemaProxy?: SchemaProxy<any, any>,
+  availableResources: Record<string, Enhanced<unknown, unknown>>,
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
   factoryType: 'direct' | 'kro' = 'kro'
 ): ResourceAnalysisResult {
   const context: ResourceAnalysisContext = {

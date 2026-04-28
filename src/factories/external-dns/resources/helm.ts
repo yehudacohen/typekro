@@ -9,6 +9,7 @@
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { isCelExpression } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -129,6 +130,12 @@ const externalDnsHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluat
 export function externalDnsHelmRelease(
   config: ExternalDnsHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+  const values = config.values
+    ? isCelExpression(config.values)
+      ? (config.values as unknown as Record<string, unknown>)
+      : mapExternalDnsConfigToHelmValues(config.values)
+    : undefined;
+
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -152,9 +159,9 @@ export function externalDnsHelmRelease(
           },
         },
       },
-      ...(config.values &&
-        Object.keys(config.values).length > 0 && {
-          values: mapExternalDnsConfigToHelmValues(config.values),
+      ...(values &&
+        (isCelExpression(config.values) || Object.keys(values).length > 0) && {
+          values,
         }),
     },
   }).withReadinessEvaluator(externalDnsHelmReleaseReadinessEvaluator);
@@ -185,8 +192,8 @@ export function externalDnsHelmRelease(
  */
 export function mapExternalDnsConfigToHelmValues(
   config: ExternalDnsHelmValues
-): Record<string, any> {
-  const values: Record<string, any> = {};
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
 
   // Provider configuration
   if (config.provider) {
@@ -490,21 +497,26 @@ export function validateExternalDnsHelmValues(values: ExternalDnsHelmValues): {
   }
 
   // Validate resource requirements format
-  const validateResources = (resources: any, component: string) => {
-    if (resources) {
-      if (resources.limits) {
-        if (resources.limits.cpu && typeof resources.limits.cpu !== 'string') {
+  const validateResources = (resources: unknown, component: string) => {
+    const resourceRequirements = resources as {
+      limits?: { cpu?: unknown; memory?: unknown };
+      requests?: { cpu?: unknown; memory?: unknown };
+    } | undefined;
+
+    if (resourceRequirements) {
+      if (resourceRequirements.limits) {
+        if (resourceRequirements.limits.cpu && typeof resourceRequirements.limits.cpu !== 'string') {
           errors.push(`${component}.resources.limits.cpu must be a string`);
         }
-        if (resources.limits.memory && typeof resources.limits.memory !== 'string') {
+        if (resourceRequirements.limits.memory && typeof resourceRequirements.limits.memory !== 'string') {
           errors.push(`${component}.resources.limits.memory must be a string`);
         }
       }
-      if (resources.requests) {
-        if (resources.requests.cpu && typeof resources.requests.cpu !== 'string') {
+      if (resourceRequirements.requests) {
+        if (resourceRequirements.requests.cpu && typeof resourceRequirements.requests.cpu !== 'string') {
           errors.push(`${component}.resources.requests.cpu must be a string`);
         }
-        if (resources.requests.memory && typeof resources.requests.memory !== 'string') {
+        if (resourceRequirements.requests.memory && typeof resourceRequirements.requests.memory !== 'string') {
           errors.push(`${component}.resources.requests.memory must be a string`);
         }
       }

@@ -9,30 +9,14 @@ import { type } from 'arktype';
 import { kubernetesComposition } from 'typekro';
 import { Deployment, Service, Secret } from 'typekro/simple';
 
-const FullStackSpec = type({ 
-  name: 'string', 
-  appImage: 'string', 
-  replicas: 'number' 
-});
-
-const FullStackStatus = type({ 
-  ready: 'boolean', 
-  dbReady: 'boolean', 
-  appReady: 'boolean' 
-});
-
 export const fullstack = kubernetesComposition({
   name: 'fullstack',
   apiVersion: 'example.com/v1alpha1',
   kind: 'FullStack',
-  spec: FullStackSpec,
-  status: FullStackStatus,
+  spec: type({ name: 'string', appImage: 'string', replicas: 'number' }),
+  status: type({ ready: 'boolean', dbReady: 'boolean', appReady: 'boolean' }),
 }, (spec) => {
-  Secret({ 
-    id: 'dbSecret', 
-    name: `${spec.name}-db-secret`, 
-    stringData: { password: 'secret123' } 
-  });
+  Secret({ id: 'dbSecret', name: `${spec.name}-db-secret`, stringData: { password: 'secret123' } });
 
   const db = Deployment({
     id: 'db',
@@ -49,6 +33,8 @@ export const fullstack = kubernetesComposition({
     ports: [{ port: 5432, targetPort: 5432 }]
   });
 
+  const dbUrl = `postgresql://postgres:secret123@${spec.name}-db-svc:5432/${spec.name}`;
+
   const app = Deployment({
     id: 'app',
     name: spec.name,
@@ -56,8 +42,8 @@ export const fullstack = kubernetesComposition({
     replicas: spec.replicas,
     ports: [{ containerPort: 3000 }],
     env: {
-      DATABASE_HOST: dbSvc.status.clusterIP,  // ✨ Cross-resource reference
-      DATABASE_URL: `postgresql://postgres:secret123@${spec.name}-db-svc:5432/${spec.name}`
+      DATABASE_HOST: dbSvc.status.clusterIP,
+      DATABASE_URL: dbUrl
     }
   });
 

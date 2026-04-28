@@ -7,6 +7,12 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import type { DeploymentResult } from '../../src/core/types/deployment.js';
+import { DependencyGraph } from '../../src/core/dependencies/graph.js';
+import {
+  DirectDeploymentStrategy,
+  mergeResolvedStatusArtifactsForTest,
+} from '../../src/core/deployment/strategies/direct-strategy.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('DirectResourceFactory Status Hydration', () => {
@@ -22,6 +28,32 @@ describe('DirectResourceFactory Status Hydration', () => {
     url: 'string',
     readyReplicas: 'number%1',
     ready: 'boolean',
+  });
+
+  describe('Status artifact merging', () => {
+    it('preserves resolved live siblings when replacing nested artifacts', () => {
+      const merged = mergeResolvedStatusArtifactsForTest(
+        {
+          components: {
+            database: {
+              endpoint: 'live-db-rw.default.svc',
+              ready: { expression: 'database.status.ready' },
+            },
+          },
+        },
+        {
+          components: {
+            database: {
+              endpoint: 'fallback-db-rw.default.svc',
+              ready: true,
+            },
+          },
+        }
+      ) as { components: { database: { endpoint: string; ready: boolean } } };
+
+      expect(merged.components.database.endpoint).toBe('live-db-rw.default.svc');
+      expect(merged.components.database.ready).toBe(true);
+    });
   });
 
   describe('Status Builder Integration', () => {
@@ -427,6 +459,104 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       expect(factory).toBeDefined();
       expect(factory.name).toBe('fallback-test');
+    });
+  });
+
+  describe('Hydration flag contracts', () => {
+    class ExposedDirectStrategy extends DirectDeploymentStrategy<
+      typeof WebAppSpecSchema.infer,
+      typeof WebAppStatusSchema.infer
+    > {
+      public async exposeCreateEnhancedProxy(
+        spec: typeof WebAppSpecSchema.infer,
+        instanceName: string,
+        deploymentResult: DeploymentResult
+      ) {
+        return this.createEnhancedProxy(spec, instanceName, deploymentResult);
+      }
+    }
+
+    const makeDeploymentResult = (): DeploymentResult => ({
+      status: 'success',
+      resources: [],
+      errors: [],
+      deploymentId: 'test',
+      dependencyGraph: new DependencyGraph(),
+      duration: 0,
+    });
+
+    it('does not perform live status re-execution when waitForReady is false', async () => {
+      let liveReexecCalled = false;
+      const strategy = new ExposedDirectStrategy(
+        'webapp-status-test',
+        'test-ns',
+        { apiVersion: 'v1alpha1', kind: 'WebApp', spec: WebAppSpecSchema, status: WebAppStatusSchema },
+        (_schema, _resources) => ({ url: 'http://x', ready: true, readyReplicas: 1, phase: 'running' as const }),
+        {
+          deployment: simple.Deployment({ name: 'app', image: 'nginx', id: 'webapp' }),
+        },
+        { waitForReady: false },
+        { getKubernetesApi: () => ({}) } as never,
+        {
+          createResourceGraphForInstance: () => ({
+            name: 'test-graph',
+            resources: [],
+            dependencies: new Map(),
+            orderedLevels: [],
+            dependencyGraph: new DependencyGraph(),
+          }),
+          reExecuteWithLiveStatus: () => {
+            liveReexecCalled = true;
+            return null;
+          },
+        }
+      );
+
+      const proxy = await strategy.exposeCreateEnhancedProxy(
+        { name: 'app', image: 'nginx', replicas: 1, hostname: 'x' },
+        'app',
+        makeDeploymentResult()
+      );
+
+      expect(liveReexecCalled).toBe(false);
+      expect(Object.keys(proxy.status as Record<string, unknown>)).toEqual([]);
+    });
+
+    it('does not perform live status re-execution when hydrateStatus is false', async () => {
+      let liveReexecCalled = false;
+      const strategy = new ExposedDirectStrategy(
+        'webapp-status-test',
+        'test-ns',
+        { apiVersion: 'v1alpha1', kind: 'WebApp', spec: WebAppSpecSchema, status: WebAppStatusSchema },
+        (_schema, _resources) => ({ url: 'http://x', ready: true, readyReplicas: 1, phase: 'running' as const }),
+        {
+          deployment: simple.Deployment({ name: 'app', image: 'nginx', id: 'webapp' }),
+        },
+        { hydrateStatus: false },
+        { getKubernetesApi: () => ({}) } as never,
+        {
+          createResourceGraphForInstance: () => ({
+            name: 'test-graph',
+            resources: [],
+            dependencies: new Map(),
+            orderedLevels: [],
+            dependencyGraph: new DependencyGraph(),
+          }),
+          reExecuteWithLiveStatus: () => {
+            liveReexecCalled = true;
+            return null;
+          },
+        }
+      );
+
+      const proxy = await strategy.exposeCreateEnhancedProxy(
+        { name: 'app', image: 'nginx', replicas: 1, hostname: 'x' },
+        'app',
+        makeDeploymentResult()
+      );
+
+      expect(liveReexecCalled).toBe(false);
+      expect(Object.keys(proxy.status as Record<string, unknown>)).toEqual([]);
     });
   });
 

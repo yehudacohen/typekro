@@ -105,7 +105,7 @@ export const demoBootstrap = kubernetesComposition(
     const kroBootstrap = typeKroRuntimeBootstrap({
       namespace: spec.namespace,
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.8.5',
+      kroVersion: '0.9.1',
     });
 
     // Use pre-loaded AWS credentials
@@ -213,7 +213,7 @@ const infrastructureStack = kubernetesComposition(
       id: 'awsCredentialsExternalDnsInfra',
     });
 
-    // For this demo, we'll deploy cert-manager and external-ds as nested compositions
+    // For this demo, we'll deploy cert-manager, external-dns, and APISIX as nested compositions.
     const certManagerInstance = certManager.certManagerBootstrap({
       name: 'cert-manager',
       namespace: 'cert-manager',
@@ -235,19 +235,11 @@ const infrastructureStack = kubernetesComposition(
       policy: 'sync',
     });
 
-    // Deploy APISix ingress controller
+    // Deploy APISIX gateway. Standard Kubernetes Ingress reconciliation requires
+    // deploying an APISIX ingress controller separately.
     const apisixInstance = apisix.apisixBootstrap({
       name: 'apisix',
       namespace: 'apisix-system',
-      ingressController: {
-        enabled: true,
-        config: {
-          kubernetes: {
-            ingressClass: 'apisix',
-            namespace: 'apisix-system',
-          },
-        },
-      },
       gateway: {
         type: 'LoadBalancer',
         http: {
@@ -374,7 +366,8 @@ const webappStack = kubernetesComposition(
 
     const _ingress = simple.Ingress({
       name: `${spec.name}-ingress`,
-      ingressClassName: 'apisix', // Use APISix ingress class
+      // Requires a separately deployed APISIX ingress controller for this class.
+      ingressClassName: 'apisix',
       annotations: {
         // External-DNS annotations for automatic DNS record creation
         'external-dns.alpha.kubernetes.io/hostname': spec.domain,

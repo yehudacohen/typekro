@@ -12,7 +12,8 @@ import {
   createRollbackManagerWithKubeConfig,
   ResourceRollbackManager,
 } from '../../src/core/deployment/rollback-manager.js';
-import type { DeploymentEvent } from '../../src/core/types/deployment.js';
+import { setMetadataField } from '../../src/core/metadata/index.js';
+import type { DeployedResource, DeploymentEvent } from '../../src/core/types/deployment.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
@@ -134,6 +135,32 @@ describe('ResourceRollbackManager', () => {
       expect(deleteCalls[2]![0]!.metadata.name).toBe('app1-config'); // configmap last
     });
 
+    it('should rollback failed resources that were already applied', async () => {
+      const deployment1 = createTestDeployment('readiness-failed');
+      const deployedResources: DeployedResource[] = [
+        {
+          id: 'app',
+          kind: 'Deployment',
+          name: 'readiness-failed',
+          namespace: 'default',
+          manifest: deployment1,
+          status: 'failed',
+          applied: true,
+          deployedAt: new Date(),
+          error: new Error('timed out waiting for readiness'),
+        },
+      ];
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockRejectedValue(createK8sError('Not found', 404));
+
+      const result = await manager.rollbackDeployedResources(deployedResources, { mode: 'direct' });
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.rolledBackResources).toEqual(['Deployment/readiness-failed']);
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+    });
+
     it('should emit proper rollback events throughout the process', async () => {
       const deployment1 = createTestDeployment('test-app');
       const resources = [deployment1] as Enhanced<unknown, unknown>[];
@@ -177,7 +204,7 @@ describe('ResourceRollbackManager', () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it.skip('should wait for deletion completion when timeout is specified', async () => {
+    it('should wait for deletion completion when timeout is specified', async () => {
       const deployment1 = createTestDeployment('wait-for-deletion');
       const resources = [deployment1] as Enhanced<unknown, unknown>[];
 
@@ -206,6 +233,121 @@ describe('ResourceRollbackManager', () => {
           }),
         })
       );
+    });
+
+    it('waits for cluster-scoped resource deletion without requiring a namespace', async () => {
+      const clusterRole = {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'cluster-reader' },
+      } as Enhanced<unknown, unknown>;
+      const resources = [clusterRole];
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
+
+      const result = await manager.rollbackResources(resources, { timeout: 5000 });
+
+      expect(result.status).toBe('success');
+      expect(result.errors).toHaveLength(0);
+      expect(mockK8sApi.read).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'cluster-reader' },
+      });
+    });
+
+    it('deletes deployed cluster-scoped rollback records without a namespace', async () => {
+      const clusterRole = {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'cluster-reader' },
+      } as Enhanced<unknown, unknown>;
+      setMetadataField(clusterRole, 'scope', 'cluster');
+      const deployedResource: DeployedResource = {
+        id: 'clusterReader',
+        kind: 'ClusterRole',
+        name: 'cluster-reader',
+        namespace: 'default',
+        manifest: clusterRole,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
+
+      await manager.deleteDeployedResource(deployedResource);
+
+      expect(mockK8sApi.delete).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'cluster-reader' },
+      });
+      expect(mockK8sApi.read).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'cluster-reader' },
+      });
+    });
+
+    it('treats deployed rollback records already gone at initial DELETE as deleted', async () => {
+      const deployedResource: DeployedResource = {
+        id: 'goneConfig',
+        kind: 'ConfigMap',
+        name: 'gone-config',
+        namespace: 'default',
+        manifest: {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name: 'gone-config', namespace: 'default' },
+        } as Enhanced<unknown, unknown>,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.delete.mockRejectedValueOnce(createK8sError('Not found', 404));
+
+      await expect(manager.deleteDeployedResource(deployedResource)).resolves.toBeUndefined();
+      expect(mockK8sApi.read).not.toHaveBeenCalled();
+    });
+
+    it('rolls back scoped resources that match a target-scoped failed deploy', async () => {
+      const clusterOperator = createTestDeployment('cluster-operator');
+      setMetadataField(clusterOperator, 'scopes', ['cluster']);
+      const app = createTestDeployment('app');
+      const deployedResources: DeployedResource[] = [
+        {
+          id: 'clusterOperator',
+          kind: 'Deployment',
+          name: 'cluster-operator',
+          namespace: 'default',
+          manifest: clusterOperator,
+          status: 'deployed',
+          deployedAt: new Date(),
+        },
+        {
+          id: 'app',
+          kind: 'Deployment',
+          name: 'app',
+          namespace: 'default',
+          manifest: app,
+          status: 'deployed',
+          deployedAt: new Date(),
+        },
+      ];
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockRejectedValue(createK8sError('Not found', 404));
+
+      const result = await manager.rollbackDeployedResources(deployedResources, {
+        mode: 'direct',
+        targetScopes: ['cluster'],
+      });
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.rolledBackResources).toEqual(['Deployment/app', 'Deployment/cluster-operator']);
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
     });
   });
 

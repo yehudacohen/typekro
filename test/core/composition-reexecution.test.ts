@@ -333,7 +333,7 @@ describe('Composition Re-execution with Actual Values', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle composition re-execution errors gracefully', async () => {
+    it('should propagate composition re-execution errors', async () => {
       let executionCount = 0;
 
       const testComposition = kubernetesComposition(
@@ -373,16 +373,14 @@ describe('Composition Re-execution with Actual Values', () => {
         waitForReady: false,
       });
 
-      // This should not throw even if re-execution fails
-      // The system should fall back to the original resources
+      // Re-execution failures should not be hidden by falling back to stale resources.
       expect(() => {
-        const yaml = factory.toYaml({
+        factory.toYaml({
           name: 'error-app',
           port: 8080,
           replicas: 1,
         });
-        expect(yaml).toBeDefined();
-      }).not.toThrow();
+      }).toThrow(/Re-execution error/);
 
       expect(executionCount).toBe(2); // Should have attempted re-execution
     });

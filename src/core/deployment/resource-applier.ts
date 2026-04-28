@@ -22,6 +22,7 @@ import { ensureError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
 import {
   copyResourceMetadata,
+  getMetadataField,
   getReadinessEvaluator,
 } from '../metadata/index.js';
 import type { ReferenceResolver } from '../references/index.js';
@@ -48,8 +49,19 @@ export class ResourceApplier {
   constructor(
     private k8sApi: k8s.KubernetesObjectApi,
     private referenceResolver: ReferenceResolver,
-    private logger: TypeKroLogger
+    _logger: TypeKroLogger
   ) {}
+
+  private buildResourceIdentityMetadata(resource: KubernetesResource): {
+    name: string;
+    namespace?: string;
+  } {
+    const name = resource.metadata?.name || '';
+    if (getMetadataField(resource as object, 'scope') === 'cluster') {
+      return { name };
+    }
+    return { name, namespace: resource.metadata?.namespace || 'default' };
+  }
 
   /**
    * Serialize a resource for sending to the Kubernetes API.
@@ -87,17 +99,27 @@ export class ResourceApplier {
         originalMetadata: resource.metadata,
       });
       const resolveTimeout = options.timeout || DEFAULT_READINESS_TIMEOUT;
-      const resolvedResource = (await Promise.race([
-        this.referenceResolver.resolveReferences(resource, context),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
-        ),
-      ])) as KubernetesResource;
-      resourceLogger.debug('References resolved successfully', {
-        resolvedMetadata: resolvedResource.metadata,
-        hasReadinessEvaluator: !!getReadinessEvaluator(resolvedResource),
-      });
-      return resolvedResource;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const resolvedResource = (await Promise.race([
+          this.referenceResolver.resolveReferences(resource, context),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error('Reference resolution timeout')),
+              resolveTimeout
+            );
+          }),
+        ])) as KubernetesResource;
+        resourceLogger.debug('References resolved successfully', {
+          resolvedMetadata: resolvedResource.metadata,
+          hasReadinessEvaluator: !!getReadinessEvaluator(resolvedResource),
+        });
+        return resolvedResource;
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+      }
     } catch (error: unknown) {
       // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
       // one at a time. This is expected behavior, so we log at debug level instead of warn.
@@ -129,6 +151,16 @@ export class ResourceApplier {
     resourceLogger: TypeKroLogger
   ): KubernetesResource {
     if (!namespace || !resource.metadata || typeof resource.metadata.namespace === 'string') {
+      return resource;
+    }
+
+    if (getMetadataField(resource as object, 'scope') === 'cluster') {
+      resourceLogger.debug('Skipping namespace application for cluster-scoped resource', {
+        kind: resource.kind,
+        name: resource.metadata.name,
+        targetNamespace: namespace,
+        kubernetesScope: 'cluster',
+      });
       return resource;
     }
 
@@ -189,8 +221,11 @@ export class ResourceApplier {
       deploymentId,
       factoryNamespace: options.namespace ?? context.namespace ?? 'default',
       resourceId,
-      ...(scopes.length > 0 && { scopes }),
+      scopes,
       ...(dependencies.length > 0 && { dependencies }),
+      ...(options.singletonSpecFingerprint && {
+        singletonSpecFingerprint: options.singletonSpecFingerprint,
+      }),
     });
   }
 
@@ -274,10 +309,7 @@ export class ResourceApplier {
           const result = await this.k8sApi.read({
             apiVersion: resolvedResource.apiVersion,
             kind: resolvedResource.kind,
-            metadata: {
-              name: resourceName,
-              namespace: resourceNamespace || 'default',
-            },
+            metadata: this.buildResourceIdentityMetadata(resolvedResource),
           });
           return result;
         } catch (readError: unknown) {
@@ -321,10 +353,7 @@ export class ResourceApplier {
           await this.k8sApi.delete({
             apiVersion: resolvedResource.apiVersion,
             kind: resolvedResource.kind,
-            metadata: {
-              name: resourceName,
-              namespace: resourceNamespace || 'default',
-            },
+            metadata: this.buildResourceIdentityMetadata(resolvedResource),
           });
 
           // Wait a moment for deletion to propagate
@@ -506,10 +535,7 @@ export class ResourceApplier {
       return await this.k8sApi.read({
         apiVersion: resource.apiVersion,
         kind: resource.kind,
-        metadata: {
-          name: resource.metadata?.name || '',
-          namespace: resource.metadata?.namespace || 'default',
-        },
+        metadata: this.buildResourceIdentityMetadata(resource),
       });
     } catch (error: unknown) {
       const apiError = error as KubernetesApiError;

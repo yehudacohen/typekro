@@ -33,7 +33,7 @@ import {
  * const bootstrap = typeKroRuntimeBootstrap({
  *   namespace: 'flux-system',
  *   fluxVersion: 'v2.4.0',
- *   kroVersion: '0.9.0'
+ *   kroVersion: '0.9.1'
  * });
  *
  * const factory = await bootstrap.factory('direct', {
@@ -52,14 +52,14 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
   // v2.7.5 is the latest stable version with fixes for schema validation issues
   const fluxVersion = config.fluxVersion || 'v2.7.5';
-  // KRO 0.9.0+ is REQUIRED — the TypeKro serialization pipeline emits
+  // KRO 0.9.1+ is REQUIRED — the TypeKro serialization pipeline emits
   // `${has(...) ? ... : omit()}` conditionals for optional spec fields
   // without defaults, and the `omit()` CEL function is gated behind the
-  // `CELOmitFunction` feature gate introduced in KRO 0.9.0. Running an
+  // `CELOmitFunction` feature gate introduced in KRO 0.9.1. Running an
   // older controller will cause RGD validation to fail at reconcile time
   // with "unknown function omit". The feature gate is enabled in the
   // Helm values block further down (`config.featureGates.CELOmitFunction`).
-  const kroVersion = config.kroVersion || '0.9.0';
+  const kroVersion = config.kroVersion || '0.9.1';
   const targetNamespace = config.namespace || DEFAULT_FLUX_NAMESPACE;
   const rbacMode: RbacMode = config.rbac || 'cluster-admin';
 
@@ -71,11 +71,12 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       spec: TypeKroRuntimeSpec,
       status: TypeKroRuntimeStatus,
     },
-    (_spec) => {
+    (spec) => {
+      const runtimeNamespace = spec.namespace || targetNamespace;
       // System namespace for Flux
       const _systemNamespace = namespace({
         metadata: {
-          name: targetNamespace,
+          name: runtimeNamespace,
         },
         id: 'systemNamespace',
       });
@@ -110,7 +111,8 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         deploymentStrategy: 'serverSideApply',
         fieldManager: 'typekro-bootstrap',
         forceConflicts: true,
-        manifestTransform: fixCRDSchemaForK8s133,
+        namespace: runtimeNamespace,
+        manifestTransform: (manifest) => rewriteFluxNamespace(fixCRDSchemaForK8s133(manifest), runtimeNamespace),
         // Idempotent bootstrap: if the Flux install YAML can't be downloaded (e.g., DNS
         // failure, air-gapped environment) but Flux is already running on the cluster,
         // skip the download and proceed. This prevents bootstrap from failing when
@@ -131,12 +133,12 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
 
       // RBAC for Flux controllers.
       // Configurable via config.rbac: 'cluster-admin' (default), 'scoped', or { clusterRoleRef }.
-      createFluxRbac(rbacMode, targetNamespace);
+      createFluxRbac(rbacMode, runtimeNamespace);
 
       // Helm Repository for Kro OCI charts
       helmRepository({
         name: 'kro-helm-repo',
-        namespace: DEFAULT_FLUX_NAMESPACE,
+        namespace: runtimeNamespace,
         url: 'oci://registry.k8s.io/kro/charts',
         interval: '5m',
         type: 'oci',
@@ -153,6 +155,10 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
           name: 'kro',
           repository: `oci://registry.k8s.io/kro/charts`,
           version: kroVersion,
+        },
+        sourceRef: {
+          name: 'kro-helm-repo',
+          namespace: runtimeNamespace,
         },
         values: {
           config: {
@@ -185,6 +191,26 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       };
     }
   );
+}
+
+function rewriteFluxNamespace<
+  T extends {
+    metadata?: { name?: unknown; namespace?: unknown };
+    subjects?: Array<{ namespace?: unknown }>;
+  },
+>(manifest: T, namespaceName: string): T {
+  if (manifest.metadata?.name === DEFAULT_FLUX_NAMESPACE && !manifest.metadata.namespace) {
+    manifest.metadata = { ...manifest.metadata, name: namespaceName };
+  }
+  if (manifest.metadata?.namespace === DEFAULT_FLUX_NAMESPACE) {
+    manifest.metadata = { ...manifest.metadata, namespace: namespaceName };
+  }
+  if (Array.isArray(manifest.subjects)) {
+    manifest.subjects = manifest.subjects.map((subject) =>
+      subject.namespace === DEFAULT_FLUX_NAMESPACE ? { ...subject, namespace: namespaceName } : subject
+    );
+  }
+  return manifest;
 }
 
 // ---------------------------------------------------------------------------

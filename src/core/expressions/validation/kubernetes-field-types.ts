@@ -14,7 +14,7 @@ import type { TypeInfo } from './type-safety.js';
 /**
  * Infer the type of a field on a Kubernetes resource
  */
-export function inferResourceFieldType(resource: Enhanced<any, any>, fieldPath: string): TypeInfo {
+export function inferResourceFieldType(resource: Enhanced<unknown, unknown>, fieldPath: string): TypeInfo {
   try {
     const parts = fieldPath.split('.');
 
@@ -83,7 +83,7 @@ export function getMetadataFieldType(fieldParts: string[]): TypeInfo {
 /**
  * Get the type of a spec field based on resource kind
  */
-export function getSpecFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
+export function getSpecFieldType(resource: Enhanced<unknown, unknown>, fieldParts: string[]): TypeInfo {
   const resourceKind = resource.constructor.name;
   const fieldName = fieldParts[0];
 
@@ -137,7 +137,7 @@ export function getSpecFieldType(resource: Enhanced<any, any>, fieldParts: strin
 /**
  * Get the type of a status field based on resource kind
  */
-export function getStatusFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
+export function getStatusFieldType(resource: Enhanced<unknown, unknown>, fieldParts: string[]): TypeInfo {
   const resourceKind = resource.constructor.name;
   const fieldName = fieldParts[0];
 
@@ -203,7 +203,7 @@ export function getStatusFieldType(resource: Enhanced<any, any>, fieldParts: str
  * Infer the type of a schema field from the schema proxy
  */
 export function inferSchemaFieldType(
-  schemaProxy: SchemaProxy<any, any> | undefined,
+  schemaProxy: SchemaProxy<Record<string, unknown>, Record<string, unknown>> | undefined,
   fieldPath: string
 ): TypeInfo {
   if (!schemaProxy) {

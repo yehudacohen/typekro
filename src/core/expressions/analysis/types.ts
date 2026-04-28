@@ -40,7 +40,7 @@ export interface FactoryExpressionContext {
   /** Available resources for context analysis */
   availableResources?: Record<string, unknown>;
   /** Schema proxy for schema field analysis */
-  schemaProxy?: any;
+  schemaProxy?: unknown;
   /** Resource ID for context */
   resourceId?: string;
 }
@@ -58,7 +58,7 @@ export interface ExpressionAnalysisResult {
   /** Fields that contain CEL expressions */
   celExpressionFields: string[];
   /** Detailed analysis results */
-  analysisDetails?: any;
+  analysisDetails?: unknown;
 }
 
 /**
@@ -95,7 +95,7 @@ export interface ConversionConfig {
 /**
  * Result of expression conversion
  */
-export interface ConversionResult<T = any> {
+export interface ConversionResult<T = unknown> {
   /** Converted expression */
   converted: T;
   /** Whether conversion was successful */
@@ -117,9 +117,9 @@ export interface ConversionResult<T = any> {
  */
 export interface CelGenerationContext {
   /** Resource references available in the context */
-  resourceRefs: Record<string, KubernetesRef<any>>;
+  resourceRefs: Record<string, KubernetesRef<unknown>>;
   /** Schema references available in the context */
-  schemaRefs: Record<string, KubernetesRef<any>>;
+  schemaRefs: Record<string, KubernetesRef<unknown>>;
   /** Factory type for context-aware generation */
   factoryType: 'direct' | 'kro';
 }
@@ -188,7 +188,7 @@ export interface LazyAnalysisContext {
 /**
  * Lazy analyzed expression wrapper
  */
-export interface LazyAnalyzedExpression<T = any> {
+export interface LazyAnalyzedExpression<T = unknown> {
   /** Get the analyzed result */
   getAnalysis(): Promise<ExpressionAnalysisResult>;
   /** Get the original expression */
@@ -232,7 +232,7 @@ export interface CacheConfig {
 /**
  * Cache entry for expression analysis
  */
-export interface CacheEntry<T = any> {
+export interface CacheEntry<T = unknown> {
   /** Cached value */
   value: T;
   /** Timestamp when cached */

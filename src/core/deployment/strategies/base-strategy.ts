@@ -28,6 +28,8 @@ import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../s
 /** Options threaded from `factory.deploy(spec, opts)` to the strategy. */
 export interface DeployStrategyOptions {
   targetScopes?: string[];
+  instanceNameOverride?: string;
+  singletonSpecFingerprint?: string;
 }
 
 export interface DeploymentStrategy<
@@ -51,6 +53,7 @@ export abstract class BaseDeploymentStrategy<
     protected factoryName: string,
     protected namespace: string,
     protected schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: deployment strategies must preserve the generic status-builder resource map contract.
     protected statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
     protected resourceKeys?: Record<string, KubernetesResource>,
     protected factoryOptions: FactoryOptions = {}
@@ -73,7 +76,7 @@ export abstract class BaseDeploymentStrategy<
     validateSpec(spec, this.schemaDefinition);
 
     // Step 2: Generate instance name (common to all strategies)
-    const instanceName = generateInstanceName(spec);
+    const instanceName = opts?.instanceNameOverride ?? generateInstanceName(spec);
 
     this.logger.debug('Starting deployment execution', {
       instanceName,
@@ -509,15 +512,29 @@ export abstract class BaseDeploymentStrategy<
                     namespace: deployedResource.namespace || this.namespace || 'default',
                   },
                 });
-                resourceKeyMapping.set(originalKey, actualResource);
-                this.logger.debug('Queried live resource for CEL mapping', {
-                  originalKey,
-                  resourceKind: deployedResource.kind,
-                  resourceName: deployedResource.name,
+              resourceKeyMapping.set(originalKey, actualResource);
+              const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
+              if (nestedAliasMatch?.[1]) {
+                const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
+                if (!resourceKeyMapping.has(alias)) {
+                  resourceKeyMapping.set(alias, actualResource);
+                }
+              }
+              this.logger.debug('Queried live resource for CEL mapping', {
+                originalKey,
+                resourceKind: deployedResource.kind,
+                resourceName: deployedResource.name,
                 });
               } catch (_error: unknown) {
                 // Fall back to manifest if cluster query fails
                 resourceKeyMapping.set(originalKey, deployedResource.manifest);
+                const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
+                if (nestedAliasMatch?.[1]) {
+                  const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
+                  if (!resourceKeyMapping.has(alias)) {
+                    resourceKeyMapping.set(alias, deployedResource.manifest);
+                  }
+                }
                 this.logger.debug('Fallback to manifest for CEL mapping', {
                   originalKey,
                   reason: 'cluster query failed',
@@ -526,6 +543,13 @@ export abstract class BaseDeploymentStrategy<
             } else {
               // No K8s client available — use manifest
               resourceKeyMapping.set(originalKey, deployedResource.manifest);
+              const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
+              if (nestedAliasMatch?.[1]) {
+                const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
+                if (!resourceKeyMapping.has(alias)) {
+                  resourceKeyMapping.set(alias, deployedResource.manifest);
+                }
+              }
               this.logger.debug('Fallback to manifest for CEL mapping', {
                 originalKey,
                 reason: 'no k8sApi available',
@@ -547,6 +571,11 @@ export abstract class BaseDeploymentStrategy<
           timeout: this.factoryOptions.timeout || DEFAULT_READINESS_TIMEOUT,
           resourceKeyMapping,
           schema: { spec, status: {} },
+          ...(((status as Record<string, unknown>).__nestedStatusCel as Record<string, string> | undefined)
+            ? {
+                nestedStatusCel: (status as Record<string, unknown>).__nestedStatusCel as Record<string, string>,
+              }
+            : {}),
         };
 
         // Resolve all CEL expressions in the status

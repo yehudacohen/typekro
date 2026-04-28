@@ -136,8 +136,8 @@ export function apisixHelmRelease(
  * @param config - The APISix Helm values
  * @returns Helm values object for the APISix chart
  */
-export function mapAPISixConfigToHelmValues(config: APISixHelmValues): Record<string, any> {
-  const values: Record<string, any> = {
+export function mapAPISixConfigToHelmValues(config: APISixHelmValues): Record<string, unknown> {
+  const values: Record<string, unknown> = {
     // Installation configuration - default to true for TypeKro comprehensive deployment
     installCRDs: config.installCRDs ?? true,
   };

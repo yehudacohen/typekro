@@ -7,6 +7,10 @@
 
 import { beforeAll, describe, expect, it } from 'bun:test';
 import { extractNullishDefaults } from '../../src/core/serialization/schema.js';
+import {
+  KUBERNETES_REF_MARKER_PATTERN,
+  KUBERNETES_REF_MARKER_SOURCE,
+} from '../../src/shared/brands.js';
 
 describe('Schema Nullish Defaults', () => {
   describe('extractNullishDefaults (fn.toString regex)', () => {
@@ -145,14 +149,39 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
-    it('does not wrap sub-path refs (only top-level optional fields are omittable)', () => {
-      // omit() removes the CONTAINING field, so wrapping schema.spec.env.FOO
-      // would try to omit a sub-key of env rather than env itself — that's
-      // the wrong semantics. Only top-level matches are wrapped.
+    it('wraps sub-path refs under an optional ancestor with chained has() guards', () => {
+      // When the parent (`env`) is optional, accessing `env.FOO` requires
+      // both the parent AND the leaf to exist. Single has() on the ancestor
+      // is insufficient — the user may provide `env: {}` without FOO.
       const marker = '__KUBERNETES_REF___schema___spec.env.FOO__';
       const result = processResourceReferences(marker, ctx(['env']));
-      expect(result).toBe('${schema.spec.env.FOO}');
-      expect(String(result)).not.toContain('omit()');
+      expect(result).toBe(
+        '${has(schema.spec.env) && has(schema.spec.env.FOO) ? schema.spec.env.FOO : omit()}'
+      );
+    });
+
+    it('converts markers with underscores in resource ids and field paths', () => {
+      const marker = '__KUBERNETES_REF_my_db_status.image_tag__';
+      const result = processResourceReferences(marker, ctx([]));
+      expect(result).toBe('${my_db.status.image_tag}');
+    });
+
+    it('converts mixed marker strings with underscores in ids and paths', () => {
+      const marker = 'image=__KUBERNETES_REF_my_db_status.image_tag__';
+      const result = processResourceReferences(marker, ctx([]));
+      expect(result).toBe('image=${string(my_db.status.image_tag)}');
+    });
+
+    it('uses shared marker grammar for schema, underscore, and adjacent mixed markers', () => {
+      const mixed =
+        '__KUBERNETES_REF___schema___spec.name____KUBERNETES_REF_my_db_status.image_tag__';
+      const matches = [...mixed.matchAll(new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'))];
+
+      expect(matches.map((match) => [match[1], match[2]])).toEqual([
+        ['__schema__', 'spec.name'],
+        ['my_db', 'status.image_tag'],
+      ]);
+      expect(KUBERNETES_REF_MARKER_PATTERN.exec('__KUBERNETES_REF___schema___spec.name__')).toBeNull();
     });
 
     it('wraps CelExpression objects that are a single schema.spec.<field>', async () => {
@@ -171,6 +200,24 @@ describe('Schema Nullish Defaults', () => {
       const result = processResourceReferences(expr, ctx(['baseUrl']));
       expect(result).toBe(
         '${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}'
+      );
+    });
+
+    it('wraps nested CelExpression schema refs under an optional ancestor', async () => {
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('schema.spec.database.storageClass');
+      const result = processResourceReferences(expr, ctx(['database']));
+      expect(result).toBe(
+        '${has(schema.spec.database) && has(schema.spec.database.storageClass) ? schema.spec.database.storageClass : omit()}'
+      );
+    });
+
+    it('wraps nested string CelExpression schema refs under an optional ancestor', async () => {
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('string(schema.spec.database.storageClass)');
+      const result = processResourceReferences(expr, ctx(['database']));
+      expect(result).toBe(
+        '${has(schema.spec.database) && has(schema.spec.database.storageClass) ? string(schema.spec.database.storageClass) : omit()}'
       );
     });
 
@@ -195,7 +242,8 @@ describe('Schema Nullish Defaults', () => {
   describe('applyTernaryConditionalsToResources', () => {
     let applyTernaryConditionalsToResources: (
       resources: Record<string, unknown>,
-      conditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>
+      conditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>,
+      nestedStatusCel?: Record<string, string>
     ) => void;
 
     beforeAll(async () => {
@@ -226,6 +274,57 @@ describe('Schema Nullish Defaults', () => {
       expect(result).not.toContain('__KUBERNETES_REF__');
     });
 
+    it('guards every segment for nested ternary condition fields', () => {
+      const resources = {
+        config: {
+          data: {
+            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
+          },
+        },
+      };
+
+      applyTernaryConditionalsToResources(resources, [
+        {
+          proxySection: '\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
+          falsyValue: '',
+          conditionField: 'cache.redisUrl',
+        },
+      ]);
+
+      const result = (resources.config.data as Record<string, string>)['settings.yml'];
+      expect(result).toContain(
+        'has(schema.spec.cache) && has(schema.spec.cache.redisUrl) ?'
+      );
+      expect(result).toContain('string(schema.spec.cache.redisUrl)');
+    });
+
+    it('resolves nested status markers inside conditional YAML sections', () => {
+      const resources = {
+        config: {
+          data: {
+            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF_inner_status.redisUrl__',
+          },
+        },
+      };
+
+      applyTernaryConditionalsToResources(
+        resources,
+        [
+          {
+            proxySection: '\nredis:\n  url: __KUBERNETES_REF_inner_status.redisUrl__',
+            falsyValue: '',
+            conditionField: 'cache.redisUrl',
+          },
+        ],
+        { '__nestedStatus:inner:redisUrl': 'schema.spec.cache.redisUrl' }
+      );
+
+      const result = (resources.config.data as Record<string, string>)['settings.yml'];
+      expect(result).toContain('string(schema.spec.cache.redisUrl)');
+      expect(result).not.toContain('inner.status.redisUrl');
+      expect(result).not.toContain('__KUBERNETES_REF__');
+    });
+
     it('should not affect strings without the ternary section', () => {
       const resources = {
         deploy: { metadata: { name: 'test' } },
@@ -236,6 +335,79 @@ describe('Schema Nullish Defaults', () => {
       ]);
 
       expect((resources.deploy.metadata as Record<string, string>).name).toBe('test');
+    });
+
+    it('remaps nested composition ternary conditionals onto the outer schema', async () => {
+      const { type } = await import('arktype');
+      const { kubernetesComposition, simple } = await import('../../src/index.js');
+
+      const inner = kubernetesComposition(
+        {
+          name: 'inner-settings',
+          apiVersion: 'v1alpha1',
+          kind: 'InnerSettings',
+          spec: type({ name: 'string', 'redisUrl?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.ConfigMap({
+            name: `${spec.name}-settings`,
+            data: {
+              'settings.yml': `base: true${spec.redisUrl ? `\nredis:\n  url: ${spec.redisUrl}` : ''}`,
+            },
+            id: 'settings',
+          });
+          return { ready: true };
+        }
+      );
+
+      const outer = kubernetesComposition(
+        {
+          name: 'outer-settings',
+          apiVersion: 'v1alpha1',
+          kind: 'OuterSettings',
+          spec: type({ name: 'string', 'cacheUrl?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          inner({ name: spec.name, redisUrl: spec.cacheUrl });
+          return { ready: true };
+        }
+      );
+
+      const yaml = outer.toYaml();
+      expect(yaml).toContain('has(schema.spec.cacheUrl)');
+      expect(yaml).toContain('string(schema.spec.cacheUrl)');
+      expect(yaml).not.toContain('has(schema.spec.redisUrl)');
+    });
+
+    it('guards conditional YAML sections with the ternary test field when it differs from the referenced field', async () => {
+      const { type } = await import('arktype');
+      const { kubernetesComposition, simple } = await import('../../src/index.js');
+
+      const composition = kubernetesComposition(
+        {
+          name: 'decoupled-ternary-test',
+          apiVersion: 'v1alpha1',
+          kind: 'DecoupledTernaryTest',
+          spec: type({ name: 'string', 'enableRedis?': 'boolean', connectionString: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.ConfigMap({
+            name: spec.name,
+            data: {
+              'settings.yml': `base: true${spec.enableRedis ? `\nredis:\n  url: ${spec.connectionString}` : ''}`,
+            },
+            id: 'settings',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('has(schema.spec.enableRedis)');
+      expect(yaml).not.toContain('has(schema.spec.connectionString) ?');
     });
   });
 
@@ -566,6 +738,91 @@ describe('Schema Nullish Defaults', () => {
       // ArkType returns an ArkErrors instance (iterable + has `.summary`)
       // on failure; a successful result is a plain object without it.
       expect('summary' in (bad as object)).toBe(true);
+    });
+
+    it('Direct mode: enabled false creates no SearXNG resources', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'disabled-search',
+        enabled: false,
+      });
+
+      expect(graph.resources).toHaveLength(0);
+    });
+
+    it('KRO mode: enabled false gates SearXNG resources with includeWhen', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      expect(yaml).toContain('includeWhen');
+      expect(yaml).toContain('!(has(schema.spec.enabled))');
+      expect(yaml).toContain('schema.spec.enabled != false');
+    });
+
+    it('KRO mode: status CEL guards disabled instances before deployment refs', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? true');
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? \\"Disabled\\"');
+      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? false');
+      expect(yaml).toContain('searxngDeployment.status.conditions.exists');
+    });
+
+    it('Direct mode: bootstrap does not auto-enable limiter when only redisUrl is provided', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'search-with-redis',
+        redisUrl: 'redis://valkey:6379/0',
+        server: { secret_key: 'test-secret' },
+      });
+      const config = graph.resources.find(
+        (resource) => resource.manifest.kind === 'ConfigMap' &&
+          resource.manifest.metadata?.name === 'search-with-redis-config'
+      );
+      const settingsYaml = (config?.manifest.data as Record<string, string> | undefined)?.['settings.yml'];
+
+      expect(settingsYaml).toContain('url: redis://valkey:6379/0');
+      expect(settingsYaml).toContain('limiter: false');
+    });
+
+    it('Direct mode: default-enabled bootstrap requires an explicit secret source', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+
+      expect(() => factory.createResourceGraphForInstance({ name: 'searxng' })).toThrow(
+        'requires server.secret_key or secretKeyRef'
+      );
+    });
+
+    it('Direct mode: generated secret uses the explicit server secret key', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('direct', { namespace: 'test' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'searxng',
+        server: { secret_key: 'test-secret' },
+      });
+      const secret = graph.resources.find(
+        (resource) => resource.manifest.kind === 'Secret' &&
+          resource.manifest.metadata?.name === 'searxng-secret'
+      );
+      const stringData = secret?.manifest.stringData as Record<string, string> | undefined;
+
+      expect(stringData?.secret_key).toBe('test-secret');
     });
   });
 

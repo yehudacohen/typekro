@@ -11,6 +11,7 @@ import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
   type KubernetesClientConfig,
+  type KubernetesClientProviderDebugState,
   type KubernetesClientProvider,
 } from '../kubernetes/client-provider.js';
 import type { FactoryOptions } from '../types/deployment.js';
@@ -23,8 +24,8 @@ import type { FactoryOptions } from '../types/deployment.js';
  * on first access and cached for the lifetime of the manager.
  */
 export class KubernetesClientManager {
-  private clientProvider?: KubernetesClientProvider;
-  private cachedCustomObjectsApi?: k8s.CustomObjectsApi;
+  private clientProvider: KubernetesClientProvider | undefined;
+  private cachedCustomObjectsApi: k8s.CustomObjectsApi | undefined;
 
   constructor(private readonly factoryOptions: FactoryOptions) {}
 
@@ -53,6 +54,24 @@ export class KubernetesClientManager {
       this.cachedCustomObjectsApi = this.getClientProvider().getCustomObjectsApi();
     }
     return this.cachedCustomObjectsApi;
+  }
+
+  getDebugState(): {
+    hasClientProvider: boolean;
+    hasCachedCustomObjectsApi: boolean;
+    provider?: KubernetesClientProviderDebugState;
+  } {
+    return {
+      hasClientProvider: !!this.clientProvider,
+      hasCachedCustomObjectsApi: !!this.cachedCustomObjectsApi,
+      ...(this.clientProvider ? { provider: this.clientProvider.getDebugState() } : {}),
+    };
+  }
+
+  dispose(): void {
+    this.cachedCustomObjectsApi = undefined;
+    this.clientProvider?.dispose();
+    this.clientProvider = undefined;
   }
 
   /**

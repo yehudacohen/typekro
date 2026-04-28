@@ -1,12 +1,146 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { Cel } from '../../../core/references/cel.js';
+import { getInnerCelPath } from '../../../core/serialization/cel-references.js';
+import type { CelExpression } from '../../../core/types/common.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   externalDnsHelmRelease,
   externalDnsHelmRepository,
-  mapExternalDnsConfigToHelmValues,
 } from '../resources/helm.js';
-import { ExternalDnsBootstrapConfigSchema, ExternalDnsBootstrapStatusSchema } from '../types.js';
+import {
+  ExternalDnsBootstrapConfigSchema,
+  ExternalDnsBootstrapStatusSchema,
+  type ExternalDnsHelmValues,
+} from '../types.js';
+
+type ExternalDnsHelmValueInput = ExternalDnsHelmValues | CelExpression<Record<string, unknown>>;
+
+function containsDynamicValue(value: unknown): boolean {
+  if (isKubernetesRef(value) || isCelExpression(value)) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsDynamicValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsDynamicValue);
+  }
+  return false;
+}
+
+function celLiteral(value: unknown): string {
+  if (isKubernetesRef(value)) {
+    return getInnerCelPath(value);
+  }
+  if (isCelExpression(value)) {
+    return value.expression;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(celLiteral).join(', ')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => `${JSON.stringify(key)}: ${celLiteral(entryValue)}`);
+    return `{${entries.join(', ')}}`;
+  }
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null) {
+    return 'null';
+  }
+  return 'null';
+}
+
+function celWithDefault(value: unknown, fallback: unknown): string {
+  if (value === undefined) {
+    return celLiteral(fallback);
+  }
+  if (isKubernetesRef(value)) {
+    const path = getInnerCelPath(value);
+    return `has(${path}) ? ${path} : ${celLiteral(fallback)}`;
+  }
+  if (isCelExpression(value)) {
+    return value.expression;
+  }
+  return celLiteral(value);
+}
+
+function awsCredentialsEnv(): NonNullable<ExternalDnsHelmValues['env']> {
+  return [
+    {
+      name: 'AWS_ACCESS_KEY_ID',
+      valueFrom: {
+        secretKeyRef: {
+          name: 'aws-route53-credentials',
+          key: 'access-key-id',
+        },
+      },
+    },
+    {
+      name: 'AWS_SECRET_ACCESS_KEY',
+      valueFrom: {
+        secretKeyRef: {
+          name: 'aws-route53-credentials',
+          key: 'secret-access-key',
+        },
+      },
+    },
+    {
+      name: 'AWS_DEFAULT_REGION',
+      value: 'us-east-1',
+    },
+    {
+      name: 'AWS_SESSION_TOKEN',
+      valueFrom: {
+        secretKeyRef: {
+          name: 'aws-route53-credentials',
+          key: 'session-token',
+          optional: true,
+        },
+      },
+    },
+  ];
+}
+
+function buildHelmValues(config: ExternalDnsHelmValues): ExternalDnsHelmValueInput {
+  if (!containsDynamicValue(config)) {
+    return config;
+  }
+
+  const entries = [
+    `"provider": ${celLiteral(config.provider)}`,
+    `"policy": ${celWithDefault(config.policy, 'upsert-only')}`,
+    `"dryRun": ${celWithDefault(config.dryRun, false)}`,
+    `"domainFilters": ${celWithDefault(config.domainFilters, [])}`,
+  ];
+
+  if (config.txtOwnerId !== undefined) {
+    entries.push(`"txtOwnerId": ${celWithDefault(config.txtOwnerId, '')}`);
+  }
+  if (config.interval !== undefined) {
+    entries.push(`"interval": ${celWithDefault(config.interval, '1m')}`);
+  }
+  if (config.logLevel !== undefined) {
+    entries.push(`"logLevel": ${celWithDefault(config.logLevel, 'info')}`);
+  }
+
+  if (config.provider === 'aws') {
+    entries.push(`"env": ${celLiteral(awsCredentialsEnv())}`);
+  } else if (isKubernetesRef(config.provider) || isCelExpression(config.provider)) {
+    entries.push(
+      `"env": ${celLiteral(config.provider)} == "aws" ? ${celLiteral(awsCredentialsEnv())} : []`
+    );
+  }
+
+  return Cel.expr<Record<string, unknown>>(`{${entries.join(', ')}}`);
+}
 
 /**
  * External-DNS Bootstrap Composition
@@ -56,6 +190,9 @@ export const externalDnsBootstrap = kubernetesComposition(
       domainFilters: spec.domainFilters || [],
       policy: spec.policy || 'upsert-only',
       dryRun: spec.dryRun !== undefined ? spec.dryRun : false,
+      txtOwnerId: spec.txtOwnerId,
+      interval: spec.interval,
+      logLevel: spec.logLevel,
     };
 
     // Create namespace for external-dns (required before HelmRelease)
@@ -79,50 +216,45 @@ export const externalDnsBootstrap = kubernetesComposition(
       id: 'externalDnsHelmRepository',
     });
 
-    // Create HelmRelease for external-dns deployment
-    // NOTE: Helm values must be static - Kro cannot handle CEL expressions inside spec.values
-    // because HelmRelease's spec.values is an arbitrary object without a defined schema.
-    // We use mapExternalDnsConfigToHelmValues to convert schema references to static values.
-    const helmValuesConfig: Record<string, any> = {
-      provider: fullConfig.provider as string,
-      policy: fullConfig.policy as 'sync' | 'upsert-only' | 'create-only' | undefined,
-      dryRun: fullConfig.dryRun as boolean | undefined,
-      // AWS credentials configuration via environment variables
-      env: [
-        {
-          name: 'AWS_ACCESS_KEY_ID',
-          valueFrom: {
-            secretKeyRef: {
-              name: 'aws-route53-credentials',
-              key: 'access-key-id',
-            },
-          },
-        },
-        {
-          name: 'AWS_SECRET_ACCESS_KEY',
-          valueFrom: {
-            secretKeyRef: {
-              name: 'aws-route53-credentials',
-              key: 'secret-access-key',
-            },
-          },
-        },
-        {
-          name: 'AWS_DEFAULT_REGION',
-          value: 'us-east-1',
-        },
-      ],
+    // Create HelmRelease for external-dns deployment. When any value is dynamic,
+    // put one CEL object expression at spec.values instead of nested CEL refs at
+    // spec.values.*. Kro can schema-check spec.values but not arbitrary nested
+    // Helm chart keys such as spec.values.domainFilters.
+    const policy = fullConfig.policy ?? 'upsert-only';
+    const dryRun = fullConfig.dryRun ?? false;
+    const helmValuesConfig: ExternalDnsHelmValues = {
+      provider: fullConfig.provider,
+      policy,
+      dryRun,
     };
 
+    if (fullConfig.txtOwnerId) {
+      helmValuesConfig.txtOwnerId = fullConfig.txtOwnerId;
+    }
+    if (fullConfig.interval) {
+      helmValuesConfig.interval = fullConfig.interval;
+    }
+    if (fullConfig.logLevel) {
+      helmValuesConfig.logLevel = fullConfig.logLevel;
+    }
+
+    const isConcreteAwsProvider =
+      typeof fullConfig.provider === 'string' && fullConfig.provider === 'aws';
+    if (isConcreteAwsProvider) {
+      // AWS credentials configuration via environment variables. Other
+      // providers need provider-specific credential wiring outside this bootstrap.
+      helmValuesConfig.env = awsCredentialsEnv();
+    }
+
     // Only add domainFilters if it's defined and non-empty
-    const domainFilters = fullConfig.domainFilters as string[] | undefined;
-    if (domainFilters && domainFilters.length > 0) {
+    const domainFilters = fullConfig.domainFilters as ExternalDnsHelmValues['domainFilters'] | undefined;
+    if (domainFilters !== undefined && (!Array.isArray(domainFilters) || domainFilters.length > 0)) {
       helmValuesConfig.domainFilters = domainFilters;
     }
 
-    const helmValues = mapExternalDnsConfigToHelmValues(helmValuesConfig);
+    const helmValues = buildHelmValues(helmValuesConfig);
 
-    const _helmRelease = externalDnsHelmRelease({
+    const helmRelease = externalDnsHelmRelease({
       name: spec.name,
       namespace: spec.namespace || 'external-dns',
       repositoryName: 'external-dns-repo', // Match the repository name
@@ -133,12 +265,17 @@ export const externalDnsBootstrap = kubernetesComposition(
     // Return status matching the schema structure
     //
     // DESIGN NOTE: This is a "bootstrap composition" that deploys external-dns via Helm.
-    // For simplicity in the hello world demo, we'll use static status values.
-    // In a production scenario, these would reference actual resource status.
+    // Readiness is derived from the HelmRelease so nested compositions can
+    // propagate a real cross-composition status reference to parent RGDs.
     return {
-      // Static status for demo simplicity
-      ready: true,
-      phase: 'Ready' as 'Ready' | 'Pending' | 'Installing' | 'Failed' | 'Upgrading',
+      ready: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      phase: Cel.expr<'Ready' | 'Pending' | 'Installing' | 'Failed' | 'Upgrading'>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+      ),
 
       // DNS management status - derived from configuration
       dnsProvider: fullConfig.provider,

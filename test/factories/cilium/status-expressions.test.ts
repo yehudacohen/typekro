@@ -137,7 +137,11 @@ describe('Cilium Bootstrap Status Expressions', () => {
       );
 
       // Verify Gateway API configuration is included in Helm values
-      expect(yaml).toContain('enabled: ${schema.spec.gatewayAPI.enabled}');
+      // gatewayAPI is an optional object with an optional enabled field, so
+      // both levels must be guarded.
+      expect(yaml).toContain(
+        'enabled: "${has(schema.spec.gatewayAPI) && has(schema.spec.gatewayAPI.enabled) ? schema.spec.gatewayAPI.enabled : omit()}"'
+      );
     });
   });
 
@@ -155,9 +159,15 @@ describe('Cilium Bootstrap Status Expressions', () => {
 
       // Verify observability configuration is included in Helm values
       expect(yaml).toContain('hubble:');
-      expect(yaml).toContain('enabled: ${schema.spec.observability.hubbleEnabled}');
+      // observability is an optional object with optional subfields, so both
+      // levels must be guarded.
+      expect(yaml).toContain(
+        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.hubbleEnabled) ? schema.spec.observability.hubbleEnabled : omit()}"'
+      );
       expect(yaml).toContain('prometheus:');
-      expect(yaml).toContain('enabled: ${schema.spec.observability.prometheusEnabled}');
+      expect(yaml).toContain(
+        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.prometheusEnabled) ? schema.spec.observability.prometheusEnabled : omit()}"'
+      );
     });
   });
 

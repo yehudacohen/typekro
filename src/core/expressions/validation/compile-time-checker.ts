@@ -145,7 +145,7 @@ export class CompileTimeTypeChecker {
    * Validate that a KubernetesRef type is compatible with its usage
    */
   validateKubernetesRefCompatibility(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     usageContext: KubernetesRefUsageContext,
     validationContext: CompileTimeValidationContext
   ): CompileTimeValidationResult {
@@ -463,7 +463,7 @@ export class CompileTimeTypeChecker {
    * Extract KubernetesRef type information
    */
   private extractKubernetesRefType(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     _usageContext: KubernetesRefUsageContext
   ): CompileTimeTypeInfo {
     return {
@@ -481,7 +481,7 @@ export class CompileTimeTypeChecker {
    * Validate KubernetesRef usage
    */
   private validateKubernetesRefUsage(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     usageContext: KubernetesRefUsageContext,
     _validationContext: CompileTimeValidationContext
   ): {

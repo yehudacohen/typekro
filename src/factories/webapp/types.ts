@@ -15,6 +15,21 @@ import { type } from 'arktype';
 import { CnpgBootstrapConfigSchema } from '../cnpg/types.js';
 import { ValkeyBootstrapConfigSchema } from '../valkey/types.js';
 
+const resourceRequirementsSchemaShape = {
+  'requests?': { 'cpu?': 'string', 'memory?': 'string' },
+  'limits?': { 'cpu?': 'string', 'memory?': 'string' },
+} as const;
+
+const envFromSourceSchema = type({
+  'prefix?': 'string',
+  secretRef: { name: 'string', 'optional?': 'boolean' },
+  'configMapRef?': 'never',
+}).or({
+  'prefix?': 'string',
+  configMapRef: { name: 'string', 'optional?': 'boolean' },
+  'secretRef?': 'never',
+});
+
 // ============================================================================
 // Config Schemas (source of truth) + Inferred Types
 // ============================================================================
@@ -40,6 +55,23 @@ export const WebAppWithProcessingConfigSchema = type({
     'replicas?': 'number',
     /** Additional environment variables. */
     'env?': 'Record<string, string>',
+    /**
+     * Inject all keys from Secrets or ConfigMaps as env vars via
+     * the container's `envFrom` field.
+     *
+     * **Each entry must have exactly one of** `secretRef` or `configMapRef`
+     * (not both, not neither). `prefix` and source `optional` are supported
+     * to match Kubernetes `V1EnvFromSource` / `V1SecretEnvSource` /
+     * `V1ConfigMapEnvSource` behavior.
+     *
+     * Note: in direct deployments, the composition prepends an inngest
+     * credentials Secret to this array. If you provide your own Secret
+     * containing `INNGEST_EVENT_KEY` or `INNGEST_SIGNING_KEY`, it will take
+     * precedence (last-write-wins in K8s envFrom ordering). KRO deployments
+     * mount only the generated credentials Secret because typed list fields
+     * cannot be safely concatenated in ResourceGraphDefinition YAML.
+     */
+    'envFrom?': envFromSourceSchema.array(),
   },
   /** PostgreSQL database settings. */
   database: {
@@ -49,7 +81,7 @@ export const WebAppWithProcessingConfigSchema = type({
     storageSize: 'string',
     /** Storage class name (e.g. 'gp3', 'local-path'). */
     'storageClass?': 'string',
-    /** Database name to create (default: derived from app name). */
+    /** Database name to create (default: 'app'). */
     'database?': 'string',
     /** Database owner (default: 'app'). */
     'owner?': 'string',
@@ -67,19 +99,30 @@ export const WebAppWithProcessingConfigSchema = type({
   },
   /** Inngest background processing settings. */
   processing: {
-    /** Inngest event authentication key (hex string, required). */
+    /**
+     * Inngest event authentication key (hex string, required).
+     * In KRO mode this value is part of the custom resource spec before being
+     * copied into a generated Secret; restrict read access to webapp CRs.
+     */
     eventKey: 'string',
-    /** Inngest request signing key (hex string, required). */
+    /**
+     * Inngest request signing key (hex string, required).
+     * In KRO mode this value is part of the custom resource spec before being
+     * copied into a generated Secret; restrict read access to webapp CRs.
+     */
     signingKey: 'string',
     /** SDK URLs to auto-sync functions from. */
     'sdkUrl?': 'string[]',
     /** Number of Inngest server replicas (default: 1). */
     'replicas?': 'number',
+    /** Pod resource requirements for the Inngest server. */
+    'resources?': resourceRequirementsSchemaShape,
   },
   /**
-   * CloudNativePG operator install settings. The composition nests
-   * `cnpgBootstrap` so the operator installs automatically alongside
-   * the app stack.
+   * CloudNativePG operator install settings. The composition uses
+   * `singleton(cnpgBootstrap, ...)` so app stacks consume a shared
+   * operator boundary instead of inlining operator bootstrap resources
+   * into every KRO graph.
    *
    * The schema embeds the full `CnpgBootstrapConfigSchema` made
    * partial (every field optional) so every field the underlying
@@ -92,16 +135,15 @@ export const WebAppWithProcessingConfigSchema = type({
    *   namespace: 'cnpg-system'
    *   shared: true (singleton — survives instance deletion)
    *
-   * The defaults make the operator a **shared cluster-level singleton**:
-   * multiple `webAppWithProcessing` instances (and any other composition
-   * that nests `cnpgBootstrap`) converge on the same install. Override
-   * `name`/`namespace` + set `shared: false` to deploy a dedicated
-   * per-instance operator (isolation, version testing, multi-tenancy).
+   * The defaults make the operator a shared cluster-level singleton:
+   * multiple `webAppWithProcessing` instances converge on the same install.
+   * `name`/`namespace` customize the install target, but the singleton identity
+   * is fixed by this composition's `cnpg-operator` singleton id.
    */
   'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
   /**
-   * Hyperspike Valkey operator install settings. Same shared-singleton
-   * pattern as `cnpgOperator`. Defaults:
+   * Hyperspike Valkey operator install settings. Same singleton-consumption
+   * pattern and fixed composition singleton identity as `cnpgOperator`. Defaults:
    *   name: 'valkey-operator'
    *   namespace: 'valkey-operator-system'
    *   shared: true
@@ -119,7 +161,11 @@ export type WebAppWithProcessingConfig = typeof WebAppWithProcessingConfigSchema
 export const WebAppWithProcessingStatusSchema = type({
   ready: 'boolean',
   databaseUrl: 'string',
+  databaseHost: 'string',
+  databasePort: 'number',
   cacheUrl: 'string',
+  cacheHost: 'string',
+  cachePort: 'number',
   inngestUrl: 'string',
   appUrl: 'string',
   components: {

@@ -14,7 +14,7 @@ import type { SchemaProxy } from '../../types/serialization.js';
 export interface NestedCompositionScope {
   contextId: string;
   resourceIds: Set<string>;
-  schemaProxy?: SchemaProxy<any, any> | undefined;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>> | undefined;
   parentScope?: NestedCompositionScope | undefined;
   childScopes: NestedCompositionScope[];
   depth: number;
@@ -31,7 +31,7 @@ export class MagicProxyScopeManager {
   /**
    * Enter a new composition scope
    */
-  enterScope(contextId: string, schemaProxy?: SchemaProxy<any, any>): void {
+  enterScope(contextId: string, schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>): void {
     const parentScope = this.getCurrentScope();
     const depth = parentScope ? parentScope.depth + 1 : 0;
 

@@ -88,6 +88,7 @@ export interface CRDSchemaCheckResult {
  * @param fieldName - Field name for known-field matching
  * @returns true if this node or any descendant needs the fix
  */
+// biome-ignore lint/suspicious/noExplicitAny: CRD schema traversal operates on arbitrary YAML/JSON objects.
 export function schemaFieldNeedsFix(obj: any, fieldName?: string): boolean {
   if (!obj || typeof obj !== 'object') {
     return false;
@@ -143,6 +144,7 @@ export function schemaFieldNeedsFix(obj: any, fieldName?: string): boolean {
  * @returns Array of JSON patch operations
  */
 export function generateSchemaFixPatches(
+  // biome-ignore lint/suspicious/noExplicitAny: CRD schema traversal operates on arbitrary YAML/JSON objects.
   obj: any,
   basePath: string,
   fieldName?: string

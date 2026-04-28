@@ -8,7 +8,11 @@
 export { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 
 // Re-export main functions
-export { clearRegisteredTypes, ensureResourceTypeRegistered } from './resource-registration.js';
+export {
+  buildAlchemyDeploymentOptions,
+  clearRegisteredTypes,
+  ensureResourceTypeRegistered,
+} from './resource-registration.js';
 export { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 // Re-export types
 export type {

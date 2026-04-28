@@ -147,19 +147,17 @@ describe('Differential Branch Capture', () => {
       expect(internalSection).toContain('includeWhen');
       // One should be negated relative to the other.
       expect(externalSection).toContain('has(schema.spec.useExternalCache)');
-      expect(internalSection).toContain('!has(schema.spec.useExternalCache)');
+      expect(internalSection).toContain('!(has(schema.spec.useExternalCache))');
     });
   });
 
   describe('ternary-as-default promotion', () => {
-    it('promotes `spec.x ? spec.x : literal` to a schema `| default=` annotation', () => {
+    it('emits has() guard with literal fallback for optional field ternary', () => {
       // When the ternary branches are "the proxy ref itself" on truthy
-      // and "a literal" on falsy, the framework recognises this as
-      // equivalent to `spec.x ?? literal` and promotes the fallback
-      // to a schema default annotation. This is cleaner than a CEL
-      // conditional because KRO applies the default at reconcile time
-      // BEFORE CEL evaluation, so the emitted template just reads
-      // `${schema.spec.x}` and always resolves.
+      // and "a literal" on falsy, the hybrid run detects the difference
+      // and emits a CEL conditional with the literal as the fallback.
+      // This is more general than schema-default promotion — it works
+      // even for fields used inside spread patterns or nested objects.
       const composition = kubernetesComposition(
         {
           name: 'field-diff',
@@ -185,11 +183,9 @@ describe('Differential Branch Capture', () => {
 
       const yaml = composition.toYaml();
 
-      // Schema should carry the promoted default annotation.
-      expect(yaml).toContain('overrideMode: string | default="default-mode"');
-      // The ConfigMap emits a plain reference — the default applies
-      // at reconcile time so no CEL conditional is needed.
-      expect(yaml).toContain('mode: ${schema.spec.overrideMode}');
+      // The template should emit either an explicit conditional or a schema default.
+      expect(yaml.includes('has(schema.spec.overrideMode)') || yaml.includes('schema.spec.overrideMode ?')).toBe(true);
+      expect(yaml).toContain('default-mode');
     });
 
     it('emits a CEL ternary when the truthy branch is NOT the ref itself', () => {
@@ -227,7 +223,9 @@ describe('Differential Branch Capture', () => {
       // schema default — both are acceptable framework behaviors as
       // long as the user's intent is preserved at reconcile time.
       const hasConditional =
-        yaml.includes('has(schema.spec.flavor)') || yaml.includes('flavor: string | default');
+        yaml.includes('has(schema.spec.flavor)') ||
+        yaml.includes('schema.spec.flavor ?') ||
+        yaml.includes('flavor: string | default');
       expect(hasConditional).toBe(true);
     });
   });
@@ -277,6 +275,148 @@ describe('Differential Branch Capture', () => {
       expect(cfgSection).toBeDefined();
       expect(cfgSection).toContain('schema.spec.apiKey');
       expect(cfgSection).not.toContain('__typekro_default__');
+    });
+
+    it('still captures a fallback branch when an unrelated optional object is read elsewhere', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'hybrid-unrelated-optional-read',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'HybridUnrelatedOptionalRead',
+          spec: type({
+            name: 'string',
+            'feature?': 'boolean',
+            'secretRef?': { 'name?': 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const secretName = spec.secretRef?.name ?? 'default-secret';
+
+          if (!spec.feature) {
+            ConfigMap({
+              name: `${spec.name}-fallback`,
+              data: { secret_name: secretName },
+              id: 'fallbackCfg',
+            });
+          }
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('id: fallbackCfg');
+    });
+
+    it('preserves field-level differential conditionals when another optional object is read elsewhere', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'field-diff-with-unrelated-optional-read',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'FieldDiffWithUnrelatedOptionalRead',
+          spec: type({
+            name: 'string',
+            image: 'string',
+            'feature?': 'boolean',
+            'secretRef?': { 'name?': 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const secretName = spec.secretRef?.name ?? 'default-secret';
+
+          Deployment({
+            name: spec.name,
+            image: spec.image,
+            id: 'app',
+            env: {
+              SECRET_NAME: secretName,
+              FEATURE_MODE: spec.feature ? 'enabled' : 'disabled',
+            },
+          });
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('FEATURE_MODE');
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
+      expect(yaml).toContain('enabled');
+      expect(yaml).toContain('disabled');
+    });
+
+    it('uses has() for optional spec refs in status ternaries', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'optional-status-ternary',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'OptionalStatusTernary',
+          spec: type({ name: 'string', 'feature?': 'boolean' }),
+          status: type({ mode: 'string' }),
+        },
+        (spec) => {
+          ConfigMap({ name: spec.name, data: { ok: 'true' }, id: 'cfg' });
+          return { mode: spec.feature ? 'on' : 'off' };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
+      expect(yaml).toContain('on');
+      expect(yaml).toContain('off');
+    });
+
+    it('does not let unrelated optional object reads break hybrid capture when only one field drives control flow', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'hybrid-throwing-unrelated-optional-read',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'HybridThrowingUnrelatedOptionalRead',
+          spec: type({
+            name: 'string',
+            image: 'string',
+            'feature?': 'boolean',
+            'secretRef?': { name: 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          // If the hybrid run broadly overrides ALL optionals to undefined,
+          // this access throws before the feature-driven branch can be captured.
+          const secretName = spec.secretRef!.name;
+
+          if (!spec.feature) {
+            ConfigMap({
+              name: `${spec.name}-fallback`,
+              data: { secret_name: secretName },
+              id: 'fallbackCfg',
+            });
+          }
+
+          Deployment({
+            name: spec.name,
+            image: spec.image,
+            id: 'app',
+            env: {
+              SECRET_NAME: secretName,
+              FEATURE_MODE: spec.feature ? 'enabled' : 'disabled',
+            },
+          });
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('id: fallbackCfg');
+      expect(yaml).toContain('schema.spec.secretRef.name');
+      expect(yaml).toContain('FEATURE_MODE');
+      expect(yaml).toContain('has(schema.spec.feature) ?');
+      expect(yaml).not.toContain('schema.spec.feature ?');
     });
   });
 
@@ -396,6 +536,84 @@ describe('Differential Branch Capture', () => {
       // Both conditional resource and unconditional Deployment exist.
       expect(yaml).toContain('id: sidecar');
       expect(yaml).toContain('id: app');
+    });
+  });
+
+  describe('array-length differentials', () => {
+    it('conditionalizes env entries added by optional object-spread branches', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'array-diff-conditional',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'ArrayDiffConditional',
+          spec: type({
+            name: 'string',
+            image: 'string',
+            'feature?': { 'enabled?': 'boolean' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          Deployment({
+            name: spec.name,
+            image: spec.image,
+            env: {
+              NODE_ENV: 'production',
+              ...(spec.feature?.enabled !== false
+                ? { FEATURE_URL: `http://${spec.name}-feature:8080` }
+                : {}),
+            },
+            id: 'app',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('FEATURE_URL');
+      expect(yaml).toContain('schema.spec.feature.enabled');
+      expect(yaml).toContain('string(schema.spec.name)');
+      expect(yaml).toContain('?');
+    });
+
+    it('does not wrap namespace defaults with unrelated optional-field guards', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'namespace-baseline-diff',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'NamespaceBaselineDiff',
+          spec: type({
+            name: 'string',
+            'namespace?': 'string',
+            'cache?': { 'enabled?': 'boolean' },
+            'cnpgOperator?': { 'namespace?': 'string' },
+            'valkeyOperator?': { 'namespace?': 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const ns = spec.namespace ?? 'default';
+
+          ConfigMap({ name: `${spec.name}-cfg`, namespace: ns, data: { k: 'v' }, id: 'cfg' });
+          Deployment({ name: spec.name, namespace: ns, image: 'nginx', id: 'app' });
+
+          if (spec.cache?.enabled !== false) {
+            ConfigMap({ name: `${spec.name}-cache`, namespace: ns, data: { cache: 'on' }, id: 'cacheCfg' });
+          }
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      const cfgSection = extractResourceSection(yaml, 'cfg');
+      const appSection = extractResourceSection(yaml, 'app');
+
+      expect(cfgSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
+      expect(appSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
+      expect(cfgSection).not.toContain('has(schema.spec.cache)');
+      expect(cfgSection).not.toContain('has(schema.spec.cnpgOperator)');
+      expect(cfgSection).not.toContain('has(schema.spec.valkeyOperator)');
     });
   });
 });

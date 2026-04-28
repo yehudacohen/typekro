@@ -36,7 +36,7 @@ export interface ProcessedMagicAssignable<T> {
   processedValue: T | CelExpression<T>;
 
   /** KubernetesRef dependencies detected in the value */
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
 
   /** Conversion errors encountered during analysis */
   errors: ConversionError[];
@@ -62,7 +62,7 @@ export interface ProcessedMagicAssignableShape<T> {
   processedShape: T;
 
   /** All KubernetesRef dependencies detected across all fields */
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
 
   /** All conversion errors encountered during analysis */
   errors: ConversionError[];
@@ -77,7 +77,7 @@ export interface ProcessedMagicAssignableShape<T> {
   valid: boolean;
 
   /** Field-level analysis results for detailed inspection */
-  fieldResults: Record<string, ProcessedMagicAssignable<any>>;
+  fieldResults: Record<string, ProcessedMagicAssignable<unknown>>;
 }
 
 /**
@@ -148,11 +148,11 @@ export class MagicAssignableAnalyzer {
       // Value contains KubernetesRef objects - needs conversion
       const conversionResult = this.convertMagicAssignableValue(value, context);
 
-      return {
-        originalValue: value,
-        processedValue: conversionResult.valid
-          ? (conversionResult.celExpression! as CelExpression<T>)
-          : (value as T),
+        return {
+          originalValue: value,
+          processedValue: conversionResult.valid
+            ? ((conversionResult.celExpression as CelExpression<T> | undefined) ?? (value as T))
+            : (value as T),
         dependencies: conversionResult.dependencies,
         errors: conversionResult.errors,
         requiresConversion: conversionResult.requiresConversion,
@@ -181,7 +181,7 @@ export class MagicAssignableAnalyzer {
   /**
    * Analyze a MagicAssignableShape object for KubernetesRef objects and convert fields to CEL if needed
    */
-  analyzeMagicAssignableShape<T extends Record<string, any>>(
+  analyzeMagicAssignableShape<T extends object>(
     shape: MagicAssignableShape<T>,
     context: AnalysisContext
   ): ProcessedMagicAssignableShape<T> {
@@ -189,7 +189,7 @@ export class MagicAssignableAnalyzer {
       // Performance optimization: check if the entire shape is static first
       if (this.options.optimizeStaticValues && !this.containsKubernetesRefs(shape)) {
         // Still need to populate fieldResults for static values
-        const fieldResults: Record<string, ProcessedMagicAssignable<any>> = {};
+        const fieldResults: Record<string, ProcessedMagicAssignable<unknown>> = {};
         for (const [key, value] of Object.entries(shape)) {
           fieldResults[key] = {
             originalValue: value,
@@ -214,11 +214,11 @@ export class MagicAssignableAnalyzer {
         };
       }
 
-      const processedShape: any = {};
-      const allDependencies: KubernetesRef<any>[] = [];
+      const processedShape: Record<string, unknown> = {};
+      const allDependencies: KubernetesRef<unknown>[] = [];
       const allErrors: ConversionError[] = [];
       const allSourceMap: SourceMapEntry[] = [];
-      const fieldResults: Record<string, ProcessedMagicAssignable<any>> = {};
+      const fieldResults: Record<string, ProcessedMagicAssignable<unknown>> = {};
 
       let requiresConversion = false;
       let overallValid = true;
@@ -235,10 +235,10 @@ export class MagicAssignableAnalyzer {
           // Check if this is a nested object that needs shape analysis
           if (this.isNestedObject(value)) {
             // Recursively analyze nested shape
-            const nestedResult = this.analyzeMagicAssignableShape(value, fieldContext);
+            const nestedResult = this.analyzeMagicAssignableShape(value as Record<string, unknown>, fieldContext);
 
             // Create a field result from the nested result
-            const fieldResult: ProcessedMagicAssignable<any> = {
+            const fieldResult: ProcessedMagicAssignable<unknown> = {
               originalValue: value,
               processedValue: nestedResult.processedShape,
               dependencies: nestedResult.dependencies,
@@ -448,9 +448,9 @@ export class MagicAssignableAnalyzer {
   /**
    * Convert an array that contains KubernetesRef objects
    */
-  private convertArrayValue(array: any[], context: AnalysisContext): CelConversionResult {
-    const processedArray: any[] = [];
-    const allDependencies: KubernetesRef<any>[] = [];
+  private convertArrayValue(array: unknown[], context: AnalysisContext): CelConversionResult {
+    const processedArray: unknown[] = [];
+    const allDependencies: KubernetesRef<unknown>[] = [];
     const allErrors: ConversionError[] = [];
     let hasConversions = false;
 
@@ -505,7 +505,7 @@ export function analyzeMagicAssignable<T>(
 /**
  * Convenience function to analyze a MagicAssignableShape object
  */
-export function analyzeMagicAssignableShape<T extends Record<string, any>>(
+export function analyzeMagicAssignableShape<T extends object>(
   shape: MagicAssignableShape<T>,
   context: AnalysisContext,
   options?: MagicAssignableAnalysisOptions

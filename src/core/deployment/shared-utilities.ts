@@ -24,10 +24,20 @@ export function validateSpec<TSpec extends KroCompatibleType, TStatus extends Kr
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
   context?: { kind?: string; name?: string }
 ): void {
-  const validationResult = schemaDefinition.spec(spec);
-  if (validationResult instanceof Error) {
+  const validationResult = schemaDefinition.spec(spec) as unknown;
+  const validationMessage = validationResult instanceof Error
+    ? validationResult.message
+    : validationResult &&
+        typeof validationResult === 'object' &&
+        (validationResult as { ' arkKind'?: unknown })[' arkKind'] === 'errors'
+      ? (validationResult as { summary?: string; message?: string }).message ??
+        (validationResult as { summary?: string; message?: string }).summary ??
+        String(validationResult)
+      : null;
+
+  if (validationMessage) {
     throw new ValidationError(
-      `Invalid spec: ${validationResult.message}`,
+      `Invalid spec: ${validationMessage}`,
       context?.kind ?? 'Unknown',
       context?.name ?? 'unknown',
       'spec',
@@ -80,6 +90,43 @@ export function generateInstanceName<TSpec>(spec: TSpec, fallbackPrefix = 'insta
 
   // Generate a unique name
   return `${fallbackPrefix}-${Date.now()}`;
+}
+
+/**
+ * Singleton owner boundaries must use the stable singleton id as the CR name.
+ * This keeps owner creation and singleton.use() references aligned even when
+ * the singleton spec contains a user-facing `name` field with a different value.
+ */
+export function getSingletonInstanceName(id: string): string {
+  if (!id || typeof id !== 'string') {
+    throw new ValidationError(
+      `Invalid singleton id: ${JSON.stringify(id)}. Singleton ids must be non-empty strings.`,
+      'Singleton',
+      String(id),
+      'id',
+      ['Provide a non-empty singleton id']
+    );
+  }
+
+  const normalized = id
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[^a-zA-Z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+
+  if (!normalized) {
+    throw new ValidationError(
+      `Invalid singleton id: ${JSON.stringify(id)}. Singleton ids must contain at least one alphanumeric character.`,
+      'Singleton',
+      id,
+      'id',
+      ['Use letters or numbers in the singleton id']
+    );
+  }
+
+  return convertToKubernetesName(normalized);
 }
 
 /**

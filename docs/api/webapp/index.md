@@ -21,7 +21,7 @@ Deploys a complete application stack with automatic wiring:
 |-----------|----------|---------------|
 | PostgreSQL | CNPG Cluster + PgBouncer Pooler | `DATABASE_URL` |
 | Cache | Valkey cluster | `VALKEY_URL`, `REDIS_URL` |
-| Workflow engine | Inngest (external DB mode) | `INNGEST_BASE_URL`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` |
+| Workflow engine | Inngest (external DB mode) | `INNGEST_BASE_URL`; credentials are injected from a generated Secret via `envFrom` |
 | Application | Deployment + Service | — |
 
 ### Quick Example
@@ -83,18 +83,24 @@ DATABASE_URL=postgresql://app@my-app-db-pooler:5432/myapp
 VALKEY_URL=redis://my-app-cache:6379
 REDIS_URL=redis://my-app-cache:6379
 INNGEST_BASE_URL=http://my-app-inngest:8288
-INNGEST_EVENT_KEY=<from config>
-INNGEST_SIGNING_KEY=<from config>
+INNGEST_EVENT_KEY=<from generated Secret>
+INNGEST_SIGNING_KEY=<from generated Secret>
 ```
 
-User-provided `app.env` values are merged on top, so you can override any of these.
+The composition creates an Inngest credentials Secret and prepends it to `app.envFrom` for direct deployments. In KRO mode, the generated Inngest credentials Secret is still mounted, but schema-provided `app.envFrom` entries are not merged into the generated Deployment because KRO cannot safely concatenate typed list fields. User-provided `app.env` values are still merged on top of generated direct environment variables, so they can override direct values such as `DATABASE_URL` or `INNGEST_BASE_URL`.
+
+In KRO mode, `processing.eventKey` and `processing.signingKey` are still plain custom-resource spec fields before TypeKro copies them into the generated Secret. Treat webapp custom resources as sensitive and restrict RBAC read access to those CRs.
 
 ### Status
 
 ```typescript
 instance.status.ready       // all components healthy
 instance.status.databaseUrl // postgresql://app@...-db-pooler:5432/...
+instance.status.databaseHost // ...-db-pooler
+instance.status.databasePort // 5432
 instance.status.cacheUrl    // redis://...-cache:6379
+instance.status.cacheHost   // ...-cache
+instance.status.cachePort   // 6379
 instance.status.inngestUrl  // http://...-inngest:8288
 instance.status.appUrl      // http://...:3000
 
@@ -114,35 +120,41 @@ instance.status.components.inngest   // Inngest ready
 | `app.port` | No | Container port (default: 3000) |
 | `app.replicas` | No | Replica count (default: 1) |
 | `app.env` | No | Extra env vars (merged with auto-wired ones) |
+| `app.envFrom` | No | Additional Secret/ConfigMap envFrom sources for direct deployments. TypeKro prepends the generated Inngest credentials Secret, so later entries can override only by defining the same env keys in a later source according to Kubernetes envFrom behavior. In KRO mode, only the generated Inngest credentials Secret is mounted |
 | `database.storageSize` | Yes | PG storage (e.g., '50Gi') |
 | `database.instances` | No | PG replicas (default: 1) |
 | `database.storageClass` | No | Storage class |
-| `database.database` | No | Database name (default: app name) |
+| `database.database` | No | Database name (default: `app`) |
 | `database.owner` | No | DB owner (default: 'app') |
 | `cache.shards` | No | Valkey shards (default: 3) |
 | `cache.replicas` | No | Replicas per shard (default: 0) |
-| `processing.eventKey` | Yes | Inngest event key (hex string) |
-| `processing.signingKey` | Yes | Inngest signing key (hex string) |
+| `cache.volumePermissions` | No | Enable the Valkey volume permissions init container |
+| `cache.storageSize` | No | Storage size per Valkey shard (default: '1Gi') |
+| `processing.eventKey` | Yes | Inngest event key (hex string); sensitive in KRO custom-resource specs |
+| `processing.signingKey` | Yes | Inngest signing key (hex string); sensitive in KRO custom-resource specs |
 | `processing.sdkUrl` | No | App SDK URLs for function sync |
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
+| `processing.resources` | No | CPU/memory requests and limits for the Inngest server |
+| `cnpgOperator` | No | CloudNativePG operator singleton settings; accepts the underlying CNPG bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared`. `name`/`namespace` customize the install target; the singleton identity is fixed by the composition. |
+| `valkeyOperator` | No | Valkey operator singleton settings; accepts the underlying Valkey bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared`. `name`/`namespace` customize the install target; the singleton identity is fixed by the composition. |
 
 ### Prerequisites
 
-The following operators must be installed before deploying:
+Install the TypeKro runtime first so Flux and KRO are available. The webapp
+composition bootstraps CloudNativePG and Valkey operators itself as shared
+singleton dependencies.
 
-- **CloudNativePG** operator — `cnpgBootstrap` from `typekro/cnpg`
-- **Valkey** operator — `valkeyBootstrap` from `typekro/valkey`
-- **Flux CD** — for Inngest HelmRelease
+- **TypeKro runtime** — Flux CD plus KRO controller
+- **CloudNativePG** operator — bootstrapped by this composition
+- **Valkey** operator — bootstrapped by this composition
 
 ```typescript
-import { cnpgBootstrap } from 'typekro/cnpg';
-import { valkeyBootstrap } from 'typekro/valkey';
+import { typeKroRuntimeBootstrap } from 'typekro';
 
-// Install operators first
-await cnpgBootstrap.factory('direct', { ... }).deploy({ ... });
-await valkeyBootstrap.factory('direct', { ... }).deploy({ ... });
+// Install runtime first
+await typeKroRuntimeBootstrap().factory('direct', { ... }).deploy({ ... });
 
-// Then deploy the full stack
+// Then deploy the full stack; CNPG and Valkey operator singletons are included
 await webAppWithProcessing.factory('kro', { ... }).deploy({ ... });
 ```
 

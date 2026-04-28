@@ -15,7 +15,14 @@ import {
   setIncludeWhen,
   setReadyWhen,
 } from '../../metadata/index.js';
-import type { Enhanced, IncludeWhenCondition, ReadyWhenCondition } from '../../types/index.js';
+import type {
+  CelExpression,
+  Enhanced,
+  IncludeWhenCondition,
+  KubernetesRef,
+  ReadyWhenCallback,
+  ReadyWhenCondition,
+} from '../../types/index.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
   type ConditionalExpressionConfig,
@@ -336,7 +343,14 @@ export class ConditionalExpressionIntegrator {
         }
 
         // Update the resource with processed expression
-        resource.conditionals[name] = results.conditionals[name].expression;
+        resource.conditionals[name] = results.conditionals[name].expression as
+          | string
+          | boolean
+          | CelExpression<boolean>
+          | KubernetesRef<boolean>
+          | KubernetesRef<number>
+          | KubernetesRef<string>
+          | ReadyWhenCallback;
       }
     }
 

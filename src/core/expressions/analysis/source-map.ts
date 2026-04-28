@@ -359,6 +359,7 @@ export interface SourceMapExport {
 /**
  * Utility functions for working with source maps
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: This module intentionally exposes a namespaced utility surface.
 export class SourceMapUtils {
   /**
    * Create a source location from AST node location

@@ -1,19 +1,12 @@
+import { escapeCelString } from '../../utils/cel-escape.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getInnerCelPath } from '../serialization/cel-references.js';
 import type { CelExpression, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
-
-/**
- * Escape a string for safe embedding in a CEL string literal.
- * Prevents CEL injection by escaping backslashes first, then double quotes.
- */
-function escapeCelString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
 
 /** Patterns that indicate raw JavaScript operators were used instead of CEL operators.
  * Note: && and || are valid CEL operators, so only === and !== are flagged. */
@@ -279,6 +272,116 @@ function math<T = unknown>(
 }
 
 /**
+ * Convert a value to its CEL representation for use inside a ternary.
+ * Unlike `expr()` which concatenates raw strings, this function
+ * properly quotes string literals and converts marker strings
+ * (containing `__KUBERNETES_REF__` tokens) to CEL concatenation.
+ */
+function celValueForTernary(value: RefOrValue<CelValue>): string {
+  if (isKubernetesRef(value)) {
+    return getInnerCelPath(value);
+  }
+  if (isCelExpression(value)) {
+    return value.expression;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return '""';
+  }
+  const str = String(value);
+  // Check for __KUBERNETES_REF__ markers from template literal coercion.
+  // Convert markers to CEL concatenation: "literal" + string(ref) + "literal"
+  if (str.includes('__KUBERNETES_REF_')) {
+    const parts: string[] = [];
+    let lastIndex = 0;
+    const pattern = new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g');
+    let m: RegExpExecArray | null = pattern.exec(str);
+    while (m !== null) {
+      if (m.index > lastIndex) {
+        parts.push(`"${escapeCelString(str.slice(lastIndex, m.index))}"`);
+      }
+      const resourceId = m[1];
+      const fieldPath = m[2];
+      if (!resourceId || !fieldPath) continue;
+      const celPath =
+        resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+      parts.push(`string(${celPath})`);
+      lastIndex = m.index + m[0].length;
+      m = pattern.exec(str);
+    }
+    if (lastIndex < str.length) {
+      parts.push(`"${escapeCelString(str.slice(lastIndex))}"`);
+    }
+    const [firstPart] = parts;
+    return parts.length === 1 && firstPart !== undefined ? firstPart : parts.join(' + ');
+  }
+  // Plain string → quote as CEL string literal
+  return `"${escapeCelString(str)}"`;
+}
+
+/**
+ * Creates a conditional CEL expression with smart value conversion.
+ *
+ * Unlike `Cel.conditional` (which concatenates raw strings), `Cel.cond`
+ * properly quotes string literals, converts marker strings from template
+ * literal coercion, and handles KubernetesRef values — producing valid
+ * CEL ternary expressions without manual escaping.
+ *
+ * @example Resource status condition with string values
+ * ```typescript
+ * env: { CACHE_MODE: Cel.cond(cache.status.ready, 'redis', 'memory') }
+ * // → ${cache.status.ready ? "redis" : "memory"}
+ * ```
+ *
+ * @example Marker strings from template literals
+ * ```typescript
+ * env: { URL: Cel.cond(cache.status.ready, `http://${cache.metadata.name}:6379`, '') }
+ * // → ${cache.status.ready ? "http://" + string(cache.metadata.name) + ":6379" : ""}
+ * ```
+ */
+function cond<T = unknown>(
+  condition: RefOrValue<unknown>,
+  trueValue: RefOrValue<CelValue>,
+  falseValue: RefOrValue<CelValue>
+): CelExpression<T> & T {
+  let condCel: string;
+  if (isKubernetesRef(condition)) {
+    condCel = getInnerCelPath(condition);
+  } else if (isCelExpression(condition)) {
+    condCel = condition.expression;
+  } else if (typeof condition === 'boolean') {
+    condCel = String(condition);
+    logger.warn('Cel.cond called with a static boolean condition — the ternary is statically evaluable and KRO will always take one branch. This usually means a ref was expected instead of a literal.', {
+      condition,
+    });
+  } else {
+    condCel = String(condition);
+  }
+
+  const trueCel = celValueForTernary(trueValue);
+  const falseCel = celValueForTernary(falseValue);
+
+  const expression = `${condCel} ? ${trueCel} : ${falseCel}`;
+
+  const result = {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression,
+    // Mark as a mixed template so processResourceReferences passes it
+    // through as-is (does not re-wrap in ${...}).
+    __isTemplate: true,
+    // toString/Symbol.toPrimitive enable template literal composition:
+    //   `redis://${Cel.cond(ref, 'a', 'b')}:6379`
+    // produces a valid KRO mixed-template string.
+    toString: () => `\${${expression}}`,
+    [Symbol.toPrimitive]: () => `\${${expression}}`,
+  };
+
+  return result as unknown as CelExpression<T> & T;
+}
+
+/**
  * Creates a mixed string template that combines literal strings with CEL expressions
  *
  * This function creates YAML strings with embedded CEL expressions.
@@ -449,6 +552,7 @@ export const Cel = {
   expr,
   join,
   conditional,
+  cond,
   math,
   template,
   concat,

@@ -33,6 +33,8 @@ import type { ResourceStatus } from '../types/kubernetes.js';
 export interface ResourceMetadata {
   /** Original resource identifier for cross-resource references */
   resourceId?: string;
+  /** Local resource IDs that should resolve to this emitted resource ID. */
+  resourceAliases?: string[];
   /** Factory-provided function that evaluates whether a deployed resource is ready */
   readinessEvaluator?: (resource: unknown) => ResourceStatus;
   /** Conditional resource creation CEL expression array */
@@ -45,6 +47,17 @@ export interface ResourceMetadata {
   templateOverrides?: Array<{ propertyPath: string; celExpression: string }>;
   /** Kubernetes scope — 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.) */
   scope?: 'namespaced' | 'cluster';
+  /**
+   * Whether this resource creates a DNS-addressable service in the
+   * cluster. When `true`, the dependency resolver will detect implicit
+   * dependencies from other resources whose env vars or spec fields
+   * reference this resource's `metadata.name` as a hostname.
+   *
+   * Set automatically by factory functions that create DNS names:
+   * `service()`, `deployment()`, `statefulSet()`, and CRD factories
+   * like `valkey()`, `cluster()`, `pooler()`.
+   */
+  dnsAddressable?: boolean;
   /**
    * Deprecated alias for `scopes`. `lifecycle: 'shared'` is equivalent to
    * `scopes: ['shared']`. New code should use `scopes` directly.
@@ -69,6 +82,14 @@ export interface ResourceMetadata {
    * the scopes without access to the original composition.
    */
   scopes?: string[];
+  /**
+   * Explicit dependencies for KRO deployment ordering.
+   * Each entry declares that this resource should wait for another
+   * resource to be ready before KRO creates it. Emitted as template
+   * annotations so KRO discovers the dependency edge while building
+   * the resource DAG.
+   */
+  dependsOn?: Array<{ resourceId: string }>;
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

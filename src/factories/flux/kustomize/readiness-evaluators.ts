@@ -12,11 +12,16 @@ import type {
  * This evaluator follows TypeKro patterns and integrates with the cluster state access system.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Kustomization is a CRD without typed client
-export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
-  liveResource: any
+export const kustomizationReadinessEvaluator: ReadinessEvaluator<unknown> = (
+  liveResource: unknown
 ): ResourceStatus => {
   try {
-    const status = liveResource.status;
+    const status = (liveResource as {
+      status?: {
+        conditions?: KubernetesCondition[];
+        inventory?: { entries?: unknown[] };
+      };
+    } | null | undefined)?.status;
 
     if (!status) {
       return {

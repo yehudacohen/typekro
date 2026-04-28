@@ -35,7 +35,7 @@ The bootstrap deploys:
 1. **Flux CD** - GitOps toolkit (source-controller, helm-controller, etc.)
 2. **Kro Controller** - ResourceGraphDefinition controller
 3. **Required RBAC** - ClusterRoleBindings for controllers
-4. **Namespaces** - `flux-system` and `kro`
+4. **Namespaces** - `flux-system` and `kro-system`
 
 ## Configuration
 
@@ -43,9 +43,22 @@ The bootstrap deploys:
 interface TypeKroRuntimeConfig {
   namespace?: string;     // Target namespace (default: 'flux-system')
   fluxVersion?: string;   // Flux version (default: 'v2.7.5')
-  kroVersion?: string;    // Kro version (default: '0.3.0')
+  kroVersion?: string;    // Kro version (default: '0.9.1')
+  rbac?: RbacMode;        // Flux controller RBAC mode (default: 'cluster-admin')
 }
+
+type RbacMode = 'cluster-admin' | 'scoped' | { clusterRoleRef: string };
 ```
+
+TypeKro requires KRO `0.9.1+` because generated ResourceGraphDefinitions use the `omit()` CEL function behind the `CELOmitFunction` feature gate.
+
+`rbac` controls the permissions granted to Flux controllers:
+
+| Value | Description |
+|-------|-------------|
+| `'cluster-admin'` | Default. Binds Flux controllers to the built-in `cluster-admin` ClusterRole for maximum compatibility |
+| `'scoped'` | Creates a narrower ClusterRole with the permissions TypeKro's bundled controllers need |
+| `{ clusterRoleRef: string }` | Binds Flux controllers to a pre-existing ClusterRole you manage |
 
 ### Example with Custom Versions
 
@@ -53,7 +66,8 @@ interface TypeKroRuntimeConfig {
 const runtime = typeKroRuntimeBootstrap({
   namespace: 'flux-system',
   fluxVersion: 'v2.7.5',
-  kroVersion: '0.3.0'
+  kroVersion: '0.9.1',
+  rbac: 'scoped',
 });
 ```
 
@@ -88,7 +102,7 @@ await factory.deploy({ name: 'my-app', image: 'nginx' });
 kubectl get pods -n flux-system
 
 # Check Kro controller
-kubectl get pods -n kro
+kubectl get pods -n kro-system
 
 # Check ResourceGraphDefinitions
 kubectl get rgd -A
@@ -103,7 +117,7 @@ kubectl get rgd -A
 kubectl logs -n flux-system deployment/helm-controller
 
 # Check Kro controller logs
-kubectl logs -n kro deployment/kro-controller-manager
+kubectl logs -n kro-system deployment/kro-controller-manager
 ```
 
 ### CRD Validation Errors
@@ -114,4 +128,3 @@ The bootstrap includes fixes for Kubernetes 1.33+ CRD schema validation. If you 
 
 - [Deployment Modes](/guide/deployment-modes) - Direct vs Kro comparison
 - [Kro Overview](/api/kro/) - ResourceGraphDefinition details
-

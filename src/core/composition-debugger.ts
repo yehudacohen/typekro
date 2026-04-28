@@ -136,7 +136,7 @@ function logCompositionEnd(
  */
 function logStatusValidation(
   compositionName: string,
-  statusObject: any,
+  statusObject: unknown,
   validationResult: 'success' | 'failure',
   issues?: string[]
 ): void {

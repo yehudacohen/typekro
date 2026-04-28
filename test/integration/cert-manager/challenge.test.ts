@@ -336,7 +336,6 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       });
 
       expect(acmeIssuerResource).toBeDefined();
-      // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
       const issuerBody = acmeIssuerResource as Record<string, any>;
       expect(issuerBody.kind).toBe('ClusterIssuer');
       expect(issuerBody.spec.acme?.server).toBe(
@@ -355,7 +354,6 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       });
 
       expect(certificateResource).toBeDefined();
-      // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
       const certBody = certificateResource as Record<string, any>;
       expect(certBody.kind).toBe('Certificate');
       expect(certBody.spec.dnsNames).toEqual(['acme-test.example.com']);

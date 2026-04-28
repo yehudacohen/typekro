@@ -168,7 +168,7 @@ export interface CiliumBootstrapConfig {
   };
 
   // Custom Helm values override
-  customValues?: Record<string, any>;
+  customValues?: Record<string, unknown>;
 
   // TypeKro specific
   id?: string;
@@ -775,7 +775,7 @@ export interface BackendService {
  */
 export interface EnvoyResource {
   '@type': string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // =============================================================================
@@ -945,7 +945,7 @@ export interface CiliumHelmReleaseConfig {
   replace?: boolean;
   createNamespace?: boolean;
   cleanupOnFail?: boolean;
-  values?: Record<string, any>;
+  values?: Record<string, unknown>;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
   id?: string;

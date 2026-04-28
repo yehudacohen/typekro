@@ -95,14 +95,14 @@ type PipelineLogger = ReturnType<ReturnType<typeof getComponentLogger>['child']>
 function executeStatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   statusBuilder: (
     schema: SchemaProxy<TSpec, TStatus>,
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>
 ): MagicAssignableShape<TStatus> {
   return runInStatusBuilderContext(() => statusBuilder(schema, resourcesWithKeys as TResources));
 }
@@ -157,7 +157,7 @@ interface AnalysisStageResult {
 function analyzeStatusMappingsForMode<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   mode: CompositionMode,
   statusBuilder: (
@@ -165,7 +165,7 @@ function analyzeStatusMappingsForMode<
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   statusMappings: MagicAssignableShape<TStatus>,
   logger: PipelineLogger
 ): StageResult<AnalysisStageResult> {
@@ -206,14 +206,14 @@ function analyzeStatusMappingsForMode<
 function analyzeImperativeStatusMappingsStage<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   statusBuilder: (
     schema: SchemaProxy<TSpec, TStatus>,
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   statusMappings: MagicAssignableShape<TStatus>,
   originalCompositionFn: (...args: unknown[]) => unknown,
   logger: PipelineLogger
@@ -240,7 +240,7 @@ function analyzeImperativeStatusMappingsStage<
     try {
       const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
         statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-        resourcesWithKeys as Record<string, Enhanced<any, any>>,
+        resourcesWithKeys as Record<string, Enhanced<unknown, unknown>>,
         schema,
         'kro'
       );
@@ -305,7 +305,7 @@ function analyzeImperativeStatusMappingsStage<
     try {
       const imperativeAnalysis = analyzeImperativeComposition(
         originalCompositionFn,
-        resourcesWithKeys as Record<string, Enhanced<any, any>>,
+        resourcesWithKeys as Record<string, Enhanced<unknown, unknown>>,
         { factoryType: 'kro' }
       );
 
@@ -370,21 +370,21 @@ function analyzeImperativeStatusMappingsStage<
 function analyzeDeclarativeStatusMappingsStage<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   statusBuilder: (
     schema: SchemaProxy<TSpec, TStatus>,
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   statusMappings: MagicAssignableShape<TStatus>,
   logger: PipelineLogger
 ): StageResult<AnalysisStageResult> {
   try {
     const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
       statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-      resourcesWithKeys as Record<string, Enhanced<any, any>>,
+      resourcesWithKeys as Record<string, Enhanced<unknown, unknown>>,
       schema,
       'kro'
     );
@@ -687,7 +687,7 @@ export interface StatusAnalysisPipelineResult {
 export function runStatusAnalysisPipeline<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   statusBuilder: (
@@ -695,7 +695,7 @@ export function runStatusAnalysisPipeline<
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   logger: PipelineLogger
 ): StatusAnalysisPipelineResult {
   // Default fallback values
@@ -879,4 +879,3 @@ function mergePhaseAAndPhaseB(
 
   return merged;
 }
-

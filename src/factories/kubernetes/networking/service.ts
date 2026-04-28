@@ -37,7 +37,7 @@ export function service(
     apiVersion: 'v1',
     kind: 'Service',
     metadata: resource.metadata ?? { name: 'unnamed-service' },
-  }).withReadinessEvaluator((liveResource: V1Service): ResourceStatus => {
+  }, { dnsAddressable: true }).withReadinessEvaluator((liveResource: V1Service): ResourceStatus => {
     // Use the live resource's spec.type if we don't have a static value
     // This handles the case where type was a KubernetesRef that got resolved during deployment
     const serviceType = staticServiceType ?? liveResource.spec?.type ?? 'ClusterIP';

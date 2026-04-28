@@ -9,13 +9,16 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getResourceId } from '../metadata/index.js';
+import { getMetadataField, getResourceId } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
 
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
+
+  private static readonly CLUSTER_SERVICE_SUFFIX_PATTERN = /^([a-z0-9-]+)(?:\.([a-z0-9-]+))?(?:\.svc(?:\.cluster\.local)?|\.cluster\.local)$/i;
+  private static readonly BARE_HOST_KEY_PATTERN = /(?:^|_)(?:DB|DATABASE|REDIS|VALKEY|CACHE|SERVICE|UPSTREAM|POSTGRES|PG)_(?:HOST|SERVER)$/i;
 
   /**
    * Build a dependency graph from a collection of Kubernetes resources
@@ -67,6 +70,27 @@ export class DependencyResolver {
           }
         }
       }
+
+      const explicitDependencies = getMetadataField(resource, 'dependsOn') as
+        | Array<{ resourceId: string }>
+        | undefined;
+      for (const dep of explicitDependencies ?? []) {
+        const targetId = graph.hasNode(dep.resourceId)
+          ? dep.resourceId
+          : originalIdToGraphId.get(dep.resourceId);
+        if (!targetId) {
+          throw new TypeKroError(
+            `dependsOn target '${dep.resourceId}' was not found in resource graph`,
+            'INVALID_DEPENDENCY_TARGET',
+            { sourceResourceId: resource.id, dependencyResourceId: dep.resourceId }
+          );
+        }
+        try {
+          graph.addEdge(resource.id, targetId);
+        } catch {
+          // Edge already exists — safe to ignore
+        }
+      }
     }
 
     // Detect implicit namespace dependencies: if a resource has metadata.namespace
@@ -83,7 +107,8 @@ export class DependencyResolver {
       for (const resource of resources) {
         const ns = resource.metadata?.namespace;
         if (ns && namespaceResources.has(ns)) {
-          const nsResourceId = namespaceResources.get(ns)!;
+          const nsResourceId = namespaceResources.get(ns);
+          if (!nsResourceId) continue;
           // Don't add self-dependency
           if (nsResourceId !== resource.id) {
             try {
@@ -101,7 +126,269 @@ export class DependencyResolver {
       }
     }
 
+    // Detect implicit service-name dependencies: if a resource's env vars
+    // or spec fields contain the metadata.name of another resource that
+    // provides a network service (Service, StatefulSet, Deployment), add
+    // a dependency edge. This catches patterns like:
+    //   VALKEY_HOST: "myapp-cache"
+    //   DATABASE_URL: "postgresql://app@myapp-db-pooler:5432/db"
+    // where the hostname is the metadata.name of another resource in the
+    // graph. Without this, resources that reference nested composition
+    // status (which resolves to real strings in direct mode) would deploy
+    // in parallel with the services they depend on.
+    // Detect DNS-addressable resources: resources marked with
+    // `dnsAddressable: true` in their metadata (set by factory functions
+    // like service(), deployment(), valkey(), cluster(), etc.).
+    // Precompile regex patterns once per service name to avoid creating
+    // a new RegExp on every (resource × stringValue × serviceName) pair.
+    const dnsAddressableResourcesByName = new Map<string, Array<{ id: string; namespace?: string }>>();
+    const serviceResourceIdsByQualifiedHost = new Map<string, Set<string>>();
+    for (const resource of resources) {
+      const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
+      if (isDnsAddressable && resource.metadata?.name) {
+        const name = String(resource.metadata.name);
+        if (name && !name.includes('$')) {
+          const normalizedName = name.toLowerCase();
+          const namespace = resource.metadata?.namespace?.toLowerCase();
+          const existing = dnsAddressableResourcesByName.get(normalizedName) ?? [];
+          existing.push({ id: resource.id, ...(namespace ? { namespace } : {}) });
+          dnsAddressableResourcesByName.set(normalizedName, existing);
+
+          if (namespace) {
+            const qualifiedHosts = [
+              `${normalizedName}.${namespace}.svc`,
+              `${normalizedName}.${namespace}.svc.cluster.local`,
+            ];
+
+            for (const host of qualifiedHosts) {
+              const qualifiedIds = serviceResourceIdsByQualifiedHost.get(host) ?? new Set<string>();
+              qualifiedIds.add(resource.id);
+              serviceResourceIdsByQualifiedHost.set(host, qualifiedIds);
+            }
+          }
+        }
+      }
+    }
+
+    if (dnsAddressableResourcesByName.size > 0) {
+      for (const resource of resources) {
+        const stringValues = this.collectStringValues(resource);
+        for (const entry of stringValues) {
+          for (const host of this.extractHostCandidates(entry.value, entry.key)) {
+            const matchedServices = this.resolveDnsAddressableServiceIds(
+              host,
+              resource.metadata?.namespace?.toLowerCase(),
+              dnsAddressableResourcesByName,
+              serviceResourceIdsByQualifiedHost
+            );
+            for (const svcResourceId of matchedServices.ids) {
+              if (svcResourceId === resource.id) continue;
+              try {
+                graph.addEdge(resource.id, svcResourceId);
+                this.logger.debug('Added implicit service-name dependency', {
+                  resource: resource.id,
+                  referencedHost: host,
+                  referencedService: matchedServices.serviceName,
+                  serviceResource: svcResourceId,
+                });
+              } catch (err) {
+                this.logger.debug('Failed to add service-name dependency edge', {
+                  resource: resource.id,
+                  target: svcResourceId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
     return graph;
+  }
+
+  /**
+   * Collect string values from a resource's container env vars and
+   * connection-string-like fields. Focused extraction avoids false
+   * positives from labels, resource limits ("500m"), annotation
+   * content, and other spec fields that happen to contain short
+   * substrings matching service names.
+   */
+  /**
+   * Fields whose string values should be excluded from hostname detection.
+   * Container `image` fields use `:` as a tag separator (e.g., `myapp:latest`)
+   * which the hostname regex treats as a port delimiter — creating false
+   * dependency edges when a Service shares a name with its image base name.
+   */
+  private static readonly EXCLUDED_KEYS = new Set(['image', 'imagePullPolicy']);
+
+  private resolveDnsAddressableServiceIds(
+    host: string,
+    sourceNamespace: string | undefined,
+    resourcesByName: Map<string, Array<{ id: string; namespace?: string }>>,
+    resourcesByQualifiedHost: Map<string, Set<string>>
+  ): { serviceName: string; ids: string[] } {
+    const directNameMatch = resourcesByName.get(host);
+    if (directNameMatch && directNameMatch.length > 0) {
+      if (sourceNamespace) {
+        const sameNamespaceMatches = directNameMatch
+          .filter((resource) => resource.namespace === sourceNamespace)
+          .map((resource) => resource.id);
+        if (sameNamespaceMatches.length > 0) {
+          return { serviceName: host, ids: sameNamespaceMatches };
+        }
+
+        return { serviceName: host, ids: [] };
+      }
+
+      return { serviceName: host, ids: [] };
+    }
+
+    const exactQualifiedMatch = resourcesByQualifiedHost.get(host);
+    if (exactQualifiedMatch && exactQualifiedMatch.size > 0) {
+      return {
+        serviceName: host.split('.')[0] ?? host,
+        ids: Array.from(exactQualifiedMatch),
+      };
+    }
+
+    const clusterSuffixMatch = host.match(DependencyResolver.CLUSTER_SERVICE_SUFFIX_PATTERN);
+    if (clusterSuffixMatch) {
+      const serviceName = clusterSuffixMatch[1]?.toLowerCase();
+      const explicitNamespace = clusterSuffixMatch[2]?.toLowerCase();
+      if (serviceName) {
+        const sameNamedResources = resourcesByName.get(serviceName) ?? [];
+        if (explicitNamespace) {
+          const exactNamespaceMatches = sameNamedResources
+            .filter((resource) => resource.namespace === explicitNamespace)
+            .map((resource) => resource.id);
+          if (exactNamespaceMatches.length > 0) {
+            return { serviceName, ids: exactNamespaceMatches };
+          }
+
+          return { serviceName, ids: [] };
+        }
+
+        if (sourceNamespace) {
+          const sameNamespaceMatches = sameNamedResources
+            .filter((resource) => resource.namespace === sourceNamespace)
+            .map((resource) => resource.id);
+          if (sameNamespaceMatches.length > 0) {
+            return { serviceName, ids: sameNamespaceMatches };
+          }
+
+          return { serviceName, ids: [] };
+        }
+
+        return { serviceName, ids: [] };
+      }
+    }
+
+    return { serviceName: host, ids: [] };
+  }
+
+  private extractHostCandidates(value: string, key?: string): string[] {
+    const hosts = new Set<string>();
+    const trimmedValue = value.trim();
+
+    const authorityMatches = value.matchAll(/[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/\s]+)/g);
+    for (const match of authorityMatches) {
+      const authority = match[1];
+      if (!authority) continue;
+      const hostPort = authority.includes('@') ? authority.split('@').at(-1) : authority;
+      const host = hostPort?.split(':')[0];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const userHostMatches = value.matchAll(/(^|[^\w.-])[^\s@/:]+@([a-z0-9.-]+)(?::\d+)?(?=$|[/?\s])/gi);
+    for (const match of userHostMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const hostWithPortMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(:\d+)(?=$|[/?\s])/gi);
+    for (const match of hostWithPortMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const dottedHostMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?=$|[/?\s])/gi);
+    for (const match of dottedHostMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    // Support env-style host values like `VALKEY_HOST=myapp-cache` without
+    // reopening broad bare-token matching for arbitrary string values.
+    if (key && DependencyResolver.BARE_HOST_KEY_PATTERN.test(key) && /^[a-z0-9-]+$/i.test(trimmedValue)) {
+      hosts.add(trimmedValue.toLowerCase());
+    }
+
+    return Array.from(hosts);
+  }
+
+  private collectStringValues(
+    resource: DeployableK8sResource<Enhanced<unknown, unknown>>
+  ): Array<{ value: string; key?: string }> {
+    const values: Array<{ value: string; key?: string }> = [];
+    const addString = (v: unknown, key?: string): void => {
+      if (typeof v === 'string' && v.length > 0 && v.length < 500) {
+        // Skip fields that produce false positives in hostname matching.
+        if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
+        values.push({ value: v, ...(key ? { key } : {}) });
+      }
+    };
+
+    // Extract env var values from all containers and initContainers
+    const podSpec = (resource as { spec?: { template?: { spec?: Record<string, unknown> } } })?.spec?.template?.spec;
+    const containers = [
+      ...(Array.isArray(podSpec?.containers) ? podSpec.containers : []),
+      ...(Array.isArray(podSpec?.initContainers) ? podSpec.initContainers : []),
+    ];
+    if (containers.length > 0) {
+      for (const container of containers) {
+        if (Array.isArray(container?.env)) {
+          for (const envVar of container.env) {
+            addString(envVar?.value, envVar?.name);
+          }
+        }
+        // Also check envFrom secretRef/configMapRef names
+        if (Array.isArray(container?.envFrom)) {
+          for (const source of container.envFrom) {
+            addString(source?.secretRef?.name, 'secretRef.name');
+            addString(source?.configMapRef?.name, 'configMapRef.name');
+          }
+        }
+        // Check command and args (may reference service hostnames)
+        if (Array.isArray(container?.command)) {
+          for (const arg of container.command) addString(arg);
+        }
+        if (Array.isArray(container?.args)) {
+          for (const arg of container.args) addString(arg);
+        }
+      }
+    }
+
+    // For non-Deployment resources (e.g., HelmRelease values, CRD specs),
+    // fall back to shallow traversal of spec.* string fields (depth 1-2).
+    if (containers.length === 0) {
+      const MAX_DEPTH = 3;
+      const traverse = (obj: unknown, depth = 0, key?: string): void => {
+        if (depth > MAX_DEPTH) return;
+        if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
+          if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
+          values.push({ value: obj, ...(key ? { key } : {}) });
+        } else if (Array.isArray(obj)) {
+          for (const item of obj) traverse(item, depth + 1);
+        } else if (obj !== null && typeof obj === 'object') {
+          for (const [k, value] of Object.entries(obj)) traverse(value, depth + 1, k);
+        }
+      };
+      const spec = (resource as { spec?: unknown })?.spec;
+      if (spec) traverse(spec);
+    }
+
+    return values;
   }
 
   /**

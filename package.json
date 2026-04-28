@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -101,6 +101,7 @@
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
+    "test:integration:required": "REQUIRE_CLUSTER_TESTS=true ./scripts/run-integration-tests.sh",
     "test:integration:debug": "DEBUG_MODE=true ./scripts/run-integration-tests.sh",
     "typecheck": "bun run typecheck:lib && bun run typecheck:examples && bun run typecheck:tests",
     "typecheck:lib": "bun tsc --noEmit",
@@ -166,7 +167,7 @@
     "acorn": "8.15.0",
     "alchemy": "^0.62.3",
     "angular-expressions": "1.5.1",
-    "arktype": "^2.1.20",
+    "arktype": "^2.2.0",
     "cel-js": "^0.8.2",
     "estraverse": "^5.3.0",
     "ignore": "^7.0.5",

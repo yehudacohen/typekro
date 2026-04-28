@@ -94,7 +94,7 @@ export function createBunCompatibleApiClient<T extends k8s.ApiType>(
     default: kubeConfig,
   };
 
-  const baseServerConfig = new ServerConfiguration<{}>(cluster.server, {});
+  const baseServerConfig = new ServerConfiguration<Record<string, never>>(cluster.server, {});
 
   const config = createConfiguration({
     baseServer: baseServerConfig,
@@ -237,7 +237,7 @@ export function createBunCompatibleKubernetesObjectApi(
     default: kubeConfig,
   };
 
-  const baseServerConfig = new ServerConfiguration<{}>(cluster.server, {});
+  const baseServerConfig = new ServerConfiguration<Record<string, never>>(cluster.server, {});
 
   const config = createConfiguration({
     baseServer: baseServerConfig,

@@ -154,6 +154,37 @@ describe('waitForKroInstanceReady', () => {
         )
       ).resolves.toBeUndefined();
     });
+
+    it('does not trust custom status.ready when Kro Ready condition is stale false', async () => {
+      mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
+        spec: { schema: { status: { ready: { type: 'boolean' }, supervisorReady: { type: 'boolean' } } } },
+      });
+
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ACTIVE',
+          conditions: [{
+            type: 'Ready',
+            status: 'False',
+            reason: 'NotReady',
+            message: 'resource reconciliation failed: cluster mutated',
+          }],
+          ready: true,
+          supervisorReady: true,
+        })
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 1,
+            pollInterval: 0,
+          })
+        )
+      ).rejects.toThrow(DeploymentTimeoutError);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -275,6 +306,49 @@ describe('waitForKroInstanceReady', () => {
             state: 'ACTIVE',
             conditions: [{ type: 'Ready', status: 'True' }],
             ready: true,
+          })
+        );
+      });
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+        )
+      ).resolves.toBeUndefined();
+
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps polling until all expected custom status fields are present', async () => {
+      mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
+        spec: {
+          schema: {
+            status: {
+              ready: { type: 'boolean' },
+              components: { type: 'object' },
+            },
+          },
+        },
+      });
+
+      let callCount = 0;
+      mockK8sApi.read.mockImplementation(() => {
+        callCount++;
+        if (callCount < 3) {
+          return Promise.resolve(
+            kroInstance({
+              state: 'ACTIVE',
+              conditions: [{ type: 'Ready', status: 'True' }],
+              components: { database: true },
+            })
+          );
+        }
+        return Promise.resolve(
+          kroInstance({
+            state: 'ACTIVE',
+            conditions: [{ type: 'Ready', status: 'True' }],
+            ready: true,
+            components: { database: true, app: true },
           })
         );
       });

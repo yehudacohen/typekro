@@ -1,11 +1,13 @@
 /**
  * YAML generation functionality for Kro ResourceGraphDefinitions
  *
- * Supports Kro v0.8.x features: forEach, includeWhen, readyWhen, externalRef,
+ * Supports Kro 0.9.1+ ResourceGraphDefinition serialization, including
+ * forEach, includeWhen, readyWhen, externalRef, mixed-template CEL, omit(),
  * schema group, and allowBreakingChanges annotation.
  */
 
 import * as yaml from 'js-yaml';
+import { getMetadataField } from '../metadata/resource-metadata.js';
 import { escapeRegExp } from '../../utils/helpers.js';
 import {
   extractResourceReferences,
@@ -31,7 +33,7 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';
-import { getInnerCelPath, processResourceReferences } from './cel-references.js';
+import { finalizeCelForKro, getInnerCelPath, normalizeRefMarkersToCelPaths, processResourceReferences } from './cel-references.js';
 import { generateKroSchema } from './schema.js';
 
 /**
@@ -108,21 +110,21 @@ function readTemplateOverrides(
  *  - string (already CEL) → pass-through
  *  - string with __KUBERNETES_REF__ markers → convert markers to CEL
  */
-function convertIncludeWhenValueToCel(value: unknown): string | undefined {
+function convertIncludeWhenValueToCel(value: unknown, context: SerializationContext): string | undefined {
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return convertRefMarkersInString(value);
+      return `\${${convertRefMarkersInString(value, context)}}`;
     }
     return value;
   }
 
   if (isKubernetesRef(value)) {
-    const celPath = getInnerCelPath(value);
+    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
     return `\${${celPath}}`;
   }
 
   if (isCelExpression(value)) {
-    return `\${${value.expression}}`;
+    return `\${${normalizeRefMarkersToCelPaths(value.expression, context)}}`;
   }
 
   // Fallback — coerce to string
@@ -140,14 +142,14 @@ function convertIncludeWhenValueToCel(value: unknown): string | undefined {
  *  - An array of the above
  *  - undefined (no condition)
  */
-function resolveIncludeWhen(raw: unknown): string[] | undefined {
+function resolveIncludeWhen(raw: unknown, context: SerializationContext): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
 
   const items = Array.isArray(raw) ? raw : [raw];
   const celStrings: string[] = [];
 
   for (const item of items) {
-    const cel = convertIncludeWhenValueToCel(item);
+    const cel = convertIncludeWhenValueToCel(item, context);
     if (cel) celStrings.push(cel);
   }
 
@@ -157,6 +159,124 @@ function resolveIncludeWhen(raw: unknown): string[] | undefined {
 // ---------------------------------------------------------------------------
 // readyWhen → CEL conversion
 // ---------------------------------------------------------------------------
+
+const READY_WHEN_CALLBACK_METHODS = new Set(['exists', 'all', 'filter', 'map', 'some', 'every']);
+
+function findMatchingParen(source: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let escaped = false;
+
+  for (let i = openIndex; i < source.length; i++) {
+    const char = source[i];
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+
+    if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function normalizeArrowBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+
+  return trimmed
+    .replace(/^\{\s*(?:return\s+)?/, '')
+    .replace(/;?\s*\}\s*$/, '')
+    .trim();
+}
+
+function convertReadyWhenCallbackMethods(expression: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < expression.length) {
+    const dotIndex = expression.indexOf('.', index);
+    if (dotIndex === -1) {
+      result += expression.slice(index);
+      break;
+    }
+
+    result += expression.slice(index, dotIndex);
+
+    let cursor = dotIndex + 1;
+    while (/\s/.test(expression[cursor] ?? '')) cursor++;
+
+    const methodMatch = /^[a-zA-Z_$][a-zA-Z0-9_$]*/.exec(expression.slice(cursor));
+    if (!methodMatch || !READY_WHEN_CALLBACK_METHODS.has(methodMatch[0])) {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const method = methodMatch[0];
+    cursor += method.length;
+    while (/\s/.test(expression[cursor] ?? '')) cursor++;
+
+    if (expression[cursor] !== '(') {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const closeIndex = findMatchingParen(expression, cursor);
+    if (closeIndex === -1) {
+      result += expression[dotIndex];
+      index = dotIndex + 1;
+      continue;
+    }
+
+    const callbackSource = expression.slice(cursor + 1, closeIndex).trim();
+    const arrowIndex = callbackSource.indexOf('=>');
+    if (arrowIndex === -1) {
+      result += expression.slice(dotIndex, closeIndex + 1);
+      index = closeIndex + 1;
+      continue;
+    }
+
+    let param = callbackSource.slice(0, arrowIndex).trim();
+    param = param.replace(/^\(\s*/, '').replace(/\s*\)$/, '').trim();
+    const colonIndex = param.indexOf(':');
+    if (colonIndex !== -1) param = param.slice(0, colonIndex).trim();
+
+    if (!/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(param)) {
+      result += expression.slice(dotIndex, closeIndex + 1);
+      index = closeIndex + 1;
+      continue;
+    }
+
+    let body = normalizeArrowBody(callbackSource.slice(arrowIndex + 2));
+    body = body.replace(/===/g, '==').replace(/!==/g, '!=');
+    body = convertReadyWhenCallbackMethods(body);
+
+    const celMethod = method === 'some' ? 'exists' : method === 'every' ? 'all' : method;
+    result += `.${celMethod}(${param}, ${body})`;
+    index = closeIndex + 1;
+  }
+
+  return result;
+}
 
 /**
  * Convert a readyWhen callback function to a CEL expression string by parsing its source.
@@ -221,20 +341,10 @@ function convertReadyWhenCallbackToCel(
   celExpr = celExpr.replace(/===/g, '==');
   celExpr = celExpr.replace(/!==/g, '!=');
 
-  // Convert JS arrow function callbacks inside .exists(), .filter(), .all(), .map()
-  // Pattern: .exists((c) => c.type === 'Ready' && c.status === 'True')
-  // → .exists(c, c.type == "Ready" && c.status == "True")
-  celExpr = celExpr.replace(
-    /\.\s*(exists|all|filter|map)\s*\(\s*\(?([a-zA-Z_$][a-zA-Z0-9_$]*)\)?\s*(?::\s*\w+)?\s*=>\s*([\s\S]+?)\)/g,
-    (_match, method: string, innerParam: string, innerBody: string) => {
-      let cleanBody = innerBody.trim();
-      // Fix operators in inner body too
-      cleanBody = cleanBody.replace(/===/g, '==').replace(/!==/g, '!=');
-      // Convert single quotes to double quotes for string literals
-      cleanBody = cleanBody.replace(/'([^']+)'/g, '"$1"');
-      return `.${method}(${innerParam}, ${cleanBody})`;
-    }
-  );
+  // Convert JS arrow function callbacks inside CEL macros and natural JS array
+  // helpers. Use a balanced scanner instead of a regex so nested parentheses in
+  // predicate bodies don't truncate the callback body.
+  celExpr = convertReadyWhenCallbackMethods(celExpr);
 
   // Convert remaining single-quoted strings to double-quoted for CEL
   celExpr = celExpr.replace(/'([^']+)'/g, '"$1"');
@@ -254,7 +364,8 @@ function convertReadyWhenCallbackToCel(
 function convertReadyWhenValueToCel(
   value: unknown,
   resourceId: string,
-  hasForEach: boolean
+  hasForEach: boolean,
+  context: SerializationContext
 ): string | undefined {
   // Callback function — parse source to extract CEL expression
   if (typeof value === 'function') {
@@ -264,17 +375,18 @@ function convertReadyWhenValueToCel(
   }
 
   if (isKubernetesRef(value)) {
-    const celPath = getInnerCelPath(value);
+    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
     return `\${${celPath}}`;
   }
 
   if (isCelExpression(value)) {
-    return `\${${value.expression}}`;
+    return `\${${normalizeRefMarkersToCelPaths(value.expression, context)}}`;
   }
 
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
-      return `\${${convertRefMarkersInString(value)}}`;
+      const converted = convertRefMarkersInString(value, context);
+      return converted.includes('${') ? converted : `\${${converted}}`;
     }
     return value;
   }
@@ -291,7 +403,8 @@ function convertReadyWhenValueToCel(
 function resolveReadyWhen(
   raw: unknown,
   resourceId: string,
-  hasForEach: boolean
+  hasForEach: boolean,
+  context: SerializationContext
 ): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
 
@@ -299,7 +412,7 @@ function resolveReadyWhen(
   const celStrings: string[] = [];
 
   for (const item of items) {
-    const cel = convertReadyWhenValueToCel(item, resourceId, hasForEach);
+    const cel = convertReadyWhenValueToCel(item, resourceId, hasForEach, context);
     if (cel) celStrings.push(cel);
   }
 
@@ -316,17 +429,8 @@ function resolveReadyWhen(
  * Input:  "__KUBERNETES_REF_web_status.readyReplicas__ > 0"
  * Output: "web.status.readyReplicas > 0"
  */
-function convertRefMarkersInString(str: string): string {
-  // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
-  // For schema: __KUBERNETES_REF___schema___{fieldPath}__
-  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
-
-  return str.replace(refPattern, (_match, resourceId: string, fieldPath: string) => {
-    if (resourceId === '__schema__') {
-      return `schema.${fieldPath}`;
-    }
-    return `${resourceId}.${fieldPath}`;
-  });
+function convertRefMarkersInString(str: string, context: SerializationContext): string {
+  return normalizeRefMarkersToCelPaths(str, context);
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +486,130 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
   return template;
 }
 
+/**
+ * Strip orphaned `$item` sentinel references from a template.
+ *
+ * After forEach substitution, any remaining `$item` paths are from non-forEach
+ * contexts — typically when `...spec.array` is spread into a literal array.
+ * These are not valid CEL identifiers and must be collapsed to the parent
+ * array reference.
+ *
+ * Handles both wrapped CEL (`${path.$item.field}`) and raw paths.
+ * Strips `.$item` and any trailing field access, keeping just the parent path.
+ */
+function stripOrphanedItemSentinels<T>(template: T): T {
+  if (typeof template === 'string') {
+    const normalized = normalizeOptionalArrayConditional(template);
+    if (normalized !== undefined) return normalized as T;
+    if (!template.includes('$item')) return template;
+    // Match any path segment ending with .$item optionally followed by .field
+    const stripped = template.replace(/(\w[\w.]*)\.\$item(?:\.[a-zA-Z0-9_.]+)?/g, '$1');
+    return (normalizeOptionalArrayConditional(stripped) ?? stripped) as T;
+  }
+
+  if (Array.isArray(template)) {
+    const collapsed = collapseOrphanedArraySpreads(template);
+    if (collapsed !== undefined) return collapsed as T;
+    return template.map((item) => stripOrphanedItemSentinels(item)) as T;
+  }
+
+  if (template !== null && typeof template === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = stripOrphanedItemSentinels(value);
+    }
+    return result as T;
+  }
+
+  return template;
+}
+
+function normalizeOptionalArrayConditional(value: string): string | undefined {
+  const match = value.match(/^\$\{has\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\) \? (\[.*), \1\] : (\[.*\])\}$/);
+  if (!match?.[1] || !match[2] || !match[3]) return undefined;
+  const [, basePath, truthyPrefix, fallbackList] = match;
+  if (`${truthyPrefix}]` !== fallbackList) return undefined;
+  return `\${${fallbackList} + (has(${basePath}) ? ${basePath} : [])}`;
+}
+
+function findOrphanedItemBase(value: unknown): string | undefined {
+  const serialized = JSON.stringify(value);
+  return serialized?.match(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.\$item/)?.[1];
+}
+
+function isDirectOrphanedItemElement(value: unknown, basePath: string): boolean {
+  if (typeof value === 'string') {
+    return value.includes('${') && value.includes(`${basePath}.$item`);
+  }
+  if (Array.isArray(value)) return value.every((item) => isDirectOrphanedItemElement(item, basePath));
+  if (value && typeof value === 'object') {
+    const entries = Object.values(value);
+    return entries.length > 0 && entries.every((entry) => isDirectOrphanedItemElement(entry, basePath));
+  }
+  return false;
+}
+
+function collapseOrphanedArraySpreads(items: unknown[]): string | undefined {
+  const parts: string[] = [];
+  let literals: unknown[] = [];
+  let sawSpread = false;
+
+  const flushLiterals = () => {
+    if (literals.length === 0) return;
+    parts.push(celValueForTemplate(literals));
+    literals = [];
+  };
+
+  for (const item of items) {
+    const basePath = findOrphanedItemBase(item);
+    if (!basePath || !isDirectOrphanedItemElement(item, basePath)) {
+      literals.push(stripOrphanedItemSentinels(item));
+      continue;
+    }
+
+    sawSpread = true;
+    flushLiterals();
+    const serialized = JSON.stringify(item) ?? '';
+    parts.push(serialized.includes(`has(${basePath})`) ? `(has(${basePath}) ? ${basePath} : [])` : basePath);
+  }
+
+  if (!sawSpread) return undefined;
+  flushLiterals();
+  return parts.length > 0 ? `\${${parts.join(' + ')}}` : undefined;
+}
+
+function celValueForTemplate(value: unknown): string {
+  if (typeof value === 'string') return celStringForTemplate(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `[${value.map(celValueForTemplate).join(', ')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).map(
+      ([key, entryValue]) => `${JSON.stringify(key)}: ${celValueForTemplate(entryValue)}`
+    );
+    return `{${entries.join(', ')}}`;
+  }
+  return 'null';
+}
+
+function celStringForTemplate(value: string): string {
+  const fullCel = value.match(/^\$\{(.+)\}$/);
+  if (fullCel?.[1]) return fullCel[1];
+  if (!value.includes('${')) return JSON.stringify(value);
+
+  const parts: string[] = [];
+  let cursor = 0;
+  const pattern = /\$\{([^}]+)\}/g;
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) parts.push(JSON.stringify(value.slice(cursor, index)));
+    if (match[1]) parts.push(`string(${match[1]})`);
+    cursor = index + match[0].length;
+  }
+  if (cursor < value.length) parts.push(JSON.stringify(value.slice(cursor)));
+  return parts.length > 0 ? parts.join(' + ') : '""';
+}
+
 // ---------------------------------------------------------------------------
 // Template override application
 // ---------------------------------------------------------------------------
@@ -399,33 +627,104 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
  */
 function applyTemplateOverrides(
   template: Record<string, unknown>,
-  overrides: Array<{ propertyPath: string; celExpression: string }>
+  overrides: Array<{ propertyPath: string; celExpression: string }>,
+  context: SerializationContext
 ): void {
   for (const { propertyPath, celExpression } of overrides) {
     const parts = propertyPath.split('.');
-    let target: Record<string, unknown> | undefined = template;
+    let target: Record<string, unknown> | unknown[] | undefined = template;
 
-    // Walk to the parent of the target property
+    // Walk to the parent of the target property. Object-branch ternaries can
+    // produce paths that only exist in the non-selected branch, so materialize
+    // missing containers instead of silently dropping those overrides.
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       if (!part) continue;
-      const next = target![part];
-      if (next && typeof next === 'object' && !Array.isArray(next)) {
-        target = next as Record<string, unknown>;
+      if (!target) break;
+      const next = Array.isArray(target) && /^\d+$/.test(part)
+        ? target[Number(part)]
+        : (target as Record<string, unknown>)[part];
+      if (next && typeof next === 'object') {
+        target = next as Record<string, unknown> | unknown[];
       } else {
-        // Path doesn't exist in the template — skip this override
-        target = undefined;
-        break;
+        if (!celExpression.includes('omit()')) {
+          target = undefined;
+          break;
+        }
+        const nextPart = parts[i + 1];
+        const container: Record<string, unknown> | unknown[] = nextPart && /^\d+$/.test(nextPart) ? [] : {};
+        if (Array.isArray(target) && /^\d+$/.test(part)) {
+          target[Number(part)] = container;
+        } else {
+          (target as Record<string, unknown>)[part] = container;
+        }
+        target = container;
       }
     }
 
     if (!target) continue;
 
     const lastKey = parts[parts.length - 1];
-    if (lastKey && lastKey in target) {
-      target[lastKey] = celExpression;
+    if (lastKey) {
+      const finalized = finalizeCelForKro(celExpression, context.nestedStatusCel, context);
+      if (Array.isArray(target) && /^\d+$/.test(lastKey)) {
+        target[Number(lastKey)] = finalized;
+      } else {
+        (target as Record<string, unknown>)[lastKey] = finalized;
+      }
     }
   }
+}
+
+function toIdSuffix(resourceId: string): string {
+  return resourceId.charAt(0).toUpperCase() + resourceId.slice(1);
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < max && left[index] === right[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function deriveResourceIdAliases(resourceId: string): string[] {
+  const aliases: string[] = [];
+  for (const match of resourceId.matchAll(/\d+/g)) {
+    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
+    if (suffix && /^[A-Z]/.test(suffix)) {
+      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
+    }
+  }
+  return aliases;
+}
+
+function resolveDependsOnResourceId(
+  dependencyId: string,
+  currentResourceId: string,
+  knownResourceIds?: ReadonlySet<string>
+): string {
+  if (!knownResourceIds || knownResourceIds.has(dependencyId)) {
+    return dependencyId;
+  }
+
+  const suffix = toIdSuffix(dependencyId);
+  const candidates = Array.from(knownResourceIds).filter((resourceId) =>
+    resourceId.endsWith(suffix)
+  );
+
+  if (candidates.length === 0) {
+    return dependencyId;
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0] ?? dependencyId;
+  }
+
+  return candidates.sort(
+    (left, right) => commonPrefixLength(right, currentResourceId) - commonPrefixLength(left, currentResourceId)
+  )[0] ?? dependencyId;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +747,11 @@ function buildResourceEntry(
   const isExternalRef = readNonEnumerable<boolean>(resource, '__externalRef');
 
   if (isExternalRef) {
+    const forEach = readForEachDimensions(resource);
+    if (forEach && forEach.length > 0) {
+      throw new Error(`Resource '${id}' cannot use both externalRef and forEach`);
+    }
+
     // externalRef resources: emit externalRef metadata, NOT template.
     // Use Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's get trap
     // and read the actual underlying values. Going through the proxy would cause
@@ -461,15 +765,17 @@ function buildResourceEntry(
     // Process marker strings in metadata values to convert them to CEL expressions.
     // externalRef metadata.name may contain __KUBERNETES_REF__ markers from template
     // literals (e.g., `${spec.name}-db-${dbOwner}`).
-    const rawName = typeof rawMeta?.name === 'string' ? rawMeta.name : '';
-    const rawNamespace = typeof rawMeta?.namespace === 'string' ? rawMeta.namespace : undefined;
+    const rawName = rawMeta && 'name' in rawMeta ? rawMeta.name : '';
+    const rawNamespace = rawMeta && 'namespace' in rawMeta ? rawMeta.namespace : undefined;
+    const processedName = processResourceReferences(rawName, context);
+    const processedNamespace = processResourceReferences(rawNamespace, context);
     const extRef: KroExternalRef = {
       apiVersion: String(apiVersionDesc?.value ?? ''),
       kind: String(kindDesc?.value ?? ''),
       metadata: {
-        name: String(processResourceReferences(rawName, context)),
-        ...(rawNamespace && {
-          namespace: String(processResourceReferences(rawNamespace, context)),
+        name: String(processedName ?? ''),
+        ...(rawNamespace !== undefined && processedNamespace !== undefined && {
+          namespace: String(processedNamespace),
         }),
       },
     };
@@ -478,7 +784,7 @@ function buildResourceEntry(
 
     // externalRef can still have includeWhen (but NOT forEach — mutually exclusive)
     const rawIncludeWhen = readIncludeWhen(resource);
-    const includeWhen = resolveIncludeWhen(rawIncludeWhen);
+    const includeWhen = resolveIncludeWhen(rawIncludeWhen, context);
     if (includeWhen) {
       entry.includeWhen = includeWhen;
     }
@@ -520,25 +826,64 @@ function buildResourceEntry(
     }
   }
 
+  // Orphaned $item sentinels — strip remaining $item references from non-forEach
+  // resources. When a schema array proxy is spread (`...spec.envFrom`) into a
+  // literal array, the proxy iterator yields $item-marked refs that never get
+  // matched by a forEach dimension. Collapse `path.$item.field` → `path` so
+  // the CEL expression references the whole array (valid CEL), rather than
+  // leaving `$item` which is not a valid CEL identifier.
+  if (entry.template && !hasForEach) {
+    entry.template = stripOrphanedItemSentinels(entry.template);
+  }
+
   // Template overrides — ternary expressions in factory args that evaluated to
   // literals at runtime but should be CEL conditionals in the output.
   const templateOverrides = readTemplateOverrides(resource);
   if (templateOverrides && templateOverrides.length > 0 && entry.template) {
-    applyTemplateOverrides(entry.template as Record<string, unknown>, templateOverrides);
+    applyTemplateOverrides(entry.template as Record<string, unknown>, templateOverrides, context);
   }
 
   // includeWhen — conditional resource creation (convert raw values to CEL)
   const rawIncludeWhen = readIncludeWhen(resource);
-  const includeWhen = resolveIncludeWhen(rawIncludeWhen);
+  const includeWhen = resolveIncludeWhen(rawIncludeWhen, context);
   if (includeWhen) {
     entry.includeWhen = includeWhen;
   }
 
   // readyWhen — resource readiness conditions (convert callbacks/refs to CEL)
   const rawReadyWhen = readReadyWhen(resource);
-  const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach);
+  const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach, context);
   if (readyWhen) {
     entry.readyWhen = readyWhen;
+  }
+
+  // dependsOn — explicit dependency ordering via template annotation injection.
+  //
+  // KRO builds its dependency graph ONLY from template expression references.
+  // readyWhen only supports self-references (e.g., self.status.readyReplicas)
+  // — it CANNOT reference other resources. To establish a dependency edge
+  // between resources, we inject an annotation into the dependent resource's
+  // template that references the dependency's metadata.name. KRO scans ALL
+  // template fields for expressions and creates DAG edges from them.
+  //
+  // Once KRO sees the edge, it automatically waits for the dependency to be
+  // ready (all its own readyWhen conditions satisfied) before creating the
+  // dependent resource. No cross-resource readyWhen is needed.
+  const dependsOnDeps = getMetadataField(resource, 'dependsOn') as
+    | Array<{ resourceId: string }>
+    | undefined;
+  if (dependsOnDeps && dependsOnDeps.length > 0) {
+    const template = entry.template as Record<string, unknown> | undefined;
+    if (template) {
+      const metadata = (template.metadata ?? {}) as Record<string, unknown>;
+      const annotations = (metadata.annotations ?? {}) as Record<string, string>;
+      for (const dep of dependsOnDeps) {
+        const resolvedDependencyId = resolveDependsOnResourceId(dep.resourceId, id, context.resourceIds);
+        annotations[`typekro.dev/depends-on-${resolvedDependencyId}`] = `\${${resolvedDependencyId}.metadata.name}`;
+      }
+      metadata.annotations = annotations;
+      template.metadata = metadata;
+    }
   }
 
   return entry;
@@ -551,7 +896,7 @@ function buildResourceEntry(
 /**
  * Serializes resources to Kro YAML (ResourceGraphDefinition).
  *
- * Supports Kro v0.8.x features:
+ * Supports Kro 0.9.1+ features:
  * - externalRef: Resources marked with __externalRef emit `externalRef` instead of `template`
  * - includeWhen: Non-enumerable includeWhen arrays are emitted per resource
  * - readyWhen: Non-enumerable readyWhen arrays are emitted per resource
@@ -575,16 +920,19 @@ export function serializeResourceGraphToYaml(
     : undefined;
 
   // Create serialization context
+  const nestedStatusCel = schemaWithMeta?.__nestedStatusCel;
   const context: SerializationContext = {
     celPrefix: 'resources', // Default Kro prefix, but now configurable
     ...(options?.namespace && { namespace: options.namespace }),
     resourceIdStrategy: 'deterministic',
     ...(omitFields && { omitFields }),
+    ...(nestedStatusCel && { nestedStatusCel }),
   };
 
   // 1. Use embedded resource IDs and build dependency graph
   const resourceMap = new Map<string, { id: string; resource: KubernetesResource }>();
   const dependencies: ResourceDependency[] = [];
+  const resourceAliases = new Map<string, string>();
 
   // 2. Process each resource and extract references
   for (const [resourceName, resource] of Object.entries(resources)) {
@@ -597,6 +945,19 @@ export function serializeResourceGraphToYaml(
         resource.metadata?.namespace || options?.namespace
       );
     resourceMap.set(resourceName, { id: resourceId, resource });
+    resourceAliases.set(resourceName, resourceId);
+    for (const alias of deriveResourceIdAliases(resourceId)) {
+      if (!resourceAliases.has(alias)) {
+        resourceAliases.set(alias, resourceId);
+      }
+    }
+
+    const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+    if (aliases) {
+      for (const alias of aliases) {
+        resourceAliases.set(alias, resourceId);
+      }
+    }
 
     // Extract all ResourceReference objects from the resource
     const refs = extractResourceReferences(resource);
@@ -610,10 +971,13 @@ export function serializeResourceGraphToYaml(
     }
   }
 
+  const knownResourceIds = new Set<string>(Array.from(resourceMap.values(), ({ id }) => id));
+  context.resourceIds = knownResourceIds;
+  context.resourceAliases = resourceAliases;
+
   // 3. Build metadata with optional annotations
   const metadata: KroResourceGraphDefinition['metadata'] = {
     name,
-    namespace: options?.namespace || 'default',
   };
 
   if (options?.allowBreakingChanges) {

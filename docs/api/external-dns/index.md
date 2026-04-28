@@ -22,14 +22,18 @@ import * as externalDns from 'typekro/external-dns';
 ```typescript
 import * as externalDns from 'typekro/external-dns';
 
-// Bootstrap External-DNS with Helm
-const bootstrap = externalDns.externalDnsBootstrap({
+const factory = externalDns.externalDnsBootstrap.factory('direct', {
   namespace: 'external-dns',
-  provider: 'cloudflare',
-  config: {
-    domainFilters: ['example.com'],
-    policy: 'sync'
-  }
+  waitForReady: true,
+});
+
+await factory.deploy({
+  name: 'external-dns',
+  namespace: 'external-dns',
+  provider: 'aws',
+  domainFilters: ['example.com'],
+  policy: 'sync',
+  txtOwnerId: 'typekro-example',
 });
 ```
 
@@ -38,6 +42,7 @@ const bootstrap = externalDns.externalDnsBootstrap({
 | Factory | Description |
 |---------|-------------|
 | `externalDnsBootstrap` | Deploy External-DNS via Helm |
+| `externalDnsHelmRepository` | HelmRepository for External-DNS charts |
 | `externalDnsHelmRelease` | Full HelmRelease configuration |
 | `dnsEndpoint` | Create DNSEndpoint custom resources |
 
@@ -45,19 +50,21 @@ const bootstrap = externalDns.externalDnsBootstrap({
 
 ```typescript
 interface ExternalDnsBootstrapConfig {
+  name: string;
   namespace?: string;
-  provider: 'cloudflare' | 'aws' | 'azure' | 'google' | string;
-  config?: {
-    domainFilters?: string[];
-    policy?: 'sync' | 'upsert-only';
-    txtOwnerId?: string;
-    interval?: string;
-  };
-  credentials?: {
-    secretName: string;
-  };
+  provider: 'aws' | 'azure' | 'cloudflare' | 'google' | 'digitalocean';
+  domainFilters?: string[];
+  policy?: 'sync' | 'upsert-only' | 'create-only';
+  dryRun?: boolean;
+  txtOwnerId?: string;
+  interval?: string;
+  logLevel?: 'panic' | 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 ```
+
+Use `externalDnsBootstrap.factory('direct' | 'kro', options)` to deploy the bootstrap composition. The bootstrap auto-wires AWS credentials from an `aws-route53-credentials` Secret with `access-key-id`, `secret-access-key`, and optional `session-token` keys. Other providers are accepted as Helm values, but their credential wiring must be configured separately, for example with the lower-level `externalDnsHelmRelease` factory.
+
+When generated for KRO, dynamic Helm values are emitted as a single `spec.values` CEL object so Kro does not need to schema-check arbitrary nested chart keys.
 
 ## DNSEndpoint Resource
 
@@ -67,15 +74,12 @@ Create DNS records directly:
 import * as externalDns from 'typekro/external-dns';
 
 const record = externalDns.dnsEndpoint({
-  metadata: { name: 'app-dns', namespace: 'default' },
-  spec: {
-    endpoints: [{
-      dnsName: 'app.example.com',
-      recordType: 'A',
-      targets: ['192.168.1.100'],
-      recordTTL: 300
-    }]
-  }
+  name: 'app-dns',
+  namespace: 'default',
+  dnsName: 'app.example.com',
+  recordType: 'A',
+  targets: ['192.168.1.100'],
+  recordTTL: 300
 });
 ```
 
@@ -86,23 +90,22 @@ import { kubernetesComposition } from 'typekro';
 import * as externalDns from 'typekro/external-dns';
 
 const app = kubernetesComposition(definition, (spec) => {
-  externalDns.externalDnsBootstrap({
+  const bootstrap = externalDns.externalDnsBootstrap({
+    name: 'external-dns',
     namespace: 'external-dns',
-    provider: 'cloudflare'
+    provider: 'aws',
+    domainFilters: [spec.hostname]
   });
 
   externalDns.dnsEndpoint({
-    metadata: { name: `${spec.name}-dns` },
-    spec: {
-      endpoints: [{
-        dnsName: spec.hostname,
-        recordType: 'CNAME',
-        targets: [spec.loadBalancerHost]
-      }]
-    }
+    name: `${spec.name}-dns`,
+    namespace: 'default',
+    dnsName: spec.hostname,
+    recordType: 'CNAME',
+    targets: [spec.loadBalancerHost]
   });
 
-  return { ready: true };
+  return { ready: bootstrap.status.ready };
 });
 ```
 

@@ -12,6 +12,23 @@ import * as simple from '../src/factories/simple/index.js';
 // In production: import { toResourceGraph, Cel } from 'typekro';
 import { Cel, toResourceGraph } from '../src/index.js';
 
+type DeploymentResource = ReturnType<typeof simple.Deployment>;
+type ServiceResource = ReturnType<typeof simple.Service>;
+
+interface FullStackResources {
+  webapp?: DeploymentResource;
+  webappService?: ServiceResource;
+  database?: DeploymentResource;
+  databaseService?: ServiceResource;
+  redis?: DeploymentResource;
+  redisService?: ServiceResource;
+}
+
+interface ConditionLike {
+  type?: string;
+  status?: string;
+}
+
 // Define comprehensive schemas
 const FullStackAppSpec = type({
   name: 'string',
@@ -78,7 +95,7 @@ export const fullStackApp = toResourceGraph(
 
   // Resource builder with JavaScript expressions
   (schema) => {
-    const resources: any = {};
+    const resources: FullStackResources = {};
 
     // Main application deployment
     resources.webapp = simple.Deployment({
@@ -156,54 +173,56 @@ export const fullStackApp = toResourceGraph(
       });
     }
 
-    return resources;
+    return resources as unknown as Record<string, DeploymentResource | ServiceResource>;
   },
 
   // Status builder with comprehensive JavaScript expressions
   // All of these are automatically converted to CEL expressions
-  (schema, resources) => ({
+  (schema, resources) => {
+    const typedResources = resources as FullStackResources;
+    return ({
     // ✅ Simple boolean expressions
     ready:
-      resources.webapp.status.readyReplicas > 0 &&
-      (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
-      (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0),
+      typedResources.webapp!.status.readyReplicas > 0 &&
+      (!schema.spec.features.database || typedResources.database?.status.readyReplicas! > 0) &&
+      (!schema.spec.features.redis || typedResources.redis?.status.readyReplicas! > 0),
 
-    healthy: resources.webapp.status.readyReplicas === schema.spec.replicas,
+    healthy: typedResources.webapp!.status.readyReplicas === schema.spec.replicas,
 
     // ✅ Template literals with interpolation
-    url: resources.webappService.status?.loadBalancer?.ingress?.[0]?.ip
-      ? `https://${resources.webappService.status.loadBalancer.ingress[0].ip}`
-      : resources.webappService.spec?.clusterIP
-        ? `http://${resources.webappService.spec.clusterIP}`
+    url: typedResources.webappService!.status?.loadBalancer?.ingress?.[0]?.ip
+      ? `https://${typedResources.webappService!.status.loadBalancer.ingress[0].ip}`
+      : typedResources.webappService!.spec?.clusterIP
+        ? `http://${typedResources.webappService!.spec.clusterIP}`
         : 'pending',
 
     // ✅ Complex conditional expressions
     phase:
-      resources.webapp.status.readyReplicas === 0
+      typedResources.webapp!.status.readyReplicas === 0
         ? 'stopped'
-        : resources.webapp.status.readyReplicas < schema.spec.replicas
+        : typedResources.webapp!.status.readyReplicas < schema.spec.replicas
           ? 'scaling'
-          : resources.webapp.status.readyReplicas === schema.spec.replicas
+          : typedResources.webapp!.status.readyReplicas === schema.spec.replicas
             ? 'ready'
             : 'overscaled',
 
     // ✅ Direct resource references
-    replicas: resources.webapp.status.readyReplicas,
+    replicas: typedResources.webapp!.status.readyReplicas,
 
     // ✅ Arithmetic expressions
-    utilizationPercent: (resources.webapp.status.readyReplicas / schema.spec.replicas) * 100,
+    utilizationPercent: (typedResources.webapp!.status.readyReplicas / schema.spec.replicas) * 100,
 
     // ✅ Complex nested objects with JavaScript expressions
     components: {
-      webapp: resources.webapp.status.readyReplicas > 0,
-      database: schema.spec.features.database ? resources.database?.status.readyReplicas > 0 : true,
-      redis: schema.spec.features.redis ? resources.redis?.status.readyReplicas > 0 : true,
-      loadBalancer: resources.webappService.status?.loadBalancer?.ingress?.length > 0,
+      webapp: typedResources.webapp!.status.readyReplicas > 0,
+      database: schema.spec.features.database ? typedResources.database?.status.readyReplicas! > 0 : true,
+      redis: schema.spec.features.redis ? typedResources.redis?.status.readyReplicas! > 0 : true,
+      loadBalancer: (typedResources.webappService!.status?.loadBalancer?.ingress?.length ?? 0) > 0,
     },
 
     // ✅ Array expressions (for simple cases)
     endpoints: [
-      resources.webappService.status?.loadBalancer?.ingress?.[0]?.ip || 'pending',
+      typedResources.webappService!.status?.loadBalancer?.ingress?.[0]?.ip || 'pending',
       // For complex array operations, use explicit CEL:
       // Cel.map(resources.webappService.status.loadBalancer.ingress, 'item.ip')
     ],
@@ -215,32 +234,33 @@ export const fullStackApp = toResourceGraph(
     health: {
       // Conditional string expressions
       overall:
-        resources.webapp.status.readyReplicas > 0 &&
-        (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
-        (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0)
+        typedResources.webapp!.status.readyReplicas > 0 &&
+        (!schema.spec.features.database || typedResources.database?.status.readyReplicas! > 0) &&
+        (!schema.spec.features.redis || typedResources.redis?.status.readyReplicas! > 0)
           ? 'healthy'
           : 'unhealthy',
 
       // Optional chaining with fallbacks
       database: schema.spec.features.database
-        ? resources.database?.status.conditions?.find((c: any) => c.type === 'Available')
+        ? typedResources.database?.status.conditions?.find((c: ConditionLike) => c.type === 'Available')
             ?.status === 'True'
           ? 'connected'
           : 'disconnected'
         : 'disabled',
 
       redis: schema.spec.features.redis
-        ? resources.redis?.status.readyReplicas > 0
+        ? typedResources.redis?.status.readyReplicas! > 0
           ? 'connected'
           : 'disconnected'
         : 'disabled',
 
       // Template with complex logic
-      uptime: resources.webapp.metadata?.creationTimestamp
-        ? `Running since ${resources.webapp.metadata.creationTimestamp}`
+      uptime: typedResources.webapp!.metadata?.creationTimestamp
+        ? `Running since ${typedResources.webapp!.metadata.creationTimestamp}`
         : 'Not started',
     },
-  })
+  });
+  }
 );
 
 // Example usage demonstrating both factory patterns
@@ -331,7 +351,10 @@ export function performanceComparison() {
   };
 
   // JavaScript expressions - converted to CEL only when containing references
-  const _dynamicStatus = (schema: any, resources: any) => ({
+  const _dynamicStatus = (schema: { spec: { name: string } }, resources: {
+    deployment: { status: { readyReplicas: number } };
+    service: { spec: { clusterIP: string } };
+  }) => ({
     // No conversion - static values
     staticField: 'unchanged',
 
@@ -356,14 +379,20 @@ export function migrationExample() {
   console.log('=== Migration from Manual CEL ===');
 
   // Before: Manual CEL expressions (legacy approach - DON'T DO THIS)
-  const _beforeStatus = (_schema: any, resources: any) => ({
+  const _beforeStatus = (_schema: unknown, resources: {
+    deployment: { status: { readyReplicas: number } };
+    service: { spec: { clusterIP: string } };
+  }) => ({
     ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
     url: Cel.template('https://%s', resources.service.spec.clusterIP),
     phase: Cel.expr(resources.deployment.status.readyReplicas, ' > 0 ? "running" : "pending"'),
   });
 
   // After: Natural JavaScript expressions (modern approach)
-  const _afterStatus = (_schema: any, resources: any) => ({
+  const _afterStatus = (_schema: unknown, resources: {
+    deployment: { status: { readyReplicas: number } };
+    service: { spec: { clusterIP: string } };
+  }) => ({
     // ✨ Natural JavaScript - automatically converted to CEL
     ready: resources.deployment.status.readyReplicas > 0,
     url: `https://${resources.service.spec.clusterIP}`,

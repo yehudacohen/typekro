@@ -214,7 +214,14 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         port: url.port || (isHttps ? 443 : 80),
         path: url.pathname + url.search,
         method: method,
-        headers: headers,
+        // Disable connection pooling so Bun can exit once requests complete.
+        // Reusing the runtime's default agent leaves idle Kubernetes API sockets
+        // open after deploy completion, which keeps the CLI process alive.
+        agent: false,
+        headers: {
+          connection: 'close',
+          ...headers,
+        },
         // Pass TLS options directly instead of using agent
         // This works around Bun's issues with https.Agent
         rejectUnauthorized: agentOptions.rejectUnauthorized ?? true,
@@ -228,6 +235,14 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         ciphers: agentOptions.ciphers,
       };
 
+      let timeoutId: NodeJS.Timeout | undefined;
+      const clearRequestTimeout = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
+      };
+
       const req = httpModule.request(options, (res) => {
         const chunks: Buffer[] = [];
 
@@ -236,6 +251,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         });
 
         res.on('end', () => {
+          clearRequestTimeout();
           const buffer = Buffer.concat(chunks);
           const responseHeaders: Record<string, string> = {};
 
@@ -278,7 +294,15 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       });
 
       req.on('error', (err) => {
+        clearRequestTimeout();
         reject(err);
+      });
+
+      req.on('socket', (socket) => {
+        // Prevent idle client sockets from keeping short-lived CLI processes alive.
+        // Bun can keep its HTTP client thread around after requests complete unless
+        // the socket is explicitly detached from the event loop.
+        socket.unref();
       });
 
       // ⭐ SET HTTP REQUEST TIMEOUT (skip for watch operations)
@@ -286,7 +310,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // when the Kubernetes API server doesn't respond (webhooks, network issues)
       // Watch operations are handled by the API server via timeoutSeconds parameter
       if (shouldSetTimeout) {
-        req.setTimeout(timeoutMs, () => {
+        timeoutId = setTimeout(() => {
           req.destroy(); // Abort the request
           const timeoutError = new Error(
             `HTTP request timeout: ${method} ${url.pathname} timed out after ${timeoutMs}ms\n` +
@@ -305,7 +329,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
               `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`
           );
           reject(timeoutError);
-        });
+        }, timeoutMs);
       }
 
       // Handle abort signal (if available - added in newer versions).
@@ -317,11 +341,16 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         signal.addEventListener(
           'abort',
           () => {
+            clearRequestTimeout();
             req.destroy(new Error('Request aborted'));
           },
           { once: true }
         );
       }
+
+      req.on('close', () => {
+        clearRequestTimeout();
+      });
 
       // Send body if present
       if (body) {

@@ -8,7 +8,13 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { getComponentLogger } from '../logging/index.js';
+import { remapVariableNames } from '../composition/nested-status-cel.js';
+import { lookupNestedExpression } from '../serialization/cel-references.js';
+import { isStaticExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
+
+const logger = getComponentLogger('cel-validator');
 
 export interface CelValidationError {
   field: string;
@@ -61,87 +67,136 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
 }
 
 /**
- * Check if a CEL expression string references any non-schema resource fields.
- *
- * Any reference to a deployed resource (status, metadata, or spec) requires
- * KRO runtime resolution because:
- * - `resource.status.*` — populated by the cluster after deployment
- * - `resource.metadata.*` — set by K8s (may include generated fields like uid)
- * - `resource.spec.*` — available on the deployed resource object
- *
- * Only `schema.spec.*` references are static (resolved from the user's spec
- * by TypeKro at deploy time). KRO status CEL does NOT support `schema.spec.*`.
- */
-function containsNonSchemaResourceReferences(expression: string): boolean {
-  // Match `identifier.(status|metadata|spec).field` but NOT `schema.*`
-  return /\b(?!schema\.)\w+\.(status|metadata|spec)\./.test(expression);
-}
-
-/**
  * Determines if a status field value requires Kro resolution.
  *
- * A value requires KRO resolution if it references any non-schema resource
- * field (status, metadata, or spec). Schema refs and literal values are
- * static — they can be hydrated by the TypeKro runtime at deploy time.
+ * A value requires KRO resolution iff, after transitively resolving any
+ * nested-composition references through `nestedStatusCel`, it depends on
+ * at least one real-resource reference (a `status.*` or generated
+ * `metadata.*` field). Schema refs and literal values — at any depth,
+ * including the far side of nested composition references — are static
+ * and hydrated by the TypeKro runtime at deploy time.
+ *
+ * Dynamic (KRO resolves):
+ *   - status.*             — only available after deployment
+ *   - metadata.uid         — assigned by API server
+ *   - metadata.creationTimestamp / resourceVersion / generation
+ *
+ * Static (TypeKro resolves at deploy time):
+ *   - __schema__ refs       — resolved against the CR spec
+ *   - metadata.name / namespace / labels / annotations (composition-set)
+ *   - Literal values        — emitted as-is
+ *   - Nested composition refs whose inner analyzed expression is itself
+ *     fully static (transitive check)
  */
-function requiresKroResolution(value: any): boolean {
+function requiresKroResolution(
+  value: unknown,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): boolean {
+  const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
+  const preserveVariables = new Set<string>();
+  if (nestedStatusCel) {
+    for (const key of Object.keys(nestedStatusCel)) {
+      const match = key.match(/^__nestedStatus:([^:]+):/);
+      const id = match?.[1];
+      if (id && !resourceIds?.has(id)) {
+        preserveVariables.add(id);
+      }
+    }
+  }
+
   if (isKubernetesRef(value)) {
-    // Schema refs are static — resolved from the user's spec at deploy time.
+    // Schema refs — always static.
     if (value.resourceId === '__schema__') {
       return false;
     }
-    // Determine which fields require KRO runtime resolution vs. can be hydrated
-    // by TypeKro at deploy time.
-    //
-    // Dynamic (KRO resolves):
-    //   - status.*             — only available after deployment
-    //   - metadata.uid         — assigned by API server
-    //   - metadata.creationTimestamp — assigned by API server
-    //   - metadata.resourceVersion  — assigned by API server
-    //   - metadata.generation       — assigned by API server
-    //
-    // Static (TypeKro resolves at deploy time):
-    //   - spec.*                — deterministic from the template
-    //   - metadata.name         — set by the composition
-    //   - metadata.namespace    — set by the composition
-    //   - metadata.labels       — set by the composition
-    //   - metadata.annotations  — set by the composition
     if (typeof value.fieldPath !== 'string') return false;
-    if (value.fieldPath.startsWith('status.')) return true;
-    if (value.fieldPath.startsWith('metadata.')) {
+
+    // Nested composition refs — look up the inner analyzed expression
+    // and classify it transitively. If the inner resolves to something
+    // that depends only on schema refs and literals, this outer ref is
+    // also static.
+    const isNestedComp = (value as { __nestedComposition?: boolean }).__nestedComposition === true;
+    if (isNestedComp && nestedStatusCel) {
+      const fieldName = value.fieldPath.replace(/^status\./, '');
+      const innerExpr = resourceIds?.has(value.resourceId)
+        ? lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel, false)
+        : lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel);
+      if (innerExpr !== undefined) {
+        return !isStaticExpression(innerExpr, nestedStatusCel);
+      }
+      // Nested ref with no entry in the table — conservatively dynamic.
+      // This either means the resolution table is incomplete (a real bug
+      // we want to surface for diagnosis) or the alias mechanism in
+      // `buildNestedCompositionAliases` couldn't match the variable
+      // assignment in the composition source. The fallback keeps the
+      // serialization succeeding by treating the ref as dynamic, but
+      // KRO will reject the resulting CEL at runtime because the virtual
+      // baseId isn't a real resource — so we want this on the radar.
+      logger.warn('Nested composition ref classified as dynamic — no nestedStatusCel entry', {
+        resourceId: value.resourceId,
+        fieldPath: value.fieldPath,
+        availableKeys: Object.keys(nestedStatusCel).slice(0, 10),
+      });
+      return true;
+    }
+
+    // Direct resource refs — status.* and generated metadata.* are dynamic,
+    // composition-set metadata.* is static.
+    const fieldPath = value.fieldPath;
+    if (fieldPath.startsWith('status.')) return true;
+    if (fieldPath.startsWith('metadata.')) {
       const staticMetadataFields = ['metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations'];
-      return !staticMetadataFields.some(f => value.fieldPath === f || value.fieldPath.startsWith(`${f}.`));
+      return !staticMetadataFields.some((f) => fieldPath === f || fieldPath.startsWith(`${f}.`));
     }
     return false;
   }
 
   if (isCelExpression(value)) {
-    return containsNonSchemaResourceReferences(value.expression);
+    // Transitive check: resolve any nested refs inside the expression and
+    // ask whether the result contains non-schema refs.
+    const normalizedExpression = localResourceIds.length > 0
+      ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
+      : value.expression;
+    return !isStaticExpression(normalizedExpression, nestedStatusCel);
   }
 
-  // Strings containing __KUBERNETES_REF__ markers from template literals
-  if (typeof value === 'string' && value.includes('__KUBERNETES_REF_')) {
-    const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
-    let match: RegExpExecArray | null = refPattern.exec(value);
-    while (match !== null) {
-      if (match[1] !== '__schema__') return true;
-      match = refPattern.exec(value);
-    }
-    return false;
+  // Strings potentially containing __KUBERNETES_REF__ markers from
+  // template literals. Classify transitively: a marker string referencing
+  // only schema fields (and literal text) is static even though it
+  // contains markers.
+  if (typeof value === 'string') {
+    if (!value.includes('__KUBERNETES_REF_')) return false;
+    const normalizedValue = localResourceIds.length > 0
+      ? remapVariableNames(value, localResourceIds, preserveVariables)
+      : value;
+    return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
 
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-    // Recursively check nested objects
-    return Object.values(value).some(requiresKroResolution);
+  if (Array.isArray(value)) {
+    return value.some((v) => requiresKroResolution(v, nestedStatusCel, resourceIds));
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value as Record<string, unknown>).some((v) =>
+      requiresKroResolution(v, nestedStatusCel, resourceIds)
+    );
   }
 
   return false;
 }
 
 /**
- * Separates a nested object into static and dynamic parts
+ * Separates a nested object into static and dynamic parts.
+ *
+ * Classification is transitive over nested-composition references when a
+ * `nestedStatusCel` lookup table is provided.
  */
-function separateNestedObject(obj: Record<string, unknown>): {
+function separateNestedObject(
+  obj: Record<string, unknown>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): {
   staticPart: Record<string, unknown>;
   dynamicPart: Record<string, unknown>;
   hasStatic: boolean;
@@ -151,7 +206,7 @@ function separateNestedObject(obj: Record<string, unknown>): {
   const dynamicPart: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    if (requiresKroResolution(value)) {
+    if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;
@@ -167,9 +222,26 @@ function separateNestedObject(obj: Record<string, unknown>): {
 }
 
 /**
- * Separates status mappings into static fields (can be hydrated directly) and dynamic fields (need Kro resolution)
+ * Separate status mappings into static fields (hydrated locally by TypeKro)
+ * and dynamic fields (emitted as CEL for KRO).
+ *
+ * When `nestedStatusCel` is provided, classification is transitive — a
+ * nested composition reference whose target is a schema-only / literal
+ * expression is classified as static even though the reference itself
+ * looks like `<id>.status.<field>`. This is the key mechanism that
+ * satisfies the "depth-agnostic staticness" invariant for nested
+ * compositions.
+ *
+ * If `nestedStatusCel` is not explicitly passed, the function falls back
+ * to reading `statusMappings.__nestedStatusCel` (which is where the
+ * composition context attaches the table via Reflect.set), so existing
+ * callers continue to work without explicit plumbing.
  */
-export function separateStatusFields(statusMappings: Record<string, unknown>): {
+export function separateStatusFields(
+  statusMappings: Record<string, unknown>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): {
   staticFields: Record<string, unknown>;
   dynamicFields: Record<string, unknown>;
 } {
@@ -181,7 +253,20 @@ export function separateStatusFields(statusMappings: Record<string, unknown>): {
     return { staticFields, dynamicFields };
   }
 
+  // Fallback: pick up the nested status CEL table from the statusMappings
+  // object itself. The composition context attaches it via Reflect.set as
+  // a non-enumerable property, so we need getOwnPropertyDescriptor to see it.
+  if (!nestedStatusCel) {
+    const descriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
+    if (descriptor?.value && typeof descriptor.value === 'object') {
+      nestedStatusCel = descriptor.value as Record<string, string>;
+    }
+  }
+
   for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    // Internal metadata fields are not user-facing status.
+    if (fieldName.startsWith('__')) continue;
+
     if (
       typeof fieldValue === 'object' &&
       fieldValue !== null &&
@@ -191,7 +276,9 @@ export function separateStatusFields(statusMappings: Record<string, unknown>): {
     ) {
       // Handle nested objects that might have mixed static/dynamic fields
       const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(
-        fieldValue as Record<string, unknown>
+        fieldValue as Record<string, unknown>,
+        nestedStatusCel,
+        resourceIds
       );
 
       if (hasStatic) {
@@ -200,7 +287,7 @@ export function separateStatusFields(statusMappings: Record<string, unknown>): {
       if (hasDynamic) {
         dynamicFields[fieldName] = dynamicPart;
       }
-    } else if (requiresKroResolution(fieldValue)) {
+    } else if (requiresKroResolution(fieldValue, nestedStatusCel, resourceIds)) {
       dynamicFields[fieldName] = fieldValue;
     } else {
       staticFields[fieldName] = fieldValue;
@@ -227,14 +314,32 @@ export function validateStatusCelExpressions(
       .map((r) => r.id)
       .filter(Boolean), // Resource IDs
   ]);
+  const preserveVariables = new Set<string>();
+  const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
+  const nestedStatusCelForValidation = nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
+    ? nestedDescriptor.value as Record<string, string>
+    : undefined;
+  if (nestedStatusCelForValidation) {
+    for (const key of Object.keys(nestedStatusCelForValidation)) {
+      const match = key.match(/^__nestedStatus:([^:]+):/);
+      const id = match?.[1];
+      if (id && !resourceIds.has(id)) {
+        preserveVariables.add(id);
+      }
+    }
+  }
 
   // Separate static and dynamic fields
   const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
 
   // Only validate dynamic fields that will be sent to Kro
-  function validateExpression(fieldName: string, value: any): void {
+  function validateExpression(fieldName: string, value: unknown): void {
     if (isCelExpression(value)) {
-      const expression = value.expression;
+      const expression = remapVariableNames(
+        value.expression,
+        Array.from(resourceIds).filter((id): id is string => typeof id === 'string'),
+        preserveVariables,
+      );
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)
       // This is the most important validation - ensuring referenced resources actually exist
@@ -259,7 +364,8 @@ export function validateStatusCelExpressions(
         if (
           referencedId !== 'schema' &&
           !resourceIds.has(referencedId) &&
-          !lambdaVars.has(referencedId)
+          !lambdaVars.has(referencedId) &&
+          !preserveVariables.has(referencedId)
         ) {
           // Check if this specific reference is a cross-composition status access.
           // Cross-composition references (e.g., `otherComposition.status.ready`) are valid
@@ -333,7 +439,7 @@ export function validateResourceIds(
         errors.push({
           field: `resources.${key}.id`,
           expression: resource.id,
-          error: validation.error!,
+          error: validation.error ?? 'Unknown CEL validation error',
         });
       }
     }

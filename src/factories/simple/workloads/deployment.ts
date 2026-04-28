@@ -96,7 +96,10 @@ function createDeployment(
                 { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
                 'spec.template.spec.containers[0].image'
               ),
+              ...(config.command && { command: config.command }),
+              ...(config.args && { args: config.args }),
               ...(env.length > 0 && { env }),
+              ...(config.envFrom && { envFrom: config.envFrom }),
               ...(config.ports && { ports: config.ports }),
               ...(config.resources && { resources: config.resources }),
               ...(config.volumeMounts && { volumeMounts: config.volumeMounts }),

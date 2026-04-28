@@ -32,6 +32,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { getComponentLogger } from '../logging/index.js';
 import { ContainerBuildError } from './errors.js';
@@ -169,22 +170,47 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
     ig.add(patterns);
   }
 
-  // Collect files, excluding .dockerignore matches
-  const glob = new Bun.Glob('**/*');
+  // Collect files, excluding .dockerignore matches.
+  // Use a recursive directory walker that skips ignored DIRECTORIES
+  // upfront (e.g., node_modules/, .git/) instead of Bun.Glob which
+  // enumerates all files before filtering — critical for repos with
+  // multi-GB node_modules.
   const files: string[] = [];
-  for await (const path of glob.scan({ cwd: contextPath, onlyFiles: true })) {
-    if (ig.ignores(path)) continue;
-    files.push(path);
-  }
+  // `dir` is relative to contextPath; `prefix` is the slash-joined
+  // path used for ignore matching and file collection. readdir always
+  // receives an absolute path via join(contextPath, dir).
+  const walkDir = async (dir: string, prefix: string): Promise<void> => {
+    const entries = await readdir(join(contextPath, dir), { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      // Check ignore BEFORE descending — this is the perf optimization
+      // that avoids traversing node_modules/ entirely.
+      if (ig.ignores(relativePath + (entry.isDirectory() ? '/' : ''))) continue;
+      if (entry.isDirectory()) {
+        await walkDir(join(dir, entry.name), relativePath);
+      } else if (entry.isFile()) {
+        // Only include regular files — skip symlinks, sockets, etc.
+        files.push(relativePath);
+      }
+    }
+  };
+  await walkDir('', '');
   files.sort();
 
   for (const file of files) {
-    // Hash the file path (so renames change the hash)
     hasher.update(file);
-    // Stream file contents through the hasher (binary-safe, memory-efficient)
-    const stream = Bun.file(join(contextPath, file)).stream();
-    for await (const chunk of stream) {
-      hasher.update(chunk);
+    try {
+      const stream = Bun.file(join(contextPath, file)).stream();
+      for await (const chunk of stream) {
+        hasher.update(chunk);
+      }
+    } catch (err) {
+      // Skip unreadable files (broken symlinks, permission errors).
+      // Log at debug so build hash inconsistencies can be diagnosed.
+      logger.debug('Skipping unreadable file during content hash', {
+        file,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

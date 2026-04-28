@@ -24,10 +24,10 @@ export interface CelGenerationConfig {
   factoryType: 'direct' | 'kro';
 
   /** Available resources for reference validation */
-  availableResources?: Record<string, Enhanced<any, any>>;
+  availableResources?: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy for schema field references */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Whether to use strict type checking */
   strictTypeChecking?: boolean;
@@ -53,7 +53,7 @@ export interface CelGenerationResult {
   context: ExpressionContext;
 
   /** Dependencies that were resolved */
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
 
   /** Any warnings generated during conversion */
   warnings: string[];
@@ -67,7 +67,7 @@ export interface CelGenerationResult {
  */
 export interface CelGenerationDebugInfo {
   /** Original KubernetesRef objects */
-  originalRefs: KubernetesRef<any>[];
+  originalRefs: KubernetesRef<unknown>[];
 
   /** Transformation steps applied */
   transformationSteps: string[];
@@ -91,7 +91,7 @@ export class ContextAwareCelGenerator {
    * Generate CEL expression from KubernetesRef objects based on context
    */
   generateCelExpression(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     context: ExpressionContext,
     strategy: CelGenerationStrategy,
     config: CelGenerationConfig
@@ -171,7 +171,7 @@ export class ContextAwareCelGenerator {
    * Generate status expression CEL for status builders
    */
   private generateStatusExpression(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -234,7 +234,7 @@ export class ContextAwareCelGenerator {
    * Generate resource reference CEL for resource builders
    */
   private generateResourceReference(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -306,7 +306,7 @@ export class ContextAwareCelGenerator {
    * Generate conditional check CEL for conditional expressions
    */
   private generateConditionalCheck(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     _config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -386,7 +386,7 @@ export class ContextAwareCelGenerator {
    * Generate readiness check CEL for readiness expressions
    */
   private generateReadinessCheck(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     _config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -466,7 +466,7 @@ export class ContextAwareCelGenerator {
    * Generate template interpolation CEL for template literals
    */
   private generateTemplateInterpolation(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     _config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -506,7 +506,7 @@ export class ContextAwareCelGenerator {
    * Generate direct evaluation CEL (pass-through for direct factory)
    */
   private generateDirectEvaluation(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     _config: CelGenerationConfig,
     debugInfo: CelGenerationDebugInfo
   ): CelExpression {
@@ -552,7 +552,7 @@ export class ContextAwareCelGenerator {
   /**
    * Generate Kro-specific status reference
    */
-  private generateKroStatusReference(ref: KubernetesRef<any>): string {
+  private generateKroStatusReference(ref: KubernetesRef<unknown>): string {
     if (ref.resourceId === '__schema__') {
       return `schema.${ref.fieldPath}`;
     } else {
@@ -563,7 +563,7 @@ export class ContextAwareCelGenerator {
   /**
    * Generate direct factory status reference
    */
-  private generateDirectStatusReference(ref: KubernetesRef<any>): string {
+  private generateDirectStatusReference(ref: KubernetesRef<unknown>): string {
     // For direct factory, the references will be resolved before CEL evaluation
     if (ref.resourceId === '__schema__') {
       return `schema.${ref.fieldPath}`;

@@ -76,9 +76,9 @@ export function dnsEndpoint(config: DNSEndpointConfig): Enhanced<DNSEndpointSpec
       }]
     },
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator((resource: any) => {
+  }).withReadinessEvaluator((resource: unknown) => {
     // DNSEndpoint is ready when it exists and has been processed
-    const status = resource.status;
+    const status = (resource as { status?: { observedGeneration?: unknown } } | null | undefined)?.status;
     
     if (!status) {
       return {

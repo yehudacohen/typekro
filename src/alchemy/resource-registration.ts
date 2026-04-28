@@ -14,8 +14,15 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
+import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
-import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
+import {
+  DirectTypeKroDeployer,
+  KroTypeKroDeployer,
+  ResourceGraphDefinitionDeletionDeferredError,
+} from './deployers.js';
+import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
+import type { KroDeletionOptions } from './kro-delete.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
 
@@ -31,8 +38,21 @@ interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   deployedAt: number;
 }
 
-// Global registry to track registered resource types
-const REGISTERED_TYPES = new Map<string, unknown>();
+// Process-global registry to track registered resource types. Some test and
+// runtime paths can load this module through different specifiers; anchoring the
+// cache on globalThis keeps provider identity stable for a given Alchemy type.
+const REGISTERED_TYPES_KEY = Symbol.for('typekro.alchemy.registeredTypes');
+const globalRegisteredTypes = globalThis as Record<symbol, unknown>;
+if (!globalRegisteredTypes[REGISTERED_TYPES_KEY]) {
+  globalRegisteredTypes[REGISTERED_TYPES_KEY] = new Map<string, unknown>();
+}
+const REGISTERED_TYPES = globalRegisteredTypes[REGISTERED_TYPES_KEY] as Map<string, unknown>;
+
+const REGISTERED_TYPE_NAMES_KEY = Symbol.for('typekro.alchemy.registeredTypeNames');
+if (!globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY]) {
+  globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] = new Set<string>();
+}
+const REGISTERED_TYPE_NAMES = globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] as Set<string>;
 
 /**
  * Dynamic registration function with full type safety
@@ -59,6 +79,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
   if (PROVIDERS.has(alchemyType)) {
     const existingProvider = PROVIDERS.get(alchemyType);
     REGISTERED_TYPES.set(alchemyType, existingProvider);
+    REGISTERED_TYPE_NAMES.add(alchemyType);
     return existingProvider;
   }
 
@@ -89,18 +110,20 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
       }
 
       try {
-        // Create kubeconfig and deployer using centralized provider
-        const kc = _createClientProvider(props, 'deployment');
-        const deployer = await _createDeployer(kc, props.deploymentStrategy);
+        const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
 
-        // Deploy resource and create result
-        const { resourceProperties } = await _deployAndCreateResult(props, deployer);
+        try {
+          // Deploy resource and create result
+          const { resourceProperties } = await _deployAndCreateResult(props, deployer);
 
-        // Log deployment success
-        _logDeploymentSuccess(alchemyLogger, alchemyType, props, resourceProperties, this);
+          // Log deployment success
+          _logDeploymentSuccess(alchemyLogger, alchemyType, props, resourceProperties, this);
 
-        // Execute Alchemy context function
-        return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
+          // Execute Alchemy context function
+          return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
+        } finally {
+          await dispose();
+        }
       } catch (error: unknown) {
         alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
         throw error;
@@ -110,6 +133,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
 
   // Cache the registered provider
   REGISTERED_TYPES.set(alchemyType, ResourceProvider);
+  REGISTERED_TYPE_NAMES.add(alchemyType);
 
   return ResourceProvider;
 }
@@ -149,19 +173,114 @@ function _createClientProvider<T extends Enhanced<unknown, unknown>>(
 /**
  * Create the appropriate deployer based on the deployment strategy
  */
-async function _createDeployer<_T extends Enhanced<unknown, unknown>>(
+async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   kc: import('@kubernetes/client-node').KubeConfig,
-  strategy: 'direct' | 'kro'
+  props: TypeKroResourceProps<T>
 ): Promise<TypeKroDeployer> {
   // Use dynamic import to avoid circular dependencies
   const { DirectDeploymentEngine } = await import('../core/deployment/engine.js');
   const engine = new DirectDeploymentEngine(kc);
 
-  if (strategy === 'direct') {
+  if (props.deploymentStrategy === 'direct') {
     return new DirectTypeKroDeployer(engine);
-  } else {
-    return new KroTypeKroDeployer(engine);
   }
+
+  const kroDeletion = props.kroDeletion ?? inferKroDeletionOptions(props);
+  return new KroTypeKroDeployer(engine, kroDeletion ? {
+    deleteInstance: (name: string) => deleteKroInstanceFinalizerSafe(kc, name, kroDeletion),
+    shouldSkipRgdDelete: () => hasKroInstances(kc, kroDeletion),
+    deleteResourceGraphDefinition: () => deleteKroDefinition(kc, kroDeletion),
+  } : {});
+}
+
+function fullApiVersion(apiVersion: unknown, group: unknown): string | undefined {
+  if (typeof apiVersion !== 'string' || apiVersion.length === 0) return undefined;
+  if (apiVersion.includes('/')) return apiVersion;
+  return typeof group === 'string' && group.length > 0 ? `${group}/${apiVersion}` : apiVersion;
+}
+
+function apiGroup(apiVersion: unknown): string | undefined {
+  return typeof apiVersion === 'string' && apiVersion.includes('/')
+    ? apiVersion.split('/')[0]
+    : undefined;
+}
+
+function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): KroDeletionOptions | undefined {
+  if (props.deploymentStrategy !== 'kro') return undefined;
+
+  const resource = props.resource as {
+    apiVersion?: unknown;
+    kind?: unknown;
+    metadata?: {
+      name?: unknown;
+      namespace?: unknown;
+      labels?: Record<string, unknown>;
+    };
+    spec?: { schema?: { apiVersion?: unknown; group?: unknown; kind?: unknown } };
+  };
+
+  if (resource.kind === 'ResourceGraphDefinition') {
+    const schema = resource.spec?.schema;
+    const apiVersion = fullApiVersion(schema?.apiVersion, schema?.group);
+    if (
+      typeof resource.metadata?.name !== 'string' ||
+      typeof schema?.kind !== 'string' ||
+      !apiVersion
+    ) {
+      return undefined;
+    }
+
+    return {
+      apiVersion,
+      kind: schema.kind,
+      ...(typeof schema.group === 'string' && { group: schema.group }),
+      namespace: typeof resource.metadata.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+      rgdName: resource.metadata.name,
+      timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+    };
+  }
+
+  const rgdName = resource.metadata?.labels?.['typekro.io/rgd'];
+  if (
+    typeof rgdName !== 'string' ||
+    typeof resource.apiVersion !== 'string' ||
+    typeof resource.kind !== 'string'
+  ) {
+    return undefined;
+  }
+
+  const group = apiGroup(resource.apiVersion);
+  return {
+    apiVersion: resource.apiVersion,
+    kind: resource.kind,
+    ...(group && { group }),
+    namespace: typeof resource.metadata?.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+    rgdName,
+    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+  };
+}
+
+/** Internal test hook for legacy Alchemy KRO state rehydration. */
+export const inferKroDeletionOptionsForTest = inferKroDeletionOptions;
+
+async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  phase: string
+): Promise<{ deployer: TypeKroDeployer; dispose: () => Promise<void> }> {
+  if (props.deployer) {
+    return { deployer: props.deployer, dispose: async () => {} };
+  }
+
+  const kc = _createClientProvider(props, phase);
+  const deployer = await _createDeployer(kc, props);
+  return {
+    deployer,
+    dispose: async () => {
+      await deployer.dispose?.();
+    },
+  };
 }
 
 /**
@@ -172,20 +291,38 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger
 ): Promise<TypeKroResource<T>> {
+  const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
-    const kc = _createClientProvider(props, 'delete');
-    const deployer = await _createDeployer(kc, props.deploymentStrategy);
-
     await deployer.delete(props.resource, {
       mode: 'alchemy' as const,
       namespace: props.namespace,
       ...props.options,
     });
   } catch (error: unknown) {
+    if (error instanceof ResourceGraphDefinitionDeletionDeferredError) {
+      logger.debug('Deferring Alchemy state deletion for ResourceGraphDefinition', {
+        resourceName: props.resource.metadata?.name,
+        reason: error.message,
+      });
+      return {
+        ...context,
+        resource: props.resource,
+        namespace: props.namespace,
+        deployedResource: props.resource,
+        ready: false,
+        deployedAt: Date.now(),
+      } as unknown as TypeKroResource<T>;
+    }
     logger.error('Error deleting resource', ensureError(error));
+    throw error;
+  } finally {
+    await dispose();
   }
   return context.destroy();
 }
+
+/** Internal test hook for deletion semantics. */
+export const handleResourceDeletionForTest = _handleResourceDeletion;
 
 /**
  * Deploy resource and create deployment result
@@ -194,14 +331,11 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   deployer: TypeKroDeployer
 ): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
+  const deploymentOptions = buildAlchemyDeploymentOptions(props);
+
   // Deploy using the created deployer - pass the original resource with KubernetesRef objects
   // The deployer will handle reference resolution internally
-  const deployedResource = await deployer.deploy(props.resource, {
-    mode: 'alchemy' as const,
-    namespace: props.namespace,
-    waitForReady: props.options?.waitForReady ?? true,
-    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
-  });
+  const deployedResource = await deployer.deploy(props.resource, deploymentOptions);
 
   // Create clean, serializable versions for Alchemy storage.
   // We use JSON.parse(JSON.stringify()) deliberately instead of structuredClone because:
@@ -223,6 +357,24 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   };
 
   return { resourceProperties };
+}
+
+export function buildAlchemyDeploymentOptions<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): DeploymentOptions {
+  const {
+    waitForReady,
+    timeout,
+    ...deploymentMetadataOptions
+  } = props.options ?? {};
+
+  return {
+    mode: 'alchemy' as const,
+    namespace: props.namespace,
+    ...deploymentMetadataOptions,
+    waitForReady: waitForReady ?? true,
+    timeout: timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+  };
 }
 
 /**
@@ -307,5 +459,9 @@ function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
  * Clear the registered types cache (useful for testing)
  */
 export function clearRegisteredTypes(): void {
+  for (const alchemyType of REGISTERED_TYPE_NAMES) {
+    PROVIDERS.delete(alchemyType);
+  }
   REGISTERED_TYPES.clear();
+  REGISTERED_TYPE_NAMES.clear();
 }

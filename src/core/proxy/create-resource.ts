@@ -22,6 +22,7 @@ import { TypeKroError } from '../errors.js';
 import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
+  getMetadataField,
   getResourceId as getMetadataResourceId,
   getReadinessEvaluator,
   setMetadataField,
@@ -410,6 +411,21 @@ export interface CreateResourceOptions {
    * - 'cluster': Resource is cluster-scoped and cannot have a namespace
    */
   scope?: 'namespaced' | 'cluster';
+  /**
+   * Whether this resource creates a DNS-addressable service in the
+   * cluster (e.g., a Service, StatefulSet headless service, or a CRD
+   * that creates Services during reconciliation). When `true`, the
+   * dependency resolver detects implicit dependencies from other
+   * resources whose env vars reference this resource's `metadata.name`
+   * as a hostname.
+   *
+   * **Currently set by:** `service()`, `cluster()` (CNPG), `pooler()`,
+   * `valkey()`. **Not set by:** `deployment()`, `statefulSet()` (these
+   * don't create DNS names — only the Service fronting them does).
+   * New factory functions that create DNS-addressable resources must
+   * set this flag or implicit dependency detection will miss them.
+   */
+  dnsAddressable?: boolean;
 }
 
 /**
@@ -513,6 +529,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
     setMetadataField(enhanced, 'scope', options.scope);
   }
 
+  // Mark DNS-addressable resources so the dependency resolver can detect
+  // implicit service-name dependencies from env vars and connection strings.
+  if (options?.dnsAddressable) {
+    setMetadataField(enhanced, 'dnsAddressable', true);
+  }
+
   // Auto-register with composition context if active (but not for external references)
   const context = getCurrentCompositionContext();
   if (context && !resource.__externalRef) {
@@ -521,7 +543,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   // Add fluent builder method for readiness evaluator
   Object.defineProperty(enhanced, 'withReadinessEvaluator', {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+    // biome-ignore lint/suspicious/noExplicitAny: resources may register evaluators for diverse typed Kubernetes objects.
     value: function (evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus> {
       // Register in global registry by KIND
       ReadinessEvaluatorRegistry.getInstance().registerForKind(
@@ -532,6 +554,78 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
       // Attach to individual resource instance via WeakMap
       setReadinessEvaluator(this, evaluator);
+
+      return this as Enhanced<TSpec, TStatus>;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+
+  // Add dependsOn method for explicit KRO dependency ordering
+  Object.defineProperty(enhanced, 'dependsOn', {
+    value: function (
+      dependency: unknown,
+      condition?: string | { expression: string }
+    ): Enhanced<TSpec, TStatus> {
+      if (condition !== undefined) {
+        throw new TypeKroError(
+          'Conditional dependsOn() is not supported. TypeKro can only serialize unconditional dependency edges.',
+          'UNSUPPORTED_DEPENDENCY_CONDITION',
+          { dependencyType: typeof dependency }
+        );
+      }
+
+      // Extract resource ID from the dependency
+      let depId: string | undefined;
+      if (typeof dependency === 'string' && dependency.length > 0) {
+        depId = dependency;
+      }
+      if (
+        !depId &&
+        typeof dependency === 'object' &&
+        dependency !== null &&
+        (dependency as { kind?: unknown }).kind === 'singleton-reference'
+      ) {
+        throw new TypeKroError(
+          'Enhanced.dependsOn() does not accept singleton reference handles. ' +
+            'Depend on a real resource or the owning singleton definition instead.',
+          'INVALID_DEPENDENCY_TARGET',
+          { dependencyType: 'singleton-reference' }
+        );
+      }
+      // Enhanced resource — read ID from metadata
+      depId ??= getMetadataResourceId(dependency as Record<string, unknown>);
+      // NestedCompositionResource — read __compositionId.
+      // NOTE: __compositionId is the execution name (e.g., "inngest-execution-3"),
+      // NOT a KRO graph resource ID. When used as a dependsOn target, the
+      // readyWhen CEL expression will reference this ID which may not match
+      // any resource in the KRO graph. For nested compositions, use
+      // nestedCompositionResource.dependsOn() instead — it resolves to the
+      // actual leaf merged resource ID in the parent context.
+      if (!depId && typeof dependency === 'object' && dependency !== null) {
+        depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
+        if (depId) {
+          debugLogger.warn('dependsOn: resolved via __compositionId — this may not match a KRO graph resource. Prefer calling dependsOn on the nested composition resource directly.', {
+            compositionId: depId,
+          });
+        }
+      }
+      if (!depId) {
+        throw new TypeKroError(
+          'Enhanced.dependsOn() target must be a resource, nested composition resource, or non-empty resource ID string.',
+          'INVALID_DEPENDENCY_TARGET',
+          { dependencyType: typeof dependency }
+        );
+      }
+
+      // Accumulate dependencies
+      const existing = getMetadataField(this, 'dependsOn') as
+        | Array<{ resourceId: string }>
+        | undefined;
+      const deps = existing ?? [];
+      deps.push({ resourceId: depId });
+      setMetadataField(this, 'dependsOn', deps);
 
       return this as Enhanced<TSpec, TStatus>;
     },

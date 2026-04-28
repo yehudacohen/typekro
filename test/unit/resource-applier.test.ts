@@ -17,6 +17,7 @@ import { ResourceApplier } from '../../src/core/deployment/resource-applier.js';
 import type { TypeKroLogger } from '../../src/core/logging/types.js';
 import {
   getResourceMetadata,
+  setMetadataField,
   setReadinessEvaluator,
   setResourceId,
 } from '../../src/core/metadata/index.js';
@@ -241,6 +242,36 @@ describe('ResourceApplier', () => {
       expect(resource.metadata.namespace).toBeUndefined();
       expect(result.metadata.namespace).toBe('new-ns');
     });
+
+    it('should not add deployment namespace to cluster-scoped resources', () => {
+      const resource = createTestResource({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'test-cluster-role' },
+      });
+      delete (resource.metadata as Record<string, unknown>).namespace;
+      setMetadataField(resource, 'scope', 'cluster');
+
+      const result = applier.applyNamespaceToResource(resource, 'new-ns', mockLogger);
+
+      expect(result).toBe(resource);
+      expect(result.metadata.namespace).toBeUndefined();
+    });
+
+    it('should namespace namespaced resources even when lifecycle-scoped as cluster infrastructure', () => {
+      const resource = createTestResource({
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        kind: 'HelmRelease',
+        metadata: { name: 'operator-release' },
+      });
+      delete (resource.metadata as Record<string, unknown>).namespace;
+      setMetadataField(resource, 'scopes', ['cluster']);
+
+      const result = applier.applyNamespaceToResource(resource, 'operator-ns', mockLogger);
+
+      expect(result).not.toBe(resource);
+      expect(result.metadata.namespace).toBe('operator-ns');
+    });
   });
 
   // ===========================================================================
@@ -400,6 +431,25 @@ describe('ResourceApplier', () => {
       });
     });
 
+    it('should not use default namespace when reading cluster-scoped resources', async () => {
+      mockApi.read.mockImplementation(() => Promise.reject(createK8sError('Not Found', 404)));
+
+      const resource: KubernetesResource = {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'test-cluster-role' },
+      };
+      setMetadataField(resource, 'scope', 'cluster');
+
+      await applier.checkResourceExists(resource, mockLogger);
+
+      expect(mockApi.read).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'test-cluster-role' },
+      });
+    });
+
     it('should handle Unrecognized API version error without throwing', async () => {
       const error = new Error('Unrecognized API version and kind: example.com/v1/MyResource');
       mockApi.read.mockImplementation(() => Promise.reject(error));
@@ -456,6 +506,56 @@ describe('ResourceApplier', () => {
       expect(result).toBe(patchedResource);
       expect(mockApi.patch).toHaveBeenCalledTimes(1);
       expect(mockApi.create).not.toHaveBeenCalled();
+    });
+
+    it('should read cluster-scoped resources without namespace during apply', async () => {
+      mockApi.read.mockImplementation(() => Promise.reject(createK8sError('Not Found', 404)));
+      mockApi.create.mockImplementation((resource) => Promise.resolve(resource));
+
+      const resource: KubernetesResource = {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'test-cluster-role' },
+        rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get'] }],
+      };
+      setMetadataField(resource, 'scope', 'cluster');
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.read).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'test-cluster-role' },
+      });
+    });
+
+    it('should read and replace cluster-scoped conflicts without namespace', async () => {
+      mockApi.read.mockImplementation(() => Promise.reject(createK8sError('Not Found', 404)));
+      mockApi.create.mockImplementationOnce(() =>
+        Promise.reject(createK8sError('Already Exists', 409))
+      );
+      mockApi.delete.mockImplementation(() => Promise.resolve({ body: {} }));
+      mockApi.create.mockImplementationOnce((resource) => Promise.resolve(resource));
+
+      const resource: KubernetesResource = {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'conflict-cluster-role' },
+        rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get'] }],
+      };
+      setMetadataField(resource, 'scope', 'cluster');
+
+      await applier.applyResourceToCluster(
+        resource,
+        createTestOptions({ conflictStrategy: 'replace' }),
+        mockLogger
+      );
+
+      expect(mockApi.delete).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'conflict-cluster-role' },
+      });
     });
 
     it('should return a dry-run resource when dryRun is true', async () => {
@@ -761,6 +861,56 @@ describe('ResourceApplier', () => {
 
       // Should fall back to original resource on timeout
       expect(result).toBe(resource);
+    });
+
+    it('clears the reference resolution timeout after a successful resolve', async () => {
+      const resolvedResource = createTestResource({
+        metadata: { name: 'resolved-deployment', namespace: 'default' },
+      });
+      const resolver = createMockReferenceResolver(resolvedResource);
+      const localApplier = new ResourceApplier(
+        mockApi as k8s.KubernetesObjectApi,
+        resolver,
+        mockLogger
+      );
+
+      const resource = createTestResource({ id: 'deploy' }) as KubernetesResource & { id: string };
+      const context: ResolutionContext = {
+        deployedResources: [],
+        kubeClient: {} as k8s.KubeConfig,
+        namespace: 'default',
+        resourceKeyMapping: new Map([['deploy', { kind: 'Deployment', name: 'test' }]]),
+      };
+      const options = createTestOptions({ timeout: 12345 });
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const originalClearTimeout = globalThis.clearTimeout;
+      const fakeTimer = { unref: mock() } as unknown as ReturnType<typeof setTimeout>;
+      const clearCalls: ReturnType<typeof setTimeout>[] = [];
+
+      globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
+        void handler;
+        void args;
+        return fakeTimer;
+      }) as unknown as typeof setTimeout;
+      globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+        clearCalls.push(timer);
+      }) as typeof clearTimeout;
+
+      try {
+        const result = await localApplier.resolveResourceReferences(
+          resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
+          context,
+          options,
+          mockLogger
+        );
+
+        expect(result.metadata.name).toBe('resolved-deployment');
+        expect(clearCalls).toEqual([fakeTimer]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
+      }
     });
   });
 

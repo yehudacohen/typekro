@@ -41,6 +41,35 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  live-cluster-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.2.x'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -Lo ./kubectl https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+
+      - name: Required live cluster integration tests
+        run: CREATE_KIND_CLUSTER=true bun run test:integration:required
+
   # Build docs on master changes
   build-docs:
     runs-on: ubuntu-latest
@@ -115,7 +144,7 @@ jobs:
 
   # Publish to npm when version changes using OIDC trusted publishing
   publish-npm:
-    needs: check-version
+    needs: [check-version, test, live-cluster-integration]
     runs-on: ubuntu-latest
     if: needs.check-version.outputs.version-changed == 'true'
     permissions:

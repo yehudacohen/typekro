@@ -52,6 +52,8 @@ export const InngestBootstrapConfigSchema = type({
   'namespace?': 'string',
   /** Chart version (default: '0.3.1'). */
   'version?': 'string',
+  /** HelmRepository name in the Flux namespace (default: derived from name). */
+  'repositoryName?': 'string',
   /** Number of Inngest replicas (default: 1). */
   'replicaCount?': 'number',
 

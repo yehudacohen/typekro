@@ -47,7 +47,8 @@ function resolveResourceReference(
     // Try to resolve schema references to actual values if schema context is available
     if (context.schema) {
       const pathParts = fieldPath.split('.');
-      let current: any = context.schema;
+      // biome-ignore lint/suspicious/noExplicitAny: schema traversal is over dynamically-shaped serialized values.
+      let current: Record<string, any> | undefined = context.schema as Record<string, any> | undefined;
 
       for (const part of pathParts) {
         if (current && typeof current === 'object' && part in current) {
@@ -78,7 +79,8 @@ function resolveResourceReference(
 
   // Try to resolve the field path to a known value
   const pathParts = fieldPath.split('.');
-  let current: any = resource;
+  // biome-ignore lint/suspicious/noExplicitAny: resource traversal is over dynamically-shaped serialized values.
+  let current: Record<string, any> | undefined = resource as Record<string, any> | undefined;
 
   for (const part of pathParts) {
     if (current && typeof current === 'object' && part in current) {
@@ -166,7 +168,7 @@ export function optimizeStatusMappings(
   const optimizedMappings: Record<string, unknown> = {};
   const allOptimizations: string[] = [];
 
-  function evaluateValue(value: any, path: string): any {
+  function evaluateValue(value: unknown, path: string): unknown {
     if (isKubernetesRef(value)) {
       const resolved = resolveResourceReference(value, context);
       if (resolved) {

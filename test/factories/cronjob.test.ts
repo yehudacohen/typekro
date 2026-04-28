@@ -424,7 +424,7 @@ describe('CronJob Factory', () => {
         { schedule: '@daily', description: 'Using daily named schedule' },
       ];
 
-      schedulePatterns.forEach(({ schedule, description }) => {
+      schedulePatterns.forEach(({ schedule, description: _description }) => {
         const cronJobResource = createTestCronJob(
           `schedule-test-${schedule.replace(/[^a-z0-9]/gi, '-')}`,
           schedule

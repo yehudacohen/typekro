@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 import {
+  buildNestedCompositionAliases,
   extractNestedStatusCel,
   remapVariableNames,
   recoverGarbledExpression,
@@ -16,51 +17,42 @@ import {
 
 describe('remapVariableNames', () => {
   it('should pass through known resource IDs unchanged', () => {
-    const result = remapVariableNames(
-      'deployment.status.ready',
-      ['deployment', 'service']
-    );
+    const result = remapVariableNames('deployment.status.ready', ['deployment', 'service']);
     expect(result).toBe('deployment.status.ready');
   });
 
   it('should pass through schema references unchanged', () => {
-    const result = remapVariableNames(
-      'schema.spec.name',
-      ['deployment']
-    );
+    const result = remapVariableNames('schema.spec.name', ['deployment']);
     expect(result).toBe('schema.spec.name');
   });
 
   it('should match by exact lowercase', () => {
-    const result = remapVariableNames(
-      'Deployment.status.ready',
-      ['deployment']
-    );
+    const result = remapVariableNames('Deployment.status.ready', ['deployment']);
     expect(result).toBe('deployment.status.ready');
   });
 
   it('should use single resource when unambiguous', () => {
-    const result = remapVariableNames(
-      'd.status.ready',
-      ['inngestHelmRelease']
-    );
+    const result = remapVariableNames('d.status.ready', ['inngestHelmRelease']);
     expect(result).toBe('inngestHelmRelease.status.ready');
   });
 
-  it('should match unambiguous camelCase prefix', () => {
+  it('preserves named variables before the single-resource fast path', () => {
     const result = remapVariableNames(
-      'inngest.status.ready',
-      ['inngestHelmRelease', 'namespace']
+      'inner.status.ready && d.status.ready',
+      ['inngestHelmRelease'],
+      new Set(['inner'])
     );
+    expect(result).toBe('inner.status.ready && inngestHelmRelease.status.ready');
+  });
+
+  it('should match unambiguous camelCase prefix', () => {
+    const result = remapVariableNames('inngest.status.ready', ['inngestHelmRelease', 'namespace']);
     expect(result).toBe('inngestHelmRelease.status.ready');
   });
 
   it('should reject ambiguous prefix matches', () => {
     // Both 'cache' and 'cacheService' match prefix 'cache'
-    const result = remapVariableNames(
-      'cache.status.ready',
-      ['cache', 'cacheService']
-    );
+    const result = remapVariableNames('cache.status.ready', ['cache', 'cacheService']);
     // 'cache' is an exact match (included in innerResourceIds), so it passes through
     expect(result).toBe('cache.status.ready');
   });
@@ -70,28 +62,26 @@ describe('remapVariableNames', () => {
     // actually 'c' -> 'cache' starts with 'c' and cache[1] = 'a' (lowercase) — NOT a camelCase boundary
     // 'c' -> 'cacheService' starts with 'c' and cacheService[1] = 'a' (lowercase) — NOT a boundary
     // So neither matches the prefix rule, and the variable is left as-is
-    const result = remapVariableNames(
-      'c.status.ready',
-      ['cache', 'cacheService']
-    );
+    const result = remapVariableNames('c.status.ready', ['cache', 'cacheService']);
     expect(result).toBe('c.status.ready');
   });
 
   it('should handle metadata and spec sections', () => {
-    const result = remapVariableNames(
-      'd.metadata.name',
-      ['deployment']
-    );
+    const result = remapVariableNames('d.metadata.name', ['deployment']);
     expect(result).toBe('deployment.metadata.name');
+  });
+
+  it('does not remap CEL lambda variables through the single-resource fast path', () => {
+    const result = remapVariableNames('items.exists(c, c.status.ready == true) && d.status.ready', [
+      'realResource',
+    ]);
+    expect(result).toBe('items.exists(c, c.status.ready == true) && realResource.status.ready');
   });
 });
 
 describe('recoverGarbledExpression', () => {
   it('should pass through non-garbled expressions unchanged', () => {
-    const result = recoverGarbledExpression(
-      'deployment.status.ready',
-      ['deployment']
-    );
+    const result = recoverGarbledExpression('deployment.status.ready', ['deployment']);
     expect(result).toBe('deployment.status.ready');
   });
 
@@ -104,18 +94,12 @@ describe('recoverGarbledExpression', () => {
   });
 
   it('should extract status field from arrow function source', () => {
-    const result = recoverGarbledExpression(
-      '(() => d.status.readyReplicas >= 1)',
-      ['deployment']
-    );
+    const result = recoverGarbledExpression('(() => d.status.readyReplicas >= 1)', ['deployment']);
     expect(result).toBe('deployment.status.readyReplicas');
   });
 
   it('should return undefined when no status reference found', () => {
-    const result = recoverGarbledExpression(
-      'new SomeClass({config: true})',
-      ['deployment']
-    );
+    const result = recoverGarbledExpression('new SomeClass({config: true})', ['deployment']);
     expect(result).toBeUndefined();
   });
 
@@ -127,6 +111,13 @@ describe('recoverGarbledExpression', () => {
     // 'helmRelease' doesn't start with 'inngestHelmRelease' — it's the other way around
     // So it falls through to innerResources[0]
     expect(result).toBe('inngestHelmRelease.status.conditions');
+  });
+
+  it('should recover multi-segment nested status paths without truncation', () => {
+    const result = recoverGarbledExpression('(() => stack.status.components.app.ready)', [
+      'stackResource',
+    ]);
+    expect(result).toBe('stackResource.status.components.app.ready');
   });
 });
 
@@ -140,7 +131,9 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       }
     );
     expect(mappings['__nestedStatus:inner1:ready']).toBe('deployment.status.ready');
@@ -150,12 +143,18 @@ describe('extractNestedStatusCel', () => {
     const mappings: Record<string, string> = {};
     extractNestedStatusCel(
       {
-        ready: { [KUBERNETES_REF_BRAND]: true, resourceId: 'deployment', fieldPath: 'status.ready' },
+        ready: {
+          [KUBERNETES_REF_BRAND]: true,
+          resourceId: 'deployment',
+          fieldPath: 'status.ready',
+        },
       },
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       }
     );
     expect(mappings['__nestedStatus:inner1:ready']).toBe('deployment.status.ready');
@@ -170,10 +169,51 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       }
     );
     expect(mappings['__nestedStatus:inner1:version']).toBe('schema.spec.version');
+  });
+
+  it('quotes dotted literal string values instead of treating them as CEL paths', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        region: 'prod.us',
+        phase: 'Ready.OK',
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['deployment'],
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
+      }
+    );
+    expect(mappings['__nestedStatus:inner1:region']).toBe('"prod.us"');
+    expect(mappings['__nestedStatus:inner1:phase']).toBe('"Ready.OK"');
+  });
+
+  it('quotes spaced operator text instead of treating it as CEL', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        equation: 'a - b',
+        label: 'foo + bar',
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['deployment'],
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
+      }
+    );
+
+    expect(mappings['__nestedStatus:inner1:equation']).toBe('"a - b"');
+    expect(mappings['__nestedStatus:inner1:label']).toBe('"foo + bar"');
   });
 
   it('should skip internal fields', () => {
@@ -186,7 +226,9 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       }
     );
     expect(Object.keys(mappings)).toEqual(['__nestedStatus:inner1:ready']);
@@ -204,11 +246,71 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['app', 'database'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       }
     );
     expect(mappings['__nestedStatus:inner1:components.app']).toBe('app.status.ready');
     expect(mappings['__nestedStatus:inner1:components.db']).toBe('database.status.ready');
+  });
+
+  it('should extract array-valued nested status mappings', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        endpoints: [
+          {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'service.status.loadBalancer.ingress[0].hostname',
+          },
+          'fallback.example.com',
+        ],
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['service'],
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
+      }
+    );
+
+    expect(mappings['__nestedStatus:inner1:endpoints']).toBe(
+      '[service.status.loadBalancer.ingress[0].hostname, "fallback.example.com"]'
+    );
+  });
+
+  it('should extract object elements inside array-valued nested status', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        checks: [
+          {
+            name: 'api',
+            ready: {
+              [CEL_EXPRESSION_BRAND]: true,
+              expression: 'deployment.status.readyReplicas >= 1',
+            },
+          },
+        ],
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['deployment'],
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
+      }
+    );
+
+    expect(mappings['__nestedStatus:inner1:checks']).toBe(
+      '[{"name": "api", "ready": deployment.status.readyReplicas >= 1}]'
+    );
+    expect(mappings['__nestedStatus:inner1:checks.0.name']).toBe('"api"');
+    expect(mappings['__nestedStatus:inner1:checks.0.ready']).toBe(
+      'deployment.status.readyReplicas >= 1'
+    );
   });
 
   it('should fall back to Phase B for comparison artifacts', () => {
@@ -220,7 +322,9 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       },
       '',
       {
@@ -239,7 +343,9 @@ describe('extractNestedStatusCel', () => {
       {
         baseId: 'inner1',
         innerResourceIds: ['deployment'],
-        registerMapping: (k, v) => { mappings[k] = v; },
+        registerMapping: (k, v) => {
+          mappings[k] = v;
+        },
       },
       '',
       {
@@ -249,5 +355,214 @@ describe('extractNestedStatusCel', () => {
       }
     );
     expect(mappings['__nestedStatus:inner1:metadata.name']).toBe('deployment.metadata.name');
+  });
+});
+
+describe('buildNestedCompositionAliases', () => {
+  // Existing entries the inner composition has accumulated for one
+  // nested call (`webAppWithProcessing` instance #1) with two status fields.
+  const baseEntries: Record<string, string> = {
+    '__nestedStatus:webAppWithProcessing1:url': 'http://example',
+    '__nestedStatus:webAppWithProcessing1:ready': 'app.status.readyReplicas >= 1',
+  };
+
+  it('aliases a `const x = factory(...)` assignment to the matching baseId', () => {
+    const source = `
+      function composition(spec) {
+        const stack = webAppWithProcessing({ name: spec.name });
+        return { ready: stack.status.ready };
+      }
+    `;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+    expect(aliases['__nestedStatus:stack:ready']).toBe('app.status.readyReplicas >= 1');
+  });
+
+  it('aliases comma-continuation declarations (Bun/esbuild minified shape)', () => {
+    // After Bun's transform, multiple `const a = ..., b = ...` declarations
+    // collapse onto one line. The regex must match `, stack = factory(`.
+    const source = `(spec) => { const ns = "default", stack = webAppWithProcessing({ name: spec.name }); return { ready: stack.status.ready }; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+  });
+
+  it('aliases `let` and `var` assignments in addition to `const`', () => {
+    const letSource = `function f(spec) { let stack = webAppWithProcessing({}); return stack.status.ready; }`;
+    const letAliases = buildNestedCompositionAliases(
+      letSource,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(letAliases['__nestedStatus:stack:url']).toBe('http://example');
+
+    const varSource = `function f(spec) { var stack = webAppWithProcessing({}); return stack.status.ready; }`;
+    const varAliases = buildNestedCompositionAliases(
+      varSource,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(varAliases['__nestedStatus:stack:url']).toBe('http://example');
+  });
+
+  it('aliases member-expression factory calls by the callee property name', () => {
+    const source = `function f(spec) { const stack = lib.webAppWithProcessing({ name: spec.name }); return stack.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+    expect(aliases['__nestedStatus:stack:ready']).toBe('app.status.readyReplicas >= 1');
+  });
+
+  it('aliases optional-chaining member-expression factory calls by the callee property name', () => {
+    const source = `function f(spec) { const stack = registry?.webAppWithProcessing({ name: spec.name }); return stack.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+  });
+
+  it('maps repeated factory calls deterministically by call order', () => {
+    // Repeated calls to the same nested composition are assigned in source
+    // order to the corresponding baseIds, which are also tracked in creation
+    // order.
+    const source = `(spec) => { const a = wap({}); const b = wap({}); return { x: a.status.url, y: b.status.url }; }`;
+    const entries: Record<string, string> = {
+      '__nestedStatus:wap1:url': 'http://a',
+      '__nestedStatus:wap2:url': 'http://b',
+    };
+    const aliases = buildNestedCompositionAliases(source, new Set(['wap1', 'wap2']), entries);
+    expect(aliases['__nestedStatus:a:url']).toBe('http://a');
+    expect(aliases['__nestedStatus:b:url']).toBe('http://b');
+  });
+
+  it('accounts for earlier unassigned same-factory calls when aliasing later assignments', () => {
+    const source = `(spec) => { wap({}); const later = wap({}); return later.status.url; }`;
+    const entries: Record<string, string> = {
+      '__nestedStatus:wap1:url': 'http://first',
+      '__nestedStatus:wap2:url': 'http://second',
+    };
+    const aliases = buildNestedCompositionAliases(source, new Set(['wap1', 'wap2']), entries);
+
+    expect(aliases['__nestedStatus:later:url']).toBe('http://second');
+  });
+
+  it('skips when the variable name is already a known baseId', () => {
+    // Edge case: user named their local var the same as the composition
+    // baseId. We don't shadow real entries.
+    const source = `(spec) => { const webAppWithProcessing1 = webAppWithProcessing({}); return webAppWithProcessing1.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    // No alias entries — the existing entries already cover this var name.
+    expect(Object.keys(aliases)).toHaveLength(0);
+  });
+
+  it('aliases destructured nested status handles', () => {
+    const source = `(spec) => { const { status } = webAppWithProcessing({}); return status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(aliases['__nestedStatus:status:ready']).toBe('app.status.readyReplicas >= 1');
+  });
+
+  it('aliases renamed destructured nested status handles', () => {
+    const source = `(spec) => { const { status: appStatus } = webAppWithProcessing({}); return appStatus.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(aliases['__nestedStatus:appStatus:ready']).toBe('app.status.readyReplicas >= 1');
+  });
+
+  it('does not alias invalid top-level destructuring from nested handles', () => {
+    // `ready` lives under the returned handle's `.status`, not top-level.
+    const source = `(spec) => { const { ready } = webAppWithProcessing({}); return ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(Object.keys(aliases)).toHaveLength(0);
+  });
+
+  it('skips property assignments (e.g., `obj.foo = factory()`)', () => {
+    // The LHS is a member expression, not a bare identifier. The regex
+    // shouldn't match because the boundary character before the LHS is
+    // a `.`, which fails the explicit guard.
+    const source = `(spec) => { const obj = {}; obj.stack = webAppWithProcessing({}); return obj.stack.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(aliases['__nestedStatus:stack:url']).toBeUndefined();
+  });
+
+  it('returns empty when nestedCompositionIds is empty', () => {
+    const aliases = buildNestedCompositionAliases(
+      '(spec) => { const stack = wap({}); return {}; }',
+      new Set(),
+      baseEntries
+    );
+    expect(Object.keys(aliases)).toHaveLength(0);
+  });
+
+  it('returns empty when nestedCompositionIds is undefined', () => {
+    const aliases = buildNestedCompositionAliases(
+      '(spec) => { const stack = wap({}); return {}; }',
+      undefined,
+      baseEntries
+    );
+    expect(Object.keys(aliases)).toHaveLength(0);
+  });
+
+  it('returns empty when no factory call matches a known baseId stem', () => {
+    // The composition source mentions `unrelated()` which isn't in
+    // the baseId stem map.
+    const source = `(spec) => { const x = unrelated({}); return {}; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+    expect(Object.keys(aliases)).toHaveLength(0);
+  });
+
+  it('handles instance-suffix variations (factoryName matches baseId stem regardless of digits)', () => {
+    // The baseId is `wap5` (not `wap1`) because of monotonic counter.
+    // Source uses `wap()` — stem-stripping should still match.
+    const source = `(spec) => { const stack = wap({}); return stack.status.url; }`;
+    const entries: Record<string, string> = {
+      '__nestedStatus:wap5:url': 'http://example',
+    };
+    const aliases = buildNestedCompositionAliases(source, new Set(['wap5']), entries);
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+  });
+
+  it('does not throw on malformed source', () => {
+    // Garbage in — empty result out, no exception.
+    const source = '!@#$%^&*()_+~`|}{[]:;<>,./?';
+    expect(() =>
+      buildNestedCompositionAliases(source, new Set(['webAppWithProcessing1']), baseEntries)
+    ).not.toThrow();
   });
 });

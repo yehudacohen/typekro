@@ -151,14 +151,15 @@ function Certificate(config: CertificateConfig): Enhanced<CertificateSpec, Certi
 ### ReadinessEvaluator Interface
 
 ```typescript
-type ReadinessEvaluator<T extends KubernetesResource = KubernetesResource> = (
+type ReadinessEvaluator<T = any> = (
   resource: T
-) => ResourceStatus | Promise<ResourceStatus>;
+) => ResourceStatus;
 
 interface ResourceStatus {
   ready: boolean;
   reason?: string;   // Short reason code (e.g., 'MinimumReplicasAvailable')
   message?: string;  // Human-readable message
+  details?: Record<string, unknown>; // Additional debugging information
 }
 ```
 
@@ -184,30 +185,21 @@ const replicaReadiness: ReadinessEvaluator = (resource) => {
   return { ready: ready >= desired, message: `${ready}/${desired} replicas ready` };
 };
 
-// Async readiness (for external checks)
-const asyncReadiness: ReadinessEvaluator = async (resource) => {
-  const endpoint = resource.status?.endpoint;
-  if (!endpoint) return { ready: false, message: 'No endpoint yet' };
-  
-  try {
-    const response = await fetch(`${endpoint}/health`);
-    return { ready: response.ok, message: response.ok ? 'Healthy' : 'Unhealthy' };
-  } catch {
-    return { ready: false, message: 'Health check failed' };
-  }
-};
+// Readiness evaluators are synchronous and should only inspect the live
+// Kubernetes resource passed to them. Perform external health checks in a
+// controller, sidecar, or status-updating job, then expose the result on status.
 ```
 
 ## Resource Dependencies
 
-Use `withDependencies()` to explicitly declare that a resource depends on other resources:
+Use `dependsOn()` to explicitly declare that a resource depends on other resources:
 
 ```typescript
 const app = Deployment({
   id: 'app',
   name: 'my-app',
   image: 'nginx'
-}).withDependencies('database', 'configMap');
+}).dependsOn('database').dependsOn('configMap');
 // App will wait for 'database' and 'configMap' resources to be ready
 ```
 

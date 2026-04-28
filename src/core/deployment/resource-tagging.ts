@@ -89,6 +89,9 @@ export const SCOPES_ANNOTATION = 'typekro.io/scopes';
 /** Annotation carrying dependency ids as a JSON array of strings. */
 export const DEPENDS_ON_ANNOTATION = 'typekro.io/depends-on';
 
+/** Annotation carrying the immutable singleton owner spec fingerprint. */
+export const SINGLETON_SPEC_FINGERPRINT_ANNOTATION = 'typekro.io/singleton-spec-fingerprint';
+
 // ── Tagging context and API ───────────────────────────────────────────────
 
 /**
@@ -116,6 +119,8 @@ export interface TagContext {
    * Used for reverse-topological deletion reconstruction.
    */
   dependencies?: string[];
+  /** Fingerprint for singleton owner resources. */
+  singletonSpecFingerprint?: string;
 }
 
 /**
@@ -154,11 +159,14 @@ export function applyTypekroTags(manifest: KubernetesResource, ctx: TagContext):
   metadata.annotations[DEPLOYMENT_ID_ANNOTATION] = ctx.deploymentId;
   metadata.annotations[RESOURCE_ID_ANNOTATION] = ctx.resourceId;
 
-  if (ctx.scopes && ctx.scopes.length > 0) {
+  if (ctx.scopes) {
     metadata.annotations[SCOPES_ANNOTATION] = JSON.stringify(ctx.scopes);
   }
   if (ctx.dependencies && ctx.dependencies.length > 0) {
     metadata.annotations[DEPENDS_ON_ANNOTATION] = JSON.stringify(ctx.dependencies);
+  }
+  if (ctx.singletonSpecFingerprint) {
+    metadata.annotations[SINGLETON_SPEC_FINGERPRINT_ANNOTATION] = ctx.singletonSpecFingerprint;
   }
 }
 
@@ -191,9 +199,9 @@ export interface ExtractedTags {
  * un-owned," because this function is invoked on resources that matched
  * a label selector upstream.
  */
-export function extractTypekroTags(
-  resource: { metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> } }
-): ExtractedTags {
+export function extractTypekroTags(resource: {
+  metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> };
+}): ExtractedTags {
   const labels = resource.metadata?.labels ?? {};
   const annotations = resource.metadata?.annotations ?? {};
 
@@ -232,7 +240,8 @@ export function extractTypekroTags(
  *      `scopes: ['shared']`.
  *
  * Returns an empty array if the resource is "instance-private" (no
- * scopes from any source).
+ * scopes from any source). Factory-provided `scope: 'cluster'` metadata is
+ * treated as membership in the broader `cluster` deletion/application scope.
  */
 export function getEffectiveScopes(resource: KubernetesResource): string[] {
   const scopes = new Set<string>();
@@ -247,11 +256,16 @@ export function getEffectiveScopes(resource: KubernetesResource): string[] {
     for (const s of fromMeta) scopes.add(s);
   }
 
-  // 3. Legacy lifecycle alias
+  // 3. Canonical factory scope metadata for cluster-scoped resources.
+  if (getMetadataField(resource as object, 'scope') === 'cluster') {
+    scopes.add('cluster');
+  }
+
+  // 4. Legacy lifecycle alias
   const legacy = getMetadataField(resource as object, 'lifecycle');
   if (legacy === 'shared') scopes.add('shared');
 
-  // 4. Annotation-based legacy: `typekro.io/lifecycle: shared` from any
+  // 5. Annotation-based legacy: `typekro.io/lifecycle: shared` from any
   //    pre-scopes deployment is also treated as `['shared']`.
   const lifecycleAnn = resource.metadata?.annotations?.['typekro.io/lifecycle'];
   if (lifecycleAnn === 'shared') scopes.add('shared');
@@ -290,6 +304,20 @@ export function scopesMatchFilter(
 ): boolean {
   if (resourceScopes.length === 0) return includeUnscoped;
   return resourceScopes.some((s) => scopeFilter.includes(s));
+}
+
+/**
+ * Decide whether a resource matches deploy-side `targetScopes` semantics.
+ *
+ * Deployment targeting is intentionally stricter than delete-side filtering:
+ * - `undefined` means deploy everything (handled by callers before invoking this helper).
+ * - `[]` means deploy only instance-private/unscoped resources.
+ * - Non-empty filters deploy only resources with at least one matching lifecycle scope.
+ */
+export function scopesMatchDeployTarget(resourceScopes: string[], targetScopes: string[]): boolean {
+  if (targetScopes.length === 0) return resourceScopes.length === 0;
+  if (resourceScopes.length === 0) return false;
+  return resourceScopes.some((s) => targetScopes.includes(s));
 }
 
 // ── Label selector construction ───────────────────────────────────────────

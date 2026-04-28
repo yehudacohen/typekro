@@ -282,7 +282,7 @@ describe('Magic Proxy Integration Tests', () => {
         }),
       };
 
-      const databaseComposition = (kubernetesComposition as Function)(
+      const databaseComposition = (kubernetesComposition as (...args: unknown[]) => unknown)(
         databaseDefinition,
         (spec: { name: string; storage: string }) => {
           const deployment = simple.Deployment({
@@ -313,7 +313,7 @@ describe('Magic Proxy Integration Tests', () => {
 
       // Simplified test - nested compositions are complex and not the focus here
       expect(databaseComposition).toBeDefined();
-      expect(databaseComposition.toYaml).toBeDefined();
+      expect((databaseComposition as { toYaml?: unknown }).toYaml).toBeDefined();
     });
   });
 

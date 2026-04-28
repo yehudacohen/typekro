@@ -2,6 +2,7 @@
 // Following external-dns Helm chart and CRD specifications
 
 import { type Type, type } from 'arktype';
+import type { CelExpression } from '../../core/types/common.js';
 
 // Re-export common types from cert-manager for consistency
 export type {
@@ -119,7 +120,7 @@ export interface ExternalDnsHelmReleaseConfig {
   namespace?: string;
   repositoryName: string;
   version?: string; // Chart version
-  values?: ExternalDnsHelmValues;
+  values?: ExternalDnsHelmValues | CelExpression<Record<string, unknown>>;
   id?: string;
 }
 
@@ -195,7 +196,7 @@ export interface ExternalDnsHelmValues {
     effect?: 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute';
     tolerationSeconds?: number;
   }>;
-  affinity?: any;
+  affinity?: unknown;
   priorityClassName?: string;
   terminationGracePeriodSeconds?: number;
 
@@ -261,10 +262,12 @@ export interface ExternalDnsHelmValues {
       secretKeyRef?: {
         name: string;
         key: string;
+        optional?: boolean;
       };
       configMapKeyRef?: {
         name: string;
         key: string;
+        optional?: boolean;
       };
     };
   }>;

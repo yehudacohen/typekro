@@ -17,24 +17,20 @@ import { type } from 'arktype';
 import { kubernetesComposition, helmRelease } from 'typekro';
 import { Secret } from 'typekro/simple';
 
-const DatabaseSpec = type({
-  name: 'string',
-  size: 'string',
-  password: 'string',
-  replicas: 'number'
-});
-
-const DatabaseStatus = type({
-  ready: 'boolean',
-  phase: '"Pending" | "Installing" | "Ready" | "Failed"'
-});
-
 export const database = kubernetesComposition({
   name: 'database',
   apiVersion: 'data.example.com/v1alpha1',
   kind: 'Database',
-  spec: DatabaseSpec,
-  status: DatabaseStatus,
+  spec: type({
+    name: 'string',
+    size: 'string',
+    password: 'string',
+    replicas: 'number'
+  }),
+  status: type({
+    ready: 'boolean',
+    phase: '"Pending" | "Installing" | "Ready" | "Failed"'
+  }),
 }, (spec) => {
   const dbSecret = Secret({
     id: 'dbSecret',
@@ -52,16 +48,9 @@ export const database = kubernetesComposition({
       version: '12.1.9'
     },
     values: {
-      auth: { 
-        existingSecret: dbSecret.metadata.name, 
-        database: spec.name 
-      },
-      primary: { 
-        persistence: { size: spec.size } 
-      },
-      readReplicas: { 
-        replicaCount: spec.replicas - 1  // ✨ JavaScript expression
-      }
+      auth: { existingSecret: dbSecret.metadata.name, database: spec.name },
+      primary: { persistence: { size: spec.size } },
+      readReplicas: { replicaCount: spec.replicas - 1 }
     }
   });
 

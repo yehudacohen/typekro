@@ -310,16 +310,16 @@ describe('serializeResourceGraphToYaml', () => {
     expect((parsed.metadata as Record<string, unknown>).name).toBe('test-app');
   });
 
-  test('defaults namespace to "default"', () => {
+  test('omits namespace by default because RGDs are cluster-scoped', () => {
     const yamlStr = serializeResourceGraphToYaml('test', {
       svc: makeResource('Service', 'svc'),
     });
 
     const parsed = yaml.load(yamlStr) as Record<string, unknown>;
-    expect((parsed.metadata as Record<string, unknown>).namespace).toBe('default');
+    expect((parsed.metadata as Record<string, unknown>).namespace).toBeUndefined();
   });
 
-  test('uses custom namespace from options', () => {
+  test('does not put custom namespace on cluster-scoped RGD metadata', () => {
     const yamlStr = serializeResourceGraphToYaml(
       'test',
       { svc: makeResource('Service', 'svc') },
@@ -327,7 +327,7 @@ describe('serializeResourceGraphToYaml', () => {
     );
 
     const parsed = yaml.load(yamlStr) as Record<string, unknown>;
-    expect((parsed.metadata as Record<string, unknown>).namespace).toBe('production');
+    expect((parsed.metadata as Record<string, unknown>).namespace).toBeUndefined();
   });
 
   test('produces empty resources array for empty input', () => {

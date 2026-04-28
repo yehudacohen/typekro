@@ -62,7 +62,6 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
     );
 
     const yamlOutput = factory.toYaml();
-    // biome-ignore lint/suspicious/noExplicitAny: YAML parsed output has deeply nested dynamic structure
     const parsedYaml = yaml.load(yamlOutput) as Record<string, any>;
     const generatedSchemaSpec = parsedYaml.spec.schema.spec;
 
@@ -122,7 +121,6 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
     );
 
     const yamlOutput: string = resourceGraph.toYaml();
-    // biome-ignore lint/suspicious/noExplicitAny: YAML parsed output has deeply nested dynamic structure
     const parsedYaml = yaml.load(yamlOutput) as Record<string, any>;
 
     // --- THIS IS THE CORRECTED SECTION ---

@@ -89,8 +89,11 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   } else {
     // Positional form: externalRef(apiVersion, kind, instanceName, namespace?)
     apiVersion = configOrApiVersion;
-    resolvedKind = kind!;
-    resolvedName = instanceName!;
+    if (!kind || !instanceName) {
+      throw new Error('externalRef positional form requires kind and instanceName');
+    }
+    resolvedKind = kind;
+    resolvedName = instanceName;
     resolvedNamespace = namespace;
   }
 

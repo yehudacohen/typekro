@@ -135,6 +135,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
 
       // Check what status fields are expected by looking at the ResourceGraphDefinition
       let expectedCustomStatusFields = false;
+      let expectedStatusKeys: string[] = [];
       try {
         const rgdResponse = await customObjectsApi.getClusterCustomObject({
           group: 'kro.run',
@@ -144,12 +145,14 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         });
         const rgd = rgdResponse as RGDManifest;
         const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
-        const rgdStatusKeys = Object.keys(rgdStatusSchema);
-        expectedCustomStatusFields = rgdStatusKeys.length > 0;
+        expectedStatusKeys = Object.keys(rgdStatusSchema).filter(
+          (key) => !basicKroFields.includes(key)
+        );
+        expectedCustomStatusFields = expectedStatusKeys.length > 0;
 
         readinessLogger.debug('ResourceGraphDefinition status schema check', {
           rgdName,
-          rgdStatusKeys,
+          rgdStatusKeys: expectedStatusKeys,
           expectedCustomStatusFields,
         });
       } catch (error: unknown) {
@@ -168,22 +171,22 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         isSynced,
         hasCustomStatusFields,
         expectedCustomStatusFields,
+        expectedStatusKeys,
         statusKeys,
       });
 
-      // Resource is ready when it's active, synced, and either:
-      // 1. Has the expected custom status fields populated, OR
-      // 2. No custom status fields are expected (empty status schema in RGD)
-      //
-      // Additionally, if the status schema defines a `ready` boolean field,
-      // wait for it to be `true` — ACTIVE means all resources are created,
-      // but `ready` reflects live resource health (e.g., readyReplicas >= 1).
+      // Resource is ready only after KRO reports the current instance as synced.
+      // A user-defined `status.ready === true` can be stale across updates, so it
+      // must not bypass Kro's InstanceSynced/Ready condition.
       const statusReadyField = status.ready;
       const hasReadyField = typeof statusReadyField === 'boolean';
+      const hasExpectedCustomStatus =
+        expectedStatusKeys.length === 0 ||
+        expectedStatusKeys.every((key) => Object.hasOwn(status, key));
       const isReady =
         isActive &&
         isSynced &&
-        (hasCustomStatusFields || !expectedCustomStatusFields) &&
+        hasExpectedCustomStatus &&
         (!hasReadyField || statusReadyField === true);
 
       if (isReady) {
@@ -191,6 +194,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           instanceName,
           hasCustomStatusFields,
           expectedCustomStatusFields,
+          expectedStatusKeys,
         });
         return;
       }
@@ -213,14 +217,29 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         state,
         isSynced,
         hasCustomStatusFields,
+        expectedStatusKeys,
       });
     } catch (error: unknown) {
       // Re-throw CRDInstanceError as-is
       if (error instanceof CRDInstanceError) {
         throw error;
       }
-      const k8sError = error as { statusCode?: number };
-      if (k8sError.statusCode !== 404) {
+      const k8sError = error as {
+        statusCode?: number;
+        code?: number | string;
+        body?: { code?: number; reason?: string };
+        message?: string;
+      };
+      const errorCode =
+        k8sError.statusCode ??
+        k8sError.body?.code ??
+        (typeof k8sError.code === 'number' ? k8sError.code : undefined);
+      const isNotFound =
+        errorCode === 404 ||
+        k8sError.body?.reason === 'NotFound' ||
+        k8sError.message?.includes(' not found') === true ||
+        k8sError.message?.includes('NotFound') === true;
+      if (!isNotFound) {
         throw error;
       }
       // Instance not found yet, continue waiting

@@ -5,18 +5,25 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import {
+  createCompositionContext,
+  getCurrentCompositionContext,
+  runInStatusBuilderContext,
+  runWithCompositionContext,
+} from '../composition/context.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
   applyAnalysisToResources,
 } from '../expressions/composition/composition-analyzer.js';
+import { remapResourceStatusReferences } from '../expressions/composition/composition-analyzer-helpers.js';
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
-import { setResourceId } from '../metadata/index.js';
+import { getMetadataField, setResourceId } from '../metadata/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
 import type {
@@ -30,12 +37,14 @@ import type {
   MagicAssignableShape,
   ResourceGraphDefinition,
   SchemaDefinition,
+  SerializationContext,
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
+import { finalizeCelForKro } from './cel-references.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
@@ -45,11 +54,11 @@ import { serializeResourceGraphToYaml } from './yaml.js';
  * Separate Enhanced<> resources from deployment closures in the builder result
  */
 function separateResourcesAndClosures<
-  T extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  T extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   builderResult: T
-): { resources: Record<string, Enhanced<any, any>>; closures: Record<string, DeploymentClosure> } {
-  const resources: Record<string, Enhanced<any, any>> = {};
+): { resources: Record<string, Enhanced<unknown, unknown>>; closures: Record<string, DeploymentClosure> } {
+  const resources: Record<string, Enhanced<unknown, unknown>> = {};
   const closures: Record<string, DeploymentClosure> = {};
 
   for (const [key, value] of Object.entries(builderResult)) {
@@ -58,10 +67,10 @@ function separateResourcesAndClosures<
       closures[key] = value as DeploymentClosure;
     } else if (value && typeof value === 'object' && 'kind' in value && 'apiVersion' in value) {
       // This is an Enhanced<> resource
-      resources[key] = value as Enhanced<any, any>;
+      resources[key] = value as Enhanced<unknown, unknown>;
     } else {
       // Unknown type, treat as resource for backward compatibility
-      resources[key] = value as Enhanced<any, any>;
+      resources[key] = value as Enhanced<unknown, unknown>;
     }
   }
 
@@ -215,7 +224,7 @@ function validateResourceGraphName(name: string | undefined | null): string {
  */
 function findResourceByKey(
   key: string | symbol,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): KubernetesResource | undefined {
   if (typeof key !== 'string') return undefined;
@@ -353,7 +362,7 @@ interface StatusAnalysisResult {
 function analyzeAndConvertStatusMappings<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   statusBuilder: (
@@ -361,7 +370,7 @@ function analyzeAndConvertStatusMappings<
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): StatusAnalysisResult {
   // Delegate to the decomposed pipeline (Phase 2.9).
@@ -408,7 +417,7 @@ interface CompositionBodyAnalysisResult {
  */
 function processCompositionBodyAnalysis(
   statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   analyzedStatusMappings: Record<string, unknown>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>,
   schemaDefinition?: { spec: { json?: unknown } }
@@ -422,12 +431,13 @@ function processCompositionBodyAnalysis(
   if (originalCompositionFnForAnalysis) {
     try {
       const resourceIds = new Set(Object.keys(resourcesWithKeys));
-      const specJson = (schemaDefinition?.spec as { json?: unknown } | undefined)?.json as
-        | { optional?: { key: string }[] }
-        | undefined;
-      const optionalFieldNames = specJson
-        ? new Set((specJson.optional ?? []).map((p) => p.key))
-        : undefined;
+      const specJson = (schemaDefinition?.spec as { json?: unknown } | undefined)?.json;
+      const optionalFieldNames = specJson ? collectOptionalSpecPaths(specJson) : undefined;
+      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(
+        statusMappings,
+        '__nestedStatusCel'
+      );
+      const nestedStatusCel = nestedStatusDescriptor?.value as Record<string, string> | undefined;
       compositionAnalysis = analyzeCompositionBody(
         originalCompositionFnForAnalysis,
         resourceIds,
@@ -453,12 +463,118 @@ function processCompositionBodyAnalysis(
       // (so we set them to a sentinel that prevents the composition from
       // dereferencing undefined). Both runs use the same composition
       // function, so resource IDs and factory calls are deterministic.
+      //
+      // SKIP when this composition is being executed as a nested call
+      // (`context.isNestedCall === true`). The inner composition's own
+      // definition-time pass already captured its hybrid-branch analysis
+      // with the INNER schema proxy. Re-running that hybrid capture here —
+      // against the fresh inner schema proxy that `captureHybridRunResources`
+      // creates — would emit differential CEL conditionals that reference
+      // inner-schema fields (e.g., `has(schema.spec.secretKeyRef)`) which
+      // don't exist in the outer RGD. The outer composition is the
+      // authority on branch conditions for its own calls; the inner's
+      // branch shape is driven by what the outer passed in.
+      // ── Resource-status ternary compilation (Phases 3+4) ────────────
+      //
+      // When the AST detects ternaries conditioned on resource status
+      // fields (e.g., `cache.status.ready ? 'redis' : 'memory'`), proxy
+      // JS evaluation does not necessarily match CEL truth evaluation.
+      // To emit the CEL conditional, re-execute explicit true and false
+      // branches using `liveStatusMap`, then diff those branch outputs.
+      //
+      // To avoid false positives (other fields changing due to the status
+      // flip), direct factory calls diff only `callSiteResourceId`; nested
+      // composition call arguments diff only resources registered under known
+      // nested composition base IDs.
+      const resourceStatusTernaries = compositionAnalysis.resourceStatusTernaries;
+
+      // Deduplicate by call site and condition. Conditionalization is scoped to
+      // one callSiteResourceId, so two resources using the same status condition
+      // must both be processed.
+      const seenConditions = new Set<string>();
+      const uniqueTernaries = resourceStatusTernaries.filter((t) => {
+        const key = `${t.callSiteResourceId}:${t.variableName}:${t.conditionExpression ?? t.statusField}`;
+        if (seenConditions.has(key)) return false;
+        seenConditions.add(key);
+        return true;
+      });
+
+      // Process EACH resource-status ternary independently to avoid
+      // cross-contamination: flip ONE condition → run → diff → apply.
+      // Multiple ternaries on the same resource get independent conditionals.
+      for (const ternary of uniqueTernaries) {
+        const resId =
+          compositionAnalysis.variableToResourceId.get(ternary.variableName) ??
+          ternary.variableName;
+        if (!resourceIds.has(resId)) continue;
+
+        const conditionCel = ternary.conditionExpression
+          ? remapResourceStatusReferences(
+              ternary.conditionExpression,
+              new Map(compositionAnalysis.variableToResourceId).set(ternary.variableName, resId)
+            )
+          : `${resId}.status.${ternary.statusField}`;
+
+        const trueCtx = runResourceStatusBranch(
+          originalCompositionFnForAnalysis,
+          schemaDefinition,
+          compositionAnalysis,
+          ternary,
+          true
+        );
+        const falseCtx = runResourceStatusBranch(
+          originalCompositionFnForAnalysis,
+          schemaDefinition,
+          compositionAnalysis,
+          ternary,
+          false
+        );
+
+        // Diff ONLY the targeted resource(s)
+        const targetIds = ternary.callSiteResourceId && ternary.callSiteResourceId !== '__non_factory_call__'
+          ? [ternary.callSiteResourceId]
+          : getNestedResourceStatusTargetIds(
+              trueCtx.resources,
+              trueCtx.nestedCompositionIds
+            );
+
+        for (const id of targetIds) {
+          const targetRes = resourcesWithKeys[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          const trueRes = trueCtx.resources[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          const falseRes = falseCtx.resources[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          if (targetRes && trueRes && falseRes) {
+            applyResourceStatusBranchDiff(
+              targetRes,
+              trueRes,
+              falseRes,
+              conditionCel,
+              nestedStatusCel,
+              resourceIds
+            );
+          }
+        }
+
+        serializationLogger.debug('Resource-status branch runs applied', {
+          conditionCel,
+          targetIds,
+        });
+      }
+
+      const currentCtx = getCurrentCompositionContext();
+      const skipHybridCapture = currentCtx?.isNestedCall === true;
       if (
+        !skipHybridCapture &&
         schemaDefinition &&
         (compositionAnalysis.unregisteredFactories.length > 0 ||
           collectOverridableOptionalFields(schemaDefinition, compositionAnalysis).size > 0)
       ) {
-        const { captured, overriddenFields } = captureHybridRunResources(
+        const { captured, overriddenFields, overrideConditions } = captureHybridRunResources(
           originalCompositionFnForAnalysis,
           schemaDefinition,
           compositionAnalysis
@@ -497,11 +613,45 @@ function processCompositionBodyAnalysis(
         // so multiple `toYaml()` calls on the resulting TypedResourceGraph
         // all see a consistent final state.
         if (overriddenFields.size > 0) {
-          for (const id of Object.keys(resourcesWithKeys)) {
-            const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
-            const hybridRes = captured[id] as unknown as Record<string, unknown> | undefined;
-            if (proxyRes && hybridRes) {
-              applyDifferentialFieldConditionals(proxyRes, hybridRes, overriddenFields);
+          const baselineResources = Object.fromEntries(
+            Object.entries(resourcesWithKeys).map(([id, resource]) => [
+              id,
+              cloneResourceTree(resource as unknown as Record<string, unknown>),
+            ])
+          ) as Record<string, Record<string, unknown>>;
+
+          const differentialFields = collectDifferentialOptionalFields(compositionAnalysis);
+          const fieldsToDiff = Array.from(differentialFields).filter((field) => overriddenFields.has(field));
+
+          for (const field of fieldsToDiff) {
+            const singleFieldSet = new Set([field]);
+            const { captured: fieldCaptured } = captureHybridRunResources(
+              originalCompositionFnForAnalysis,
+              schemaDefinition,
+              compositionAnalysis,
+              singleFieldSet
+            );
+            const fieldConditions = new Map<string, string>();
+            const explicitCondition = overrideConditions.get(field);
+            if (explicitCondition) {
+              fieldConditions.set(field, explicitCondition);
+            }
+
+            for (const id of Object.keys(resourcesWithKeys)) {
+              const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
+              const baselineRes = baselineResources[id];
+              const hybridRes = fieldCaptured[id] as unknown as Record<string, unknown> | undefined;
+              if (proxyRes && baselineRes && hybridRes) {
+                applyDifferentialFieldConditionals(
+                  proxyRes,
+                  baselineRes,
+                  hybridRes,
+                  singleFieldSet,
+                  fieldConditions,
+                  nestedStatusCel,
+                  resourceIds
+                );
+              }
             }
           }
         }
@@ -566,28 +716,83 @@ function collectOverridableOptionalFields(
   schemaDefinition: { spec: { json?: unknown } },
   analysis: ASTAnalysisResult
 ): Set<string> {
-  const specJson = schemaDefinition.spec.json as
-    | { optional?: { key: string }[] }
-    | undefined;
+  const specJson = schemaDefinition.spec.json;
   if (!specJson) return new Set();
-  const optionalFields = new Set((specJson.optional ?? []).map((p) => p.key));
 
-  const testedFields = new Set<string>();
-  // Pull field names from every includeWhen condition the AST analyzer
-  // attached to a resource (including resources that were never
-  // runtime-registered because their branch wasn't taken).
-  for (const entry of analysis.resources.values()) {
-    for (const cond of entry.includeWhen) {
-      const matches = cond.expression.matchAll(/schema\.spec\.([A-Za-z_$][\w$]*)/g);
-      for (const m of matches) {
-        const field = m[1];
-        if (field && optionalFields.has(field)) {
-          testedFields.add(field);
+  const differentialFields = collectDifferentialOptionalFields(analysis);
+  return new Set(
+    Array.from(collectOptionalSpecPaths(specJson))
+      .filter((field) => differentialFields.has(field))
+  );
+}
+
+function collectOptionalSpecPaths(schemaJson: unknown, prefix = ''): Set<string> {
+  const paths = new Set<string>();
+  if (!schemaJson || typeof schemaJson !== 'object') return paths;
+
+  const node = schemaJson as {
+    optional?: Array<{ key?: string; value?: unknown }>;
+    required?: Array<{ key?: string; value?: unknown }>;
+  };
+
+  for (const entry of node.optional ?? []) {
+    if (!entry.key) continue;
+    const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+    paths.add(path);
+    for (const childPath of collectOptionalSpecPaths(entry.value, path)) {
+      paths.add(childPath);
+    }
+  }
+
+  for (const entry of node.required ?? []) {
+    if (!entry.key) continue;
+    const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+    for (const childPath of collectOptionalSpecPaths(entry.value, path)) {
+      paths.add(childPath);
+    }
+  }
+
+  return paths;
+}
+
+function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<string> {
+  const fields = new Set<string>(analysis.hybridOverrideConditions.keys());
+
+  for (const field of analysis.differentialConditionFields) {
+    fields.add(field);
+  }
+
+  for (const controlFlow of analysis.resources.values()) {
+    for (const condition of controlFlow.includeWhen) {
+      const expression = condition.expression;
+      const matches = expression.matchAll(/schema\.spec\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)/g);
+      for (const match of matches) {
+        const field = match[1];
+        if (field) {
+          fields.add(field);
         }
       }
     }
   }
-  return testedFields;
+
+  return fields;
+}
+
+function collectHybridOverrideValues(analysis: ASTAnalysisResult): Map<string, unknown> {
+  const overrideValues = new Map<string, unknown>();
+
+  for (const [field, expression] of analysis.hybridOverrideConditions.entries()) {
+    const match = expression.match(/^schema\.spec\.([a-zA-Z0-9_.]+)\s*!=\s*false$/);
+    const path = match?.[1];
+    if (!path || path !== field || overrideValues.has(field)) continue;
+    overrideValues.set(field, false);
+  }
+
+  return overrideValues;
+}
+
+function collectHybridOverrideConditions(analysis: ASTAnalysisResult): Map<string, string> {
+  return new Map(analysis.hybridOverrideConditions);
 }
 
 /**
@@ -617,15 +822,28 @@ function collectOverridableOptionalFields(
  */
 function captureHybridRunResources(
   compositionFn: (...args: unknown[]) => unknown,
-  schemaDefinition: { spec: { json?: unknown } },
-  analysis: ASTAnalysisResult
+  schemaDefinition: { spec: { json?: unknown }; status?: { json?: unknown } },
+  analysis: ASTAnalysisResult,
+  fieldsToOverride?: Set<string>
 ): {
-  captured: Record<string, Enhanced<any, any>>;
+  captured: Record<string, Enhanced<unknown, unknown>>;
   overriddenFields: Set<string>;
+  overrideConditions: Map<string, string>;
 } {
   try {
-    const overriddenFields = collectOverridableOptionalFields(schemaDefinition, analysis);
-    if (overriddenFields.size === 0) return { captured: {}, overriddenFields };
+    const allOverriddenFields = collectOverridableOptionalFields(schemaDefinition, analysis);
+    const overriddenFields = fieldsToOverride
+      ? new Set(Array.from(allOverriddenFields).filter((field) => fieldsToOverride.has(field)))
+      : allOverriddenFields;
+    if (overriddenFields.size === 0) {
+      return { captured: {}, overriddenFields, overrideConditions: new Map() };
+    }
+    const overrideValues = new Map(
+      Array.from(collectHybridOverrideValues(analysis)).filter(([field]) => overriddenFields.has(field))
+    );
+    const overrideConditions = new Map(
+      Array.from(collectHybridOverrideConditions(analysis)).filter(([field]) => overriddenFields.has(field))
+    );
 
     // Build the hybrid spec: the real schema proxy (so all other field
     // accesses produce KubernetesRef values) wrapped in a Proxy that
@@ -634,36 +852,102 @@ function captureHybridRunResources(
     // will throw — but that's exactly the code path the override is
     // meant to skip, so the thrown access lives inside the `else`
     // branch that this run intentionally does not execute.
-    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>();
-    const hybridSpec = new Proxy(realSchema.spec as object, {
-      get(target, prop: string | symbol, receiver) {
-        if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return undefined;
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-      has(target, prop: string | symbol) {
-        if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return false;
-        }
-        return Reflect.has(target, prop);
-      },
-    });
+    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+      (schemaDefinition.spec as { json?: unknown } | undefined)?.json,
+      (schemaDefinition.status as { json?: unknown } | undefined)?.json
+    );
+    const hybridSpec = createHybridSpecProxy(
+      realSchema.spec as Record<string, unknown>,
+      overriddenFields,
+      overrideValues
+    );
 
     const tempCtx = createCompositionContext('hybrid-capture');
     runWithCompositionContext(tempCtx, () => {
       compositionFn(hybridSpec);
     });
     return {
-      captured: tempCtx.resources as Record<string, Enhanced<any, any>>,
+      captured: tempCtx.resources as Record<string, Enhanced<unknown, unknown>>,
       overriddenFields,
+      overrideConditions,
     };
   } catch {
     // Best-effort: compositions that throw when running with a hybrid spec
     // degrade gracefully — stub resources still cover the missing factories
     // and the proxy-run resources are used as-is.
-    return { captured: {}, overriddenFields: new Set() };
+    return { captured: {}, overriddenFields: new Set(), overrideConditions: new Map() };
   }
+}
+
+function createHybridSpecProxy(
+  target: Record<string, unknown>,
+  overriddenFields: Set<string>,
+  overrideValues: Map<string, unknown>,
+  pathPrefix = ''
+): Record<string, unknown> {
+  return new Proxy(target, {
+    get(proxyTarget, prop: string | symbol, receiver) {
+      if (typeof prop !== 'string') {
+        return Reflect.get(proxyTarget, prop, receiver);
+      }
+
+      const path = pathPrefix ? `${pathPrefix}.${prop}` : prop;
+      if (overriddenFields.has(path)) {
+        return overrideValues.has(path) ? overrideValues.get(path) : undefined;
+      }
+
+      const hasNestedOverride = Array.from(overriddenFields).some((field) => field.startsWith(`${path}.`));
+      const value = Reflect.get(proxyTarget, prop, receiver);
+      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
+        return createHybridSpecProxy(value as Record<string, unknown>, overriddenFields, overrideValues, path);
+      }
+
+      return value;
+    },
+    has(proxyTarget, prop: string | symbol) {
+      if (typeof prop !== 'string') {
+        return Reflect.has(proxyTarget, prop);
+      }
+
+      const path = pathPrefix ? `${pathPrefix}.${prop}` : prop;
+      if (overriddenFields.has(path)) {
+        return overrideValues.has(path);
+      }
+
+      return Reflect.has(proxyTarget, prop);
+    },
+  }) as Record<string, unknown>;
+}
+
+function cloneResourceTree<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneResourceTree(item)) as T;
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, cloneResourceTree(entryValue)])
+    ) as T;
+  }
+  return value;
+}
+
+function structuralEquals(a: unknown, b: unknown): boolean {
+  if (isLeafValue(a) || isLeafValue(b)) {
+    return leafEquals(a, b);
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => structuralEquals(item, b[index]));
+  }
+  if (isWalkableRecord(a) && isWalkableRecord(b)) {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const key of keys) {
+      if (!structuralEquals((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return a === b;
 }
 
 /**
@@ -694,71 +978,134 @@ function captureHybridRunResources(
  *     the conditional.
  */
 function applyDifferentialFieldConditionals(
-  proxyRes: Record<string, unknown>,
+  currentRes: Record<string, unknown>,
+  baselineRes: Record<string, unknown>,
   hybridRes: Record<string, unknown>,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): void {
-  walkAndConditionalize(proxyRes, hybridRes, overriddenFields);
+  walkAndConditionalize(
+    currentRes,
+    baselineRes,
+    hybridRes,
+    overriddenFields,
+    overrideConditions,
+    nestedStatusCel,
+    resourceIds
+  );
 }
 
 function walkAndConditionalize(
-  proxy: unknown,
+  current: unknown,
+  baseline: unknown,
   hybrid: unknown,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): unknown {
-  if (Array.isArray(proxy) && Array.isArray(hybrid)) {
-    const maxLen = Math.max(proxy.length, hybrid.length);
+  if (Array.isArray(current) && Array.isArray(baseline) && Array.isArray(hybrid)) {
+    if (baseline.length !== hybrid.length) {
+      return structuralEquals(current, baseline)
+        ? buildCelConditional(
+            baseline,
+            hybrid,
+            overriddenFields,
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
+          )
+        : current;
+    }
+
+    const maxLen = Math.max(current.length, hybrid.length);
     for (let i = 0; i < maxLen; i++) {
-      const p = proxy[i];
+      const c = current[i];
+      const b = baseline[i];
       const h = hybrid[i];
-      if (i >= proxy.length) {
+      if (i >= current.length) {
         // New element added by hybrid run — copy it over.
-        proxy.push(h);
+        current.push(h);
         continue;
       }
       if (i >= hybrid.length) {
         // Element removed in hybrid — leave the proxy value as-is.
         continue;
       }
-      if (isLeafValue(p) && isLeafValue(h)) {
-        if (!leafEquals(p, h)) {
-          proxy[i] = buildCelConditional(p, h, overriddenFields);
-        }
-      } else {
-        walkAndConditionalize(p, h, overriddenFields);
-      }
-    }
-    return proxy;
-  }
-
-  if (isPlainObject(proxy) && isPlainObject(hybrid)) {
-    const keys = new Set([...Object.keys(proxy), ...Object.keys(hybrid)]);
-    for (const key of keys) {
-      const p = (proxy as Record<string, unknown>)[key];
-      const h = (hybrid as Record<string, unknown>)[key];
-      if (!(key in (hybrid as Record<string, unknown>))) {
-        continue; // Proxy has it, hybrid doesn't — keep proxy value
-      }
-      if (!(key in (proxy as Record<string, unknown>))) {
-        (proxy as Record<string, unknown>)[key] = h;
-        continue;
-      }
-      if (isLeafValue(p) && isLeafValue(h)) {
-        if (!leafEquals(p, h)) {
-          (proxy as Record<string, unknown>)[key] = buildCelConditional(
-            p,
+      if (isLeafValue(b) && isLeafValue(h)) {
+        if (!leafEquals(b, h) && leafEquals(c, b)) {
+          current[i] = buildCelConditional(
+            b,
             h,
-            overriddenFields
+            overriddenFields,
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
           );
         }
       } else {
-        walkAndConditionalize(p, h, overriddenFields);
+        const conditionalized = walkAndConditionalize(
+          c,
+          b,
+          h,
+          overriddenFields,
+          overrideConditions,
+          nestedStatusCel,
+          resourceIds
+        );
+        if (conditionalized !== c) {
+          current[i] = conditionalized;
+        }
       }
     }
-    return proxy;
+    return current;
   }
 
-  return proxy;
+  if (isWalkableRecord(current) && isWalkableRecord(baseline) && isWalkableRecord(hybrid)) {
+    const keys = new Set([...Object.keys(current), ...Object.keys(baseline), ...Object.keys(hybrid)]);
+    for (const key of keys) {
+      const c = (current as Record<string, unknown>)[key];
+      const b = (baseline as Record<string, unknown>)[key];
+      const h = (hybrid as Record<string, unknown>)[key];
+      if (!(key in (hybrid as Record<string, unknown>))) {
+        continue;
+      }
+      if (!(key in (current as Record<string, unknown>))) {
+        (current as Record<string, unknown>)[key] = h;
+        continue;
+      }
+      if (isLeafValue(b) && isLeafValue(h)) {
+        if (!leafEquals(b, h) && leafEquals(c, b)) {
+          (current as Record<string, unknown>)[key] = buildCelConditional(
+            b,
+            h,
+            overriddenFields,
+            overrideConditions,
+            nestedStatusCel,
+            resourceIds
+          );
+        }
+      } else {
+        const conditionalized = walkAndConditionalize(
+          c,
+          b,
+          h,
+          overriddenFields,
+          overrideConditions,
+          nestedStatusCel,
+          resourceIds
+        );
+        if (conditionalized !== c) {
+          (current as Record<string, unknown>)[key] = conditionalized;
+        }
+      }
+    }
+    return current;
+  }
+
+  return current;
 }
 
 function isLeafValue(v: unknown): boolean {
@@ -768,9 +1115,283 @@ function isLeafValue(v: unknown): boolean {
     typeof v === 'string' ||
     typeof v === 'number' ||
     typeof v === 'boolean' ||
+    isCelExpressionLike(v) ||
     // KubernetesRef proxies register as functions (typeof fn is 'function')
     typeof v === 'function'
   );
+}
+
+function runResourceStatusBranch(
+  compositionFn: (spec: KroCompatibleType) => unknown,
+  schemaDefinition: { spec: { json?: unknown } } | undefined,
+  analysis: ASTAnalysisResult,
+  ternary: ASTAnalysisResult['resourceStatusTernaries'][number],
+  desiredConditionValue: boolean
+) {
+  const branchCtx = createCompositionContext('resource-status-branch', {
+    isReExecution: true,
+  });
+  branchCtx.liveStatusMap = createResourceStatusBranchMap(
+    analysis,
+    ternary,
+    desiredConditionValue
+  );
+
+  const branchSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+    (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
+    (schemaDefinition as { status?: { json?: unknown } } | undefined)?.status?.json
+  );
+  const specOverrides = createSpecConditionOverrideMap(
+    ternary.conditionExpression,
+    desiredConditionValue
+  );
+  const branchSpec = specOverrides.size > 0
+    ? createSpecOverrideProxy(branchSchema.spec as Record<string, unknown>, specOverrides)
+    : branchSchema.spec;
+
+  runWithCompositionContext(branchCtx, () => {
+    runInStatusBuilderContext(() => {
+      compositionFn(branchSpec as KroCompatibleType);
+    });
+  });
+
+  return branchCtx;
+}
+
+function createResourceStatusBranchMap(
+  analysis: ASTAnalysisResult,
+  ternary: ASTAnalysisResult['resourceStatusTernaries'][number],
+  desiredConditionValue: boolean
+): Map<string, Record<string, unknown>> {
+  const conditionExpression = ternary.conditionExpression ?? `${ternary.variableName}.status.${ternary.statusField}`;
+  const statusRefs = collectStatusRefs(conditionExpression);
+  if (statusRefs.length === 0) {
+    statusRefs.push({ variableName: ternary.variableName, statusField: ternary.statusField });
+  }
+
+  const statusMap = new Map<string, Record<string, unknown>>();
+  for (const statusRef of statusRefs) {
+    const resourceId = analysis.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+    const existing = statusMap.get(resourceId) ?? {};
+    setNestedBranchStatusValue(existing, statusRef.statusField, getBranchStatusValue(
+      conditionExpression,
+      `${statusRef.variableName}.status.${statusRef.statusField}`,
+      desiredConditionValue
+    ));
+    statusMap.set(resourceId, existing);
+  }
+
+  return statusMap;
+}
+
+function setNestedBranchStatusValue(
+  target: Record<string, unknown>,
+  statusField: string,
+  value: unknown
+): void {
+  const parts = statusField.split('.').filter(Boolean);
+  if (parts.length === 0) return;
+
+  let cursor = target;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (!part) continue;
+    const next = cursor[part];
+    if (!isPlainObject(next)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+
+  const leaf = parts[parts.length - 1];
+  if (leaf) {
+    cursor[leaf] = value;
+  }
+}
+
+function collectStatusRefs(conditionExpression: string): Array<{ variableName: string; statusField: string }> {
+  const refs: Array<{ variableName: string; statusField: string }> = [];
+  const seen = new Set<string>();
+  const statusRefPattern = /\b([A-Za-z_$][\w$]*)\.status\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+
+  for (const match of conditionExpression.matchAll(statusRefPattern)) {
+    const variableName = match[1];
+    const statusField = match[2];
+    if (!variableName || !statusField) continue;
+
+    const key = `${variableName}:${statusField}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ variableName, statusField });
+  }
+
+  return refs;
+}
+
+function createSpecConditionOverrideMap(
+  conditionExpression: string | undefined,
+  desiredConditionValue: boolean
+): Map<string, unknown> {
+  const overrides = new Map<string, unknown>();
+  if (!conditionExpression) return overrides;
+
+  const specRefPattern = /\b(?:schema\.)?spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+  for (const match of conditionExpression.matchAll(specRefPattern)) {
+    const specPath = match[1];
+    const fullRef = match[0];
+    if (!specPath || !fullRef || overrides.has(specPath)) continue;
+    overrides.set(specPath, getBranchStatusValue(conditionExpression, fullRef, desiredConditionValue));
+  }
+
+  return overrides;
+}
+
+function createSpecOverrideProxy(
+  target: Record<string, unknown>,
+  overrides: Map<string, unknown>,
+  path: string[] = []
+): Record<string, unknown> {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (typeof prop !== 'string') return Reflect.get(obj, prop, receiver);
+
+      const fullPath = [...path, prop].join('.');
+      if (overrides.has(fullPath)) return overrides.get(fullPath);
+
+      const hasNestedOverride = [...overrides.keys()].some((key) => key.startsWith(`${fullPath}.`));
+      const value = Reflect.get(obj, prop, receiver);
+      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
+        return createSpecOverrideProxy(value as Record<string, unknown>, overrides, [...path, prop]);
+      }
+      return value;
+    },
+    ownKeys: (obj) => Reflect.ownKeys(obj),
+    getOwnPropertyDescriptor: (obj, prop) => Reflect.getOwnPropertyDescriptor(obj, prop),
+  });
+}
+
+function getBranchStatusValue(
+  conditionExpression: string,
+  statusRefExpression: string,
+  desiredConditionValue: boolean
+): unknown {
+  const escapedRef = statusRefExpression.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const comparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(>=|>|<=|<|==|!=)\\s*(-?\\d+(?:\\.\\d+)?)`)
+  );
+  if (comparison?.[1] && comparison[2] !== undefined) {
+    const operator = comparison[1];
+    const numberValue = Number(comparison[2]);
+    if (operator === '>=') return desiredConditionValue ? numberValue : numberValue - 1;
+    if (operator === '>') return desiredConditionValue ? numberValue + 1 : numberValue;
+    if (operator === '<=') return desiredConditionValue ? numberValue : numberValue + 1;
+    if (operator === '<') return desiredConditionValue ? numberValue - 1 : numberValue;
+    if (operator === '==') return desiredConditionValue ? numberValue : numberValue + 1;
+    if (operator === '!=') return desiredConditionValue ? numberValue + 1 : numberValue;
+  }
+
+  const stringComparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(==|!=)\\s*(['"])(.*?)\\2`)
+  );
+  if (stringComparison?.[1] && stringComparison[3] !== undefined) {
+    const operator = stringComparison[1];
+    const stringValue = stringComparison[3];
+    if (operator === '==') return desiredConditionValue ? stringValue : `__typekro_not_${stringValue}`;
+    if (operator === '!=') return desiredConditionValue ? `__typekro_not_${stringValue}` : stringValue;
+  }
+
+  const booleanComparison = conditionExpression.match(
+    new RegExp(`${escapedRef}\\s*(==|!=)\\s*(true|false)`)
+  );
+  if (booleanComparison?.[1] && booleanComparison[2] !== undefined) {
+    const operator = booleanComparison[1];
+    const booleanValue = booleanComparison[2] === 'true';
+    if (operator === '==') return desiredConditionValue ? booleanValue : !booleanValue;
+    if (operator === '!=') return desiredConditionValue ? !booleanValue : booleanValue;
+  }
+
+  const negatedRef = new RegExp(`!\\s*${escapedRef}(?![A-Za-z0-9_$.])`).test(conditionExpression);
+  return negatedRef ? !desiredConditionValue : desiredConditionValue;
+}
+
+function applyResourceStatusBranchDiff(
+  targetRes: Record<string, unknown>,
+  trueRes: Record<string, unknown>,
+  falseRes: Record<string, unknown>,
+  conditionCel: string,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): void {
+  for (const key of new Set([...Object.keys(trueRes), ...Object.keys(falseRes)])) {
+    if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
+
+    const tv = trueRes[key];
+    const fv = falseRes[key];
+
+    if (tv === undefined && fv !== undefined) {
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
+      targetRes[key] = `\${${conditionCel} ? omit() : ${falseRepr}}`;
+      continue;
+    }
+
+    if (fv === undefined && tv !== undefined) {
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : omit()}`;
+      continue;
+    }
+
+    if (tv === undefined || fv === undefined) continue;
+
+    if (isCelExpressionLike(tv) || isCelExpressionLike(fv)) {
+      if (!leafEquals(tv, fv)) {
+        const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+        const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
+        targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+      }
+      continue;
+    }
+
+    const targetValue = targetRes[key];
+    if (isPlainObject(tv) && isPlainObject(fv)) {
+      if (!isPlainObject(targetValue)) targetRes[key] = {};
+      applyResourceStatusBranchDiff(
+        targetRes[key] as Record<string, unknown>,
+        tv,
+        fv,
+        conditionCel,
+        nestedStatusCel,
+        resourceIds
+      );
+    } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length === fv.length) {
+      if (!Array.isArray(targetValue)) targetRes[key] = [...tv];
+      const targetArray = targetRes[key] as unknown[];
+      for (let i = 0; i < tv.length; i++) {
+        if (isPlainObject(tv[i]) && isPlainObject(fv[i])) {
+          if (!isPlainObject(targetArray[i])) targetArray[i] = {};
+          applyResourceStatusBranchDiff(
+            targetArray[i] as Record<string, unknown>,
+            tv[i] as Record<string, unknown>,
+            fv[i] as Record<string, unknown>,
+            conditionCel,
+            nestedStatusCel,
+            resourceIds
+          );
+        } else if (!leafEquals(tv[i], fv[i])) {
+          const trueRepr = celValueRepr(tv[i], nestedStatusCel, resourceIds);
+          const falseRepr = celValueRepr(fv[i], nestedStatusCel, resourceIds);
+          targetArray[i] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+        }
+      }
+    } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length !== fv.length) {
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+    } else if (!leafEquals(tv, fv)) {
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
+      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+    }
+  }
 }
 
 function leafEquals(a: unknown, b: unknown): boolean {
@@ -781,8 +1402,59 @@ function leafEquals(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+function getNestedResourceStatusTargetIds(
+  resources: Record<string, Enhanced<unknown, unknown>>,
+  nestedCompositionIds: Set<string> | undefined
+): string[] {
+  if (!nestedCompositionIds || nestedCompositionIds.size === 0) return [];
+
+  return Object.entries(resources)
+    .filter(([resourceId, resource]) =>
+      [...nestedCompositionIds].some((nestedId) => isNestedCompositionChild(resourceId, resource, nestedId))
+    )
+    .map(([resourceId]) => resourceId);
+}
+
+function isNestedCompositionChild(
+  resourceId: string,
+  resource: Enhanced<unknown, unknown>,
+  nestedId: string
+): boolean {
+  if (resourceId === nestedId) return true;
+
+  const boundaryChar = resourceId[nestedId.length];
+  if (resourceId.startsWith(nestedId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar)) {
+    return true;
+  }
+
+  const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+  return aliases?.some((alias) => {
+    if (alias === nestedId) return true;
+
+    const aliasBoundaryChar = alias[nestedId.length];
+    return alias.startsWith(nestedId) && aliasBoundaryChar !== undefined && /[A-Z_-]/.test(aliasBoundaryChar);
+  }) ?? false;
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && !isCelExpressionLike(v);
+}
+
+function isWalkableRecord(v: unknown): v is Record<string, unknown> {
+  if (isPlainObject(v)) {
+    return true;
+  }
+
+  return typeof v === 'function' && Object.keys(v as object).length > 0;
+}
+
+/** Duck-type check for CelExpression objects — avoids importing from cel.ts (cycle risk). */
+function isCelExpressionLike(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null) return false;
+  // Plain Cel.expr() objects carry the symbol brand; template expressions also
+  // carry `__isTemplate`. Support both shapes without importing cel.ts.
+  return 'expression' in v && typeof (v as Record<string, unknown>).expression === 'string'
+    && ((v as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true || '__isTemplate' in v);
 }
 
 /**
@@ -797,12 +1469,51 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 function buildCelConditional(
   proxyValue: unknown,
   hybridValue: unknown,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): string {
   const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
-  const proxyRepr = celValueRepr(proxyValue);
-  const hybridRepr = celValueRepr(hybridValue);
-  return `\${has(schema.spec.${field}) ? ${proxyRepr} : ${hybridRepr}}`;
+  const proxyRepr = celValueRepr(proxyValue, nestedStatusCel, resourceIds);
+  const hybridRepr = celValueRepr(hybridValue, nestedStatusCel, resourceIds);
+
+  const explicitCondition = overrideConditions.get(field);
+  if (explicitCondition) {
+    return `\${${explicitCondition} ? ${proxyRepr} : ${hybridRepr}}`;
+  }
+
+  // Chain has() guards when the proxy value references a sub-field deeper
+  // than the controlling optional field. A single has(schema.spec.X) is
+  // insufficient when the value accesses X.Y — the user may provide X: {}
+  // without Y, and KRO would fail with "no such key: Y".
+  const guardField = `schema.spec.${field}`;
+  let guard = `has(${guardField})`;
+
+  // Extract the full schema path from the proxy repr to check depth.
+  // proxyRepr may be a bare path like `schema.spec.cnpgOperator.version`
+  // or wrapped in string() like `string(schema.spec.cnpgOperator.version)`.
+  // Chain has() guards for ALL intermediate levels between the controlling
+  // field and the leaf. For `cnpgOperator.monitoring.enabled`, we need:
+  //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
+  const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
+  if (schemaPathMatch) {
+    const fullRefPath = schemaPathMatch[1]?.replace(/\.+$/, '');
+    if (!fullRefPath) return `\${has(${guardField}) ? ${proxyRepr} : ${hybridRepr}}`;
+    const fullPath = `schema.spec.${fullRefPath}`;
+    if (fullPath !== guardField && fullPath.startsWith(`${guardField}.`)) {
+      const guardSegments = field.split('.').length;
+      const leafSegments = fullRefPath.split('.');
+      const guards = [`has(${guardField})`];
+      for (let j = guardSegments + 1; j <= leafSegments.length; j++) {
+        const intermediatePath = `schema.spec.${leafSegments.slice(0, j).join('.')}`;
+        guards.push(`has(${intermediatePath})`);
+      }
+      guard = guards.join(' && ');
+    }
+  }
+
+  return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
 }
 
 /**
@@ -855,9 +1566,27 @@ function pickConditionField(
  *   result is valid CEL, not just a raw string)
  * - Numbers and booleans are emitted verbatim
  */
-function celValueRepr(value: unknown): string {
+// Re-export from shared utility for local use. This was previously an
+// inline copy; the canonical implementation lives in utils/cel-escape.ts.
+import { escapeCelString as escapeCelLiteral } from '../../utils/cel-escape.js';
+
+function celValueRepr(
+  value: unknown,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
+): string {
   if (value === null || value === undefined) return '""';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // CelExpression object — use the expression string directly.
+  if (isCelExpressionLike(value)) {
+    return unwrapKroExpression(
+      finalizeCelForKro(
+        (value as { expression: string }).expression,
+        nestedStatusCel,
+        createBranchCelContext(nestedStatusCel, resourceIds)
+      )
+    );
+  }
   if (typeof value === 'function') {
     // KubernetesRef proxy — toString yields the marker token which we
     // convert to a bare CEL path via the marker → CEL rules.
@@ -868,9 +1597,37 @@ function celValueRepr(value: unknown): string {
       return markerStringToCelExpr(value);
     }
     // Plain string literal — escape for CEL embedding
-    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    return `"${escapeCelLiteral(value)}"`;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => celValueRepr(item, nestedStatusCel, resourceIds)).join(', ')}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.entries(value)
+      .map(([key, entryValue]) => `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds)}`)
+      .join(', ')}}`;
   }
   return '""';
+}
+
+function createBranchCelContext(
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds: ReadonlySet<string> | undefined
+): SerializationContext | undefined {
+  if (!nestedStatusCel && !resourceIds) return undefined;
+  return {
+    celPrefix: '',
+    resourceIdStrategy: 'deterministic',
+    ...(nestedStatusCel ? { nestedStatusCel } : {}),
+    ...(resourceIds ? { resourceIds } : {}),
+  };
+}
+
+function unwrapKroExpression(value: string): string {
+  if (value.startsWith('${') && value.endsWith('}') && value.indexOf('${', 2) === -1) {
+    return value.slice(2, -1);
+  }
+  return value;
 }
 
 /**
@@ -878,7 +1635,7 @@ function celValueRepr(value: unknown): string {
  * its bare CEL path form: `schema.spec.X` or `resources.X.field`.
  */
 function markerStringToCelBare(str: string): string {
-  const m = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  const m = str.match(new RegExp(`^${KUBERNETES_REF_MARKER_SOURCE}$`));
   if (!m) return markerStringToCelExpr(str);
   const [, resourceId, fieldPath] = m;
   return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
@@ -890,8 +1647,9 @@ function markerStringToCelBare(str: string): string {
  * embedding inside a CEL ternary.
  */
 function markerStringToCelExpr(str: string): string {
+  const markerSource = KUBERNETES_REF_MARKER_SOURCE;
   // Fast path: whole string is a single marker
-  const singleMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  const singleMatch = str.match(new RegExp(`^${markerSource}$`));
   if (singleMatch) {
     const [, resourceId, fieldPath] = singleMatch;
     return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
@@ -900,15 +1658,19 @@ function markerStringToCelExpr(str: string): string {
   // Slow path: interleave literal text and markers via CEL string concatenation
   const parts: string[] = [];
   let lastIndex = 0;
-  const pattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+  const pattern = new RegExp(markerSource, 'g');
   let m: RegExpExecArray | null = pattern.exec(str);
   while (m !== null) {
     if (m.index > lastIndex) {
       const literal = str.slice(lastIndex, m.index);
-      parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      parts.push(`"${escapeCelLiteral(literal)}"`);
     }
-    const resourceId = m[1]!;
-    const fieldPath = m[2]!;
+    const resourceId = m[1];
+    const fieldPath = m[2];
+    if (!resourceId || !fieldPath) {
+      m = pattern.exec(str);
+      continue;
+    }
     const celPath =
       resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
     parts.push(`string(${celPath})`);
@@ -917,9 +1679,10 @@ function markerStringToCelExpr(str: string): string {
   }
   if (lastIndex < str.length) {
     const literal = str.slice(lastIndex);
-    parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+    parts.push(`"${escapeCelLiteral(literal)}"`);
   }
-  return parts.length === 1 ? parts[0]! : parts.join(' + ');
+  const [firstPart] = parts;
+  return parts.length === 1 && firstPart !== undefined ? firstPart : parts.join(' + ');
 }
 
 // =============================================================================
@@ -943,7 +1706,7 @@ function reanalyzeStatusForDirectFactory<
     statusMappings: MagicAssignableShape<KroCompatibleType>;
   },
   analyzedStatusMappings: Record<string, unknown>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   schema: SchemaProxy<TSpec, TStatus>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): Record<string, unknown> {
@@ -1004,7 +1767,7 @@ function wrapWithResourceGraphProxy<
   TStatus extends KroCompatibleType,
 >(
   baseResourceGraph: TypedResourceGraph<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): TypedResourceGraph<TSpec, TStatus> {
   return new Proxy(baseResourceGraph, {
@@ -1095,7 +1858,7 @@ export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
   // This new generic captures the exact shape of your resources - can be Enhanced<> resources or DeploymentClosures
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   // The resourceBuilder is now defined as returning that specific shape
@@ -1126,7 +1889,7 @@ export function toResourceGraph<
 function createTypedResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,
@@ -1147,11 +1910,18 @@ function createTypedResourceGraph<
   const schemaDefinition: SchemaDefinition<TSpec, TStatus> = {
     apiVersion: definition.apiVersion || 'v1alpha1',
     kind: definition.kind,
+    ...(definition.group && { group: definition.group }),
     spec: definition.spec,
     status: definition.status,
   };
 
-  const schema = createSchemaProxy<TSpec, TStatus>();
+  // Pass the Arktype JSON so the proxy is shape-aware — spread
+  // (`{ ...spec.X }`) and `Object.keys(spec.X)` enumerate declared
+  // fields instead of returning an opaque empty object.
+  const schema = createSchemaProxy<TSpec, TStatus>(
+    (definition.spec as { json?: unknown } | undefined)?.json,
+    (definition.status as { json?: unknown } | undefined)?.json
+  );
   const builderResult = resourceBuilder(schema);
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
 
@@ -1203,6 +1973,18 @@ function createTypedResourceGraph<
     analyzedStatusMappings,
     evaluationContext
   );
+  for (const metadataKey of [
+    '__originalCompositionFn',
+    '__nestedCompositionFns',
+    '__nestedCompositionDefinitions',
+    '__nestedCompositionResources',
+    '__nestedCompositionSpecMappings',
+  ]) {
+    const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
+    if (descriptor) {
+      Object.defineProperty(optimizedStatusMappings, metadataKey, descriptor);
+    }
+  }
 
   if (optimizations.length > 0) {
     serializationLogger.info('CEL expression optimizations applied', { optimizations });
@@ -1257,6 +2039,11 @@ function createTypedResourceGraph<
             statusMappings: directStatusMappings,
             compositionFn: declarativeCompositionFn,
             compositionDefinition: definition,
+            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+              ? {
+                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                }
+              : {}),
           }
         );
       } else if (mode === 'kro') {
@@ -1270,6 +2057,12 @@ function createTypedResourceGraph<
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
+            compositionAnalysis,
+            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+              ? {
+                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                }
+              : {}),
           }
         );
       } else {
@@ -1283,7 +2076,11 @@ function createTypedResourceGraph<
       }
     },
 
-    toYaml(): string {
+    toYaml(spec?: TSpec): string {
+      if (spec !== undefined) {
+        return this.factory('kro').toYaml(spec);
+      }
+
       // Apply composition body analysis results (guard: only once)
       if (compositionAnalysis && !analysisState.appliedToResources) {
         analysisState.appliedToResources = true;
@@ -1303,11 +2100,14 @@ function createTypedResourceGraph<
       // Collect nested composition status CEL mappings from the composition context.
       // These enable inlining the inner composition's real CEL expressions instead
       // of referencing virtual nested composition IDs.
-      // Extract nested composition status CEL mappings attached by executeCompositionCore.
-      // These are on the raw statusMappings (capturedStatus from the composition function),
-      // not on the optimizedStatusMappings (which is a processed copy).
+      // Extract nested composition status CEL mappings attached by
+      // executeCompositionCore via Reflect.set. Must use
+      // Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's
+      // get handler which would return a KubernetesRef instead of the
+      // actual Record<string, string>.
+      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
       const nestedStatusCel: Record<string, string> =
-        (statusMappings as Record<string, unknown>).__nestedStatusCel as Record<string, string> ?? {};
+        (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
 
       serializationLogger.debug('Nested status CEL extraction', {
         hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,
@@ -1325,6 +2125,18 @@ function createTypedResourceGraph<
 
       if (definition.group) {
         kroSchema.group = definition.group;
+      }
+
+      // Attach nested status CEL mappings to the schema as a non-enumerable
+      // property (same pattern as __ternaryConditionals, __omitFields).
+      // Non-enumerable so it doesn't appear in the YAML output, but
+      // accessible via KroSimpleSchemaWithMetadata for the YAML serializer
+      // to resolve virtual composition IDs in resource templates.
+      if (Object.keys(nestedStatusCel).length > 0) {
+        Object.defineProperty(kroSchema, '__nestedStatusCel', {
+          value: nestedStatusCel,
+          enumerable: false,
+        });
       }
 
       // Inject status overrides into schema status section.
@@ -1350,7 +2162,11 @@ function createTypedResourceGraph<
         analysisState.ternaryAndOmitApplied = true;
 
         if (kroSchema.__ternaryConditionals?.length) {
-          applyTernaryConditionalsToResources(resourcesWithKeys, kroSchema.__ternaryConditionals);
+          applyTernaryConditionalsToResources(
+            resourcesWithKeys,
+            kroSchema.__ternaryConditionals,
+            kroSchema.__nestedStatusCel
+          );
         }
       }
 

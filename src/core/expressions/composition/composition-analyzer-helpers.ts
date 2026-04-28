@@ -93,6 +93,13 @@ export function isFactoryCall(node: ASTNode): node is CallExpression {
     const name = (callee as Identifier).name;
     return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
   }
+  if (callee.type === 'MemberExpression' && !callee.computed) {
+    const property = callee.property as ASTNode | undefined;
+    if (property?.type === 'Identifier') {
+      const name = (property as Identifier).name;
+      return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
+    }
+  }
   return false;
 }
 
@@ -100,6 +107,12 @@ export function isFactoryCall(node: ASTNode): node is CallExpression {
 export function extractFactoryName(call: CallExpression): string {
   if (call.callee.type === 'Identifier') {
     return (call.callee as Identifier).name;
+  }
+  if (call.callee.type === 'MemberExpression' && !call.callee.computed) {
+    const property = call.callee.property as ASTNode | undefined;
+    if (property?.type === 'Identifier') {
+      return (property as Identifier).name;
+    }
   }
   return 'Unknown';
 }
@@ -158,6 +171,61 @@ export function conditionToCel(
 ): string {
   let source = getSource(node, fullSource);
 
+  const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
+    if (!optionalFieldNames || optionalFieldNames.size === 0) return undefined;
+    const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(path);
+    const refPath = refMatch?.[1];
+    if (!refPath) return undefined;
+
+    const segments = refPath.split('.');
+    let shallowestOptionalIndex: number | undefined;
+    for (let i = 1; i <= segments.length; i++) {
+      const prefix = segments.slice(0, i).join('.');
+      if (optionalFieldNames.has(prefix)) {
+        shallowestOptionalIndex ??= i;
+      }
+    }
+    if (shallowestOptionalIndex === undefined) return undefined;
+
+    const guards: string[] = [];
+    for (let i = shallowestOptionalIndex; i <= segments.length; i++) {
+      guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+    }
+    const guard = guards.join(' && ');
+    return negation ? (guards.length === 1 ? `!${guard}` : `!(${guard})`) : guard;
+  };
+
+  const optionalChainGuards = (basePath: string, tailPath: string): { fullPath: string; present: string; missing: string } => {
+    const baseRef = basePath.replace(/^schema\.spec\./, '');
+    const fullRef = `${baseRef}.${tailPath}`;
+    const segments = fullRef.split('.');
+    const baseDepth = baseRef.split('.').length;
+    const guards: string[] = [];
+    for (let i = baseDepth; i <= segments.length; i++) {
+      guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+    }
+    return {
+      fullPath: `schema.spec.${fullRef}`,
+      present: guards.join(' && '),
+      missing: guards.map((guard) => `!${guard}`).join(' || '),
+    };
+  };
+
+  const optionalComparisonGuard = (
+    refPath: string,
+    operator: string,
+    rightValue: string
+  ): string | undefined => {
+    const present = optionalTruthinessGuard(refPath, '');
+    if (!present) return undefined;
+
+    if (operator === '!=') {
+      return `(!(${present}) || ${refPath} ${operator} ${rightValue})`;
+    }
+
+    return `(${present} && ${refPath} ${operator} ${rightValue})`;
+  };
+
   // Replace the spec parameter name with schema.spec
   // Must use word boundary to avoid replacing substrings
   // escapeRegExp prevents regex injection if specParamName contains metacharacters
@@ -166,37 +234,132 @@ export function conditionToCel(
   // JS → CEL operator conversions
   source = source.replace(/===/g, '==');
   source = source.replace(/!==/g, '!=');
+  // Bun/esbuild may minify booleans inside function source: `false` → `!1`,
+  // `true` → `!0`. Normalize them back to plain CEL booleans for readability
+  // and stable test output.
+  source = source.replace(/(^|[^\w])!1(?=$|[^\w])/g, '$1false');
+  source = source.replace(/(^|[^\w])!0(?=$|[^\w])/g, '$1true');
+
+  source = source.replace(
+    /(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:"[^"]*")|(?:'[^']*')|(?:schema\.spec\.[A-Za-z_$][\w$.]*))/g,
+    (_match, basePath: string, tailPath: string, operator: string, rightValue: string) => {
+      const { fullPath, present, missing } = optionalChainGuards(basePath, tailPath);
+      if (operator === '!=') {
+        return `${missing} || ${fullPath} ${operator} ${rightValue}`;
+      }
+      return `${present} && ${fullPath} ${operator} ${rightValue}`;
+    }
+  );
+  source = source.replace(
+    /(^|[\s(])(!?)(schema\.spec\.[A-Za-z_$][\w$.]*)\?\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?=\s*(?:&&|\|\||\)|$))/g,
+    (_match, leading: string, negation: string, basePath: string, tailPath: string) => {
+      const { fullPath, present, missing } = optionalChainGuards(basePath, tailPath);
+      return negation ? `${leading}${missing} || !${fullPath}` : `${leading}${present} && ${fullPath}`;
+    }
+  );
+
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /(schema\.spec\.[A-Za-z_$][\w$.]*)\s*(==|!=|>=|>|<=|<)\s*((?:true|false)|(?:-?\d+(?:\.\d+)?)|(?:"[^"]*")|(?:'[^']*')|(?:schema\.spec\.[A-Za-z_$][\w$.]*))/g,
+      (match: string, refPath: string, operator: string, rightValue: string) =>
+        optionalComparisonGuard(refPath, operator, rightValue) ?? match
+    );
+  }
+
+  // Kro CEL has no optional chaining syntax. Optional-chain expressions above
+  // preserve JS missing-parent semantics; any remaining optional chains fall
+  // through to normal has(...) wrapping where possible.
+  source = source.replace(/\?\./g, '.');
+
+  // JS `Object.keys(X).length` → CEL `size(X)`. The `.length` on a map
+  // enumeration is equivalent to the map's size in CEL. We convert the
+  // whole `Object.keys(X).length` expression in one pass so the result
+  // composes cleanly with any surrounding comparison operators
+  // (`> 0`, `>= N`, etc.).
+  source = source.replace(
+    /Object\.keys\((schema\.spec\.[a-zA-Z0-9_.]+)\)\.length/g,
+    'size($1)'
+  );
+
+  // JS `X.length` on a schema reference where X is known to be an array
+  // or map-like also maps to `size(X)` in CEL. This handles the common
+  // pattern `if (spec.items.length > 0)` without requiring Object.keys.
+  source = source.replace(
+    /(schema\.spec\.[a-zA-Z0-9_.]+)\.length\b/g,
+    'size($1)'
+  );
+
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /size\((schema\.spec\.[a-zA-Z0-9_.]+)\)/g,
+      (match, path: string) => {
+        const guard = optionalTruthinessGuard(path, '');
+        return guard ? `(${guard} ? ${match} : 0)` : match;
+      }
+    );
+  }
 
   // Truthiness → has() for OPTIONAL fields only. JavaScript's
   // `if (spec.x)` means "the field is set" when x is optional, but
   // "the value is truthy" when x is a required boolean. We pick the
   // right interpretation based on whether the tested field is declared
-  // as optional in the schema.
+  // as optional in the schema. KRO CEL's `has(schema.spec.X)` is the
+  // canonical presence check; a bare `schema.spec.X` used as a boolean
+  // throws when X is absent.
   //
-  // We handle three shapes, all of which must resolve to a bare
-  // `schema.spec.<path>` expression with nothing else around them:
-  //   (a) `schema.spec.x`        → `has(schema.spec.x)` (if x optional)
-  //   (b) `!schema.spec.x`       → `!has(schema.spec.x)` (if x optional)
-  //   (c) `schema.spec.x.y.z`    → `has(schema.spec.x.y.z)` (if x optional)
+  // Three passes:
   //
-  // Compound conditions (`&&`, `||`, `==`, `!=`) are left alone — the user
-  // is expressing a value-based test and the authored CEL is already
-  // correct after the operator conversions above.
+  //   1. **Standalone bare ref** — the *entire* condition is a single
+  //      `schema.spec.<path>` (or its negation). Rewrite to `has(...)`.
+  //      Handles `if (spec.x)`, `if (!spec.x)`, `if (spec.a.b.c)`.
+  //
+  //   2. **Bare ref in a compound** — the condition has `&&` or `||`,
+  //      and one side is a bare optional ref (e.g. the left operand
+  //      of `spec.secrets && size(spec.secrets) > 0`). Wrap just that
+  //      operand with `has()` so the compound evaluates safely.
+  //
+  //   3. **Bare ref as a ternary test** — full ternary expressions like
+  //      `spec.feature ? 'on' : 'off'` are converted as a whole, so the
+  //      optional ref is not the entire source string. Wrap the condition
+  //      operand before the `?`.
+  //
+  // In both passes, the check fires only when the top-level segment
+  // of the referenced path is a declared optional field — required
+  // fields keep their JS semantics (value-based truthiness).
   //
   // Note: We do NOT convert quotes here. Bun's transpiler normalizes JS strings
   // to double quotes in fn.toString(), so the source text already uses double quotes.
   // For template values (inside resource templates), double quotes work fine because
   // they're nested in the YAML structure. For status values, the caller is responsible
   // for converting double quotes to single quotes if needed to avoid YAML escaping.
+
+  // Pass 1: standalone bare ref.
   const bareRefPattern = /^(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)\s*$/;
   const bareMatch = bareRefPattern.exec(source);
   if (bareMatch) {
     const negation = bareMatch[1];
     const path = bareMatch[2];
-    const topLevelField = bareMatch[3];
-    if (topLevelField && optionalFieldNames?.has(topLevelField)) {
-      source = `${negation}has(${path})`;
+    if (path) {
+      source = optionalTruthinessGuard(path, negation ?? '') ?? source;
     }
+  }
+
+  // Pass 2: bare ref as an operand of `&&` / `||`. Handles the common
+  // pattern `spec.secrets && size(spec.secrets) > 0` where the LHS
+  // needs has() to avoid throwing on absent optional fields.
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /(^|[\s(])(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
+    );
+    source = source.replace(
+      /(&&|\|\|)(\s+)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
+      (match, operator, spacing, negation, path) => `${operator}${spacing}${optionalTruthinessGuard(path, negation) ?? match.slice(`${operator}${spacing}`.length)}`
+    );
+    source = source.replace(
+      /(^|[(:?,]\s*)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*\?)/g,
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
+    );
   }
 
   return `\${${source}}`;
@@ -261,6 +424,7 @@ export function isCompileTimeLiteral(node: ASTNode): boolean {
 export function referencesSpec(node: ASTNode, specParamName: string): boolean {
   let found = false;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
       if (n.type === 'Identifier' && getIdentifierName(n) === specParamName) {
@@ -274,6 +438,217 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
   return found;
 }
 
+/**
+ * Check if an expression references a resource's status field — i.e.,
+ * contains a `<identifier>.status.<field>` MemberExpression where the
+ * root identifier is NOT the spec parameter and NOT a known JS global.
+ *
+ * Returns the `{ variableName, statusField }` if found, or `undefined`.
+ * Used by the ternary detector to widen its gate beyond spec-only conditions.
+ *
+ * **Limitation — compound conditions**: Returns on the first match
+ * (`VisitorOption.Break`). For compound expressions like
+ * `cache.status.ready && db.status.instances >= 1`, only the first
+ * status ref (`cache.status.ready`) is captured. The inverted run
+ * then flips only that field, which may not fully invert the ternary
+ * if the second condition also contributes. This is acceptable for
+ * now: compound resource-status ternaries are rare, and `dependsOn`
+ * + `Cel.cond` can handle them explicitly.
+ */
+export function extractResourceStatusRef(
+  node: ASTNode,
+  specParamName: string,
+  optionalFieldNames?: Set<string>
+): { variableName: string; statusField: string; conditionExpression?: string } | undefined {
+  const GLOBALS = new Set([
+    'this', 'globalThis', 'window', 'console', 'process', 'Math', 'JSON',
+    'Object', 'Array', 'String', 'Number', 'Boolean', 'Promise', 'Date',
+    'Map', 'Set', 'WeakMap', 'WeakSet', 'RegExp', 'Error', 'Symbol',
+    'Proxy', 'Reflect', 'Buffer', 'undefined', 'NaN', 'Infinity',
+    'setTimeout', 'setInterval', 'queueMicrotask', 'Intl',
+    'module', 'exports', 'require', 'schema',
+  ]);
+
+  let result: { variableName: string; statusField: string; conditionExpression?: string } | undefined;
+  const memberPath = (member: ASTNode): string[] | undefined => {
+    if (member.type === 'ChainExpression') {
+      return memberPath((member as ASTNode & { expression?: ASTNode }).expression as ASTNode);
+    }
+    if (member.type === 'Identifier') return [getIdentifierName(member) ?? ''];
+    const property = member.property as ASTNode | undefined;
+    if (
+      member.type === 'MemberExpression' &&
+      !member.computed &&
+      property?.type === 'Identifier'
+    ) {
+      const objectPath = memberPath(member.object as ASTNode);
+      const propertyName = getIdentifierName(property);
+      if (objectPath && propertyName) return [...objectPath, propertyName];
+    }
+    return undefined;
+  };
+  const statusAccess = (member: ASTNode): { variableName: string; statusField: string } | undefined => {
+    const path = memberPath(member);
+    if (!path || path.length < 3 || path[1] !== 'status') return undefined;
+    const variableName = path[0];
+    if (!variableName || variableName === specParamName || GLOBALS.has(variableName)) return undefined;
+    return { variableName, statusField: path.slice(2).join('.') };
+  };
+  const firstStatusSegment = (statusField: string): string => statusField.split('.')[0] ?? statusField;
+  const literalToCel = (literal: Literal): string => {
+    if (typeof literal.value === 'string') return JSON.stringify(literal.value);
+    if (literal.value === null) return 'null';
+    return String(literal.value);
+  };
+  const wrapOptionalSpecTruthiness = (source: string): string => {
+    if (!optionalFieldNames || optionalFieldNames.size === 0) return source;
+
+    const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
+      const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(path);
+      const refPath = refMatch?.[1];
+      if (!refPath) return undefined;
+
+      const segments = refPath.split('.');
+      let shallowestOptionalIndex: number | undefined;
+      for (let i = 1; i <= segments.length; i++) {
+        const prefix = segments.slice(0, i).join('.');
+        if (optionalFieldNames.has(prefix)) {
+          shallowestOptionalIndex ??= i;
+        }
+      }
+      if (shallowestOptionalIndex === undefined) return undefined;
+
+      const guards: string[] = [];
+      for (let i = shallowestOptionalIndex; i <= segments.length; i++) {
+        guards.push(`has(schema.spec.${segments.slice(0, i).join('.')})`);
+      }
+      const guard = guards.join(' && ');
+      return negation ? (guards.length === 1 ? `!${guard}` : `!(${guard})`) : guard;
+    };
+
+    const bareRefPattern = /^(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)\s*$/;
+    const bareMatch = bareRefPattern.exec(source);
+    if (bareMatch) {
+      const negation = bareMatch[1];
+      const path = bareMatch[2];
+      if (path) return optionalTruthinessGuard(path, negation ?? '') ?? source;
+    }
+
+    let wrapped = source.replace(
+      /(^|[\s(])(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
+      (match, leading, negation, path) => `${leading}${optionalTruthinessGuard(path, negation) ?? match.slice(String(leading).length)}`
+    );
+    wrapped = wrapped.replace(
+      /(&&|\|\|)(\s+)(!?)(schema\.spec\.[\w]+(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
+      (match, operator, spacing, negation, path) => `${operator}${spacing}${optionalTruthinessGuard(path, negation) ?? match.slice(`${operator}${spacing}`.length)}`
+    );
+    return wrapped;
+  };
+  const expressionNodeToCel = (expr: ASTNode): string => {
+    if (expr.type === 'ChainExpression') {
+      return expressionNodeToCel((expr as ASTNode & { expression?: ASTNode }).expression as ASTNode);
+    }
+    if (expr.type === 'Identifier') return getIdentifierName(expr) ?? '';
+    if (expr.type === 'Literal') return literalToCel(expr as Literal);
+    if (expr.type === 'MemberExpression') {
+      const path = memberPath(expr);
+      if (!path) return '';
+      return path[0] === specParamName ? ['schema', ...path].join('.') : path.join('.');
+    }
+    if (expr.type === 'BinaryExpression' || expr.type === 'LogicalExpression') {
+      const left = expressionNodeToCel(expr.left as ASTNode);
+      const right = expressionNodeToCel(expr.right as ASTNode);
+      const operator = String(expr.operator).replace('===', '==').replace('!==', '!=');
+      return wrapOptionalSpecTruthiness(`${left} ${operator} ${right}`);
+    }
+    if (expr.type === 'UnaryExpression') {
+      const unary = expr as ASTNode & { operator?: string; argument?: ASTNode };
+      if (unary.operator === '!' && unary.argument?.type === 'Literal') {
+        const value = (unary.argument as Literal).value;
+        if (value === 0) return 'true';
+        if (value === 1) return 'false';
+      }
+      return wrapOptionalSpecTruthiness(`${expr.operator ?? ''}${expressionNodeToCel(expr.argument as ASTNode)}`);
+    }
+    if (expr.type === 'CallExpression') {
+      const call = expr as unknown as CallExpression;
+      const callee = call.callee;
+      if (callee.type === 'MemberExpression' && !callee.computed) {
+        const target = expressionNodeToCel(callee.object as ASTNode);
+        const methodName = getIdentifierName(callee.property as ASTNode) ?? '';
+        const method = methodName === 'some' ? 'exists' : methodName === 'every' ? 'all' : methodName;
+        const args = call.arguments.map((arg) => expressionNodeToCel(arg)).join(', ');
+        return `${target}.${method}(${args})`;
+      }
+    }
+    if (expr.type === 'ArrowFunctionExpression') {
+      const param = (expr.params as ASTNode[] | undefined)?.[0];
+      const paramName = param?.type === 'Identifier' ? getIdentifierName(param) : undefined;
+      return `${paramName ?? '_'}, ${expressionNodeToCel(expr.body as ASTNode)}`;
+    }
+    return '';
+  };
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
+  estraverse.traverse(node as any, {
+    enter(n) {
+      const astNode = n as unknown as ASTNode;
+      if (astNode.type === 'CallExpression') {
+        const call = astNode as unknown as CallExpression;
+        if (call.callee.type === 'MemberExpression' && !call.callee.computed) {
+          const target = statusAccess(call.callee.object as ASTNode);
+          const method = getIdentifierName(call.callee.property as ASTNode);
+          if (target && method) {
+            result = {
+              variableName: target.variableName,
+              statusField: firstStatusSegment(target.statusField),
+              conditionExpression: expressionNodeToCel(node),
+            };
+            return estraverse.VisitorOption.Break;
+          }
+        }
+      }
+
+      // Match: X.status.Y where X is an Identifier
+      if (
+        astNode.type === 'MemberExpression' &&
+        !astNode.computed &&
+        (astNode.property as ASTNode | undefined)?.type === 'Identifier'
+      ) {
+        const access = statusAccess(astNode);
+        if (access) {
+          result = {
+            ...access,
+            statusField: firstStatusSegment(access.statusField),
+            conditionExpression: expressionNodeToCel(node),
+          };
+          return estraverse.VisitorOption.Break;
+        }
+      }
+      return undefined;
+    },
+    fallback: 'iteration',
+  });
+  return result;
+}
+
+/**
+ * Rewrite every `<jsVariable>.status.` reference in a CEL-ish condition to its
+ * serialized KRO resource ID. Compound conditions can reference more than the
+ * primary variable captured by `extractResourceStatusRef`.
+ */
+export function remapResourceStatusReferences(
+  conditionExpression: string,
+  variableToResourceId: Map<string, string>
+): string {
+  let remapped = conditionExpression;
+  for (const [variableName, resourceId] of variableToResourceId) {
+    const escapedVariableName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const variableStatusRef = new RegExp(`(^|[^A-Za-z0-9_$])${escapedVariableName}\\.status\\.`, 'g');
+    remapped = remapped.replace(variableStatusRef, `$1${resourceId}.status.`);
+  }
+  return remapped;
+}
+
 // ---------------------------------------------------------------------------
 // Factory call search
 // ---------------------------------------------------------------------------
@@ -283,7 +658,7 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
  */
 export function findFactoryCallsInSubtree(node: ASTNode): FactoryCallInfo[] {
   const calls: FactoryCallInfo[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
       const astNode = n as unknown as ASTNode;
@@ -291,7 +666,7 @@ export function findFactoryCallsInSubtree(node: ASTNode): FactoryCallInfo[] {
         const call = astNode as CallExpression;
         const id = extractFactoryId(call);
         if (id) {
-          calls.push({ id, factoryName: extractFactoryName(call) });
+          calls.push({ id, factoryName: extractFactoryName(call), node: call });
         }
       }
       return undefined;
@@ -340,8 +715,13 @@ export function extractSpecParamName(functionSource: string): string {
  * - Single quotes → double quotes
  * - Wraps in `${}`
  */
-export function expressionToCel(node: ASTNode, fullSource: string, specParamName: string): string {
-  return conditionToCel(node, fullSource, specParamName);
+export function expressionToCel(
+  node: ASTNode,
+  fullSource: string,
+  specParamName: string,
+  optionalFieldNames?: Set<string>
+): string {
+  return conditionToCel(node, fullSource, specParamName, optionalFieldNames);
 }
 
 /**
@@ -359,6 +739,11 @@ export function factoryArgKeyToTemplatePath(key: string): string | undefined {
   if (key === 'namespace') return 'metadata.namespace';
   if (key === 'labels') return 'metadata.labels';
   if (key === 'annotations') return 'metadata.annotations';
+  if (key === 'data') return 'data';
+  if (key === 'stringData') return 'stringData';
+  if (key === 'binaryData') return 'binaryData';
+  if (key === 'immutable') return 'immutable';
+  if (key === 'type') return 'type';
   return `spec.${key}`;
 }
 
@@ -370,5 +755,5 @@ export function factoryArgKeyToTemplatePath(key: string): string | undefined {
 export function negateCondition(condition: string): string {
   // Remove ${...} wrapper
   const inner = condition.replace(/^\$\{/, '').replace(/\}$/, '');
-  return `\${!${inner}}`;
+  return `\${!(${inner})}`;
 }

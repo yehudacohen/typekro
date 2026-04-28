@@ -37,7 +37,9 @@ describe('ClusterRoleBinding Array Serialization', () => {
     expect(Array.isArray(crbRecord.subjects)).toBe(true);
 
     // Test with toJSON (which is what the resolver now uses)
-    const plainObject = (crb as unknown as Record<string, Function>).toJSON!();
+    const plainObject = (crb as unknown as Record<string, (...args: never[]) => unknown>).toJSON?.() as {
+      subjects: unknown[];
+    };
     console.log('\nAfter toJSON subjects:', plainObject.subjects);
     console.log('After toJSON isArray:', Array.isArray(plainObject.subjects));
     console.log('After toJSON keys:', Object.keys(plainObject.subjects));
@@ -46,7 +48,7 @@ describe('ClusterRoleBinding Array Serialization', () => {
     expect(plainObject.subjects.length).toBe(2);
 
     // Now clone the plain object
-    const cloned = structuredClone(plainObject);
+    const cloned = structuredClone(plainObject) as { subjects: unknown[] };
     console.log('\nCloned subjects:', cloned.subjects);
     console.log('Cloned isArray:', Array.isArray(cloned.subjects));
     console.log('Cloned keys:', Object.keys(cloned.subjects));

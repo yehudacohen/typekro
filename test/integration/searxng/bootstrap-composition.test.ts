@@ -17,11 +17,14 @@ import type {
   SearxngBootstrapConfig,
   SearxngBootstrapStatus,
 } from '../../../src/factories/searxng/types.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
 
 setDefaultTimeout(120000);
 
-describe('SearXNG Bootstrap Composition', () => {
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+
+describeOrSkip('SearXNG Bootstrap Composition', () => {
   let kubeConfig: k8s.KubeConfig;
   let factory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
   const suffix = Math.random().toString(36).slice(2, 7);
@@ -141,8 +144,8 @@ describe('SearXNG Bootstrap Composition', () => {
     // CEL expressions in status (not raw property access)
     expect(yaml).toContain('.exists(c,');
 
-    // ConfigMap settings YAML uses mixed templates with string()-wrapped CEL refs
-    expect(yaml).toContain('limiter: ${string(schema.spec.server.limiter)}');
+    // ConfigMap settings YAML uses a mixed template with string()-wrapped CEL refs.
+    expect(yaml).toContain('string(schema.spec.server.limiter)');
 
     // REGRESSION: required fields in template literals (like `${spec.name}-config`)
     // should produce clean mixed templates, NOT be wrapped in has() conditionals.

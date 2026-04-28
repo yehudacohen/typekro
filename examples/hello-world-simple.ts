@@ -84,7 +84,7 @@ async function deploySimpleStack() {
     const runtimeFactory = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.8.5',
+      kroVersion: '0.9.1',
     }).factory('direct', {
       namespace: 'flux-system',
       skipTLSVerify: true,
@@ -118,7 +118,7 @@ async function deploySimpleStack() {
         eventTypes: ['Warning', 'Error', 'Normal'],
         includeChildResources: true,
       },
-      progressCallback: (event: any) => {
+      progressCallback: (event: { message: string }) => {
         console.log(`📡 Webapp: ${event.message}`);
       },
     });
@@ -197,7 +197,7 @@ async function deploySimpleStack() {
     console.log('');
     console.log('🧹 To clean up:');
     console.log('  kubectl delete resourcegraphdefinition --all');
-    console.log('  kubectl delete namespace flux-system kro');
+    console.log('  kubectl delete namespace flux-system kro-system');
   } catch (error) {
     console.error('❌ Deployment failed:', error);
     process.exit(1);

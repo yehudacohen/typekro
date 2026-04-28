@@ -69,7 +69,9 @@ A Kubernetes resource enhanced with TypeKro functionality.
 ```typescript
 type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
-  withDependencies(...deps: string[]): Enhanced<TSpec, TStatus>;
+  withIncludeWhen(condition: IncludeWhenCondition): Enhanced<TSpec, TStatus>;
+  withReadyWhen(condition: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
+  dependsOn(dependency: unknown): Enhanced<TSpec, TStatus>;
 }
 ```
 
@@ -173,11 +175,9 @@ interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
 A closure that executes during deployment phase.
 
 ```typescript
-type DeploymentClosure<T> = {
-  readonly [DEPLOYMENT_CLOSURE_BRAND]: true;
-  readonly name: string;
-  execute(context: DeploymentContext): Promise<T>;
-}
+type DeploymentClosure<T = AppliedResource[]> = (
+  deploymentContext: DeploymentContext
+) => Promise<T>
 ```
 
 **Used by:** `yamlFile()`, `yamlDirectory()`
@@ -246,9 +246,11 @@ Values that can be assigned through the magic proxy system.
 type MagicAssignable<T> = 
   | T 
   | undefined 
+  | CelExpression<T>
   | KubernetesRef<T> 
   | KubernetesRef<T | undefined> 
-  | CelExpression<T>
+  | DeepKubernetesRef<T>
+  | DeepKubernetesRef<T | undefined>
 ```
 
 ### `MagicAssignableShape<T>`
@@ -295,7 +297,24 @@ interface FactoryOptions {
   timeout?: number;
   waitForReady?: boolean;
   progressCallback?: (event: DeploymentEvent) => void;
-  
+  hydrateStatus?: boolean;
+
+  // Alchemy integration
+  alchemyScope?: Scope;
+
+  // Kubernetes client configuration
+  kubeConfig?: KubeConfig;
+  skipTLSVerify?: boolean;
+
+  // Direct-mode deployment closures
+  closures?: Record<string, DeploymentClosure>;
+
+  // Automatic environment fixes
+  autoFix?: AutoFixConfig;
+
+  // Kubernetes API request timeouts
+  httpTimeouts?: HttpTimeoutConfig;
+
   // Event monitoring - stream control plane logs
   eventMonitoring?: {
     enabled?: boolean;
@@ -321,28 +340,32 @@ Result of a deployment operation.
 
 ```typescript
 interface DeploymentResult {
-  success: boolean;
-  deployedResources: DeployedResource[];
-  errors: Error[];
+  deploymentId: string;
+  resources: DeployedResource[];
+  dependencyGraph: DependencyGraph;
+  status: 'success' | 'partial' | 'failed';
+  errors: DeploymentError[];
   duration: number;
+  alchemyMetadata?: AlchemyDeploymentMetadata;
 }
 ```
 
 ## Status Types
 
-### `ReadinessEvaluator<T>`
+### `ReadinessEvaluator<T = any>`
 
 Function type for custom readiness evaluation.
 
 ```typescript
-type ReadinessEvaluator<T extends KubernetesResource> = (
+type ReadinessEvaluator<T = any> = (
   resource: T
-) => ResourceStatus | Promise<ResourceStatus>
+) => ResourceStatus
 
 interface ResourceStatus {
   ready: boolean;
   reason?: string;
   message?: string;
+  details?: Record<string, unknown>;
 }
 ```
 
@@ -361,7 +384,7 @@ const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' })
 Runtime type checking functions:
 
 ```typescript
-import { isKubernetesRef, isCelExpression } from 'typekro';
+import { isKubernetesRef, isCelExpression } from 'typekro/advanced';
 
 function processValue(value: RefOrValue<string>): string {
   if (isKubernetesRef(value)) {

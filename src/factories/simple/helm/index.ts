@@ -29,7 +29,7 @@ export function HelmChart(
   name: string,
   repository: string,
   chart: string,
-  values?: Record<string, any>
+  values?: Record<string, unknown>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   return helmRelease({
     name,

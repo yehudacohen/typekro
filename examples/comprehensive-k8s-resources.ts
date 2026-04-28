@@ -54,6 +54,14 @@ import {
   validatingWebhookConfiguration,
 } from '../src/index.js';
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable ${name}`);
+  }
+  return value;
+}
+
 // =============================================================================
 // 1. INFRASTRUCTURE FOUNDATION
 // =============================================================================
@@ -244,8 +252,8 @@ const appSecret = secret({
     // WARNING: Never hardcode real credentials in source code.
     // Use environment variables, sealed secrets, or a secrets manager in production.
     'database.username': process.env.DB_USERNAME ?? 'app_user',
-    'database.password': process.env.DB_PASSWORD ?? 'change-me-in-production',
-    'api.key': process.env.API_KEY ?? 'change-me-in-production',
+    'database.password': requiredEnv('DB_PASSWORD'),
+    'api.key': requiredEnv('API_KEY'),
   },
 });
 

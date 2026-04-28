@@ -2,9 +2,10 @@
  * SearXNG Settings Builder
  *
  * Constructs a settings.yml string from typed configuration fields.
- * The result is passed as `settingsYaml` to the bootstrap composition,
- * which stores it in a ConfigMap. This approach works in both direct
- * and KRO mode because the YAML is a plain string, not proxy objects.
+ * Pass the result as `settingsYaml` to the bootstrap composition in direct
+ * mode when you need full control over the generated ConfigMap. KRO mode
+ * ignores `settingsYaml` from the schema because it is a proxy reference, not
+ * a concrete string available at RGD generation time.
  *
  * @example
  * ```typescript

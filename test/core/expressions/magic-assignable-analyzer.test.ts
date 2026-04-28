@@ -337,7 +337,7 @@ describe('MagicAssignableAnalyzer', () => {
     it('should handle empty shapes', () => {
       const analyzer = createAnalyzer();
       const context = createContext();
-      const shape: MagicAssignableShape<{}> = {};
+      const shape: MagicAssignableShape<Record<string, never>> = {};
 
       const result = analyzer.analyzeMagicAssignableShape(shape, context);
 

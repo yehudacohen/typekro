@@ -9,7 +9,7 @@
  * - includeWhen: Conditional resource creation based on spec fields
  * - readyWhen: Readiness detection based on resource status
  * - externalRef: Reference to pre-existing cluster resources
- * - Kro v0.8.5 bootstrap and controller upgrade
+ * - Kro 0.9.1+ bootstrap and controller upgrade
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
@@ -202,10 +202,10 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   };
 
   // =========================================================================
-  // 1. Kro v0.8.5 Bootstrap Verification
+  // 1. Kro 0.9.1+ Bootstrap Verification
   // =========================================================================
 
-  describe('Kro v0.8.5 Controller', () => {
+  describe('Kro 0.9.1+ Controller', () => {
     it('should have the Kro controller running in kro-system', async () => {
       const healthy = await isKroControllerHealthy();
       expect(healthy).toBe(true);

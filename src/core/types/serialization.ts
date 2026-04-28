@@ -44,8 +44,8 @@ export interface KroSimpleSchema {
   group?: string;
   /** Spec fields — nested objects represent KRO SimpleSchema nested types. */
   spec: Record<string, unknown>;
-  /** Status fields may be plain CEL expression strings or nested objects for nested status mappings. */
-  status?: Record<string, string | Record<string, unknown>>;
+  /** Status fields may be plain CEL expression strings, nested objects, or arrays for status mappings. */
+  status?: Record<string, string | Record<string, unknown> | unknown[]>;
 }
 
 /**
@@ -77,6 +77,8 @@ export interface TernaryConditional {
 export interface KroSimpleSchemaWithMetadata extends KroSimpleSchema {
   readonly __ternaryConditionals?: TernaryConditional[];
   readonly __omitFields?: string[];
+  /** Nested composition status CEL mappings for virtual ID resolution. */
+  readonly __nestedStatusCel?: Record<string, string>;
 }
 
 export interface KroFieldDefinition {
@@ -241,9 +243,11 @@ export interface ResourceGraphWithDeployment {
   toDryRun(options?: DeploymentOptions): Promise<DeploymentResult>;
 
   /**
-   * Generates the ResourceGraphDefinition YAML string.
+   * Generates the ResourceGraphDefinition YAML string, or a custom resource
+   * instance YAML string when a spec is provided.
    */
   toYaml(): string;
+  toYaml(spec: KroCompatibleType): string;
 }
 
 /**
@@ -308,6 +312,10 @@ export interface SerializationContext {
   celPrefix: string;
   namespace?: string;
   resourceIdStrategy: 'deterministic' | 'random';
+  /** Known real resource IDs in the current graph. Nested-ref resolution should not rewrite these. */
+  resourceIds?: ReadonlySet<string>;
+  /** Maps inner/local resource IDs to the final emitted graph IDs. */
+  resourceAliases?: ReadonlyMap<string, string>;
   /**
    * Top-level optional spec field names (without `schema.spec.` prefix) that
    * should be wrapped with KRO 0.9+ `has(...) ? ... : omit()` when referenced
@@ -317,6 +325,14 @@ export interface SerializationContext {
    * is required.
    */
   omitFields?: ReadonlySet<string>;
+  /**
+   * Nested composition status CEL mappings. When a resource template
+   * references a virtual nested composition ID (e.g.,
+   * `innerService1.status.serviceUrl`), this map provides the real
+   * CEL expression to inline. Keys are
+   * `__nestedStatus:<compositionId>:<field>`, values are CEL strings.
+   */
+  nestedStatusCel?: Record<string, string>;
 }
 
 export interface ResourceDependency {
@@ -352,18 +368,18 @@ export type MagicAssignableShape<T> = T extends object
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
   schema: SchemaProxy<TSpec, TStatus>
-) => Record<string, Enhanced<any, any>>; // Make the return type more specific
+) => Record<string, Enhanced<unknown, unknown>>; // Make the return type more specific
 
 // Type that preserves Enhanced resources exactly as they are
 // Enhanced resources already have the correct MagicProxy types for spec and status
-export type StatusBuilderResources<TResources extends Record<string, Enhanced<any, any>>> =
+export type StatusBuilderResources<TResources extends Record<string, Enhanced<unknown, unknown>>> =
   TResources;
 
 // The StatusBuilder type itself can be simplified, as the key logic will move to the toResourceGraph function.
 export type StatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any>> = Record<string, Enhanced<any, any>>, // Keep any for compatibility
+  TResources extends Record<string, Enhanced<unknown, unknown>> = Record<string, Enhanced<unknown, unknown>>,
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here
@@ -383,6 +399,8 @@ export interface SchemaDefinition<
 > {
   apiVersion: string;
   kind: string;
+  /** Custom API group for the generated CRD. Defaults to Kro's `kro.run`. */
+  group?: string;
   spec: Type<TSpec>;
   status: Type<TStatus>;
 }

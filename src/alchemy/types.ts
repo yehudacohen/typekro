@@ -9,6 +9,7 @@ import type { Resource as AlchemyResource } from 'alchemy';
 import type { KubernetesClientConfig } from '../core/kubernetes/client-provider.js';
 import type { DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
+import type { KroDeletionOptions } from './kro-delete.js';
 
 /**
  * Centralized deployment interface that abstracts deployment logic
@@ -23,6 +24,9 @@ export interface TypeKroDeployer {
    * Delete a TypeKro resource from Kubernetes
    */
   delete<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<void>;
+
+  /** Dispose any underlying clients owned by this deployer. */
+  dispose?(): Promise<void>;
 }
 
 /**
@@ -55,13 +59,16 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
    */
   kubeConfigOptions?: SerializableKubeConfigOptions;
 
+  /** Optional preconfigured deployer. Runtime-only; do not rely on this surviving Alchemy rehydration. */
+  deployer?: TypeKroDeployer;
+
+  /** Serializable metadata used to preserve finalizer-safe KRO teardown after Alchemy rehydration. */
+  kroDeletion?: KroDeletionOptions;
+
   /**
    * Optional deployment options
    */
-  options?: {
-    waitForReady?: boolean;
-    timeout?: number;
-  };
+  options?: Partial<Omit<DeploymentOptions, 'mode' | 'namespace'>>;
 }
 
 /**

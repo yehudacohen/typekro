@@ -9,6 +9,8 @@ import * as yaml from 'js-yaml';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
+import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
@@ -25,6 +27,7 @@ import {
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata, getMetadataField, getResourceId, setResourceId } from '../metadata/index.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -33,6 +36,7 @@ import type {
   DirectResourceFactory,
   FactoryOptions,
   FactoryStatus,
+  InternalResourceFactoryDeployOptions,
   RollbackResult,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
@@ -47,9 +51,15 @@ import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
-import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
-import { generateInstanceName } from './shared-utilities.js';
+import { generateInstanceName, getSingletonInstanceName, validateSpec } from './shared-utilities.js';
+import {
+  assertNoDeployedSingletonSpecDrift,
+  assertNoDiscoveredSingletonSpecDrift,
+  singletonSpecFingerprintAnnotationValue,
+} from './singleton-owner-drift.js';
 import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
+import { getSingletonResourceId } from '../singleton/singleton.js';
+import type { SingletonDefinitionRecord } from '../types/deployment.js';
 
 /**
  * DirectResourceFactory implementation
@@ -70,10 +80,13 @@ export class DirectResourceFactoryImpl<
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
+  // biome-ignore lint/suspicious/noExplicitAny: status builders accept composition-specific resource maps that cannot be expressed more tightly here.
   private readonly statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined;
-  private deploymentEngine?: DirectDeploymentEngine;
+  private deploymentEngine: DirectDeploymentEngine | undefined;
   private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
+  private readonly singletonDefinitions: SingletonDefinitionRecord[];
+  private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private readonly logger = getComponentLogger('direct-factory');
   private readonly clientManager: KubernetesClientManager;
@@ -82,6 +95,7 @@ export class DirectResourceFactoryImpl<
     name: string,
     resources: Record<string, KubernetesResource>,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: constructor must preserve the generic status-builder resource map contract.
     statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
     options: FactoryOptions = {}
   ) {
@@ -94,6 +108,7 @@ export class DirectResourceFactoryImpl<
     this.schemaDefinition = schemaDefinition;
     this.statusBuilder = statusBuilder;
     this.factoryOptions = options;
+    this.singletonDefinitions = options.singletonDefinitions ?? [];
     this.clientManager = new KubernetesClientManager(options);
   }
 
@@ -102,6 +117,31 @@ export class DirectResourceFactoryImpl<
    */
   private getClientProvider(): KubernetesClientProvider {
     return this.clientManager.getClientProvider();
+  }
+
+  private getDebugState(): Record<string, unknown> {
+    return {
+      mode: this.mode,
+      namespace: this.namespace,
+      deployedInstances: this.deployedInstances.size,
+      hasDeploymentEngine: !!this.deploymentEngine,
+      clientManager: this.clientManager.getDebugState(),
+      deploymentEngine: this.deploymentEngine?.getDebugState(),
+    };
+  }
+
+  async dispose(): Promise<void> {
+    logHandleSnapshot(this.logger, 'direct-factory.dispose.before', {
+      factoryState: this.getDebugState(),
+    });
+    if (this.deploymentEngine) {
+      await this.deploymentEngine.dispose();
+      this.deploymentEngine = undefined;
+    }
+    this.clientManager.dispose();
+    logHandleSnapshot(this.logger, 'direct-factory.dispose.after', {
+      factoryState: this.getDebugState(),
+    });
   }
 
   /**
@@ -138,11 +178,16 @@ export class DirectResourceFactoryImpl<
    */
   async deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[] }
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
       hasStatusBuilder: !!this.statusBuilder,
+    });
+
+    validateSpec(spec, this.schemaDefinition, {
+      kind: this.schemaDefinition.kind,
+      name: this.name,
     });
 
     // Use the consolidated deployment strategy
@@ -151,6 +196,8 @@ export class DirectResourceFactoryImpl<
     this.logger.debug('Got deployment strategy', {
       strategyType: strategy.constructor.name,
     });
+
+    await this.ensureSingletonOwners(spec);
 
     const instance = await strategy.deploy(spec, opts);
 
@@ -163,7 +210,7 @@ export class DirectResourceFactoryImpl<
     }
 
     // Track the deployed instance
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = opts?.instanceNameOverride ?? this.generateInstanceName(spec);
     this.deployedInstances.set(instanceName, instance);
 
     return instance;
@@ -204,6 +251,11 @@ export class DirectResourceFactoryImpl<
 
   /**
    * Get all deployed instances
+   *
+   * Direct mode currently reports same-process instances only. Cross-process
+   * discovery is implemented for `deleteInstance(name)`, but reconstructing
+   * fully typed Enhanced instances from live tagged resources is intentionally
+   * not attempted here.
    */
   async getInstances(): Promise<Enhanced<TSpec, TStatus>[]> {
     return Array.from(this.deployedInstances.values());
@@ -237,84 +289,17 @@ export class DirectResourceFactoryImpl<
    */
   async deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void> {
     const engine = this.getDeploymentEngine();
-    const instance = this.deployedInstances.get(name);
 
     try {
-      // Path 1: same-process deleteInstance — use the deployment ID
-      // annotation on the in-memory Enhanced proxy.
-      let rollbackResult: import('../types/deployment.js').RollbackResult | undefined;
-      if (instance) {
-        const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
-        if (deploymentId) {
-          try {
-            rollbackResult = await engine.rollback(deploymentId, {
-              ...(opts?.scopes && { scopes: opts.scopes }),
-              ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-            });
-          } catch (error: unknown) {
-            // Fall through to path 2 (discovery) ONLY when the in-memory
-            // deployment state is stale — i.e., the engine couldn't find
-            // the deployment ID in its Map (cleared by a previous rollback
-            // or lost with the process). Any other error — including
-            // genuine API failures during rollback — should propagate.
-            const isNotFound =
-              error instanceof ResourceGraphFactoryError &&
-              error.operation === 'cleanup';
-            if (!isNotFound) {
-              throw error;
-            }
-          }
-        }
-      }
+      const rollbackResult = await this.rollbackInstanceResources(name, opts);
 
-      // Path 2: cross-process lookup via cluster-side label discovery.
-      // Fires when the factory has no in-memory record, OR path 1
-      // couldn't find the deployment ID, OR path 1's engine state was
-      // wiped. Queries the cluster for all resources tagged with this
-      // factory+instance's labels, rebuilds the graph from per-resource
-      // annotations, and delegates to the same graph-based rollback.
-      if (!rollbackResult) {
-        // Build GVK hint set: built-in baseline (Namespace, Deployment,
-        // Service, etc.) PLUS any CRD kinds from this factory's resource
-        // templates. The baseline ensures nested composition resources
-        // (e.g., HelmRelease from cnpgBootstrap) are always discoverable
-        // even though they aren't in the parent factory's `this.resources`
-        // map. The CRD hints add the factory's custom kinds on top so we
-        // don't need the expensive full-cluster CRD enumeration.
-        const crdHints = new Map<string, import('./deployment-state-discovery.js').GvkTarget>();
-        for (const r of Object.values(this.resources)) {
-          if (!r.apiVersion || !r.kind) continue;
-          const key = `${r.apiVersion}/${r.kind}`;
-          if (crdHints.has(key)) continue;
-          const scope = getMetadataField(r as object, 'scope');
-          crdHints.set(key, { apiVersion: r.apiVersion, kind: r.kind, namespaced: scope !== 'cluster' });
-        }
-        const knownGvks = [
-          ...BUILT_IN_GVKS,
-          ...crdHints.values(),
-        ];
-        const record = await engine.loadDeploymentByInstance({
-          factoryName: this.name,
-          instanceName: name,
-          knownGvks,
-        });
-        if (!record) {
-          throw new TypeKroError(
-            `Instance not found: ${name} (no in-memory state and no tagged resources on the cluster). The instance may have been cleaned up already, or was deployed with a typekro version that did not tag resources.`,
-            'INSTANCE_NOT_FOUND',
-            { instanceName: name, factoryName: this.name }
-          );
-        }
-        this.logger.info('Cross-process cleanup: discovered deployment from cluster labels', {
-          instanceName: name,
-          factoryName: this.name,
-          deploymentId: record.deploymentId,
-          resourceCount: record.resources.length,
-        });
-        rollbackResult = await engine.rollbackRecord(record, {
-          ...(opts?.scopes && { scopes: opts.scopes }),
-          ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-        });
+      if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
+        const errorSummary = rollbackResult.errors
+          .map((error) => `${error.resourceId}: ${ensureError(error.error).message}`)
+          .join('; ');
+        throw new Error(
+          `Cleanup incomplete for instance ${name}: rollback ${rollbackResult.status}${errorSummary ? ` (${errorSummary})` : ''}`
+        );
       }
 
       // Wait for any namespaces to be fully deleted before returning.
@@ -322,7 +307,8 @@ export class DirectResourceFactoryImpl<
       // cause race conditions if the caller immediately re-creates resources.
       const deletedNamespaces = rollbackResult.rolledBackResources
         .filter((r) => r.startsWith('Namespace/'))
-        .map((r) => r.split('/')[1]!);
+        .map((r) => r.split('/')[1])
+        .filter((namespace): namespace is string => namespace !== undefined);
 
       if (deletedNamespaces.length > 0) {
         // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
@@ -391,6 +377,71 @@ export class DirectResourceFactoryImpl<
     }
   }
 
+  private buildKnownGvks(): import('./deployment-state-discovery.js').GvkTarget[] {
+    const crdHints = new Map<string, import('./deployment-state-discovery.js').GvkTarget>();
+    for (const r of Object.values(this.resources)) {
+      if (!r.apiVersion || !r.kind) continue;
+      const key = `${r.apiVersion}/${r.kind}`;
+      if (crdHints.has(key)) continue;
+      const scope = getMetadataField(r as object, 'scope');
+      crdHints.set(key, { apiVersion: r.apiVersion, kind: r.kind, namespaced: scope !== 'cluster' });
+    }
+    return [
+      ...BUILT_IN_GVKS,
+      ...crdHints.values(),
+    ];
+  }
+
+  private async rollbackInstanceResources(
+    name: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<RollbackResult> {
+    const engine = this.getDeploymentEngine();
+    const instance = this.deployedInstances.get(name);
+
+    if (instance) {
+      const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
+      if (deploymentId) {
+        try {
+          return await engine.rollback(deploymentId, {
+            ...(opts?.scopes && { scopes: opts.scopes }),
+            ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+          });
+        } catch (error: unknown) {
+          const isNotFound =
+            error instanceof ResourceGraphFactoryError &&
+            error.operation === 'cleanup';
+          if (!isNotFound) {
+            throw error;
+          }
+        }
+      }
+    }
+
+    const record = await engine.loadDeploymentByInstance({
+      factoryName: this.name,
+      instanceName: name,
+      knownGvks: this.buildKnownGvks(),
+    });
+    if (!record) {
+      throw new TypeKroError(
+        `Instance not found: ${name} (no in-memory state and no tagged resources on the cluster). The instance may have been cleaned up already, or was deployed with a typekro version that did not tag resources.`,
+        'INSTANCE_NOT_FOUND',
+        { instanceName: name, factoryName: this.name }
+      );
+    }
+    this.logger.info('Cross-process cleanup: discovered deployment from cluster labels', {
+      instanceName: name,
+      factoryName: this.name,
+      deploymentId: record.deploymentId,
+      resourceCount: record.resources.length,
+    });
+    return engine.rollbackRecord(record, {
+      ...(opts?.scopes && { scopes: opts.scopes }),
+      ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+    });
+  }
+
   /**
    * Poll until the given namespaces no longer exist (HTTP 404).
    * Namespaces enter a "Terminating" phase on deletion and may take time
@@ -407,6 +458,7 @@ export class DirectResourceFactoryImpl<
     for (const ns of namespaces) {
       // Each namespace gets its own timeout budget
       const nsStartTime = Date.now();
+      let deleted = false;
       while (Date.now() - nsStartTime < timeout) {
         try {
           await k8sApi.read({
@@ -421,21 +473,33 @@ export class DirectResourceFactoryImpl<
           const k8sErr = error as { statusCode?: number; body?: { code?: number } };
           if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
             this.logger.debug('Namespace fully deleted', { namespace: ns });
+            deleted = true;
             break;
           }
-          // Unexpected error — log and stop waiting for this namespace
+          // Unexpected error — fail loudly so callers do not assume cleanup completed.
           this.logger.warn('Error polling namespace deletion', {
             namespace: ns,
             error: ensureError(error).message,
           });
-          break;
+          throw error;
         }
+      }
+      if (!deleted) {
+        throw new ResourceGraphFactoryError(
+          `Timed out waiting for namespace ${ns} to be deleted after ${timeout}ms`,
+          this.name,
+          'cleanup'
+        );
       }
     }
   }
 
   /**
    * Get factory status with real health checking using readiness evaluators
+   *
+   * Direct mode status is based on same-process instances returned by
+   * `getInstances()`. Use `deleteInstance(name)` for cross-process cleanup;
+   * status reconstruction from tagged live resources is not currently exposed.
    */
   async getStatus(): Promise<FactoryStatus> {
     const instances = await this.getInstances();
@@ -681,33 +745,65 @@ export class DirectResourceFactoryImpl<
 
   /**
    * Rollback all deployments made by this factory
+   *
+   * This rolls back same-process deployments tracked by this factory instance.
+   * For cross-process cleanup, call `deleteInstance(name)` with the known
+   * instance name so TypeKro can discover tagged resources from the cluster.
    */
   async rollback(): Promise<RollbackResult> {
     this.logger.debug('Starting rollback for all deployed instances');
 
-    // Get kubeConfig from the centralized provider (lazy initialization)
-    const clientProvider = this.getClientProvider();
-    const kubeConfig = clientProvider.getKubeConfig();
-
-    // Create rollback manager with the provider's KubeConfig
-    const rollbackManager = createRollbackManagerWithKubeConfig(kubeConfig);
-
-    // Get all deployed instances as Enhanced resources
-    const resourcesToRollback = Array.from(this.deployedInstances.values());
+    const startedAt = Date.now();
+    const instanceNames = Array.from(this.deployedInstances.keys());
 
     this.logger.debug('Rolling back resources', {
-      resourceCount: resourcesToRollback.length,
-      instanceNames: Array.from(this.deployedInstances.keys()),
+      instanceCount: instanceNames.length,
+      instanceNames,
     });
 
-    // Perform rollback using consolidated logic
-    const result = await rollbackManager.rollbackResources(resourcesToRollback, {
-      timeout: this.factoryOptions.timeout || undefined,
-      emitEvent: this.factoryOptions.progressCallback || undefined,
-    });
+    const rolledBackResources: string[] = [];
+    const errors: DeploymentError[] = [];
+    let status: RollbackResult['status'] = 'success';
 
-    // Clear all tracked instances after rollback
-    this.deployedInstances.clear();
+    for (const instanceName of instanceNames) {
+      try {
+        const result = await this.rollbackInstanceResources(instanceName);
+        rolledBackResources.push(...result.rolledBackResources);
+        errors.push(...result.errors);
+        if (result.status === 'failed') {
+          status = 'failed';
+        } else if (result.status === 'partial' && status === 'success') {
+          status = 'partial';
+        }
+        if (result.status === 'success' && result.errors.length === 0) {
+          this.deployedInstances.delete(instanceName);
+        }
+      } catch (error: unknown) {
+        status = 'failed';
+        errors.push({
+          resourceId: instanceName,
+          phase: 'rollback',
+          error: ensureError(error),
+          timestamp: new Date(),
+        });
+      }
+    }
+
+    if (errors.length > 0 && status === 'success') {
+      status = rolledBackResources.length > 0 ? 'partial' : 'failed';
+    }
+
+    const result: RollbackResult = {
+      deploymentId: `factory-rollback-${Date.now()}`,
+      rolledBackResources,
+      duration: Date.now() - startedAt,
+      status,
+      errors,
+    };
+
+    if (result.status === 'success') {
+      this.deployedInstances.clear();
+    }
 
     this.logger.info('Rollback completed', {
       status: result.status,
@@ -823,11 +919,14 @@ export class DirectResourceFactoryImpl<
   /**
    * Create a resource graph for a specific instance
    */
-  public createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph {
+  public createResourceGraphForInstance(
+    spec: TSpec,
+    instanceNameOverride?: string
+  ): DeploymentResourceGraph {
     const dependencyResolver = new DependencyResolver();
     const resolvedResources = this.resolveResourcesForSpec(spec);
 
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = instanceNameOverride ?? this.generateInstanceName(spec);
     const resourceArray = Object.values(resolvedResources).map((resource, index) => {
       this.logger.debug('Processing resource for ID generation', {
         index,
@@ -930,9 +1029,10 @@ export class DirectResourceFactoryImpl<
         }
       } catch (error: unknown) {
         this.logger.error(
-          'Failed to re-execute composition, falling back to reference resolution',
+          'Failed to re-execute composition with actual spec values',
           ensureError(error)
         );
+        throw error;
       }
     }
 
@@ -978,6 +1078,7 @@ export class DirectResourceFactoryImpl<
       // with the same id (e.g., 'regionDep') get unique keys ('regionDep', 'regionDep-1', etc.)
       const reExecutionContext = createCompositionContext('re-execution', {
         deduplicateIds: true,
+        isReExecution: true,
       });
 
       // Execute the composition function within the new context and capture both resources and status
@@ -1009,7 +1110,7 @@ export class DirectResourceFactoryImpl<
 
         // Extract the underlying Kubernetes resource from the Enhanced proxy
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
-          enhanced as Enhanced<any, any>
+          enhanced as Enhanced<unknown, unknown>
         );
         kubernetesResources[id] = kubernetesResource;
       }
@@ -1022,7 +1123,7 @@ export class DirectResourceFactoryImpl<
       };
     } catch (error: unknown) {
       this.logger.error('Failed to re-execute composition', ensureError(error));
-      return null;
+      throw error;
     }
   }
 
@@ -1032,6 +1133,35 @@ export class DirectResourceFactoryImpl<
    */
   public getReExecutedStatus(): TStatus | null {
     return this.reExecutedStatus;
+  }
+
+  private reExecuteSingletonStatus(
+    singletonDefinition: SingletonDefinitionRecord,
+    liveStatusMap: Map<string, Record<string, unknown>>
+  ): Record<string, unknown> | undefined {
+    const compositionFn = (singletonDefinition.composition as unknown as {
+      _compositionFn?: (spec: unknown) => unknown;
+    })._compositionFn;
+
+    if (!compositionFn) {
+      return undefined;
+    }
+
+    const singletonContext = createCompositionContext('singleton-re-execution', {
+      deduplicateIds: true,
+      isReExecution: true,
+    });
+    singletonContext.liveStatusMap = liveStatusMap;
+
+    const status = runWithCompositionContext(singletonContext, () =>
+      compositionFn(singletonDefinition.spec)
+    );
+
+    if (status && typeof status === 'object' && !Array.isArray(status)) {
+      return status as Record<string, unknown>;
+    }
+
+    return undefined;
   }
 
   /**
@@ -1064,6 +1194,7 @@ export class DirectResourceFactoryImpl<
       // synthesize status entries from child resources' live data.
       const probeContext = createCompositionContext('re-execution-probe', {
         deduplicateIds: true,
+        isReExecution: true,
       });
       probeContext.liveStatusMap = liveStatusMap;
 
@@ -1084,12 +1215,52 @@ export class DirectResourceFactoryImpl<
         probeContext.resources,
         liveStatusMap,
         this.logger,
-        probeContext.nestedCompositionIds
+        probeContext.nestedCompositionIds,
+        probeContext.nestedStatusSnapshots
       );
+
+      // Framework invariant: direct-mode re-execution must preserve the same
+      // cross-composition semantics as KRO-mode serialization. If a user writes
+      // `const stack = nestedComp(...); return { ready: stack.status.ready && ... }`,
+      // TypeKro must resolve that alias in the framework rather than pushing
+      // CEL-specific workarounds into composition code.
+      const aliasTargets = buildNestedCompositionAliasTargets(
+        this.factoryOptions.compositionFn.toString(),
+        probeContext.nestedCompositionIds,
+      );
+      for (const [aliasName, baseId] of Object.entries(aliasTargets)) {
+        const synthesizedStatus = enrichedMap.get(baseId);
+        if (synthesizedStatus && !enrichedMap.has(aliasName)) {
+          enrichedMap.set(aliasName, synthesizedStatus);
+        }
+      }
+
+      const singletonDefinitions = new Map<string, SingletonDefinitionRecord>();
+      for (const definition of this.singletonDefinitions) {
+        singletonDefinitions.set(definition.key, definition);
+      }
+      for (const definition of probeContext.singletonDefinitions?.values() ?? []) {
+        singletonDefinitions.set(definition.key, definition);
+      }
+
+      for (const definition of singletonDefinitions.values()) {
+        const singletonResourceId = getSingletonResourceId(definition.key);
+        if (enrichedMap.has(singletonResourceId)) {
+          continue;
+        }
+
+        const singletonStatus =
+          this.singletonOwnerStatuses.get(singletonResourceId) ??
+          this.reExecuteSingletonStatus(definition, liveStatusMap);
+        if (singletonStatus) {
+          enrichedMap.set(singletonResourceId, singletonStatus);
+        }
+      }
 
       // Phase 2: Real execution with enriched live status map
       const reExecutionContext = createCompositionContext('re-execution', {
         deduplicateIds: true,
+        isReExecution: true,
       });
       reExecutionContext.liveStatusMap = enrichedMap;
 
@@ -1178,7 +1349,7 @@ export class DirectResourceFactoryImpl<
    * string representations, which is critical for HelmRelease values that may contain
    * schema proxy references.
    */
-  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
+  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<unknown, unknown>): KubernetesResource {
     // Start with required Kubernetes resource structure
     const resource: KubernetesResource = {
       apiVersion: enhanced.apiVersion,
@@ -1240,6 +1411,18 @@ export class DirectResourceFactoryImpl<
     return { found: true, value: currentValue };
   }
 
+  private resolveSpecPathValue(spec: TSpec, specPath: string, logPath: string): { found: true; value: unknown } | { found: false } {
+    const pathParts = specPath.split('.').filter(Boolean);
+    return this.traverseSpec(spec, pathParts, logPath);
+  }
+
+  private stringifyCelFallbackValue(value: unknown): string {
+    if (value === null) return 'null';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return JSON.stringify(value);
+  }
+
   /**
    * Resolve schema references and CEL expressions to actual values for direct deployment.
    * This is the final, corrected version that handles both direct proxies and Cel.expr wrappers.
@@ -1271,16 +1454,25 @@ export class DirectResourceFactoryImpl<
       this.logger.trace('Found CEL Expression', { path, expression: resource.expression });
       // The .expression property holds a string like "schema.spec.name-db-config"
       let expressionString = resource.expression;
+      const exactSchemaRef = expressionString.match(/^schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/);
+      const exactSpecPath = exactSchemaRef?.[1];
+      if (exactSpecPath !== undefined) {
+        const resolved = this.resolveSpecPathValue(spec, exactSpecPath, path);
+        if (resolved.found) {
+          return resolved.value;
+        }
+      }
       // Use regex to find all `schema.spec.fieldName` placeholders in the string
       // and replace them with the corresponding values from the spec object.
       // The 'g' flag ensures all occurrences are replaced.
-      expressionString = expressionString.replace(/schema\.spec\.(\w+)/g, (_match, fieldName) => {
-        const value = (spec as Record<string, unknown>)[fieldName];
-        this.logger.trace('Replacing CEL placeholder', { fieldName, value });
+      expressionString = expressionString.replace(/schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g, (_match, specPath) => {
+        const resolved = this.resolveSpecPathValue(spec, specPath, path);
+        const value = resolved.found ? resolved.value : undefined;
+        this.logger.trace('Replacing CEL placeholder', { specPath, value });
         // If the value exists in the spec, convert it to a string for concatenation.
         // Otherwise, keep the original placeholder (though this shouldn't happen in valid cases).
 
-        return value !== undefined ? String(value) : _match;
+        return value !== undefined ? this.stringifyCelFallbackValue(value) : _match;
       });
       this.logger.trace('Resolved CEL expression to value', {
         path,
@@ -1341,7 +1533,7 @@ export class DirectResourceFactoryImpl<
       // For schema: __KUBERNETES_REF___schema___{fieldPath}__
       // The fieldPath for schema refs is like "spec.baseName" or "spec.nested.field"
       const resolvedString = resource.replace(
-        /__KUBERNETES_REF___schema___(.+?)__/g,
+        new RegExp(KUBERNETES_REF_SCHEMA_MARKER_SOURCE, 'g'),
         (_match, fieldPath) => {
           // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
           const pathParts = fieldPath.split('.');
@@ -1389,6 +1581,328 @@ export class DirectResourceFactoryImpl<
   private generateInstanceName(spec: TSpec): string {
     // Use the imported shared utility
     return generateInstanceName(spec);
+  }
+
+  private async ensureTargetNamespace(namespace = this.namespace): Promise<void> {
+    try {
+      const { createBunCompatibleKubernetesObjectApi } = await import(
+        '../kubernetes/bun-api-client.js'
+      );
+      const k8sApi = createBunCompatibleKubernetesObjectApi(this.getClientProvider().getKubeConfig());
+      const waitForNamespaceDeletion = async (): Promise<void> => {
+        const start = Date.now();
+        while (Date.now() - start < 120000) {
+          try {
+            const existing = (await k8sApi.read({
+              apiVersion: 'v1',
+              kind: 'Namespace',
+              metadata: { name: namespace },
+            })) as { metadata?: { deletionTimestamp?: string | Date } };
+            if (!existing.metadata?.deletionTimestamp) {
+              return;
+            }
+          } catch (pollError: unknown) {
+            const err = pollError as { statusCode?: number; body?: { code?: number } };
+            const code = err.statusCode ?? err.body?.code;
+            if (code === 404) {
+              return;
+            }
+            throw pollError;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        throw new Error(`Namespace ${namespace} is still terminating after 120000ms`);
+      };
+      try {
+        const existing = (await k8sApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: namespace },
+        })) as { metadata?: { deletionTimestamp?: string | Date } };
+        if (existing.metadata?.deletionTimestamp) {
+          await waitForNamespaceDeletion();
+        } else {
+          return;
+        }
+      } catch (readError: unknown) {
+        const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        if (code !== 404) {
+          throw readError;
+        }
+      }
+
+      try {
+        await k8sApi.create({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: {
+            name: namespace,
+            labels: {
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
+          },
+        });
+      } catch (createError: unknown) {
+        const k8sErr = createError as {
+          statusCode?: number;
+          body?: { code?: number; reason?: string };
+          message?: string;
+        };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        const isNamespaceTerminating =
+          k8sErr.body?.reason === 'Forbidden' &&
+          k8sErr.message?.includes('NamespaceTerminating') === true;
+        if (isNamespaceTerminating) {
+          await waitForNamespaceDeletion();
+          await k8sApi.create({
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: {
+              name: namespace,
+              labels: {
+                'app.kubernetes.io/managed-by': 'typekro',
+              },
+            },
+          });
+        } else if (code !== 409) {
+          throw createError;
+        }
+      }
+    } catch (error: unknown) {
+      throw new ResourceGraphFactoryError(
+        `Failed to ensure target namespace "${namespace}" exists: ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    }
+  }
+
+  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
+    const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
+
+    if (this.factoryOptions.compositionFn) {
+      const singletonContext = createCompositionContext('singleton-owner-discovery');
+      runWithCompositionContext(singletonContext, () => {
+        this.factoryOptions.compositionFn?.(spec);
+      });
+
+      for (const [key, definition] of singletonContext.singletonDefinitions ?? []) {
+        discoveredSingletons.set(key, definition);
+      }
+    }
+
+    for (const definition of this.singletonDefinitions) {
+      if (!discoveredSingletons.has(definition.key)) {
+        discoveredSingletons.set(definition.key, definition);
+      }
+    }
+
+    if (discoveredSingletons.size === 0) return;
+
+    for (const definition of discoveredSingletons.values()) {
+      await this.ensureTargetNamespace(definition.registryNamespace);
+
+      const singletonInstanceName = getSingletonInstanceName(definition.id);
+      const singletonFactory = definition.composition.factory('direct', {
+        namespace: definition.registryNamespace,
+        waitForReady: true,
+        ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+        ...(this.factoryOptions.kubeConfig !== undefined ? { kubeConfig: this.factoryOptions.kubeConfig } : {}),
+        ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
+      }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
+
+      try {
+        const existingInstances = await singletonFactory.getInstances();
+        assertNoDeployedSingletonSpecDrift(
+          definition,
+          singletonInstanceName,
+          existingInstances
+        );
+        if ('createResourceGraphForInstance' in singletonFactory && existingInstances.length === 0) {
+          const discovered = await this.getDeploymentEngine().loadDeploymentByInstance({
+            factoryName: singletonFactory.name,
+            instanceName: singletonInstanceName,
+          });
+          const discoveredResources = discovered?.resources ?? [];
+          const driftCheck = assertNoDiscoveredSingletonSpecDrift(
+            definition,
+            singletonInstanceName,
+            discoveredResources
+          );
+          if (driftCheck.hasLegacyUnfingerprintedResources) {
+            const expectedGraph = singletonFactory.createResourceGraphForInstance(
+              definition.spec,
+              singletonInstanceName
+            );
+            const discoveredIds = new Set(discoveredResources.map((resource) => resource.id));
+            const hasAllExpectedResources = expectedGraph.resources.every((resource) =>
+              discoveredIds.has(resource.id)
+            );
+            const hasHelmReleaseResources = expectedGraph.resources.some(
+              (resource) => resource.manifest.kind === 'HelmRelease'
+            );
+
+            const legacyStatus = this.reExecuteSingletonStatusFromDiscoveredResources(
+              definition,
+              discoveredResources
+            );
+            if (legacyStatus) {
+              this.singletonOwnerStatuses.set(getSingletonResourceId(definition.key), legacyStatus);
+            }
+            if (hasAllExpectedResources && !hasHelmReleaseResources) {
+              this.logger.warn('Skipping direct singleton owner reconciliation for legacy resources without a spec fingerprint', {
+                singletonId: definition.id,
+                singletonKey: definition.key,
+                singletonInstanceName,
+                registryNamespace: definition.registryNamespace,
+              });
+              continue;
+            }
+
+            this.logger.warn('Reconciling direct singleton owner because legacy resources may need repair', {
+              singletonId: definition.id,
+              singletonKey: definition.key,
+              singletonInstanceName,
+              registryNamespace: definition.registryNamespace,
+              discoveredResourceCount: discoveredResources.length,
+              expectedResourceCount: expectedGraph.resources.length,
+              hasAllExpectedResources,
+              hasHelmReleaseResources,
+            });
+          }
+        }
+
+        const singletonDeployOptions: InternalResourceFactoryDeployOptions = {
+          instanceNameOverride: singletonInstanceName,
+          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
+        };
+        const deployedSingleton = await singletonFactory.deploy(definition.spec, singletonDeployOptions);
+        const singletonStatus = (deployedSingleton as { status?: unknown }).status;
+        if (singletonStatus && typeof singletonStatus === 'object' && !Array.isArray(singletonStatus)) {
+          this.singletonOwnerStatuses.set(
+            getSingletonResourceId(definition.key),
+            singletonStatus as Record<string, unknown>
+          );
+        }
+      } finally {
+        await singletonFactory.dispose?.();
+      }
+    }
+  }
+
+  private reExecuteSingletonStatusFromDiscoveredResources(
+    definition: SingletonDefinitionRecord,
+    resources: Array<{ id: string; manifest?: unknown }>
+  ): Record<string, unknown> | null {
+    if (resources.length === 0) return null;
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+    const localIdsByLiveIdentity = this.getSingletonLocalIdsByLiveIdentity(definition);
+    const singletonInstanceName = getSingletonInstanceName(definition.id);
+    for (const resource of resources) {
+      const manifest = resource.manifest;
+      const status =
+        manifest && typeof manifest === 'object' && 'status' in manifest
+          ? (manifest as { status?: unknown }).status
+          : undefined;
+      const statusRecord =
+        status && typeof status === 'object' && !Array.isArray(status)
+          ? (status as Record<string, unknown>)
+          : {};
+
+      for (const id of this.getSingletonStatusAliases(resource.id, manifest, singletonInstanceName, localIdsByLiveIdentity)) {
+        liveStatusMap.set(id, statusRecord);
+      }
+    }
+
+    return this.reExecuteSingletonStatus(definition, liveStatusMap) ?? null;
+  }
+
+  private getSingletonLocalIdsByLiveIdentity(
+    definition: SingletonDefinitionRecord
+  ): Map<string, string> {
+    const compositionFn = (definition.composition as unknown as {
+      _compositionFn?: (spec: unknown) => unknown;
+    })._compositionFn;
+    const idsByIdentity = new Map<string, string>();
+    if (!compositionFn) return idsByIdentity;
+
+    const probeContext = createCompositionContext('singleton-status-discovery-probe', {
+      deduplicateIds: true,
+      isReExecution: true,
+    });
+    runWithCompositionContext(probeContext, () => compositionFn(definition.spec));
+
+    for (const [id, resource] of Object.entries(probeContext.resources)) {
+      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
+      if (identity) idsByIdentity.set(identity, id);
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      if (namespaceAgnosticIdentity) idsByIdentity.set(namespaceAgnosticIdentity, id);
+    }
+
+    return idsByIdentity;
+  }
+
+  private getSingletonStatusAliases(
+    discoveredId: string,
+    manifest: unknown,
+    singletonInstanceName: string,
+    localIdsByLiveIdentity: Map<string, string>
+  ): string[] {
+    const aliases = new Set<string>([discoveredId]);
+    const annotationId =
+      manifest && typeof manifest === 'object'
+        ? (manifest as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations?.['typekro.io/resource-id']
+        : undefined;
+    if (annotationId) aliases.add(annotationId);
+
+    const derivedId = this.deriveLocalIdFromDirectGraphId(
+      discoveredId,
+      singletonInstanceName,
+      localIdsByLiveIdentity.values()
+    );
+    if (derivedId) aliases.add(derivedId);
+
+    if (manifest && typeof manifest === 'object') {
+      const resource = manifest as { kind?: string; metadata?: { name?: string; namespace?: string } };
+      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      const localId =
+        (identity ? localIdsByLiveIdentity.get(identity) : undefined) ??
+        (namespaceAgnosticIdentity ? localIdsByLiveIdentity.get(namespaceAgnosticIdentity) : undefined);
+      if (localId) aliases.add(localId);
+    }
+
+    return [...aliases];
+  }
+
+  private deriveLocalIdFromDirectGraphId(
+    id: string,
+    singletonInstanceName: string,
+    candidateLocalIds: Iterable<string> = []
+  ): string | undefined {
+    const prefix = `${toCamelCase(singletonInstanceName)}Resource`;
+    const match = id.match(new RegExp(`^${prefix}\\d+(.+)$`));
+    if (!match?.[1]) return undefined;
+    const suffix = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+    const normalizedSuffix = suffix.toLowerCase();
+    for (const candidate of candidateLocalIds) {
+      if (
+        candidate === suffix ||
+        candidate.toLowerCase() === normalizedSuffix ||
+        toCamelCase(candidate).toLowerCase() === normalizedSuffix
+      ) {
+        return candidate;
+      }
+    }
+    return suffix;
+  }
+
+  private getLiveIdentityKey(kind?: string, name?: string, namespace?: string): string | undefined {
+    if (!kind || !name) return undefined;
+    return `${kind}/${namespace ?? ''}/${name}`;
   }
 }
 
@@ -1472,6 +1986,7 @@ export function createDirectResourceFactory<
   name: string,
   resources: Record<string, KubernetesResource>,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+  // biome-ignore lint/suspicious/noExplicitAny: factory creation must accept status builders with composition-specific resource maps.
   statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
   options: FactoryOptions = {}
 ): DirectResourceFactory<TSpec, TStatus> {

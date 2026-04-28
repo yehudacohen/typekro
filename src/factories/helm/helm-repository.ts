@@ -1,4 +1,5 @@
 import type { Enhanced, KubernetesCondition, ReadinessEvaluator } from '../../core/types/index.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
 import { createResource } from '../shared.js';
 
 export interface HelmRepositorySpec {
@@ -50,18 +51,23 @@ export interface HelmRepositoryConfig {
  *   Defaults to no prefix (`'HelmRepository'`).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRepository is a CRD without typed client
-export function createHelmRepositoryReadinessEvaluator(label?: string): ReadinessEvaluator<any> {
+export function createHelmRepositoryReadinessEvaluator(label?: string): ReadinessEvaluator<unknown> {
   const prefix = label ? `${label} ` : '';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRepository is a CRD without typed client
-  return (resource: any) => {
+  return (resource: unknown) => {
+    const liveResource = resource as {
+      status?: { conditions?: KubernetesCondition[] };
+      spec?: { type?: string };
+      metadata?: { generation?: unknown; resourceVersion?: unknown };
+    };
     // HelmRepository is ready when it has a Ready condition with status True
-    const conditions = resource.status?.conditions || [];
+    const conditions = liveResource.status?.conditions || [];
     const readyCondition = conditions.find((c: KubernetesCondition) => c.type === 'Ready');
 
     // For OCI repositories, they may not have status conditions but are functional
     // if the resource exists and has been processed by Flux
-    const isOciRepository = resource.spec?.type === 'oci';
-    const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
+    const isOciRepository = liveResource.spec?.type === 'oci';
+    const hasBeenProcessed = liveResource.metadata?.generation && liveResource.metadata?.resourceVersion;
 
     const isReady = readyCondition?.status === 'True' || (isOciRepository && !!hasBeenProcessed);
 
@@ -88,7 +94,7 @@ export function helmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      ...(config.namespace && { namespace: config.namespace }),
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url,

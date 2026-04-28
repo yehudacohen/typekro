@@ -125,7 +125,6 @@ const logger = getComponentLogger('fn-toString-self-test');
  * Known reference function used for self-testing.
  * The body must contain identifiable tokens that the parser can find.
  */
-// biome-ignore lint/complexity/useArrowFunction: Must test regular function toString
 const REFERENCE_FUNCTION = function referenceTestFunction(schema: { spec: { name: string } }) {
   return { ready: true, name: schema.spec.name };
 };

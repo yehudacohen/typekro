@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { searxngBootstrap } from '../../../src/factories/searxng/compositions/searxng-bootstrap.js';
 import { searxng } from '../../../src/factories/searxng/resources/searxng.js';
 
 describe('SearXNG Factory', () => {
@@ -126,6 +127,32 @@ describe('SearXNG Factory', () => {
       expect(deploy.metadata.labels?.['app.kubernetes.io/name']).toBe('searxng');
       expect(deploy.metadata.labels?.['app.kubernetes.io/instance']).toBe('my-search');
       expect(deploy.metadata.labels?.['app.kubernetes.io/managed-by']).toBe('typekro');
+    });
+  });
+
+  describe('bootstrap settings', () => {
+    it('emits documented concrete settings fields in direct YAML', () => {
+      const yaml = searxngBootstrap.toYaml({
+        name: 'search',
+        server: {
+          limiter: true,
+          bind_address: '0.0.0.0:8080',
+          method: 'POST',
+        },
+        search: {
+          formats: ['html', 'json', 'rss'],
+          default_lang: 'en',
+          autocomplete: 'duckduckgo',
+          safe_search: 2,
+        },
+      });
+
+      expect(yaml).toContain('bind_address: 0.0.0.0:8080');
+      expect(yaml).toContain('method: POST');
+      expect(yaml).toContain('default_lang: en');
+      expect(yaml).toContain('autocomplete: duckduckgo');
+      expect(yaml).toContain('safe_search: 2');
+      expect(yaml).toContain('- rss');
     });
   });
 });

@@ -12,6 +12,20 @@ import type {
   ResourceStatus,
 } from '../../core/types/index.js';
 
+interface HelmReleaseLike {
+  status?: {
+    phase?: string;
+    revision?: number | string;
+    message?: string;
+    conditions?: KubernetesCondition[];
+    lastDeployed?: string;
+  };
+  metadata?: {
+    creationTimestamp?: string;
+    uid?: string;
+  };
+}
+
 /**
  * Create a readiness evaluator for HelmRelease resources.
  *
@@ -26,12 +40,13 @@ import type {
  * during installation/upgrades. The status field is added later by controllers.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEvaluator<any> {
+export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEvaluator<unknown> {
   const prefix = label ? `${label} ` : '';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-  return (liveResource: any): ResourceStatus => {
+  return (liveResource: unknown): ResourceStatus => {
     try {
-      const status = liveResource.status;
+      const live = liveResource as HelmReleaseLike;
+      const status = live.status;
 
       // Case 1: No status field yet (common during initial creation)
       if (!status) {
@@ -118,7 +133,7 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
  * For a labeled variant, use {@link createLabeledHelmReleaseEvaluator}.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-export const helmReleaseReadinessEvaluator: ReadinessEvaluator<any> =
+export const helmReleaseReadinessEvaluator: ReadinessEvaluator<unknown> =
   createLabeledHelmReleaseEvaluator();
 
 /**
@@ -132,8 +147,8 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator<any> =
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
 export function createHelmRevisionReadinessEvaluator(
   expectedRevision: number
-): ReadinessEvaluator<any> {
-  return (liveResource: any): ResourceStatus => {
+): ReadinessEvaluator<unknown> {
+  return (liveResource: unknown): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
@@ -143,7 +158,8 @@ export function createHelmRevisionReadinessEvaluator(
       }
 
       // Check if we have the expected revision
-      const status = liveResource.status;
+      const live = liveResource as HelmReleaseLike;
+      const status = live.status;
       const currentRevision = status?.revision;
 
       if (currentRevision === expectedRevision) {
@@ -179,8 +195,8 @@ export function createHelmRevisionReadinessEvaluator(
 export function createHelmTestReadinessEvaluator(
   requireTests: boolean = false
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-): ReadinessEvaluator<any> {
-  return (liveResource: any): ResourceStatus => {
+): ReadinessEvaluator<unknown> {
+  return (liveResource: unknown): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
@@ -195,7 +211,11 @@ export function createHelmTestReadinessEvaluator(
       }
 
       // Check for test conditions
-      const status = liveResource.status;
+      const live = liveResource as HelmReleaseLike;
+      const status = live.status;
+      if (!status) {
+        return baseStatus;
+      }
       if (status.conditions && Array.isArray(status.conditions)) {
         const testCondition = status.conditions.find(
           (c: KubernetesCondition) => c.type === 'TestSuccess'
@@ -243,8 +263,8 @@ export function createHelmTestReadinessEvaluator(
 export function createHelmTimeoutReadinessEvaluator(
   timeoutMinutes: number = 10
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-): ReadinessEvaluator<any> {
-  return (liveResource: any): ResourceStatus => {
+): ReadinessEvaluator<unknown> {
+  return (liveResource: unknown): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
@@ -254,8 +274,9 @@ export function createHelmTimeoutReadinessEvaluator(
       }
 
       // Check if we have timing information
-      const status = liveResource.status;
-      const metadata = liveResource.metadata;
+      const live = liveResource as HelmReleaseLike;
+      const status = live.status;
+      const metadata = live.metadata;
 
       // Use lastDeployed time or creation time as reference
       let startTime: Date | null = null;
@@ -300,11 +321,10 @@ export function createHelmTimeoutReadinessEvaluator(
  */
 export function createComprehensiveHelmReadinessEvaluator(
   options: { expectedRevision?: number; requireTests?: boolean; timeoutMinutes?: number } = {}
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-): ReadinessEvaluator<any> {
+): ReadinessEvaluator<unknown> {
   const { expectedRevision, requireTests = false, timeoutMinutes = 10 } = options;
 
-  return (liveResource: any): ResourceStatus => {
+  return (liveResource: unknown): ResourceStatus => {
     try {
       // First check timeout
       const timeoutEvaluator = createHelmTimeoutReadinessEvaluator(timeoutMinutes);
@@ -339,7 +359,8 @@ export function createComprehensiveHelmReadinessEvaluator(
       }
 
       // All checks passed
-      const status = liveResource.status;
+      const live = liveResource as HelmReleaseLike;
+      const status = live.status;
       return {
         ready: true,
         message: `HelmRelease is fully ready (revision ${status?.revision || 'unknown'})${requireTests ? ' with tests passed' : ''}`,

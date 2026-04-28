@@ -340,9 +340,12 @@ describe('Callable Composition API', () => {
         expect(yaml).toContain('kind: ResourceGraphDefinition');
         expect(yaml).toContain('${'); // Should contain CEL expressions
 
-        // Nested composition status should be inlined — virtual worker IDs
-        // replaced with inner composition's actual CEL/values
-        expect(yaml).not.toMatch(/worker\d+\.status\./);
+        // Nested composition status should resolve to real merged resource ids
+        // in the parent graph, not raw inner resource ids.
+        expect(yaml).toContain('worker1.status.readyReplicas');
+        expect(yaml).toContain('worker2.status.readyReplicas');
+        expect(yaml).toContain('worker3.status.readyReplicas');
+        expect(yaml).not.toContain('innerDeploy.status');
       }).not.toThrow();
     });
   });

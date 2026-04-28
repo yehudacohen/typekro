@@ -14,7 +14,6 @@
  * - Context-aware optionality handling based on field hydration state
  */
 
-import { DEFAULT_MAX_OPTIONALITY_DEPTH } from '../../config/defaults.js';
 import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression } from '../../types/common.js';
@@ -73,29 +72,16 @@ export type {
 } from './optionality-types.js';
 
 /**
- * Default optionality handling options
- */
-const DEFAULT_OPTIONALITY_OPTIONS: Required<OptionalityHandlingOptions> = {
-  deepAnalysis: true,
-  conservative: true,
-  useKroConditionals: true,
-  generateHasChecks: true,
-  maxDepth: DEFAULT_MAX_OPTIONALITY_DEPTH,
-  includeReasoning: true,
-};
-
-/**
  * Enhanced Type Optionality Handler
  *
  * Handles the complexity of Enhanced types that appear non-optional at compile time
  * but may be undefined at runtime during field hydration.
  */
 export class EnhancedTypeOptionalityHandler {
-  private options: Required<OptionalityHandlingOptions>;
   private logger = getComponentLogger('optionality-handler');
 
-  constructor(options?: OptionalityHandlingOptions) {
-    this.options = { ...DEFAULT_OPTIONALITY_OPTIONS, ...options };
+  constructor(_options?: OptionalityHandlingOptions) {
+    void _options;
   }
 
   /**

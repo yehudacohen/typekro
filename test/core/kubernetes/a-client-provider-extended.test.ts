@@ -42,6 +42,30 @@ describe('KubernetesClientProvider Extended API Support', () => {
   });
 
   describe('API Client Creation', () => {
+    it('preserves exec and authProvider user auth in complete kubeconfig configuration', () => {
+      provider.initialize({
+        cluster: {
+          name: 'exec-cluster',
+          server: 'https://exec-server:6443',
+          skipTLSVerify: true,
+        },
+        user: {
+          name: 'exec-user',
+          exec: { command: 'aws', args: ['eks', 'get-token'] },
+          authProvider: { name: 'gcp', config: { 'access-token': 'token' } },
+        },
+        context: 'exec-context',
+      });
+
+      const user = provider.getKubeConfig().getCurrentUser() as unknown as {
+        exec?: unknown;
+        authProvider?: unknown;
+      };
+
+      expect(user.exec).toEqual({ command: 'aws', args: ['eks', 'get-token'] });
+      expect(user.authProvider).toEqual({ name: 'gcp', config: { 'access-token': 'token' } });
+    });
+
     it('should create CoreV1Api client', () => {
       provider.initializeWithKubeConfig(createTestKubeConfig());
       const coreApi = provider.getCoreV1Api();

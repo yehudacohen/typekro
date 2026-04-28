@@ -48,6 +48,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { DependencyGraph } from '../dependencies/graph.js';
 import { getComponentLogger } from '../logging/index.js';
+import { setMetadataField } from '../metadata/index.js';
 import type { DeployedResource, DeploymentStateRecord } from '../types/deployment.js';
 import type {
   CustomResourceDefinitionItem,
@@ -213,9 +214,10 @@ export async function discoverDeployedResourcesByInstance(
   }
 ): Promise<DeploymentStateRecord | undefined> {
   const labelSelector = buildFactoryInstanceSelector(opts);
+  const discoveredGvks = await discoverClusterGvks(k8sApi);
   const gvkTargets = opts.knownGvks?.length
-    ? opts.knownGvks
-    : await discoverClusterGvks(k8sApi);
+    ? mergeGvkTargets([...opts.knownGvks, ...discoveredGvks])
+    : discoveredGvks;
 
   const usingHint = !!opts.knownGvks?.length;
   logger.debug('Discovering deployed resources by label', {
@@ -245,7 +247,19 @@ export async function discoverDeployedResourcesByInstance(
           undefined, // fieldSelector
           labelSelector
         );
-        return result.items ?? [];
+        // K8s list responses often omit apiVersion/kind on individual
+        // items — they're inferred from the list's metadata. Stamp
+        // each item with the target's GVK so downstream code (dedup,
+        // rollback) has the correct kind for API calls.
+        const items = result.items ?? [];
+        for (const item of items) {
+          if (!item.apiVersion) (item as { apiVersion: string }).apiVersion = target.apiVersion;
+          if (!item.kind) (item as { kind: string }).kind = target.kind;
+          if (!target.namespaced) {
+            setMetadataField(item, 'scope', 'cluster');
+          }
+        }
+        return items;
       } catch (err) {
         // 404 on a GVK means the API server doesn't recognise that
         // kind — expected for CRDs that were uninstalled mid-discovery.
@@ -297,6 +311,22 @@ export async function discoverDeployedResourcesByInstance(
   }
 
   return buildRecordFromResources(uniqueResources, opts);
+}
+
+function mergeGvkTargets(targets: GvkTarget[]): GvkTarget[] {
+  const merged = new Map<string, GvkTarget>();
+  for (const target of targets) {
+    const key = `${target.apiVersion}/${target.kind}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, target);
+      continue;
+    }
+    if (existing.namespaced && !target.namespaced) {
+      merged.set(key, target);
+    }
+  }
+  return Array.from(merged.values());
 }
 
 /**
@@ -403,10 +433,10 @@ function buildRecordFromResources(
  * callers may receive strings from raw JSON or test mocks.
  */
 function toDate(value: unknown): Date | undefined {
-  if (value instanceof Date) return isNaN(value.getTime()) ? undefined : value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value;
   if (typeof value === 'string' || typeof value === 'number') {
     const d = new Date(value);
-    return isNaN(d.getTime()) ? undefined : d;
+    return Number.isNaN(d.getTime()) ? undefined : d;
   }
   return undefined;
 }
@@ -429,7 +459,8 @@ async function listWithConcurrency<T, R>(
       // below, so `next++` can't be interleaved between workers.
       const idx = next++;
       if (idx >= items.length) return;
-      const item = items[idx]!;
+      const item = items[idx];
+      if (item === undefined) return;
       results[idx] = await fn(item);
     }
   };

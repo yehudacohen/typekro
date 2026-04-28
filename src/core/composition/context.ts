@@ -13,6 +13,9 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { DeploymentClosure } from '../types/deployment.js';
+import type { SingletonDefinitionRecord } from '../types/deployment.js';
+import type { KubernetesResource } from '../types/kubernetes.js';
+import type { KroCompatibleType, ResourceGraphDefinition } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
 
 // =============================================================================
@@ -25,7 +28,7 @@ import type { Enhanced } from '../types.js';
  */
 export interface CompositionContext {
   /** Map of resource ID to Enhanced resource */
-  resources: Record<string, Enhanced<any, any>>;
+  resources: Record<string, Enhanced<unknown, unknown>>;
   /** Map of closure ID to deployment closure */
   closures: Record<string, DeploymentClosure>;
   /** Counter for generating unique resource IDs */
@@ -37,7 +40,7 @@ export interface CompositionContext {
   /** Map of variable names to resource IDs for CEL expression generation */
   variableMappings: Record<string, string>;
   /** Add a resource to the context */
-  addResource(id: string, resource: Enhanced<any, any>): void;
+  addResource(id: string, resource: Enhanced<unknown, unknown>): void;
   /** Add a deployment closure to the context */
   addClosure(id: string, closure: DeploymentClosure): void;
   /** Add a variable to resource ID mapping */
@@ -60,6 +63,47 @@ export interface CompositionContext {
    * without relying on string-pattern heuristics.
    */
   nestedCompositionIds?: Set<string>;
+  /**
+   * Map of nested composition baseId → its `compositionFn` reference.
+   *
+   * Populated alongside `nestedCompositionIds` whenever a nested composition
+   * is registered. Used by `arktypeToKroSchema` to source-parse each inner
+   * composition for `?? <literal>` defaults via `extractNullishDefaults`,
+   * and merge those defaults into the outer schema's specFields. Without
+   * this, the outer schema would emit `${schema.spec.X.Y}` references for
+   * fields that the inner declares with a JS default but the outer never
+   * exposes — and KRO would reject the RGD because the field isn't in
+   * the outer schema.
+   *
+   * Entries propagate up across nesting levels: an inner composition's
+   * own nested fns are copied into its parent's map at merge time so
+   * default-extraction at the outermost level can see all nesting depths.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
+  nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
+  /** Map of nested composition baseId -> nested composition schema definition. */
+  nestedCompositionDefinitions?: Map<string, ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>>;
+  /** Map of nested composition baseId -> resources emitted during its proxy execution. */
+  nestedCompositionResources?: Map<string, Record<string, KubernetesResource>>;
+  /** Map of nested composition baseId -> inner spec path prefix to parent spec path prefix. */
+  nestedCompositionSpecMappings?: Map<string, Record<string, string>>;
+  /** Map of nested composition baseId -> returned status snapshot. */
+  nestedStatusSnapshots?: Map<string, Record<string, unknown>>;
+  /** Singleton definitions collected while executing the composition. */
+  singletonDefinitions?: Map<string, SingletonDefinitionRecord>;
+  /** True when this context is a direct-mode re-execution. */
+  isReExecution?: boolean | undefined;
+  /**
+   * True when this context was created to execute a composition AS A NESTED
+   * CALL with a concrete spec from the caller (as opposed to the composition's
+   * own definition-time pass with a schema proxy). Used by
+   * `processCompositionBodyAnalysis` to skip hybrid-branch re-capture — the
+   * outer composition is the authority on branch conditions, and re-running
+   * the inner composition with a fresh inner schema proxy would produce
+   * differential conditionals referencing inner-schema fields that don't
+   * exist in the outer RGD.
+   */
+  isNestedCall?: boolean | undefined;
 }
 
 /**
@@ -72,6 +116,19 @@ export interface CompositionContextOptions {
    * resources with the same id (e.g., 'regionDep' → 'regionDep', 'regionDep-1', 'regionDep-2').
    */
   deduplicateIds?: boolean;
+  /**
+   * When true, this context is a direct-mode re-execution with real spec
+   * values. Nested compositions should skip their definition-time proxy
+   * pass (which generates CEL) and only run the spec-driven execution.
+   */
+  isReExecution?: boolean;
+  /**
+   * When true, this context was created to execute a composition as a
+   * nested call with a concrete spec from the caller. Signals to
+   * `processCompositionBodyAnalysis` that hybrid-branch re-capture should
+   * be skipped — see {@link CompositionContext.isNestedCall}.
+   */
+  isNestedCall?: boolean;
 }
 
 // =============================================================================
@@ -177,7 +234,11 @@ export function createCompositionContext(
     closureCounter: 0,
     compositionInstanceCounter: 0,
     variableMappings: {},
-    addResource(id: string, resource: Enhanced<any, any>) {
+    nestedStatusSnapshots: new Map(),
+    singletonDefinitions: new Map(),
+    isReExecution: contextOptions?.isReExecution,
+    isNestedCall: contextOptions?.isNestedCall,
+    addResource(id: string, resource: Enhanced<unknown, unknown>) {
       if (contextOptions?.deduplicateIds && id in this.resources) {
         // Append numeric suffix to make the key unique
         idCounts[id] = (idCounts[id] ?? 0) + 1;

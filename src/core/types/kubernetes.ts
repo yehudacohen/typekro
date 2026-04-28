@@ -193,8 +193,10 @@ export type IncludeWhenCondition =
  * );
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- self shape is user-defined per resource
-export type ReadyWhenCallback = (self: any) => boolean;
+// biome-ignore lint/suspicious/noExplicitAny: self shape is author-defined per resource callback.
+export type ReadyWhenCallback<TSelf = any> = {
+  bivarianceHack(self: TSelf): boolean;
+}['bivarianceHack'];
 
 /**
  * Condition type accepted by {@link Enhanced.withReadyWhen}.
@@ -267,11 +269,11 @@ export type Enhanced<TSpec, TStatus> = Omit<
   readonly subsets?: MagicProxy<V1EndpointSubset[]>; // Endpoints
 
   // Optional readiness evaluator that returns structured status
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- stored evaluator is called with runtime K8s objects
+  // biome-ignore lint/suspicious/noExplicitAny: stored evaluator is called with heterogeneous runtime K8s objects.
   readonly readinessEvaluator?: ReadinessEvaluator<any>;
 
   // Fluent builder method for setting readiness evaluator
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+  // biome-ignore lint/suspicious/noExplicitAny: accepts evaluators typed for any specific K8s resource.
   withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
 
   // Kro v0.8.x conditional expression support (added at runtime by ConditionalExpressionIntegrator)
@@ -279,6 +281,10 @@ export type Enhanced<TSpec, TStatus> = Omit<
   withIncludeWhen(condition: IncludeWhenCondition): Enhanced<TSpec, TStatus>;
   /** Set readyWhen condition — callback `(self) => bool`, CEL expression, ref, or static boolean */
   withReadyWhen(condition: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
+  /** Declare an unconditional ordering dependency on another resource. */
+  dependsOn(
+    dependency: string | KubernetesResource | { readonly __compositionId: string }
+  ): Enhanced<TSpec, TStatus>;
 };
 
 // =============================================================================
@@ -301,10 +307,13 @@ export interface ResourceStatus {
  * `ReadinessEvaluator<V1Deployment>`). For CRD-based resources without
  * a typed client, pass `any` explicitly: `ReadinessEvaluator<any>`.
  *
- * @typeParam T - The live resource type. Defaults to `unknown` to encourage
- *   explicit typing; use `any` for untyped CRD resources.
+ * @typeParam T - The live resource type. Defaults to `any` for compatibility;
+ *   use an explicit concrete resource type for stronger checking.
  */
-export type ReadinessEvaluator<T = unknown> = (liveResource: T) => ResourceStatus;
+// biome-ignore lint/suspicious/noExplicitAny: evaluator parameter types are intentionally resource-specific and heterogeneous.
+export type ReadinessEvaluator<T = any> = {
+  bivarianceHack(liveResource: T): ResourceStatus;
+}['bivarianceHack'];
 
 // =============================================================================
 // KRO-SPECIFIC TYPES
@@ -602,7 +611,7 @@ export interface PodStatus {
   containerStatuses?: Array<{
     ready?: boolean;
     name: string;
-    state?: any;
+    state?: unknown;
   }>;
   conditions?: Array<{
     type: string;
@@ -672,8 +681,8 @@ export interface GenericResourceStatus {
 // Spec interfaces for resources that need them
 export interface DeploymentSpec {
   replicas?: number;
-  selector?: any;
-  template?: any;
+  selector?: unknown;
+  template?: unknown;
 }
 
 export interface ServiceSpec {
@@ -689,7 +698,7 @@ export interface ServiceSpec {
 export interface JobSpec {
   completions?: number;
   parallelism?: number;
-  template?: any;
+  template?: unknown;
 }
 
 export interface StatefulSetSpec {
@@ -702,17 +711,17 @@ export interface StatefulSetSpec {
  * This strips the magic proxy layer and provides direct access to the underlying types
  * for use with the Kubernetes API client
  */
-export type K8sCompatible<T extends Enhanced<any, any>> = T & {
+export type K8sCompatible<T extends Enhanced<unknown, unknown>> = T & {
   // Override magic proxy fields with direct access for K8s client compatibility
-  readonly spec: T extends Enhanced<infer TSpec, any> ? TSpec : unknown;
-  readonly status: T extends Enhanced<any, infer TStatus> ? TStatus : unknown;
+  readonly spec: T extends Enhanced<infer TSpec, unknown> ? TSpec : unknown;
+  readonly status: T extends Enhanced<unknown, infer TStatus> ? TStatus : unknown;
   readonly metadata: V1ObjectMeta;
 };
 
 /**
  * Type modifier for resources that need to be deployable (with required ID)
  */
-export type DeployableResource<T extends Enhanced<any, any>> = K8sCompatible<T> & {
+export type DeployableResource<T extends Enhanced<unknown, unknown>> = K8sCompatible<T> & {
   /** Required resource graph identifier. @see {@link KubernetesResource.id} */
   readonly id: string;
 };
@@ -721,11 +730,11 @@ export type DeployableResource<T extends Enhanced<any, any>> = K8sCompatible<T> 
  * Bridge type modifier that makes Enhanced types extend KubernetesObject
  * This creates a seamless bridge between our type system and the Kubernetes client
  */
-export type K8sClientCompatible<T extends Enhanced<any, any>> = T &
+export type K8sClientCompatible<T extends Enhanced<unknown, unknown>> = T &
   KubernetesObject & {
     // Ensure our Enhanced fields are properly typed while maintaining K8s client compatibility
-    readonly spec: T extends Enhanced<infer TSpec, any> ? TSpec : unknown;
-    readonly status: T extends Enhanced<any, infer TStatus> ? TStatus : unknown;
+    readonly spec: T extends Enhanced<infer TSpec, unknown> ? TSpec : unknown;
+    readonly status: T extends Enhanced<unknown, infer TStatus> ? TStatus : unknown;
     readonly metadata: V1ObjectMeta;
     /** @see {@link KubernetesResource.id} */
     readonly id?: string;
@@ -734,7 +743,7 @@ export type K8sClientCompatible<T extends Enhanced<any, any>> = T &
 /**
  * Deployable version of K8sClientCompatible with required ID
  */
-export type DeployableK8sResource<T extends Enhanced<any, any>> = K8sClientCompatible<T> & {
+export type DeployableK8sResource<T extends Enhanced<unknown, unknown>> = K8sClientCompatible<T> & {
   /** Required resource graph identifier. @see {@link KubernetesResource.id} */
   readonly id: string;
 };
@@ -743,7 +752,7 @@ export type DeployableK8sResource<T extends Enhanced<any, any>> = K8sClientCompa
  * Union type for resources that can be used in deployment operations
  * This handles both our typed resources and raw Kubernetes API objects
  */
-export type DeploymentResource = K8sClientCompatible<Enhanced<any, any>> | KubernetesObject;
+export type DeploymentResource = K8sClientCompatible<Enhanced<unknown, unknown>> | KubernetesObject;
 
 /**
  * Type-safe resource accessor that works with both our types and k8s client types

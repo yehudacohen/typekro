@@ -40,13 +40,13 @@ export interface CelConversionConfig {
 /**
  * Result of CEL conversion
  */
-export interface CelConversionResult<T = any> {
+export interface CelConversionResult<T = unknown> {
   /** Converted value */
   converted: T;
   /** Whether conversion was performed */
   wasConverted: boolean;
   /** Original value before conversion */
-  original: any;
+  original: unknown;
   /** Conversion strategy used */
   strategy: 'direct' | 'cel-expression' | 'template-literal' | 'static';
   /** Performance metrics */
@@ -182,7 +182,7 @@ export class CelConversionEngine {
    * @param maxDepth - Maximum depth to check
    * @returns Whether conversion is needed
    */
-  needsConversion(value: any, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): boolean {
+  needsConversion(value: unknown, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): boolean {
     return this.magicProxyDetector.containsKubernetesRefs(value, maxDepth);
   }
 
@@ -252,7 +252,7 @@ export class CelConversionEngine {
    * Check if a KubernetesRef comes from an external reference
    * External references are not registered in the current composition context
    */
-  private isExternalReference(ref: KubernetesRef<any>): boolean {
+  private isExternalReference(ref: KubernetesRef<unknown>): boolean {
     const resourceId = ref.resourceId;
 
     // Schema references are never external
@@ -272,7 +272,7 @@ export class CelConversionEngine {
     return !(resourceId in context.resources);
   }
 
-  private generateCelFromRef(ref: KubernetesRef<any>, _context: FactoryExpressionContext): string {
+  private generateCelFromRef(ref: KubernetesRef<unknown>, _context: FactoryExpressionContext): string {
     const resourceId = ref.resourceId;
     const fieldPath = ref.fieldPath;
 
@@ -286,7 +286,7 @@ export class CelConversionEngine {
     return `${resourceId}.${fieldPath}`;
   }
 
-  private isTemplateLiteralWithRefs(value: any, detection: MagicProxyDetectionResult): boolean {
+  private isTemplateLiteralWithRefs(value: unknown, detection: MagicProxyDetectionResult): boolean {
     // This is a simplified check - in a real implementation, we'd need to parse
     // the template literal structure to detect embedded KubernetesRef objects
     return typeof value === 'string' && detection.hasKubernetesRefs;
@@ -414,6 +414,6 @@ export function kubernetesRefToCel<T>(
  * @param maxDepth - Maximum depth to check
  * @returns Whether conversion is needed
  */
-export function needsCelConversion(value: any, maxDepth?: number): boolean {
+export function needsCelConversion(value: unknown, maxDepth?: number): boolean {
   return celConversionEngine.needsConversion(value, maxDepth);
 }

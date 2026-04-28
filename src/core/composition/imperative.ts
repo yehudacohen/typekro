@@ -7,15 +7,26 @@
  * as the existing toResourceGraph API.
  */
 
-import { toCamelCase } from '../../utils/string.js';
-import { extractNestedStatusCel as extractNestedStatusCelFn } from './nested-status-cel.js';
+import {
+  copyResourceMetadata,
+  getMetadataField,
+  getResourceId,
+  setMetadataField,
+  setResourceId,
+} from '../metadata/index.js';
+import {
+  buildNestedCompositionAliasTargets,
+  buildNestedCompositionAliases,
+  extractNestedStatusCel as extractNestedStatusCelFn,
+  remapVariableNames,
+} from './nested-status-cel.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
   KUBERNETES_REF_BRAND,
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
-import { CompositionExecutionError, ensureError } from '../errors.js';
+import { CompositionExecutionError, ensureError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type {
@@ -31,7 +42,15 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import type { Enhanced } from '../types.js';
+import type { KubernetesResource } from '../types/kubernetes.js';
+import type { CelExpression, Enhanced } from '../types.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
+import { toCamelCase } from '../../utils/string.js';
 import type { CompositionContext } from './context.js';
 import {
   createCompositionContext,
@@ -45,6 +64,131 @@ import {
  * This will log detailed information about resource registration, status building, and performance
  */
 const logger = getComponentLogger('imperative-composition');
+
+/**
+ * Compute the merged resource ID for an inner composition's resource in
+ * the parent context. Single-resource compositions use baseId directly;
+ * multi-resource compositions use `baseId-innerResourceId`.
+ *
+ * This is the **single source of truth** for the naming convention — used
+ * by both the merge loop and the dependsOn leaf-resource lookup.
+ */
+export function computeMergedId(
+  baseId: string,
+  innerResourceId: string,
+  resourceCount: number,
+  preserveSingleResourceId: boolean = false,
+): string {
+  if (resourceCount === 1) {
+    return preserveSingleResourceId ? innerResourceId : baseId;
+  }
+  return `${baseId}${innerResourceId.charAt(0).toUpperCase()}${innerResourceId.slice(1)}`;
+}
+
+function createNestedReExecutionLiveStatusMap(
+  parentLiveStatusMap: Map<string, Record<string, unknown>>,
+  baseId: string,
+): Map<string, Record<string, unknown>> {
+  const hasPrefixedChildren = [...parentLiveStatusMap.keys()].some((key) => {
+    const boundaryChar = key[baseId.length];
+    return key.startsWith(baseId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar);
+  });
+
+  return new Proxy(parentLiveStatusMap, {
+    get(target, prop, receiver) {
+      if (prop !== 'get' && prop !== 'has') {
+        return Reflect.get(target, prop, receiver);
+      }
+
+      return (resourceId: string) => {
+        const directValue = target[prop](resourceId);
+        if (prop === 'has' ? directValue : directValue !== undefined) {
+          return directValue;
+        }
+
+        const mergedId = `${baseId}${resourceId.charAt(0).toUpperCase()}${resourceId.slice(1)}`;
+        const mergedValue = target[prop](mergedId);
+        if (prop === 'has' ? mergedValue : mergedValue !== undefined) {
+          return mergedValue;
+        }
+
+        return hasPrefixedChildren ? (prop === 'has' ? false : undefined) : target[prop](baseId);
+      };
+    },
+  });
+}
+
+function collectNestedSpecMappings(
+  value: unknown,
+  pathPrefix = '',
+  mappings: Record<string, string> = {}
+): Record<string, string> {
+  if (
+    pathPrefix === '' &&
+    value &&
+    typeof value === 'object' &&
+    (value as { __schemaProxyBasePath?: unknown }).__schemaProxyBasePath === 'spec'
+  ) {
+    mappings[''] = '';
+    return mappings;
+  }
+
+  if (isKubernetesRef(value) && value.resourceId === '__schema__') {
+    if (value.fieldPath === 'spec') {
+      mappings[pathPrefix] = '';
+    } else if (value.fieldPath.startsWith('spec.')) {
+      mappings[pathPrefix] = value.fieldPath.slice('spec.'.length);
+    }
+    return mappings;
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return mappings;
+  }
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    collectNestedSpecMappings(child, pathPrefix ? `${pathPrefix}.${key}` : key, mappings);
+  }
+
+  return mappings;
+}
+
+function remapNestedSpecPath(path: string, mappings: Record<string, string>): string | undefined {
+  if (Object.hasOwn(mappings, '')) {
+    const mappedPrefix = mappings[''];
+    return mappedPrefix ? `${mappedPrefix}.${path}` : path;
+  }
+
+  const matches = Object.keys(mappings)
+    .filter((prefix) => path === prefix || path.startsWith(`${prefix}.`))
+    .sort((left, right) => right.length - left.length);
+
+  const prefix = matches[0];
+  if (prefix === undefined) return undefined;
+  const mappedPrefix = mappings[prefix];
+  if (mappedPrefix === undefined) return undefined;
+  const suffix = path.slice(prefix.length);
+  if (mappedPrefix === '') {
+    return suffix.startsWith('.') ? suffix.slice(1) : suffix;
+  }
+  return `${mappedPrefix}${suffix}`;
+}
+
+function remapNestedSpecMappings(
+  innerMappings: Record<string, string>,
+  outerMappings: Record<string, string>
+): Record<string, string> {
+  const remapped: Record<string, string> = {};
+
+  for (const [innerPath, currentPath] of Object.entries(innerMappings)) {
+    const outerPath = remapNestedSpecPath(currentPath, outerMappings);
+    if (outerPath !== undefined) {
+      remapped[innerPath] = outerPath;
+    }
+  }
+
+  return remapped;
+}
 
 export function enableCompositionDebugging(): void {
   CompositionDebugger.enableDebugMode();
@@ -187,6 +331,18 @@ function generateUniqueClosureId(
 /**
  * Execute a nested composition with a specific spec (when called as a function)
  */
+
+/**
+ * Narrow result type for the re-execution lightweight path. Only the
+ * fields that executeNestedCompositionWithSpec actually consumes are
+ * required — this ensures compile-time failures if new required fields
+ * are added to TypedResourceGraph that we'd silently miss.
+ */
+interface ReExecutionResult<TStatus> {
+  resources: Record<string, Enhanced<unknown, unknown>>;
+  status: MagicAssignableShape<TStatus> | undefined;
+}
+
 function executeNestedCompositionWithSpec<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -203,23 +359,27 @@ function executeNestedCompositionWithSpec<
     `Executing nested composition with spec: ${compositionName}`
   );
 
-  // Create a unique context for this nested composition execution
+  // Create a unique context for this nested composition execution.
+  //
+  // - `isReExecution` propagates from the parent so deeply nested
+  //   compositions (3+ levels) also skip the KRO analysis pass during
+  //   direct-mode re-execution.
+  // - `isNestedCall` is always set on this context because, by
+  //   definition, we're executing the inner composition with a concrete
+  //   spec from the caller. `processCompositionBodyAnalysis` reads this
+  //   flag to skip the hybrid-branch re-capture — the inner's branch
+  //   analysis was already done at its own definition time, and re-running
+  //   it with a fresh inner schema proxy would leak inner-schema refs
+  //   into the merged resource templates.
   const uniqueExecutionName = `${compositionName}-execution-${++globalCompositionCounter}`;
-  const executionContext = createCompositionContext(uniqueExecutionName);
-
-  // Execute the composition with the provided spec
-  const result = runWithCompositionContext(executionContext, () => {
-    return executeCompositionCore(
-      definition,
-      compositionFn,
-      options,
-      executionContext,
-      uniqueExecutionName,
-      spec // Pass the actual spec
-    );
+  const executionContext = createCompositionContext(uniqueExecutionName, {
+    ...(parentContext.isReExecution ? { isReExecution: true } : {}),
+    isNestedCall: true,
   });
 
-  // Get the instance number for this composition call
+  // Get the instance number for this composition call before executing the
+  // inner body so re-execution can expose parent live-status entries under the
+  // inner composition's local child resource ids.
   const instanceNumber = ++parentContext.compositionInstanceCounter;
 
   // For composition names ending with '-composition', use the base name for resource IDs
@@ -233,6 +393,42 @@ function executeNestedCompositionWithSpec<
   }
   baseName = toCamelCase(baseName);
   const baseId = `${baseName}${instanceNumber}`;
+
+  if (parentContext.isReExecution && parentContext.liveStatusMap) {
+    executionContext.liveStatusMap = createNestedReExecutionLiveStatusMap(
+      parentContext.liveStatusMap,
+      baseId,
+    );
+  }
+
+  // Execute the composition with the provided spec.
+  //
+  // During re-execution (direct-mode deploy), skip the full
+  // toResourceGraph/KRO-analysis pipeline. Just run the composition
+  // function directly with real values and capture the resources it
+  // registers — no proxy, no CEL generation, no status builder context.
+  const isReExec = parentContext.isReExecution;
+  const result = runWithCompositionContext(executionContext, () => {
+    if (isReExec) {
+      // Lightweight path: run composition fn directly, capture resources.
+      // Returns a ReExecutionResult — a narrow type with only the fields
+      // that executeNestedCompositionWithSpec actually reads (.resources
+      // for merging, .status for the NestedCompositionResource return).
+      const status = compositionFn(spec);
+      return {
+        resources: executionContext.resources,
+        status,
+      } as ReExecutionResult<TStatus> as unknown as TypedResourceGraph<TSpec, TStatus>;
+    }
+    return executeCompositionCore(
+      definition,
+      compositionFn,
+      options,
+      executionContext,
+      uniqueExecutionName,
+      spec // Pass the actual spec
+    );
+  });
 
   // Validate: nested composition IDs must not contain hyphens because
   // synthesizeNestedCompositionStatus uses hyphen-delimited segment
@@ -251,15 +447,95 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionIds.add(baseId);
 
+  // Register the inner composition's compositionFn so the outer's schema
+  // generation can source-parse it for `?? <literal>` defaults and
+  // auto-mirror them into the outer schema. This unblocks the common
+  // pattern where an inner reads `spec.X?.Y ?? default` and the outer
+  // doesn't explicitly expose Y in its schema — in KRO mode the proxy is
+  // truthy so `??` never fires, leaving a CEL ref to a field the outer
+  // schema doesn't declare. With the inner's default mirrored into the
+  // outer schema, KRO resolves the ref via the default at apply time.
+  if (!parentContext.nestedCompositionFns) {
+    parentContext.nestedCompositionFns = new Map();
+  }
+  parentContext.nestedCompositionFns.set(baseId, compositionFn);
+
+  if (!parentContext.nestedCompositionDefinitions) {
+    parentContext.nestedCompositionDefinitions = new Map();
+  }
+  parentContext.nestedCompositionDefinitions.set(
+    baseId,
+    definition as ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>,
+  );
+
+  if (!parentContext.nestedCompositionResources) {
+    parentContext.nestedCompositionResources = new Map();
+  }
+  parentContext.nestedCompositionResources.set(
+    baseId,
+    executionContext.resources as Record<string, KubernetesResource>,
+  );
+
+  const nestedSpecMappings = collectNestedSpecMappings(spec);
+  if (Object.keys(nestedSpecMappings).length > 0) {
+    if (!parentContext.nestedCompositionSpecMappings) {
+      parentContext.nestedCompositionSpecMappings = new Map();
+    }
+    parentContext.nestedCompositionSpecMappings.set(baseId, nestedSpecMappings);
+  }
+
+  if (!parentContext.nestedStatusSnapshots) {
+    parentContext.nestedStatusSnapshots = new Map();
+  }
+  const currentStatusSnapshot = (result as unknown as { status?: unknown }).status;
+  if (currentStatusSnapshot && typeof currentStatusSnapshot === 'object' && !Array.isArray(currentStatusSnapshot)) {
+    parentContext.nestedStatusSnapshots.set(baseId, currentStatusSnapshot as Record<string, unknown>);
+  }
+
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
+  const nestedResourceIds = executionContext.nestedCompositionIds ?? new Set<string>();
 
   // Merge the executed composition's resources into the parent context
+  const mergedInnerResourceIds: string[] = [];
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
-    // For single-resource compositions, use baseId as the resource ID
-    // For multi-resource compositions, use baseId-resourceId
-    const uniqueId = resourceCount === 1 ? baseId : `${baseId}-${resourceId}`;
-    parentContext.addResource(uniqueId, resource);
+    const uniqueId = computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId));
+    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<unknown, unknown>;
+    copyResourceMetadata(resource, mergedResource);
+
+    const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as string[] | undefined;
+    const aliases = new Set(existingAliases ?? []);
+    aliases.add(resourceId);
+    setMetadataField(mergedResource, 'resourceAliases', Array.from(aliases));
+
+    const existingDependsOn = getMetadataField(mergedResource, 'dependsOn') as
+      | Array<{ resourceId: string; condition?: string }>
+      | undefined;
+    if (existingDependsOn && existingDependsOn.length > 0) {
+      setMetadataField(
+        mergedResource,
+        'dependsOn',
+        existingDependsOn.map((dependency) => {
+          if (!Object.hasOwn(executionContext.resources, dependency.resourceId)) {
+            return dependency;
+          }
+
+          return {
+            ...dependency,
+            resourceId: computeMergedId(
+              baseId,
+              dependency.resourceId,
+              resourceCount,
+              nestedResourceIds.has(dependency.resourceId),
+            ),
+          };
+        }),
+      );
+    }
+
+    setResourceId(mergedResource, uniqueId);
+    parentContext.addResource(uniqueId, mergedResource);
+    mergedInnerResourceIds.push(uniqueId);
   }
 
   for (const [closureId, closure] of Object.entries(executionContext.closures)) {
@@ -272,36 +548,229 @@ function executeNestedCompositionWithSpec<
     `Executed nested composition ${compositionName} with ${Object.keys(executionContext.resources).length} resources and ${Object.keys(executionContext.closures).length} closures`
   );
 
-  // Preserve the inner composition's analyzed status CEL expressions.
-  // These are needed by the outer composition's serializer to inline the real
-  // CEL when it encounters a reference like `inngestBootstrap1.status.ready`.
+  // Preserve the inner composition's analyzed status CEL expressions so the
+  // outer composition's serializer can inline them when it encounters a
+  // reference like `inngestBootstrap1.status.ready`. There are two sources
+  // we need to propagate up:
+  //
+  // 1. The inner composition's own direct analysis (its `analyzedStatusMappings`
+  //    — Phase A + Phase B). These give the outer access to the inner's
+  //    top-level status fields.
+  // 2. The inner composition's own accumulated `__nestedStatus:*` entries
+  //    (from further-nested compositions it called). Without this
+  //    propagation, the outer can't resolve references like `inngest.status.ready`
+  //    that appear inside the inner's status expressions — the resolution
+  //    target lives in the inner's variableMappings but never makes it to
+  //    the outer's. This is what enables 3+ level nesting.
   const innerAnalysis = (result as unknown as Record<string, unknown>)._analysisResults as
     { analyzedStatusMappings?: Record<string, unknown>; phaseBStatusMappings?: Record<string, unknown> } | undefined;
 
-  // Store the inner status CEL mappings in the parent context so the serializer
-  // can look them up by the nested composition's baseId.
-  // Use analyzedStatusMappings (Phase A/B merged) as the primary source.
-  // For comparison artifacts (false from proxy >= 1), fall back to
-  // phaseBStatusMappings to recover the garbled but extractable CEL.
   const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
   const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
+  const preserveVariables = new Set(
+    Object.keys(
+      buildNestedCompositionAliasTargets(
+        compositionFn.toString(),
+        executionContext.nestedCompositionIds,
+      )
+    )
+  );
+  for (const nestedId of executionContext.nestedCompositionIds ?? []) {
+    preserveVariables.add(nestedId);
+  }
   if (innerStatusSource) {
     extractNestedStatusCelFn(innerStatusSource, {
       baseId,
-      innerResourceIds: Object.keys(executionContext.resources),
+      innerResourceIds: mergedInnerResourceIds,
+      preserveVariables,
       registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
     }, '', innerPhaseBFallback);
   }
 
-  // Create a NestedCompositionResource to return
-  // This is what enables: const db = databaseComposition({ name: 'mydb' }); db.spec; db.status.ready
-  const nestedCompositionResource: NestedCompositionResource<TSpec, TStatus> = {
+  // Propagate the inner composition's deeper nested-status entries up to
+  // the parent. The inner accumulated these in its own variableMappings
+  // when it processed its own nested composition calls (further-nested
+  // compositions).
+  //
+  // Each propagated entry's baseId is unique across the composition tree
+  // because `globalCompositionCounter` is monotonic, so there's no key
+  // collision between *different* deeply-nested compositions. The guard
+  // below — `!(key in parentContext.variableMappings)` — protects a
+  // different case: the direct extraction pass that ran a few lines
+  // above may have already produced an entry for the same key after
+  // running it through `remapVariableNames` against this composition's
+  // immediate inner resource set. That direct-pass entry is more
+  // specific (its variable names are remapped to the inner's resources),
+  // so we don't want to overwrite it with the verbatim-propagated entry.
+  for (const [key, value] of Object.entries(executionContext.variableMappings)) {
+    if (key.startsWith('__nestedStatus:')) {
+      if (!(key in parentContext.variableMappings)) {
+        const remappedValue = remapVariableNames(value, mergedInnerResourceIds, preserveVariables);
+        parentContext.addVariableMapping(key, remappedValue);
+      }
+    }
+  }
+
+  // Propagate the inner composition's own nested-composition fn map upward.
+  // This enables the outermost `arktypeToKroSchema` call to source-parse
+  // every composition in the tree (not just immediate children) for
+  // `?? <literal>` defaults and auto-mirror them into the top-level schema.
+  if (executionContext.nestedCompositionFns) {
+    for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
+      if (!parentContext.nestedCompositionFns?.has(innerBaseId)) {
+        parentContext.nestedCompositionFns?.set(innerBaseId, innerFn);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionDefinitions) {
+    if (!parentContext.nestedCompositionDefinitions) {
+      parentContext.nestedCompositionDefinitions = new Map();
+    }
+    for (const [innerBaseId, innerDefinition] of executionContext.nestedCompositionDefinitions) {
+      if (!parentContext.nestedCompositionDefinitions.has(innerBaseId)) {
+        parentContext.nestedCompositionDefinitions.set(innerBaseId, innerDefinition);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionResources) {
+    if (!parentContext.nestedCompositionResources) {
+      parentContext.nestedCompositionResources = new Map();
+    }
+    for (const [innerBaseId, innerResources] of executionContext.nestedCompositionResources) {
+      if (!parentContext.nestedCompositionResources.has(innerBaseId)) {
+        parentContext.nestedCompositionResources.set(innerBaseId, innerResources);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionSpecMappings && Object.keys(nestedSpecMappings).length > 0) {
+    if (!parentContext.nestedCompositionSpecMappings) {
+      parentContext.nestedCompositionSpecMappings = new Map();
+    }
+    for (const [innerBaseId, innerMappings] of executionContext.nestedCompositionSpecMappings) {
+      if (parentContext.nestedCompositionSpecMappings.has(innerBaseId)) continue;
+      const remapped = remapNestedSpecMappings(innerMappings, nestedSpecMappings);
+      if (Object.keys(remapped).length > 0) {
+        parentContext.nestedCompositionSpecMappings.set(innerBaseId, remapped);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionIds) {
+    for (const innerBaseId of executionContext.nestedCompositionIds) {
+      parentContext.nestedCompositionIds?.add(innerBaseId);
+    }
+  }
+
+  if (executionContext.nestedStatusSnapshots) {
+    for (const [innerBaseId, innerStatus] of executionContext.nestedStatusSnapshots) {
+      if (!parentContext.nestedStatusSnapshots?.has(innerBaseId)) {
+        parentContext.nestedStatusSnapshots?.set(innerBaseId, innerStatus);
+      }
+    }
+  }
+
+  if (executionContext.singletonDefinitions) {
+    if (!parentContext.singletonDefinitions) {
+      parentContext.singletonDefinitions = new Map();
+    }
+    for (const [key, definition] of executionContext.singletonDefinitions) {
+      if (!parentContext.singletonDefinitions.has(key)) {
+        parentContext.singletonDefinitions.set(key, definition);
+      }
+    }
+  }
+
+  // Create a NestedCompositionResource to return.
+  // During re-execution (direct-mode deploy), return the REAL status
+  // values from the inner composition — not a KubernetesRef proxy.
+  // The proxy is needed for KRO analysis (to generate CEL expressions
+  // for cross-composition references), but in direct mode the outer
+  // composition needs actual strings to wire into env vars, etc.
+  // dependsOn is added via Object.defineProperty below — use Omit + cast
+  // to satisfy TypeScript while preserving the runtime defineProperty pattern.
+  const nestedCompositionResource = {
     [NESTED_COMPOSITION_BRAND]: true as const,
     spec,
-    status: createStatusProxy<TStatus>(baseId, parentContext, result),
+    status: isReExec
+      ? (mergeNestedReExecutionStatus(
+          (result as unknown as { status?: TStatus }).status ?? ({} as TStatus),
+          parentContext.liveStatusMap?.get(baseId),
+        ) as TStatus)
+      : createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
     __resources: result.resources,
-  };
+  } as NestedCompositionResource<TSpec, TStatus>;
+
+  // Add dependsOn method so compositions can express ordering dependencies.
+  // When called, it attaches the dependency to the LAST resource registered
+  // by this inner composition (the "leaf" that gates overall readiness),
+  // not all merged resources.
+  Object.defineProperty(nestedCompositionResource, 'dependsOn', {
+    value: (dependency: unknown, condition?: string | CelExpression) => {
+      if (condition !== undefined) {
+        throw new TypeKroError(
+          'Conditional dependsOn() is not supported. TypeKro can only serialize unconditional dependency edges.',
+          'UNSUPPORTED_DEPENDENCY_CONDITION',
+          { dependencyType: typeof dependency }
+        );
+      }
+
+      // Find the last resource registered by this inner composition
+      const innerResourceIds = Object.keys(executionContext.resources);
+      const lastInnerResourceId = innerResourceIds[innerResourceIds.length - 1];
+      if (!lastInnerResourceId) return nestedCompositionResource;
+
+      // Look up the merged resource by computing the same ID used during
+      // the merge loop. Uses the shared computeMergedId utility so the
+      // naming convention is defined in one place.
+      const mergedId = computeMergedId(
+        baseId,
+        lastInnerResourceId,
+        innerResourceIds.length,
+        nestedResourceIds.has(lastInnerResourceId),
+      );
+      const mergedResource = parentContext.resources[mergedId];
+      if (!mergedResource) return nestedCompositionResource;
+
+      // Extract dependency resource ID
+      let depId: string | undefined;
+      depId = getResourceId(dependency as Record<string, unknown>);
+      if (!depId && typeof dependency === 'object' && dependency !== null) {
+        depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
+      }
+      if (!depId) return nestedCompositionResource;
+
+      // Dependencies declared inside this nested composition use the inner
+      // local resource IDs (for example `cache`). Once we merge the inner
+      // resources into the parent context, those IDs are prefixed
+      // (`webAppWithProcessing1Cache`). Remap same-composition dependencies
+      // here so the stored edge matches the merged graph.
+      if (Object.hasOwn(executionContext.resources, depId)) {
+        depId = computeMergedId(
+          baseId,
+          depId,
+          innerResourceIds.length,
+          nestedResourceIds.has(depId),
+        );
+      }
+
+      // Attach dependsOn to the leaf resource
+      const existing = getMetadataField(mergedResource, 'dependsOn') as
+        | Array<{ resourceId: string }>
+        | undefined;
+      const deps = existing ?? [];
+      deps.push({ resourceId: depId });
+      setMetadataField(mergedResource, 'dependsOn', deps);
+
+      return nestedCompositionResource;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
 
   return nestedCompositionResource;
 }
@@ -319,8 +788,97 @@ const KUBERNETES_REF_PROXY_PROPS = new Set([
 ]);
 
 /**
+ * Target shape for {@link createKubernetesRefProxy} — the small object the
+ * `Proxy` wraps. Carries the KubernetesRef brand and the
+ * `__nestedComposition` flag so consumers (cel-references serializer,
+ * cel-validator transitive classifier) can detect a nested composition
+ * status reference uniformly.
+ *
+ * The index signature is intentional — dynamic property access through
+ * the Proxy's get-trap needs to be allowed at compile time. The runtime
+ * behavior is fully controlled by the Proxy handler in
+ * {@link createKubernetesRefProxy}; the underlying target object only
+ * ever exposes the four named fields above.
+ *
+ * **`valueOf` and `===` interaction.** The proxy returns the marker
+ * string from `toString`/`valueOf`, so loose-equality (`==`) comparisons
+ * with strings work via the abstract equality spec's ToPrimitive
+ * coercion. Strict-equality (`===`) with numbers always returns false
+ * because the proxy is an object, not a number — that's expected, since
+ * these proxies are not meant for arithmetic. Composition authors should
+ * use `Cel.expr<number>(ref, ' >= 1')` or similar for numeric
+ * comparisons in CEL output.
+ */
+interface NestedRefProxyTarget {
+  [KUBERNETES_REF_BRAND]: true;
+  resourceId: string;
+  fieldPath: string;
+  __nestedComposition: true;
+  [key: string]: unknown;
+}
+
+function mergeNestedReExecutionStatus(rawValue: unknown, liveValue: unknown): unknown {
+  if (isKubernetesRef(rawValue) || isCelExpression(rawValue)) {
+    return liveValue ?? rawValue;
+  }
+
+  if (
+    rawValue === null
+    || typeof rawValue !== 'object'
+    || liveValue === null
+    || typeof liveValue !== 'object'
+  ) {
+    return liveValue ?? rawValue;
+  }
+
+  if (!Array.isArray(rawValue)) {
+    if (!containsKubernetesRefs(rawValue) && !containsCelExpressions(rawValue)) {
+      return liveValue ?? rawValue;
+    }
+
+    const rawObj = rawValue as Record<string, unknown>;
+    const liveObj =
+      liveValue !== null && typeof liveValue === 'object' && !Array.isArray(liveValue)
+        ? (liveValue as Record<string, unknown>)
+        : {};
+    const merged: Record<string, unknown> = {};
+
+    for (const key of new Set([...Object.keys(rawObj), ...Object.keys(liveObj)])) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      merged[key] = mergeNestedReExecutionStatus(rawObj[key], liveObj[key]);
+    }
+
+    return merged;
+  }
+
+  if (Array.isArray(rawValue)) {
+    if (!containsKubernetesRefs(rawValue) && !containsCelExpressions(rawValue)) {
+      return liveValue ?? rawValue;
+    }
+
+    const liveArr = Array.isArray(liveValue) ? liveValue : [];
+    return rawValue.map((item, index) => mergeNestedReExecutionStatus(item, liveArr[index]));
+  }
+
+  return rawValue;
+}
+
+/**
  * Create a recursive proxy that returns `KubernetesRef` objects for
- * arbitrarily deep property access.
+ * arbitrarily deep property access on a nested composition's status.
+ *
+ * Used by {@link createStatusProxy}: `<nestedComp>.status.X` produces a
+ * chain of these proxies rooted at the nested composition's virtual
+ * baseId. The proxies carry the `__nestedComposition` marker so
+ * downstream serialization knows to resolve them via `nestedStatusCel`.
+ *
+ * **String coercion** is implemented via `Symbol.toPrimitive`, `toString`,
+ * and `valueOf`, producing the canonical marker token
+ * `__KUBERNETES_REF_<resourceId>_<fieldPath>__` (matching `createRefFactory`
+ * and `createSchemaRefFactory`). This keeps the proxy usable in template
+ * literals (`` `${nested.status.foo}-bar` ``) — the template literal
+ * machinery sees a string with a marker, and the later transitive
+ * resolver in `cel-references.ts` substitutes the nested expression in.
  *
  * Two property-resolution strategies are supported:
  * - `useAllowlist: false` (default) — uses `prop in target` to decide
@@ -333,25 +891,45 @@ const KUBERNETES_REF_PROXY_PROPS = new Set([
  * @param basePath    - The initial field path (e.g. `'status'` or `''`)
  * @param useAllowlist - When true, use an explicit allowlist instead of `prop in target`
  */
-function createKubernetesRefProxy(resourceId: string, basePath: string, useAllowlist = false): any {
-  const baseObj: any = {
+function createKubernetesRefProxy(
+  resourceId: string,
+  basePath: string,
+  useAllowlist = false
+): NestedRefProxyTarget {
+  const baseObj: NestedRefProxyTarget = {
     [KUBERNETES_REF_BRAND]: true,
     resourceId,
     fieldPath: basePath,
     __nestedComposition: true,
   };
 
+  // Canonical marker form — matches `createRefFactory` and `createSchemaRefFactory`
+  // so that downstream serialization code (processResourceReferences,
+  // convertKubernetesRefMarkersTocel, resolveNestedCompositionRefs) can
+  // recognize and substitute these proxies uniformly.
+  const markerString = `__KUBERNETES_REF_${resourceId}_${basePath}__`;
+
   return new Proxy(baseObj, {
     get(target, prop) {
+      // String-coercion hooks — same pattern as the other ref factories.
+      // `toString`/`valueOf` produce the marker string; `Symbol.toPrimitive`
+      // returns the marker for 'string' hints and NaN for numeric hints
+      // (so comparisons like `ref >= 1` evaluate to `false` in Phase A,
+      // triggering Phase B fn.toString analysis).
+      if (prop === 'toString' || prop === 'valueOf') {
+        return () => markerString;
+      }
+      if (prop === Symbol.toPrimitive) {
+        return (hint: string) => (hint === 'string' ? markerString : NaN);
+      }
+
       // Determine whether to return the target property directly
       const isKnownProp = useAllowlist
-        ? typeof prop === 'string' || typeof prop === 'symbol'
-          ? KUBERNETES_REF_PROXY_PROPS.has(prop as string)
-          : false
+        ? typeof prop === 'string' && KUBERNETES_REF_PROXY_PROPS.has(prop)
         : prop in target;
 
       if (isKnownProp) {
-        return target[prop];
+        return target[prop as keyof NestedRefProxyTarget];
       }
 
       // For any other string property, check live status data first,
@@ -362,7 +940,7 @@ function createKubernetesRefProxy(resourceId: string, basePath: string, useAllow
         if (basePath === 'status') {
           const ctx = getCurrentCompositionContext();
           const liveStatus = ctx?.liveStatusMap?.get(resourceId);
-          if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
+          if (liveStatus && Object.hasOwn(liveStatus, prop)) {
             return liveStatus[prop];
           }
         }
@@ -461,19 +1039,41 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           const resourceBuildStart = Date.now();
 
-          // Execute the composition function in a status builder context where
-          // Enhanced resource proxies return KubernetesRef objects, enabling
-          // JavaScript-to-CEL conversion during serialization.
+          // When `actualSpec` is provided, this is a re-execution with real
+          // values (direct-mode deploy). Run the composition function WITHOUT
+          // the status builder context so ternaries and conditionals evaluate
+          // as plain JavaScript — no KubernetesRef proxies, no CEL generation.
+          //
+          // When `actualSpec` is absent, this is the initial KRO analysis
+          // pass. Run in status builder context so Enhanced resource proxies
+          // return KubernetesRef objects, enabling JS-to-CEL conversion.
           const specToUse = actualSpec || (schema.spec as TSpec);
-          capturedStatus = runInStatusBuilderContext(() => compositionFn(specToUse));
+          capturedStatus = actualSpec
+            ? compositionFn(specToUse)
+            : runInStatusBuilderContext(() => compositionFn(specToUse));
 
-          // Store the original composition function for later analysis
-          // This allows the serialization system to analyze the original JavaScript expressions
+          // Store the original composition function for later analysis.
+          // These are used by the serialization system to analyze the
+          // original JavaScript expressions for CEL conversion. They're
+          // always set because nested compositions run through
+          // executeCompositionCore with actualSpec even during the
+          // definition pass (the parent passes proxy-traced spec values).
+          // During re-execution they're inert but harmless.
           Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
           Reflect.set(capturedStatus, '__originalSchema', schema.spec);
 
           // Attach nested composition status CEL mappings from the context.
           // These are populated by inner compositions' executeNestedCompositionWithSpec.
+          //
+          // We also source-parse this composition function to find variable
+          // assignments to nested-composition calls (e.g.,
+          // `const stack = webAppWithProcessing(...)`) and add alias entries
+          // mapping the variable name to the nested composition's baseId.
+          // This lets the transitive resolver in `cel-references.ts` resolve
+          // references like `stack.status.ready` that Phase B AST analysis
+          // captures verbatim from the source — the variable name has no
+          // structural relationship to the baseId, but the alias bridges
+          // that gap.
           const nestedStatusMappings: Record<string, string> = {};
           for (const [key, value] of Object.entries(context.variableMappings)) {
             if (key.startsWith('__nestedStatus:')) {
@@ -481,7 +1081,39 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             }
           }
           if (Object.keys(nestedStatusMappings).length > 0) {
+            const aliases = buildNestedCompositionAliases(
+              compositionFn.toString(),
+              context.nestedCompositionIds,
+              nestedStatusMappings
+            );
+            for (const [aliasKey, aliasValue] of Object.entries(aliases)) {
+              nestedStatusMappings[aliasKey] = aliasValue;
+              // Also push to context.variableMappings so they propagate up
+              // to outer compositions when this composition is itself nested.
+              context.addVariableMapping(aliasKey, aliasValue);
+            }
             Reflect.set(capturedStatus, '__nestedStatusCel', nestedStatusMappings);
+          }
+
+          // Attach the nested-composition-fn map so `arktypeToKroSchema` can
+          // source-parse every nested composition in the tree for
+          // `?? <literal>` defaults and auto-mirror them into this outer
+          // schema. See CompositionContext.nestedCompositionFns for the
+          // full rationale.
+          if (context.nestedCompositionFns && context.nestedCompositionFns.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionFns', context.nestedCompositionFns);
+          }
+
+          if (context.nestedCompositionDefinitions && context.nestedCompositionDefinitions.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionDefinitions', context.nestedCompositionDefinitions);
+          }
+
+          if (context.nestedCompositionResources && context.nestedCompositionResources.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionResources', context.nestedCompositionResources);
+          }
+
+          if (context.nestedCompositionSpecMappings && context.nestedCompositionSpecMappings.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionSpecMappings', context.nestedCompositionSpecMappings);
           }
 
           const resourceBuildEnd = Date.now();
@@ -617,6 +1249,12 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
         enumerable: false,
         configurable: true,
       });
+      Object.defineProperty(result, '_singletonDefinitions', {
+        value: context.singletonDefinitions ? Array.from(context.singletonDefinitions.values()) : [],
+        writable: false,
+        enumerable: false,
+        configurable: true,
+      });
       Object.defineProperty(result, '_compositionName', {
         value: compositionName,
         writable: false,
@@ -705,42 +1343,73 @@ export function kubernetesComposition<
 
   if (parentContext) {
     // We're nested within another composition - merge our resources into the parent context
-    // and return a CallableComposition that can be called with a spec
-    const nestedResult = executeNestedComposition(
-      definition,
-      compositionFn,
-      options,
-      parentContext,
-      compositionName
-    );
+    // and return a CallableComposition that can be called with a spec.
+    //
+    // Skip the definition-time proxy pass during re-execution — it
+    // generates CEL expressions that pollute resource names in direct
+    // mode. The spec-driven pass (via the callable below) is the only
+    // one that matters during re-execution.
+    // INVARIANT: `nestedResult` is `undefined` during re-execution.
+    // All downstream reads MUST guard against this. If you add code that
+    // accesses `nestedResult.status`, `nestedResult.resources`, etc.,
+    // wrap it in `if (nestedResult)` or it will crash only in
+    // direct-mode deploys (which are harder to test than serialization).
+    const nestedResult = parentContext.isReExecution
+      ? undefined
+      : executeNestedComposition(
+          definition,
+          compositionFn,
+          options,
+          parentContext,
+          compositionName
+        );
 
-    // Create a callable composition that can be invoked with a spec
+    // Create a callable composition that can be invoked with a spec.
+    // Use the CURRENT composition context at call time (not the captured
+    // `parentContext` from definition time) so re-execution correctly
+    // detects `isReExecution` and returns real status values.
     const callableComposition = ((spec: TSpec) => {
-      // When called with a spec, execute the nested composition with that spec
+      const currentContext = getCurrentCompositionContext() ?? parentContext;
       return executeNestedCompositionWithSpec(
         definition,
         compositionFn,
         options,
-        parentContext,
+        currentContext,
         spec,
         compositionName
       );
     }) as CallableComposition<TSpec, TStatus>;
 
-    // Copy properties from the TypedResourceGraph to the callable composition
-    // Preserve original property descriptors to maintain non-writable metadata properties
-    // Use getOwnPropertyNames to include non-enumerable properties like _compositionFn
-    for (const key of Object.getOwnPropertyNames(nestedResult)) {
-      const descriptor = Object.getOwnPropertyDescriptor(nestedResult, key);
-      if (descriptor) {
-        Object.defineProperty(callableComposition, key, descriptor);
+    // Copy properties from the TypedResourceGraph to the callable composition.
+    //
+    // INVARIANT: During re-execution, nestedResult is undefined (definition
+    // pass skipped) and the callable has no graph properties (.resources,
+    // ._compositionFn, etc.). This is safe because during re-execution
+    // the callable is always INVOKED (not just read) — the outer
+    // composition function calls webAppWithProcessing({...}) which
+    // executes the callable and returns a NestedCompositionResource with
+    // real status values. No code path reads graph properties off the
+    // callable itself during re-execution.
+    if (nestedResult) {
+      for (const key of Object.getOwnPropertyNames(nestedResult)) {
+        const descriptor = Object.getOwnPropertyDescriptor(nestedResult, key);
+        if (descriptor) {
+          Object.defineProperty(callableComposition, key, descriptor);
+        }
       }
     }
 
-    // Add the status proxy for cross-composition references
-    // Use forCompositionProperty=true to get KubernetesRef-based proxy
+    // Add the status proxy for cross-composition references.
+    // During re-execution, nestedResult is undefined (definition pass
+    // skipped). The static .status on the callable is not used in that
+    // case — callers invoke the callable which returns a
+    // NestedCompositionResource with real status values. The proxy
+    // here is only relevant for the KRO analysis pass where the
+    // callable's .status is read for graph serialization.
     Object.defineProperty(callableComposition, 'status', {
-      value: createStatusProxy<TStatus>(compositionName, parentContext, nestedResult, true),
+      value: nestedResult
+        ? createStatusProxy<TStatus>(compositionName, parentContext, nestedResult, true)
+        : {},  // Re-execution: unused — status comes from the callable's return value
       enumerable: true,
       configurable: false,
       writable: false,
@@ -827,7 +1496,7 @@ export function kubernetesComposition<
       status: createStatusProxy<TStatus>(compositionName, null, callResult),
       __compositionId: callCompositionName,
       __resources: callResult.resources,
-    } satisfies NestedCompositionResource<TSpec, TStatus>;
+    } as NestedCompositionResource<TSpec, TStatus>;
   }) as unknown as CallableComposition<TSpec, TStatus>; // Double cast needed: function shape doesn't overlap with CallableComposition
 
   // Create a set to track explicitly deleted properties

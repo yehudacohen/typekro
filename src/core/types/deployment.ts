@@ -3,8 +3,9 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
-import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
+import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
+import type { ASTAnalysisResult } from '../expressions/composition/composition-analyzer-types.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
@@ -26,6 +27,8 @@ export interface DeployedResource {
   namespace: string;
   manifest: KubernetesResource;
   status: 'deployed' | 'ready' | 'failed';
+  /** True once the resource has been applied to the Kubernetes API. */
+  applied?: boolean;
   deployedAt: Date;
   error?: Error;
   alchemyResourceId?: string;
@@ -53,6 +56,8 @@ export interface DeploymentContext {
   kubernetesApi?: KubernetesObjectApi;
   kubeConfig?: KubeConfig; // For operations that need direct API access (e.g., CRD patching)
   alchemyScope?: Scope;
+  /** True when a closure is being executed only to validate KRO compatibility. */
+  validationOnly?: boolean;
   namespace?: string;
   // Level-based execution context - enables future closure extensibility
   deployedResources: Map<string, DeployedResource>; // Resources available at this level
@@ -253,6 +258,9 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
   /** Instance identifier — see `factoryName`. */
   instanceName?: string;
 
+  /** @internal Singleton owner spec fingerprint stamped onto direct-mode resources. */
+  singletonSpecFingerprint?: string;
+
   /**
    * Scope-targeted deployment. When set, only resources whose effective
    * scopes match this filter are deployed. Resources outside the filter
@@ -444,8 +452,8 @@ export interface DeploymentResourceGraph {
 
 // New typed ResourceGraph interface for the factory pattern
 export interface TypedResourceGraph<
-  TSpec extends KroCompatibleType = any,
-  TStatus extends KroCompatibleType = any,
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
 > {
   name: string;
   resources: KubernetesResource[];
@@ -461,6 +469,7 @@ export interface TypedResourceGraph<
 
   // Utility methods
   toYaml(): string;
+  toYaml(spec: TSpec): string;
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
 }
 
@@ -486,6 +495,23 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly status: StatusProxy<TStatus>;
   readonly __compositionId: string;
   readonly __resources: KubernetesResource[];
+  /** Declare that this composition's resources depend on another resource being ready.
+   * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
+  readonly dependsOn: (dependency: string | KubernetesResource | { readonly __compositionId: string }) => this;
+}
+
+export interface SingletonHandleBase<TStatus> {
+  readonly [SINGLETON_HANDLE_BRAND]: true;
+  readonly __singletonId: string;
+  readonly __singletonKey: string;
+  readonly status: StatusProxy<TStatus>;
+}
+
+export interface SingletonOwnedHandle<TSpec, TStatus>
+  extends NestedCompositionResource<TSpec, TStatus>, SingletonHandleBase<TStatus> {}
+
+export interface SingletonReferenceHandle<TStatus> extends SingletonHandleBase<TStatus> {
+  readonly kind: 'singleton-reference';
 }
 
 /**
@@ -505,6 +531,27 @@ export type CallableComposition<
   // Enables: composition.status.field in status builders
   readonly status: InferType<TStatus>;
 } & TypedResourceGraph<TSpec, TStatus>;
+
+/**
+ * Handle returned by singleton definition/use helpers.
+ * A singleton definition may execute as a real nested composition (owned handle)
+ * or as a shared reference handle depending on execution mode/context.
+ */
+export type SingletonHandle<TSpec, TStatus> =
+  | SingletonOwnedHandle<TSpec, TStatus>
+  | SingletonReferenceHandle<TStatus>;
+
+export interface SingletonDefinitionRecord<
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
+> {
+  readonly id: string;
+  readonly key: string;
+  readonly specFingerprint: string;
+  readonly registryNamespace: string;
+  readonly composition: CallableComposition<TSpec, TStatus>;
+  readonly spec: TSpec;
+}
 
 /**
  * Options passed to `deploy()` on a `TypedResourceGraph`.
@@ -601,6 +648,12 @@ export type ResourceGraphDefinitionProvider = (rgd: {
   [key: string]: unknown;
 }) => Enhanced<Record<string, unknown>, Record<string, unknown>>;
 
+/** Options passed when creating an Alchemy-backed Kro deployer. */
+export interface AlchemyKroDeployerOptions {
+  /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
+  deleteInstance?: (name: string) => Promise<void>;
+}
+
 /**
  * Alchemy integration bridge.
  *
@@ -610,9 +663,9 @@ export type ResourceGraphDefinitionProvider = (rgd: {
  */
 export interface AlchemyBridge {
   /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
-  createDeployer(engine: unknown): unknown;
+  createDeployer(engine: unknown, options?: AlchemyKroDeployerOptions): unknown;
   /** Register a resource type in alchemy's global provider registry. */
-  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): any;
+  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): unknown;
   /** Generate a deterministic alchemy resource ID. */
   createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string): string;
 }
@@ -622,13 +675,20 @@ export interface AlchemyBridge {
  *
  * These fields are populated automatically when creating factories via
  * `TypedResourceGraph.factory()` and should never be set by library consumers.
+ *
+ * @internal
  */
 export interface InternalFactoryOptions {
   /** Re-execution function for the composition (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition functions preserve author-defined spec/status shapes.
   compositionFn?: (spec: any) => any;
+  /** AST control-flow analysis for includeWhen/forEach propagation (internal use) */
+  compositionAnalysis?: ASTAnalysisResult | null;
   /** Original composition definition (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition definitions are heterogeneous authored objects.
   compositionDefinition?: any;
   /** Original composition options (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition options are heterogeneous authored objects.
   compositionOptions?: any;
 
   /** Factory type for expression analysis and conversion (internal use) */
@@ -643,6 +703,8 @@ export interface InternalFactoryOptions {
   rgdProvider?: ResourceGraphDefinitionProvider;
   /** Alchemy integration bridge (only needed when alchemyScope is set) */
   alchemyBridge?: AlchemyBridge;
+  /** Collected singleton definitions used by this graph (internal use) */
+  singletonDefinitions?: SingletonDefinitionRecord[];
 }
 
 /**
@@ -652,6 +714,17 @@ export interface InternalFactoryOptions {
  * ({@link TypedResourceGraph.factory}) exposes only {@link PublicFactoryOptions}.
  */
 export interface FactoryOptions extends PublicFactoryOptions, InternalFactoryOptions {}
+
+/** Options exposed to library consumers for per-deploy behavior. */
+export interface ResourceFactoryDeployOptions {
+  targetScopes?: string[];
+}
+
+/** @internal Options used by singleton ownership plumbing during recursive deploys. */
+export interface InternalResourceFactoryDeployOptions extends ResourceFactoryDeployOptions {
+  instanceNameOverride?: string;
+  singletonSpecFingerprint?: string;
+}
 
 // Type mapping for factory selection
 export type FactoryForMode<
@@ -670,12 +743,16 @@ export interface ResourceFactory<
   TStatus extends KroCompatibleType,
 > {
   // Core deployment - single method handles all cases
-  deploy(spec: TSpec, opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>>;
+  deploy(
+    spec: TSpec,
+    opts?: ResourceFactoryDeployOptions
+  ): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
   deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void>;
   getStatus(): Promise<FactoryStatus>;
+  dispose(): Promise<void>;
 
   // Metadata
   readonly mode: 'kro' | 'direct';
@@ -694,7 +771,9 @@ export interface DirectResourceFactory<
   // Direct-specific features
   rollback(): Promise<RollbackResult>;
   toDryRun(spec: TSpec): Promise<DeploymentResult>;
-  toYaml(spec: TSpec): string; // Generate instance deployment YAML
+  toYaml(spec: TSpec): string;
+  /** Build the resolved resource graph for an instance spec. */
+  createResourceGraphForInstance(spec: TSpec, instanceNameOverride?: string): DeploymentResourceGraph;
 }
 
 export interface KroResourceFactory<
@@ -796,6 +875,7 @@ export interface ResolutionContext {
   deploymentId?: string;
   resourceKeyMapping?: Map<string, unknown>;
   schema?: { spec?: unknown; status?: unknown };
+  nestedStatusCel?: Record<string, string>;
   /**
    * Function returning the composition-local dependency ids for a given
    * resource id. Populated by the engine before deploy so the tagging

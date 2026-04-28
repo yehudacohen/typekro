@@ -232,10 +232,16 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
       });
 
       // Validate generated Helm values
-      expect(release.spec.values?.installCRDs).toBe(true);
-      expect(release.spec.values?.replicaCount).toBe(2);
-      expect(release.spec.values?.cainjector?.enabled).toBe(true);
-      expect(release.spec.values?.prometheus?.enabled).toBe(true);
+      const values = release.spec.values as {
+        installCRDs?: boolean;
+        replicaCount?: number;
+        cainjector?: { enabled?: boolean };
+        prometheus?: { enabled?: boolean };
+      } | undefined;
+      expect(values?.installCRDs).toBe(true);
+      expect(values?.replicaCount).toBe(2);
+      expect(values?.cainjector?.enabled).toBe(true);
+      expect(values?.prometheus?.enabled).toBe(true);
     });
 
     it('should use correct chart configuration', async () => {
@@ -330,11 +336,18 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
       });
 
       // Validate complex configuration
-      expect(release.spec.values?.global?.logLevel).toBe(2);
-      expect(release.spec.values?.controller?.resources?.requests?.cpu).toBe('100m');
-      expect(release.spec.values?.webhook?.replicaCount).toBe(2);
-      expect(release.spec.values?.cainjector?.enabled).toBe(true);
-      expect(release.spec.values?.prometheus?.servicemonitor?.interval).toBe('30s');
+      const values = release.spec.values as {
+        global?: { logLevel?: number };
+        controller?: { resources?: { requests?: { cpu?: string } } };
+        webhook?: { replicaCount?: number };
+        cainjector?: { enabled?: boolean };
+        prometheus?: { servicemonitor?: { interval?: string } };
+      } | undefined;
+      expect(values?.global?.logLevel).toBe(2);
+      expect(values?.controller?.resources?.requests?.cpu).toBe('100m');
+      expect(values?.webhook?.replicaCount).toBe(2);
+      expect(values?.cainjector?.enabled).toBe(true);
+      expect(values?.prometheus?.servicemonitor?.interval).toBe('30s');
     });
   });
 

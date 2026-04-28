@@ -6,6 +6,7 @@
  */
 
 import { isCelExpression, isKubernetesRef, containsKubernetesRefs, containsCelExpressions } from '../../../utils/type-guards.js';
+import { RESOURCE_ID_ANNOTATION } from '../resource-tagging.js';
 import { getMetadataField, getResourceId } from '../../metadata/index.js';
 import type {
   DeployedResource,
@@ -13,6 +14,7 @@ import type {
   DeploymentResourceGraph,
   DeploymentResult,
   FactoryOptions,
+  RollbackResult,
 } from '../../types/deployment.js';
 import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
@@ -37,17 +39,28 @@ export class DirectDeploymentStrategy<
     factoryName: string,
     namespace: string,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: direct strategy must preserve the generic status-builder resource map contract.
     statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined,
     resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
     public resourceResolver: {
-      createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
+      createResourceGraphForInstance(
+        spec: TSpec,
+        instanceNameOverride?: string
+      ): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
       reExecuteWithLiveStatus?(spec: TSpec, liveStatusMap: Map<string, Record<string, unknown>>): TStatus | null;
     } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
+  }
+
+  async rollbackDeployment(
+    deploymentId: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<RollbackResult> {
+    return this.deploymentEngine.rollback(deploymentId, opts);
   }
 
   protected async executeDeployment(
@@ -57,7 +70,10 @@ export class DirectDeploymentStrategy<
   ): Promise<DeploymentResult> {
     try {
       // Create resource graph for this instance
-      const resourceGraph = this.resourceResolver.createResourceGraphForInstance(spec);
+      const resourceGraph = this.resourceResolver.createResourceGraphForInstance(
+        spec,
+        opts?.instanceNameOverride
+      );
 
       // Create deployment options. Tag the options with factoryName +
       // instanceName so the engine stamps every resource with ownership
@@ -68,6 +84,7 @@ export class DirectDeploymentStrategy<
         factoryName: this.factoryName,
         instanceName,
         ...(opts?.targetScopes !== undefined && { targetScopes: opts.targetScopes }),
+        ...(opts?.singletonSpecFingerprint && { singletonSpecFingerprint: opts.singletonSpecFingerprint }),
       };
 
       // Pass closures to deployment engine for level-based execution
@@ -129,6 +146,13 @@ export class DirectDeploymentStrategy<
     // Get the base proxy first
     const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
 
+    if (
+      this.factoryOptions.waitForReady === false ||
+      this.factoryOptions.hydrateStatus === false
+    ) {
+      return baseProxy;
+    }
+
     // Try live status re-execution: re-run the composition function with real
     // status data from the cluster injected into the proxy system. This makes
     // status comparisons like `database.status.readyInstances >= 1` evaluate
@@ -151,7 +175,18 @@ export class DirectDeploymentStrategy<
 
           // Deep merge: recursively walk the status tree, replacing proxy artifacts
           // (KubernetesRef, CelExpression) with base values while keeping resolved values.
-          const mergedStatus = deepMergeLiveStatus(liveStatus, baseProxy.status ?? {});
+          let mergedStatus = deepMergeLiveStatus(liveStatus, baseProxy.status ?? {});
+
+          const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
+          if (reExecutedStatus) {
+            mergedStatus = mergeResolvedStatusArtifacts(mergedStatus, reExecutedStatus);
+          }
+
+          mergedStatus = repairReadyFromResolvedComponents(
+            mergedStatus,
+            baseProxy.status,
+            reExecutedStatus,
+          );
 
           return {
             ...baseProxy,
@@ -221,11 +256,18 @@ export class DirectDeploymentStrategy<
         });
 
         const status = (liveResource as Record<string, unknown>).status;
+        const annotationId =
+          (resource.manifest.metadata as { annotations?: Record<string, string> } | undefined)
+            ?.annotations?.[RESOURCE_ID_ANNOTATION];
+        const originalId = getResourceId(resource.manifest) || annotationId || resource.id;
+
         if (status && typeof status === 'object') {
-          const originalId = getResourceId(resource.manifest) || resource.id;
           return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
         }
-        return null;
+
+        // Statusless resources (Service, ConfigMap, Secret, etc.) still count as
+        // successfully visible children for nested-composition recovery.
+        return { originalId, deployedId: resource.id, kind: resource.kind, status: {} };
       })
     );
 
@@ -334,4 +376,105 @@ function deepMergeLiveStatus(
 
   // Primitives (string, number, boolean, null, undefined) — correctly resolved
   return liveValue;
+}
+
+function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: unknown): unknown {
+  const looksLikeExpressionObject =
+    currentValue !== null
+    && typeof currentValue === 'object'
+    && !Array.isArray(currentValue)
+    && 'expression' in (currentValue as Record<string, unknown>)
+    && typeof (currentValue as { expression?: unknown }).expression === 'string';
+
+  if (
+    isCelExpression(currentValue)
+    || isKubernetesRef(currentValue)
+    || looksLikeExpressionObject
+  ) {
+    return reExecutedValue ?? currentValue;
+  }
+
+  if (currentValue !== null && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
+    if (reExecutedValue === null || typeof reExecutedValue !== 'object' || Array.isArray(reExecutedValue)) {
+      return currentValue;
+    }
+
+    const currentObj = currentValue as Record<string, unknown>;
+    const reExecutedObj = reExecutedValue as Record<string, unknown>;
+    const merged: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(currentObj), ...Object.keys(reExecutedObj)])) {
+      merged[key] = mergeResolvedStatusArtifacts(currentObj[key], reExecutedObj[key]);
+    }
+    return merged;
+  }
+
+  if (Array.isArray(currentValue)) {
+    if (!Array.isArray(reExecutedValue)) {
+      return currentValue;
+    }
+    return currentValue.map((item, index) => mergeResolvedStatusArtifacts(item, reExecutedValue[index]));
+  }
+
+  return currentValue;
+}
+
+/** Internal test hook for status artifact merge semantics. */
+export const mergeResolvedStatusArtifactsForTest = mergeResolvedStatusArtifacts;
+
+function repairReadyFromResolvedComponents<T>(
+  status: T,
+  baseStatus: unknown,
+  reExecutedStatus: unknown,
+): T {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return status;
+
+  const statusRecord = status as Record<string, unknown>;
+  const baseRecord = baseStatus && typeof baseStatus === 'object' && !Array.isArray(baseStatus)
+    ? (baseStatus as Record<string, unknown>)
+    : null;
+  const reExecutedRecord = reExecutedStatus && typeof reExecutedStatus === 'object' && !Array.isArray(reExecutedStatus)
+    ? (reExecutedStatus as Record<string, unknown>)
+    : null;
+
+  const baseReady = baseRecord?.ready;
+  const baseReadyLooksUnresolved =
+    isCelExpression(baseReady)
+    || isKubernetesRef(baseReady)
+    || containsKubernetesRefs(baseReady)
+    || (
+      baseReady !== null
+      && typeof baseReady === 'object'
+      && 'expression' in (baseReady as Record<string, unknown>)
+      && typeof (baseReady as { expression?: unknown }).expression === 'string'
+    );
+
+  if (typeof statusRecord.ready !== 'boolean') {
+    return status;
+  }
+
+  if (typeof reExecutedRecord?.ready === 'boolean' && reExecutedRecord.ready === true) {
+    return {
+      ...statusRecord,
+      ready: reExecutedRecord.ready,
+    } as T;
+  }
+
+  const components = statusRecord.components;
+  if (!components || typeof components !== 'object' || Array.isArray(components)) {
+    return status;
+  }
+
+  const componentValues = Object.values(components as Record<string, unknown>);
+  if (componentValues.length === 0 || componentValues.some((value) => typeof value !== 'boolean')) {
+    return status;
+  }
+
+  if (!baseReadyLooksUnresolved && statusRecord.ready === true) {
+    return status;
+  }
+
+  return {
+    ...statusRecord,
+    ready: componentValues.every((value) => value === true),
+  } as T;
 }

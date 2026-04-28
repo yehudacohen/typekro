@@ -184,10 +184,10 @@ export interface CompileTimeValidationContext {
  */
 export interface KubernetesRefUsageContext {
   /** Available resources */
-  availableResources: Record<string, Enhanced<any, any>>;
+  availableResources: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy if available */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** How the KubernetesRef is being used */
   usageType: 'property-access' | 'method-call' | 'comparison' | 'template-literal';

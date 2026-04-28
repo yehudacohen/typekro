@@ -31,11 +31,22 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Docs validation
+        run: |
+          bun run docs:validate
+          bun run docs:check-lines
+          bun run docs:check-examples
+          bun run docs:check-links
+          bun run docs:build
+
       - name: Circular dependency check
         run: bunx madge --circular --extensions ts src/
 
       - name: Unit tests with coverage
         run: bun run test:coverage
+
+      - name: Integration YAML tests
+        run: bun run test:integration:yaml
 
       - name: Upload coverage to Codecov
         if: success()

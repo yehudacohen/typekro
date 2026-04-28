@@ -24,6 +24,7 @@ import type {
   KubernetesResource,
 } from '../types.js';
 import { CelEvaluator } from './cel-evaluator.js';
+import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
 
 // =============================================================================
 // TYPE DEFINITIONS FOR IMPROVED TYPE SAFETY
@@ -182,7 +183,12 @@ export class ReferenceResolver {
   /**
    * Resolve all references in a resource
    */
+  // biome-ignore lint/suspicious/noExplicitAny: resolver traverses heterogeneous runtime resource shapes.
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
+    const resourceRecord = resource as {
+      id?: string;
+      toJSON?: () => unknown;
+    } & Record<string, unknown>;
     this.logger.debug('ReferenceResolver.resolveReferences called', {
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
@@ -193,42 +199,42 @@ export class ReferenceResolver {
     });
 
     // Quick check - if there are no references, return the resource as-is
-    if (!this.hasReferences(resource)) {
-      this.logger.trace('No references found in resource, returning as-is', {
-        resourceId: resource.id,
+      if (!this.hasReferences(resourceRecord)) {
+        this.logger.trace('No references found in resource, returning as-is', {
+        resourceId: resourceRecord.id,
       });
       return resource;
     }
 
-    this.logger.trace('Cloning resource and resolving references', { resourceId: resource.id });
+    this.logger.trace('Cloning resource and resolving references', { resourceId: resourceRecord.id });
 
     // Deep clone the resource to avoid modifying the original
     // Since we know hasReferences() returned true, use selectiveClone to preserve
     // Symbol-branded objects (KubernetesRef, CEL expressions)
     // This avoids structuredClone failures on objects with Symbols
-    let resolved: any;
+    let resolved: unknown;
 
-    if (typeof resource.toJSON === 'function') {
+    if (typeof resourceRecord.toJSON === 'function') {
       this.logger.trace('Resource has toJSON method, calling it first', {
-        resourceId: resource.id,
+        resourceId: resourceRecord.id,
       });
-      const plainObject = resource.toJSON();
+      const plainObject = resourceRecord.toJSON();
       // toJSON might still contain Symbol-branded objects, so use selectiveClone
       resolved = this.selectiveClone(plainObject);
     } else {
       this.logger.trace('Using selective clone to preserve Symbol brands', {
-        resourceId: resource.id,
+        resourceId: resourceRecord.id,
       });
       // Use selective cloning to preserve KubernetesRef and CEL expression Symbols
       resolved = this.selectiveClone(resource);
     }
 
     // Preserve all resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
-    copyResourceMetadata(resource, resolved);
-    const rid = getResourceId(resource);
+    copyResourceMetadata(resourceRecord, resolved as object);
+    const rid = getResourceId(resourceRecord);
     if (rid) {
       this.logger.trace('Preserved metadata on cloned resource', {
-        resourceId: resource.id,
+        resourceId: resourceRecord.id,
         __resourceId: rid,
       });
     }
@@ -334,10 +340,10 @@ export class ReferenceResolver {
    * Recursively traverse and resolve references
    */
   private async traverseAndResolve(
-    obj: any,
+    obj: unknown,
     context: ResolutionContext,
-    visited = new Set<any>()
-  ): Promise<any> {
+    visited = new Set<object>()
+  ): Promise<unknown> {
     if (obj === null || obj === undefined) {
       return obj;
     }
@@ -388,11 +394,12 @@ export class ReferenceResolver {
 
     if (typeof obj === 'object') {
       visited.add(obj);
-      for (const [key, value] of Object.entries(obj)) {
-        obj[key] = await this.traverseAndResolve(value, context, visited);
+      const objectRecord = obj as Record<string, unknown>;
+      for (const [key, value] of Object.entries(objectRecord)) {
+        objectRecord[key] = await this.traverseAndResolve(value, context, visited);
       }
       visited.delete(obj);
-      return obj;
+      return objectRecord;
     }
 
     // Resolve embedded __KUBERNETES_REF__ marker strings in plain string values.
@@ -519,8 +526,8 @@ export class ReferenceResolver {
     for (let match = markerPattern.exec(value); match !== null; match = markerPattern.exec(value)) {
       replacements.push({
         marker: match[0],
-        resourceId: match[1]!,
-        fieldPath: match[2]!,
+        resourceId: match[1] ?? '',
+        fieldPath: match[2] ?? '',
       });
     }
 
@@ -660,6 +667,10 @@ export class ReferenceResolver {
         resourcesMapKeys: Array.from(resourcesMap.keys()),
       });
 
+      const resolvedExpression = context.nestedStatusCel
+        ? inlineNestedStatusRefs(expr.expression, context.nestedStatusCel, new Set(resourcesMap.keys()))
+        : expr.expression;
+
       // Create CEL evaluation context
       const celContext: CelEvaluationContext = {
         resources: resourcesMap,
@@ -669,9 +680,15 @@ export class ReferenceResolver {
       };
 
       // Use the proper CEL evaluator
-      const result = await this.celEvaluator.evaluate(expr, celContext);
+      const result = await this.celEvaluator.evaluate(
+        {
+          ...expr,
+          expression: resolvedExpression,
+        } as CelExpression<T>,
+        celContext,
+      );
       this.logger.debug('CEL expression evaluated successfully', {
-        expression: expr.expression,
+        expression: resolvedExpression,
         result,
         resultType: typeof result,
       });
@@ -820,6 +837,7 @@ export class ReferenceResolver {
       // Cast is required: resourceRef.metadata.name is guaranteed non-undefined (set above)
       // but V1ObjectMeta.name is typed as optional, causing exactOptionalPropertyTypes mismatch.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: client-node read() accepts a broad Kubernetes object shape.
       const resource = await this.k8sApi.read(resourceRef as any);
 
       queryLogger.debug('Successfully retrieved cluster resource', {

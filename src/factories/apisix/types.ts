@@ -1,7 +1,7 @@
 /**
- * APISix Ingress Controller Types
+ * APISIX Gateway Types
  *
- * Type definitions for APISix ingress controller bootstrap configuration
+ * Type definitions for APISIX gateway bootstrap configuration
  * following the same patterns as cert-manager types.
  */
 
@@ -13,6 +13,31 @@ import type {
   SecurityContext,
   Toleration,
 } from '../cert-manager/types.js';
+
+const imageSchemaShape = {
+  'repository?': 'string',
+  'tag?': 'string',
+  'pullPolicy?': '"Always" | "IfNotPresent" | "Never"',
+} as const;
+
+const resourceRequirementsSchemaShape = {
+  'requests?': { 'cpu?': 'string', 'memory?': 'string' },
+  'limits?': { 'cpu?': 'string', 'memory?': 'string' },
+} as const;
+
+const envVarSchema = type({
+  name: 'string',
+  'value?': 'string',
+  'valueFrom?': 'object',
+});
+
+const authTlsSchemaShape = {
+  'enabled?': 'boolean',
+  'existingSecret?': 'string',
+  'certFilename?': 'string',
+  'keyFilename?': 'string',
+  'verify?': 'boolean',
+} as const;
 
 // APISix Bootstrap Configuration
 export interface APISixBootstrapConfig {
@@ -63,9 +88,10 @@ export interface APISixBootstrapConfig {
      * Admin API credentials for the APISIX Admin API.
      *
      * Override the chart defaults for production deployments. When omitted,
-     * credentials are resolved from `APISIX_ADMIN_KEY` / `APISIX_VIEWER_KEY`
-     * environment variables, falling back to well-known chart defaults (with a
-     * warning) for local development only.
+     * direct deployments resolve credentials from `APISIX_ADMIN_KEY` /
+     * `APISIX_VIEWER_KEY`. KRO definition generation resolves those env vars
+     * immediately or fails early, because KRO cannot read this process'
+     * environment during later CR reconciliation.
      *
      * @security These values are sensitive. Do not commit them to source control.
      * Prefer environment variables or a secrets manager.
@@ -76,8 +102,14 @@ export interface APISixBootstrapConfig {
     };
   };
 
-  // Ingress Controller configuration
+  // Ingress controller configuration compatibility. The bootstrap currently disables
+  // the APISIX chart subchart and configures standard Ingress through the gateway.
   ingressController?: {
+    /**
+     * Accepted for compatibility, but the APISIX chart subchart is currently
+     * disabled by the bootstrap composition to avoid a ServiceAccount conflict.
+     * Deploy an APISIX ingress controller separately if you need Kubernetes Ingress support.
+     */
     enabled?: boolean;
     image?: {
       repository?: string;
@@ -126,7 +158,7 @@ export interface APISixBootstrapConfig {
     containerSecurityContext?: SecurityContext;
     extraArgs?: string[];
     env?: EnvVar[];
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // Dashboard configuration
@@ -138,7 +170,7 @@ export interface APISixBootstrapConfig {
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
     resources?: ResourceRequirements;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // etcd configuration
@@ -181,7 +213,7 @@ export interface APISixBootstrapConfig {
   };
 
   // Custom values override (for any additional Helm values)
-  customValues?: Record<string, any>;
+  customValues?: Record<string, unknown>;
 }
 
 /**
@@ -217,18 +249,93 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'servicePort?': 'number',
       'containerPort?': 'number',
     },
+    'stream?': {
+      'enabled?': 'boolean',
+      'only?': 'boolean',
+      'tcp?': 'number[]',
+      'udp?': 'number[]',
+    },
+    'ingress?': {
+      'enabled?': 'boolean',
+      'annotations?': 'Record<string, string>',
+      'hosts?': 'string[]',
+      'tls?': type({
+        'secretName?': 'string',
+        'hosts?': 'string[]',
+      }).array(),
+    },
+    'adminCredentials?': {
+      'admin?': 'string',
+      'viewer?': 'string',
+    },
   },
 
-  // Ingress Controller configuration
+  // Ingress controller config compatibility. The bootstrap disables the subchart.
   'ingressController?': {
     'enabled?': 'boolean',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type('object').array(),
+    'affinity?': 'object',
+    'securityContext?': 'object',
+    'containerSecurityContext?': 'object',
     'extraArgs?': 'string[]',
+    'env?': envVarSchema.array(),
     'config?': {
+      'apisix?': {
+        'serviceNamespace?': 'string',
+        'serviceName?': 'string',
+        'servicePort?': 'number',
+        'adminAPIVersion?': 'string',
+      },
       'kubernetes?': {
+        'kubeconfig?': 'string',
+        'resyncInterval?': 'string',
         'ingressClass?': 'string',
+        'ingressVersion?': 'string',
+        'watchEndpointSlices?': 'boolean',
         'namespace?': 'string',
         'watchedNamespace?': 'string',
       },
+    },
+  },
+
+  // APISix configuration
+  'apisix?': {
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'nodeSelector?': 'Record<string, string>',
+    'tolerations?': type('object').array(),
+    'affinity?': 'object',
+    'securityContext?': 'object',
+    'containerSecurityContext?': 'object',
+    'extraArgs?': 'string[]',
+    'env?': envVarSchema.array(),
+    'config?': 'Record<string, unknown>',
+  },
+
+  // Dashboard configuration
+  'dashboard?': {
+    'enabled?': 'boolean',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'config?': 'Record<string, unknown>',
+  },
+
+  // etcd configuration
+  'etcd?': {
+    'enabled?': 'boolean',
+    'replicaCount?': 'number',
+    'image?': imageSchemaShape,
+    'resources?': resourceRequirementsSchemaShape,
+    'auth?': {
+      'rbac?': {
+        'create?': 'boolean',
+        'user?': 'string',
+        'password?': 'string',
+      },
+      'tls?': authTlsSchemaShape,
     },
   },
 
@@ -236,12 +343,16 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   'serviceAccount?': {
     'create?': 'boolean',
     'name?': 'string',
+    'annotations?': 'Record<string, string>',
   },
 
   // RBAC configuration
   'rbac?': {
     'create?': 'boolean',
   },
+
+  // Custom values override
+  'customValues?': 'Record<string, unknown>',
 });
 
 /**
@@ -255,7 +366,7 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
 
   // Component status
   gatewayReady: 'boolean',
-  ingressControllerReady: 'boolean',
+  standardIngressReady: 'boolean',
   dashboardReady: 'boolean',
   etcdReady: 'boolean',
 
@@ -266,6 +377,12 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
     type: 'string',
     'clusterIP?': 'string',
     'externalIP?': 'string',
+    'ports?': type({
+      name: 'string',
+      port: 'number',
+      targetPort: 'number',
+      protocol: 'string',
+    }).array(),
   },
 
   // Ingress class information
@@ -283,7 +400,11 @@ export interface APISixBootstrapStatus {
 
   // Component status
   gatewayReady: boolean;
-  ingressControllerReady: boolean;
+  /**
+   * Whether this bootstrap configured standard Kubernetes Ingress reconciliation.
+   * This is false because the APISIX ingress-controller subchart is intentionally disabled.
+   */
+  standardIngressReady: boolean;
   dashboardReady: boolean;
   etcdReady: boolean;
 
@@ -367,7 +488,7 @@ export interface APISixHelmValues {
     };
   };
 
-  // Ingress Controller configuration
+  // Ingress controller config compatibility. The bootstrap disables the subchart.
   ingressController?: {
     enabled?: boolean;
     image?: {
@@ -417,9 +538,9 @@ export interface APISixHelmValues {
     containerSecurityContext?: SecurityContext;
     extraArgs?: string[];
     env?: EnvVar[];
-    config?: Record<string, any>;
-    // Admin service configuration (for ingress controller chart)
-    // This configures the init container to wait for the correct APISIX admin service
+    config?: Record<string, unknown>;
+    // Admin service configuration for consumers that still render the upstream
+    // ingress-controller chart separately from this bootstrap.
     adminService?: {
       namespace?: string;
       name?: string;
@@ -436,7 +557,7 @@ export interface APISixHelmValues {
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
     resources?: ResourceRequirements;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // etcd configuration

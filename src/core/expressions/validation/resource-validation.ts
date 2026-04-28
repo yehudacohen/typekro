@@ -60,9 +60,9 @@ export class ResourceReferenceValidator {
    * Validate a KubernetesRef object
    */
   validateKubernetesRef(
-    ref: KubernetesRef<any>,
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    ref: KubernetesRef<unknown>,
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     context?: ValidationContext
   ): ResourceValidationResult {
     const refKey = `${ref.resourceId}.${ref.fieldPath}`;
@@ -143,9 +143,9 @@ export class ResourceReferenceValidator {
    * Validate multiple KubernetesRef objects
    */
   validateKubernetesRefs(
-    refs: KubernetesRef<any>[],
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    refs: KubernetesRef<unknown>[],
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     context?: ValidationContext
   ): ResourceValidationResult[] {
     return refs.map((ref) =>
@@ -157,9 +157,9 @@ export class ResourceReferenceValidator {
    * Validate that a resource reference chain is type-safe
    */
   validateReferenceChain(
-    refs: KubernetesRef<any>[],
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>
+    refs: KubernetesRef<unknown>[],
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
   ): ResourceValidationResult {
     const errors: ResourceValidationError[] = [];
     const warnings: ResourceValidationWarning[] = [];
@@ -218,8 +218,8 @@ export class ResourceReferenceValidator {
    * Validate schema reference
    */
   private validateSchemaReference(
-    ref: KubernetesRef<any>,
-    schemaProxy?: SchemaProxy<any, any>,
+    ref: KubernetesRef<unknown>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     _context?: ValidationContext
   ): ResourceValidationResult {
     const errors: ResourceValidationError[] = [];
@@ -298,8 +298,8 @@ export class ResourceReferenceValidator {
    * Validate resource reference
    */
   private validateResourceReference(
-    ref: KubernetesRef<any>,
-    availableResources: Record<string, Enhanced<any, any>>,
+    ref: KubernetesRef<unknown>,
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
     _context?: ValidationContext
   ): ResourceValidationResult {
     const errors: ResourceValidationError[] = [];
@@ -418,7 +418,7 @@ export class ResourceReferenceValidator {
    * Check for circular dependencies
    */
   private checkCircularDependencies(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     dependencyChain: string[]
   ): { valid: boolean; errors: ResourceValidationError[] } {
     const refKey = `${ref.resourceId}.${ref.fieldPath}`;

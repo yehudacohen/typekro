@@ -23,7 +23,7 @@ export interface KustomizationConfig {
       labelSelector?: string;
       annotationSelector?: string;
     };
-    patch: string | Record<string, any>;
+    patch: string | Record<string, unknown>;
     options?: {
       allowNameChange?: boolean;
       allowKindChange?: boolean;
