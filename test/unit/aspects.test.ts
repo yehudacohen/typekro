@@ -446,6 +446,26 @@ describe('typed resource aspects', () => {
     expect(yaml).toContain('path: /workspace');
   });
 
+  it('applies hot reload labels to reference-backed Kro workload labels', () => {
+    const yaml = app.toYaml({
+      aspects: [
+        aspect
+          .on(
+            simple.Deployment,
+            hotReload({
+              labels: { 'typekro.dev/hot-reload': 'true' },
+              containers: [{ name: 'demo', image: 'oven/bun:1.3.13' }],
+            })
+          )
+          .where({ slot: 'app' })
+          .expectOne(),
+      ],
+    });
+
+    expect(yaml).toContain('typekro.dev/hot-reload: "true"');
+    expect(yaml).toContain('image: oven/bun:1.3.13');
+  });
+
   it('applies kind-level factory targets to base Kubernetes factories through createResource metadata', () => {
     const yaml = baseFactoryApp
       .factory('direct', {

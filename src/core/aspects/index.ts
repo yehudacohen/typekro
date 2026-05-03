@@ -410,11 +410,16 @@ export function hotReload(options: HotReloadAspectOptions): OverrideAspectSurfac
     throw createDefinitionError('hotReload', 'hotReload(...) labels must be an object');
   }
 
+  const labelPatch: Record<string, ReplaceOperation<string>> = {};
+  for (const [key, value] of Object.entries(options.labels ?? {})) {
+    labelPatch[key] = replace(value);
+  }
+
   return override<HotReloadAspectSchema>({
     spec: {
       ...(options.replicas !== undefined && { replicas: replace(options.replicas) }),
       template: {
-        ...(options.labels !== undefined && { metadata: { labels: merge(options.labels) } }),
+        ...(options.labels !== undefined && { metadata: { labels: labelPatch } }),
         spec: {
           containers: replace(options.containers),
           ...(options.volumes !== undefined && { volumes: replace(options.volumes) }),
