@@ -22,6 +22,7 @@ import {
   append,
   aspect,
   Cel,
+  hotReload,
   kubernetesComposition,
   merge,
   metadata,
@@ -32,6 +33,7 @@ import {
   slot,
   workloads,
 } from '../../src/index.js';
+import { deployment as kubernetesDeployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
 
 type DeploymentAspectSchema = ResourceSpecOverrideSchema<{
@@ -118,6 +120,43 @@ const staticSelectorApp = kubernetesComposition(
   }
 );
 
+const baseFactoryApp = kubernetesComposition(
+  {
+    name: 'aspect-base-factory-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'AspectBaseFactoryApp',
+    spec: type({ name: 'string', image: 'string' }),
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    const deployment = slot(
+      'base-app',
+      kubernetesDeployment({
+        id: 'baseDeployment',
+        metadata: {
+          name: spec.name,
+          labels: { app: spec.name },
+        },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: { app: spec.name } },
+          template: {
+            metadata: { labels: { app: spec.name } },
+            spec: {
+              containers: [{ name: spec.name, image: spec.image }],
+              volumes: [{ name: 'production-config', emptyDir: {} }],
+            },
+          },
+        },
+      })
+    );
+
+    return {
+      ready: deployment.status.readyReplicas > 0,
+    };
+  }
+);
+
 describe('typed resource aspects', () => {
   it('constructs immutable operation, surface, aspect, and slot descriptors', () => {
     const resource = { kind: 'Example' };
@@ -160,12 +199,13 @@ describe('typed resource aspects', () => {
     const slottedResource = slot('first', { kind: 'Example' });
     expect(slot('first', slottedResource)).toBe(slottedResource);
     expect(() => slot('second', slottedResource)).toThrow(/AspectDefinitionError|slot|different/i);
+    expect(() => aspect.on(simple.Deployment, metadata({ labels: merge({ app: 'demo' }) }))).not.toThrow();
     expect(() =>
       aspect.on(
         (() => ({ kind: 'Deployment' })) as unknown as typeof simple.Deployment,
         metadata({ labels: merge({ app: 'demo' }) })
       )
-    ).toThrow(/AspectDefinitionError|factory target|metadata/i);
+    ).toThrow(/AspectDefinitionError|registered TypeKro factory|aspect metadata/i);
   });
 
   it('rejects conflicting selector and cardinality builder calls', () => {
@@ -350,6 +390,97 @@ describe('typed resource aspects', () => {
     expect(yaml).toContain('emptyDir: {}');
   });
 
+  it('builds dev-mode hot reload overrides for targeted workloads', () => {
+    const yaml = app
+      .factory('direct', {
+        aspects: [
+          aspect
+            .on(
+              simple.Deployment,
+              hotReload({
+                replicas: 1,
+                labels: { 'typekro.dev/hot-reload': 'true' },
+                containers: [
+                  {
+                    name: 'demo',
+                    image: 'oven/bun:1.3.13',
+                    command: ['bun', 'run', 'dev'],
+                    workingDir: '/workspace',
+                    env: [{ name: 'NODE_ENV', value: 'development' }],
+                    volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }],
+                  },
+                ],
+                volumes: [{ name: 'workspace', hostPath: { path: '/workspace', type: 'Directory' } }],
+              })
+            )
+            .where({ slot: 'app' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('typekro.dev/hot-reload: \'true\'');
+    expect(yaml).toContain('replicas: 1');
+    expect(yaml).toContain('image: oven/bun:1.3.13');
+    expect(yaml).toContain('workingDir: /workspace');
+    expect(yaml).toContain('name: NODE_ENV');
+    expect(yaml).toContain('mountPath: /workspace');
+    expect(yaml).toContain('path: /workspace');
+  });
+
+  it('applies kind-level factory targets to base Kubernetes factories through createResource metadata', () => {
+    const yaml = baseFactoryApp
+      .factory('direct', {
+        aspects: [
+          aspect
+            .on(
+              kubernetesDeployment,
+              hotReload({
+                replicas: 1,
+                labels: { 'typekro.dev/hot-reload': 'true' },
+                containers: [
+                  {
+                    name: 'demo',
+                    image: 'oven/bun:1.3.13',
+                    command: ['bun', 'run', 'dev'],
+                    workingDir: '/workspace',
+                    volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }],
+                  },
+                ],
+                volumes: [{ name: 'workspace', emptyDir: {} }],
+              })
+            )
+            .where({ slot: 'base-app' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('typekro.dev/hot-reload: \'true\'');
+    expect(yaml).toContain('image: oven/bun:1.3.13');
+    expect(yaml).toContain('mountPath: /workspace');
+    expect(yaml).toContain('emptyDir: {}');
+    expect(yaml).not.toContain('production-config');
+  });
+
+  it('applies kind-level factory-target metadata aspects without manual factory schemas', () => {
+    const yaml = baseFactoryApp
+      .factory('direct', {
+        aspects: [
+          aspect
+            .on(
+              kubernetesDeployment,
+              metadata({ labels: merge({ 'aspect.target': 'base-factory' }) })
+            )
+            .where({ slot: 'base-app' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('aspect.target: base-factory');
+  });
+
   it('applies workload group aspects to all matching workload resources', () => {
     const yaml = app.toYaml({
       aspects: [
@@ -391,24 +522,24 @@ describe('typed resource aspects', () => {
     expect(yaml).toContain('targetPort: 8443');
   });
 
-  it('rejects resource group overrides for fields absent from non-advertised specs', () => {
-    expect(() =>
-      app
-        .factory('direct', {
-          aspects: [
-            aspect
-              .on(
-                resources,
-                override<ResourceSpecOverrideSchema<{ externalName: string }>>({
-                  spec: { externalName: replace('example.com') },
-                })
-              )
-              .where({ kind: 'Service' })
-              .expectOne(),
-          ],
-        })
-        .toYaml({ name: 'demo', image: 'nginx' })
-    ).toThrow(/AspectApplicationError|spec\.externalName|advertised/i);
+  it('allows typed optional resource overrides even when the field is absent initially', () => {
+    const yaml = app
+      .factory('direct', {
+        aspects: [
+          aspect
+            .on(
+              resources,
+              override<ResourceSpecOverrideSchema<{ externalName: string }>>({
+                spec: { externalName: replace('example.com') },
+              })
+            )
+            .where({ kind: 'Service' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('externalName: example.com');
   });
 
   it('does not let resource group overrides mutate resources without structured specs', () => {
@@ -443,21 +574,21 @@ describe('typed resource aspects', () => {
     ).toThrow(/expected one resources match but found 0|selector|match/i);
   });
 
-  it('rejects override fields outside the advertised deep writable schema', () => {
-    expect(() =>
-      app.toYaml({
-        aspects: [
-          aspect.on(
-            simple.Deployment,
-            override<DeploymentAspectSchema>({
-              spec: {
-                strategy: replace({ type: 'Recreate' }),
-              } as never,
-            })
-          ),
-        ],
-      })
-    ).toThrow(/AspectApplicationError|spec\.strategy|advertised/i);
+  it('allows typed optional workload overrides without manual deep schemas', () => {
+    const yaml = app.toYaml({
+      aspects: [
+        aspect.on(
+          simple.Deployment,
+          override<ResourceSpecOverrideSchema<{ strategy: { type: string } }>>({
+            spec: {
+              strategy: replace({ type: 'Recreate' }),
+            },
+          })
+        ),
+      ],
+    });
+
+    expect(yaml).toContain('type: Recreate');
   });
 
   it('rejects operations placed on incompatible advertised field types', () => {
@@ -474,7 +605,7 @@ describe('typed resource aspects', () => {
           ),
         ],
       })
-    ).toThrow(/AspectApplicationError|append|scalar|spec\.replicas/i);
+    ).toThrow(/AspectApplicationError|append|array|spec\.replicas/i);
   });
 
   it('applies one aspect across all matching Deployment and StatefulSet targets', () => {

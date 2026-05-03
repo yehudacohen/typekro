@@ -5,13 +5,8 @@
  * Kubernetes Deployment resources with sensible defaults.
  */
 
-import type { V1Container, V1EnvVar, V1Volume } from '@kubernetes/client-node';
-import type { AspectOverrideSchemaNode } from '../../../core/aspects/metadata.js';
-import { setAspectMetadata } from '../../../core/aspects/metadata.js';
-import type {
-  AspectFactoryTargetBrand,
-  ResourceSpecOverrideSchema,
-} from '../../../core/aspects/types.js';
+import type { V1EnvVar } from '@kubernetes/client-node';
+import type { AspectFactoryTargetBrand } from '../../../core/aspects/types.js';
 import { processFactoryValue, withExpressionAnalysis } from '../../../core/expressions/index.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { Enhanced } from '../../../core/types.js';
@@ -20,36 +15,6 @@ import { deployment } from '../../kubernetes/workloads/deployment.js';
 import type { DeploymentConfig } from '../types.js';
 
 const _logger = getComponentLogger('simple-deployment-factory');
-
-const DEPLOYMENT_ASPECT_OVERRIDE_SCHEMA: AspectOverrideSchemaNode = Object.freeze({
-  kind: 'object',
-  children: Object.freeze({
-    spec: Object.freeze({
-      kind: 'object',
-      children: Object.freeze({
-        replicas: Object.freeze({ kind: 'scalar' }),
-        template: Object.freeze({
-          kind: 'object',
-          children: Object.freeze({
-            metadata: Object.freeze({
-              kind: 'object',
-              children: Object.freeze({
-                labels: Object.freeze({ kind: 'object' }),
-              }),
-            }),
-            spec: Object.freeze({
-              kind: 'object',
-              children: Object.freeze({
-                containers: Object.freeze({ kind: 'array' }),
-                volumes: Object.freeze({ kind: 'array' }),
-              }),
-            }),
-          }),
-        }),
-      }),
-    }),
-  }),
-});
 
 /**
  * Creates a simple Deployment with sensible defaults (original implementation)
@@ -146,17 +111,6 @@ function createDeployment(
       },
     },
   });
-  setAspectMetadata(resource, {
-    factoryTarget: 'Deployment',
-    targetGroups: ['workloads'],
-    surfaces: ['metadata', 'override'],
-    name: config.name,
-    kind: 'Deployment',
-    labels: { app: config.name },
-    overrideSchema: DEPLOYMENT_ASPECT_OVERRIDE_SCHEMA,
-    ...(config.id !== undefined ? { id: config.id } : {}),
-    ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
-  });
   return resource;
 }
 
@@ -177,23 +131,8 @@ function createDeployment(
  * });
  * ```
  */
-type DeploymentAspectSpec = {
-  replicas: number;
-  template: {
-    metadata: { labels: Record<string, string> };
-    spec: {
-      containers: readonly V1Container[];
-      volumes: readonly V1Volume[];
-    };
-  };
-};
-
 const analyzedDeployment = withExpressionAnalysis(createDeployment, 'Deployment');
 export const Deployment = analyzedDeployment as typeof analyzedDeployment &
-  AspectFactoryTargetBrand<
-    'metadata' | 'override',
-    ResourceSpecOverrideSchema<DeploymentAspectSpec>
-  >;
+  AspectFactoryTargetBrand<'metadata' | 'override', never>;
 Reflect.set(Deployment, '__typekroAspectTargetId', 'Deployment');
 Reflect.set(Deployment, '__typekroAspectSurfaces', Object.freeze(['metadata', 'override']));
-Reflect.set(Deployment, '__typekroAspectOverrideSchema', DEPLOYMENT_ASPECT_OVERRIDE_SCHEMA);

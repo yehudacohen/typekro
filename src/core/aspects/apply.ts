@@ -10,9 +10,10 @@ import { TypeKroError } from '../errors.js';
 import { copyResourceMetadata } from '../metadata/resource-metadata.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 
-import { AspectDefinitionError } from './index.js';
 import type { AspectOverrideSchemaNode } from './metadata.js';
 import { getAspectMetadata, setAspectMetadata } from './metadata.js';
+import { resolveFactoryTargetId } from './targets.js';
+import { AspectDefinitionError } from './types.js';
 import type {
   AppendOperation,
   ApplyAspectsOptions,
@@ -128,6 +129,10 @@ function targetLabel(target: unknown): string {
   return 'unknown';
 }
 
+function normalizedTargetId(value: unknown): string {
+  return String(value).toLowerCase();
+}
+
 function hasStructuredSpec(resource: KubernetesResource): boolean {
   return !!resource.spec && typeof resource.spec === 'object' && !Array.isArray(resource.spec);
 }
@@ -143,9 +148,13 @@ function matchesTarget(
 
   return targets.some((target) => {
     if (typeof target === 'function') {
+      const targetId = resolveFactoryTargetId(target);
+      if (targetId === undefined) return false;
+      // Factory targets are kind-level identities, so custom factories that
+      // produce the same Kubernetes kind intentionally share the same target.
       return (
-        metadata?.factoryTarget ===
-        String(Reflect.get(target, '__typekroAspectTargetId') ?? target.name)
+        normalizedTargetId(metadata?.factoryTarget) === normalizedTargetId(targetId) ||
+        normalizedTargetId(resource.kind) === normalizedTargetId(targetId)
       );
     }
     if (isTargetGroup(target)) {
@@ -321,33 +330,17 @@ function validateOverridePatchNode(
   }
 }
 
-function schemaNodeFromValue(value: unknown): AspectOverrideSchemaNode {
-  if (Array.isArray(value)) return { kind: 'array' };
-  if (value && typeof value === 'object') {
-    const children: Record<string, AspectOverrideSchemaNode> = {};
-    for (const [key, child] of Object.entries(value)) {
-      children[key] = schemaNodeFromValue(child);
-    }
-    return { kind: 'object', children };
-  }
-  return { kind: 'scalar' };
-}
-
-function inferOverrideSchema(
-  resource: MutableResource,
-  _patch: unknown
-): AspectOverrideSchemaNode | undefined {
-  if (!hasStructuredSpec(resource)) return undefined;
-  return schemaNodeFromValue({ spec: resource.spec });
-}
-
 function validateOverridePatch(
   resource: MutableResource,
   patch: unknown,
   context: ApplyOperationContext
 ): void {
-  const schema =
-    getAspectMetadata(resource)?.overrideSchema ?? inferOverrideSchema(resource, patch);
+  const schema = getAspectMetadata(resource)?.overrideSchema;
+  // Generic factory targets derive their deep writable shape from TypeScript.
+  // At runtime we still enforce root/spec boundaries and concrete operation
+  // compatibility against existing fields during applyPatch/applyOperation, but
+  // TypeScript remains authoritative for optional Kubernetes fields that are not
+  // present in the initial manifest.
   if (!schema) return;
   validateOverridePatchNode(schema, patch, [], context);
 }

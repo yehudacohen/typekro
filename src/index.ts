@@ -99,6 +99,7 @@ export {
   allResources,
   append,
   aspect,
+  hotReload,
   merge,
   metadata,
   override,
@@ -107,6 +108,7 @@ export {
   slot,
   workloads,
 } from './core/aspects/index.js';
+export type { HotReloadAspectOptions, HotReloadContainer, HotReloadVolume } from './core/aspects/index.js';
 export type {
   AppendOperation,
   ApplyAspectsOptions,

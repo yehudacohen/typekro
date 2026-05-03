@@ -19,6 +19,7 @@ import { getCurrentCompositionContext, isInStatusBuilderContext } from '../compo
 import { isDebugMode } from '../config/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
+import { setAspectMetadata } from '../aspects/metadata.js';
 import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
@@ -41,6 +42,16 @@ const IS_DEBUG_MODE = isDebugMode();
 
 // Track which kinds have been auto-registered to avoid redundant registry lookups.
 const autoRegisteredKinds = new Set<string>();
+
+const WORKLOAD_KINDS = new Set([
+  'Deployment',
+  'StatefulSet',
+  'DaemonSet',
+  'ReplicaSet',
+  'ReplicationController',
+  'Job',
+  'CronJob',
+]);
 
 // ---------------------------------------------------------------------------
 // Data-driven proxy root-field configuration (Phase 3.4)
@@ -528,6 +539,20 @@ export function createResource<TSpec extends object, TStatus extends object>(
   if (options?.scope) {
     setMetadataField(enhanced, 'scope', options.scope);
   }
+
+  const targetGroups = WORKLOAD_KINDS.has(resource.kind)
+    ? (['resources', 'workloads'] as const)
+    : (['resources'] as const);
+  setAspectMetadata(enhanced, {
+    factoryTarget: resource.kind,
+    targetGroups,
+    surfaces: resource.spec && typeof resource.spec === 'object' ? ['metadata', 'override'] : ['metadata'],
+    kind: resource.kind,
+    id: resourceId,
+    ...(resource.metadata?.name !== undefined ? { name: resource.metadata.name } : {}),
+    ...(resource.metadata?.labels !== undefined ? { labels: resource.metadata.labels } : {}),
+    ...(resource.metadata?.namespace !== undefined ? { namespace: resource.metadata.namespace } : {}),
+  });
 
   // Mark DNS-addressable resources so the dependency resolver can detect
   // implicit service-name dependencies from env vars and connection strings.

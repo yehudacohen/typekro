@@ -23,6 +23,7 @@ import {
   allResources,
   append,
   aspect,
+  hotReload,
   kubernetesComposition,
   merge,
   metadata,
@@ -32,6 +33,8 @@ import {
   simple,
   workloads,
 } from '../../src/index.js';
+import { deployment as kubernetesDeployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import type { V1DeploymentSpec } from '../../src/factories/kubernetes/types.js';
 
 function assertType<T>(_value: T): void {
   // Compile-time only.
@@ -168,6 +171,34 @@ describe('typed resource aspect contracts', () => {
     expect(true).toBe(true);
   });
 
+  it('exposes a typed dev-mode hot reload override surface', () => {
+    if (COMPILE_ONLY) {
+      const surface = hotReload({
+        replicas: 1,
+        labels: { dev: 'true' },
+        containers: [
+          {
+            name: 'app',
+            image: 'oven/bun:1.3.13',
+            command: ['bun', 'run', 'dev'],
+            workingDir: '/workspace',
+            env: [{ name: 'NODE_ENV', value: 'development' }],
+            volumeMounts: [{ name: 'workspace', mountPath: '/workspace' }],
+          },
+        ],
+        volumes: [{ name: 'workspace', hostPath: { path: '/workspace', type: 'Directory' } }],
+      });
+
+      assertType<AspectSurfaceForTarget<typeof simple.Deployment>>(surface);
+      assertType<AspectSurfaceForTarget<typeof kubernetesDeployment>>(surface);
+
+      // @ts-expect-error containers are required.
+      hotReload({ volumes: [{ name: 'workspace' }] });
+    }
+
+    expect(true).toBe(true);
+  });
+
   it('types aspect.on, cardinality, and selectors from public helpers', () => {
     if (COMPILE_ONLY) {
       aspect.on(allResources, metadata({ labels: merge({ app: 'demo' }) }));
@@ -211,6 +242,24 @@ describe('typed resource aspect contracts', () => {
         })
         .expectOne();
       aspect.on(allResources, metadata({ annotations: replace({ owner: 'platform' }) })).optional();
+      aspect
+        .on(
+          kubernetesDeployment,
+          override<ResourceSpecOverrideSchema<V1DeploymentSpec>>({
+            spec: {
+              replicas: replace(2),
+              template: {
+                spec: {
+                  containers: replace([{ name: 'app', image: 'nginx' }]),
+                  volumes: append([{ name: 'workspace', emptyDir: {} }]),
+                },
+              },
+            },
+          })
+        )
+        .where({ id: 'deployment', kind: 'Deployment' });
+
+      aspect.on(kubernetesDeployment, metadata({ labels: merge({ app: 'demo' }) }));
 
       // @ts-expect-error allResources cannot receive override surfaces.
       aspect.on(

@@ -1,4 +1,6 @@
-import type { TypeKroError } from '../errors.js';
+import type { V1Container, V1Volume } from '@kubernetes/client-node';
+import { TypeKroError } from '../errors.js';
+import type { Enhanced } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/schema.js';
 
 /** Kubernetes image pull policy values supported by workload override aspects. */
@@ -86,12 +88,19 @@ export type AspectPatchValue<T> = T extends readonly (infer TElement)[]
 
 /** Partial recursive patch shape derived from an advertised writable aspect schema. */
 export type AspectOverridePatch<TSchema> = {
-  readonly [K in keyof TSchema]?: TSchema[K] extends readonly unknown[]
-    ? AspectPatchValue<TSchema[K]>
-    : TSchema[K] extends object
-      ? AspectPatchValue<TSchema[K]> | AspectOverridePatch<TSchema[K]>
-      : AspectPatchValue<TSchema[K]>;
+  readonly [K in keyof TSchema]?: NonNullable<TSchema[K]> extends readonly unknown[]
+    ? AspectPatchValue<NonNullable<TSchema[K]>>
+    : NonNullable<TSchema[K]> extends object
+      ? AspectPatchValue<NonNullable<TSchema[K]>> | AspectOverridePatch<NonNullable<TSchema[K]>>
+      : AspectPatchValue<NonNullable<TSchema[K]>>;
 };
+
+/** Writable view of Kubernetes specs for aspects: fields are optional, names stay typed. */
+export type AspectWritableSchema<T> = T extends readonly (infer TElement)[]
+  ? readonly AspectWritableSchema<TElement>[]
+  : T extends object
+    ? { readonly [K in keyof T]?: AspectWritableSchema<NonNullable<T[K]>> }
+    : T;
 
 /** Override mutation surface derived from a target's writable aspect schema. */
 export interface OverrideAspectSurface<TSchema extends object = ResourceSpecOverrideSchema> {
@@ -99,10 +108,43 @@ export interface OverrideAspectSurface<TSchema extends object = ResourceSpecOver
   readonly patch: AspectOverridePatch<TSchema>;
 }
 
+/** Container shape accepted by the hot reload override helper. */
+export type HotReloadContainer = V1Container;
+
+/** Kubernetes volume shape accepted by the hot reload override helper. */
+export type HotReloadVolume = V1Volume;
+
+/** Options for building a dev-mode hot reload override surface. */
+export interface HotReloadAspectOptions {
+  /** Full container list to use for the targeted workload template. */
+  readonly containers: readonly HotReloadContainer[];
+  /** Full volume list to use for the targeted workload template. */
+  readonly volumes?: readonly HotReloadVolume[];
+  /** Labels to merge onto the targeted workload pod template. */
+  readonly labels?: Record<string, string>;
+  /** Optional replica override, commonly `1` for local dev. */
+  readonly replicas?: number;
+}
+
+/** Workload override schema produced by the hot reload helper. */
+export type HotReloadAspectSchema = ResourceSpecOverrideSchema<{
+  replicas: number;
+  template: {
+    metadata: { labels: Record<string, string> };
+    spec: {
+      containers: readonly HotReloadContainer[];
+      volumes: readonly HotReloadVolume[];
+    };
+  };
+}>;
+
 /** Any public aspect surface descriptor. */
 export type AspectSurface =
   | MetadataAspectSurface
   | OverrideAspectSurface<ResourceSpecOverrideSchema>;
+
+/** Any factory function that returns a TypeKro enhanced resource. */
+export type EnhancedResourceFactoryTarget = (...args: never[]) => Enhanced<object, object>;
 
 /** Callable factory target identity accepted by aspect.on(...). */
 export type AspectFactoryTarget<
@@ -151,17 +193,30 @@ export interface AspectTargetGroup<
   readonly id: TId;
 }
 
-/** Any public aspect target accepted by aspect.on(...); runtime metadata is authoritative. */
-export type AspectTarget = AspectFactoryTarget<AspectSurfaceKind, object> | AspectTargetGroup;
+/**
+ * Any public aspect target accepted by aspect.on(...).
+ *
+ * Concrete factory targets are resolved by TypeKro factory registration or
+ * explicit aspect metadata. Matching is kind-level: factories that produce the
+ * same Kubernetes kind intentionally share the same target identity.
+ */
+export type AspectTarget =
+  | AspectFactoryTarget<AspectSurfaceKind, object>
+  | EnhancedResourceFactoryTarget
+  | AspectTargetGroup;
 
 /** Writable override schema advertised by a target where TypeScript can infer it. */
 export type AspectOverrideSchemaForTarget<TTarget> = TTarget extends typeof workloads
   ? ResourceSpecOverrideSchema
   : TTarget extends typeof resources
     ? ResourceSpecOverrideSchema
-    : TTarget extends AspectFactoryTarget<infer _TSurfaces, infer TOverrideSchema>
-      ? TOverrideSchema
-      : never;
+    : TTarget extends (...args: never[]) => Enhanced<infer TSpec, infer _TStatus>
+      ? TSpec extends object
+        ? ResourceSpecOverrideSchema<AspectWritableSchema<TSpec>>
+        : never
+      : TTarget extends AspectFactoryTarget<infer _TSurfaces, infer TOverrideSchema>
+        ? TOverrideSchema
+        : never;
 
 /** Keys present on both writable schemas. */
 export type CommonAspectSchemaKeys<TLeft, TRight> = Extract<keyof TLeft, keyof TRight>;
@@ -224,7 +279,11 @@ export type AspectSurfaceForTarget<TTarget> = TTarget extends typeof allResource
     ? OverrideAspectSurface<ResourceSpecOverrideSchema>
     : TTarget extends typeof workloads
       ? OverrideAspectSurface<ResourceSpecOverrideSchema>
-      : TTarget extends ResourceAspectFactoryTarget<infer TOverrideSchema>
+      : TTarget extends (...args: never[]) => Enhanced<infer TSpec, infer _TStatus>
+        ? TSpec extends object
+          ? MetadataAspectSurface | OverrideAspectSurface<ResourceSpecOverrideSchema<AspectWritableSchema<TSpec>>>
+          : never
+        : TTarget extends ResourceAspectFactoryTarget<infer TOverrideSchema>
         ? MetadataAspectSurface | OverrideAspectSurface<TOverrideSchema>
         : TTarget extends AspectFactoryTarget<'metadata'>
           ? MetadataAspectSurface
@@ -237,7 +296,9 @@ export type AspectSurfaceKindForTarget<TTarget> = TTarget extends typeof allReso
     ? 'override'
     : TTarget extends typeof workloads
       ? 'override'
-      : TTarget extends AspectFactoryTarget<infer TSurfaces, infer _TOverrideSchema>
+      : TTarget extends (...args: never[]) => Enhanced<object, object>
+        ? 'metadata' | 'override'
+        : TTarget extends AspectFactoryTarget<infer TSurfaces, infer _TOverrideSchema>
         ? TSurfaces
         : never;
 
@@ -292,6 +353,9 @@ export interface AspectDefinition<
   expectOne(): AspectDefinition<TTarget, TSurface>;
 }
 
+/** Aspect definition accepted by runtime render/deploy options after construction. */
+export type AnyAspectDefinition = AspectDefinition<unknown, unknown>;
+
 /** Public aspect builder. */
 export interface AspectBuilder {
   /** @throws AspectDefinitionError when target metadata or surface compatibility is invalid. */
@@ -308,7 +372,7 @@ export interface AspectBuilder {
 
 /** Options for render-time aspect application. */
 export interface ToYamlOptions {
-  readonly aspects: readonly AspectDefinition[];
+  readonly aspects: readonly AnyAspectDefinition[];
 }
 
 /** WeakMap-only metadata used for aspect matching. */
@@ -327,7 +391,7 @@ export interface ResourceAspectMetadata {
 /** Internal options shared by direct, Kro, and render-time application paths. */
 export interface ApplyAspectsOptions {
   readonly mode: AspectMode;
-  readonly aspects: readonly AspectDefinition[];
+  readonly aspects: readonly AnyAspectDefinition[];
 }
 
 /** Summary for one aspect's target/selector matching result. */
@@ -386,17 +450,28 @@ export interface AspectDiagnosticsPolicy {
   )[];
 }
 
+export type AspectDefinitionFunctionName =
+  | 'aspect.on'
+  | 'metadata'
+  | 'override'
+  | 'hotReload'
+  | 'replace'
+  | 'merge'
+  | 'append'
+  | 'slot';
+
 /** Error thrown for invalid aspect definitions before resource application. */
-export declare class AspectDefinitionError extends TypeKroError {
-  readonly functionName:
-    | 'aspect.on'
-    | 'metadata'
-    | 'override'
-    | 'replace'
-    | 'merge'
-    | 'append'
-    | 'slot';
-  readonly reason: string;
+export class AspectDefinitionError extends TypeKroError {
+  constructor(
+    readonly functionName: AspectDefinitionFunctionName,
+    readonly reason: string
+  ) {
+    super(`Invalid aspect definition in ${functionName}: ${reason}`, 'ASPECT_DEFINITION_ERROR', {
+      functionName,
+      reason,
+    });
+    this.name = 'AspectDefinitionError';
+  }
 }
 
 /** Error thrown while applying aspects to matched resources. */
@@ -422,9 +497,10 @@ export declare const allResources: AspectTargetGroup<'allResources'>;
  * Design decision: broad `resources` targeting supersedes the earlier workload-only
  * target group so Service and future schema-bearing resources can receive typed
  * overrides without adding one target group per Kubernetes kind. The tradeoff is
- * that concrete factory targets still provide stronger type narrowing, while this
- * group relies on runtime advertised schemas or conservative current-spec schema
- * inference. Use `allResources` for metadata-only stack-wide mutation.
+ * that concrete factory targets still provide stronger compile-time type
+ * narrowing, while runtime validation remains best-effort for optional fields
+ * absent from the initial manifest. Use `allResources` for metadata-only
+ * stack-wide mutation.
  */
 export declare const resources: AspectTargetGroup<'resources'>;
 /**
@@ -450,6 +526,10 @@ export declare function metadata(
 export declare function override<TSchema extends object>(
   patch: AspectOverridePatch<TSchema>
 ): OverrideAspectSurface<TSchema>;
+/** @throws AspectDefinitionError when hot reload options are malformed. */
+export declare function hotReload(
+  options: HotReloadAspectOptions
+): OverrideAspectSurface<HotReloadAspectSchema>;
 /** @throws AspectDefinitionError when the slot name is empty or already assigned incompatibly. */
 export declare function slot<TResource extends object>(
   name: string,
@@ -459,7 +539,7 @@ export declare function slot<TResource extends object>(
 declare module '../types/deployment.js' {
   interface PublicFactoryOptions {
     /** Ordered aspects applied before factory resources are rendered or deployed. */
-    aspects?: readonly AspectDefinition[];
+    aspects?: readonly AnyAspectDefinition[];
   }
 
   interface TypedResourceGraph<

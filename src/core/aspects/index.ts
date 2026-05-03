@@ -4,10 +4,10 @@
  *
  * Target groups: `allResources` accepts `metadata(...)` for every rendered
  * resource. `resources` accepts `override(...)` for every rendered resource with
- * a structured `spec`, using resource-advertised schemas when present and a
- * conservative runtime schema derived from the resource object otherwise.
- * Concrete factory targets such as `simple.Deployment` and `simple.StatefulSet`
- * provide the strongest type narrowing.
+ * a structured `spec`. Concrete factory targets such as `simple.Deployment` and
+ * base Kubernetes factories provide the strongest compile-time type narrowing;
+ * runtime validation remains best-effort for optional fields absent from the
+ * initial manifest.
  *
  * Selectors use AND semantics across `slot`, `id`, `name`, `namespace`, `kind`,
  * and `labels`. By default an aspect requires one-or-more matches; `.optional()`
@@ -77,14 +77,15 @@ import {
   isMixedTemplate,
   isResourceReference,
 } from '../../utils/type-guards.js';
-import { TypeKroError } from '../errors.js';
 import { getAspectMetadata, setAspectMetadata } from './metadata.js';
+import { resolveFactoryTargetId } from './targets.js';
+import { AspectDefinitionError } from './types.js';
 
 import type {
   AppendOperation,
   AspectBuilder,
   AspectDefinition,
-  AspectDefinitionError as AspectDefinitionErrorType,
+  AspectDefinitionFunctionName,
   AspectOverridePatch,
   AspectSelector,
   AspectSurface,
@@ -93,6 +94,8 @@ import type {
   AspectTargetGroup,
   CommonAspectSurfaceForTargets,
   CompatibleAspectTargets,
+  HotReloadAspectOptions,
+  HotReloadAspectSchema,
   MergeOperation,
   MetadataAspectSurface,
   OverrideAspectSurface,
@@ -135,7 +138,7 @@ function assertSelector(selector: AspectSelector): void {
 }
 
 function createDefinitionError(
-  functionName: AspectDefinitionErrorType['functionName'],
+  functionName: AspectDefinitionFunctionName,
   reason: string
 ): AspectDefinitionError {
   return new AspectDefinitionError(functionName, reason);
@@ -209,15 +212,15 @@ function assertTargetSurfaceCompatibility(
     }
 
     if (typeof target === 'function') {
-      const targetId = Reflect.get(target, '__typekroAspectTargetId');
-      const surfaces = Reflect.get(target, '__typekroAspectSurfaces');
-      if (typeof targetId !== 'string' || targetId.length === 0 || !Array.isArray(surfaces)) {
+      const targetId = resolveFactoryTargetId(target);
+      if (targetId === undefined) {
         throw createDefinitionError(
           'aspect.on',
-          'factory target must advertise TypeKro aspect metadata'
+          'factory target must be a registered TypeKro factory or advertise TypeKro aspect metadata'
         );
       }
-      if (!surfaces.includes(surface.kind)) {
+      const surfaces = Reflect.get(target, '__typekroAspectSurfaces');
+      if (Array.isArray(surfaces) && !surfaces.includes(surface.kind)) {
         throw createDefinitionError(
           'aspect.on',
           `factory target ${targetId} does not support ${surface.kind}(...) aspects`
@@ -275,20 +278,6 @@ class AspectDefinitionImpl<TTarget = AspectTarget, TSurface = AspectSurface> {
       throw createDefinitionError('aspect.on', 'expectOne() cannot be called after optional()');
     }
     return new AspectDefinitionImpl(this.target, this.surface, 'exactly-one', this.selector);
-  }
-}
-
-/** Error thrown for invalid aspect definitions before resource application. */
-export class AspectDefinitionError extends TypeKroError {
-  constructor(
-    readonly functionName: AspectDefinitionErrorType['functionName'],
-    readonly reason: string
-  ) {
-    super(`Invalid aspect definition in ${functionName}: ${reason}`, 'ASPECT_DEFINITION_ERROR', {
-      functionName,
-      reason,
-    });
-    this.name = 'AspectDefinitionError';
   }
 }
 
@@ -380,6 +369,40 @@ export function override(patch: unknown) {
   });
 }
 
+/**
+ * Creates a dev-mode hot reload override surface for workload pod templates.
+ *
+ * The helper intentionally returns only the override surface. Callers still pick
+ * the target and selector with `aspect.on(...)`, keeping dev behavior explicit.
+ */
+export function hotReload(options: HotReloadAspectOptions): OverrideAspectSurface<HotReloadAspectSchema> {
+  if (!isPlainObject(options)) {
+    throw createDefinitionError('hotReload', 'hotReload(...) options must be an object');
+  }
+  if (!Array.isArray(options.containers) || options.containers.length === 0) {
+    throw createDefinitionError('hotReload', 'hotReload(...) containers must be a non-empty array');
+  }
+  if (options.volumes !== undefined && !Array.isArray(options.volumes)) {
+    throw createDefinitionError('hotReload', 'hotReload(...) volumes must be an array');
+  }
+  if (options.labels !== undefined && !isPlainObject(options.labels)) {
+    throw createDefinitionError('hotReload', 'hotReload(...) labels must be an object');
+  }
+
+  return override<HotReloadAspectSchema>({
+    spec: {
+      ...(options.replicas !== undefined && { replicas: replace(options.replicas) }),
+      template: {
+        ...(options.labels !== undefined && { metadata: { labels: merge(options.labels) } }),
+        spec: {
+          containers: replace(options.containers),
+          ...(options.volumes !== undefined && { volumes: replace(options.volumes) }),
+        },
+      },
+    },
+  });
+}
+
 /** Attaches semantic slot metadata to a resource for aspect selector matching. */
 export function slot<TResource extends object>(name: string, resource: TResource): TResource {
   if (name.length === 0) {
@@ -394,4 +417,5 @@ export function slot<TResource extends object>(name: string, resource: TResource
 }
 
 export { AspectApplicationError, applyAspects } from './apply.js';
+export { AspectDefinitionError } from './types.js';
 export type * from './types.js';
