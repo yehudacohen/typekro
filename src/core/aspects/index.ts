@@ -135,6 +135,27 @@ function assertSelector(selector: AspectSelector): void {
   if (!isPlainObject(selector)) {
     throw createDefinitionError('aspect.on', 'where(...) selector must be an object');
   }
+  const allowedKeys = new Set(['slot', 'id', 'name', 'namespace', 'kind', 'labels']);
+  for (const [key, value] of Object.entries(selector)) {
+    if (!allowedKeys.has(key)) {
+      throw createDefinitionError('aspect.on', `where(...) selector field ${key} is not supported`);
+    }
+    if (key === 'labels') {
+      if (!isPlainObject(value)) {
+        throw createDefinitionError('aspect.on', 'where(...) selector labels must be an object');
+      }
+      for (const [labelKey, labelValue] of Object.entries(value)) {
+        if (typeof labelValue !== 'string') {
+          throw createDefinitionError(
+            'aspect.on',
+            `where(...) selector label ${labelKey} must be a string`
+          );
+        }
+      }
+    } else if (typeof value !== 'string') {
+      throw createDefinitionError('aspect.on', `where(...) selector ${key} must be a string`);
+    }
+  }
 }
 
 function createDefinitionError(

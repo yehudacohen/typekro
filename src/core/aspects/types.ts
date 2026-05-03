@@ -394,21 +394,6 @@ export interface ApplyAspectsOptions {
   readonly aspects: readonly AnyAspectDefinition[];
 }
 
-/** Summary for one aspect's target/selector matching result. */
-export interface AspectMatchSummary {
-  readonly aspectIndex: number;
-  readonly target: string;
-  readonly selector?: AspectSelector;
-  readonly matchCount: number;
-  readonly matchedResourceIds: readonly string[];
-}
-
-/** Result returned by the shared aspect application layer. */
-export interface ApplyAspectsResult<TResources> {
-  readonly resources: TResources;
-  readonly matchSummary: readonly AspectMatchSummary[];
-}
-
 /** Context used when validating mode-specific aspect safety. */
 export interface AspectSafetyContext {
   readonly mode: AspectMode;

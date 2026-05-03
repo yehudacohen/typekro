@@ -51,6 +51,21 @@ import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
+function isToYamlOptions(value: unknown): value is ToYamlOptions {
+  if (typeof value !== 'object' || value === null || !Object.hasOwn(value, 'aspects')) {
+    return false;
+  }
+  const aspects = (value as { aspects?: unknown }).aspects;
+  if (!Array.isArray(aspects)) return false;
+  // Empty arrays remain render options for the established `toYaml({ aspects: [] })`
+  // API. Non-empty arrays must contain aspect descriptors so CRD specs with an
+  // unrelated `aspects` array are not accidentally interpreted as render options.
+  return aspects.every(
+    (entry) =>
+      typeof entry === 'object' && entry !== null && (entry as { kind?: unknown }).kind === 'aspect'
+  );
+}
+
 /**
  * Separate Enhanced<> resources from deployment closures in the builder result
  */
@@ -2148,16 +2163,8 @@ function createTypedResourceGraph<
 
     toYaml(specOrOptions?: TSpec | ToYamlOptions): string {
       if (specOrOptions !== undefined) {
-        if (
-          typeof specOrOptions === 'object' &&
-          specOrOptions !== null &&
-          Object.hasOwn(specOrOptions, 'aspects') &&
-          Array.isArray((specOrOptions as ToYamlOptions).aspects)
-        ) {
-          const factory = this.factory('kro', specOrOptions as ToYamlOptions) as KroResourceFactory<
-            TSpec,
-            TStatus
-          >;
+        if (isToYamlOptions(specOrOptions)) {
+          const factory = this.factory('kro', specOrOptions) as KroResourceFactory<TSpec, TStatus>;
           return factory.toYaml();
         }
         return this.factory('kro').toYaml(specOrOptions as TSpec);

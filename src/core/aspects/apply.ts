@@ -384,20 +384,24 @@ function applyOperation(
 ): void {
   const current = target[key];
   const fieldPath = path.join('.');
+  if (operation.kind === 'merge' && Object.keys(operation.value).length === 0) return;
+  if (operation.kind === 'append' && operation.value.length === 0) return;
+
+  const operationValueContainsReferences =
+    containsKubernetesRefs(operation.value) || containsCelExpressions(operation.value);
+  const currentValueContainsReferences =
+    containsKubernetesRefs(current) || containsCelExpressions(current);
   if (
     context.mode === 'kro' &&
     (operation.kind === 'merge' || operation.kind === 'append') &&
-    (operation.kind === 'merge'
-      ? containsKubernetesRefs(current) || containsCelExpressions(current)
-      : operation.value.length > 0 &&
-        (containsKubernetesRefs(current) || containsCelExpressions(current)))
+    (currentValueContainsReferences || operationValueContainsReferences)
   ) {
     throw new AspectApplicationError(
       `Aspect ${operation.kind} is not safe for reference-backed Kro field ${fieldPath}`,
       context.aspectIndex,
       context.target,
       context.mode,
-      'reference-backed composite cannot be merged or appended in Kro mode',
+      'reference-backed composite or payload cannot be merged or appended in Kro mode',
       { ...context, operation: operation.kind, fieldPath }
     );
   }

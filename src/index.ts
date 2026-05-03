@@ -112,7 +112,6 @@ export type { HotReloadAspectOptions, HotReloadContainer, HotReloadVolume } from
 export type {
   AppendOperation,
   ApplyAspectsOptions,
-  ApplyAspectsResult,
   AspectBuilder,
   AspectCardinality,
   AspectDefinition,
@@ -121,7 +120,6 @@ export type {
   AspectFactoryTargetBrand,
   AspectFactoryTargetFunction,
   AspectFieldPath,
-  AspectMatchSummary,
   AspectMode,
   AspectOperation,
   AspectOperationKind,

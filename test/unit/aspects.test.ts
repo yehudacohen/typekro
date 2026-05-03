@@ -229,6 +229,24 @@ describe('typed resource aspects', () => {
     ).toThrow(/AspectDefinitionError|expectOne|optional/i);
   });
 
+  it('rejects selector typos and invalid selector value shapes at runtime', () => {
+    expect(() =>
+      aspect
+        .on(allResources, metadata({ labels: merge({ app: 'demo' }) }))
+        .where({ lables: { app: 'demo' } } as never)
+    ).toThrow(/AspectDefinitionError|selector field lables|not supported/i);
+    expect(() =>
+      aspect
+        .on(allResources, metadata({ labels: merge({ app: 'demo' }) }))
+        .where({ labels: { app: 1 } } as never)
+    ).toThrow(/AspectDefinitionError|selector label app|string/i);
+    expect(() =>
+      aspect
+        .on(allResources, metadata({ labels: merge({ app: 'demo' }) }))
+        .where({ name: 1 } as never)
+    ).toThrow(/AspectDefinitionError|selector name|string/i);
+  });
+
   it('keeps aspect builder refinements immutable', () => {
     const base = aspect.on(allResources, metadata({ labels: merge({ app: 'demo' }) }));
     const selector = { slot: 'app', labels: { app: 'demo' } };
@@ -917,6 +935,60 @@ describe('typed resource aspects', () => {
     ];
 
     expect(() => app.toYaml({ aspects })).toThrow(/reference-backed|Kro|merge/i);
+  });
+
+  it('rejects unsafe merge or append payloads that introduce references in Kro mode', () => {
+    const dynamicImage = Cel.expr<string>('schema.spec.image');
+    const appendAspects = [
+      aspect.on(
+        simple.Deployment,
+        override<DeploymentAspectSchema>({
+          spec: {
+            template: {
+              spec: {
+                containers: append([
+                  { name: 'dynamic-extra', image: dynamicImage as unknown as string },
+                ]),
+              },
+            },
+          },
+        })
+      ),
+    ];
+    const mergeAspects = [
+      aspect.on(
+        simple.Deployment,
+        override<DeploymentAspectSchema>({
+          spec: {
+            template: {
+              metadata: {
+                labels: merge({ dynamic: dynamicImage as unknown as string }),
+              },
+            },
+          },
+        })
+      ),
+    ];
+    const concrete = kubernetesComposition(
+      {
+        name: 'aspect-kro-payload-safety',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'AspectKroPayloadSafety',
+        spec: type({ image: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (_spec) => {
+        simple.Deployment({ id: 'concrete', name: 'concrete', image: 'nginx' });
+        return { ready: true };
+      }
+    );
+
+    expect(() => concrete.toYaml({ aspects: appendAspects })).toThrow(
+      /reference-backed|payload|Kro|append/i
+    );
+    expect(() => concrete.toYaml({ aspects: mergeAspects })).toThrow(
+      /reference-backed|payload|Kro|merge/i
+    );
   });
 
   it('allows append operations when the current Kro array is concrete', () => {
