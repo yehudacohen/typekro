@@ -58,8 +58,10 @@ function isToYamlOptions(value: unknown): value is ToYamlOptions {
   const aspects = (value as { aspects?: unknown }).aspects;
   if (!Array.isArray(aspects)) return false;
   // Empty arrays remain render options for the established `toYaml({ aspects: [] })`
-  // API. Non-empty arrays must contain aspect descriptors so CRD specs with an
-  // unrelated `aspects` array are not accidentally interpreted as render options.
+  // API only when `aspects` is the whole object. Non-empty arrays must contain
+  // aspect descriptors so CRD specs with unrelated `aspects` arrays are not
+  // accidentally interpreted as render options.
+  if (aspects.length === 0) return Object.keys(value).length === 1;
   return aspects.every(
     (entry) =>
       typeof entry === 'object' && entry !== null && (entry as { kind?: unknown }).kind === 'aspect'

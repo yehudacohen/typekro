@@ -16,7 +16,8 @@
  * Operation legality is schema-derived: `replace(...)` is valid for advertised
  * scalar, object, and array fields; `merge(...)` is valid for advertised object
  * fields; `append(...)` is valid for advertised array fields. Kro mode rejects
- * merge/append when the current composite field is reference-backed.
+ * `merge(...)` and `append(...)` when either the current composite field or the
+ * operation payload contains Kubernetes refs or CEL expressions.
  *
  * @example Apply metadata across a rendered composition.
  * ```typescript

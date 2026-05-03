@@ -295,6 +295,32 @@ describe('typed resource aspects', () => {
     expect(app.toYaml({ aspects: [] })).toEqual(app.toYaml());
   });
 
+  it('treats empty aspects arrays with other fields as spec values', () => {
+    const specWithAspects = kubernetesComposition(
+      {
+        name: 'aspect-empty-array-spec-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'AspectEmptyArraySpecApp',
+        spec: type({ aspects: 'unknown[]', name: 'string', image: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        simple.Deployment({
+          id: 'specDeployment',
+          name: spec.name,
+          image: spec.image,
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = specWithAspects.toYaml({ aspects: [], name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('name: demo');
+    expect(yaml).toContain('image: nginx');
+  });
+
   it('applies stack-wide metadata aspects during YAML rendering', () => {
     const yaml = app.toYaml({
       aspects: [
