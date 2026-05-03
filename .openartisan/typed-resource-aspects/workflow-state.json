@@ -1,0 +1,384 @@
+{
+  "mode": "INCREMENTAL",
+  "phase": "DONE",
+  "implDag": null,
+  "sessionId": "ses_22c0911dcffe315lNRGKSKE3FK",
+  "phaseState": "DRAFT",
+  "retryCount": 0,
+  "activeAgent": "build-artisan",
+  "concurrency": {
+    "maxParallelTasks": 1
+  },
+  "conventions": null,
+  "featureName": "typed-resource-aspects",
+  "sessionModel": {
+    "modelID": "gpt-5.5",
+    "providerID": "openai"
+  },
+  "userMessages": [
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. The TypeKro T1 implementation is complete and verified. Call mark_task_complete for task_id T1 with tests_passing true. Use this implementation_summary: Implemented typed resource aspects end-to-end: public immutable descriptors and exports, factory aspect metadata stamping, direct/Kro/toYaml application wiring, typed spec override surfaces with common target inference, Kro-safe merge/append validation, selector/cardinality diagnostics, and runtime/type tests. Verified with biome check, bun run typecheck, targeted aspect tests, and bun run test.\"",
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. Call mark_task_complete for task_id T1 with tests_passing true. implementation_summary: Implemented typed resource aspects end-to-end: public immutable descriptors and exports, factory aspect metadata stamping, direct/Kro/toYaml application wiring, typed spec override surfaces with common target inference, Kro-safe merge/append validation, selector/cardinality diagnostics, and runtime/type tests. Verified with biome check, bun run typecheck, targeted aspect tests, and bun run test.\"",
+    "You stopped, but the DRAFT sub-state of the IMPLEMENTATION phase is not yet complete. Continue drafting the IMPLEMENTATION artifact in this turn; do not wait for user input. Review the acceptance criteria and ensure full coverage. Call `request_review` when complete. (Retry 1/3)",
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. Call mark_task_complete for task_id T1 with tests_passing true. implementation_summary: Implemented typed resource aspects end-to-end: public immutable descriptors and exports, factory aspect metadata stamping, direct/Kro/toYaml application wiring, typed spec override surfaces with common target inference, Kro-safe merge/append validation, selector/cardinality diagnostics, runtime/type tests, and stale multi-task comments removed after the single-task IMPL_PLAN revision. Verified with biome check, bun run typecheck, targeted aspect tests, and bun run test.\"",
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. Call mark_task_complete for task_id T1 with tests_passing true. implementation_summary: Implemented typed resource aspects end-to-end and fixed attempt-5 reviewer findings: public aspect interfaces now match approved contracts, toYaml/public factory aspect options use public AspectDefinition, factory-advertised override schemas use curated supported spec roots, Kro append rejects reference-backed arrays, and stale single-task comments were removed. Verification completed: biome check, bun run typecheck, bun test test/unit/aspects-types.test.ts --timeout 10000, and bun test test/unit/aspects.test.ts --timeout 10000 passed. Full bun run test was attempted but is blocked by the local Kubernetes namespace test environment (namespaces \\\"test\\\" not found), not by aspect failures.\"",
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. Call mark_task_complete for task_id T1 with tests_passing true. implementation_summary: Implemented typed resource aspects end-to-end and fixed attempt-7 reviewer findings: aspect.on now rejects invalid factory targets without TypeKro aspect metadata and validates supported surfaces at definition time; descriptors now clone and deep-freeze selector, operation, metadata, and override payloads; direct factory YAML now preserves metadata annotations added by aspects; stale test comments were updated; regression tests cover invalid factory targets, nested immutability, and direct annotation serialization. Verification completed: biome check, bun run typecheck, bun test test/unit/aspects-types.test.ts --timeout 10000, bun test test/unit/aspects.test.ts --timeout 10000, and bun run test all passed (4240 pass, 4 skip, 1 todo, 0 fail; Kubernetes namespace 404s are logged by tests but handled).\"",
+    "\"Resume the existing Open Artisan workflow for typed-resource-aspects. The Open Artisan mark_task_complete gate bug has been fixed in the symlinked plugin. Call mark_task_complete for task_id T1 with tests_passing true. implementation_summary: Implemented typed resource aspects end-to-end and fixed attempt-9 reviewer findings: runtime override validation now traverses the curated writable schemas for Deployment and StatefulSet instead of only checking top-level roots; unsupported nested fields are rejected with AspectApplicationError diagnostics; merge and append operations are validated against advertised field kind and live target shape instead of coercing invalid targets; ApplyAspectsOptions and AspectDefinition defaults now match the approved public interface while applyAspects uses a local runtime alias internally. Regression tests cover unsupported deep fields, invalid operation placement, invalid factory targets, nested immutability, and direct annotation serialization. Verification completed: biome check, bun run typecheck, bun test test/unit/aspects-types.test.ts --timeout 10000, bun test test/unit/aspects.test.ts --timeout 10000, and bun run test all passed (4242 pass, 4 skip, 1 todo, 0 fail; Kubernetes namespace 404s are logged by tests but handled).\"",
+    "restarted and i believe the bug should be fixed try again",
+    "okay, so what am i reviewing?",
+    "You stopped, but the REVISE sub-state of the IMPLEMENTATION phase is not yet complete. Continue revising the IMPLEMENTATION artifact based on the feedback. Make incremental changes only — do NOT rewrite from scratch. Call `request_review` when revision is complete. (Retry 1/3)",
+    "how well do you think the implementation meets the goals of the original rfp? How effectively do you think we've implemented it",
+    "i consider limiting it to simple.Deployment and simple.StatefulSet a real limitation. We shouldn't have to add factories one at a time. aspects should be universally applicable...",
+    "accept",
+    "do you think this design is the right design? If you do, I approve",
+    "approve",
+    "approved",
+    "have we implemented all the implementation tasks? How has your experience with open-artisan been?",
+    "You stopped, but the REVISE sub-state of the IMPLEMENTATION phase is not yet complete. Continue revising the IMPLEMENTATION artifact based on the feedback. Make incremental changes only — do NOT rewrite from scratch. Call `request_review` when revision is complete. (Retry 1/3)",
+    "have we implemented all the implementation tasks? How has your experience with open-artisan been?",
+    "You stopped, but the REVISE sub-state of the IMPLEMENTATION phase is not yet complete. Continue revising the IMPLEMENTATION artifact based on the feedback. Make incremental changes only — do NOT rewrite from scratch. Call `request_review` when revision is complete. (Retry 1/3)",
+    "ok approved. please push and open pull request linking the rfp"
+  ],
+  "approvalCount": 12,
+  "currentTaskId": null,
+  "escapePending": false,
+  "fileAllowlist": [
+    "/Users/yehudac/workspace/typekro/src/index.ts",
+    "/Users/yehudac/workspace/typekro/src/core/types/deployment.ts",
+    "/Users/yehudac/workspace/typekro/src/core/types/resource-graph.ts",
+    "/Users/yehudac/workspace/typekro/src/core/metadata/resource-metadata.ts",
+    "/Users/yehudac/workspace/typekro/src/core/serialization/core.ts",
+    "/Users/yehudac/workspace/typekro/src/core/deployment/direct-factory.ts",
+    "/Users/yehudac/workspace/typekro/src/core/deployment/kro-factory.ts",
+    "/Users/yehudac/workspace/typekro/src/core/serialization/yaml.ts",
+    "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/deployment.ts",
+    "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/stateful-set.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/index.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/types.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/metadata.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/apply.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/adapters.ts",
+    "/Users/yehudac/workspace/typekro/test/unit/aspects.test.ts",
+    "/Users/yehudac/workspace/typekro/test/unit/aspects-types.test.ts"
+  ],
+  "schemaVersion": 24,
+  "childWorkflows": [],
+  "intentBaseline": "\"Resume the existing Open Artisan workflow for typed-resource-aspects. The TypeKro T1 implementation is complete and verified. Call mark_task_complete for task_id T1 with tests_passing true. Use this implementation_summary: Implemented typed resource aspects end-to-end: public immutable descriptors and exports, factory aspect metadata stamping, direct/Kro/toYaml application wiring, typed spec override surfaces with common target inference, Kro-safe merge/append validation, selector/cardinality diagnostics, and runtime/type tests. Verified with biome check, bun run typecheck, targeted aspect tests, and bun run test.\"",
+  "iterationCount": 0,
+  "parentWorkflow": null,
+  "discoveryReport": "# Discovery Report\n\n*Generated by parallel subagent scanners. Use this as input for the conventions document draft.*\n\n## Structure Scanner\n\n**Structural Overview**\n\n```text\ntypekro/\n├── src/\n│   ├── core/\n│   ├── factories/\n│   ├── alchemy/\n│   ├── advanced/\n│   ├── compositions/\n│   ├── shared/\n│   ├── utils/\n│   └── index.ts\n├── test/\n│   ├── core/\n│   ├── factories/\n│   ├── factory/\n│   ├── integration/\n│   ├── unit/\n│   └── utils/\n├── examples/\n├── docs/\n│   ├── .vitepress/\n│   ├── advanced/\n│   ├── api/\n│   ├── examples/\n│   └── guide/\n├── scripts/\n├── dist/              # generated build output\n└── examples-dist/     # generated example build output\n```\n\n**Module Breakdown**\n\n| Area | Files | Lines |\n|---|---:|---:|\n| `src` | 386 | 93,489 |\n| `test` | 287 | 122,752 |\n| `examples` | 15 | 4,903 |\n| `scripts` | 14 | 1,842 |\n| `docs` | 86 | 15,575 |\n\n**Top-Level `src` Areas**\n\n| Path | Files | Role |\n|---|---:|---|\n| `src/core` | 180 | Core framework, runtime, proxy, CEL/expression, serialization, deployment logic |\n| `src/factories` | 185 | User-facing and ecosystem-specific resource factories |\n| `src/alchemy` | 10 | Alchemy integration |\n| `src/utils` | 5 | Shared utilities |\n| `src/compositions` | 3 | Runtime compositions |\n| `src/advanced` | 1 | Advanced public API barrel |\n| `src/shared` | 1 | Shared low-level types/brands |\n| `src/index.ts` | 1 | Main public API barrel |\n\n**Notable Submodules**\n\n| Path | Files |\n|---|---:|\n| `src/core/expressions` | 71 |\n| `src/core/deployment` | 29 |\n| `src/core/types` | 11 |\n| `src/core/serialization` | 10 |\n| `src/factories/kubernetes` | 62 |\n| `src/factories/simple` | 23 |\n| `src/factories/cnpg` | 12 |\n| `src/factories/cert-manager` | 11 |\n\n**Source File Count By Extension**\n\nExcluding generated/dependency directories like `node_modules`, `dist`, `examples-dist`, `coverage`, and `.git`.\n\n| Extension | Count |\n|---|---:|\n| `.ts` | 702 |\n| `.json` | 478 |\n| `.md` | 79 |\n| `.log` | 70 |\n| no extension | 25 |\n| `.env` | 22 |\n| `.vue` | 15 |\n| `.yaml` | 14 |\n| `.tf` | 11 |\n| `.sh` | 7 |\n| `.yml` | 7 |\n| `.svg` | 3 |\n| `.css` | 2 |\n| `.lock` | 2 |\n| `.js` | 1 |\n\n**Entry Points**\n\n| Entry | Source |\n|---|---|\n| Main package `typekro` | `src/index.ts` |\n| Published JS | `dist/index.js` |\n| Published types | `dist/index.d.ts` |\n| `typekro/simple` | `src/factories/simple/index.ts` |\n| `typekro/helm` | `src/factories/helm/index.ts` |\n| `typekro/kro` | `src/factories/kro/index.ts` |\n| `typekro/kubernetes` | `src/factories/kubernetes/index.ts` |\n| `typekro/cilium` | `src/factories/cilium/index.ts` |\n| `typekro/cert-manager` | `src/factories/cert-manager/index.ts` |\n| `typekro/cnpg` | `src/factories/cnpg/index.ts` |\n| `typekro/flux` | `src/factories/flux/index.ts` |\n| `typekro/apisix` | `src/factories/apisix/index.ts` |\n| `typekro/external-dns` | `src/factories/external-dns/index.ts` |\n| `typekro/inngest` | `src/factories/inngest/index.ts` |\n| `typekro/pebble` | `src/factories/pebble/index.ts` |\n| `typekro/webapp` | `src/factories/webapp/index.ts` |\n| `typekro/valkey` | `src/factories/valkey/index.ts` |\n| `typekro/containers` | `src/core/containers/index.ts` |\n| `typekro/searxng` | `src/factories/searxng/index.ts` |\n| `typekro/alchemy` | `src/alchemy/index.ts` |\n| `typekro/advanced` | `src/advanced/index.ts` |\n\n**Monorepo Structure**\n\nSingle-package repository.\n\nNo root `workspaces` field was observed in `package.json`.\n\nNo `packages/*/package.json` structure was observed.\n\nRoot tooling uses `bun`, TypeScript, Biome, VitePress, and shell/TypeScript scripts.\n\n`.opencode/package.json` exists as tool-local config, not as a root workspace package.\n\n**File Placement Rules**\n\nNew library source goes under `src`.\n\nCore framework behavior goes under `src/core/<domain>`.\n\nPublic resource factories go under `src/factories/<ecosystem-or-category>`.\n\nSimple user-facing factories go under `src/factories/simple`.\n\nEach exported package/subpath should have an `index.ts` barrel matching the existing export style.\n\nAlchemy-specific code goes under `src/alchemy`.\n\nAdvanced-only APIs go through `src/advanced/index.ts`.\n\nTests go under `test`, grouped by concern: `test/core`, `test/factories`, `test/factory`, `test/integration`, `test/unit`, or `test/utils`.\n\nExamples go under `examples` as standalone `.ts` files.\n\nDocs go under `docs`, usually grouped into `guide`, `api`, `advanced`, or `examples`.\n\nBuild outputs belong only in `dist` and `examples-dist`; do not edit them as source.\n\nConfigs stay at the repo root unless they are docs-specific (`docs/.vitepress`) or test-specific (`test/tsconfig.typecheck.json`).\n\n## Convention Detector\n\n**Formatting**\n- Indentation: 2 spaces, no tabs. Config: `.editorconfig` has `indent_style = space`, `indent_size = 2`; `biome.json` has `\"indentWidth\": 2`.\n- Line endings: LF, UTF-8, final newline. Config: `.editorconfig` lines 10-13.\n- Line width: 100 for TS/JS. Config: `.editorconfig` line 18 and `biome.json` line 18.\n- Quotes: single quotes for JS/TS strings. Example: `import type { V1Service } from '@kubernetes/client-node';`\n- Semicolons: always. Example: `const rawType = resource.spec?.type;`\n- Trailing commas: ES5 where multiline. Config: `biome.json` line 107.\n\n**TypeScript Strictness**\n- Strict TypeScript is required: `strict`, `noImplicitAny`, `strictNullChecks`, `noUncheckedIndexedAccess`, and `exactOptionalPropertyTypes` are enabled in `tsconfig.json`.\n- Prefer explicit `unknown` over `any`. Example: `export function isKubernetesRef(obj: unknown): obj is KubernetesRef<unknown>`.\n- Use type-only imports/exports. Examples:\n  ```ts\n  import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';\n  export type { CompositionContext, CompositionContextOptions };\n  ```\n\n**Naming**\n- Files use kebab-case: `helm-release.ts`, `settings-builder.ts`, `type-guards.ts`, `endpoint-slice.ts`.\n- Functions and variables use camelCase:\n  ```ts\n  export function buildSearxngSettings(input: SearxngSettingsInput): string\n  const staticServiceType = typeof rawType === 'string' ? rawType : null;\n  ```\n- Interfaces, classes, and type names use PascalCase:\n  ```ts\n  export interface HelmReleaseConfig\n  export class TypeKroError extends Error\n  ```\n- Constants use UPPER_SNAKE_CASE:\n  ```ts\n  DEFAULT_FLUX_NAMESPACE\n  WELL_KNOWN_HELM_REPOSITORIES\n  CEL_EXPRESSION_BRAND\n  ```\n- Kubernetes/resource config fields may preserve external snake_case when matching upstream APIs:\n  ```ts\n  secret_key?: string;\n  bind_address?: string;\n  default_lang?: string;\n  safe_search?: 0 | 1 | 2;\n  ```\n\n**Imports**\n- Imports include explicit `.js` extensions for local TypeScript modules:\n  ```ts\n  import { createResource } from '../shared.js';\n  import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';\n  ```\n- External imports come before internal imports:\n  ```ts\n  import yaml from 'js-yaml';\n\n  export interface SearxngSettingsInput\n  ```\n- Relative imports are standard inside `src/`; no path aliases are visible in sampled files.\n- Barrel files re-export from category indexes:\n  ```ts\n  export { service } from './service.js';\n  export { ingress } from './ingress.js';\n  ```\n- Main public API is centralized through `src/index.ts`:\n  ```ts\n  export { kubernetesComposition } from './core/composition/imperative.js';\n  export * from './factories/index.js';\n  export type * from './core/types/index.js';\n  ```\n\n**Factories And Resources**\n- Resource factories are lowercase functions returning typed `Enhanced<Spec, Status>` values:\n  ```ts\n  export function service(\n    resource: V1Service & { id?: string }\n  ): Enhanced<V1ServiceSpec, V1ServiceStatus>\n  ```\n- Factories use `createResource` and attach readiness evaluators when applicable:\n  ```ts\n  return createResource({\n    ...resource,\n    apiVersion: 'v1',\n    kind: 'Service',\n    metadata: resource.metadata ?? { name: 'unnamed-service' },\n  }, { dnsAddressable: true }).withReadinessEvaluator(...)\n  ```\n- Factory metadata may self-register near the top of the file:\n  ```ts\n  registerFactory({\n    factoryName: 'Service',\n    kind: 'Service',\n    apiVersion: 'v1',\n    semanticAliases: ['service', 'svc'],\n  });\n  ```\n\n**Error Handling**\n- Domain errors extend `TypeKroError` and carry a stable code plus context:\n  ```ts\n  export class ValidationError extends TypeKroError {\n    constructor(\n      message: string,\n      public readonly resourceKind: string,\n      public readonly resourceName: string,\n      public readonly field?: string,\n      public readonly suggestions?: string[]\n    ) {\n      super(message, 'VALIDATION_ERROR', {\n        resourceKind,\n        resourceName,\n        field,\n        suggestions,\n      });\n      this.name = 'ValidationError';\n    }\n  }\n  ```\n- Use `unknown` in catches and normalize before reading error messages:\n  ```ts\n  } catch (error: unknown) {\n    return {\n      ready: false,\n      reason: 'EvaluationError',\n      message: `Error evaluating service readiness: ${ensureError(error).message}`,\n    };\n  }\n  ```\n- Readiness evaluators return structured status objects instead of throwing:\n  ```ts\n  return {\n    ready: false,\n    reason: 'LoadBalancerPending',\n    message: 'Waiting for LoadBalancer to assign external IP or hostname',\n    details: { serviceType, ingressStatus: ingress },\n  };\n  ```\n\n**Tests**\n- Tests use `bun:test`:\n  ```ts\n  import { describe, expect, it } from 'bun:test';\n  ```\n- Test descriptions use `should ...` phrasing:\n  ```ts\n  it('should provide detailed error messages for invalid CRD specs', () => {\n  ```\n- Assertions use `expect`, including thrown-error assertions and instance checks:\n  ```ts\n  expect(() => {\n    customResource(...)\n  }).toThrow(ValidationError);\n\n  expect(error).toBeInstanceOf(TypeKroReferenceError);\n  ```\n\n**Documentation**\n- Public APIs use JSDoc with `@param`, `@returns`, and examples:\n  ```ts\n  /**\n   * Creates a Kubernetes Service resource with type-aware readiness evaluation.\n   *\n   * @param resource - The Service specification conforming to the Kubernetes V1Service API.\n   * @returns An Enhanced Service resource that evaluates readiness based on service type.\n   */\n  ```\n- Comments explain non-obvious behavior, not trivial assignments:\n  ```ts\n  // Retry on failed installs — required for charts that depend on external\n  // resources (e.g., Inngest waiting for Postgres/Redis to be ready).\n  ```\n\n## Architecture Analyzer\n\n**Architecture Report**\n\nNo files were modified. I inspected public entry points, core graph/composition/serialization modules, factory patterns, deployment paths, and import relationships using file reads and grep.\n\n**Core Abstractions**\n\n- `ResourceGraph<TSpec, TStatus>`: typed graph of Kubernetes resources with deploy, rollback, YAML, and factory methods.\n- `kubernetesComposition`: recommended imperative API; runs a user function in a composition context and converts natural JS status expressions to CEL.\n- `toResourceGraph`: advanced API; separates resource builder and status builder with explicit CEL/resource references.\n- `Enhanced<TSpec, TStatus>`: user-facing Kubernetes resource proxy with magic `spec`, `status`, and `metadata` refs.\n- `KubernetesResource<TSpec, TStatus>`: base manifest shape plus internal graph `id`.\n- `KubernetesRef<T>`: branded runtime reference to a resource/schema field.\n- `CelExpression<T>` / `Cel`: branded CEL expression escape hatch.\n- `MagicProxy<T>` / `SchemaMagicProxy<T>`: compile-time natural types, runtime proxy references.\n- `CompositionContext`: async-local shared context that collects resources, closures, variable mappings, nested compositions, singletons, and live status.\n- `DeploymentClosure`: function-style deployment artifact registered alongside resources.\n- `DirectResourceFactory` / `KroResourceFactory`: deployment-mode-specific factories produced by a graph.\n- `DirectDeploymentEngine`: direct Kubernetes apply/readiness/delete executor.\n- `ReadinessEvaluator`: resource-specific readiness predicate used in direct deployments.\n- `FactoryRegistry`: module-scoped self-registration registry for factory name, kind, apiVersion, and semantic aliases.\n- `TypeKroError` subclasses: structured domain errors.\n\n**Dependency Map**\n\n```text\nsrc/index.ts\n  → core/composition\n  → core/proxy\n  → core/references\n  → core/serialization\n  → core/types\n  → core/deployment\n  → factories\n  → compositions/typekro-runtime\n\ntypekro/advanced\n  → core/references\n  → core/serialization\n  → core/dependencies\n  → core/errors\n  → core/kubernetes\n  → core/logging\n  → core/resources\n  → core/yaml\n  → utils\n\ntypekro/alchemy\n  → alchemy/*\n  → core/config\n  → core/errors\n  → core/kubernetes\n  → core/logging\n  → core/types\n  → core/resources\n\nfactories/*\n  → core/types\n  → core/proxy via factories/shared.ts\n  → core/composition via factories/shared.ts or direct imports\n  → core/readiness\n  → core/resources/factory-registry\n  → core/errors/logging/config as needed\n  → sibling factory packages for higher-level compositions\n\nfactories/simple/*\n  → factories/kubernetes/*\n  → core/expressions\n  → core/types\n\nfactories/ecosystem/compositions/*\n  → core/composition/imperative\n  → core/references/Cel when explicit expressions are needed\n  → factories/kubernetes/*\n  → factories/simple/*\n  → ecosystem resource factories\n\ncore/composition\n  → core/metadata\n  → core/errors/logging\n  → core/serialization\n  → core/references/types\n  → utils/type-guards/string\n\ncore/proxy\n  → core/composition/context\n  → core/config/constants/errors\n  → core/expressions\n  → core/metadata\n  → core/readiness\n  → core/resources/factory-registry/id\n  → core/types\n  → core/validation\n\ncore/serialization\n  → core/composition/context\n  → core/deployment factories\n  → core/expressions\n  → core/metadata\n  → core/references\n  → core/resources/factory-registry\n  → core/types\n  → core/validation\n  → serialization helpers/yaml/schema/CEL processors\n\ncore/deployment\n  → core/dependencies\n  → core/kubernetes\n  → core/metadata\n  → core/readiness\n  → core/serialization\n  → core/types\n  → deployment strategies\n\ncore/references\n  → core/types\n  → CEL evaluator/resolver/schema-proxy/external refs\n\ncore/types\n  → mostly type-only dependencies\n  → @kubernetes/client-node types\n  → limited alchemy `Scope` type export\n```\n\n**Layer Diagram**\n\n```text\nPublic API Barrels\nsrc/index.ts, src/advanced/index.ts, src/alchemy/index.ts, package subpaths\n        ↓\nUser-Facing Construction APIs\nkubernetesComposition, toResourceGraph, simple.*, ecosystem factories\n        ↓\nFactory Layer\nfactories/kubernetes, factories/simple, helm/flux/cnpg/etc.\n        ↓\nCore Model + Proxy Layer\nEnhanced, KubernetesResource, MagicProxy, KubernetesRef, CelExpression,\ncreateResource, CompositionContext, metadata, factory registry\n        ↓\nSerialization + Analysis Layer\nschema conversion, status analysis pipeline, CEL refs/optimizer,\nKro RGD YAML generation, validation\n        ↓\nDeployment Layer\nDirect/Kro factories, deployment strategies, readiness, dependency graph,\nKubernetes client providers\n        ↓\nInfrastructure Integrations\nKubernetes API, Kro controller, Alchemy integration, YAML/path processing\n```\n\n**Key Patterns**\n\n- Barrel exports define public surface; subpath exports keep specialized APIs out of the main autocomplete surface.\n- Factories return `Enhanced<Spec, Status>` resources through the canonical `createResource` proxy engine.\n- Simple factories wrap lower-level Kubernetes factories with sensible defaults.\n- Ecosystem packages use `resources/`, `compositions/`, `utils/`, and `types.ts` structure.\n- Factories self-register at module scope with `registerFactory()` for AST analysis, stub generation, and semantic resource-key matching.\n- Composition state is scoped with `AsyncLocalStorage`, not mutable globals.\n- Magic proxies are the core communication mechanism between user code and serialization.\n- CEL is represented as branded data, not plain strings where type safety matters.\n- Deployment mode is selected via factory methods: `factory('direct')` or `factory('kro')`.\n- Readiness is attached fluently with `.withReadinessEvaluator()` or related `Enhanced` helpers.\n- Alchemy integration is mostly an outer integration layer, with limited bridge points in deployment strategies and factory options.\n- Error handling uses structured custom errors and `ensureError()` normalization.\n\n**Communication Patterns**\n\n- Internal modules communicate through direct function/class calls and shared typed objects.\n- Resource references communicate via branded proxy values (`KubernetesRef`, `CelExpression`) that serialization later resolves.\n- Composition registration communicates through async-local shared state (`CompositionContext`).\n- Factory metadata communicates through a module-scoped registry populated by import-time self-registration.\n- Deployment communicates with Kubernetes through client providers and direct API clients.\n- No event bus, queue, HTTP server, or pub/sub architecture is present in the source layers inspected.\n- Dynamic import is used only in integration bridge areas; newer code prefers dependency-inversion providers in `FactoryOptions`.\n\n**Dependency Direction Rules**\n\n- Public barrels may import/re-export from lower layers; lower layers should not import public barrels.\n- `core/types` should remain the lowest-level type layer; avoid runtime imports from higher-level modules.\n- `core/proxy`, `core/composition`, `core/serialization`, and `core/deployment` may depend on core utilities/types, not on concrete factory implementations.\n- Factories may depend on core, but core should not depend on factories. If core needs factory metadata, use `FactoryRegistry` or injected providers.\n- Simple factories may depend on Kubernetes factories; Kubernetes factories must not depend on simple factories.\n- Ecosystem compositions may depend on Kubernetes/simple/common ecosystem resources; resource factories should avoid depending on compositions.\n- Alchemy should depend on core. New core-to-alchemy coupling should be avoided unless it is type-only or an explicit deployment bridge.\n- Cross-cutting utilities (`utils`, `shared/brands`, core constants) should not import domain modules.\n- Use `factories/shared.ts` only as the compatibility bridge for `createResource` and composition context; canonical implementations live in `core/`.\n- New public APIs should be exported through the correct barrel and package subpath, not by deep imports from consumers.\n\n**Extension Rules**\n\n- Add new resource factories in the appropriate ecosystem/category directory and return `Enhanced<Spec, Status>`.\n- Use `createResource()` as the only resource proxy constructor.\n- Register new factories with `registerFactory()` at module scope when AST/status analysis or semantic matching must recognize them.\n- Keep factory configs in ecosystem `types.ts`; keep mapper/default logic in `utils/` when it is reusable.\n- Prefer `kubernetesComposition` for new compositions; use `toResourceGraph` only for explicit CEL control.\n- In `kubernetesComposition`, use natural JS expressions for status; do not introduce explicit `Cel.expr()` unless existing local code does.\n- In `toResourceGraph`, use typed `Cel.expr<T>()` and `Cel.template()`; do not use JS fallback operators in status builders.\n- Preserve `.js` extensions in relative imports.\n- Use type-only imports for types.\n- Keep comments focused on non-obvious proxy, serialization, readiness, or deployment behavior.\n- Do not add new global mutable state; use module-scoped registries only when there is already an established singleton pattern.\n- Do not create new core dependencies on concrete ecosystem packages; use DI/provider hooks or registration metadata instead.\n\n## Test Pattern Scanner\n\n**Test Framework And Runner**\n\n- Framework: Bun test via `bun:test`.\n- Runner commands from `package.json`:\n  - Unit: `bun run test` -> `./scripts/run-unit-tests.sh`\n  - Unit script runs: `bun test --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)`\n  - Integration: `bun run test:integration` -> `./scripts/run-integration-tests.sh`\n  - Integration script runs `test/integration/**/*.test.ts` with `--timeout 300000`.\n  - Coverage: `bun test --coverage --coverage-reporter=lcov --timeout 10000 ...`\n- No Jest/Vitest/Mocha/Pytest config found.\n\n**Total Test File Count**\n\n- Matching test files: 276\n- Patterns found:\n  - `*.test.ts`: 276\n  - `*.spec.*`: 0\n  - `test_*.*`: 0\n  - `*_test.*`: 0\n\n**File Naming And Directory Conventions**\n\n- Tests are separate from source, under `test/`, not colocated with `src/`.\n- Naming convention is exclusively `*.test.ts`.\n- Directory conventions:\n  - `test/unit/**`: unit-level behavior and isolated internals.\n  - `test/core/**`: core serialization, references, CEL, Kubernetes helpers, expression engine.\n  - `test/factories/**`: factory-specific behavior grouped by factory/domain.\n  - `test/factory/**`: older/general factory tests.\n  - `test/integration/**`: cluster/e2e/integration behavior.\n  - `test/utils/**`: reusable typed test helpers, not test files.\n\n**Test Structure Pattern**\n\n- Imports come first, usually:\n  - `import { describe, expect, it } from 'bun:test';`\n  - Some files use `test` instead of `it`: `import { describe, expect, test } from 'bun:test';`\n- Top-level `describe('Feature Name', () => { ... })`.\n- Nested `describe(...)` is common for sub-features.\n- Individual cases use descriptive strings, often `should ...`.\n- Async tests use `async () => { ... }`.\n- Integration tests may use `beforeAll` / `afterAll`.\n- Conditional integration skipping uses `const describeOrSkip = clusterAvailable ? describe : describe.skip;`.\n- Assertions use Bun/Jest-style `expect`:\n  - `toBe`\n  - `toEqual`\n  - `toContain`\n  - `toBeDefined`\n  - `toThrow`\n  - `toMatch`\n  - `not.toContain`\n  - `toHaveLength`\n\n**Mock/Stub Approach**\n\n- Uses Bun mocks: `import { mock } from 'bun:test';`\n- Shared typed helpers live in `test/utils/mock-factories.ts`.\n- Prefer typed mock factory helpers over ad hoc `as any`.\n- Inline helpers inside test files are common for local-only fixtures, e.g. `makeEnhanced`, `makeClosure`, `makeCelExpr`.\n- Kubernetes integration helpers live in `test/integration/shared-kubeconfig.ts` and `test/integration/shared-bootstrap.ts`.\n- Integration tests avoid shelling out from test bodies where possible and use TypeKro/Kubernetes client APIs directly.\n\n**Helper And Fixture Patterns**\n\n- Helpers are TypeScript modules under `test/utils/` or `test/integration/shared-*.ts`.\n- Common helper style:\n  - Export focused functions.\n  - Keep typed return values.\n  - Use JSDoc for helper purpose.\n  - Avoid untyped casts where possible.\n- Some existing tests still use `as unknown as ...` for complex internal shapes, but new tests should prefer existing typed helpers.\n\n**Template For New Tests**\n\n```typescript\nimport { describe, expect, it } from 'bun:test';\nimport { type } from 'arktype';\nimport { toResourceGraph } from '../../src/core/serialization/index.js';\n\ndescribe('Feature Or Component Name', () => {\n  const TestSpecSchema = type({\n    name: 'string',\n  });\n\n  const TestStatusSchema = type({\n    ready: 'boolean',\n  });\n\n  it('should describe the expected behavior', () => {\n    const graph = toResourceGraph(\n      {\n        name: 'test-name',\n        apiVersion: 'example.com/v1alpha1',\n        kind: 'TestResource',\n        spec: TestSpecSchema,\n        status: TestStatusSchema,\n      },\n      () => ({\n        // resources under test\n      }),\n      () => ({ ready: true })\n    );\n\n    expect(graph).toBeDefined();\n  });\n});\n```\n\nFor integration tests, follow the existing pattern:\n\n```typescript\nimport { afterAll, beforeAll, describe, expect, it } from 'bun:test';\nimport { isClusterAvailable } from './shared-kubeconfig.js';\n\nconst clusterAvailable = isClusterAvailable();\nconst describeOrSkip = clusterAvailable ? describe : describe.skip;\n\ndescribeOrSkip('Integration Feature Name', () => {\n  beforeAll(async () => {\n    if (!clusterAvailable) return;\n  });\n\n  afterAll(async () => {\n    // cleanup\n  });\n\n  it('should perform the integration behavior', async () => {\n    expect(clusterAvailable).toBe(true);\n  });\n});\n```\n\n## History Analyzer\n\nUnable to complete the git-history analysis because `bash` execution is blocked in the current `DISCOVERY/ANALYZE` workflow state.\n\nAttempted read-only git queries:\n- `git log --oneline -20`\n- `git shortlog -sn --no-merges -10`\n- `git diff --stat HEAD~10 HEAD`\n- `git branch --all --sort=-committerdate`\n\nAll were rejected by the workflow guard: `Tool \"bash\" is blocked in DISCOVERY/ANALYZE`.\n\nNo files were modified.\n\n## Docs Reader\n\n**AGENTS.md**\n`AGENTS.md` exists and is highest priority. Binding agent-specific rules reproduced verbatim:\n\n```md\n# ⚠️ CRITICAL: NEVER CREATE BACKUP FILES (.backup, .old, -backup.ts, etc.) - USE GIT FOR VERSION CONTROL!\n# ⚠️ CRITICAL: NO DESTRUCTIVE GIT COMMANDS WITHOUT EXPLICIT USER PERMISSION!\n```\n\n```md\n- **Tool**: Use `bun` (never npm/yarn). Biome for linting/formatting.\n- **Imports**: External libraries first, internal modules second, types last. Use `type` imports for types (enforced by Biome).\n- **Format**: 2 spaces, single quotes, 100 char lines, trailing commas ES5, semicolons always\n- **Types**: Strict TypeScript. No `as any` except in specific core files. No `!` assertions except tests.\n- **Type Safety**: Arrays/objects require null checks (`arr[0]?.value`). Optional properties are exact - no `undefined` when not specified.\n- **Naming**: camelCase variables/functions, PascalCase types/interfaces, UPPER_SNAKE constants\n- **Errors**: Custom error classes extending `TypeKroError`. Use structured error messages.\n- **Documentation**: Use JSDoc comments for public APIs, exported functions, and complex types.\n- **Patterns**: Use `createResource` pattern for internal factories. Follow `src/core/`, `src/factories/` structure.\n```\n\n```md\n- **NEVER** create `.backup`, `.backup2`, `.old`, etc. files anywhere in the workspace\n- **NEVER** create temporary files in the workspace root (debug-*.js, test-*.ts, temp-*.md)\n- **NEVER** create duplicate files with slight name variations (-enhanced.ts, -improved.ts, -timeout-fix.ts)\n- Use git for version control, not manual backups\n- Use `/tmp` or ask where to put temporary files\n- Clean up after yourself in the same session\n```\n\n```md\n- **NEVER EVER** run `git checkout HEAD --`, `git checkout --`, `git reset --hard`, or any command that deletes working directory changes\n- **THESE COMMANDS DESTROY USER'S UNCOMMITTED WORK** - this is the worst possible mistake an agent can make\n- **WORKING DIRECTORY CHANGES ARE SACRED** - they represent the user's current progress and should never be touched\n- **NEVER** delete files without asking first\n- **NEVER** revert changes blindly without understanding what they contain\n- **ALWAYS** check what changes contain before modifying them\n- **ALWAYS** ask \"What will this command do?\" before running destructive git commands\n- **IF YOU NEED TO UNDO YOUR CHANGES**: Make targeted edits to fix them, don't use destructive git commands\n```\n\n```md\n- **CRITICAL**: When user asks to commit specific changes, ONLY commit those exact changes\n- **NEVER** run `git add .` or `git commit -a` which commits ALL changes\n- **ALWAYS** check `git status` to see what files have uncommitted changes  \n- **ALWAYS** only stage the specific files that were part of your task\n- **NEVER** stage or commit files with user's work-in-progress changes\n- **ASK** if unsure which changes belong to your task vs user's other work\n- **EXAMPLE**: User asks to commit docs changes → only stage docs files, not package.json or src/ changes\n```\n\n```md\n- **NEVER** assume something is wrong without investigation\n- **ALWAYS** understand why existing code was written that way\n- **ALWAYS** read broader context: specs, tests, git history, comments\n- **ALWAYS** consider trade-offs and constraints that led to current implementation\n- Ask: \"Why does this code exist?\" before changing it\n- Ask: \"What would break if I changed this?\" before modifying\n- Ask: \"Is this the right place to make the change?\"\n```\n\n```md\n- **NEVER** change test expectations to match broken code\n- **NEVER** disable functionality to make tests pass (e.g., `waitForReady: false`)\n- **ALWAYS** fix implementation to meet test requirements  \n- **NEVER** mask problems with `as any` or commenting out tests\n- **ALWAYS** ask \"What is the test trying to validate?\" when tests fail\n- **ALWAYS** identify root cause in implementation, not tests\n- Only change tests when requirements legitimately changed\n```\n\n```md\n- **FOLLOW** established directory structure in `src/core/`, `src/factories/`, etc.\n- **USE** consistent import patterns: external libraries first, internal modules second, types last\n- **AVOID** circular dependencies - check with `bunx madge --circular --extensions ts src/`\n- **USE** `createResource` pattern for new factory functions\n- **PLACE** new factories in appropriate category directories\n- **EXPORT** properly through index files\n```\n\n```md\n- **ALWAYS** use `bun` instead of `npm`, `yarn`, or `pnpm`\n- **USE** `bun install`, `bun add`, `bun run test`, etc.\n- **NEVER** create package-lock.json or yarn.lock files\n- **USE** `bun test` for running tests\n- **FOLLOW** project's established package.json scripts\n```\n\n```md\n- **NEVER** modify composition function signatures without understanding proxy implications\n- **UNDERSTAND** that schema references are automatically `KubernetesRef` objects at runtime\n- **TRUST** the existing `RefOrValue<T>` system - it handles all cases correctly\n- **VALIDATION** belongs in serialization, not in composition functions\n```\n\n```md\n- **ONLY** use supported patterns: direct resource references, CEL expressions, CEL templates\n- **NEVER** use JavaScript fallback patterns like `||` operators in status builders\n- **USE** `Cel.expr()` for complex logic, `Cel.template()` for string construction\n- **REFERENCE** complete-webapp.ts as the canonical example\n```\n\n```md\n- **NEVER** use `as any` or type assertions in tests or production code\n- **ALWAYS** test real type safety - code should compile without casting\n- **VALIDATE** that the type system provides proper IDE experience\n- **TESTS** should mirror how real developers will use the library\n```\n\n```md\n- **ALWAYS** ask before modifying existing core files\n- **ALWAYS** ask before creating new files in src/\n- **ALWAYS** ask before changing build/config files\n- **ALWAYS** show the user what you plan to change and get approval\n- **ALWAYS** explain the reasoning behind the change\n```\n\n**CONTRIBUTING.md**\nDocumented conventions:\n\n- Use Bun `>= 1.0.0`; Node.js `>= 18`.\n- Setup: `bun install`, `bun run build`, `bun run test`, `bun run quality`.\n- Architecture is modular: `src/core/`, `src/factories/`, `src/alchemy/`, `src/compositions/`, `src/utils/`.\n- Key principles: Factory Pattern, Magic Proxy System, `RefOrValue<T>`, no circular dependencies, full type safety with no `any`.\n- Follow existing patterns and TypeScript conventions; discuss large features first.\n- Commit format is conventional commits: `feat:`, `fix:`, `docs:`, `feat!:`, `chore`, `refactor`, `style`, `test`, `perf`.\n- TypeScript standards: strict mode, no `any`, explicit return types for public APIs and complex functions, JSDoc for public functions and interfaces.\n- Formatting uses Biome.\n- Import order: external libraries, internal modules, type-only imports at the end.\n- New factory functions go in the proper category and use `createResource`.\n- Every factory function should include a readiness evaluator.\n- Add exports from the appropriate index file.\n- Add comprehensive tests.\n- PR checklist requires tests, formatting, typecheck, tests for new features, docs updates, conventional commits, and clear motivation.\n\n**README / Docs Setup**\nKey setup/development instructions:\n\n- Install library usage dependencies with `bun add typekro arktype`.\n- Repository setup: `git clone`, `cd typekro`, `bun install`, `bun run test`, `bun run build`.\n- Requirements: Node.js 18+ or Bun, TypeScript 5.0+, Kubernetes cluster for deployment, Kro controller optional for runtime features.\n- Docs getting started requires Node.js 18+ or Bun and `kubectl` configured.\n- Verify cluster access with `kubectl cluster-info`.\n- Preferred composition API is `kubernetesComposition`; use `toResourceGraph` only when explicit CEL control is needed.\n- Deployment modes: `direct`, `kro`, `alchemy`, YAML generation; `auto` is documented as reserved/future.\n- Debug env vars: `TYPEKRO_LOG_LEVEL`, `TYPEKRO_DEBUG`, `TYPEKRO_LOG_PRETTY`.\n\n**GitHub / CI**\nDocumented checks and automation:\n\n- CI runs on PRs to `master`.\n- CI uses Bun `1.2.x` and `bun install --frozen-lockfile`.\n- CI runs `bun run build`, `bun run typecheck`, `bun run lint`.\n- Docs validation runs `docs:validate`, `docs:check-lines`, `docs:check-examples`, `docs:check-links`, `docs:build`.\n- CI checks circular dependencies with `bunx madge --circular --extensions ts src/`.\n- CI runs `bun run test:coverage` and `bun run test:integration:yaml`.\n- Deploy workflow publishes docs on `master` changes to `docs/**`, `.github/workflows/**`, or `package.json`.\n- NPM publish occurs when `package.json` version changes and no existing `v<version>` tag exists.\n- Dependabot reviewers/assignees are `yehudacohen`.\n\n**Explicit Ownership / Do Not Modify Constraints**\nFound explicit constraints:\n\n- `src/factories/searxng/types.ts`: `secret_key` is NEVER written into the ConfigMap.\n- `src/factories/searxng/resources/searxng.ts`: `SEARXNG_SECRET delivery — secret_key is NEVER written into the ConfigMap.`\n- `src/core/deployment/kro-factory.ts`: dynamic fields are owned by live Kro instance status and should not be replaced by live re-execution.\n- No explicit source comment saying `DO NOT TOUCH` or `DO NOT MODIFY` was found.\n- `docs/.vitepress/dist/` appears to be generated output, but I did not find an explicit “do not edit generated files” annotation.\n\n**Binding AI Constraint List**\nComplete practical constraints for new code to be indistinguishable:\n\n- Use `bun`, never npm/yarn/pnpm, except existing GitHub publish workflow uses `npm publish`.\n- Use Biome style: 2 spaces, single quotes, semicolons, 100 char lines, trailing commas ES5.\n- Keep imports ordered: external, internal, type-only.\n- Use strict TypeScript; avoid `any`, `as any`, and production non-null assertions.\n- Use exact optional property semantics; omit properties instead of setting `undefined`.\n- Use null-safe array/object access.\n- Use camelCase for variables/functions, PascalCase for types/interfaces, UPPER_SNAKE for constants.\n- Add JSDoc for public APIs, exported functions, and complex types.\n- Follow `src/core/` and `src/factories/` organization.\n- Use built-in factories for standard Kubernetes resources; use `createResource` for custom/internal factories.\n- Add readiness evaluators for factory functions.\n- Export new factories through index files.\n- Prefer `kubernetesComposition` with natural JS status expressions.\n- Use `toResourceGraph` only for explicit CEL control.\n- In `kubernetesComposition`, use `simple.*`/`typekro/simple` factories and resource `id` values for references.\n- Do not use `Cel.expr()`/`Cel.template()` by default in `kubernetesComposition`.\n- In `toResourceGraph`, always specify `Cel.expr<T>()` type parameters.\n- Do not use optional chaining on enhanced resource refs in status builders.\n- Do not use JavaScript fallback operators like `||` in status builders; use CEL expressions where needed.\n- Resource IDs should be descriptive camelCase and unique within a composition.\n- Add `id` whenever accessing `.status` or `.metadata`, using cross-resource refs, or tracking dependency graph behavior.\n- Do not mutate composition function signatures without understanding magic proxy behavior.\n- Keep validation in serialization, not composition functions.\n- Composition functions should be side-effect-free beyond resource creation.\n- Do not perform I/O, random generation, logging, metrics, or hidden state mutation inside composition functions.\n- Fix framework limitations at the framework level; do not bury awkward composition workarounds.\n- Use `??` for defaults, not `||`.\n- Do not use `simple.Secret` for schema-proxy-derived `stringData`; use the low-level secret factory so KRO can resolve references.\n- For cluster-scoped resources, set `{ scope: 'cluster' }`.\n- For cross-namespace shared resources such as HelmRepositories in `flux-system`, use `lifecycle: 'shared'`.\n- For Kubernetes API catch blocks, check `error.statusCode ?? error.code ?? error.body?.code`.\n- Do not manually delete RGDs/CRDs/namespaces in integration tests; use `factory.deleteInstance()`.\n- Tests should verify real type safety without casts.\n- Do not change tests to match broken implementation.\n- Do not disable functionality to make tests pass.\n- Do not skip/comment out failing tests.\n- Never create backup files or workspace-root temp files.\n- Never run destructive git commands without explicit permission.\n- Never commit unrelated user work; stage files selectively.\n\n---\n*6/6 scanners completed successfully.*",
+  "feedbackHistory": [
+    {
+      "phase": "PLANNING",
+      "feedback": "Revise the plan to make two requirements more explicit: include a concrete example for applying one aspect across multiple workload types such as all Deployments and StatefulSets matching selector criteria, and document aspect application ordering with an example showing later aspects observe earlier mutations.",
+      "timestamp": 1777429151519
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "Revise INTERFACES: the public target model is too narrow. `aspect.on(factoryOrGroup, ...)` should be able to target any aspect-capable resource factory, not only `simple.Deployment` and `simple.StatefulSet`. Keep Deployment/StatefulSet as the v1 workload override adapter guarantee, but make the generic factory target interface broad enough for metadata targeting and future factory surfaces.",
+      "timestamp": 1777429736525
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "Revise the INTERFACES artifact before approval. Keep the correction that aspect targets should not be limited to simple.Deployment and simple.StatefulSet, but simplify and clarify the design. Specific feedback: the type-level target model is too elaborate for an interfaces doc and may overconstrain implementation before TypeScript inference is tested; make it more conceptual and state compile-time restrictions where feasible with runtime metadata authoritative. Make surface naming consistent between 'override' and 'workload surface'. Clarify exactly which factories in v1 get stamped with factory identity; if arbitrary factories require createResource-wide stamping or additional files, identify that integration point or defer it. The simple.Service example conflicts with the approved allowlist unless its factory file is added, so either avoid that concrete example or revise the allowlist in a later phase. Reconsider or explicitly test the ambiguity in graph.toYaml({ aspects }) because it structurally overlaps with specs. Move Kubernetes client type imports out of the public imports example into a referenced external/internal types section.",
+      "timestamp": 1777430118514
+    },
+    {
+      "phase": "TESTS",
+      "feedback": "Revise: the current TESTS artifact is a markdown test plan under .openartisan. With the new file-based artifact rules, TESTS must submit real runnable test/spec files, not a markdown design artifact. Return to INTERFACES as well because the approved INTERFACES artifact was also a markdown design doc rather than real interface/type/schema files.",
+      "timestamp": 1777454911416
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "Revise the INTERFACES artifact: the aspect override surface should be derived from the targeted factories' advertised writable aspect schemas rather than a single hand-written `WorkloadOverrideSurface`. For a single target, `override(...)` should accept a partial of that target's aspect override schema. For multiple targets, such as `[simple.Deployment, simple.StatefulSet]`, it should accept a partial of the common writable intersection of their aspect schemas: only fields present on all targets, recursively common nested fields, compatible value types only, and unsafe/status/identity/Kro-sensitive fields excluded by policy. Do not model this as `Partial<Deployment & StatefulSet>` because TypeScript intersections do not mean common keys only and can admit target-specific fields. `allResources` should remain metadata-only, and `workloads` should represent the common workload override schema across registered workload-capable factories.",
+      "timestamp": 1777456863995
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "Revise the INTERFACES artifact again: remove the bespoke `CommonWorkloadOverrideSchema` abstraction. The override contract should be derived from the target resource schema under `spec`, with factory targets advertising a curated writable `{ spec: ... }` schema. For a single target, `override(...)` should accept a recursive partial patch under that target's `spec`. For multiple targets, compute the recursively common writable subset under `spec` across the targeted schemas. Keep excluding status, identity metadata, and Kro-sensitive/unsafe fields by policy, but do not invent a separate hand-maintained common workload schema. `workloads` can be a broad target group, but concrete factory targets and factory arrays should drive useful type narrowing from their resource specs.",
+      "timestamp": 1777457734928
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "[propose_backtrack → PLANNING] The approved plan requires a concrete top-level workload override API with fields like command/env/volumes/imagePullPolicy, but the latest user feedback changes the intended interface to resource-spec-derived overrides under `{ spec: ... }` and explicitly removes the bespoke common workload schema. The INTERFACES reviewer is rejecting the revised source contract because it no longer matches the approved plan, so the plan must be revised first to reflect the new product decision before INTERFACES can be fairly reviewed.",
+      "timestamp": 1777457839780
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "[propose_backtrack → INTERFACES] After approving the revised plan, the workflow auto-skipped INTERFACES, TESTS, and IMPL_PLAN because the persisted file allowlist is empty. This is not valid for the scope change: the real interface source contracts need to be re-reviewed against the newly approved spec-derived override plan before runnable tests and implementation can proceed. IMPLEMENTATION currently has no DAG and no allowlist, so continuing would bypass required artifact gates.",
+      "timestamp": 1777458240613
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "[propose_backtrack → PLANNING] The INTERFACES reviewer requested concrete Deployment/StatefulSet override schema aliases and exact field lists, but the user explicitly rejected that direction. The approved product intent is that override schemas are factory-advertised writable `{ spec: ... }` schemas, not a centrally maintained concrete workload schema in the aspect interface contract. The plan currently contains concrete field lists that caused the reviewer to enforce the wrong abstraction, so PLANNING must be revised to remove those lists and explicitly state that implementers should push back on reviewer feedback that conflicts with approved user intent rather than blindly satisfying it.",
+      "timestamp": 1777458412388
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "[propose_backtrack → INTERFACES] After approving PLANNING, the workflow auto-skipped INTERFACES, TESTS, and IMPL_PLAN because `fileAllowlist` is still empty. This bypasses required real source interface and runnable test artifacts for a scope-changing feature. The revised plan explicitly requires interface hooks and tests, so IMPLEMENTATION is not a valid next phase yet. Backtrack to INTERFACES and review the real TypeScript contracts first.",
+      "timestamp": 1777468482147
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "Revise INTERFACES before approval. Fix these type-contract issues: 1) `allResources` and `workloads` are both typed as broad `AspectTargetGroup`, so `typeof allResources` and `typeof workloads` are not distinguishable and `workloads` can be classified as metadata-only. Make target groups generic/literal-specific, e.g. `AspectTargetGroup<'allResources'>` and `AspectTargetGroup<'workloads'>`, or declare constants with specific literal ids. 2) `ToYamlOptions.aspects` is optional, which does not encode the approved dispatch rule that an object is render options only when it has an own `aspects` property whose value is an array. Since no-aspect rendering already uses `toYaml()`, make `aspects` required in `ToYamlOptions`. 3) Array fields can accept `merge(...)` because arrays extend object in `AspectPatchValue<T>`. Adjust the conditional so arrays allow `replace`/`append`, non-array objects allow `replace`/`merge`, and scalars allow `replace`. Also note as a non-blocking follow-up: module augmentation for `PublicFactoryOptions.aspects` and `toYaml(options)` is acceptable for INTERFACES, but TESTS/implementation must prove those augmentations are exported/imported so consumers actually see them.",
+      "timestamp": 1777497605881
+    },
+    {
+      "phase": "TESTS",
+      "feedback": "Revise TESTS with one final relevant coverage pass: add builder immutability, metadata replace semantics, and incompatible target-array type rejection while avoiding irrelevant network/auth/timeout requirements for this local feature.",
+      "timestamp": 1777499489136
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "[propose_backtrack → IMPL_PLAN] The approved IMPL_PLAN lists test/unit/aspects.test.ts as an expected test for T1, but the task's expected-green text says only descriptor/definition runtime cases should pass while metadata/application/render wiring remains T2-T4. The per-task reviewer correctly runs the whole expected test file and blocks T1 because downstream T2-T4 tests fail. The implementation plan needs revision to either split T1-specific tests into a separate runnable file or adjust task expected tests so per-task review aligns with task boundaries.",
+      "timestamp": 1777500133075
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "[propose_backtrack → TESTS] Implementation revealed contradictions/overbroad assertions in the approved TESTS artifact: (1) the metadata replace test asserts the full YAML does not contain `app: static-demo`, but resource metadata replacement should not remove Deployment selector or pod-template labels because pod-template metadata was explicitly out of scope; (2) the unsafe append test is structurally identical to the happy append test and does not actually create a distinct reference-backed array target, making both pass and fail expectations impossible to satisfy; (3) direct/Kro parity checks `parity: true` but js-yaml correctly quotes boolean-like string label values as `'true'`, so the assertion should accept valid YAML string quoting. These should be fixed in TESTS before continuing implementation.",
+      "timestamp": 1777501001654
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "okay, so what am i reviewing?[WORKFLOW GATE — IMMEDIATE ACTION REQUIRED] The user has provided feedback on the IMPLEMENTATION artifact. Call `submit_feedback` NOW with feedback_type=\"revise\" and feedback_text set to the user's exact message. This must be your first and only tool call. Do NOT do research or analysis first.",
+      "timestamp": 1777784009301
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "how well do you think the implementation meets the goals of the original rfp? How effectively do you think we've implemented it[WORKFLOW GATE — IMMEDIATE ACTION REQUIRED] The user has provided feedback on the IMPLEMENTATION artifact. Call `submit_feedback` NOW with feedback_type=\"revise\" and feedback_text set to the user's exact message. This must be your first and only tool call. Do NOT do research or analysis first.",
+      "timestamp": 1777812537916
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "accept",
+      "timestamp": 1777813091092
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "do you think this design is the right design? If you do, I approve[WORKFLOW GATE — IMMEDIATE ACTION REQUIRED] The user has provided feedback on the INTERFACES artifact. Call `submit_feedback` NOW with feedback_type=\"revise\" and feedback_text set to the user's exact message. This must be your first and only tool call. Do NOT do research or analysis first.",
+      "timestamp": 1777813515970
+    },
+    {
+      "phase": "TESTS",
+      "feedback": "[propose_backtrack → INTERFACES] The TESTS reviewer is rejecting the new `resources` tests because `.openartisan/typed-resource-aspects/interfaces.md` still declares only `allResources`, `workloads`, and `aspect`, even though the reviewed source interface `src/core/aspects/types.ts` was revised and accepted with `resources`. The tests are aligned with the revised source interface, but the persisted interface artifact mirror is stale, causing an upstream artifact mismatch that cannot be fixed correctly from TESTS/REVISE without editing the interface artifact.",
+      "timestamp": 1777813734214
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "have we implemented all the implementation tasks? How has your experience with open-artisan been?[WORKFLOW GATE — IMMEDIATE ACTION REQUIRED] The user has provided feedback on the IMPLEMENTATION artifact. Call `submit_feedback` NOW with feedback_type=\"revise\" and feedback_text set to the user's exact message. Do NOT do research or analysis first.",
+      "timestamp": 1777815719175
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "have we implemented all the implementation tasks? How has your experience with open-artisan been?",
+      "timestamp": 1777817004456
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "ok approved. please push and open pull request linking the rfp",
+      "timestamp": 1777822660706
+    },
+    {
+      "phase": "IMPLEMENTATION",
+      "feedback": "[propose_backtrack → INTERFACES] The approved interfaces are internally inconsistent for multi-target aspects. `.openartisan/typed-resource-aspects/interfaces.md` declares `AspectDefinition<TTarget = AspectTarget, TSurface = AspectSurface>`, while public options use `readonly AspectDefinition[]`. The approved `aspect.on([factoryA, factoryB], ...)` overload returns `AspectDefinition<TTargets, ...>` where `TTargets` is a readonly target array, which is not assignable to `AspectDefinition[]` under the approved single-target default. The implementation can either widen the default to `AspectTarget | readonly AspectTarget[]` (which fixes the public options path but deviates from the approved interface) or preserve the default exactly (which forces casts for public multi-target options). This is a public interface design inconsistency, not an implementation bug, so the interfaces artifact needs revision before implementation can satisfy both exact interface matching and cast-free multi-target options.",
+      "timestamp": 1777823326483
+    },
+    {
+      "phase": "INTERFACES",
+      "feedback": "[propose_backtrack → PLANNING] The interface artifact now correctly documents the user-approved strategic change to add broad `resources` targeting, but the approved plan still lists only `allResources` and `workloads` target groups. The interface reviewer is therefore blocking on plan terminology, not the source contract. To resolve this without fighting the reviewer or removing the user-approved `resources` scope, the PLANNING artifact must be revised to record that `resources` supersedes the earlier workload-only group for schema-capable override targeting while `workloads` remains workload-focused/compatibility. Then interfaces/tests/impl_plan/implementation can align downstream.",
+      "timestamp": 1777823609197
+    }
+  ],
+  "pendingFeedback": null,
+  "taskReviewCount": 0,
+  "backtrackContext": null,
+  "cachedPriorState": null,
+  "revisionBaseline": null,
+  "approvedArtifacts": {
+    "plan": "approved-at-1777468468407",
+    "tests": "15b6630e275bf535",
+    "impl_plan": "e00abf1f99e31aad",
+    "interfaces": "0706c3fbcd31a3d2",
+    "conventions": "approved-at-1777428055670",
+    "implementation": "approved-at-1777824244676"
+  },
+  "artifactDiskPaths": {
+    "plan": "/Users/yehudac/workspace/typekro/.openartisan/typed-resource-aspects/plan.md",
+    "tests": "/Users/yehudac/workspace/typekro/test/unit/aspects.test.ts",
+    "impl_plan": "/Users/yehudac/workspace/typekro/.openartisan/typed-resource-aspects/impl-plan.md",
+    "interfaces": "/Users/yehudac/workspace/typekro/src/core/aspects/types.ts",
+    "conventions": "/Users/yehudac/workspace/typekro/.openartisan/typed-resource-aspects/conventions.md",
+    "discovery_report": "/Users/yehudac/workspace/typekro/.openartisan/typed-resource-aspects/discovery-report.md"
+  },
+  "lastCheckpointTag": null,
+  "modeDetectionNote": null,
+  "reviewArtifactHash": null,
+  "latestReviewResults": [
+    {
+      "criterion": "Bespoke structural gate — shipped runtime wired end-to-end and scope decisions documented",
+      "met": true,
+      "evidence": "Runtime wiring remains end-to-end through the shared aspect engine and render/direct/Kro paths. Scope decisions are documented in `src/core/aspects/types.ts` and the aligned plan artifact: `resources` is broad schema-capable targeting, `workloads` is workload-focused compatibility, and `allResources` is metadata-only. The public multi-target option path is now cast-free.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "1. Implementation matches approved interface signatures exactly — no deviations",
+      "met": true,
+      "evidence": "After interface cascade approval, `AspectDefinition` defaults to `AspectTarget | readonly AspectTarget[]`, matching the revised approved contract and allowing array-target definitions in public options. `AspectApplicationError` concrete fields match its declared interface, and public helpers/targets remain declared/exported as approved.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "2. Expected tests for this task pass",
+      "met": true,
+      "evidence": "Latest verification passed: `bun run typecheck`, aspect type tests (`7 pass`, `0 fail`), aspect runtime tests (`34 pass`, `0 fail`), and full `bun run test` (`4249 pass`, `4 skip`, `1 todo`, `0 fail`, across 212 files).",
+      "score": "NaN"
+    },
+    {
+      "criterion": "3. No regressions in previously-passing tests",
+      "met": true,
+      "evidence": "Full `bun run test` completed with `0 fail` after the final multi-target typing/test fix. Existing aspect runtime and type tests also passed.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "4. No scope creep — only what the plan specifies is implemented",
+      "met": true,
+      "evidence": "The implementation remains scoped to typed resource aspects: public descriptors/helpers, metadata/override surfaces, safe `resources`/`workloads`/`allResources` targeting, direct/Kro/toYaml wiring, and tests. No deploy-time aspects, raw YAML patching, unrelated deployment API churn, or broad non-schema mutation was added.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "5. Consistent with all prior approved artifacts (plan, interfaces, conventions)",
+      "met": true,
+      "evidence": "The plan was aligned to the accepted `resources` target and the interfaces/tests cascade passed. Implementation now matches the revised artifacts: public multi-target options compile without casts, `resources` uses schema-capable targeting, and `allResources` remains metadata-only.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "6. No reimplementation of existing utils, dependency capabilities, or functions that exist elsewhere in the codebase",
+      "met": true,
+      "evidence": "Implementation reuses existing TypeKro utilities: branded value guards from `../../utils/type-guards.js`, `TypeKroError`, and `copyResourceMetadata`. Aspect-specific validation/application logic remains domain-specific and does not duplicate an existing utility.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "7. If custom code is built, no open source package would be better",
+      "met": true,
+      "evidence": "Custom code is justified because it integrates TypeKro WeakMap metadata, factory target brands, KubernetesRef/CelExpression preservation, Kro safety checks, and direct/Kro/toYaml runtime paths. Generic patch/schema packages would not understand these contracts.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "8. No placeholder tests for claimed-complete scope",
+      "met": true,
+      "evidence": "The previously identified placeholder risk is fixed: `test/unit/aspects.test.ts` passes `multiTargetAspect` through `factory('direct', { aspects: [multiTargetAspect] })` without `as never`, and `bun run typecheck` proves the public type path. Runtime tests exercise actual YAML/resource behavior, not helper existence only.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "9. No helper-only or half-integrated implementations",
+      "met": true,
+      "evidence": "Descriptors are wired through actual runtime call sites via `applyAspects`, factory/render options, and serialization paths. Public multi-target definitions now flow through real factory options without casts, closing the last half-integrated type path.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "10. No partial client integration for shared runtime paths",
+      "met": true,
+      "evidence": "Render, direct factory, and Kro factory paths use the shared aspect implementation and are covered by tests. The public `AspectDefinition[]` option path now accepts both single and multi-target definitions.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "11. Documentation complete",
+      "met": true,
+      "evidence": "Inline public docs in `src/core/aspects/index.ts` cover target groups, selectors, operations, direct/Kro factory usage, and failure recovery. `src/core/aspects/types.ts` documents the `resources`/`workloads` target decision and tradeoffs. The plan artifact is aligned with the accepted `resources` target.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "12. Test coverage for new code",
+      "met": true,
+      "evidence": "New interface behavior is tested by the cast-free multi-target runtime test plus `bun run typecheck`. Existing tests cover `resources` Service success, absent-field rejection, ConfigMap exclusion, direct/Kro integration, structured diagnostics, and type-level target/surface constraints.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "13. No duplicated policy or gate logic without justification",
+      "met": true,
+      "evidence": "Target/surface compatibility remains centralized in `assertTargetSurfaceCompatibility`, runtime target matching in `matchesTarget`, and schema validation in `validateOverridePatchNode`/`validateOverridePatch`. No duplicate policy logic was introduced by the latest type/test fix.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "14. Autonomous runtime claims must be operationally true",
+      "met": true,
+      "evidence": "Not applicable: TypeKro aspects are synchronous render/factory-time behavior. No agent/plugin/background autonomy claim is made by the shipped TypeKro feature.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "15. Dogfooding/runtime verification present for integration-heavy work",
+      "met": true,
+      "evidence": "Integration surfaces were verified through real TypeKro public paths: `toYaml({ aspects })`, direct factory graph/YAML, Kro factory/YAML, and multi-target factory options. Full suite passed after final revision. Open Artisan dogfood gates caught and drove fixes for real issues.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "16. Docs and shipped runtime behavior are aligned after revise cycles",
+      "met": true,
+      "evidence": "Plan, source types, tests, and runtime are aligned after revise cycles: `resources` is documented and implemented as schema-capable targeting; `workloads` remains compatibility/workload-focused; non-structured resources are excluded; non-advertised specs use current-spec-only fallback; public multi-target options compile without casts.",
+      "score": "NaN"
+    },
+    {
+      "criterion": "[Q] Design excellence",
+      "met": true,
+      "evidence": "Score 9/10. The final fix is minimal and type-correct: it widens the `AspectDefinition` default without changing runtime semantics, removes an unsafe test cast, and documents target tradeoffs. Runtime remains centralized, immutable descriptors are preserved, and schema inference stays conservative.",
+      "score": "9"
+    },
+    {
+      "criterion": "[Q] Architectural cohesion",
+      "met": true,
+      "evidence": "Score 9/10. Public types, runtime descriptors, metadata, and application logic remain in their respective modules. Interface, tests, plan, and implementation now agree on target groups and public option typing.",
+      "score": "9"
+    },
+    {
+      "criterion": "[Q] Vision alignment, completeness, readiness, security, and operational excellence",
+      "met": true,
+      "evidence": "Score 9/10. The implementation delivers the approved typed aspects feature with cast-free public multi-target options, full typecheck/full test pass, no stubs or debug code in the aspect implementation, no new secrets/auth/network behavior, and structured redacted diagnostics appropriate for synchronous render-time execution.",
+      "score": "9"
+    }
+  ],
+  "phaseApprovalCounts": {
+    "TESTS": 2,
+    "PLANNING": 3,
+    "DISCOVERY": 1,
+    "IMPL_PLAN": 3,
+    "INTERFACES": 2,
+    "IMPLEMENTATION": 1
+  },
+  "reviewArtifactFiles": [
+    "/Users/yehudac/workspace/typekro/src/index.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/index.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/types.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/metadata.ts",
+    "/Users/yehudac/workspace/typekro/src/core/aspects/apply.ts",
+    "/Users/yehudac/workspace/typekro/test/unit/aspects.test.ts",
+    "/Users/yehudac/workspace/typekro/test/unit/aspects-types.test.ts",
+    "/Users/yehudac/workspace/typekro/src/core/deployment/direct-factory.ts",
+    "/Users/yehudac/workspace/typekro/src/core/deployment/kro-factory.ts",
+    "/Users/yehudac/workspace/typekro/src/core/serialization/core.ts",
+    "/Users/yehudac/workspace/typekro/src/core/serialization/yaml.ts",
+    "/Users/yehudac/workspace/typekro/src/core/metadata/resource-metadata.ts",
+    "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/deployment.ts",
+    "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/stateful-set.ts"
+  ],
+  "pendingRevisionSteps": [],
+  "priorWorkflowChecked": false,
+  "orchestratorSessionId": null,
+  "userGateMessageReceived": false,
+  "taskCompletionInProgress": null,
+  "approvedArtifactFiles": {
+    "implementation": [
+      "/Users/yehudac/workspace/typekro/src/index.ts",
+      "/Users/yehudac/workspace/typekro/src/core/aspects/index.ts",
+      "/Users/yehudac/workspace/typekro/src/core/aspects/types.ts",
+      "/Users/yehudac/workspace/typekro/src/core/aspects/metadata.ts",
+      "/Users/yehudac/workspace/typekro/src/core/aspects/apply.ts",
+      "/Users/yehudac/workspace/typekro/test/unit/aspects.test.ts",
+      "/Users/yehudac/workspace/typekro/test/unit/aspects-types.test.ts",
+      "/Users/yehudac/workspace/typekro/src/core/deployment/direct-factory.ts",
+      "/Users/yehudac/workspace/typekro/src/core/deployment/kro-factory.ts",
+      "/Users/yehudac/workspace/typekro/src/core/serialization/core.ts",
+      "/Users/yehudac/workspace/typekro/src/core/serialization/yaml.ts",
+      "/Users/yehudac/workspace/typekro/src/core/metadata/resource-metadata.ts",
+      "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/deployment.ts",
+      "/Users/yehudac/workspace/typekro/src/factories/simple/workloads/stateful-set.ts"
+    ]
+  }
+}

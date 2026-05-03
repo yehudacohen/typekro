@@ -680,16 +680,13 @@ export interface AlchemyBridge {
  */
 export interface InternalFactoryOptions {
   /** Re-execution function for the composition (internal use) */
-  // biome-ignore lint/suspicious/noExplicitAny: internal composition functions preserve author-defined spec/status shapes.
-  compositionFn?: (spec: any) => any;
+  compositionFn?(spec: KroCompatibleType): unknown;
   /** AST control-flow analysis for includeWhen/forEach propagation (internal use) */
   compositionAnalysis?: ASTAnalysisResult | null;
   /** Original composition definition (internal use) */
-  // biome-ignore lint/suspicious/noExplicitAny: internal composition definitions are heterogeneous authored objects.
-  compositionDefinition?: any;
+  compositionDefinition?: unknown;
   /** Original composition options (internal use) */
-  // biome-ignore lint/suspicious/noExplicitAny: internal composition options are heterogeneous authored objects.
-  compositionOptions?: any;
+  compositionOptions?: unknown;
 
   /** Factory type for expression analysis and conversion (internal use) */
   factoryType?: 'direct' | 'kro';

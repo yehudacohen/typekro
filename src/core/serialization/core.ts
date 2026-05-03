@@ -5,6 +5,8 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
+import type { ToYamlOptions } from '../aspects/types.js';
 import {
   createCompositionContext,
   getCurrentCompositionContext,
@@ -14,7 +16,6 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
-import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
@@ -37,8 +38,8 @@ import type {
   MagicAssignableShape,
   ResourceGraphDefinition,
   SchemaDefinition,
-  SerializationContext,
   SchemaProxy,
+  SerializationContext,
   SerializationOptions,
 } from '../types/serialization.js';
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
@@ -57,7 +58,10 @@ function separateResourcesAndClosures<
   T extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   builderResult: T
-): { resources: Record<string, Enhanced<unknown, unknown>>; closures: Record<string, DeploymentClosure> } {
+): {
+  resources: Record<string, Enhanced<unknown, unknown>>;
+  closures: Record<string, DeploymentClosure>;
+} {
   const resources: Record<string, Enhanced<unknown, unknown>> = {};
   const closures: Record<string, DeploymentClosure> = {};
 
@@ -531,23 +535,15 @@ function processCompositionBodyAnalysis(
         );
 
         // Diff ONLY the targeted resource(s)
-        const targetIds = ternary.callSiteResourceId && ternary.callSiteResourceId !== '__non_factory_call__'
-          ? [ternary.callSiteResourceId]
-          : getNestedResourceStatusTargetIds(
-              trueCtx.resources,
-              trueCtx.nestedCompositionIds
-            );
+        const targetIds =
+          ternary.callSiteResourceId && ternary.callSiteResourceId !== '__non_factory_call__'
+            ? [ternary.callSiteResourceId]
+            : getNestedResourceStatusTargetIds(trueCtx.resources, trueCtx.nestedCompositionIds);
 
         for (const id of targetIds) {
-          const targetRes = resourcesWithKeys[id] as unknown as
-            | Record<string, unknown>
-            | undefined;
-          const trueRes = trueCtx.resources[id] as unknown as
-            | Record<string, unknown>
-            | undefined;
-          const falseRes = falseCtx.resources[id] as unknown as
-            | Record<string, unknown>
-            | undefined;
+          const targetRes = resourcesWithKeys[id] as unknown as Record<string, unknown> | undefined;
+          const trueRes = trueCtx.resources[id] as unknown as Record<string, unknown> | undefined;
+          const falseRes = falseCtx.resources[id] as unknown as Record<string, unknown> | undefined;
           if (targetRes && trueRes && falseRes) {
             applyResourceStatusBranchDiff(
               targetRes,
@@ -621,7 +617,9 @@ function processCompositionBodyAnalysis(
           ) as Record<string, Record<string, unknown>>;
 
           const differentialFields = collectDifferentialOptionalFields(compositionAnalysis);
-          const fieldsToDiff = Array.from(differentialFields).filter((field) => overriddenFields.has(field));
+          const fieldsToDiff = Array.from(differentialFields).filter((field) =>
+            overriddenFields.has(field)
+          );
 
           for (const field of fieldsToDiff) {
             const singleFieldSet = new Set([field]);
@@ -721,8 +719,7 @@ function collectOverridableOptionalFields(
 
   const differentialFields = collectDifferentialOptionalFields(analysis);
   return new Set(
-    Array.from(collectOptionalSpecPaths(specJson))
-      .filter((field) => differentialFields.has(field))
+    Array.from(collectOptionalSpecPaths(specJson)).filter((field) => differentialFields.has(field))
   );
 }
 
@@ -839,10 +836,14 @@ function captureHybridRunResources(
       return { captured: {}, overriddenFields, overrideConditions: new Map() };
     }
     const overrideValues = new Map(
-      Array.from(collectHybridOverrideValues(analysis)).filter(([field]) => overriddenFields.has(field))
+      Array.from(collectHybridOverrideValues(analysis)).filter(([field]) =>
+        overriddenFields.has(field)
+      )
     );
     const overrideConditions = new Map(
-      Array.from(collectHybridOverrideConditions(analysis)).filter(([field]) => overriddenFields.has(field))
+      Array.from(collectHybridOverrideConditions(analysis)).filter(([field]) =>
+        overriddenFields.has(field)
+      )
     );
 
     // Build the hybrid spec: the real schema proxy (so all other field
@@ -896,10 +897,21 @@ function createHybridSpecProxy(
         return overrideValues.has(path) ? overrideValues.get(path) : undefined;
       }
 
-      const hasNestedOverride = Array.from(overriddenFields).some((field) => field.startsWith(`${path}.`));
+      const hasNestedOverride = Array.from(overriddenFields).some((field) =>
+        field.startsWith(`${path}.`)
+      );
       const value = Reflect.get(proxyTarget, prop, receiver);
-      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
-        return createHybridSpecProxy(value as Record<string, unknown>, overriddenFields, overrideValues, path);
+      if (
+        hasNestedOverride &&
+        value &&
+        (typeof value === 'object' || typeof value === 'function')
+      ) {
+        return createHybridSpecProxy(
+          value as Record<string, unknown>,
+          overriddenFields,
+          overrideValues,
+          path
+        );
       }
 
       return value;
@@ -941,7 +953,9 @@ function structuralEquals(a: unknown, b: unknown): boolean {
   if (isWalkableRecord(a) && isWalkableRecord(b)) {
     const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
     for (const key of keys) {
-      if (!structuralEquals((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
+      if (
+        !structuralEquals((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
+      ) {
         return false;
       }
     }
@@ -1064,7 +1078,11 @@ function walkAndConditionalize(
   }
 
   if (isWalkableRecord(current) && isWalkableRecord(baseline) && isWalkableRecord(hybrid)) {
-    const keys = new Set([...Object.keys(current), ...Object.keys(baseline), ...Object.keys(hybrid)]);
+    const keys = new Set([
+      ...Object.keys(current),
+      ...Object.keys(baseline),
+      ...Object.keys(hybrid),
+    ]);
     for (const key of keys) {
       const c = (current as Record<string, unknown>)[key];
       const b = (baseline as Record<string, unknown>)[key];
@@ -1131,11 +1149,7 @@ function runResourceStatusBranch(
   const branchCtx = createCompositionContext('resource-status-branch', {
     isReExecution: true,
   });
-  branchCtx.liveStatusMap = createResourceStatusBranchMap(
-    analysis,
-    ternary,
-    desiredConditionValue
-  );
+  branchCtx.liveStatusMap = createResourceStatusBranchMap(analysis, ternary, desiredConditionValue);
 
   const branchSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
     (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
@@ -1145,9 +1159,10 @@ function runResourceStatusBranch(
     ternary.conditionExpression,
     desiredConditionValue
   );
-  const branchSpec = specOverrides.size > 0
-    ? createSpecOverrideProxy(branchSchema.spec as Record<string, unknown>, specOverrides)
-    : branchSchema.spec;
+  const branchSpec =
+    specOverrides.size > 0
+      ? createSpecOverrideProxy(branchSchema.spec as Record<string, unknown>, specOverrides)
+      : branchSchema.spec;
 
   runWithCompositionContext(branchCtx, () => {
     runInStatusBuilderContext(() => {
@@ -1163,7 +1178,8 @@ function createResourceStatusBranchMap(
   ternary: ASTAnalysisResult['resourceStatusTernaries'][number],
   desiredConditionValue: boolean
 ): Map<string, Record<string, unknown>> {
-  const conditionExpression = ternary.conditionExpression ?? `${ternary.variableName}.status.${ternary.statusField}`;
+  const conditionExpression =
+    ternary.conditionExpression ?? `${ternary.variableName}.status.${ternary.statusField}`;
   const statusRefs = collectStatusRefs(conditionExpression);
   if (statusRefs.length === 0) {
     statusRefs.push({ variableName: ternary.variableName, statusField: ternary.statusField });
@@ -1171,13 +1187,18 @@ function createResourceStatusBranchMap(
 
   const statusMap = new Map<string, Record<string, unknown>>();
   for (const statusRef of statusRefs) {
-    const resourceId = analysis.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
+    const resourceId =
+      analysis.variableToResourceId.get(statusRef.variableName) ?? statusRef.variableName;
     const existing = statusMap.get(resourceId) ?? {};
-    setNestedBranchStatusValue(existing, statusRef.statusField, getBranchStatusValue(
-      conditionExpression,
-      `${statusRef.variableName}.status.${statusRef.statusField}`,
-      desiredConditionValue
-    ));
+    setNestedBranchStatusValue(
+      existing,
+      statusRef.statusField,
+      getBranchStatusValue(
+        conditionExpression,
+        `${statusRef.variableName}.status.${statusRef.statusField}`,
+        desiredConditionValue
+      )
+    );
     statusMap.set(resourceId, existing);
   }
 
@@ -1209,10 +1230,13 @@ function setNestedBranchStatusValue(
   }
 }
 
-function collectStatusRefs(conditionExpression: string): Array<{ variableName: string; statusField: string }> {
+function collectStatusRefs(
+  conditionExpression: string
+): Array<{ variableName: string; statusField: string }> {
   const refs: Array<{ variableName: string; statusField: string }> = [];
   const seen = new Set<string>();
-  const statusRefPattern = /\b([A-Za-z_$][\w$]*)\.status\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+  const statusRefPattern =
+    /\b([A-Za-z_$][\w$]*)\.status\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
 
   for (const match of conditionExpression.matchAll(statusRefPattern)) {
     const variableName = match[1];
@@ -1240,7 +1264,10 @@ function createSpecConditionOverrideMap(
     const specPath = match[1];
     const fullRef = match[0];
     if (!specPath || !fullRef || overrides.has(specPath)) continue;
-    overrides.set(specPath, getBranchStatusValue(conditionExpression, fullRef, desiredConditionValue));
+    overrides.set(
+      specPath,
+      getBranchStatusValue(conditionExpression, fullRef, desiredConditionValue)
+    );
   }
 
   return overrides;
@@ -1260,8 +1287,15 @@ function createSpecOverrideProxy(
 
       const hasNestedOverride = [...overrides.keys()].some((key) => key.startsWith(`${fullPath}.`));
       const value = Reflect.get(obj, prop, receiver);
-      if (hasNestedOverride && value && (typeof value === 'object' || typeof value === 'function')) {
-        return createSpecOverrideProxy(value as Record<string, unknown>, overrides, [...path, prop]);
+      if (
+        hasNestedOverride &&
+        value &&
+        (typeof value === 'object' || typeof value === 'function')
+      ) {
+        return createSpecOverrideProxy(value as Record<string, unknown>, overrides, [
+          ...path,
+          prop,
+        ]);
       }
       return value;
     },
@@ -1296,8 +1330,10 @@ function getBranchStatusValue(
   if (stringComparison?.[1] && stringComparison[3] !== undefined) {
     const operator = stringComparison[1];
     const stringValue = stringComparison[3];
-    if (operator === '==') return desiredConditionValue ? stringValue : `__typekro_not_${stringValue}`;
-    if (operator === '!=') return desiredConditionValue ? `__typekro_not_${stringValue}` : stringValue;
+    if (operator === '==')
+      return desiredConditionValue ? stringValue : `__typekro_not_${stringValue}`;
+    if (operator === '!=')
+      return desiredConditionValue ? `__typekro_not_${stringValue}` : stringValue;
   }
 
   const booleanComparison = conditionExpression.match(
@@ -1410,7 +1446,9 @@ function getNestedResourceStatusTargetIds(
 
   return Object.entries(resources)
     .filter(([resourceId, resource]) =>
-      [...nestedCompositionIds].some((nestedId) => isNestedCompositionChild(resourceId, resource, nestedId))
+      [...nestedCompositionIds].some((nestedId) =>
+        isNestedCompositionChild(resourceId, resource, nestedId)
+      )
     )
     .map(([resourceId]) => resourceId);
 }
@@ -1423,17 +1461,27 @@ function isNestedCompositionChild(
   if (resourceId === nestedId) return true;
 
   const boundaryChar = resourceId[nestedId.length];
-  if (resourceId.startsWith(nestedId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar)) {
+  if (
+    resourceId.startsWith(nestedId) &&
+    boundaryChar !== undefined &&
+    /[A-Z_-]/.test(boundaryChar)
+  ) {
     return true;
   }
 
   const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
-  return aliases?.some((alias) => {
-    if (alias === nestedId) return true;
+  return (
+    aliases?.some((alias) => {
+      if (alias === nestedId) return true;
 
-    const aliasBoundaryChar = alias[nestedId.length];
-    return alias.startsWith(nestedId) && aliasBoundaryChar !== undefined && /[A-Z_-]/.test(aliasBoundaryChar);
-  }) ?? false;
+      const aliasBoundaryChar = alias[nestedId.length];
+      return (
+        alias.startsWith(nestedId) &&
+        aliasBoundaryChar !== undefined &&
+        /[A-Z_-]/.test(aliasBoundaryChar)
+      );
+    }) ?? false
+  );
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -1453,8 +1501,11 @@ function isCelExpressionLike(v: unknown): boolean {
   if (typeof v !== 'object' || v === null) return false;
   // Plain Cel.expr() objects carry the symbol brand; template expressions also
   // carry `__isTemplate`. Support both shapes without importing cel.ts.
-  return 'expression' in v && typeof (v as Record<string, unknown>).expression === 'string'
-    && ((v as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true || '__isTemplate' in v);
+  return (
+    'expression' in v &&
+    typeof (v as Record<string, unknown>).expression === 'string' &&
+    ((v as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true || '__isTemplate' in v)
+  );
 }
 
 /**
@@ -1604,7 +1655,10 @@ function celValueRepr(
   }
   if (isPlainObject(value)) {
     return `{${Object.entries(value)
-      .map(([key, entryValue]) => `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds)}`)
+      .map(
+        ([key, entryValue]) =>
+          `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds)}`
+      )
       .join(', ')}}`;
   }
   return '""';
@@ -2039,9 +2093,17 @@ function createTypedResourceGraph<
             statusMappings: directStatusMappings,
             compositionFn: declarativeCompositionFn,
             compositionDefinition: definition,
-            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+            ...((
+              this as {
+                _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
+              }
+            )._singletonDefinitions
               ? {
-                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                  singletonDefinitions: (
+                    this as {
+                      _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
+                    }
+                  )._singletonDefinitions,
                 }
               : {}),
           }
@@ -2058,9 +2120,17 @@ function createTypedResourceGraph<
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
             compositionAnalysis,
-            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+            ...((
+              this as {
+                _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
+              }
+            )._singletonDefinitions
               ? {
-                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                  singletonDefinitions: (
+                    this as {
+                      _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
+                    }
+                  )._singletonDefinitions,
                 }
               : {}),
           }
@@ -2076,9 +2146,21 @@ function createTypedResourceGraph<
       }
     },
 
-    toYaml(spec?: TSpec): string {
-      if (spec !== undefined) {
-        return this.factory('kro').toYaml(spec);
+    toYaml(specOrOptions?: TSpec | ToYamlOptions): string {
+      if (specOrOptions !== undefined) {
+        if (
+          typeof specOrOptions === 'object' &&
+          specOrOptions !== null &&
+          Object.hasOwn(specOrOptions, 'aspects') &&
+          Array.isArray((specOrOptions as ToYamlOptions).aspects)
+        ) {
+          const factory = this.factory('kro', specOrOptions as ToYamlOptions) as KroResourceFactory<
+            TSpec,
+            TStatus
+          >;
+          return factory.toYaml();
+        }
+        return this.factory('kro').toYaml(specOrOptions as TSpec);
       }
 
       // Apply composition body analysis results (guard: only once)
@@ -2105,7 +2187,10 @@ function createTypedResourceGraph<
       // Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's
       // get handler which would return a KubernetesRef instead of the
       // actual Record<string, string>.
-      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
+      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(
+        statusMappings,
+        '__nestedStatusCel'
+      );
       const nestedStatusCel: Record<string, string> =
         (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
 

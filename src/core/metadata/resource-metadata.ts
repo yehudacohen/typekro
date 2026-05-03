@@ -13,6 +13,7 @@
  * @see ROADMAP.md Phase 2.6
  */
 
+import type { ResourceAspectMetadata } from '../aspects/types.js';
 import type { ResourceStatus } from '../types/kubernetes.js';
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,8 @@ export interface ResourceMetadata {
    * the resource DAG.
    */
   dependsOn?: Array<{ resourceId: string }>;
+  /** Internal aspect matching metadata; never serialized. */
+  aspects?: ResourceAspectMetadata;
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

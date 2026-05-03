@@ -79,6 +79,7 @@ export interface ResourceGraph<
    * Convert the resource graph to YAML for inspection or manual deployment
    */
   toYaml(): string;
+  toYaml(spec: TSpec): string;
 
   /**
    * Create a factory for this resource graph that can create instances
