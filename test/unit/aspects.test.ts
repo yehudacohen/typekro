@@ -39,6 +39,7 @@ import {
   withImagePullPolicy,
   withLabels,
   withLocalWorkspace,
+  withMetadata,
   withReplicas,
   withResourceDefaults,
   withServiceAccount,
@@ -211,6 +212,9 @@ describe('typed resource aspects', () => {
     );
     expect(() => metadata({ labels: append(['not-a-metadata-operation']) as never })).toThrow(
       /AspectDefinitionError|metadata|labels/i
+    );
+    expect(() => withMetadata(undefined as never)).toThrow(
+      /AspectDefinitionError|withMetadata|object/i
     );
     expect(() =>
       override<WorkloadReplicasSchema>({
