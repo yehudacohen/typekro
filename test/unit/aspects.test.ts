@@ -13,6 +13,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as aspectsEntry from '../../src/aspects.js';
 import type {
   CommonAspectSchemaForTargets,
   ResourceSpecOverrideSchema,
@@ -188,6 +189,17 @@ describe('typed resource aspects', () => {
       cardinality: 'one-or-more',
     });
     expect(slot('example', resource)).toBe(resource);
+  });
+
+  it('exports chainable convenience helpers from the dedicated aspects entrypoint', () => {
+    const labels = aspectsEntry.withLabels({ team: 'platform' }).optional();
+    const env = aspectsEntry.withEnvVars({ LOG_LEVEL: 'debug' }).where({ slot: 'app' }).expectOne();
+
+    expect(labels.kind).toBe('aspect');
+    expect(labels.cardinality).toBe('zero-or-more');
+    expect(env.kind).toBe('aspect');
+    expect(env.cardinality).toBe('exactly-one');
+    expect(env.selector).toEqual({ slot: 'app' });
   });
 
   it('rejects invalid helper and surface payloads before resource mutation', () => {

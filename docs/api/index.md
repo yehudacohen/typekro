@@ -88,6 +88,21 @@ helmRelease({
 })
 ```
 
+### [Aspects](./aspects.md)
+
+Typed resource customization at render and factory time.
+
+```typescript
+import { withEnvVars, withLabels } from 'typekro/aspects';
+
+const aspects = [
+  withLabels({ team: 'platform' }),
+  withEnvVars({ LOG_LEVEL: 'debug' }).where({ id: 'api' }).expectOne(),
+];
+
+app.factory('direct', { namespace: 'dev', aspects });
+```
+
 ## Type System
 
 ### [Core Types](./types.md)
@@ -136,6 +151,9 @@ import { Deployment, Service, ConfigMap } from 'typekro/simple';
 // Helm integration
 import { helmRelease, helmRepository } from 'typekro';
 
+// Cross-cutting resource customization
+import { withLabels, withEnvVars } from 'typekro/aspects';
+
 // Types
 import type { Enhanced, KubernetesRef } from 'typekro';
 ```
@@ -171,4 +189,5 @@ return {
 
 - [Getting Started](/guide/getting-started) - 5-minute quick start
 - [kubernetesComposition](./kubernetes-composition.md) - Primary composition API
+- [Aspects](./aspects.md) - Cross-cutting resource customization
 - [Factory Functions](./factories/) - All factory functions
