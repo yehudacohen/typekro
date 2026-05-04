@@ -654,6 +654,95 @@ describe('Nested Composition Direct Mode', () => {
       expect(status?.innerUrl).toBe('http://myapp-inner.test-ns.svc:80');
       expect(status?.innerUrl).not.toContain('__KUBERNETES_REF_');
     });
+
+    it('direct factory reExecuteWithLiveStatus supports three-level nested compositions', () => {
+      const leafComposition = kubernetesComposition(
+        {
+          name: 'leaf',
+          kind: 'Leaf',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: spec.name,
+            image: 'nginx:alpine',
+            id: 'leafDeployment',
+          });
+
+          return {
+            ready: deployment.status.readyReplicas >= 1,
+            endpoint: `http://${spec.name}:80`,
+          };
+        }
+      );
+
+      const middleComposition = kubernetesComposition(
+        {
+          name: 'middle',
+          kind: 'Middle',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const leaf = leafComposition({ name: `${spec.name}-leaf` });
+          const deployment = simple.Deployment({
+            name: `${spec.name}-middle`,
+            image: 'nginx:alpine',
+            env: { LEAF_ENDPOINT: leaf.status.endpoint },
+            id: 'middleDeployment',
+          });
+
+          return {
+            ready: leaf.status.ready && deployment.status.readyReplicas >= 1,
+            endpoint: leaf.status.endpoint,
+          };
+        }
+      );
+
+      const threeLevelComposition = kubernetesComposition(
+        {
+          name: 'three-level',
+          kind: 'ThreeLevel',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const middle = middleComposition({ name: spec.name });
+          const deployment = simple.Deployment({
+            name: `${spec.name}-outer`,
+            image: 'nginx:alpine',
+            env: { MIDDLE_ENDPOINT: middle.status.endpoint },
+            id: 'outerDeployment',
+          });
+
+          return {
+            ready: middle.status.ready && deployment.status.readyReplicas >= 1,
+            endpoint: middle.status.endpoint,
+          };
+        }
+      );
+
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; endpoint: string } | null;
+      }
+
+      const factory = threeLevelComposition.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['middle1Leaf1', { readyReplicas: 1 }],
+          ['middle1MiddleDeployment', { readyReplicas: 1 }],
+          ['outerDeployment', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+    });
   });
 
   describe('Bug #3: discovery stamps kind/apiVersion on list items', () => {

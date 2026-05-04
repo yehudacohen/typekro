@@ -95,9 +95,13 @@ function createNestedReExecutionLiveStatusMap(
   });
 
   return new Proxy(parentLiveStatusMap, {
-    get(target, prop, receiver) {
+    get(target, prop) {
       if (prop !== 'get' && prop !== 'has') {
-        return Reflect.get(target, prop, receiver);
+        const value = Reflect.get(target, prop, target);
+        // Map prototype methods perform brand checks against their receiver.
+        // Bind them to the real Map so nested re-execution can safely call
+        // methods like keys() on this proxy-backed live status map.
+        return typeof value === 'function' ? value.bind(target) : value;
       }
 
       return (resourceId: string) => {
