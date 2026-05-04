@@ -1030,6 +1030,23 @@ describe('typed resource aspects', () => {
     expect(kroYaml).toMatch(/parity: ["']?true["']?/);
   });
 
+  it('renders curated helper aspects in both direct and Kro YAML paths', () => {
+    const aspects = [
+      withLabels({ aspect: 'curated' }),
+      withEnvVars({ LOG_LEVEL: 'debug' }).where({ slot: 'app' }).expectOne(),
+      withImagePullPolicy('IfNotPresent').where({ slot: 'app' }).expectOne(),
+    ];
+    const directYaml = app.factory('direct', { aspects }).toYaml({ name: 'demo', image: 'nginx' });
+    const kroYaml = app.toYaml({ aspects });
+
+    for (const yaml of [directYaml, kroYaml]) {
+      expect(yaml).toMatch(/aspect: ["']?curated["']?/);
+      expect(yaml).toContain('name: LOG_LEVEL');
+      expect(yaml).toContain('value: debug');
+      expect(yaml).toContain('imagePullPolicy: IfNotPresent');
+    }
+  });
+
   it('applies Kro ternary post-processing on repeated aspect renders', () => {
     const ternaryApp = kubernetesComposition(
       {
@@ -1076,6 +1093,25 @@ describe('typed resource aspects', () => {
     ];
 
     expect(() => app.toYaml({ aspects })).toThrow(/reference-backed|Kro|merge/i);
+  });
+
+  it('rejects unsafe append operations against reference-backed arrays in Kro mode', () => {
+    const aspects = [
+      aspect.on(
+        simple.Deployment,
+        override<DeploymentAspectSchema>({
+          spec: {
+            template: {
+              spec: {
+                containers: append([{ name: 'debugger', image: 'busybox:latest' }]),
+              },
+            },
+          },
+        })
+      ),
+    ];
+
+    expect(() => app.toYaml({ aspects })).toThrow(/reference-backed|Kro|append/i);
   });
 
   it('rejects unsafe merge or append payloads that introduce references in Kro mode', () => {

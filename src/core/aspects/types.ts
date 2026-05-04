@@ -266,8 +266,10 @@ export interface AspectTargetGroup<
  * Any public aspect target accepted by aspect.on(...).
  *
  * Concrete factory targets are resolved by TypeKro factory registration or
- * explicit aspect metadata. Matching is kind-level: factories that produce the
- * same Kubernetes kind intentionally share the same target identity.
+ * explicit aspect metadata. Matching is intentionally kind/capability-level, not
+ * strict factory provenance: factories that produce the same Kubernetes kind can
+ * share a target identity when they advertise compatible aspect metadata. Use
+ * `slot(...)` and selectors for exact semantic targeting.
  */
 export type AspectTarget =
   | AspectFactoryTarget<AspectSurfaceKind, object>

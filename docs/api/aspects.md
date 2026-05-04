@@ -89,6 +89,8 @@ withEnvVars({ LOG_LEVEL: 'debug' })
 
 Supported selector fields are `slot`, `id`, `name`, `namespace`, `kind`, and `labels`.
 
+Slots are the preferred exact-targeting mechanism. Factory tokens are resource kind/capability tokens, so use `.where({ slot: 'api' })`, `.where({ id: 'api' })`, or label selectors when you need to target one semantic resource.
+
 ## Low-Level Primitives
 
 Use primitives when a convenience helper is not specific enough.
@@ -101,7 +103,7 @@ aspect
   .where({ namespace: 'prod' });
 ```
 
-For typed spec overrides, target a specific factory or target group:
+For typed spec overrides, target a factory kind/capability token or target group:
 
 ```typescript
 import { aspect, override, replace, simple } from 'typekro';
@@ -116,6 +118,10 @@ aspect.on(
 );
 ```
 
+::: warning Advanced API
+`override({ spec: ... })` is an advanced escape hatch for fields not covered by curated helpers. Prefer `withLabels(...)`, `withEnvVars(...)`, `withImagePullPolicy(...)`, and the other `withX(...)` helpers for first-class v1 usage.
+:::
+
 ## Targets
 
 | Target | Surface | Use case |
@@ -123,9 +129,9 @@ aspect.on(
 | `allResources` | `metadata(...)` | Labels and annotations on every rendered resource |
 | `resources` | `override(...)` | Broad spec overrides on schema-capable resources |
 | `workloads` | `override(...)` | Workload pod-template helpers |
-| Factory target | `metadata(...)` or `override(...)` | Kind-specific typed targeting, such as `simple.Deployment` |
+| Factory target | `metadata(...)` or `override(...)` | Kind/capability targeting, such as Deployment via `simple.Deployment` |
 
-Factory targets match by produced Kubernetes kind. For example, a `simple.Deployment` aspect can also match custom Deployment factories that advertise the same TypeKro aspect metadata.
+Factory targets match by produced Kubernetes kind/capability, not strict factory provenance. For example, a `simple.Deployment` aspect can also match custom Deployment factories that advertise the same TypeKro aspect metadata. Use selectors or slots for exact resource targeting.
 
 ## Operations
 
@@ -135,7 +141,14 @@ Factory targets match by produced Kubernetes kind. For example, a `simple.Deploy
 | `merge(object)` | object | Merge keys into an object field |
 | `append(array)` | array | Append entries to an array field |
 
-Kro mode rejects unsafe `merge(...)` and `append(...)` operations when either the current field or operation payload contains Kubernetes references or CEL expressions.
+Kro mode rejects unsafe `merge(...)` and `append(...)` operations when either the current field or operation payload contains Kubernetes references or CEL expressions. Use `replace(...)` when the full field should become symbolic or when the existing KRO field is already symbolic.
+
+Unsupported patterns include:
+
+- `merge(...)` into a KRO object that is reference-backed
+- `append(...)` into a KRO array that contains refs or CEL expressions
+- `merge(...)` or `append(...)` payloads that introduce refs or CEL expressions
+- relying on a factory token to mean strict factory provenance
 
 ## Hot Reload Surface
 

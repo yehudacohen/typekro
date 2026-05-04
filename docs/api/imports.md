@@ -111,6 +111,8 @@ const devAspects = [
 ];
 ```
 
+Factory tokens in aspects target resource kind/capability. Use `slot(...)` or selectors for exact semantic targeting.
+
 ## Ecosystem-Specific Imports
 
 ```typescript

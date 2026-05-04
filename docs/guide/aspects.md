@@ -37,6 +37,12 @@ await factory.deploy({ name: 'api', image: 'nginx:latest' });
 
 Convenience helpers such as `withLabels(...)` and `withEnvVars(...)` return normal aspect definitions, so they are chainable with `.where(...)`, `.optional()`, and `.expectOne()`.
 
+## Target Semantics
+
+Aspect targets describe resource semantics, not strict factory provenance. A factory function such as `simple.Deployment` is used as a convenient Deployment kind/capability token. It may match Deployment-producing resources from other TypeKro factories when they advertise compatible aspect metadata.
+
+Use slots and selectors when you need exact intent-level targeting. Prefer `slot('api', resource)` over relying on which factory happened to create the resource.
+
 ## Selectors
 
 Selectors narrow which matched resources receive an aspect. Selector fields use AND semantics.
@@ -68,7 +74,7 @@ const api = slot(
 const devAspect = withEnvVars({ LOG_LEVEL: 'debug' }).where({ slot: 'api' }).expectOne();
 ```
 
-Slots are metadata for aspect matching only; they do not change the Kubernetes manifest.
+Slots are metadata for aspect matching only; they do not change the Kubernetes manifest. They are the recommended way to target a specific semantic resource across nested composition boundaries.
 
 ## Direct and Kro Modes
 
@@ -82,6 +88,8 @@ app.factory('kro', { namespace: 'prod', aspects });
 ```
 
 Kro mode is stricter for composite mutations. TypeKro rejects unsafe `merge(...)` and `append(...)` operations when the current field or payload contains Kubernetes references or CEL expressions.
+
+Use `replace(...)` when a field is symbolic in Kro output or when you need to replace the full list/object. Use `merge(...)` and `append(...)` only when the existing field is concrete in the final rendered resource.
 
 ## Convenience Helpers
 
@@ -108,6 +116,17 @@ const devAspects = [
 ```
 
 Use lower-level `aspect.on(...)`, `metadata(...)`, and `override(...)` when you need a typed override not covered by a convenience helper.
+
+::: warning Advanced API
+`override({ spec: ... })` is an advanced escape hatch. The first-class API is the curated `withX(...)` helper layer. Prefer helpers unless you need a field-specific override that is not yet covered.
+:::
+
+## Unsupported Patterns
+
+- Do not use `merge(...)` or `append(...)` against KRO fields that are built from resource refs or CEL expressions.
+- Do not use aspects as raw YAML rewrites; aspects operate on TypeKro resource objects before serialization.
+- Do not rely on factory provenance for exact matching; use `slot(...)`, `id`, labels, or other selectors.
+- Do not expect arbitrary deep merge semantics from helpers. Use `replace(...)` for whole-field replacement and narrow helpers for curated workload changes.
 
 ## Next Steps
 

@@ -4,9 +4,11 @@
  *
  * Target groups: `allResources` accepts `metadata(...)` for every rendered
  * resource. `resources` accepts `override(...)` for every rendered resource with
- * a structured `spec`. Concrete factory targets such as `simple.Deployment` and
- * base Kubernetes factories provide the strongest compile-time type narrowing;
- * runtime validation remains best-effort for optional fields absent from the
+ * a structured `spec`. Factory functions such as `simple.Deployment` are used as
+ * kind/capability tokens, not strict provenance tokens: a Deployment target can
+ * match Deployment-producing factories that advertise compatible aspect
+ * metadata. Use `slot(...)` and `.where(...)` for exact semantic targeting.
+ * Runtime validation remains best-effort for optional fields absent from the
  * initial manifest.
  *
  * Selectors use AND semantics across `slot`, `id`, `name`, `namespace`, `kind`,
