@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-04
+
+### Added
+
+- **Typed resource aspects**: reusable, type-checked resource mutations that can target resources by kind/capability, selectors, slots, and IDs.
+- **Aspect convenience helpers**: `withLabels()`, `withAnnotations()`, `withMetadata()`, `withEnvVars()`, `withEnvFrom()`, `withResourceDefaults()`, `withImagePullPolicy()`, `withReplicas()`, `withServiceAccount()`, `withLocalWorkspace()`, and `withHotReload()`.
+- **Dedicated aspect exports**: new `typekro/aspects` package export path alongside top-level exports for aspect primitives and helpers.
+- **Hot reload aspects**: `hotReload()` and `withHotReload()` support local-development container, volume, label, and replica overrides.
+- **Aspect documentation**: guide and API reference for target semantics, selectors, slots, KRO safety constraints, and advanced `override({ spec: ... })` usage.
+
+### Fixed
+
+- KRO-mode aspect validation now rejects unsafe reference-backed composite mutations while preserving safe no-op mutations.
+- Aspect selector and render-option validation now fails closed for malformed selector input and avoids mistaking arbitrary specs for render options.
+
+## [0.9.0] - 2026-04-28
+
 ### Added
 
 - **SearXNG integration**: `searxngBootstrap` composition and `searxng()` factory for deploying the SearXNG metasearch engine. Supports auto-created Secret (from `server.secret_key`) or external `secretKeyRef` for Vault / external-secrets-operator workflows.
@@ -188,7 +205,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/yehudacohen/typekro/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/yehudacohen/typekro/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/yehudacohen/typekro/compare/v0.7.0...v0.8.0
 [0.5.0]: https://github.com/yehudacohen/typekro/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yehudacohen/typekro/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/yehudacohen/typekro/compare/v0.3.0...v0.3.1
