@@ -1,4 +1,11 @@
-import type { V1Container, V1Volume } from '@kubernetes/client-node';
+import type {
+  V1Container,
+  V1EnvFromSource,
+  V1EnvVar,
+  V1ResourceRequirements,
+  V1Volume,
+  V1VolumeMount,
+} from '@kubernetes/client-node';
 import { TypeKroError } from '../errors.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/schema.js';
@@ -16,7 +23,7 @@ export type AspectSurfaceKind = 'metadata' | 'override';
 export type AspectMode = 'direct' | 'kro';
 
 /** Supported aspect operation kinds. */
-export type AspectOperationKind = 'replace' | 'merge' | 'append';
+export type AspectOperationKind = 'replace' | 'merge' | 'append' | 'patchEach' | 'mergeByName';
 
 /** Object-form selector for narrowing resources matched by an aspect target. */
 export interface AspectSelector {
@@ -46,8 +53,25 @@ export interface AppendOperation<TElement> {
   readonly value: readonly TElement[];
 }
 
+/** Applies a nested patch to each object in an array field. */
+export interface PatchEachOperation<TElement extends object> {
+  readonly kind: 'patchEach';
+  readonly patch: AspectOverridePatch<TElement>;
+}
+
+/** Merges named entries into an array keyed by each entry's `name` field. */
+export interface MergeByNameOperation<TElement extends { name: string }> {
+  readonly kind: 'mergeByName';
+  readonly value: readonly TElement[];
+}
+
 /** Any v1 aspect operation descriptor. */
-export type AspectOperation<T> = ReplaceOperation<T> | MergeOperation<object> | AppendOperation<T>;
+export type AspectOperation<T> =
+  | ReplaceOperation<T>
+  | MergeOperation<object>
+  | AppendOperation<T>
+  | PatchEachOperation<object>
+  | MergeByNameOperation<{ name: string }>;
 
 /** Resource-level metadata mutation surface. */
 export interface MetadataAspectSurface {
@@ -81,7 +105,11 @@ export interface AspectValidationPolicy {
 
 /** Operation descriptor accepted for a single writable schema field. */
 export type AspectPatchValue<T> = T extends readonly (infer TElement)[]
-  ? ReplaceOperation<T> | AppendOperation<TElement>
+  ? TElement extends { name: string }
+    ? ReplaceOperation<T> | AppendOperation<TElement> | MergeByNameOperation<TElement> | PatchEachOperation<Extract<TElement, object>>
+    : TElement extends object
+      ? ReplaceOperation<T> | AppendOperation<TElement> | PatchEachOperation<TElement>
+      : ReplaceOperation<T> | AppendOperation<TElement>
   : T extends object
     ? ReplaceOperation<T> | MergeOperation<T>
     : ReplaceOperation<T>;
@@ -114,6 +142,35 @@ export type HotReloadContainer = V1Container;
 /** Kubernetes volume shape accepted by the hot reload override helper. */
 export type HotReloadVolume = V1Volume;
 
+/** Resource metadata key/value map accepted by convenience aspect helpers. */
+export type LabelMap = Record<string, string>;
+
+/** Resource annotation key/value map accepted by convenience aspect helpers. */
+export type AnnotationMap = Record<string, string>;
+
+/** Environment variable map accepted by workload convenience aspect helpers. */
+export type EnvVarMap = Record<string, string>;
+
+/** Workload pod-template writable schema used by convenience aspect helpers. */
+export type WorkloadPodTemplateAspectSchema = ResourceSpecOverrideSchema<{
+  replicas: number;
+  template: {
+    metadata: { labels: LabelMap; annotations: AnnotationMap };
+    spec: {
+      serviceAccountName: string;
+      containers: readonly {
+        name: string;
+        env: readonly V1EnvVar[];
+        envFrom: readonly V1EnvFromSource[];
+        imagePullPolicy: ImagePullPolicy;
+        resources: V1ResourceRequirements;
+        volumeMounts: readonly V1VolumeMount[];
+      }[];
+      volumes: readonly V1Volume[];
+    };
+  };
+}>;
+
 /** Options for building a dev-mode hot reload override surface. */
 export interface HotReloadAspectOptions {
   /** Full container list to use for the targeted workload template. */
@@ -124,6 +181,18 @@ export interface HotReloadAspectOptions {
   readonly labels?: Record<string, string>;
   /** Optional replica override, commonly `1` for local dev. */
   readonly replicas?: number;
+}
+
+/** Options for adding a local host workspace mount to each workload container. */
+export interface LocalWorkspaceAspectOptions {
+  /** Host path to mount into targeted workload pods. */
+  readonly workspacePath: string;
+  /** Container mount path. Defaults to `/workspace`. */
+  readonly mountPath?: string;
+  /** Kubernetes volume and mount name. Defaults to `workspace`. */
+  readonly volumeName?: string;
+  /** HostPath type. Defaults to `Directory`. */
+  readonly hostPathType?: 'Directory' | 'DirectoryOrCreate';
 }
 
 /** Workload override schema produced by the hot reload helper. */

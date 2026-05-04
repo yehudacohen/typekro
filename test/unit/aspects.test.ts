@@ -31,6 +31,16 @@ import {
   resources,
   simple,
   slot,
+  withAnnotations,
+  withEnvFrom,
+  withEnvVars,
+  withHotReload,
+  withImagePullPolicy,
+  withLabels,
+  withLocalWorkspace,
+  withReplicas,
+  withResourceDefaults,
+  withServiceAccount,
   workloads,
 } from '../../src/index.js';
 import { deployment as kubernetesDeployment } from '../../src/factories/kubernetes/workloads/deployment.js';
@@ -470,6 +480,75 @@ describe('typed resource aspects', () => {
     expect(yaml).toContain('name: NODE_ENV');
     expect(yaml).toContain('mountPath: /workspace');
     expect(yaml).toContain('path: /workspace');
+  });
+
+  it('builds chainable withX convenience aspects for common workload customization', () => {
+    const yaml = app
+      .factory('direct', {
+        aspects: [
+          withLabels({ environment: 'dev', team: 'platform' }),
+          withAnnotations({ owner: 'platform' }),
+          withEnvVars({ NODE_ENV: 'development', LOG_LEVEL: 'debug' })
+            .where({ slot: 'app' })
+            .expectOne(),
+          withEnvFrom([{ configMapRef: { name: 'app-config' } }])
+            .where({ slot: 'app' })
+            .expectOne(),
+          withImagePullPolicy('Never').where({ slot: 'app' }).expectOne(),
+          withResourceDefaults({ requests: { cpu: '100m', memory: '128Mi' } })
+            .where({ slot: 'app' })
+            .expectOne(),
+          withReplicas(2).where({ slot: 'app' }).expectOne(),
+          withServiceAccount('app-runner').where({ slot: 'app' }).expectOne(),
+          withLocalWorkspace({ workspacePath: '/workspace/app' })
+            .where({ slot: 'app' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('environment: dev');
+    expect(yaml).toContain('owner: platform');
+    expect(yaml).toContain('replicas: 2');
+    expect(yaml).toContain('name: NODE_ENV');
+    expect(yaml).toContain('value: development');
+    expect(yaml).toContain('name: app-config');
+    expect(yaml).toContain('imagePullPolicy: Never');
+    expect(yaml).toContain('cpu: 100m');
+    expect(yaml).toContain('serviceAccountName: app-runner');
+    expect(yaml).toContain('mountPath: /workspace');
+    expect(yaml).toContain('path: /workspace/app');
+  });
+
+  it('renders withX workload helpers through Kro YAML', () => {
+    const yaml = app.toYaml({
+      aspects: [
+        withEnvVars({ LOG_LEVEL: 'debug' }).where({ slot: 'app' }).expectOne(),
+        withImagePullPolicy('IfNotPresent').where({ slot: 'app' }).expectOne(),
+      ],
+    });
+
+    expect(yaml).toContain('name: LOG_LEVEL');
+    expect(yaml).toContain('value: debug');
+    expect(yaml).toContain('imagePullPolicy: IfNotPresent');
+  });
+
+  it('provides withHotReload as the chainable hot reload convenience aspect', () => {
+    const yaml = app
+      .factory('direct', {
+        aspects: [
+          withHotReload({
+            labels: { 'typekro.dev/hot-reload': 'true' },
+            containers: [{ name: 'demo', image: 'oven/bun:1.3.13' }],
+          })
+            .where({ slot: 'app' })
+            .expectOne(),
+        ],
+      })
+      .toYaml({ name: 'demo', image: 'nginx' });
+
+    expect(yaml).toContain('typekro.dev/hot-reload: \'true\'');
+    expect(yaml).toContain('image: oven/bun:1.3.13');
   });
 
   it('applies hot reload labels to reference-backed Kro workload labels', () => {

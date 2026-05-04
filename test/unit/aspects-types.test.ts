@@ -31,8 +31,15 @@ import {
   replace,
   resources,
   simple,
+  withEnvFrom,
+  withEnvVars,
+  withHotReload,
+  withImagePullPolicy,
+  withLabels,
+  withServiceAccount,
   workloads,
 } from '../../src/index.js';
+import { withAnnotations } from '../../src/aspects.js';
 import { deployment as kubernetesDeployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import type { V1DeploymentSpec } from '../../src/factories/kubernetes/types.js';
 
@@ -129,6 +136,34 @@ describe('typed resource aspect contracts', () => {
 
       // @ts-expect-error render options must provide an aspects array.
       graph.toYaml({ aspects: undefined });
+    }
+
+    expect(true).toBe(true);
+  });
+
+  it('exposes chainable withX convenience aspects', () => {
+    if (COMPILE_ONLY) {
+      const labels = withLabels({ team: 'platform' }).where({ labels: { app: 'demo' } });
+      const annotations = withAnnotations({ owner: 'platform' }).optional();
+      const env = withEnvVars({ LOG_LEVEL: 'debug' }).where({ slot: 'app' }).expectOne();
+      const envFrom = withEnvFrom([{ secretRef: { name: 'app-secret' } }]);
+      const imagePolicy = withImagePullPolicy('IfNotPresent').where({ kind: 'Deployment' });
+      const serviceAccount = withServiceAccount('app-runner');
+      const hot = withHotReload({ containers: [{ name: 'app', image: 'oven/bun:1.3.13' }] });
+
+      assertType<'aspect'>(labels.kind);
+      assertType<'aspect'>(annotations.kind);
+      assertType<'aspect'>(env.kind);
+      assertType<'aspect'>(envFrom.kind);
+      assertType<'aspect'>(imagePolicy.kind);
+      assertType<'aspect'>(serviceAccount.kind);
+      assertType<'aspect'>(hot.kind);
+
+      // @ts-expect-error labels are Kubernetes key/value maps, not string arrays.
+      withLabels(['team=platform']);
+
+      // @ts-expect-error imagePullPolicy is restricted to Kubernetes-supported values.
+      withImagePullPolicy('Sometimes');
     }
 
     expect(true).toBe(true);

@@ -22,7 +22,9 @@ import type {
   AspectSelector,
   AspectTarget,
   MergeOperation,
+  MergeByNameOperation,
   MetadataAspectSurface,
+  PatchEachOperation,
   ReplaceOperation,
 } from './types.js';
 
@@ -238,12 +240,21 @@ function applyMapOperation(
 
 function isOperation(
   value: unknown
-): value is ReplaceOperation<unknown> | MergeOperation<object> | AppendOperation<unknown> {
+): value is
+  | ReplaceOperation<unknown>
+  | MergeOperation<object>
+  | AppendOperation<unknown>
+  | PatchEachOperation<object>
+  | MergeByNameOperation<{ name: string }> {
   return (
     !!value &&
     typeof value === 'object' &&
     'kind' in value &&
-    (value.kind === 'replace' || value.kind === 'merge' || value.kind === 'append')
+    (value.kind === 'replace' ||
+      value.kind === 'merge' ||
+      value.kind === 'append' ||
+      value.kind === 'patchEach' ||
+      value.kind === 'mergeByName')
   );
 }
 
@@ -270,7 +281,12 @@ interface ApplyOperationContext {
 
 function operationPlacementIsAllowed(
   fieldKind: AspectOverrideSchemaNode['kind'],
-  operation: ReplaceOperation<unknown> | MergeOperation<object> | AppendOperation<unknown>
+  operation:
+    | ReplaceOperation<unknown>
+    | MergeOperation<object>
+    | AppendOperation<unknown>
+    | PatchEachOperation<object>
+    | MergeByNameOperation<{ name: string }>
 ): boolean {
   if (operation.kind === 'replace') return true;
   if (operation.kind === 'merge') return fieldKind === 'object';
@@ -378,7 +394,12 @@ function applyPatch(
 function applyOperation(
   target: Record<string, unknown>,
   key: string,
-  operation: ReplaceOperation<unknown> | MergeOperation<object> | AppendOperation<unknown>,
+  operation:
+    | ReplaceOperation<unknown>
+    | MergeOperation<object>
+    | AppendOperation<unknown>
+    | PatchEachOperation<object>
+    | MergeByNameOperation<{ name: string }>,
   path: string[],
   context: ApplyOperationContext
 ): void {
@@ -386,9 +407,12 @@ function applyOperation(
   const fieldPath = path.join('.');
   if (operation.kind === 'merge' && Object.keys(operation.value).length === 0) return;
   if (operation.kind === 'append' && operation.value.length === 0) return;
+  if (operation.kind === 'mergeByName' && operation.value.length === 0) return;
 
   const operationValueContainsReferences =
-    containsKubernetesRefs(operation.value) || containsCelExpressions(operation.value);
+    'patch' in operation
+      ? containsKubernetesRefs(operation.patch) || containsCelExpressions(operation.patch)
+      : containsKubernetesRefs(operation.value) || containsCelExpressions(operation.value);
   const currentValueContainsReferences =
     containsKubernetesRefs(current) || containsCelExpressions(current);
   if (
@@ -402,6 +426,16 @@ function applyOperation(
       context.target,
       context.mode,
       'reference-backed composite or payload cannot be merged or appended in Kro mode',
+      { ...context, operation: operation.kind, fieldPath }
+    );
+  }
+  if (context.mode === 'kro' && operation.kind === 'mergeByName' && operationValueContainsReferences) {
+    throw new AspectApplicationError(
+      `Aspect ${operation.kind} payload is not safe for Kro field ${fieldPath}`,
+      context.aspectIndex,
+      context.target,
+      context.mode,
+      'reference-backed payload cannot be merged by name in Kro mode',
       { ...context, operation: operation.kind, fieldPath }
     );
   }
@@ -419,7 +453,7 @@ function applyOperation(
       );
     }
     target[key] = { ...(current as Record<string, unknown>), ...operation.value };
-  } else {
+  } else if (operation.kind === 'append') {
     if (current === undefined) {
       target[key] = cloneValue(operation.value);
       return;
@@ -435,6 +469,64 @@ function applyOperation(
       );
     }
     target[key] = [...current, ...operation.value];
+  } else if (operation.kind === 'patchEach') {
+    if (!Array.isArray(current)) {
+      throw new AspectApplicationError(
+        `Aspect patchEach operation requires an array field at ${fieldPath}`,
+        context.aspectIndex,
+        context.target,
+        context.mode,
+        'patchEach operation target is not an array',
+        { ...context, operation: operation.kind, fieldPath }
+      );
+    }
+    for (const [index, entry] of current.entries()) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new AspectApplicationError(
+          `Aspect patchEach operation requires object entries at ${fieldPath}`,
+          context.aspectIndex,
+          context.target,
+          context.mode,
+          'patchEach operation entry is not an object',
+          { ...context, operation: operation.kind, fieldPath: `${fieldPath}[${index}]` }
+        );
+      }
+      applyPatch(entry as Record<string, unknown>, operation.patch, [`${fieldPath}[${index}]`], context);
+    }
+  } else {
+    if (current === undefined) {
+      target[key] = cloneValue(operation.value);
+      return;
+    }
+    if (!Array.isArray(current)) {
+      throw new AspectApplicationError(
+        `Aspect mergeByName operation requires an array field at ${fieldPath}`,
+        context.aspectIndex,
+        context.target,
+        context.mode,
+        'mergeByName operation target is not an array',
+        { ...context, operation: operation.kind, fieldPath }
+      );
+    }
+    const merged = current.map((entry) => cloneValue(entry));
+    for (const value of operation.value) {
+      const existingIndex = merged.findIndex(
+        (entry) =>
+          !!entry &&
+          typeof entry === 'object' &&
+          !Array.isArray(entry) &&
+          (entry as { name?: unknown }).name === value.name
+      );
+      if (existingIndex >= 0) {
+        merged[existingIndex] = {
+          ...(merged[existingIndex] as Record<string, unknown>),
+          ...cloneValue(value),
+        };
+      } else {
+        merged.push(cloneValue(value));
+      }
+    }
+    target[key] = merged;
   }
 }
 

@@ -106,9 +106,28 @@ export {
   replace,
   resources,
   slot,
+  withAnnotations,
+  withEnvFrom,
+  withEnvVars,
+  withHotReload,
+  withImagePullPolicy,
+  withLabels,
+  withLocalWorkspace,
+  withMetadata,
+  withReplicas,
+  withResourceDefaults,
+  withServiceAccount,
   workloads,
 } from './core/aspects/index.js';
-export type { HotReloadAspectOptions, HotReloadContainer, HotReloadVolume } from './core/aspects/index.js';
+export type {
+  AnnotationMap,
+  EnvVarMap,
+  HotReloadAspectOptions,
+  HotReloadContainer,
+  HotReloadVolume,
+  LabelMap,
+  LocalWorkspaceAspectOptions,
+} from './core/aspects/index.js';
 export type {
   AppendOperation,
   ApplyAspectsOptions,
@@ -146,13 +165,16 @@ export type {
   FactoryAspectTargetDescriptor,
   ImagePullPolicy,
   MergeOperation,
+  MergeByNameOperation,
   MetadataAspectSurface,
   OverrideAspectSurface,
+  PatchEachOperation,
   ReplaceOperation,
   ResourceAspectFactoryTarget,
   ResourceAspectMetadata,
   ResourceSpecOverrideSchema,
   ToYamlOptions,
+  WorkloadPodTemplateAspectSchema,
   WorkloadAspectFactoryTarget,
 } from './core/aspects/types.js';
 // Imperative composition (define compositions with native TypeScript)

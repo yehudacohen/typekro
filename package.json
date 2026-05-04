@@ -14,6 +14,10 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./aspects": {
+      "import": "./dist/aspects.js",
+      "types": "./dist/aspects.d.ts"
+    },
     "./simple": {
       "import": "./dist/factories/simple/index.js",
       "types": "./dist/factories/simple/index.d.ts"

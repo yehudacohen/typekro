@@ -83,6 +83,15 @@ import { resolveFactoryTargetId } from './targets.js';
 import { AspectDefinitionError } from './types.js';
 
 import type {
+  V1EnvFromSource,
+  V1EnvVar,
+  V1ResourceRequirements,
+  V1Volume,
+  V1VolumeMount,
+} from '@kubernetes/client-node';
+
+import type {
+  AnnotationMap,
   AppendOperation,
   AspectBuilder,
   AspectDefinition,
@@ -95,12 +104,19 @@ import type {
   AspectTargetGroup,
   CommonAspectSurfaceForTargets,
   CompatibleAspectTargets,
+  EnvVarMap,
   HotReloadAspectOptions,
   HotReloadAspectSchema,
+  ImagePullPolicy,
+  LabelMap,
+  LocalWorkspaceAspectOptions,
   MergeOperation,
+  MergeByNameOperation,
   MetadataAspectSurface,
   OverrideAspectSurface,
+  PatchEachOperation,
   ReplaceOperation,
+  WorkloadPodTemplateAspectSchema,
 } from './types.js';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -189,7 +205,18 @@ function assertOverridePatch(path: string, value: unknown): void {
     if (kind === 'append' && !Array.isArray((value as { value?: unknown }).value)) {
       throw createDefinitionError('override', `${path} append value must be an array`);
     }
-    if (kind === 'replace' || kind === 'merge' || kind === 'append') {
+    if (kind === 'mergeByName' && !Array.isArray((value as { value?: unknown }).value)) {
+      throw createDefinitionError('override', `${path} mergeByName value must be an array`);
+    }
+    if (kind === 'patchEach') {
+      const patch = (value as { patch?: unknown }).patch;
+      if (!isPlainObject(patch)) {
+        throw createDefinitionError('override', `${path} patchEach patch must be an object`);
+      }
+      assertOverridePatch(`${path}.patch`, patch);
+      return;
+    }
+    if (kind === 'replace' || kind === 'merge' || kind === 'append' || kind === 'mergeByName') {
       return;
     }
     throw createDefinitionError('override', `${path} uses unsupported operation ${kind}`);
@@ -359,6 +386,29 @@ export function append<TElement>(value: readonly TElement[]): AppendOperation<TE
   return Object.freeze({ kind: 'append', value: cloneImmutable(value) });
 }
 
+function patchEach<TElement extends object>(
+  patch: AspectOverridePatch<TElement>
+): PatchEachOperation<TElement> {
+  if (!isPlainObject(patch)) {
+    throw createDefinitionError('override', 'patchEach patch must be an object');
+  }
+  return Object.freeze({ kind: 'patchEach', patch: cloneImmutable(patch) });
+}
+
+function mergeByName<TElement extends { name: string }>(
+  value: readonly TElement[]
+): MergeByNameOperation<TElement> {
+  if (!Array.isArray(value)) {
+    throw createDefinitionError('override', 'mergeByName value must be an array');
+  }
+  for (const entry of value) {
+    if (!isPlainObject(entry) || typeof entry.name !== 'string' || entry.name.length === 0) {
+      throw createDefinitionError('override', 'mergeByName entries must have a non-empty name');
+    }
+  }
+  return Object.freeze({ kind: 'mergeByName', value: cloneImmutable(value) });
+}
+
 /** Creates a metadata aspect surface descriptor. */
 export function metadata(surface: Omit<MetadataAspectSurface, 'kind'>): MetadataAspectSurface {
   if (!isPlainObject(surface)) {
@@ -388,6 +438,124 @@ export function override(patch: unknown) {
   return Object.freeze({
     kind: 'override',
     patch: cloneImmutable(patch) as AspectOverridePatch<object>,
+  });
+}
+
+/** Creates a cross-cutting resource metadata label aspect. */
+export function withLabels(labels: LabelMap): AspectDefinition<typeof allResources, MetadataAspectSurface> {
+  return aspect.on(allResources, metadata({ labels: merge(labels) }));
+}
+
+/** Creates a cross-cutting resource metadata annotation aspect. */
+export function withAnnotations(
+  annotations: AnnotationMap
+): AspectDefinition<typeof allResources, MetadataAspectSurface> {
+  return aspect.on(allResources, metadata({ annotations: merge(annotations) }));
+}
+
+/** Creates a cross-cutting resource metadata aspect. */
+export function withMetadata(options: {
+  readonly labels?: LabelMap;
+  readonly annotations?: AnnotationMap;
+}): AspectDefinition<typeof allResources, MetadataAspectSurface> {
+  if (!isPlainObject(options)) {
+    throw createDefinitionError('metadata', 'withMetadata(...) options must be an object');
+  }
+  return aspect.on(
+    allResources,
+    metadata({
+      ...(options.labels !== undefined && { labels: merge(options.labels) }),
+      ...(options.annotations !== undefined && { annotations: merge(options.annotations) }),
+    })
+  );
+}
+
+function workloadOverride(
+  patch: AspectOverridePatch<WorkloadPodTemplateAspectSchema>
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return aspect.on(workloads, override<WorkloadPodTemplateAspectSchema>(patch)) as unknown as AspectDefinition<
+    typeof workloads,
+    OverrideAspectSurface<WorkloadPodTemplateAspectSchema>
+  >;
+}
+
+/** Creates a workload aspect that sets replica count. */
+export function withReplicas(
+  count: number
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return workloadOverride({ spec: { replicas: replace(count) } });
+}
+
+/** Creates a workload aspect that adds or updates env vars on every container. */
+export function withEnvVars(
+  vars: EnvVarMap
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  const env: V1EnvVar[] = Object.entries(vars).map(([name, value]) => ({ name, value }));
+  return workloadOverride({
+    spec: { template: { spec: { containers: patchEach({ env: mergeByName(env) }) } } },
+  });
+}
+
+/** Creates a workload aspect that appends envFrom sources to every container. */
+export function withEnvFrom(
+  envFrom: readonly V1EnvFromSource[]
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return workloadOverride({
+    spec: { template: { spec: { containers: patchEach({ envFrom: append(envFrom) }) } } },
+  });
+}
+
+/** Creates a workload aspect that sets resource requirements on every container. */
+export function withResourceDefaults(
+  resources: V1ResourceRequirements
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return workloadOverride({
+    spec: { template: { spec: { containers: patchEach({ resources: replace(resources) }) } } },
+  });
+}
+
+/** Creates a workload aspect that sets imagePullPolicy on every container. */
+export function withImagePullPolicy(
+  policy: ImagePullPolicy
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return workloadOverride({
+    spec: { template: { spec: { containers: patchEach({ imagePullPolicy: replace(policy) }) } } },
+  });
+}
+
+/** Creates a workload aspect that sets serviceAccountName on pod templates. */
+export function withServiceAccount(
+  serviceAccountName: string
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  return workloadOverride({
+    spec: { template: { spec: { serviceAccountName: replace(serviceAccountName) } } },
+  });
+}
+
+/** Creates a workload aspect that mounts a local host workspace into every container. */
+export function withLocalWorkspace(
+  options: LocalWorkspaceAspectOptions
+): AspectDefinition<typeof workloads, OverrideAspectSurface<WorkloadPodTemplateAspectSchema>> {
+  if (!isPlainObject(options)) {
+    throw createDefinitionError('override', 'withLocalWorkspace(...) options must be an object');
+  }
+  const volumeName = options.volumeName ?? 'workspace';
+  const mountPath = options.mountPath ?? '/workspace';
+  const volumeMount: V1VolumeMount & { name: string } = { name: volumeName, mountPath };
+  const volume: V1Volume & { name: string } = {
+    name: volumeName,
+    hostPath: { path: options.workspacePath, type: options.hostPathType ?? 'Directory' },
+  };
+
+  return workloadOverride({
+    spec: {
+      template: {
+        spec: {
+          containers: patchEach({ volumeMounts: mergeByName([volumeMount]) }),
+          volumes: mergeByName([volume]),
+        },
+      },
+    },
   });
 }
 
@@ -428,6 +596,16 @@ export function hotReload(options: HotReloadAspectOptions): OverrideAspectSurfac
       },
     },
   });
+}
+
+/** Creates a workload-targeted dev-mode hot reload aspect. */
+export function withHotReload(
+  options: HotReloadAspectOptions
+): AspectDefinition<typeof workloads, OverrideAspectSurface<HotReloadAspectSchema>> {
+  return aspect.on(workloads, hotReload(options)) as unknown as AspectDefinition<
+    typeof workloads,
+    OverrideAspectSurface<HotReloadAspectSchema>
+  >;
 }
 
 /** Attaches semantic slot metadata to a resource for aspect selector matching. */
