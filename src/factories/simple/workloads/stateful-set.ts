@@ -6,6 +6,7 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
+import type { AspectFactoryTargetBrand } from '../../../core/aspects/types.js';
 import type { Enhanced } from '../../../core/types.js';
 import type { V1StatefulSetSpec, V1StatefulSetStatus } from '../../kubernetes/types.js';
 import { statefulSet } from '../../kubernetes/workloads/stateful-set.js';
@@ -28,14 +29,14 @@ import type { StatefulSetConfig } from '../types.js';
  * });
  * ```
  */
-export function StatefulSet(
+function createStatefulSet(
   config: StatefulSetConfig
 ): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {
   const env: V1EnvVar[] = config.env
     ? Object.entries(config.env).map(([name, value]) => ({ name, value }))
     : [];
 
-  return statefulSet({
+  const resource = statefulSet({
     ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
@@ -64,4 +65,10 @@ export function StatefulSet(
       }),
     },
   });
+  return resource;
 }
+
+export const StatefulSet = createStatefulSet as typeof createStatefulSet &
+  AspectFactoryTargetBrand<'metadata' | 'override', never>;
+Reflect.set(StatefulSet, '__typekroAspectTargetId', 'StatefulSet');
+Reflect.set(StatefulSet, '__typekroAspectSurfaces', Object.freeze(['metadata', 'override']));

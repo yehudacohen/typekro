@@ -6,6 +6,7 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
+import type { AspectFactoryTargetBrand } from '../../../core/aspects/types.js';
 import { processFactoryValue, withExpressionAnalysis } from '../../../core/expressions/index.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { Enhanced } from '../../../core/types.js';
@@ -35,7 +36,7 @@ function createDeployment(
       }))
     : [];
 
-  return deployment({
+  const resource = deployment({
     ...(config.id && { id: config.id }),
     metadata: {
       name: processFactoryValue(
@@ -110,6 +111,7 @@ function createDeployment(
       },
     },
   });
+  return resource;
 }
 
 /**
@@ -129,4 +131,8 @@ function createDeployment(
  * });
  * ```
  */
-export const Deployment = withExpressionAnalysis(createDeployment, 'Deployment');
+const analyzedDeployment = withExpressionAnalysis(createDeployment, 'Deployment');
+export const Deployment = analyzedDeployment as typeof analyzedDeployment &
+  AspectFactoryTargetBrand<'metadata' | 'override', never>;
+Reflect.set(Deployment, '__typekroAspectTargetId', 'Deployment');
+Reflect.set(Deployment, '__typekroAspectSurfaces', Object.freeze(['metadata', 'override']));

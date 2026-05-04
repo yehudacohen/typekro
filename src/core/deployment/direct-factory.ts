@@ -8,16 +8,16 @@
 import * as yaml from 'js-yaml';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { applyAspects } from '../aspects/apply.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
-import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
   DEFAULT_MAX_RECURSION_DEPTH,
 } from '../config/defaults.js';
+import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import { DependencyResolver } from '../dependencies/index.js';
-import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import {
   ensureError,
   ResourceGraphFactoryError,
@@ -26,8 +26,13 @@ import {
 } from '../errors.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
-import { copyResourceMetadata, getMetadataField, getResourceId, setResourceId } from '../metadata/index.js';
-import { logHandleSnapshot } from './handle-tracing.js';
+import {
+  copyResourceMetadata,
+  getMetadataField,
+  getResourceId,
+  setResourceId,
+} from '../metadata/index.js';
+import { getSingletonResourceId } from '../singleton/singleton.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -38,6 +43,7 @@ import type {
   FactoryStatus,
   InternalResourceFactoryDeployOptions,
   RollbackResult,
+  SingletonDefinitionRecord,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 // Alchemy integration
@@ -48,18 +54,22 @@ import type {
   StatusBuilder,
 } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
+import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
-import { generateInstanceName, getSingletonInstanceName, validateSpec } from './shared-utilities.js';
+import {
+  generateInstanceName,
+  getSingletonInstanceName,
+  validateSpec,
+} from './shared-utilities.js';
 import {
   assertNoDeployedSingletonSpecDrift,
   assertNoDiscoveredSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
 import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
-import { getSingletonResourceId } from '../singleton/singleton.js';
-import type { SingletonDefinitionRecord } from '../types/deployment.js';
 
 /**
  * DirectResourceFactory implementation
@@ -178,7 +188,11 @@ export class DirectResourceFactoryImpl<
    */
   async deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[]; instanceNameOverride?: string; singletonSpecFingerprint?: string }
+    opts?: {
+      targetScopes?: string[];
+      instanceNameOverride?: string;
+      singletonSpecFingerprint?: string;
+    }
   ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
@@ -287,7 +301,10 @@ export class DirectResourceFactoryImpl<
    *   includeUnscopedResources: false });                                           // cluster-only (leave app running)
    * ```
    */
-  async deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void> {
+  async deleteInstance(
+    name: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<void> {
     const engine = this.getDeploymentEngine();
 
     try {
@@ -322,20 +339,25 @@ export class DirectResourceFactoryImpl<
               const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
               if (pvcs.items.length > 0) {
                 this.logger.info('Deleting PVCs to unblock namespace termination', {
-                  namespace: ns, count: pvcs.items.length,
+                  namespace: ns,
+                  count: pvcs.items.length,
                 });
               }
               for (const pvc of pvcs.items) {
                 const pvcName = pvc.metadata?.name;
                 if (!pvcName) continue;
-                await coreApi.deleteNamespacedPersistentVolumeClaim({
-                  name: pvcName,
-                  namespace: ns,
-                }).catch((err: unknown) => {
-                  this.logger.info('PVC delete failed', {
-                    pvc: pvcName, namespace: ns, error: String(err),
+                await coreApi
+                  .deleteNamespacedPersistentVolumeClaim({
+                    name: pvcName,
+                    namespace: ns,
+                  })
+                  .catch((err: unknown) => {
+                    this.logger.info('PVC delete failed', {
+                      pvc: pvcName,
+                      namespace: ns,
+                      error: String(err),
+                    });
                   });
-                });
               }
             } catch {
               // Namespace may already be gone
@@ -384,12 +406,13 @@ export class DirectResourceFactoryImpl<
       const key = `${r.apiVersion}/${r.kind}`;
       if (crdHints.has(key)) continue;
       const scope = getMetadataField(r as object, 'scope');
-      crdHints.set(key, { apiVersion: r.apiVersion, kind: r.kind, namespaced: scope !== 'cluster' });
+      crdHints.set(key, {
+        apiVersion: r.apiVersion,
+        kind: r.kind,
+        namespaced: scope !== 'cluster',
+      });
     }
-    return [
-      ...BUILT_IN_GVKS,
-      ...crdHints.values(),
-    ];
+    return [...BUILT_IN_GVKS, ...crdHints.values()];
   }
 
   private async rollbackInstanceResources(
@@ -409,8 +432,7 @@ export class DirectResourceFactoryImpl<
           });
         } catch (error: unknown) {
           const isNotFound =
-            error instanceof ResourceGraphFactoryError &&
-            error.operation === 'cleanup';
+            error instanceof ResourceGraphFactoryError && error.operation === 'cleanup';
           if (!isNotFound) {
             throw error;
           }
@@ -846,7 +868,10 @@ export class DirectResourceFactoryImpl<
    */
   toYaml(spec: TSpec): string {
     // Resolve references with the actual spec values
-    const resolvedResources = this.resolveResourcesForSpec(spec);
+    const resolvedResources = applyAspects(this.resolveResourcesForSpec(spec), {
+      mode: 'direct',
+      aspects: this.factoryOptions.aspects ?? [],
+    });
 
     // Validate that all values are fully resolved — no KubernetesRef or
     // CelExpression objects should remain in direct-mode YAML output.
@@ -889,6 +914,9 @@ export class DirectResourceFactoryImpl<
           ...(cleanResource.metadata?.labels
             ? { labels: cleanResource.metadata.labels }
             : undefined),
+          ...(cleanResource.metadata?.annotations
+            ? { annotations: cleanResource.metadata.annotations }
+            : undefined),
         },
       };
 
@@ -924,7 +952,10 @@ export class DirectResourceFactoryImpl<
     instanceNameOverride?: string
   ): DeploymentResourceGraph {
     const dependencyResolver = new DependencyResolver();
-    const resolvedResources = this.resolveResourcesForSpec(spec);
+    const resolvedResources = applyAspects(this.resolveResourcesForSpec(spec), {
+      mode: 'direct',
+      aspects: this.factoryOptions.aspects ?? [],
+    });
 
     const instanceName = instanceNameOverride ?? this.generateInstanceName(spec);
     const resourceArray = Object.values(resolvedResources).map((resource, index) => {
@@ -1139,9 +1170,11 @@ export class DirectResourceFactoryImpl<
     singletonDefinition: SingletonDefinitionRecord,
     liveStatusMap: Map<string, Record<string, unknown>>
   ): Record<string, unknown> | undefined {
-    const compositionFn = (singletonDefinition.composition as unknown as {
-      _compositionFn?: (spec: unknown) => unknown;
-    })._compositionFn;
+    const compositionFn = (
+      singletonDefinition.composition as unknown as {
+        _compositionFn?: (spec: unknown) => unknown;
+      }
+    )._compositionFn;
 
     if (!compositionFn) {
       return undefined;
@@ -1226,7 +1259,7 @@ export class DirectResourceFactoryImpl<
       // CEL-specific workarounds into composition code.
       const aliasTargets = buildNestedCompositionAliasTargets(
         this.factoryOptions.compositionFn.toString(),
-        probeContext.nestedCompositionIds,
+        probeContext.nestedCompositionIds
       );
       for (const [aliasName, baseId] of Object.entries(aliasTargets)) {
         const synthesizedStatus = enrichedMap.get(baseId);
@@ -1349,7 +1382,9 @@ export class DirectResourceFactoryImpl<
    * string representations, which is critical for HelmRelease values that may contain
    * schema proxy references.
    */
-  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<unknown, unknown>): KubernetesResource {
+  private extractKubernetesResourceFromEnhanced(
+    enhanced: Enhanced<unknown, unknown>
+  ): KubernetesResource {
     // Start with required Kubernetes resource structure
     const resource: KubernetesResource = {
       apiVersion: enhanced.apiVersion,
@@ -1411,7 +1446,11 @@ export class DirectResourceFactoryImpl<
     return { found: true, value: currentValue };
   }
 
-  private resolveSpecPathValue(spec: TSpec, specPath: string, logPath: string): { found: true; value: unknown } | { found: false } {
+  private resolveSpecPathValue(
+    spec: TSpec,
+    specPath: string,
+    logPath: string
+  ): { found: true; value: unknown } | { found: false } {
     const pathParts = specPath.split('.').filter(Boolean);
     return this.traverseSpec(spec, pathParts, logPath);
   }
@@ -1454,7 +1493,9 @@ export class DirectResourceFactoryImpl<
       this.logger.trace('Found CEL Expression', { path, expression: resource.expression });
       // The .expression property holds a string like "schema.spec.name-db-config"
       let expressionString = resource.expression;
-      const exactSchemaRef = expressionString.match(/^schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/);
+      const exactSchemaRef = expressionString.match(
+        /^schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/
+      );
       const exactSpecPath = exactSchemaRef?.[1];
       if (exactSpecPath !== undefined) {
         const resolved = this.resolveSpecPathValue(spec, exactSpecPath, path);
@@ -1465,15 +1506,18 @@ export class DirectResourceFactoryImpl<
       // Use regex to find all `schema.spec.fieldName` placeholders in the string
       // and replace them with the corresponding values from the spec object.
       // The 'g' flag ensures all occurrences are replaced.
-      expressionString = expressionString.replace(/schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g, (_match, specPath) => {
-        const resolved = this.resolveSpecPathValue(spec, specPath, path);
-        const value = resolved.found ? resolved.value : undefined;
-        this.logger.trace('Replacing CEL placeholder', { specPath, value });
-        // If the value exists in the spec, convert it to a string for concatenation.
-        // Otherwise, keep the original placeholder (though this shouldn't happen in valid cases).
+      expressionString = expressionString.replace(
+        /schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g,
+        (_match, specPath) => {
+          const resolved = this.resolveSpecPathValue(spec, specPath, path);
+          const value = resolved.found ? resolved.value : undefined;
+          this.logger.trace('Replacing CEL placeholder', { specPath, value });
+          // If the value exists in the spec, convert it to a string for concatenation.
+          // Otherwise, keep the original placeholder (though this shouldn't happen in valid cases).
 
-        return value !== undefined ? this.stringifyCelFallbackValue(value) : _match;
-      });
+          return value !== undefined ? this.stringifyCelFallbackValue(value) : _match;
+        }
+      );
       this.logger.trace('Resolved CEL expression to value', {
         path,
         resolvedValue: expressionString,
@@ -1588,7 +1632,9 @@ export class DirectResourceFactoryImpl<
       const { createBunCompatibleKubernetesObjectApi } = await import(
         '../kubernetes/bun-api-client.js'
       );
-      const k8sApi = createBunCompatibleKubernetesObjectApi(this.getClientProvider().getKubeConfig());
+      const k8sApi = createBunCompatibleKubernetesObjectApi(
+        this.getClientProvider().getKubeConfig()
+      );
       const waitForNamespaceDeletion = async (): Promise<void> => {
         const start = Date.now();
         while (Date.now() - start < 120000) {
@@ -1708,19 +1754,24 @@ export class DirectResourceFactoryImpl<
       const singletonFactory = definition.composition.factory('direct', {
         namespace: definition.registryNamespace,
         waitForReady: true,
-        ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
-        ...(this.factoryOptions.kubeConfig !== undefined ? { kubeConfig: this.factoryOptions.kubeConfig } : {}),
-        ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
+        ...(this.factoryOptions.timeout !== undefined
+          ? { timeout: this.factoryOptions.timeout }
+          : {}),
+        ...(this.factoryOptions.kubeConfig !== undefined
+          ? { kubeConfig: this.factoryOptions.kubeConfig }
+          : {}),
+        ...(this.factoryOptions.skipTLSVerify !== undefined
+          ? { skipTLSVerify: this.factoryOptions.skipTLSVerify }
+          : {}),
       }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
 
       try {
         const existingInstances = await singletonFactory.getInstances();
-        assertNoDeployedSingletonSpecDrift(
-          definition,
-          singletonInstanceName,
-          existingInstances
-        );
-        if ('createResourceGraphForInstance' in singletonFactory && existingInstances.length === 0) {
+        assertNoDeployedSingletonSpecDrift(definition, singletonInstanceName, existingInstances);
+        if (
+          'createResourceGraphForInstance' in singletonFactory &&
+          existingInstances.length === 0
+        ) {
           const discovered = await this.getDeploymentEngine().loadDeploymentByInstance({
             factoryName: singletonFactory.name,
             instanceName: singletonInstanceName,
@@ -1752,35 +1803,50 @@ export class DirectResourceFactoryImpl<
               this.singletonOwnerStatuses.set(getSingletonResourceId(definition.key), legacyStatus);
             }
             if (hasAllExpectedResources && !hasHelmReleaseResources) {
-              this.logger.warn('Skipping direct singleton owner reconciliation for legacy resources without a spec fingerprint', {
+              this.logger.warn(
+                'Skipping direct singleton owner reconciliation for legacy resources without a spec fingerprint',
+                {
+                  singletonId: definition.id,
+                  singletonKey: definition.key,
+                  singletonInstanceName,
+                  registryNamespace: definition.registryNamespace,
+                }
+              );
+              continue;
+            }
+
+            this.logger.warn(
+              'Reconciling direct singleton owner because legacy resources may need repair',
+              {
                 singletonId: definition.id,
                 singletonKey: definition.key,
                 singletonInstanceName,
                 registryNamespace: definition.registryNamespace,
-              });
-              continue;
-            }
-
-            this.logger.warn('Reconciling direct singleton owner because legacy resources may need repair', {
-              singletonId: definition.id,
-              singletonKey: definition.key,
-              singletonInstanceName,
-              registryNamespace: definition.registryNamespace,
-              discoveredResourceCount: discoveredResources.length,
-              expectedResourceCount: expectedGraph.resources.length,
-              hasAllExpectedResources,
-              hasHelmReleaseResources,
-            });
+                discoveredResourceCount: discoveredResources.length,
+                expectedResourceCount: expectedGraph.resources.length,
+                hasAllExpectedResources,
+                hasHelmReleaseResources,
+              }
+            );
           }
         }
 
         const singletonDeployOptions: InternalResourceFactoryDeployOptions = {
           instanceNameOverride: singletonInstanceName,
-          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
+          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(
+            definition.specFingerprint
+          ),
         };
-        const deployedSingleton = await singletonFactory.deploy(definition.spec, singletonDeployOptions);
+        const deployedSingleton = await singletonFactory.deploy(
+          definition.spec,
+          singletonDeployOptions
+        );
         const singletonStatus = (deployedSingleton as { status?: unknown }).status;
-        if (singletonStatus && typeof singletonStatus === 'object' && !Array.isArray(singletonStatus)) {
+        if (
+          singletonStatus &&
+          typeof singletonStatus === 'object' &&
+          !Array.isArray(singletonStatus)
+        ) {
           this.singletonOwnerStatuses.set(
             getSingletonResourceId(definition.key),
             singletonStatus as Record<string, unknown>
@@ -1812,7 +1878,12 @@ export class DirectResourceFactoryImpl<
           ? (status as Record<string, unknown>)
           : {};
 
-      for (const id of this.getSingletonStatusAliases(resource.id, manifest, singletonInstanceName, localIdsByLiveIdentity)) {
+      for (const id of this.getSingletonStatusAliases(
+        resource.id,
+        manifest,
+        singletonInstanceName,
+        localIdsByLiveIdentity
+      )) {
         liveStatusMap.set(id, statusRecord);
       }
     }
@@ -1823,9 +1894,11 @@ export class DirectResourceFactoryImpl<
   private getSingletonLocalIdsByLiveIdentity(
     definition: SingletonDefinitionRecord
   ): Map<string, string> {
-    const compositionFn = (definition.composition as unknown as {
-      _compositionFn?: (spec: unknown) => unknown;
-    })._compositionFn;
+    const compositionFn = (
+      definition.composition as unknown as {
+        _compositionFn?: (spec: unknown) => unknown;
+      }
+    )._compositionFn;
     const idsByIdentity = new Map<string, string>();
     if (!compositionFn) return idsByIdentity;
 
@@ -1836,9 +1909,16 @@ export class DirectResourceFactoryImpl<
     runWithCompositionContext(probeContext, () => compositionFn(definition.spec));
 
     for (const [id, resource] of Object.entries(probeContext.resources)) {
-      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
+      const identity = this.getLiveIdentityKey(
+        resource.kind,
+        resource.metadata?.name,
+        resource.metadata?.namespace
+      );
       if (identity) idsByIdentity.set(identity, id);
-      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(
+        resource.kind,
+        resource.metadata?.name
+      );
       if (namespaceAgnosticIdentity) idsByIdentity.set(namespaceAgnosticIdentity, id);
     }
 
@@ -1854,7 +1934,8 @@ export class DirectResourceFactoryImpl<
     const aliases = new Set<string>([discoveredId]);
     const annotationId =
       manifest && typeof manifest === 'object'
-        ? (manifest as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations?.['typekro.io/resource-id']
+        ? (manifest as { metadata?: { annotations?: Record<string, string> } }).metadata
+            ?.annotations?.['typekro.io/resource-id']
         : undefined;
     if (annotationId) aliases.add(annotationId);
 
@@ -1866,12 +1947,24 @@ export class DirectResourceFactoryImpl<
     if (derivedId) aliases.add(derivedId);
 
     if (manifest && typeof manifest === 'object') {
-      const resource = manifest as { kind?: string; metadata?: { name?: string; namespace?: string } };
-      const identity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name, resource.metadata?.namespace);
-      const namespaceAgnosticIdentity = this.getLiveIdentityKey(resource.kind, resource.metadata?.name);
+      const resource = manifest as {
+        kind?: string;
+        metadata?: { name?: string; namespace?: string };
+      };
+      const identity = this.getLiveIdentityKey(
+        resource.kind,
+        resource.metadata?.name,
+        resource.metadata?.namespace
+      );
+      const namespaceAgnosticIdentity = this.getLiveIdentityKey(
+        resource.kind,
+        resource.metadata?.name
+      );
       const localId =
         (identity ? localIdsByLiveIdentity.get(identity) : undefined) ??
-        (namespaceAgnosticIdentity ? localIdsByLiveIdentity.get(namespaceAgnosticIdentity) : undefined);
+        (namespaceAgnosticIdentity
+          ? localIdsByLiveIdentity.get(namespaceAgnosticIdentity)
+          : undefined);
       if (localId) aliases.add(localId);
     }
 

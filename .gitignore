@@ -62,3 +62,10 @@ src/**/*.d.ts.map
 
 # AI tooling state — not for public repo
 .kiro/
+.openartisan/
+.opencode/
+
+# OpenCode local dependency/runtime artifacts
+.opencode/node_modules/
+.opencode/package-lock.json
+.opencode/openartisan-errors.log

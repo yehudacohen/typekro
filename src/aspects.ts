@@ -1,0 +1,28 @@
+export {
+  AspectApplicationError,
+  AspectDefinitionError,
+  allResources,
+  append,
+  aspect,
+  hotReload,
+  merge,
+  metadata,
+  override,
+  replace,
+  resources,
+  slot,
+  withAnnotations,
+  withEnvFrom,
+  withEnvVars,
+  withHotReload,
+  withImagePullPolicy,
+  withLabels,
+  withLocalWorkspace,
+  withMetadata,
+  withReplicas,
+  withResourceDefaults,
+  withServiceAccount,
+  workloads,
+} from './core/aspects/index.js';
+
+export type * from './core/aspects/types.js';

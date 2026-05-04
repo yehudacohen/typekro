@@ -91,6 +91,28 @@ const redis = helmRelease({
 });
 ```
 
+## Aspects
+
+Use the dedicated subpath for cross-cutting resource customization:
+
+```typescript
+import {
+  aspect,
+  allResources,
+  metadata,
+  merge,
+  withEnvVars,
+  withLabels,
+} from 'typekro/aspects';
+
+const devAspects = [
+  withLabels({ team: 'platform' }),
+  withEnvVars({ LOG_LEVEL: 'debug' }).where({ id: 'api' }).expectOne(),
+];
+```
+
+Factory tokens in aspects target resource kind/capability. Use `slot(...)` or selectors for exact semantic targeting.
+
 ## Ecosystem-Specific Imports
 
 ```typescript
@@ -190,6 +212,7 @@ const AppSpec = type({
 | `Cel` expressions | `typekro` |
 | `externalRef` | `typekro` |
 | `createResource` | `typekro` |
+| Aspect helpers | `typekro/aspects` |
 | `typeKroRuntimeBootstrap` | `typekro` |
 | `singleton` | `typekro` |
 | RBAC factories | `typekro` |
@@ -218,3 +241,9 @@ deploy.dependsOn(database);
 ```
 
 See [Custom Integrations](/advanced/custom-integrations) for details on these methods.
+
+## Next Steps
+
+- [Aspects](/api/aspects) - Cross-cutting resource customization
+- [Factory Functions](/api/factories/) - Factory import paths and usage
+- [Core Types](/api/types) - Type-only imports and resource types

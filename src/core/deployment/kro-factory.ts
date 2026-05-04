@@ -8,9 +8,12 @@
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
+import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
-import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
+import { applyAspects } from '../aspects/apply.js';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
@@ -23,21 +26,19 @@ import {
   ResourceGraphFactoryError,
   TypeKroError,
 } from '../errors.js';
+import { applyAnalysisToResources } from '../expressions/composition/composition-analyzer.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { createSchemaProxy, DeploymentMode } from '../references/index.js';
-import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
-import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
-import { applyAnalysisToResources } from '../expressions/composition/composition-analyzer.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
 import { getMetadataField, setMetadataField } from '../metadata/index.js';
-import { generateKroSchemaFromArktype } from '../serialization/schema.js';
+import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
+import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
-import { logHandleSnapshot } from './handle-tracing.js';
+import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AlchemyBridge,
@@ -63,9 +64,9 @@ import type {
 } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
-import { getSingletonResourceId } from '../singleton/singleton.js';
 import {
   convertToKubernetesName,
   generateInstanceName,
@@ -1455,10 +1456,15 @@ export class KroResourceFactoryImpl<
       );
     }
 
+    const aspectResources = applyAspects(this.resources, {
+      mode: 'kro',
+      aspects: this.factoryOptions.aspects ?? [],
+    });
+
     const kroSchema = generateKroSchemaFromArktype(
       this.name,
       this.schemaDefinition,
-      this.resources,
+      aspectResources,
       this.statusMappings,
       this.getNestedStatusCel()
     );
@@ -1482,18 +1488,15 @@ export class KroResourceFactoryImpl<
       }
     }
 
-    // Apply ternary conditionals to this.resources BEFORE serialization.
-    // Mutates in place (JSON.clone is NOT safe here because it strips
-    // proxy-valued fields like `metadata.namespace` that are KubernetesRef
-    // proxies with typeof function). The single-apply guard mirrors
-    // core.ts — the underlying operation is idempotent today, but we
-    // explicitly skip re-runs to keep both paths structurally identical
-    // and avoid depending on that idempotency across future refactors.
-    if (!this.ternaryAndOmitApplied) {
-      this.ternaryAndOmitApplied = true;
+    // Apply ternary conditionals to the exact resource set being serialized.
+    // Aspect application clones resources, so each aspect render needs ternary
+    // post-processing even when the base factory already ran it once.
+    const hasAspects = (this.factoryOptions.aspects?.length ?? 0) > 0;
+    if (hasAspects || !this.ternaryAndOmitApplied) {
+      if (!hasAspects) this.ternaryAndOmitApplied = true;
       if (kroSchema.__ternaryConditionals?.length) {
         applyTernaryConditionalsToResources(
-          this.resources as Record<string, unknown>,
+          aspectResources as Record<string, unknown>,
           kroSchema.__ternaryConditionals,
           kroSchema.__nestedStatusCel
         );
@@ -1502,7 +1505,7 @@ export class KroResourceFactoryImpl<
 
     return serializeResourceGraphToYaml(
       this.rgdName,
-      this.resources,
+      aspectResources,
       { namespace: this.namespace },
       kroSchema
     );

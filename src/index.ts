@@ -92,14 +92,93 @@
 // 1. ESSENTIAL — Core APIs every user needs
 // =============================================================================
 
+// Aspect helpers for typed resource customization
+export {
+  AspectApplicationError,
+  AspectDefinitionError,
+  allResources,
+  append,
+  aspect,
+  hotReload,
+  merge,
+  metadata,
+  override,
+  replace,
+  resources,
+  slot,
+  withAnnotations,
+  withEnvFrom,
+  withEnvVars,
+  withHotReload,
+  withImagePullPolicy,
+  withLabels,
+  withLocalWorkspace,
+  withMetadata,
+  withReplicas,
+  withResourceDefaults,
+  withServiceAccount,
+  workloads,
+} from './core/aspects/index.js';
+export type {
+  AnnotationMap,
+  EnvVarMap,
+  HotReloadAspectOptions,
+  HotReloadContainer,
+  HotReloadVolume,
+  LabelMap,
+  LocalWorkspaceAspectOptions,
+} from './core/aspects/index.js';
+export type {
+  AppendOperation,
+  ApplyAspectsOptions,
+  AspectBuilder,
+  AspectCardinality,
+  AspectDefinition,
+  AspectDiagnosticsPolicy,
+  AspectFactoryTarget,
+  AspectFactoryTargetBrand,
+  AspectFactoryTargetFunction,
+  AspectFieldPath,
+  AspectMode,
+  AspectOperation,
+  AspectOperationKind,
+  AspectOverridePatch,
+  AspectOverrideSchemaForTarget,
+  AspectPatchValue,
+  AspectSafetyContext,
+  AspectSelector,
+  AspectSurface,
+  AspectSurfaceForCommonKinds,
+  AspectSurfaceForTarget,
+  AspectSurfaceKind,
+  AspectSurfaceKindForTarget,
+  AspectTarget,
+  AspectTargetGroup,
+  AspectValidationPolicy,
+  CommonAspectSchema,
+  CommonAspectSchemaForTargets,
+  CommonAspectSchemaKeys,
+  CommonAspectSchemaValue,
+  CommonAspectSurfaceForTargets,
+  CommonAspectSurfaceKindForTargets,
+  CompatibleAspectTargets,
+  FactoryAspectTargetDescriptor,
+  ImagePullPolicy,
+  MergeOperation,
+  MergeByNameOperation,
+  MetadataAspectSurface,
+  OverrideAspectSurface,
+  PatchEachOperation,
+  ReplaceOperation,
+  ResourceAspectFactoryTarget,
+  ResourceAspectMetadata,
+  ResourceSpecOverrideSchema,
+  ToYamlOptions,
+  WorkloadPodTemplateAspectSchema,
+  WorkloadAspectFactoryTarget,
+} from './core/aspects/types.js';
 // Imperative composition (define compositions with native TypeScript)
 export { kubernetesComposition } from './core/composition/imperative.js';
-export { singleton } from './core/singleton/singleton.js';
-export type {
-  SingletonHandle,
-  SingletonOwnedHandle,
-  SingletonReferenceHandle,
-} from './core/types/deployment.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)
@@ -122,7 +201,13 @@ export {
 } from './core/serialization/index.js';
 // Schema conversion
 export { arktypeToKroSchema } from './core/serialization/schema.js';
-export type { ResolutionContext } from './core/types/deployment.js';
+export { singleton } from './core/singleton/singleton.js';
+export type {
+  ResolutionContext,
+  SingletonHandle,
+  SingletonOwnedHandle,
+  SingletonReferenceHandle,
+} from './core/types/deployment.js';
 // Core types (all type-only exports from core/types)
 export type * from './core/types/index.js';
 export type { CelEvaluationContext } from './core/types/references.js';
