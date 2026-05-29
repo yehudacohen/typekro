@@ -66,6 +66,10 @@
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"
     },
+    "./ory": {
+      "import": "./dist/factories/ory/index.js",
+      "types": "./dist/factories/ory/index.d.ts"
+    },
     "./webapp": {
       "import": "./dist/factories/webapp/index.js",
       "types": "./dist/factories/webapp/index.d.ts"
