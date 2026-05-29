@@ -314,13 +314,12 @@ function findUnsafeLiteral(value: unknown, allowedLiterals: Set<string>, path = 
 }
 
 function assertProductionSafe(config: OryIdentityStackConfig, values: OryMappedHelmValues): void {
-  const managedDatabases =
-    config.dependencySources?.hydra?.database?.dsn.mode === 'managed' ||
-    config.dependencySources?.kratos?.database?.dsn.mode === 'managed';
-  if (!managedDatabases && values.hydra.hydra?.dev === true) {
+  const hydraManagedDatabase = config.dependencySources?.hydra?.database?.dsn.mode === 'managed';
+  const kratosManagedDatabase = config.dependencySources?.kratos?.database?.dsn.mode === 'managed';
+  if (!hydraManagedDatabase && values.hydra.hydra?.dev === true) {
     throw unsafeProductionError('hydra.hydra.dev', 'ORY_UNSAFE_PRODUCTION_VALUE: hydra dev mode is not allowed in production');
   }
-  if (!managedDatabases && values.kratos.kratos?.development === true) {
+  if (!kratosManagedDatabase && values.kratos.kratos?.development === true) {
     throw unsafeProductionError(
       'kratos.kratos.development',
       'ORY_UNSAFE_PRODUCTION_VALUE: kratos development mode is not allowed in production'
@@ -352,8 +351,10 @@ export const validateOryConfig = (config: OryIdentityStackConfig): OryConfigVali
   if (!hasValueSource(resolvedConfig.hydra?.systemSecret)) {
     issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: 'hydra.systemSecret', message: 'Hydra system Secret source is required', component: 'hydra' });
   }
-  if (!Object.values(resolvedConfig.kratos?.secrets ?? {}).some(hasValueSource)) {
-    issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: 'kratos.secrets', message: 'Kratos Secret sources are required', component: 'kratos' });
+  for (const key of ['cookie', 'cipher'] as const) {
+    if (!hasValueSource(resolvedConfig.kratos?.secrets?.[key])) {
+      issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: `kratos.secrets.${key}`, message: `Kratos ${key} Secret source is required`, component: 'kratos' });
+    }
   }
 
   return { valid: issues.length === 0, issues };

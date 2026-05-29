@@ -174,6 +174,7 @@ export const oryPlatformStack = kubernetesComposition(
     const manageRoutes = spec.managed?.routes !== false;
     const manageSampleUpstream = spec.managed?.sampleUpstream !== false;
     const concreteSpec = typeof spec.name === 'string';
+    const emitRouteResources = manageRoutes && concreteSpec;
     let hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
     let kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
     let ketoDatabaseSecretName = `${spec.name}-keto-db-app`;
@@ -309,7 +310,7 @@ export const oryPlatformStack = kubernetesComposition(
         sampleUpstreamName,
         courierSesName: `${spec.name}-courier-ses`,
       },
-      spec.managed
+      { ...spec.managed, routes: emitRouteResources }
     );
     const resolvedSources = mergeDependencySources(managedSources, spec.dependencySources);
 
@@ -353,7 +354,7 @@ export const oryPlatformStack = kubernetesComposition(
       },
     });
 
-    if (manageRoutes && concreteSpec) {
+    if (emitRouteResources) {
       oathkeeperRule({
         id: 'sampleUpstreamOathkeeperRule',
         name: `${spec.name}-sample-upstream`,
@@ -406,7 +407,7 @@ export const oryPlatformStack = kubernetesComposition(
       infrastructure: {
         databases: manageDatabases,
         secrets: manageSecrets,
-        routes: manageRoutes,
+        routes: emitRouteResources,
         upstream: manageSampleUpstream,
         courier: spec.managed?.courierSes ?? false,
       },

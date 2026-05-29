@@ -45,6 +45,7 @@ await stack.deploy({
       database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } } },
       secrets: {
         cookie: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
+        cipher: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } } },
       },
     },
     keto: {
@@ -69,6 +70,7 @@ await stack.deploy({
     publicBaseUrl: 'https://kratos.example.com',
     secrets: {
       cookie: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+      cipher: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
     },
   },
   keto: {
@@ -86,7 +88,7 @@ Explicit literal value sources are supported for controlled environments, but Ty
 
 ## Managed Local Platform
 
-Use `oryPlatformStack` for CI and local clusters when you want TypeKro to create local infrastructure instead of manually provisioning it first. The platform graph can create managed databases, local-only Secrets, routes, and a sample upstream before deploying Ory.
+Use `oryPlatformStack` for CI and local clusters when you want TypeKro to create local infrastructure instead of manually provisioning it first. Direct mode can create managed databases, local-only Secrets, routes, and a sample upstream before deploying Ory. KRO mode omits APISIX route resources from the ResourceGraphDefinition so clusters without APISIX CRDs can still activate the graph; KRO infrastructure status reports routes as unmanaged because the graph does not own APISIX route resources.
 
 Managed Secrets are annotated with `typekro.dev/local-default: "true"` and are intended for local and CI bootstrap only. For production, provide external Secret references through `dependencySources` and disable `managed.secrets` so TypeKro does not create local default secret material.
 

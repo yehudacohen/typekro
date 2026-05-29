@@ -450,7 +450,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
     expect(instance.status.phase).toBe('Ready');
     expect(instance.status.infrastructure.databases).toBe(true);
     expect(instance.status.infrastructure.secrets).toBe(true);
-    expect(instance.status.infrastructure.routes).toBe(apisixRoutesAvailable);
+    expect(instance.status.infrastructure.routes).toBe(false);
     expect(instance.status.infrastructure.upstream).toBe(true);
     expect(instance.status.dependencies.hydraDatabase).toBe('managed');
     expect(instance.status.dependencies.kratosDatabase).toBe('managed');

@@ -159,6 +159,69 @@ describe('Ory Helm values mapper', () => {
     ).toThrow(/ORY_UNSAFE_PRODUCTION_VALUE|dev/i);
   });
 
+  it('Reject per-service dev mode when only another service database is managed', () => {
+    expect(() =>
+      mapOryConfigToHelmValues({
+        ...externalConfig,
+        dependencySources: {
+          ...externalConfig.dependencySources,
+          hydra: {
+            ...externalConfig.dependencySources?.hydra,
+            database: { dsn: { mode: 'managed', resourceName: 'identity-hydra-db' } },
+          },
+        },
+        kratos: {
+          ...externalConfig.kratos,
+          values: { kratos: { development: true } },
+        },
+      })
+    ).toThrow(/ORY_UNSAFE_PRODUCTION_VALUE|kratos.*development/i);
+
+    expect(() =>
+      mapOryConfigToHelmValues({
+        ...externalConfig,
+        dependencySources: {
+          ...externalConfig.dependencySources,
+          kratos: {
+            ...externalConfig.dependencySources?.kratos,
+            database: { dsn: { mode: 'managed', resourceName: 'identity-kratos-db' } },
+          },
+        },
+        hydra: {
+          ...externalConfig.hydra,
+          values: { hydra: { dev: true } },
+        },
+      })
+    ).toThrow(/ORY_UNSAFE_PRODUCTION_VALUE|hydra.*dev/i);
+  });
+
+  it('Require both Kratos cookie and cipher Secret sources', () => {
+    const result = validateOryConfig({
+      ...externalConfig,
+      kratos: {
+        ...externalConfig.kratos,
+        secrets: { cookie: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
+      },
+      dependencySources: {
+        ...externalConfig.dependencySources,
+        kratos: {
+          ...externalConfig.dependencySources?.kratos,
+          secrets: {
+            cookie: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ path: 'kratos.secrets.cipher' })
+    );
+  });
+
   it('Merge typed values before customValues and validate final unsafe-value safety after all merges', () => {
     expect(() =>
       mapOryConfigToHelmValues({

@@ -239,4 +239,12 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('identity-local-oathkeeper-proxy-route');
     expect(yaml).toContain('identity-local-oathkeeper-api-route');
   });
+
+  it('Omit route resource names in graph mode because APISIX routes are not emitted in the RGD', () => {
+    const yaml = oryPlatformStack.toYaml();
+
+    expect(yaml).not.toContain('identity-local-hydra-public-route');
+    expect(yaml).not.toContain('-hydra-public-route');
+    expect(yaml).not.toContain('-oathkeeper-proxy-route');
+  });
 });
