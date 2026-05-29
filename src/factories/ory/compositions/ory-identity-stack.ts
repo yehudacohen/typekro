@@ -156,15 +156,11 @@ export const oryIdentityStack = kubernetesComposition(
       dependencySources: defaultManagedDependencySources(typedSpec.name),
     } as OryIdentityStackConfig);
     if (typeof typedSpec.name === 'string') {
-      try {
-        values = mapOryConfigToHelmValues({
-          ...typedSpec,
-          namespace: resolvedNamespace,
-          version: resolvedVersion,
-        });
-      } catch (error) {
-        throw error;
-      }
+      values = mapOryConfigToHelmValues({
+        ...typedSpec,
+        namespace: resolvedNamespace,
+        version: resolvedVersion,
+      });
     }
 
     if (typeof typedSpec.name === 'string') {
