@@ -12,11 +12,13 @@ This document provides a structured prompt that an AI agent can follow to genera
 Before generating an integration, gather:
 
 1. **Operator CRD API reference** — the spec and status fields for each custom resource. Read the Go types file (`api/v1/types.go`) if available — it's the source of truth.
-2. **Helm chart details**:
-   - Repository URL — is it HTTPS or OCI (`oci://`)? OCI requires `type: 'oci'` on the HelmRepository.
-   - Chart name — for OCI, Flux constructs `{repo_url}/{chart_name}:{version}`, so verify the path.
-   - Default version — check the exact tag format from GitHub releases (e.g., `v0.0.61-chart` vs `0.23.0`).
-3. **Readiness semantics** — how each resource reports readiness (conditions, phase, top-level boolean, custom).
+2. **Freshness research** — verify the current stable upstream version and API surface before writing code. Check official docs, GitHub releases, ArtifactHub or OCI registry metadata, chart `values.yaml`, CRD OpenAPI schemas, and install/upgrade notes. Record any deprecated API versions, required companion controllers, compatibility matrix entries, and breaking changes since the repo's previously known version.
+3. **Helm chart details** — record repository URL, chart name, Helm type, and default version. For OCI repositories, Flux constructs `{repo_url}/{chart_name}:{version}`, so verify the path and pass `type: 'oci'` to the HelmRepository. Check the exact tag format from GitHub releases (e.g., `v0.0.61-chart` vs `0.23.0`).
+4. **Readiness semantics** — how each resource reports readiness (conditions, phase, top-level boolean, custom).
+5. **Upstream ownership boundary** — identify the official operator, Helm chart, CRDs, and helper controllers. Prefer official upstream components over custom TypeKro controllers or bespoke charts unless the user explicitly asks for custom infrastructure.
+6. **Dependency contract** — list every dependency as `managed` or `external`: databases, Secrets, routes, object storage, email, DNS, TLS, cloud IAM, and sample upstreams. For managed dependencies, identify the exact generated resource names and keys consumed by Helm values (for example CNPG `*-db-app` Secret key `uri`).
+7. **Baseline local requirements** — define what must work in local/CI without external DNS, TLS, SMTP, cloud credentials, or ingress controllers. Optional integrations should be opt-in, not required for the baseline.
+8. **Direct and KRO mode expectations** — decide which resources can exist in direct-only YAML and which must be valid in a graph-native RGD. Optional CRDs absent from common test clusters must not make the RGD inactive.
 
 ## Generation Prompt
 
@@ -257,14 +259,21 @@ setMetadataField(repo, 'lifecycle', 'shared');
 
 **Custom values merge:** The helm-values-mapper uses recursive deep merge for `customValues`. Plain objects merge key-by-key at arbitrary depth. Arrays and primitives replace. Prototype pollution is guarded (`__proto__`, `constructor`, `prototype` keys are skipped).
 
+**Dependency-source resolution:** If the integration wires managed infrastructure into Helm charts, keep dependency resolution explicit and test it thoroughly:
+- Managed dependencies should reference the actual producer's output, not a guessed placeholder. For CNPG app databases, use the generated application Secret/key (`*-db-app`, key `uri`) when the chart needs a DSN with credentials.
+- External dependencies should accept Secret refs or literal URLs only where production-safe.
+- Values mappers must validate unresolved dependencies early with structured errors.
+- Do not pass raw schema proxies, raw `values`, or raw `customValues` into graph fallback values if the chart requires concrete strings or nested config. Build a graph-safe fallback config and let the mapper emit deterministic defaults.
+- Add tests that inspect generated RGD YAML for the exact Secret names/keys and required chart defaults.
+
 **For OCI registries**, pass `type: 'oci'` to `helmRepository()`:
 ```typescript
 helmRepository({
-  name: config.name || DEFAULT_MY_REPO_NAME,
-  namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
-  url: config.url || DEFAULT_MY_REPO_URL,
+  name: config.name ?? DEFAULT_MY_REPO_NAME,
+  namespace: config.namespace ?? DEFAULT_FLUX_NAMESPACE,
+  url: config.url ?? DEFAULT_MY_REPO_URL,
   type: 'oci',  // ⚠️ Required for OCI — without this, Flux rejects the URL
-  interval: config.interval || '5m',
+  interval: config.interval ?? '5m',
 });
 ```
 
@@ -343,6 +352,13 @@ return {
 ```
 `Cel.expr` is only needed for bootstrap (Helm-based) compositions where status is derived from conditions arrays.
 
+**Platform compositions with nested stacks:** If a composition creates managed infrastructure and then calls a nested integration stack:
+- Keep the infrastructure ownership in the platform composition and pass dependencies through typed dependency sources.
+- Rebuild status field-by-field from nested status handles. Do not pass a nested `status` object wholesale into the parent status; KRO may serialize nested object references into invalid expressions.
+- KRO graph fallback should contain only graph-safe values. Strip raw `values`, `customValues`, Secret value sources, and optional service config that can become `omit()` where Helm requires a concrete string.
+- Omit optional CRDs from the RGD when the CRD may not exist in baseline clusters. It is fine for concrete direct-mode YAML to include optional resources gated by a concrete spec flag.
+- Do not create a `Namespace` resource in a KRO graph for the same namespace that contains the KRO instance. Create test namespaces outside the graph, deploy the instance into them, then delete those namespaces after `deleteInstance`.
+
 **Barrel exports (`index.ts`):** Each directory needs a barrel export:
 ```typescript
 // src/factories/{name}/index.ts
@@ -369,15 +385,19 @@ export type { MyConfig, MyStatus } from './types.js';
 - getHelmValueWarnings (if any)
 
 **Integration tests:**
-- Deploy operator via bootstrap composition with `waitForReady: true`
-- Assert ALL status fields: `ready`, `phase`, `failed`, `version`
+- Deploy operator via bootstrap or platform composition with `waitForReady: true`
+- Assert every status field declared by that composition's status schema. Bootstrap stacks usually expose `ready`, `phase`, `failed`, and `version`; platform stacks may expose infrastructure, dependency, component, and endpoint fields instead.
 - **Ground-truth pod verification**: After status assertions, run `kubectl get pods -n {ns} -o json` and verify all pods are Running with all containers Ready. Allow up to 10 restarts for KRO mode (simultaneous deploy causes transient CrashLoopBackOff while dependencies start).
 - Test YAML generation for KRO mode
 - Test both `'kro'` and `'direct'` factory mode creation
-- **Cleanup**: Use `factory.deleteInstance(name)` only — it handles the full lifecycle (instance → RGD → CRD). Do NOT manually delete RGDs, CRDs, or namespaces — KRO's finalizer handles child resource cleanup including Namespaces. The only manual cleanup needed is the factory namespace itself.
+- For dependency-managing integrations, run live direct AND KRO e2e before calling the work complete. Unit/YAML tests are not enough; they will miss chart runtime config, generated Secret mismatches, Flux install failures, and KRO finalizer behavior.
+- When KRO readiness stalls, inspect cluster state over time instead of guessing: RGD state, instance state, HelmReleases, pods, jobs, generated Secrets, operator CRs, and logs. Prefer background test execution plus repeated `kubectl` checks for long e2e runs.
+- Verify generated in-cluster HelmRelease values, not just local YAML. In-cluster values prove the RGD, KRO expression evaluation, and Flux handoff produced the expected chart config.
+- **Cleanup**: Use `factory.deleteInstance(name)` for instance-owned resources. Do NOT manually delete RGDs, CRDs, or patch finalizers during normal cleanup. Test namespaces created outside the graph may be deleted after `deleteInstance`; do not include the namespace that contains a KRO instance as a child resource in that same KRO graph, or KRO finalizer deletion can deadlock.
 - ⚠️ afterAll hooks should log errors, not silently swallow: `catch (e) { console.error('cleanup failed:', e.message); }`
 - Use random namespace suffixes (`Math.random().toString(36).slice(2, 7)`) for parallel-safe isolation.
 - ⚠️ Run with parallel kubectl monitoring via a background Bash command (not a subagent — subagents can't run Bash). Monitor HelmRepository, HelmRelease, HelmChart, and pods every 15s to catch OCI pull errors, CrashLoopBackOff, or SourceNotReady early.
+- Do not materialize command strings, logs, generated YAML snapshots, or debugging output into repo files unless the user explicitly asks for a committed artifact. Use temp paths outside the workspace for long-running logs.
 
 **Deep merge for customValues:**
 - Test one-level deep merge (existing keys preserved)
@@ -432,9 +452,11 @@ Then verify each item:
 - [ ] All string literals that appear more than once are extracted as exported constants
 - [ ] Helm repo name, version, URL are constants used by both the factory and the composition
 - [ ] `DEFAULT_FLUX_NAMESPACE` imported from core, not redeclared locally
+- [ ] Default operator/chart version was verified against current official releases or registry metadata during this task
+- [ ] CRD API group/version and Helm values schema were verified against current upstream docs or CRDs, not copied from stale examples
 
 **Status & CEL:**
-- [ ] Bootstrap status has: `ready`, `phase` ('Ready' | 'Installing'), `failed`, `version?`
+- [ ] Bootstrap status has: `ready`, `phase` ('Ready' | 'Installing'), `failed`, `version?`; platform status has all declared infrastructure/dependency/component fields asserted in tests
 - [ ] Phase uses simple two-state ternary (no nested `.exists()`)
 - [ ] `failed` uses separate single `.exists()` expression
 - [ ] Status type exactly matches what the CEL actually produces
@@ -452,24 +474,31 @@ Then verify each item:
 **Integration:**
 - [ ] Integration test covers both `'kro'` and `'direct'` factory modes
 - [ ] Config types are inferred from ArkType schemas (`typeof Schema.infer`), not hand-written interfaces
+- [ ] Live e2e proves both direct and KRO modes for dependency-managing stacks
+- [ ] Generated in-cluster HelmRelease values reference the expected managed Secrets and concrete chart defaults
+- [ ] KRO RGD reaches `Active True`, KRO instance reaches ready, and cleanup via `deleteInstance` completes
+- [ ] Optional CRD-backed resources do not make the baseline RGD inactive when the optional CRD is absent
 
 **Resource metadata:**
 - [ ] Cluster-scoped resources use `{ scope: 'cluster' }` in `createResource`
 - [ ] Resources that operators copy labels from have required `app.kubernetes.io/*` labels
 - [ ] K8s API catch blocks check `statusCode ?? code ?? body?.code` (not just `statusCode`)
+- [ ] KRO graph does not own the namespace containing its own instance
+- [ ] Nested config fields named `id` are preserved when they are chart/CRD config, not TypeKro metadata
 
 **Tests:**
 - [ ] Every readiness state has a unit test
-- [ ] Integration test asserts ALL status fields (ready, phase, failed, version)
+- [ ] Integration test asserts every field declared by the status schema, not just `ready`
 - [ ] Helm unit tests verify defaults, custom values, readiness evaluators
 - [ ] `sanitizeHelmValues` tests construct mock branded objects with `Symbol.for('TypeKro.KubernetesRef')` and `Symbol.for('TypeKro.CelExpression')` and verify they are STRIPPED (not just that plain values pass through). KubernetesRef mocks need both `resourceId` and `fieldPath` string properties.
 - [ ] Values mapper test verifies bootstrap-only fields (`name`, `namespace`, `version`) are NOT in output
 - [ ] Version override test asserts the actual version value, not just other fields
 - [ ] No `exactOptionalPropertyTypes` violations (no `replicaCount: undefined` — use conditional spreads)
 - [ ] Config interface fields not exposed in the Helm chart (e.g., `type` on OCI-only repos) are removed from the interface, not silently ignored
-- [ ] Integration test cleanup uses `factory.deleteInstance()` only (no manual RGD/CRD/namespace deletion)
+- [ ] Integration test cleanup uses `factory.deleteInstance()` for instance-owned resources; test harness namespaces created outside the graph may be deleted after instance cleanup
 - [ ] Integration test includes ground-truth pod health verification via kubectl
 - [ ] afterAll hooks log errors instead of silently swallowing
+- [ ] Tests assert dependency-source contracts, including generated Secret names/keys and graph-safe fallback defaults
 
 **Docs & exports:**
 - [ ] API reference page exists with readiness table and limitations noted
@@ -490,19 +519,23 @@ git diff master...HEAD -- src/ # review all source changes
 
 **Review as if you're deciding whether to APPROVE or REQUEST CHANGES. Check:**
 
-1. **Schema/interface alignment** — Open types.ts. For EVERY field in every Config interface, verify the ArkType schema has a matching entry. Don't skim — go line by line. This is the #1 source of review feedback.
+1. **Freshness check** — Confirm the selected default version, CRD API versions, Helm chart values, install docs, and compatibility notes are current. If upstream has a newer version than the one used, document why the integration pins the older version.
 
-2. **String literal grep** — Run `grep -rn "'your-repo-name'" src/factories/{name}/` and verify every occurrence is a constant reference, not a duplicated literal. Check composition, factory defaults, and test assertions.
+2. **Schema/interface alignment** — Open types.ts. For EVERY field in every Config interface, verify the ArkType schema has a matching entry. Don't skim — go line by line. This is the #1 source of review feedback.
 
-3. **sanitizeHelmValues test quality** — Do the tests actually construct branded objects and verify stripping? Or do they only test that plain values pass through? The latter is NOT sufficient and will be flagged.
+3. **String literal grep** — Run `grep -rn "'your-repo-name'" src/factories/{name}/` and verify every occurrence is a constant reference, not a duplicated literal. Check composition, factory defaults, and test assertions.
 
-4. **Status field completeness** — Does the integration test assert ALL status fields? (`ready`, `phase`, `failed`, `version`). Missing any one will be caught in review.
+4. **sanitizeHelmValues test quality** — Do the tests actually construct branded objects and verify stripping? Or do they only test that plain values pass through? The latter is NOT sufficient and will be flagged.
 
-5. **Dead code / unused fields** — Any interface field that's accepted but silently ignored in the factory? Any exported constant that's not actually used? Any default that can never trigger because the type is required?
+5. **Status field completeness** — Does the integration test assert every field declared by the status schema? Bootstrap stacks usually include `ready`, `phase`, `failed`, and `version`; platform stacks should assert infrastructure, dependencies, nested component readiness, and endpoints.
 
-6. **Docs accuracy** — Do JSDoc version strings match the DEFAULT_*_VERSION constant? Do docs examples use only imports that actually exist? Are unused imports removed?
+6. **Dead code / unused fields** — Any interface field that's accepted but silently ignored in the factory? Any exported constant that's not actually used? Any default that can never trigger because the type is required?
 
-7. **Comment quality** — Do inline comments explain WHY, not WHAT? Is the proxy spreading limitation documented? Are _-prefixed variables explained?
+7. **Docs accuracy** — Do JSDoc version strings match the DEFAULT_*_VERSION constant? Do docs examples use only imports that actually exist? Are unused imports removed?
+
+8. **Comment quality** — Do inline comments explain WHY, not WHAT? Is the proxy spreading limitation documented? Are _-prefixed variables explained?
+
+9. **Framework vs integration bug classification** — If the integration needed a workaround for serialization, KRO fallback, nested `id`, status references, or TypeScript-to-CEL conversion, ask whether it belongs in core instead. Prefer a framework fix plus regression test over integration-specific hacks.
 
 **If you find issues during self-review, fix them before opening the PR.** The goal is zero blocking items on first external review.
 
@@ -569,3 +602,10 @@ git diff master...HEAD -- src/ # review all source changes
     **Prefer writing compositions as if they're plain JavaScript — if a pattern doesn't work, report it as a framework gap rather than reaching for `Cel.expr(...)` / `Cel.conditional(...)` / `Cel.has(...)` as a workaround. The explicit helpers are escape hatches for edge cases, not the default way to express conditionals.** Some things are still hard JS language limits (you can't intercept `??` on a proxy because JS evaluates it eagerly), but the framework covers the overwhelming majority of use cases and improves over time. When you hit a gap, file an issue linking to https://github.com/yehudacohen/typekro/issues/57 (AST-based analysis rewrite) and document the workaround inline.
 33. **Fix framework limitations at the framework level** — Related to rule #32: if a composition needs an ugly workaround (`isKubernetesRef(spec.x) ? ... : ...` to detect KRO mode, explicit `Cel.conditional(...)` blocks, private imports of internal helpers), treat it as a FRAMEWORK BUG and fix the framework instead. Workarounds buried in compositions become invisible to future maintainers and proliferate; framework-level fixes benefit every downstream composition. The `if (!spec.x)`-driven differential capture that now ships in TypeKro was originally an ad-hoc `Cel.not(Cel.has(spec.x))` construct in the SearXNG composition — when the author insisted on native-TypeScript ergonomics, the framework grew the capability, and the composition became ~30 lines shorter.
 34. **Optional-field overrides in differential capture are scoped to "tested" fields only** — The `processCompositionBodyAnalysis` hybrid-spec re-execution only overrides optional fields that appear in an `if`-condition or equivalent test (extracted from the AST analyzer's `includeWhen` expressions). Fields accessed unconditionally (e.g., `spec.server?.secret_key` inside a `stringData: { secret_key: ... }` object) are left as proxy references so their values flow through correctly in the captured resources. When adding a new conditional pattern, make sure the field you're testing appears in a way the `conditionToCel` bare-reference pattern recognises (`schema.spec.X` or `!schema.spec.X`); compound conditions (`spec.x && spec.y`) don't currently get extracted, so the override set will be empty and the branch capture will silently fail. Tracked in https://github.com/yehudacohen/typekro/issues/57.
+35. **KRO graph fallback values must not carry optional schema-proxy service config into Helm values** — For Helm values that require concrete defaults (for example Ory Kratos `identity.schemas[].id` and `selfservice.default_browser_return_url`), build a graph-safe fallback config that strips raw `values`, `customValues`, Secret sources, and optional service overrides. Let the mapper emit deterministic defaults, and assert the generated RGD contains those defaults. Optional proxy branches can produce `omit()` expressions in places the chart expects concrete strings.
+36. **Nested `id` is valid resource config, not always TypeKro metadata** — Resource factories use top-level `id` as the graph node identifier, but Helm values and CRD specs may also contain legitimate nested `id` fields. Serializer/reference-processing code must only remove hidden TypeKro metadata such as `__resourceId`; do not globally drop every key named `id`. Add regression assertions when an integration relies on nested ids.
+37. **Managed operator credentials should reference the operator-generated Secret, not a hand-written placeholder** — If a database operator like CNPG creates application credentials, point consuming Helm values at the generated Secret/key (for CNPG app users, commonly `*-db-app` and key `uri`). A placeholder DSN Secret without the generated password may pass YAML tests but will fail live migrations with database authentication errors.
+38. **Do not trust local RGD YAML alone for KRO integrations** — Local YAML proves serialization, but not KRO expression evaluation, Flux handoff, generated Secret availability, or chart runtime validation. For stacks that create dependencies and HelmReleases, inspect the live HelmRelease after KRO creates it and verify the final `spec.values` matches expectations.
+39. **Status passthrough must be field-by-field** — Passing nested status objects from a child stack into a parent status can serialize to invalid or unevaluable KRO expressions. Rebuild parent status one field at a time from child handles: booleans, phase, component map entries, endpoint strings, and version.
+40. **Optional CRDs must not poison baseline KRO mode** — If APISIX, ACK, cert-manager, or another optional CRD is not part of the baseline, do not emit those resources in graph-native RGD generation. Gate them on concrete direct-mode specs or require explicit user setup.
+41. **Artifact hygiene matters during integration work** — Long e2e logs belong in temp directories, not the repo. Do not create backup files, generated command artifacts, checked-in debug YAML, or alternate implementation files. If a generated artifact is useful, document the command that reproduces it instead of committing the generated output.

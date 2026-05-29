@@ -800,8 +800,8 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
-      // Exclude hidden resourceId property and id field from the final template
-      if (key === '__resourceId' || key === 'id') continue;
+      // Exclude hidden resourceId metadata; nested `id` fields can be valid resource config.
+      if (key === '__resourceId') continue;
       result[key] = processResourceReferences(value, context);
     }
 

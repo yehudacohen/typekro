@@ -135,14 +135,16 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('name: ory-platform-stack');
     expect(yaml).toContain('cnpg');
     expect(yaml).toContain('Secret');
-    expect(yaml).toContain('apisix');
-    expect(yaml).toContain('-hydra-public-route');
-    expect(yaml).toContain('-kratos-public-route');
-    expect(yaml).toContain('-oathkeeper-proxy-route');
-    expect(yaml).toContain('-oathkeeper-api-route');
+    expect(yaml).not.toContain('apisix.apache.org/v2');
     expect(yaml).toContain('sampleUpstream');
     expect(yaml).toContain('oryIdentityStack');
     expect(yaml).toContain('dependencies:');
+    expect(yaml).toContain('${string(schema.spec.name)}-hydra-db-app');
+    expect(yaml).toContain('${string(schema.spec.name)}-kratos-db-app');
+    expect(yaml).toContain('${string(schema.spec.name)}-keto-db-app');
+    expect(yaml).toContain('key: uri');
+    expect(yaml).toContain('id: default');
+    expect(yaml).toContain('default_browser_return_url');
     expect(yaml).not.toContain('undefined');
   });
 
@@ -221,5 +223,20 @@ describe('Ory platform stack composition', () => {
     expect(hydraReleaseIndex).toBeGreaterThan(databaseIndex);
     expect(hydraReleaseIndex).toBeGreaterThan(secretIndex);
     expect(routeIndex).toBeGreaterThan(hydraReleaseIndex);
+  });
+
+  it('Include optional APISIX routes in concrete direct-mode YAML only', async () => {
+    const factory = oryPlatformStack.factory('direct', { namespace: 'ory-local' });
+    const yaml = await factory.toYaml({
+      name: 'identity-local',
+      namespace: 'ory-local',
+      managed: { databases: true, secrets: true, routes: true, sampleUpstream: true },
+    });
+
+    expect(yaml).toContain('apisix.apache.org/v2');
+    expect(yaml).toContain('identity-local-hydra-public-route');
+    expect(yaml).toContain('identity-local-kratos-public-route');
+    expect(yaml).toContain('identity-local-oathkeeper-proxy-route');
+    expect(yaml).toContain('identity-local-oathkeeper-api-route');
   });
 });

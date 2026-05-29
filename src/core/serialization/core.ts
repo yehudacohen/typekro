@@ -1376,7 +1376,7 @@ function applyResourceStatusBranchDiff(
   resourceIds?: ReadonlySet<string>
 ): void {
   for (const key of new Set([...Object.keys(trueRes), ...Object.keys(falseRes)])) {
-    if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
+    if (key === '__resourceId' || key.startsWith('__')) continue;
 
     const tv = trueRes[key];
     const fv = falseRes[key];

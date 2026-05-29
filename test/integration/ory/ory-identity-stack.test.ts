@@ -7,7 +7,6 @@ import {
 } from '../../../src/core/kubernetes/index.js';
 import { oauth2Client, oathkeeperRule, oryPlatformStack } from '../../../src/factories/ory/index.js';
 import {
-  deleteNamespaceAndWait,
   ensureNamespaceExists,
   isClusterAvailable,
 } from '../shared-kubeconfig.js';
@@ -15,7 +14,15 @@ import {
 const clusterAvailable = isClusterAvailable();
 const describeOrSkip = clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
-setDefaultTimeout(120000);
+setDefaultTimeout(1500000);
+
+type OryKroFactory = ReturnType<typeof oryPlatformStack.factory> & {
+  deleteInstance(name: string): Promise<unknown>;
+};
+
+type OryFactory = ReturnType<typeof oryPlatformStack.factory> & {
+  deleteInstance(name: string): Promise<unknown>;
+};
 
 function isApisixRouteCrdAvailable(): boolean {
   const result = Bun.spawnSync(['kubectl', 'get', 'crd', 'apisixroutes.apisix.apache.org'], {
@@ -69,37 +76,7 @@ async function runKubectl(args: string[], ignoreNotFound = false): Promise<void>
   throw new Error(`kubectl ${args.join(' ')} failed: ${stderr || stdout}`);
 }
 
-async function clearMaesterFinalizers(namespace: string): Promise<void> {
-  await runKubectl(
-    [
-      'patch',
-      'oauth2client.hydra.ory.sh',
-      'console',
-      '-n',
-      namespace,
-      '--type=merge',
-      '-p',
-      '{"metadata":{"finalizers":[]}}',
-    ],
-    true
-  );
-  await runKubectl(
-    [
-      'patch',
-      'rule.oathkeeper.ory.sh',
-      'api-rule',
-      '-n',
-      namespace,
-      '--type=merge',
-      '-p',
-      '{"metadata":{"finalizers":[]}}',
-    ],
-    true
-  );
-}
-
 async function deleteMaesterResources(namespace: string): Promise<void> {
-  await clearMaesterFinalizers(namespace);
   await runKubectl(
     ['delete', 'oauth2client.hydra.ory.sh', 'console', '-n', namespace, '--ignore-not-found=true', '--wait=false'],
     true
@@ -108,7 +85,17 @@ async function deleteMaesterResources(namespace: string): Promise<void> {
     ['delete', 'rule.oathkeeper.ory.sh', 'api-rule', '-n', namespace, '--ignore-not-found=true', '--wait=false'],
     true
   );
-  await clearMaesterFinalizers(namespace);
+}
+
+async function deleteInstanceIfPresent(factory: OryFactory | undefined, name: string): Promise<void> {
+  if (!factory) return;
+  try {
+    await factory.deleteInstance(name);
+  } catch (error) {
+    if (!/not found|NotFound/i.test(String(error))) {
+      throw error;
+    }
+  }
 }
 
 async function waitForCustomObjectStatus(
@@ -186,36 +173,51 @@ async function waitForHydraOAuth2Client(namespace: string, name: string): Promis
 }
 
 describeOrSkip('Ory platform stack Kubernetes integration', () => {
-  const namespace = 'typekro-test-ory-identity-stack';
+  const suffix = Math.random().toString(36).slice(2, 7);
+  const namespace = `typekro-test-ory-identity-${suffix}`;
+  const kroNamespace = `typekro-test-ory-kro-${suffix}`;
   const apisixRoutesAvailable = isApisixRouteCrdAvailable();
   let kubeConfig: ReturnType<typeof getKubeConfig>;
+  let directFactory: OryFactory | undefined;
+  let kroFactory: OryKroFactory | undefined;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
-    await clearMaesterFinalizers(namespace);
-    await deleteNamespaceAndWait(namespace, kubeConfig, 1000);
-    await clearMaesterFinalizers(namespace);
-    await runKubectl(['wait', '--for=delete', `namespace/${namespace}`, '--timeout=30s'], true);
+
+    directFactory = oryPlatformStack.factory('direct', {
+      namespace,
+      waitForReady: true,
+      timeout: 1200000,
+      kubeConfig,
+    }) as OryFactory;
+    kroFactory = oryPlatformStack.factory('kro', {
+      namespace: kroNamespace,
+      waitForReady: true,
+      timeout: 1200000,
+      kubeConfig,
+    }) as OryKroFactory;
+
     await ensureNamespaceExists(namespace, kubeConfig);
+    await ensureNamespaceExists(kroNamespace, kubeConfig);
   });
 
   afterAll(async () => {
     if (!kubeConfig) return;
 
+    await deleteInstanceIfPresent(kroFactory, 'identity-kro');
+    await deleteInstanceIfPresent(directFactory, 'identity-test');
     await deleteMaesterResources(namespace);
+    await deleteMaesterResources(kroNamespace);
     await runKubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false'], true);
+    await runKubectl(['delete', 'namespace', kroNamespace, '--ignore-not-found=true', '--wait=false'], true);
     await deleteMaesterResources(namespace);
+    await deleteMaesterResources(kroNamespace);
   });
 
   it('E2E tests deploy the Ory platform stack to a real Kubernetes cluster', async () => {
-    const factory = oryPlatformStack.factory('direct', {
-      namespace,
-      waitForReady: true,
-      timeout: 1200000,
-      kubeConfig,
-    });
+    if (!directFactory) throw new Error('Direct factory was not initialized');
 
-    const instance = await factory.deploy({
+    const instance = await directFactory.deploy({
       name: 'identity-test',
       namespace,
       managed: {
@@ -423,4 +425,39 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
 
     expect(status.validation).toMatchObject({ valid: true });
   }, 360000);
+
+  it('E2E tests deploy the Ory platform stack through Kro and wait for readiness', async () => {
+    if (!kroFactory) throw new Error('KRO factory was not initialized');
+
+    const instance = await kroFactory.deploy({
+      name: 'identity-kro',
+      namespace: kroNamespace,
+      managed: {
+        databases: true,
+        secrets: true,
+        routes: apisixRoutesAvailable,
+        sampleUpstream: true,
+        courierSes: false,
+      },
+      maester: {
+        hydra: { enabled: true, singleNamespaceMode: true },
+        oathkeeper: { enabled: true, singleNamespaceMode: true },
+      },
+    });
+
+    expect(instance.spec.name).toBe('identity-kro');
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.phase).toBe('Ready');
+    expect(instance.status.infrastructure.databases).toBe(true);
+    expect(instance.status.infrastructure.secrets).toBe(true);
+    expect(instance.status.infrastructure.routes).toBe(apisixRoutesAvailable);
+    expect(instance.status.infrastructure.upstream).toBe(true);
+    expect(instance.status.dependencies.hydraDatabase).toBe('managed');
+    expect(instance.status.dependencies.kratosDatabase).toBe('managed');
+    expect(instance.status.dependencies.ketoDatabase).toBe('managed');
+    expect(instance.status.ory.components.hydra).toBe(true);
+    expect(instance.status.ory.components.kratos).toBe(true);
+    expect(instance.status.ory.components.keto).toBe(true);
+    expect(instance.status.ory.components.oathkeeper).toBe(true);
+  }, 1200000);
 });

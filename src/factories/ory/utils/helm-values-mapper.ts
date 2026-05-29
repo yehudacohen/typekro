@@ -148,6 +148,12 @@ function kratosConfig(config: OryIdentityStackConfig['kratos']): Record<string, 
   });
 }
 
+function ketoNamespaces(config: OryIdentityStackConfig['keto']): Array<{ id: number; name: string }> {
+  return Array.isArray(config?.namespaces)
+    ? config.namespaces.map(({ id, name }) => ({ id, name }))
+    : [];
+}
+
 function namedSecretEnvs(
   prefix: string,
   sources: Record<string, OryValueSource> | undefined
@@ -234,16 +240,12 @@ function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
       dsn: kratosDsn,
       publicBaseUrl:
         config.kratos?.publicBaseUrl ??
-        dependencyUrl(
-          sources?.kratos?.publicBaseUrl?.url,
-          `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
-        ),
+        dependencyUrl(sources?.kratos?.publicBaseUrl?.url) ??
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
       browserBaseUrl:
         config.kratos?.browserBaseUrl ??
-        dependencyUrl(
-          sources?.kratos?.browserBaseUrl?.url,
-          `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
-        ),
+        dependencyUrl(sources?.kratos?.browserBaseUrl?.url) ??
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
       secrets: Object.keys(kratosSecrets).length > 0 ? kratosSecrets : config.kratos?.secrets,
     }),
     keto: compact({
@@ -419,7 +421,10 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
       compact<OryKetoChartValues>({
         ...globalValues,
         replicaCount: resolvedConfig.keto?.replicaCount,
-        keto: { config: { dsn: secretValue(resolvedConfig.keto?.dsn), namespaces: resolvedConfig.keto?.namespaces?.map(({ id, name }) => ({ id, name })) ?? [] }, automigration: automigrationEnv(ketoEnv) },
+        keto: {
+          config: { dsn: secretValue(resolvedConfig.keto?.dsn), namespaces: ketoNamespaces(resolvedConfig.keto) },
+          automigration: automigrationEnv(ketoEnv),
+        },
         ...deploymentTargets(ketoEnv, resolvedConfig.keto?.resources),
         ...jobTargets(ketoEnv),
         serviceMonitor: resolvedConfig.keto?.serviceMonitor,

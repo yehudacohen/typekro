@@ -19,42 +19,55 @@ const apisixRouteSpecSchema = type({
   'http?': 'object[]',
 });
 
-function dependencySources(name: string): OryDependencySourceConfig {
+function dependencySources(config: {
+  hydraDatabaseSecretName: string;
+  hydraSystemSecretName: string;
+  kratosDatabaseSecretName: string;
+  kratosSecretsName: string;
+  ketoDatabaseSecretName: string;
+  oathkeeperSecretsName: string;
+  hydraPublicRouteName: string;
+  kratosPublicRouteName: string;
+  oathkeeperProxyRouteName: string;
+  oathkeeperApiRouteName: string;
+  sampleUpstreamName: string;
+  courierSesName: string;
+}): OryDependencySourceConfig {
   return {
     hydra: {
-      database: { dsn: { mode: 'managed', resourceName: `${name}-hydra-db-app`, secretKey: 'uri' } },
-      systemSecret: { mode: 'managed', secretName: `${name}-hydra-secrets`, secretKey: 'system' },
-      issuerUrl: { url: { mode: 'managed', resourceName: `${name}-hydra-public-route` } },
-      loginUrl: { url: { mode: 'managed', resourceName: `${name}-kratos-public-route` } },
-      consentUrl: { url: { mode: 'managed', resourceName: `${name}-kratos-public-route` } },
-      logoutUrl: { url: { mode: 'managed', resourceName: `${name}-kratos-public-route` } },
+      database: { dsn: { mode: 'managed', resourceName: config.hydraDatabaseSecretName, secretKey: 'uri' } },
+      systemSecret: { mode: 'managed', secretName: config.hydraSystemSecretName, secretKey: 'system' },
+      issuerUrl: { url: { mode: 'managed', resourceName: config.hydraPublicRouteName } },
+      loginUrl: { url: { mode: 'managed', resourceName: config.kratosPublicRouteName } },
+      consentUrl: { url: { mode: 'managed', resourceName: config.kratosPublicRouteName } },
+      logoutUrl: { url: { mode: 'managed', resourceName: config.kratosPublicRouteName } },
     },
     kratos: {
-      database: { dsn: { mode: 'managed', resourceName: `${name}-kratos-db-app`, secretKey: 'uri' } },
-      publicBaseUrl: { url: { mode: 'managed', resourceName: `${name}-kratos-public-route` } },
-      browserBaseUrl: { url: { mode: 'managed', resourceName: `${name}-kratos-public-route` } },
+      database: { dsn: { mode: 'managed', resourceName: config.kratosDatabaseSecretName, secretKey: 'uri' } },
+      publicBaseUrl: { url: { mode: 'managed', resourceName: config.kratosPublicRouteName } },
+      browserBaseUrl: { url: { mode: 'managed', resourceName: config.kratosPublicRouteName } },
       secrets: {
-        cookie: { mode: 'managed', secretName: `${name}-kratos-secrets`, secretKey: 'cookie' },
-        cipher: { mode: 'managed', secretName: `${name}-kratos-secrets`, secretKey: 'cipher' },
+        cookie: { mode: 'managed', secretName: config.kratosSecretsName, secretKey: 'cookie' },
+        cipher: { mode: 'managed', secretName: config.kratosSecretsName, secretKey: 'cipher' },
       },
     },
     keto: {
-      database: { dsn: { mode: 'managed', resourceName: `${name}-keto-db-app`, secretKey: 'uri' } },
+      database: { dsn: { mode: 'managed', resourceName: config.ketoDatabaseSecretName, secretKey: 'uri' } },
     },
     oathkeeper: {
-      proxyRoute: { url: { mode: 'managed', resourceName: `${name}-oathkeeper-proxy-route` } },
-      apiRoute: { url: { mode: 'managed', resourceName: `${name}-oathkeeper-api-route` } },
-      upstream: { url: { mode: 'managed', resourceName: `${name}-sample-upstream` } },
-      mutatorIdTokenJwks: { mode: 'managed', secretName: `${name}-oathkeeper-secrets`, secretKey: 'jwks' },
+      proxyRoute: { url: { mode: 'managed', resourceName: config.oathkeeperProxyRouteName } },
+      apiRoute: { url: { mode: 'managed', resourceName: config.oathkeeperApiRouteName } },
+      upstream: { url: { mode: 'managed', resourceName: config.sampleUpstreamName } },
+      mutatorIdTokenJwks: { mode: 'managed', secretName: config.oathkeeperSecretsName, secretKey: 'jwks' },
     },
   };
 }
 
 function managedDependencySources(
-  name: string,
+  config: Parameters<typeof dependencySources>[0],
   managed: OryPlatformStackConfig['managed']
 ): OryDependencySourceConfig {
-  const defaults = dependencySources(name);
+  const defaults = dependencySources(config);
   const manageDatabases = managed?.databases !== false;
   const manageSecrets = managed?.secrets !== false;
   const manageRoutes = managed?.routes !== false;
@@ -95,7 +108,7 @@ function managedDependencySources(
     kratos,
     keto,
     oathkeeper,
-    ...(managed?.courierSes ? { courier: { mode: 'managed' as const, resourceName: `${name}-courier-ses` } } : {}),
+    ...(managed?.courierSes ? { courier: { mode: 'managed' as const, resourceName: config.courierSesName } } : {}),
   };
 }
 
@@ -160,11 +173,17 @@ export const oryPlatformStack = kubernetesComposition(
     const manageSecrets = spec.managed?.secrets !== false;
     const manageRoutes = spec.managed?.routes !== false;
     const manageSampleUpstream = spec.managed?.sampleUpstream !== false;
-    const managedSources = managedDependencySources(spec.name, spec.managed);
-    const resolvedSources = mergeDependencySources(managedSources, spec.dependencySources);
+    const concreteSpec = typeof spec.name === 'string';
+    let hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
+    let kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
+    let ketoDatabaseSecretName = `${spec.name}-keto-db-app`;
+    let hydraSystemSecretName = `${spec.name}-hydra-secrets`;
+    let kratosSecretsName = `${spec.name}-kratos-secrets`;
+    let oathkeeperSecretsName = `${spec.name}-oathkeeper-secrets`;
+    let sampleUpstreamName = `${spec.name}-sample-upstream`;
 
     if (manageDatabases) {
-      cluster({
+      const hydraDatabase = cluster({
         id: 'hydraDatabase',
         name: `${spec.name}-hydra-db`,
         namespace: namespaceName,
@@ -174,13 +193,14 @@ export const oryPlatformStack = kubernetesComposition(
           bootstrap: { initdb: { database: 'hydra', owner: 'hydra' } },
         },
       });
+      hydraDatabaseSecretName = `${hydraDatabase.metadata.name ?? `${spec.name}-hydra-db`}-app`;
       secret({
         id: 'hydraDsnSecret',
         metadata: { name: `${spec.name}-hydra-db`, namespace: namespaceName },
         type: 'Opaque',
         stringData: { dsn: `postgres://hydra@${spec.name}-hydra-db-rw.${namespaceName}.svc.cluster.local:5432/hydra` },
       });
-      cluster({
+      const kratosDatabase = cluster({
         id: 'kratosDatabase',
         name: `${spec.name}-kratos-db`,
         namespace: namespaceName,
@@ -190,13 +210,14 @@ export const oryPlatformStack = kubernetesComposition(
           bootstrap: { initdb: { database: 'kratos', owner: 'kratos' } },
         },
       });
+      kratosDatabaseSecretName = `${kratosDatabase.metadata.name ?? `${spec.name}-kratos-db`}-app`;
       secret({
         id: 'kratosDsnSecret',
         metadata: { name: `${spec.name}-kratos-db`, namespace: namespaceName },
         type: 'Opaque',
         stringData: { dsn: `postgres://kratos@${spec.name}-kratos-db-rw.${namespaceName}.svc.cluster.local:5432/kratos` },
       });
-      cluster({
+      const ketoDatabase = cluster({
         id: 'ketoDatabase',
         name: `${spec.name}-keto-db`,
         namespace: namespaceName,
@@ -206,6 +227,7 @@ export const oryPlatformStack = kubernetesComposition(
           bootstrap: { initdb: { database: 'keto', owner: 'keto' } },
         },
       });
+      ketoDatabaseSecretName = `${ketoDatabase.metadata.name ?? `${spec.name}-keto-db`}-app`;
       secret({
         id: 'ketoDsnSecret',
         metadata: { name: `${spec.name}-keto-db`, namespace: namespaceName },
@@ -215,7 +237,7 @@ export const oryPlatformStack = kubernetesComposition(
     }
 
     if (manageSecrets) {
-      secret({
+      const hydraSystemSecret = secret({
         id: 'hydraSystemSecret',
         metadata: {
           name: `${spec.name}-hydra-secrets`,
@@ -225,7 +247,8 @@ export const oryPlatformStack = kubernetesComposition(
         type: 'Opaque',
         stringData: { system: 'hydra-local-system-secret-000000' },
       });
-      secret({
+      hydraSystemSecretName = hydraSystemSecret.metadata.name ?? hydraSystemSecretName;
+      const kratosSecrets = secret({
         id: 'kratosSecrets',
         metadata: {
           name: `${spec.name}-kratos-secrets`,
@@ -238,7 +261,8 @@ export const oryPlatformStack = kubernetesComposition(
           cipher: 'kratos-local-cipher-secret-00010',
         },
       });
-      secret({
+      kratosSecretsName = kratosSecrets.metadata.name ?? kratosSecretsName;
+      const oathkeeperSecrets = secret({
         id: 'oathkeeperSecrets',
         metadata: {
           name: `${spec.name}-oathkeeper-secrets`,
@@ -248,6 +272,7 @@ export const oryPlatformStack = kubernetesComposition(
         type: 'Opaque',
         stringData: { jwks: '{"keys":[]}' },
       });
+      oathkeeperSecretsName = oathkeeperSecrets.metadata.name ?? oathkeeperSecretsName;
     }
 
     if (manageSampleUpstream) {
@@ -259,20 +284,65 @@ export const oryPlatformStack = kubernetesComposition(
         replicas: 1,
         ports: [{ containerPort: 80 }],
       });
-      simple.Service({
+      const sampleUpstreamService = simple.Service({
         id: 'sampleUpstreamService',
         name: `${spec.name}-sample-upstream`,
         namespace: namespaceName,
         selector: { app: `${spec.name}-sample-upstream` },
         ports: [{ port: 80, targetPort: 80 }],
       });
+      sampleUpstreamName = sampleUpstreamService.metadata.name ?? sampleUpstreamName;
     }
+
+    const managedSources = managedDependencySources(
+      {
+        hydraDatabaseSecretName,
+        hydraSystemSecretName,
+        kratosDatabaseSecretName,
+        kratosSecretsName,
+        ketoDatabaseSecretName,
+        oathkeeperSecretsName,
+        hydraPublicRouteName: `${spec.name}-hydra-public-route`,
+        kratosPublicRouteName: `${spec.name}-kratos-public-route`,
+        oathkeeperProxyRouteName: `${spec.name}-oathkeeper-proxy-route`,
+        oathkeeperApiRouteName: `${spec.name}-oathkeeper-api-route`,
+        sampleUpstreamName,
+        courierSesName: `${spec.name}-courier-ses`,
+      },
+      spec.managed
+    );
+    const resolvedSources = mergeDependencySources(managedSources, spec.dependencySources);
 
     const ory = oryIdentityStack({
       ...spec,
       namespace: namespaceName,
       dependencySources: resolvedSources,
     } as Parameters<typeof oryIdentityStack>[0]);
+    const oryStatus = {
+      ready: ory.status.ready,
+      phase: Cel.expr<'Ready' | 'Installing'>(ory.status.ready, ' ? "Ready" : "Installing"'),
+      components: {
+        hydra: ory.status.components.hydra,
+        kratos: ory.status.components.kratos,
+        keto: ory.status.components.keto,
+        oathkeeper: ory.status.components.oathkeeper,
+      },
+      maester: {
+        hydra: ory.status.maester.hydra,
+        oathkeeper: ory.status.maester.oathkeeper,
+      },
+      endpoints: {
+        hydraPublic: `http://${spec.name}-hydra-public.${namespaceName}.svc.cluster.local`,
+        hydraAdmin: `http://${spec.name}-hydra-admin.${namespaceName}.svc.cluster.local`,
+        kratosPublic: `http://${spec.name}-kratos-public.${namespaceName}.svc.cluster.local`,
+        kratosAdmin: `http://${spec.name}-kratos-admin.${namespaceName}.svc.cluster.local`,
+        ketoRead: `http://${spec.name}-keto-read.${namespaceName}.svc.cluster.local`,
+        ketoWrite: `http://${spec.name}-keto-write.${namespaceName}.svc.cluster.local`,
+        oathkeeperProxy: `http://${spec.name}-oathkeeper-proxy.${namespaceName}.svc.cluster.local`,
+        oathkeeperApi: `http://${spec.name}-oathkeeper-api.${namespaceName}.svc.cluster.local`,
+      },
+      version: Cel.template('%s', spec.version ?? '0.62.0'),
+    };
 
     configMap({
       id: 'oryPlatformStackMetadata',
@@ -283,14 +353,14 @@ export const oryPlatformStack = kubernetesComposition(
       },
     });
 
-    if (manageRoutes) {
+    if (manageRoutes && concreteSpec) {
       oathkeeperRule({
         id: 'sampleUpstreamOathkeeperRule',
         name: `${spec.name}-sample-upstream`,
         namespace: namespaceName,
         spec: {
           match: { methods: ['GET'], url: 'http://identity.localhost/<.*>' },
-          upstream: { url: `http://${spec.name}-sample-upstream.${namespaceName}.svc.cluster.local` },
+          upstream: { url: `http://${sampleUpstreamName}.${namespaceName}.svc.cluster.local` },
           authenticators: [{ handler: 'anonymous' }],
           authorizer: { handler: 'allow' },
           mutators: [{ handler: 'noop' }],
@@ -349,8 +419,8 @@ export const oryPlatformStack = kubernetesComposition(
         upstream: mode(resolvedSources.oathkeeper?.upstream?.url),
         courier: mode(resolvedSources.courier),
       },
-      ory: ory.status,
-      endpoints: ory.status.endpoints,
+      ory: oryStatus,
+      endpoints: oryStatus.endpoints,
     };
   }
 );
