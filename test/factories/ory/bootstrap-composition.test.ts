@@ -17,6 +17,7 @@ describe('Ory identity stack composition', () => {
           database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } } },
           secrets: {
             cookie: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
+            cipher: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } } },
           },
         },
         keto: {
@@ -35,7 +36,10 @@ describe('Ory identity stack composition', () => {
       },
       kratos: {
         dsn: { secretRef: { name: 'ory-dsns', key: 'kratos' } },
-        secrets: { cookie: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
+        secrets: {
+          cookie: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+          cipher: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
+        },
       },
       keto: {
         dsn: { secretRef: { name: 'ory-dsns', key: 'keto' } },
@@ -84,6 +88,10 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('maester:');
     expect(yaml).toContain('hydra: ${hydraHelmRelease.status.conditions');
     expect(yaml).toContain('oathkeeper: ${oathkeeperHelmRelease.status.conditions');
+    expect(yaml).toContain('schema.spec.dependencySources');
+    expect(yaml).toContain('schema.spec.hydra.replicaCount');
+    expect(yaml).not.toContain('schema.spec.customValues');
+    expect(yaml).not.toContain('schema.spec.resources');
     expect(yaml).not.toContain('undefined');
   });
 

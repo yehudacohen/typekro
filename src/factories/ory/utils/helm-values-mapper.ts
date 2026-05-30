@@ -1,4 +1,5 @@
 import { TypeKroError } from '../../../core/errors.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   OryConfigValidationResult,
   OryDependencySource,
@@ -42,13 +43,50 @@ function compact<T extends object>(value: Record<string, unknown>): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function envName(value: unknown): string | undefined {
+  return isRecord(value) && typeof value.name === 'string' ? value.name : undefined;
+}
+
+function isSchemaMarkerKey(key: string): boolean {
+  return key.startsWith('__typekro');
+}
+
+function mergeExtraEnv(base: unknown[], override: unknown[]): unknown[] {
+  const protectedNames = new Set(base.flatMap((entry) => envName(entry) ?? []));
+  return [...base, ...override.filter((entry) => !protectedNames.has(envName(entry) ?? ''))];
+}
+
+function deepMergeValue(base: unknown, override: unknown, key?: string): unknown {
+  if (override === undefined) return base;
+  if (key === 'extraEnv' && Array.isArray(base) && Array.isArray(override)) {
+    return mergeExtraEnv(base, override);
+  }
+  if (isRecord(base) && isRecord(override)) {
+    return Object.fromEntries(
+      Array.from(new Set([...Object.keys(base), ...Object.keys(override)])).map((childKey) => [
+        childKey,
+        deepMergeValue(base[childKey], override[childKey], childKey),
+      ])
+    );
+  }
+  return override;
+}
+
 function mergeValues<T extends object>(
   base: T,
   typed?: T,
   serviceCustom?: Record<string, unknown>,
   stackCustom?: Record<string, unknown>
 ): T {
-  return { ...base, ...(typed ?? {}), ...(serviceCustom ?? {}), ...(stackCustom ?? {}) };
+  let merged: unknown = base;
+  for (const next of [typed, serviceCustom, stackCustom]) {
+    merged = deepMergeValue(merged, next ?? {});
+  }
+  return merged as T;
 }
 
 function sharedGlobal(config: OryIdentityStackConfig): Record<string, unknown> | undefined {
@@ -132,6 +170,15 @@ function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record
   return { 'identity.default.schema.json': defaultKratosIdentitySchema() };
 }
 
+function kratosIdentitySchemaRefs(config: OryIdentityStackConfig['kratos']): Array<{ id: string; url: string }> {
+  return Object.keys(kratosIdentitySchemas(config) ?? {}).map((filename) => ({
+    id: filename === 'identity.default.schema.json'
+      ? 'default'
+      : filename.replace(/\.schema\.json$/, '').replace(/\.json$/, ''),
+    url: `file:///etc/config/${filename}`,
+  }));
+}
+
 function kratosConfig(config: OryIdentityStackConfig['kratos']): Record<string, unknown> {
   const defaultReturnUrl = config?.browserBaseUrl ?? config?.publicBaseUrl;
   return compact<Record<string, unknown>>({
@@ -143,7 +190,7 @@ function kratosConfig(config: OryIdentityStackConfig['kratos']): Record<string, 
     }),
     selfservice: defaultReturnUrl ? { default_browser_return_url: defaultReturnUrl } : undefined,
     identity: {
-      schemas: [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }],
+      schemas: kratosIdentitySchemaRefs(config),
     },
   });
 }
@@ -158,15 +205,17 @@ function namedSecretEnvs(
   prefix: string,
   sources: Record<string, OryValueSource> | undefined
 ): Array<Record<string, unknown> | undefined> {
-  return Object.entries(sources ?? {}).map(([name, source]) =>
-    secretEnv(`${prefix}${name.replace(/[^a-z0-9]/gi, '_').toUpperCase()}`, source)
-  );
+  return Object.entries(sources ?? {}).flatMap(([name, source]) => {
+    if (isSchemaMarkerKey(name)) return [];
+    return [secretEnv(`${prefix}${name.replace(/[^a-z0-9]/gi, '_').toUpperCase()}`, source)];
+  });
 }
 
 function literalSecretValues(sources: Record<string, OryValueSource> | undefined): Record<string, unknown> | undefined {
-  const entries = Object.entries(sources ?? {}).flatMap(([name, source]) =>
-    'value' in source ? [[name, source.value] as const] : []
-  );
+  const entries = Object.entries(sources ?? {}).flatMap(([name, source]) => {
+    if (isSchemaMarkerKey(name)) return [];
+    return 'value' in source ? [[name, source.value] as const] : [];
+  });
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
@@ -188,7 +237,7 @@ function dependencyValueSource(
 function dependencyUrl(source: OryDependencySource | undefined, fallbackUrl?: string): string | undefined {
   if (!source) return fallbackUrl;
   if (source.mode === 'external') return source.url ?? fallbackUrl;
-  return fallbackUrl ?? (source.resourceName ? `http://${source.resourceName}` : undefined);
+  return source.url ?? fallbackUrl ?? (source.resourceName ? `http://${source.resourceName}` : undefined);
 }
 
 function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
@@ -314,6 +363,8 @@ function findUnsafeLiteral(value: unknown, allowedLiterals: Set<string>, path = 
 }
 
 function assertProductionSafe(config: OryIdentityStackConfig, values: OryMappedHelmValues): void {
+  if (isKubernetesRef(config.name)) return;
+
   const hydraManagedDatabase = config.dependencySources?.hydra?.database?.dsn.mode === 'managed';
   const kratosManagedDatabase = config.dependencySources?.kratos?.database?.dsn.mode === 'managed';
   if (!hydraManagedDatabase && values.hydra.hydra?.dev === true) {
@@ -338,6 +389,10 @@ function assertProductionSafe(config: OryIdentityStackConfig, values: OryMappedH
 export const validateOryConfig = (config: OryIdentityStackConfig): OryConfigValidationResult => {
   const resolvedConfig = resolveConfig(config);
   const issues: OryConfigValidationResult['issues'] = [];
+
+  if (isKubernetesRef(resolvedConfig.name)) {
+    return { valid: true, issues };
+  }
 
   if (!hasValueSource(resolvedConfig.hydra?.dsn)) {
     issues.push({ code: 'ORY_UNRESOLVED_DEPENDENCY_SOURCE', path: 'hydra.dsn', message: 'Hydra DSN source is required', component: 'hydra' });

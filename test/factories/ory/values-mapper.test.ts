@@ -126,6 +126,75 @@ describe('Ory Helm values mapper', () => {
     expect(values.oathkeeper.oathkeeper?.managedAccessRules).toBe(true);
   });
 
+  it('Resolve managed route dependency URLs from their runtime URL, not resource name', () => {
+    const values = mapOryConfigToHelmValues({
+      name: 'identity-local',
+      namespace: 'ory-local',
+      dependencySources: {
+        hydra: {
+          database: { dsn: { mode: 'managed', resourceName: 'identity-local-hydra-db' } },
+          systemSecret: {
+            mode: 'managed',
+            secretName: 'identity-local-hydra-secrets',
+            secretKey: 'system',
+          },
+          issuerUrl: {
+            url: {
+              mode: 'managed',
+              resourceName: 'identity-local-hydra-public-route',
+              url: 'http://hydra.localhost',
+            },
+          },
+          loginUrl: {
+            url: {
+              mode: 'managed',
+              resourceName: 'identity-local-kratos-public-route',
+              url: 'http://kratos.localhost',
+            },
+          },
+        },
+        kratos: {
+          database: { dsn: { mode: 'managed', resourceName: 'identity-local-kratos-db' } },
+          publicBaseUrl: {
+            url: {
+              mode: 'managed',
+              resourceName: 'identity-local-kratos-public-route',
+              url: 'http://kratos.localhost',
+            },
+          },
+          browserBaseUrl: {
+            url: {
+              mode: 'managed',
+              resourceName: 'identity-local-kratos-public-route',
+              url: 'http://kratos.localhost',
+            },
+          },
+          secrets: {
+            cookie: { mode: 'managed', secretName: 'identity-local-kratos-secrets', secretKey: 'cookie' },
+            cipher: { mode: 'managed', secretName: 'identity-local-kratos-secrets', secretKey: 'cipher' },
+          },
+        },
+        keto: { database: { dsn: { mode: 'managed', resourceName: 'identity-local-keto-db' } } },
+        oathkeeper: {
+          mutatorIdTokenJwks: {
+            mode: 'managed',
+            secretName: 'identity-local-oathkeeper-secrets',
+            secretKey: 'jwks',
+          },
+        },
+      },
+    });
+
+    expect(values.hydra.hydra?.config?.urls).toMatchObject({
+      self: { issuer: 'http://hydra.localhost' },
+      login: 'http://kratos.localhost',
+    });
+    expect(values.kratos.kratos?.config?.selfservice).toEqual({
+      default_browser_return_url: 'http://kratos.localhost',
+    });
+    expect(JSON.stringify(values)).not.toContain('identity-local-hydra-public-route');
+  });
+
   it('Map Ory chart config to upstream runtime shapes for URLs and local Kratos schema defaults', () => {
     const values = mapOryConfigToHelmValues(externalConfig);
 
@@ -145,6 +214,23 @@ describe('Ory Helm values mapper', () => {
     expect(values.kratos.kratos?.identitySchemas?.['identity.default.schema.json']).toContain(
       'Default Identity'
     );
+  });
+
+  it('Point Kratos identity config at custom schema filenames', () => {
+    const values = mapOryConfigToHelmValues({
+      ...externalConfig,
+      kratos: {
+        ...externalConfig.kratos,
+        identitySchemas: {
+          'customer.schema.json': JSON.stringify({ type: 'object' }),
+        },
+      },
+    });
+
+    expect(values.kratos.kratos?.identitySchemas?.['customer.schema.json']).toBeDefined();
+    expect(values.kratos.kratos?.config?.identity).toEqual({
+      schemas: [{ id: 'customer', url: 'file:///etc/config/customer.schema.json' }],
+    });
   });
 
   it('Reject unsafe chart value combinations outside explicit managed local dependencies', () => {
@@ -235,6 +321,31 @@ describe('Ory Helm values mapper', () => {
         },
       })
     ).toThrow(/ORY_UNSAFE_PRODUCTION_VALUE|dev/i);
+  });
+
+  it('Preserve required generated env when merging nested chart values', () => {
+    const values = mapOryConfigToHelmValues({
+      ...externalConfig,
+      hydra: {
+        ...externalConfig.hydra,
+        values: { deployment: { annotations: { owner: 'platform' }, extraEnv: [{ name: 'EXTRA', value: '1' }] } },
+      },
+      kratos: {
+        ...externalConfig.kratos,
+        values: { deployment: { annotations: { owner: 'identity' } } },
+      },
+    });
+
+    expect(values.hydra.deployment?.annotations).toEqual({ owner: 'platform' });
+    expect(values.hydra.deployment?.extraEnv).toContainEqual({
+      name: 'DSN',
+      valueFrom: { secretKeyRef: { name: 'ory-dsns', key: 'hydra' } },
+    });
+    expect(values.hydra.deployment?.extraEnv).toContainEqual({ name: 'EXTRA', value: '1' });
+    expect(values.kratos.deployment?.extraEnv).toContainEqual({
+      name: 'DSN',
+      valueFrom: { secretKeyRef: { name: 'ory-dsns', key: 'kratos' } },
+    });
   });
 
   it('Map explicit external DSN Secret references into chart environment values without leaking literals', () => {

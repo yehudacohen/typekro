@@ -147,6 +147,8 @@ export interface OryManagedDependencySource {
   mode: 'managed';
   /** Stable Kubernetes resource name override for the managed dependency. */
   resourceName?: string;
+  /** Runtime URL produced by the managed dependency, when it differs from the resource name. */
+  url?: string;
   /** Namespace override when the managed dependency must live outside the Ory namespace. */
   namespace?: string;
   /** Stable Secret name override when the dependency produces Secret data. */
@@ -924,6 +926,7 @@ const oryDependencySourceSchema = type({
 }).or({
   mode: '"managed"',
   'resourceName?': 'string',
+  'url?': 'string',
   'namespace?': 'string',
   'secretName?': 'string',
   'secretKey?': 'string',

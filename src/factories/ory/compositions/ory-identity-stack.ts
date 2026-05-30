@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -59,30 +60,24 @@ function omitCustomValuesForGraph(config: OryIdentityStackConfig): OryIdentitySt
   const {
     customValues: _hydraCustomValues,
     values: _hydraValues,
-    dsn: _hydraDsn,
-    systemSecret: _hydraSystemSecret,
     ...hydraRest
   } = hydra ?? {};
   const {
     customValues: _kratosCustomValues,
     values: _kratosValues,
-    dsn: _kratosDsn,
     identitySchemas: _kratosIdentitySchemas,
     publicBaseUrl: _kratosPublicBaseUrl,
     browserBaseUrl: _kratosBrowserBaseUrl,
-    secrets: _kratosSecrets,
     ...kratosRest
   } = kratos ?? {};
   const {
     customValues: _ketoCustomValues,
     values: _ketoValues,
-    dsn: _ketoDsn,
     ...ketoRest
   } = keto ?? {};
   const {
     customValues: _oathkeeperCustomValues,
     values: _oathkeeperValues,
-    mutatorIdTokenJwks: _oathkeeperMutatorIdTokenJwks,
     ...oathkeeperRest
   } = oathkeeper ?? {};
   const {
@@ -127,6 +122,14 @@ function defaultManagedDependencySources(name: string): OryIdentityStackConfig['
   };
 }
 
+function isSchemaSpec(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    (value as { __schemaProxyBasePath?: unknown }).__schemaProxyBasePath === 'spec'
+  );
+}
+
 /**
  * Production Ory identity stack composition.
  *
@@ -144,18 +147,23 @@ export const oryIdentityStack = kubernetesComposition(
     const typedSpec = spec as unknown as OryIdentityStackConfig;
     const resolvedNamespace = typedSpec.namespace ?? 'ory-system';
     const resolvedVersion = typedSpec.version ?? ORY_CHART_VERSION;
+    const concreteSpec =
+      !isSchemaSpec(typedSpec) &&
+      ![
+        typedSpec.name,
+        typedSpec.namespace,
+        typedSpec.version,
+        typedSpec.dependencySources,
+      ].some((value) => isKubernetesRef(value));
     const graphSpec = omitCustomValuesForGraph(typedSpec);
-    const graphFallbackSpec =
-      typeof typedSpec.name === 'string'
-        ? graphSpec
-        : { name: typedSpec.name, namespace: resolvedNamespace, version: resolvedVersion };
+    const graphFallbackSpec = graphSpec;
     let values = mapOryConfigToHelmValues({
       ...graphFallbackSpec,
       namespace: resolvedNamespace,
       version: resolvedVersion,
-      dependencySources: defaultManagedDependencySources(typedSpec.name),
+      dependencySources: graphFallbackSpec.dependencySources ?? defaultManagedDependencySources(typedSpec.name),
     } as OryIdentityStackConfig);
-    if (typeof typedSpec.name === 'string') {
+    if (concreteSpec) {
       values = mapOryConfigToHelmValues({
         ...typedSpec,
         namespace: resolvedNamespace,
@@ -163,7 +171,7 @@ export const oryIdentityStack = kubernetesComposition(
       });
     }
 
-    if (typeof typedSpec.name === 'string') {
+    if (concreteSpec) {
       namespace({
         id: 'oryNamespace',
         metadata: {

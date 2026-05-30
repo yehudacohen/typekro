@@ -139,12 +139,13 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('sampleUpstream');
     expect(yaml).toContain('oryIdentityStack');
     expect(yaml).toContain('dependencies:');
-    expect(yaml).toContain('${string(schema.spec.name)}-hydra-db-app');
-    expect(yaml).toContain('${string(schema.spec.name)}-kratos-db-app');
-    expect(yaml).toContain('${string(schema.spec.name)}-keto-db-app');
+    expect(yaml).toContain('hydra-db-app');
+    expect(yaml).toContain('kratos-db-app');
+    expect(yaml).toContain('keto-db-app');
     expect(yaml).toContain('key: uri');
     expect(yaml).toContain('id: default');
     expect(yaml).toContain('default_browser_return_url');
+    expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
   });
 
@@ -238,6 +239,9 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('identity-local-kratos-public-route');
     expect(yaml).toContain('identity-local-oathkeeper-proxy-route');
     expect(yaml).toContain('identity-local-oathkeeper-api-route');
+    expect(yaml).toContain('issuer: http://hydra.localhost');
+    expect(yaml).toContain('default_browser_return_url: http://kratos.localhost');
+    expect(yaml).not.toContain('issuer: http://identity-local-hydra-public-route');
   });
 
   it('Omit route resource names in graph mode because APISIX routes are not emitted in the RGD', () => {
