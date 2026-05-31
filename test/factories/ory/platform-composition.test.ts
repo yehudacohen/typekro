@@ -146,9 +146,18 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('hydra-db-app');
     expect(yaml).toContain('kratos-db-app');
     expect(yaml).toContain('keto-db-app');
-    expect(yaml).toContain('key: uri');
-    expect(yaml).toContain('id: default');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
+    expect(yaml).toContain('schema.spec.dependencySources.keto.database.dsn');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.name');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.key');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.secrets.cookie.value.secretRef.name');
+    expect(yaml).toContain('identitySchemas.keys().map');
     expect(yaml).toContain('default_browser_return_url');
+    expect(yaml).toContain('includeWhen');
+    expect(yaml).toContain('schema.spec.managed.databases');
+    expect(yaml).toContain('schema.spec.managed.secrets');
+    expect(yaml).toContain('schema.spec.managed.sampleUpstream');
     expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
   });
@@ -245,6 +254,10 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('identity-local-oathkeeper-api-route');
     expect(yaml).toContain('issuer: http://hydra.localhost');
     expect(yaml).toContain('default_browser_return_url: http://kratos.localhost');
+    expect(yaml).toMatch(/identity-local-hydra-public-route[\s\S]*servicePort: 4444/);
+    expect(yaml).toMatch(/identity-local-kratos-public-route[\s\S]*servicePort: 4433/);
+    expect(yaml).toMatch(/identity-local-oathkeeper-proxy-route[\s\S]*servicePort: 4455/);
+    expect(yaml).toMatch(/identity-local-oathkeeper-api-route[\s\S]*servicePort: 4456/);
     expect(yaml).not.toContain('issuer: http://identity-local-hydra-public-route');
   });
 

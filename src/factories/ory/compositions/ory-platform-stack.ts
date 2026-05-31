@@ -8,12 +8,14 @@ import { configMap } from '../../kubernetes/config/config-map.js';
 import { customResource } from '../../kubernetes/extensions/custom-resource.js';
 import { simple } from '../../simple/index.js';
 import {
+  type OryDependencySource,
   type OryDependencySourceConfig,
   type OryEndpointStatus,
   type OryIdentityStackEndpointStatus,
   type OryPlatformStackConfig,
   OryPlatformStackConfigSchema,
   OryPlatformStackStatusSchema,
+  type OryValueSource,
 } from '../types.js';
 import { oryIdentityStack } from './ory-identity-stack.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
@@ -149,18 +151,98 @@ function mergeDependencySources(
   managed: OryDependencySourceConfig,
   explicit: OryDependencySourceConfig | undefined
 ): OryDependencySourceConfig {
-  return {
-    ...managed,
-    ...explicit,
-    hydra: { ...managed.hydra, ...explicit?.hydra },
-    kratos: {
-      ...managed.kratos,
-      ...explicit?.kratos,
-      secrets: { ...managed.kratos?.secrets, ...explicit?.kratos?.secrets },
-    },
-    keto: { ...managed.keto, ...explicit?.keto },
-    oathkeeper: { ...managed.oathkeeper, ...explicit?.oathkeeper },
-  };
+  const hydra = explicit?.hydra;
+  const kratos = explicit?.kratos;
+  const keto = explicit?.keto;
+  const oathkeeper = explicit?.oathkeeper;
+
+  return defined({
+    hydra: defined({
+      database: defined({
+        dsn: mergeDependencySource(managed.hydra?.database?.dsn, hydra?.database?.dsn),
+        databaseName: hydra?.database?.databaseName ?? managed.hydra?.database?.databaseName,
+      }),
+      systemSecret: mergeDependencySource(managed.hydra?.systemSecret, hydra?.systemSecret),
+      issuerUrl: defined({
+        url: mergeDependencySource(managed.hydra?.issuerUrl?.url, hydra?.issuerUrl?.url),
+      }),
+      loginUrl: defined({
+        url: mergeDependencySource(managed.hydra?.loginUrl?.url, hydra?.loginUrl?.url),
+      }),
+      consentUrl: defined({
+        url: mergeDependencySource(managed.hydra?.consentUrl?.url, hydra?.consentUrl?.url),
+      }),
+      logoutUrl: defined({
+        url: mergeDependencySource(managed.hydra?.logoutUrl?.url, hydra?.logoutUrl?.url),
+      }),
+    }),
+    kratos: defined({
+      database: defined({
+        dsn: mergeDependencySource(managed.kratos?.database?.dsn, kratos?.database?.dsn),
+        databaseName: kratos?.database?.databaseName ?? managed.kratos?.database?.databaseName,
+      }),
+      publicBaseUrl: defined({
+        url: mergeDependencySource(managed.kratos?.publicBaseUrl?.url, kratos?.publicBaseUrl?.url),
+      }),
+      browserBaseUrl: defined({
+        url: mergeDependencySource(managed.kratos?.browserBaseUrl?.url, kratos?.browserBaseUrl?.url),
+      }),
+      secrets: defined({
+        cookie: mergeDependencySource(managed.kratos?.secrets?.cookie, kratos?.secrets?.cookie),
+        cipher: mergeDependencySource(managed.kratos?.secrets?.cipher, kratos?.secrets?.cipher),
+      }),
+      courier: mergeDependencySource(managed.kratos?.courier, kratos?.courier),
+      identitySchemas: mergeDependencySource(
+        managed.kratos?.identitySchemas,
+        kratos?.identitySchemas
+      ),
+    }),
+    keto: defined({
+      database: defined({
+        dsn: mergeDependencySource(managed.keto?.database?.dsn, keto?.database?.dsn),
+        databaseName: keto?.database?.databaseName ?? managed.keto?.database?.databaseName,
+      }),
+    }),
+    oathkeeper: defined({
+      proxyRoute: defined({
+        url: mergeDependencySource(managed.oathkeeper?.proxyRoute?.url, oathkeeper?.proxyRoute?.url),
+      }),
+      apiRoute: defined({
+        url: mergeDependencySource(managed.oathkeeper?.apiRoute?.url, oathkeeper?.apiRoute?.url),
+      }),
+      upstream: defined({
+        url: mergeDependencySource(managed.oathkeeper?.upstream?.url, oathkeeper?.upstream?.url),
+      }),
+      mutatorIdTokenJwks:
+        mergeDependencySource(managed.oathkeeper?.mutatorIdTokenJwks, oathkeeper?.mutatorIdTokenJwks),
+    }),
+    courier: mergeDependencySource(managed.courier, explicit?.courier),
+  });
+}
+
+function defined<T extends object>(value: { [K in keyof T]: T[K] | undefined }): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
+function mergeDependencySource(
+  defaults: OryDependencySource | undefined,
+  explicit: OryDependencySource | undefined
+): OryDependencySource | undefined {
+  if (!defaults) return explicit;
+  if (!explicit) return defaults;
+  const explicitValue = (explicit as { value?: OryValueSource }).value;
+  const defaultManaged = defaults.mode === 'managed' ? defaults : undefined;
+  const explicitManaged = explicit.mode === 'managed' ? explicit : undefined;
+
+  return defined({
+    mode: explicit.mode ?? defaults.mode,
+    value: explicitValue,
+    url: explicit.url ?? defaults.url,
+    resourceName: explicit.resourceName ?? defaults.resourceName,
+    namespace: explicitManaged?.namespace ?? defaultManaged?.namespace,
+    secretName: explicitManaged?.secretName ?? defaultManaged?.secretName,
+    secretKey: explicitManaged?.secretKey ?? defaultManaged?.secretKey,
+  }) as OryDependencySource;
 }
 
 function mode(value: { mode: 'external' | 'managed' } | undefined): 'external' | 'managed' {
@@ -229,15 +311,15 @@ export const oryPlatformStack = kubernetesComposition(
   },
   (spec: OryPlatformStackConfig) => {
     const namespaceName = spec.namespace ?? 'ory-system';
-    const manageDatabases = spec.managed?.databases !== false;
-    const manageSecrets = spec.managed?.secrets !== false;
-    const manageRoutes = spec.managed?.routes !== false;
-    const manageSampleUpstream = spec.managed?.sampleUpstream !== false;
     const concreteSpec =
       !isSchemaSpec(spec) &&
       ![spec.name, spec.namespace, spec.managed, spec.dependencySources].some((value) =>
         isKubernetesRef(value)
       );
+    const manageDatabases = spec.managed?.databases !== false;
+    const manageSecrets = spec.managed?.secrets !== false;
+    const manageRoutes = spec.managed?.routes !== false;
+    const manageSampleUpstream = spec.managed?.sampleUpstream !== false;
     const emitRouteResources = manageRoutes && concreteSpec;
     let hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
     let kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
@@ -247,7 +329,7 @@ export const oryPlatformStack = kubernetesComposition(
     let oathkeeperSecretsName = `${spec.name}-oathkeeper-secrets`;
     let sampleUpstreamName = `${spec.name}-sample-upstream`;
 
-    if (manageDatabases) {
+    if (spec.managed?.databases !== false) {
       cluster({
         id: 'hydraDatabase',
         name: `${spec.name}-hydra-db`,
@@ -301,7 +383,7 @@ export const oryPlatformStack = kubernetesComposition(
       });
     }
 
-    if (manageSecrets) {
+    if (spec.managed?.secrets !== false) {
       const hydraSystemSecret = secret({
         id: 'hydraSystemSecret',
         metadata: {
@@ -340,7 +422,7 @@ export const oryPlatformStack = kubernetesComposition(
       oathkeeperSecretsName = oathkeeperSecrets.metadata.name ?? oathkeeperSecretsName;
     }
 
-    if (manageSampleUpstream) {
+    if (spec.managed?.sampleUpstream !== false) {
       simple.Deployment({
         id: 'sampleUpstream',
         name: `${spec.name}-sample-upstream`,
@@ -380,9 +462,7 @@ export const oryPlatformStack = kubernetesComposition(
       },
       { ...spec.managed, routes: emitRouteResources }
     );
-    const resolvedSources = concreteSpec
-      ? mergeDependencySources(managedSources, spec.dependencySources)
-      : managedSources;
+    const resolvedSources = mergeDependencySources(managedSources, spec.dependencySources);
 
     const ory = oryIdentityStack({
       ...spec,
@@ -434,7 +514,7 @@ export const oryPlatformStack = kubernetesComposition(
         namespaceName,
         'hydra.localhost',
         ory.status.endpoints.hydraPublic.serviceName ?? `${spec.name}-hydra-public`,
-        80
+        4444
       );
       apisixRoute(
         'kratosPublicApisixRoute',
@@ -442,7 +522,7 @@ export const oryPlatformStack = kubernetesComposition(
         namespaceName,
         'kratos.localhost',
         ory.status.endpoints.kratosPublic.serviceName ?? `${spec.name}-kratos-public`,
-        80
+        4433
       );
       apisixRoute(
         'oathkeeperProxyApisixRoute',

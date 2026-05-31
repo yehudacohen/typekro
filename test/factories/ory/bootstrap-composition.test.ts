@@ -94,8 +94,16 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('oathkeeper: ${oathkeeperHelmRelease.status.conditions');
     expect(yaml).toContain('schema.spec.dependencySources');
     expect(yaml).toContain('schema.spec.hydra.replicaCount');
+    expect(yaml).toContain('schema.spec.kratos.publicBaseUrl');
+    expect(yaml).toContain('schema.spec.kratos.browserBaseUrl');
+    expect(yaml).toContain('schema.spec.kratos.identitySchemas');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.name');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.key');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.secrets.cookie.value.secretRef.name');
+    expect(yaml).toContain('identitySchemas.keys().map');
     expect(yaml).not.toContain('schema.spec.customValues');
     expect(yaml).not.toContain('schema.spec.resources');
+    expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
   });
 

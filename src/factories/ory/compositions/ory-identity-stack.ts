@@ -15,10 +15,12 @@ import {
 import { oauth2Client } from '../resources/oauth2-client.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
 import {
+  type OryDependencySource,
   type OryEndpointStatus,
   type OryIdentityStackConfig,
   OryIdentityStackConfigSchema,
   OryIdentityStackStatusSchema,
+  type OryValueSource,
 } from '../types.js';
 import { mapOryConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
@@ -92,20 +94,22 @@ function serviceEndpoint(
 }
 
 function omitCustomValuesForGraph(config: OryIdentityStackConfig): OryIdentityStackConfig {
-  const { customValues: _customValues, global: _global, hydra, kratos, keto, oathkeeper, maester, ...rest } = config;
+  const {
+    customValues: _customValues,
+    global: _global,
+    hydra,
+    kratos,
+    keto,
+    oathkeeper,
+    maester,
+    ...rest
+  } = config;
   const {
     customValues: _hydraCustomValues,
     values: _hydraValues,
     ...hydraRest
   } = hydra ?? {};
-  const {
-    customValues: _kratosCustomValues,
-    values: _kratosValues,
-    identitySchemas: _kratosIdentitySchemas,
-    publicBaseUrl: _kratosPublicBaseUrl,
-    browserBaseUrl: _kratosBrowserBaseUrl,
-    ...kratosRest
-  } = kratos ?? {};
+  const { customValues: _kratosCustomValues, values: _kratosValues, ...kratosRest } = kratos ?? {};
   const {
     customValues: _ketoCustomValues,
     values: _ketoValues,
@@ -158,6 +162,100 @@ function defaultManagedDependencySources(name: string): OryIdentityStackConfig['
   };
 }
 
+function defined<T extends object>(value: { [K in keyof T]: T[K] | undefined }): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
+function mergeDependencySource(
+  defaults: OryDependencySource | undefined,
+  explicit: OryDependencySource | undefined
+): OryDependencySource | undefined {
+  if (!defaults) return explicit;
+  if (!explicit) return defaults;
+  const explicitValue = (explicit as { value?: OryValueSource }).value;
+  const defaultManaged = defaults.mode === 'managed' ? defaults : undefined;
+  const explicitManaged = explicit.mode === 'managed' ? explicit : undefined;
+
+  return defined({
+    mode: explicit.mode ?? defaults.mode,
+    value: explicitValue,
+    url: explicit.url ?? defaults.url,
+    resourceName: explicit.resourceName ?? defaults.resourceName,
+    namespace: explicitManaged?.namespace ?? defaultManaged?.namespace,
+    secretName: explicitManaged?.secretName ?? defaultManaged?.secretName,
+    secretKey: explicitManaged?.secretKey ?? defaultManaged?.secretKey,
+  }) as OryDependencySource;
+}
+
+function mergeDependencySourceDefaults(
+  defaults: NonNullable<OryIdentityStackConfig['dependencySources']>,
+  explicit: OryIdentityStackConfig['dependencySources']
+): OryIdentityStackConfig['dependencySources'] {
+  const hydra = explicit?.hydra;
+  const kratos = explicit?.kratos;
+  const keto = explicit?.keto;
+  const oathkeeper = explicit?.oathkeeper;
+
+  return defined({
+    hydra: defined({
+      database: defined({
+        dsn: mergeDependencySource(defaults.hydra?.database?.dsn, hydra?.database?.dsn),
+        databaseName: hydra?.database?.databaseName ?? defaults.hydra?.database?.databaseName,
+      }),
+      systemSecret: mergeDependencySource(defaults.hydra?.systemSecret, hydra?.systemSecret),
+      issuerUrl: defined({
+        url: mergeDependencySource(defaults.hydra?.issuerUrl?.url, hydra?.issuerUrl?.url),
+      }),
+      loginUrl: defined({
+        url: mergeDependencySource(defaults.hydra?.loginUrl?.url, hydra?.loginUrl?.url),
+      }),
+      consentUrl: defined({
+        url: mergeDependencySource(defaults.hydra?.consentUrl?.url, hydra?.consentUrl?.url),
+      }),
+      logoutUrl: defined({
+        url: mergeDependencySource(defaults.hydra?.logoutUrl?.url, hydra?.logoutUrl?.url),
+      }),
+    }),
+    kratos: defined({
+      database: defined({
+        dsn: mergeDependencySource(defaults.kratos?.database?.dsn, kratos?.database?.dsn),
+        databaseName: kratos?.database?.databaseName ?? defaults.kratos?.database?.databaseName,
+      }),
+      publicBaseUrl: defined({
+        url: mergeDependencySource(defaults.kratos?.publicBaseUrl?.url, kratos?.publicBaseUrl?.url),
+      }),
+      browserBaseUrl: defined({
+        url: mergeDependencySource(defaults.kratos?.browserBaseUrl?.url, kratos?.browserBaseUrl?.url),
+      }),
+      secrets: defined({
+        cookie: mergeDependencySource(defaults.kratos?.secrets?.cookie, kratos?.secrets?.cookie),
+        cipher: mergeDependencySource(defaults.kratos?.secrets?.cipher, kratos?.secrets?.cipher),
+      }),
+      courier: mergeDependencySource(defaults.kratos?.courier, kratos?.courier),
+    }),
+    keto: defined({
+      database: defined({
+        dsn: mergeDependencySource(defaults.keto?.database?.dsn, keto?.database?.dsn),
+        databaseName: keto?.database?.databaseName ?? defaults.keto?.database?.databaseName,
+      }),
+    }),
+    oathkeeper: defined({
+      proxyRoute: defined({
+        url: mergeDependencySource(defaults.oathkeeper?.proxyRoute?.url, oathkeeper?.proxyRoute?.url),
+      }),
+      apiRoute: defined({
+        url: mergeDependencySource(defaults.oathkeeper?.apiRoute?.url, oathkeeper?.apiRoute?.url),
+      }),
+      upstream: defined({
+        url: mergeDependencySource(defaults.oathkeeper?.upstream?.url, oathkeeper?.upstream?.url),
+      }),
+      mutatorIdTokenJwks:
+        mergeDependencySource(defaults.oathkeeper?.mutatorIdTokenJwks, oathkeeper?.mutatorIdTokenJwks),
+    }),
+    courier: mergeDependencySource(defaults.courier, explicit?.courier),
+  });
+}
+
 function isSchemaSpec(value: unknown): boolean {
   return (
     !!value &&
@@ -193,11 +291,15 @@ export const oryIdentityStack = kubernetesComposition(
       ].some((value) => isKubernetesRef(value));
     const graphSpec = omitCustomValuesForGraph(typedSpec);
     const graphFallbackSpec = graphSpec;
+    const graphDependencySources = mergeDependencySourceDefaults(
+      defaultManagedDependencySources(typedSpec.name) ?? {},
+      graphFallbackSpec.dependencySources
+    );
     let values = mapOryConfigToHelmValues({
       ...graphFallbackSpec,
       namespace: resolvedNamespace,
       version: resolvedVersion,
-      dependencySources: graphFallbackSpec.dependencySources ?? defaultManagedDependencySources(typedSpec.name),
+      dependencySources: graphDependencySources,
     } as OryIdentityStackConfig);
     if (concreteSpec) {
       values = mapOryConfigToHelmValues({

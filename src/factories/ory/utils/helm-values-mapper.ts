@@ -1,4 +1,5 @@
 import { TypeKroError } from '../../../core/errors.js';
+import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   OryConfigValidationResult,
@@ -15,6 +16,7 @@ import type {
   OryMetricSignal,
   OryOathkeeperChartValues,
   OryOathkeeperMaesterChartValues,
+  OrySecretKeyRef,
   OryValueSource,
 } from '../types.js';
 
@@ -163,7 +165,25 @@ function defaultKratosIdentitySchema(): string {
   });
 }
 
+function dynamicKratosIdentitySchemas(): Record<string, string> {
+  return Cel.expr<Record<string, string>>(
+    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas : {"identity.default.schema.json": ',
+    JSON.stringify(defaultKratosIdentitySchema()),
+    '}'
+  ) as Record<string, string>;
+}
+
+function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
+  return Cel.expr<Array<{ id: string; url: string }>>(
+    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas.keys().map(filename, {"id": filename, "url": "file:///etc/config/" + filename}) : [{"id": "default", "url": "file:///etc/config/identity.default.schema.json"}]'
+  ) as Array<{ id: string; url: string }>;
+}
+
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
+  if (isKubernetesRef(config?.identitySchemas)) {
+    return dynamicKratosIdentitySchemas();
+  }
+
   if (config?.identitySchemas && Object.keys(config.identitySchemas).length > 0) {
     return config.identitySchemas;
   }
@@ -171,6 +191,10 @@ function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record
 }
 
 function kratosIdentitySchemaRefs(config: OryIdentityStackConfig['kratos']): Array<{ id: string; url: string }> {
+  if (isKubernetesRef(config?.identitySchemas)) {
+    return dynamicKratosIdentitySchemaRefs();
+  }
+
   return Object.keys(kratosIdentitySchemas(config) ?? {}).map((filename) => ({
     id: filename === 'identity.default.schema.json'
       ? 'default'
@@ -226,10 +250,11 @@ function dependencyValueSource(
 ): OryValueSource | undefined {
   if (!source) return undefined;
   if (source.mode === 'external') return source.value;
+  const externalSecretRef = (source as { value?: { secretRef?: OrySecretKeyRef } }).value?.secretRef;
   return {
     secretRef: {
-      name: source.secretName ?? source.resourceName ?? fallbackName,
-      key: source.secretKey ?? fallbackKey,
+      name: externalSecretRef?.name ?? source.secretName ?? source.resourceName ?? fallbackName,
+      key: externalSecretRef?.key ?? source.secretKey ?? fallbackKey,
     },
   };
 }
