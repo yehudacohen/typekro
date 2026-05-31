@@ -2,6 +2,10 @@ import { describe, expect, it } from 'bun:test';
 import { oryIdentityStack } from '../../../src/factories/ory/index.js';
 import { OryIdentityStackConfigSchema, OryIdentityStackStatusSchema } from '../../../src/factories/ory/types.js';
 
+function endpoint(url: string, host: string, port: number) {
+  return { url, scheme: 'http', host, port };
+}
+
 // Test decision: keep this file focused on Ory-only Helm wiring. Graph-managed
 // infrastructure coverage lives in `platform-composition.test.ts`.
 describe('Ory identity stack composition', () => {
@@ -60,14 +64,14 @@ describe('Ory identity stack composition', () => {
       components: { hydra: true, kratos: true, keto: true, oathkeeper: true },
       maester: { hydra: true, oathkeeper: true },
       endpoints: {
-        hydraPublic: 'http://hydra-public.ory-system.svc.cluster.local',
-        hydraAdmin: 'http://hydra-admin.ory-system.svc.cluster.local',
-        kratosPublic: 'http://kratos-public.ory-system.svc.cluster.local',
-        kratosAdmin: 'http://kratos-admin.ory-system.svc.cluster.local',
-        ketoRead: 'http://keto-read.ory-system.svc.cluster.local',
-        ketoWrite: 'http://keto-write.ory-system.svc.cluster.local',
-        oathkeeperProxy: 'http://oathkeeper-proxy.ory-system.svc.cluster.local',
-        oathkeeperApi: 'http://oathkeeper-api.ory-system.svc.cluster.local',
+        hydraPublic: endpoint('http://hydra-public.ory-system.svc.cluster.local:4444', 'hydra-public.ory-system.svc.cluster.local', 4444),
+        hydraAdmin: endpoint('http://hydra-admin.ory-system.svc.cluster.local:4445', 'hydra-admin.ory-system.svc.cluster.local', 4445),
+        kratosPublic: endpoint('http://kratos-public.ory-system.svc.cluster.local:4433', 'kratos-public.ory-system.svc.cluster.local', 4433),
+        kratosAdmin: endpoint('http://kratos-admin.ory-system.svc.cluster.local:4434', 'kratos-admin.ory-system.svc.cluster.local', 4434),
+        ketoRead: endpoint('http://keto-read.ory-system.svc.cluster.local:4466', 'keto-read.ory-system.svc.cluster.local', 4466),
+        ketoWrite: endpoint('http://keto-write.ory-system.svc.cluster.local:4467', 'keto-write.ory-system.svc.cluster.local', 4467),
+        oathkeeperProxy: endpoint('http://oathkeeper-proxy.ory-system.svc.cluster.local:4455', 'oathkeeper-proxy.ory-system.svc.cluster.local', 4455),
+        oathkeeperApi: endpoint('http://oathkeeper-api.ory-system.svc.cluster.local:4456', 'oathkeeper-api.ory-system.svc.cluster.local', 4456),
       },
       version: '0.62.0',
     });

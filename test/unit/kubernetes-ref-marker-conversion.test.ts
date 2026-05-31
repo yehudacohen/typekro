@@ -6,7 +6,10 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
+import {
+  finalizeCelForKro,
+  processResourceReferences,
+} from '../../src/core/serialization/cel-references.js';
 
 describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
   describe('Single Reference Conversion', () => {
@@ -26,6 +29,30 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
       const input = '__KUBERNETES_REF_deployment_status.readyReplicas__';
       const result = processResourceReferences(input);
       expect(result).toBe('${deployment.status.readyReplicas}');
+    });
+
+    it('should preserve array indexes as CEL bracket syntax', () => {
+      const input = '__KUBERNETES_REF_service_spec.ports[0].port__';
+      const result = processResourceReferences(input);
+      expect(result).toBe('${service.spec.ports[0].port}');
+    });
+
+    it('should normalize dot numeric path segments in finalized CEL', () => {
+      const result = finalizeCelForKro(
+        'http://${string(service.spec.ports.0.port)}:${"1.0"}',
+        undefined
+      );
+      expect(result).toBe('http://${string(service.spec.ports[0].port)}:${"1.0"}');
+    });
+
+    it('should normalize terminal dot numeric path segments without changing decimals', () => {
+      const result = finalizeCelForKro(
+        'service.spec.ports.0 == 1.0 ? service.spec.ports.1 : service.spec.ports.2',
+        undefined
+      );
+      expect(result).toBe(
+        '${service.spec.ports[0] == 1.0 ? service.spec.ports[1] : service.spec.ports[2]}'
+      );
     });
   });
 

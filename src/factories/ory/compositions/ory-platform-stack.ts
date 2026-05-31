@@ -9,6 +9,8 @@ import { customResource } from '../../kubernetes/extensions/custom-resource.js';
 import { simple } from '../../simple/index.js';
 import {
   type OryDependencySourceConfig,
+  type OryEndpointStatus,
+  type OryIdentityStackEndpointStatus,
   type OryPlatformStackConfig,
   OryPlatformStackConfigSchema,
   OryPlatformStackStatusSchema,
@@ -163,6 +165,51 @@ function mergeDependencySources(
 
 function mode(value: { mode: 'external' | 'managed' } | undefined): 'external' | 'managed' {
   return value?.mode ?? 'external';
+}
+
+function routeEndpoint(url: string, port = 80): OryEndpointStatus {
+  const parsed = new URL(url);
+  const parsedPort = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : port;
+  return {
+    url,
+    scheme: parsed.protocol.replace(':', ''),
+    host: parsed.hostname,
+    port: parsedPort,
+  };
+}
+
+function nestedEndpoint(endpoint: OryEndpointStatus): OryEndpointStatus {
+  return {
+    url: endpoint.url,
+    scheme: endpoint.scheme,
+    host: endpoint.host,
+    ...(endpoint.clusterIP ? { clusterIP: endpoint.clusterIP } : {}),
+    ...(endpoint.port ? { port: endpoint.port } : {}),
+  };
+}
+
+function platformEndpoints(
+  oryEndpoints: OryIdentityStackEndpointStatus,
+  emitRouteResources: boolean
+): OryIdentityStackEndpointStatus {
+  return {
+    hydraPublic: emitRouteResources
+      ? routeEndpoint('http://hydra.localhost')
+      : nestedEndpoint(oryEndpoints.hydraPublic),
+    hydraAdmin: nestedEndpoint(oryEndpoints.hydraAdmin),
+    kratosPublic: emitRouteResources
+      ? routeEndpoint('http://kratos.localhost')
+      : nestedEndpoint(oryEndpoints.kratosPublic),
+    kratosAdmin: nestedEndpoint(oryEndpoints.kratosAdmin),
+    ketoRead: nestedEndpoint(oryEndpoints.ketoRead),
+    ketoWrite: nestedEndpoint(oryEndpoints.ketoWrite),
+    oathkeeperProxy: emitRouteResources
+      ? routeEndpoint('http://identity.localhost', 4455)
+      : nestedEndpoint(oryEndpoints.oathkeeperProxy),
+    oathkeeperApi: emitRouteResources
+      ? routeEndpoint('http://oathkeeper-api.localhost', 4456)
+      : nestedEndpoint(oryEndpoints.oathkeeperApi),
+  };
 }
 
 function isSchemaSpec(value: unknown): boolean {
@@ -355,16 +402,7 @@ export const oryPlatformStack = kubernetesComposition(
         hydra: ory.status.maester.hydra,
         oathkeeper: ory.status.maester.oathkeeper,
       },
-      endpoints: {
-        hydraPublic: `http://${spec.name}-hydra-public.${namespaceName}.svc.cluster.local`,
-        hydraAdmin: `http://${spec.name}-hydra-admin.${namespaceName}.svc.cluster.local`,
-        kratosPublic: `http://${spec.name}-kratos-public.${namespaceName}.svc.cluster.local`,
-        kratosAdmin: `http://${spec.name}-kratos-admin.${namespaceName}.svc.cluster.local`,
-        ketoRead: `http://${spec.name}-keto-read.${namespaceName}.svc.cluster.local`,
-        ketoWrite: `http://${spec.name}-keto-write.${namespaceName}.svc.cluster.local`,
-        oathkeeperProxy: `http://${spec.name}-oathkeeper-proxy.${namespaceName}.svc.cluster.local`,
-        oathkeeperApi: `http://${spec.name}-oathkeeper-api.${namespaceName}.svc.cluster.local`,
-      },
+      endpoints: platformEndpoints(ory.status.endpoints, emitRouteResources),
       version: Cel.template('%s', spec.version ?? '0.62.0'),
     };
 
@@ -395,7 +433,7 @@ export const oryPlatformStack = kubernetesComposition(
         `${spec.name}-hydra-public-route`,
         namespaceName,
         'hydra.localhost',
-        `${spec.name}-hydra-public`,
+        ory.status.endpoints.hydraPublic.serviceName ?? `${spec.name}-hydra-public`,
         80
       );
       apisixRoute(
@@ -403,7 +441,7 @@ export const oryPlatformStack = kubernetesComposition(
         `${spec.name}-kratos-public-route`,
         namespaceName,
         'kratos.localhost',
-        `${spec.name}-kratos-public`,
+        ory.status.endpoints.kratosPublic.serviceName ?? `${spec.name}-kratos-public`,
         80
       );
       apisixRoute(
@@ -411,7 +449,7 @@ export const oryPlatformStack = kubernetesComposition(
         `${spec.name}-oathkeeper-proxy-route`,
         namespaceName,
         'identity.localhost',
-        `${spec.name}-oathkeeper-proxy`,
+        ory.status.endpoints.oathkeeperProxy.serviceName ?? `${spec.name}-oathkeeper-proxy`,
         4455
       );
       apisixRoute(
@@ -419,7 +457,7 @@ export const oryPlatformStack = kubernetesComposition(
         `${spec.name}-oathkeeper-api-route`,
         namespaceName,
         'oathkeeper-api.localhost',
-        `${spec.name}-oathkeeper-api`,
+        ory.status.endpoints.oathkeeperApi.serviceName ?? `${spec.name}-oathkeeper-api`,
         4456
       );
     }

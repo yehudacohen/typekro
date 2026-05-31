@@ -409,16 +409,34 @@ export interface OryIdentityStackMaesterStatus {
   oathkeeper: boolean;
 }
 
-/** Service endpoint names exposed by stack status. */
+/** Structured service endpoint exposed by Ory stack statuses. */
+export interface OryEndpointStatus {
+  /** URL clients should use for this endpoint. */
+  url: string;
+  /** URL scheme used by the endpoint. */
+  scheme: string;
+  /** DNS hostname or route host for the endpoint. */
+  host: string;
+  /** Cluster-assigned Service IP when this endpoint is backed by a Service. */
+  clusterIP?: string;
+  /** TCP port exposed by the endpoint when observed from the backing Service. */
+  port?: number;
+  /** Kubernetes Service name when this endpoint resolves to an in-cluster service. */
+  serviceName?: string;
+  /** Kubernetes namespace for the service endpoint when applicable. */
+  namespace?: string;
+}
+
+/** Service endpoints exposed by stack status. */
 export interface OryIdentityStackEndpointStatus {
-  hydraPublic: string;
-  hydraAdmin: string;
-  kratosPublic: string;
-  kratosAdmin: string;
-  ketoRead: string;
-  ketoWrite: string;
-  oathkeeperProxy: string;
-  oathkeeperApi: string;
+  hydraPublic: OryEndpointStatus;
+  hydraAdmin: OryEndpointStatus;
+  kratosPublic: OryEndpointStatus;
+  kratosAdmin: OryEndpointStatus;
+  ketoRead: OryEndpointStatus;
+  ketoWrite: OryEndpointStatus;
+  oathkeeperProxy: OryEndpointStatus;
+  oathkeeperApi: OryEndpointStatus;
 }
 
 /** Observed status returned by the `oryIdentityStack` composition. */
@@ -1432,6 +1450,27 @@ export const OryPlatformStackConfigSchema = OryIdentityStackConfigSchema.and({
 });
 
 /** ArkType schema for `OryIdentityStackStatus`. */
+const oryEndpointStatusSchema = type({
+  url: 'string',
+  scheme: 'string',
+  host: 'string',
+  'clusterIP?': 'string',
+  'port?': 'number',
+  'serviceName?': 'string',
+  'namespace?': 'string',
+});
+
+const oryEndpointSetStatusSchema = type({
+  hydraPublic: oryEndpointStatusSchema,
+  hydraAdmin: oryEndpointStatusSchema,
+  kratosPublic: oryEndpointStatusSchema,
+  kratosAdmin: oryEndpointStatusSchema,
+  ketoRead: oryEndpointStatusSchema,
+  ketoWrite: oryEndpointStatusSchema,
+  oathkeeperProxy: oryEndpointStatusSchema,
+  oathkeeperApi: oryEndpointStatusSchema,
+});
+
 export const OryIdentityStackStatusSchema = type({
   ready: 'boolean',
   phase: '"Ready" | "Installing"',
@@ -1445,16 +1484,7 @@ export const OryIdentityStackStatusSchema = type({
     hydra: 'boolean',
     oathkeeper: 'boolean',
   },
-  endpoints: {
-    hydraPublic: 'string',
-    hydraAdmin: 'string',
-    kratosPublic: 'string',
-    kratosAdmin: 'string',
-    ketoRead: 'string',
-    ketoWrite: 'string',
-    oathkeeperProxy: 'string',
-    oathkeeperApi: 'string',
-  },
+  endpoints: oryEndpointSetStatusSchema,
   'version?': 'string',
 });
 
@@ -1479,14 +1509,5 @@ export const OryPlatformStackStatusSchema = type({
     courier: '"external" | "managed"',
   },
   ory: OryIdentityStackStatusSchema,
-  endpoints: {
-    hydraPublic: 'string',
-    hydraAdmin: 'string',
-    kratosPublic: 'string',
-    kratosAdmin: 'string',
-    ketoRead: 'string',
-    ketoWrite: 'string',
-    oathkeeperProxy: 'string',
-    oathkeeperApi: 'string',
-  },
+  endpoints: oryEndpointSetStatusSchema,
 });

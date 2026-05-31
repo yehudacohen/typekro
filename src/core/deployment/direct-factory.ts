@@ -98,6 +98,7 @@ export class DirectResourceFactoryImpl<
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
+  private resolvedResourceKeysForHydration: Record<string, KubernetesResource> | undefined;
   private readonly logger = getComponentLogger('direct-factory');
   private readonly clientManager: KubernetesClientManager;
 
@@ -1036,6 +1037,7 @@ export class DirectResourceFactoryImpl<
   private resolveResourcesForSpec(spec: TSpec): Record<string, KubernetesResource> {
     // Reset the re-executed status
     this.reExecutedStatus = null;
+    this.resolvedResourceKeysForHydration = undefined;
 
     // Check if we have composition re-execution parameters
     if (this.factoryOptions.compositionFn && this.factoryOptions.compositionDefinition) {
@@ -1055,6 +1057,7 @@ export class DirectResourceFactoryImpl<
 
           // Store the re-executed status for later use
           this.reExecutedStatus = reExecutionResult.status;
+          this.resolvedResourceKeysForHydration = reExecutionResult.resourceKeysForHydration;
 
           return reExecutionResult.resources;
         }
@@ -1085,6 +1088,8 @@ export class DirectResourceFactoryImpl<
       }
     }
 
+    this.resolvedResourceKeysForHydration = resolvedResources;
+
     return resolvedResources;
   }
 
@@ -1094,7 +1099,11 @@ export class DirectResourceFactoryImpl<
    */
   private reExecuteCompositionWithActualValues(
     spec: TSpec
-  ): { resources: Record<string, KubernetesResource>; status: TStatus } | null {
+  ): {
+    resources: Record<string, KubernetesResource>;
+    resourceKeysForHydration: Record<string, KubernetesResource>;
+    status: TStatus;
+  } | null {
     if (!this.factoryOptions.compositionFn || !this.factoryOptions.compositionDefinition) {
       return null;
     }
@@ -1132,24 +1141,29 @@ export class DirectResourceFactoryImpl<
       // Filter out externalRef resources — they already exist in the cluster
       // and should NOT be deployed in direct mode.
       const kubernetesResources: Record<string, KubernetesResource> = {};
+      const resourceKeysForHydration: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
-        // Skip external references — they're not managed by us
-        if (Reflect.get(enhanced, '__externalRef') === true) {
-          this.logger.debug('Skipping externalRef resource in direct mode', { id });
-          continue;
-        }
-
-        // Extract the underlying Kubernetes resource from the Enhanced proxy
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
           enhanced as Enhanced<unknown, unknown>
         );
+
+        // Skip external references — they're not managed by us
+        if (Reflect.get(enhanced, '__externalRef') === true) {
+          this.logger.debug('Skipping externalRef resource in direct mode', { id });
+          Reflect.set(kubernetesResource, '__externalRef', true);
+          resourceKeysForHydration[id] = kubernetesResource;
+          continue;
+        }
+
         kubernetesResources[id] = kubernetesResource;
+        resourceKeysForHydration[id] = kubernetesResource;
       }
 
       // The status returned from re-execution should preserve CEL expressions
       // Only spec-based values should be resolved, resource-based CEL expressions should remain
       return {
         resources: kubernetesResources,
+        resourceKeysForHydration,
         status: status as TStatus,
       };
     } catch (error: unknown) {
@@ -1164,6 +1178,10 @@ export class DirectResourceFactoryImpl<
    */
   public getReExecutedStatus(): TStatus | null {
     return this.reExecutedStatus;
+  }
+
+  public getResourceKeysForHydration(): Record<string, KubernetesResource> | undefined {
+    return this.resolvedResourceKeysForHydration ?? this.resources;
   }
 
   private reExecuteSingletonStatus(

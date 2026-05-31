@@ -78,6 +78,7 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *
  * Dynamic (KRO resolves):
  *   - status.*             — only available after deployment
+ *   - spec.*               — may include controller/defaulted or externalRef fields
  *   - metadata.uid         — assigned by API server
  *   - metadata.creationTimestamp / resourceVersion / generation
  *
@@ -141,10 +142,11 @@ function requiresKroResolution(
       return true;
     }
 
-    // Direct resource refs — status.* and generated metadata.* are dynamic,
+    // Direct resource refs — status.*, spec.*, and generated metadata.* are dynamic,
     // composition-set metadata.* is static.
     const fieldPath = value.fieldPath;
     if (fieldPath.startsWith('status.')) return true;
+    if (fieldPath.startsWith('spec.')) return true;
     if (fieldPath.startsWith('metadata.')) {
       const staticMetadataFields = ['metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations'];
       return !staticMetadataFields.some((f) => fieldPath === f || fieldPath.startsWith(`${f}.`));
@@ -206,7 +208,26 @@ function separateNestedObject(
   const dynamicPart: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      !isKubernetesRef(value) &&
+      !isCelExpression(value)
+    ) {
+      const nested = separateNestedObject(
+        value as Record<string, unknown>,
+        nestedStatusCel,
+        resourceIds
+      );
+
+      if (nested.hasStatic) {
+        staticPart[key] = nested.staticPart;
+      }
+      if (nested.hasDynamic) {
+        dynamicPart[key] = nested.dynamicPart;
+      }
+    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;

@@ -50,6 +50,7 @@ export class DirectDeploymentStrategy<
         instanceNameOverride?: string
       ): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
+      getResourceKeysForHydration?(): Record<string, KubernetesResource> | undefined;
       reExecuteWithLiveStatus?(spec: TSpec, liveStatusMap: Map<string, Record<string, unknown>>): TStatus | null;
     } // Resource resolution logic
   ) {
@@ -143,6 +144,11 @@ export class DirectDeploymentStrategy<
     instanceName: string,
     deploymentResult: DeploymentResult
   ): Promise<Enhanced<TSpec, TStatus>> {
+    const hydrationResourceKeys = this.resourceResolver.getResourceKeysForHydration?.();
+    if (hydrationResourceKeys) {
+      this.resourceKeys = hydrationResourceKeys;
+    }
+
     // Get the base proxy first
     const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
 

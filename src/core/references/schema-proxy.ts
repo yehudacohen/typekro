@@ -37,6 +37,11 @@ interface MapShape {
 }
 type SchemaShape = ObjectShape | MapShape | undefined;
 
+function appendFieldPathSegment(fieldPath: string, prop: string | symbol): string {
+  const segment = String(prop);
+  return /^\d+$/.test(segment) ? `${fieldPath}[${segment}]` : `${fieldPath}.${segment}`;
+}
+
 function analyzeSchemaShape(schemaNode: unknown): SchemaShape {
   if (!schemaNode || typeof schemaNode !== 'object') return undefined;
   const node = schemaNode as {
@@ -174,7 +179,7 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       // schema with `required`/`optional` children.
       const childNode =
         shape?.kind === 'object' ? shape.children.get(String(prop)) : undefined;
-      return createSchemaRefFactory(`${fieldPath}.${String(prop)}`, childNode);
+      return createSchemaRefFactory(appendFieldPathSegment(fieldPath, prop), childNode);
     },
 
     // `ownKeys` determines what spread (`{ ...spec.X }`) and
@@ -327,7 +332,7 @@ function createSchemaMagicProxy<T extends object>(
       // nested access carries the right sub-schema all the way down.
       const childNode =
         shape?.kind === 'object' ? shape.children.get(prop) : undefined;
-      return createSchemaRefFactory(`${basePath}.${prop}`, childNode);
+      return createSchemaRefFactory(appendFieldPathSegment(basePath, prop), childNode);
     },
     ownKeys() {
       if (shape?.kind === 'object') {
@@ -493,7 +498,7 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
       }
 
       // For any other property, create a new nested reference
-      return createResourceRefFactory(resourceId, `${fieldPath}.${String(prop)}`);
+      return createResourceRefFactory(resourceId, appendFieldPathSegment(fieldPath, prop));
     },
   }) as unknown as T;
 }

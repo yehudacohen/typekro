@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { externalRef } from '../../../core/references/external-refs.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -14,11 +15,21 @@ import {
 import { oauth2Client } from '../resources/oauth2-client.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
 import {
+  type OryEndpointStatus,
   type OryIdentityStackConfig,
   OryIdentityStackConfigSchema,
   OryIdentityStackStatusSchema,
 } from '../types.js';
 import { mapOryConfigToHelmValues } from '../utils/helm-values-mapper.js';
+
+interface ObservedServiceSpec {
+  clusterIP?: string;
+  ports: [{ port: number }, ...Array<{ port: number }>];
+}
+
+interface ObservedServiceStatus {
+  loadBalancer?: { ingress?: Array<{ ip?: string; hostname?: string }> };
+}
 
 function readyCondition(conditions: unknown): boolean {
   return Cel.expr<boolean>(conditions, '.exists(c, c.type == "Ready" && c.status == "True")');
@@ -52,6 +63,31 @@ function oathkeeperProbeValues(): Record<string, unknown> {
       customStartupProbe: aliveProbe,
     },
     oathkeeper: { managedAccessRules: false },
+  };
+}
+
+function serviceEndpoint(
+  service: ReturnType<typeof externalRef<ObservedServiceSpec, ObservedServiceStatus>>,
+  namespaceName: string,
+  scheme = 'http'
+): OryEndpointStatus {
+  const serviceName = service.metadata.name;
+  const serviceNamespace = service.metadata.namespace ?? namespaceName;
+  const clusterIP = service.spec.clusterIP;
+  const port = service.spec.ports[0]?.port;
+  const hasConcreteServiceAddress =
+    !isKubernetesRef(serviceName) && !isKubernetesRef(serviceNamespace);
+  const host = hasConcreteServiceAddress
+    ? `${serviceName}.${serviceNamespace}.svc.cluster.local`
+    : clusterIP;
+  return {
+    url: `${scheme}://${clusterIP}:${port}`,
+    scheme,
+    host,
+    ...(port ? { port } : {}),
+    ...(clusterIP ? { clusterIP } : {}),
+    ...(hasConcreteServiceAddress && serviceName ? { serviceName } : {}),
+    ...(hasConcreteServiceAddress && serviceNamespace ? { namespace: serviceNamespace } : {}),
   };
 }
 
@@ -286,6 +322,54 @@ export const oryIdentityStack = kubernetesComposition(
     const kratosReleaseName = kratos.metadata.name ?? `${typedSpec.name}-kratos`;
     const ketoReleaseName = keto.metadata.name ?? `${typedSpec.name}-keto`;
     const oathkeeperReleaseName = oathkeeper.metadata.name ?? `${typedSpec.name}-oathkeeper`;
+    const hydraPublicService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'hydraPublicService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${hydraReleaseName}-public`, namespace: resolvedNamespace },
+    });
+    const hydraAdminService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'hydraAdminService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${hydraReleaseName}-admin`, namespace: resolvedNamespace },
+    });
+    const kratosPublicService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'kratosPublicService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${kratosReleaseName}-public`, namespace: resolvedNamespace },
+    });
+    const kratosAdminService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'kratosAdminService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${kratosReleaseName}-admin`, namespace: resolvedNamespace },
+    });
+    const ketoReadService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'ketoReadService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${ketoReleaseName}-read`, namespace: resolvedNamespace },
+    });
+    const ketoWriteService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'ketoWriteService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${ketoReleaseName}-write`, namespace: resolvedNamespace },
+    });
+    const oathkeeperProxyService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'oathkeeperProxyService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${oathkeeperReleaseName}-proxy`, namespace: resolvedNamespace },
+    });
+    const oathkeeperApiService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
+      id: 'oathkeeperApiService',
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: `${oathkeeperReleaseName}-api`, namespace: resolvedNamespace },
+    });
 
     return {
       ready: allServicesReady,
@@ -301,14 +385,14 @@ export const oryIdentityStack = kubernetesComposition(
         oathkeeper: oathkeeperReady,
       },
       endpoints: {
-        hydraPublic: `http://${hydraReleaseName}-public.${resolvedNamespace}.svc.cluster.local`,
-        hydraAdmin: `http://${hydraReleaseName}-admin.${resolvedNamespace}.svc.cluster.local`,
-        kratosPublic: `http://${kratosReleaseName}-public.${resolvedNamespace}.svc.cluster.local`,
-        kratosAdmin: `http://${kratosReleaseName}-admin.${resolvedNamespace}.svc.cluster.local`,
-        ketoRead: `http://${ketoReleaseName}-read.${resolvedNamespace}.svc.cluster.local`,
-        ketoWrite: `http://${ketoReleaseName}-write.${resolvedNamespace}.svc.cluster.local`,
-        oathkeeperProxy: `http://${oathkeeperReleaseName}-proxy.${resolvedNamespace}.svc.cluster.local`,
-        oathkeeperApi: `http://${oathkeeperReleaseName}-api.${resolvedNamespace}.svc.cluster.local`,
+        hydraPublic: serviceEndpoint(hydraPublicService, resolvedNamespace),
+        hydraAdmin: serviceEndpoint(hydraAdminService, resolvedNamespace),
+        kratosPublic: serviceEndpoint(kratosPublicService, resolvedNamespace),
+        kratosAdmin: serviceEndpoint(kratosAdminService, resolvedNamespace),
+        ketoRead: serviceEndpoint(ketoReadService, resolvedNamespace),
+        ketoWrite: serviceEndpoint(ketoWriteService, resolvedNamespace),
+        oathkeeperProxy: serviceEndpoint(oathkeeperProxyService, resolvedNamespace),
+        oathkeeperApi: serviceEndpoint(oathkeeperApiService, resolvedNamespace),
       },
       version: Cel.template('%s', resolvedVersion),
     };

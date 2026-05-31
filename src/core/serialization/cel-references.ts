@@ -24,6 +24,59 @@ function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export function normalizeCelArrayIndexPaths(expr: string): string {
+  let result = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < expr.length; i++) {
+    const char = expr[i];
+    if (!char) continue;
+
+    if (quote) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      result += char;
+      continue;
+    }
+
+    if (char === '.') {
+      const digitStart = i + 1;
+      let digitEnd = digitStart;
+      while (digitEnd < expr.length && /\d/.test(expr[digitEnd] ?? '')) {
+        digitEnd++;
+      }
+
+      const previous = expr[i - 1] ?? '';
+      const next = expr[digitEnd] ?? '';
+      if (
+        digitEnd > digitStart &&
+        /[A-Za-z_$\]]/.test(previous) &&
+        (next === '' || /[.\])}\s?:,+\-*/<>=!&|]/.test(next))
+      ) {
+        result += `[${expr.slice(digitStart, digitEnd)}]`;
+        i = digitEnd - 1;
+        continue;
+      }
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Primitive helpers
 // ---------------------------------------------------------------------------
@@ -39,7 +92,7 @@ function escapeRegExpLiteral(value: string): string {
  */
 export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
   const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
-  return `${resourceId}.${ref.fieldPath}`;
+  return normalizeCelArrayIndexPaths(`${resourceId}.${ref.fieldPath}`);
 }
 
 function resolveResourceIdAlias(resourceId: string, context?: SerializationContext): string {
@@ -155,7 +208,9 @@ function generateCelExpression(
     }
   }
 
-  const expression = `${resolveResourceIdAlias(ref.resourceId, context)}.${ref.fieldPath}`;
+  const expression = normalizeCelArrayIndexPaths(
+    `${resolveResourceIdAlias(ref.resourceId, context)}.${ref.fieldPath}`
+  );
   const body = maybeWrapWithOmit(expression, false, context?.omitFields);
   return `\${${body}}`;
 }
@@ -199,7 +254,7 @@ const MARKER_PATTERN_FULL = new RegExp(`^${MARKER_PATTERN_SOURCE}$`);
  * emits `<resourceId>.<fieldPath>`.
  */
 function markerToCelPath(resourceId: string, fieldPath: string, context?: SerializationContext): string {
-  return `${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`;
+  return normalizeCelArrayIndexPaths(`${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`);
 }
 
 /**
@@ -625,7 +680,7 @@ function innerExprToYamlSegment(
   }
   if (resolved.includes('${')) {
     // Already a KRO template (from Cel.template) — pass through.
-    return resolved;
+    return normalizeCelArrayIndexPaths(resolved);
   }
   // Bare literal reached via a template-literal coercion — wrap with
   // `string(...)` so KRO evaluates it to a string value. This matches
@@ -660,13 +715,15 @@ export function finalizeCelForKro(
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext
 ): string {
-  const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds);
+  const resolved = normalizeCelArrayIndexPaths(
+    resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds)
+  );
   if (resolved.includes('__KUBERNETES_REF_')) {
     return convertKubernetesRefMarkersTocel(resolved, context);
   }
   if (resolved.includes('${')) {
     // Already contains KRO template placeholders — pass through.
-    return resolved;
+    return normalizeCelArrayIndexPaths(resolved);
   }
   return `\${${resolved}}`;
 }
@@ -919,8 +976,10 @@ export function serializeStatusMappingsToCel(
    * KRO status CEL from a resolved expression" means.
    */
   function statusFieldFromExpression(expr: string): string {
-    const resolved = normalizeLocalResourceExpr(
-      resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+    const resolved = normalizeCelArrayIndexPaths(
+      normalizeLocalResourceExpr(
+        resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+      )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.

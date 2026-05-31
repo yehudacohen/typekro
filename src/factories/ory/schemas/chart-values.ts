@@ -290,10 +290,3 @@ export interface OryGlobalValues {
     };
   };
 }
-
-export type * from './hydra.js';
-export type * from './kratos.js';
-export type * from './keto.js';
-export type * from './oathkeeper.js';
-export type * from './hydra-maester.js';
-export type * from './oathkeeper-maester.js';
