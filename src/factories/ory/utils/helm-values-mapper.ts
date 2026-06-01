@@ -167,44 +167,34 @@ function defaultKratosIdentitySchema(): string {
 
 function dynamicKratosIdentitySchemas(): Record<string, string> {
   return Cel.expr<Record<string, string>>(
-    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas : {"identity.default.schema.json": ',
+    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) ? {"identity.default.schema.json": schema.spec.kratos.identitySchema} : {"identity.default.schema.json": ',
     JSON.stringify(defaultKratosIdentitySchema()),
     '}'
   ) as Record<string, string>;
 }
 
 function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
-  return Cel.expr<Array<{ id: string; url: string }>>(
-    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemaRefs) ? schema.spec.kratos.identitySchemaRefs : [{"id": "default", "url": "file:///etc/config/identity.default.schema.json"}]'
-  ) as Array<{ id: string; url: string }>;
+  return [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }];
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
-  if (isKubernetesRef(config?.identitySchemas)) {
+  if (isKubernetesRef(config?.identitySchema)) {
     return dynamicKratosIdentitySchemas();
   }
 
-  if (config?.identitySchemas && Object.keys(config.identitySchemas).length > 0) {
-    return config.identitySchemas;
+  if (config?.identitySchema) {
+    return { 'identity.default.schema.json': config.identitySchema };
   }
+
   return { 'identity.default.schema.json': defaultKratosIdentitySchema() };
 }
 
 function kratosIdentitySchemaRefs(config: OryIdentityStackConfig['kratos']): Array<{ id: string; url: string }> {
-  if (config?.identitySchemaRefs && config.identitySchemaRefs.length > 0) {
-    return config.identitySchemaRefs;
-  }
-
-  if (isKubernetesRef(config?.identitySchemas)) {
+  if (isKubernetesRef(config?.identitySchema)) {
     return dynamicKratosIdentitySchemaRefs();
   }
 
-  return Object.keys(kratosIdentitySchemas(config) ?? {}).map((filename) => ({
-    id: filename === 'identity.default.schema.json'
-      ? 'default'
-      : filename.replace(/\.schema\.json$/, '').replace(/\.json$/, ''),
-    url: `file:///etc/config/${filename}`,
-  }));
+  return dynamicKratosIdentitySchemaRefs();
 }
 
 function kratosConfig(config: OryIdentityStackConfig['kratos']): Record<string, unknown> {

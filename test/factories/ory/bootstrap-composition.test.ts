@@ -104,8 +104,7 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.browserBaseUrl.url');
-    expect(yaml).toContain('schema.spec.kratos.identitySchemas');
-    expect(yaml).toContain('schema.spec.kratos.identitySchemaRefs');
+    expect(yaml).toContain('schema.spec.kratos.identitySchema');
     expect(yaml).toContain('identity.default.schema.json');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn.resourceName');

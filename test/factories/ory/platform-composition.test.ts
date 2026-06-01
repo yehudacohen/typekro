@@ -153,8 +153,7 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url.url');
     expect(yaml).toContain('has(schema.spec.hydra) && has(schema.spec.hydra.issuerUrl)');
     expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
-    expect(yaml).toContain('schema.spec.kratos.identitySchemas');
-    expect(yaml).toContain('schema.spec.kratos.identitySchemaRefs');
+    expect(yaml).toContain('schema.spec.kratos.identitySchema');
     expect(yaml).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"');
     expect(yaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');

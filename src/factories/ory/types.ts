@@ -261,10 +261,8 @@ export interface OryKratosConfig extends OryServiceConfigBase<OryKratosChartValu
   publicBaseUrl?: string;
   /** Browser base URL for Kratos self-service flows. */
   browserBaseUrl?: string;
-  /** Named identity schema documents mounted through Kratos chart values. */
-  identitySchemas?: Record<string, string>;
-  /** Explicit identity schema refs consumed by Kratos config; required for custom KRO schema keys. */
-  identitySchemaRefs?: Array<{ id: string; url: string }>;
+  /** Default identity schema document mounted through Kratos chart values. */
+  identitySchema?: string;
   /** Courier config passthrough; upstream chart accepts provider-specific objects. */
   courier?: Record<string, unknown>;
   /** Explicit Kratos secret sources keyed by chart/config secret name. */
@@ -1391,8 +1389,7 @@ export const OryIdentityStackConfigSchema = type({
     'dsn?': oryValueSourceSchema,
     'publicBaseUrl?': 'string',
     'browserBaseUrl?': 'string',
-    'identitySchemas?': 'object',
-    'identitySchemaRefs?': type({ id: 'string', url: 'string' }).array(),
+    'identitySchema?': 'string',
     'courier?': 'object',
     'secrets?': oryValueSourceMapSchema,
     'replicaCount?': 'number',

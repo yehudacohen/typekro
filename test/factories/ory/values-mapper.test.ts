@@ -216,38 +216,19 @@ describe('Ory Helm values mapper', () => {
     );
   });
 
-  it('Point Kratos identity config at custom schema filenames', () => {
+  it('Mounts a custom Kratos default identity schema without duplicate refs', () => {
+    const schema = JSON.stringify({ title: 'Customer Identity', type: 'object' });
     const values = mapOryConfigToHelmValues({
       ...externalConfig,
       kratos: {
         ...externalConfig.kratos,
-        identitySchemas: {
-          'customer.schema.json': JSON.stringify({ type: 'object' }),
-        },
+        identitySchema: schema,
       },
     });
 
-    expect(values.kratos.kratos?.identitySchemas?.['customer.schema.json']).toBeDefined();
+    expect(values.kratos.kratos?.identitySchemas?.['identity.default.schema.json']).toBe(schema);
     expect(values.kratos.kratos?.config?.identity).toEqual({
-      schemas: [{ id: 'customer', url: 'file:///etc/config/customer.schema.json' }],
-    });
-  });
-
-  it('Uses explicit Kratos identity schema refs when provided', () => {
-    const values = mapOryConfigToHelmValues({
-      ...externalConfig,
-      kratos: {
-        ...externalConfig.kratos,
-        identitySchemas: {
-          'customer.schema.json': JSON.stringify({ type: 'object' }),
-        },
-        identitySchemaRefs: [{ id: 'customer', url: 'file:///etc/config/customer.schema.json' }],
-      },
-    });
-
-    expect(values.kratos.kratos?.identitySchemas?.['customer.schema.json']).toBeDefined();
-    expect(values.kratos.kratos?.config?.identity).toEqual({
-      schemas: [{ id: 'customer', url: 'file:///etc/config/customer.schema.json' }],
+      schemas: [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }],
     });
   });
 
