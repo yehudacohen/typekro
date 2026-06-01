@@ -320,6 +320,9 @@ export const oryPlatformStack = kubernetesComposition(
     const manageSecrets = spec.managed?.secrets !== false;
     const manageRoutes = spec.managed?.routes !== false;
     const manageSampleUpstream = spec.managed?.sampleUpstream !== false;
+    const manageDatabasesIncludeWhen = Cel.expr<boolean>(
+      '!has(schema.spec.managed) || !has(schema.spec.managed.databases) || schema.spec.managed.databases != false'
+    );
     const emitRouteResources = manageRoutes && concreteSpec;
     let hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
     let kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
@@ -339,7 +342,7 @@ export const oryPlatformStack = kubernetesComposition(
           storage: { size: '1Gi' },
           bootstrap: { initdb: { database: 'hydra', owner: 'hydra' } },
         },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
       hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
       secret({
         id: 'hydraDsnSecret',
@@ -356,7 +359,7 @@ export const oryPlatformStack = kubernetesComposition(
           storage: { size: '1Gi' },
           bootstrap: { initdb: { database: 'kratos', owner: 'kratos' } },
         },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
       kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
       secret({
         id: 'kratosDsnSecret',
@@ -373,7 +376,7 @@ export const oryPlatformStack = kubernetesComposition(
           storage: { size: '1Gi' },
           bootstrap: { initdb: { database: 'keto', owner: 'keto' } },
         },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
       ketoDatabaseSecretName = `${spec.name}-keto-db-app`;
       secret({
         id: 'ketoDsnSecret',

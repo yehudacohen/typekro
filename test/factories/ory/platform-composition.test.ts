@@ -149,6 +149,12 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
     expect(yaml).toContain('schema.spec.dependencySources.keto.database.dsn');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.issuerUrl.url');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.loginUrl.url');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.consentUrl.url');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.logoutUrl.url');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.browserBaseUrl.url');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.name');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.value.secretRef.key');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.secrets.cookie.value.secretRef.name');
@@ -158,6 +164,9 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('schema.spec.managed.databases');
     expect(yaml).toContain('schema.spec.managed.secrets');
     expect(yaml).toContain('schema.spec.managed.sampleUpstream');
+    expect(yaml).toMatch(/id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
+    expect(yaml).toMatch(/id: kratosDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
+    expect(yaml).toMatch(/id: ketoDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
     expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
   });

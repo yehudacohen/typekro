@@ -265,6 +265,15 @@ function dependencyUrl(source: OryDependencySource | undefined, fallbackUrl?: st
   return source.url ?? fallbackUrl ?? (source.resourceName ? `http://${source.resourceName}` : undefined);
 }
 
+function configUrl(
+  explicit: string | undefined,
+  source: OryDependencySource | undefined,
+  fallbackUrl?: string
+): string | undefined {
+  const resolvedSource = dependencyUrl(source, fallbackUrl);
+  return isKubernetesRef(explicit) ? resolvedSource ?? explicit : explicit ?? resolvedSource;
+}
+
 function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
   const name = config.name;
   const sources = config.dependencySources;
@@ -304,22 +313,24 @@ function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
       ...(config.hydra ?? {}),
       dsn: hydraDsn,
       systemSecret: hydraSystemSecret,
-      issuerUrl: config.hydra?.issuerUrl ?? dependencyUrl(sources?.hydra?.issuerUrl?.url),
-      loginUrl: config.hydra?.loginUrl ?? dependencyUrl(sources?.hydra?.loginUrl?.url),
-      consentUrl: config.hydra?.consentUrl ?? dependencyUrl(sources?.hydra?.consentUrl?.url),
-      logoutUrl: config.hydra?.logoutUrl ?? dependencyUrl(sources?.hydra?.logoutUrl?.url),
+      issuerUrl: configUrl(config.hydra?.issuerUrl, sources?.hydra?.issuerUrl?.url),
+      loginUrl: configUrl(config.hydra?.loginUrl, sources?.hydra?.loginUrl?.url),
+      consentUrl: configUrl(config.hydra?.consentUrl, sources?.hydra?.consentUrl?.url),
+      logoutUrl: configUrl(config.hydra?.logoutUrl, sources?.hydra?.logoutUrl?.url),
     }),
     kratos: compact({
       ...(config.kratos ?? {}),
       dsn: kratosDsn,
-      publicBaseUrl:
-        config.kratos?.publicBaseUrl ??
-        dependencyUrl(sources?.kratos?.publicBaseUrl?.url) ??
-        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
-      browserBaseUrl:
-        config.kratos?.browserBaseUrl ??
-        dependencyUrl(sources?.kratos?.browserBaseUrl?.url) ??
-        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
+      publicBaseUrl: configUrl(
+        config.kratos?.publicBaseUrl,
+        sources?.kratos?.publicBaseUrl?.url,
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
+      ),
+      browserBaseUrl: configUrl(
+        config.kratos?.browserBaseUrl,
+        sources?.kratos?.browserBaseUrl?.url,
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
+      ),
       secrets: Object.keys(kratosSecrets).length > 0 ? kratosSecrets : config.kratos?.secrets,
     }),
     keto: compact({
