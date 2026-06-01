@@ -39,6 +39,9 @@ const UPSTREAM_CRD_FILES = {
   oathkeeperRule: 'helm/charts/oathkeeper-maester/crds/crd-rules.yaml',
 } as const;
 
+const liveUpstreamDescribe =
+  process.env.TYPEKRO_LIVE_UPSTREAM_COVERAGE === 'true' ? describe : describe.skip;
+
 async function fetchPinnedYaml(path: string): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
@@ -153,104 +156,106 @@ function expectPath(object: FieldProbe, path: string): void {
 }
 
 describe('Ory upstream chart and CRD coverage', () => {
-  it('Verify the Hydra fixture includes every pinned upstream chart value field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.hydra);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+  liveUpstreamDescribe('live pinned upstream drift checks', () => {
+    it('Verify the Hydra fixture includes every pinned upstream chart value field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.hydra);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.hydra,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.hydra
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.hydra,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.hydra
+      );
+    });
 
-  it('Verify the Kratos fixture includes every pinned upstream chart value field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.kratos);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+    it('Verify the Kratos fixture includes every pinned upstream chart value field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.kratos);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.kratos,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.kratos
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.kratos,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.kratos
+      );
+    });
 
-  it('Verify the Keto fixture includes every pinned upstream chart value field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.keto);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+    it('Verify the Keto fixture includes every pinned upstream chart value field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.keto);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.keto,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.keto
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.keto,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.keto
+      );
+    });
 
-  it('Verify the Oathkeeper fixture includes every pinned upstream chart value field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.oathkeeper);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+    it('Verify the Oathkeeper fixture includes every pinned upstream chart value field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.oathkeeper);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.oathkeeper,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.oathkeeper
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.oathkeeper,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.oathkeeper
+      );
+    });
 
-  it('Verify the Hydra Maester fixture includes every pinned upstream chart field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.hydraMaester);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+    it('Verify the Hydra Maester fixture includes every pinned upstream chart field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.hydraMaester);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.hydraMaester,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.hydraMaester
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.hydraMaester,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.hydraMaester
+      );
+    });
 
-  it('Verify the Oathkeeper Maester fixture includes every pinned upstream chart field path', async () => {
-    const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.oathkeeperMaester);
-    const expectedPaths = collectYamlObjectPaths(upstream);
+    it('Verify the Oathkeeper Maester fixture includes every pinned upstream chart field path', async () => {
+      const upstream = await fetchPinnedYaml(UPSTREAM_VALUE_FILES.oathkeeperMaester);
+      const expectedPaths = collectYamlObjectPaths(upstream);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_UPSTREAM_FIELD_PATHS.oathkeeperMaester,
-      expectedPaths,
-      CHART_FREE_FORM_ROOTS.oathkeeperMaester
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_UPSTREAM_FIELD_PATHS.oathkeeperMaester,
+        expectedPaths,
+        CHART_FREE_FORM_ROOTS.oathkeeperMaester
+      );
+    });
 
-  it('Verify the OAuth2Client fixture includes every pinned upstream CRD spec/status path', async () => {
-    const crd = await fetchPinnedYaml(UPSTREAM_CRD_FILES.oauth2Client);
-    const schema = getCrdVersionSchema(crd);
-    const expectedSpecPaths = collectOpenApiPropertyPaths(schemaProperties(schema).spec);
-    const expectedStatusPaths = collectOpenApiPropertyPaths(schemaProperties(schema).status);
+    it('Verify the OAuth2Client fixture includes every pinned upstream CRD spec/status path', async () => {
+      const crd = await fetchPinnedYaml(UPSTREAM_CRD_FILES.oauth2Client);
+      const schema = getCrdVersionSchema(crd);
+      const expectedSpecPaths = collectOpenApiPropertyPaths(schemaProperties(schema).spec);
+      const expectedStatusPaths = collectOpenApiPropertyPaths(schemaProperties(schema).status);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_MAESTER_CRD_FIELD_PATHS.oauth2ClientSpec,
-      expectedSpecPaths,
-      CRD_FREE_FORM_ROOTS.oauth2ClientSpec
-    );
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_MAESTER_CRD_FIELD_PATHS.oauth2ClientStatus,
-      expectedStatusPaths
-    );
-  });
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_MAESTER_CRD_FIELD_PATHS.oauth2ClientSpec,
+        expectedSpecPaths,
+        CRD_FREE_FORM_ROOTS.oauth2ClientSpec
+      );
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_MAESTER_CRD_FIELD_PATHS.oauth2ClientStatus,
+        expectedStatusPaths
+      );
+    });
 
-  it('Verify the Oathkeeper Rule fixture includes every pinned upstream CRD spec/status path', async () => {
-    const crd = await fetchPinnedYaml(UPSTREAM_CRD_FILES.oathkeeperRule);
-    const schema = getCrdVersionSchema(crd);
-    const expectedSpecPaths = collectOpenApiPropertyPaths(schemaProperties(schema).spec);
-    const expectedStatusPaths = collectOpenApiPropertyPaths(schemaProperties(schema).status);
+    it('Verify the Oathkeeper Rule fixture includes every pinned upstream CRD spec/status path', async () => {
+      const crd = await fetchPinnedYaml(UPSTREAM_CRD_FILES.oathkeeperRule);
+      const schema = getCrdVersionSchema(crd);
+      const expectedSpecPaths = collectOpenApiPropertyPaths(schemaProperties(schema).spec);
+      const expectedStatusPaths = collectOpenApiPropertyPaths(schemaProperties(schema).status);
 
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_MAESTER_CRD_FIELD_PATHS.oathkeeperRuleSpec,
-      expectedSpecPaths,
-      CRD_FREE_FORM_ROOTS.oathkeeperRuleSpec
-    );
-    expectFixtureCoversAllUpstreamPaths(
-      ORY_MAESTER_CRD_FIELD_PATHS.oathkeeperRuleStatus,
-      expectedStatusPaths
-    );
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_MAESTER_CRD_FIELD_PATHS.oathkeeperRuleSpec,
+        expectedSpecPaths,
+        CRD_FREE_FORM_ROOTS.oathkeeperRuleSpec
+      );
+      expectFixtureCoversAllUpstreamPaths(
+        ORY_MAESTER_CRD_FIELD_PATHS.oathkeeperRuleStatus,
+        expectedStatusPaths
+      );
+    });
   });
 
   it('Model every pinned Hydra chart field path in a physical hydra schema module', () => {
