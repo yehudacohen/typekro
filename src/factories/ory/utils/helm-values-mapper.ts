@@ -265,13 +265,46 @@ function dependencyUrl(source: OryDependencySource | undefined, fallbackUrl?: st
   return source.url ?? fallbackUrl ?? (source.resourceName ? `http://${source.resourceName}` : undefined);
 }
 
+function hasPath(path: string): string {
+  const parts = path.split('.');
+  const guards: string[] = [];
+  for (let index = 2; index < parts.length; index++) {
+    guards.push(`has(${parts.slice(0, index + 1).join('.')})`);
+  }
+  return guards.join(' && ');
+}
+
+function graphUrl(
+  sourcePath: string,
+  explicitPath: string,
+  fallbackExpression = 'omit()'
+): string {
+  const sourceUrlPath = `${sourcePath}.url`;
+  const sourceNamePath = `${sourcePath}.resourceName`;
+  return Cel.expr<string>(
+    `${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : ${hasPath(explicitPath)} ? ${explicitPath} : ${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${fallbackExpression}`
+  ) as string;
+}
+
 function configUrl(
   explicit: string | undefined,
   source: OryDependencySource | undefined,
-  fallbackUrl?: string
+  fallbackUrl?: string,
+  graph?: {
+    sourcePath: string;
+    explicitPath: string;
+    fallbackExpression?: string;
+  }
 ): string | undefined {
+  if (graph && (isKubernetesRef(source?.url) || isKubernetesRef(source?.resourceName) || isKubernetesRef(explicit))) {
+    return graphUrl(graph.sourcePath, graph.explicitPath, graph.fallbackExpression);
+  }
   const resolvedSource = dependencyUrl(source, fallbackUrl);
   return isKubernetesRef(explicit) ? resolvedSource ?? explicit : explicit ?? resolvedSource;
+}
+
+function kratosPublicServiceFallbackExpression(): string {
+  return '"http://" + string(schema.spec.name) + "-kratos-public." + string(has(schema.spec.namespace) ? schema.spec.namespace : "ory-system") + ".svc.cluster.local"';
 }
 
 function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
@@ -313,10 +346,22 @@ function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
       ...(config.hydra ?? {}),
       dsn: hydraDsn,
       systemSecret: hydraSystemSecret,
-      issuerUrl: configUrl(config.hydra?.issuerUrl, sources?.hydra?.issuerUrl?.url),
-      loginUrl: configUrl(config.hydra?.loginUrl, sources?.hydra?.loginUrl?.url),
-      consentUrl: configUrl(config.hydra?.consentUrl, sources?.hydra?.consentUrl?.url),
-      logoutUrl: configUrl(config.hydra?.logoutUrl, sources?.hydra?.logoutUrl?.url),
+      issuerUrl: configUrl(config.hydra?.issuerUrl, sources?.hydra?.issuerUrl?.url, undefined, {
+        sourcePath: 'schema.spec.dependencySources.hydra.issuerUrl.url',
+        explicitPath: 'schema.spec.hydra.issuerUrl',
+      }),
+      loginUrl: configUrl(config.hydra?.loginUrl, sources?.hydra?.loginUrl?.url, undefined, {
+        sourcePath: 'schema.spec.dependencySources.hydra.loginUrl.url',
+        explicitPath: 'schema.spec.hydra.loginUrl',
+      }),
+      consentUrl: configUrl(config.hydra?.consentUrl, sources?.hydra?.consentUrl?.url, undefined, {
+        sourcePath: 'schema.spec.dependencySources.hydra.consentUrl.url',
+        explicitPath: 'schema.spec.hydra.consentUrl',
+      }),
+      logoutUrl: configUrl(config.hydra?.logoutUrl, sources?.hydra?.logoutUrl?.url, undefined, {
+        sourcePath: 'schema.spec.dependencySources.hydra.logoutUrl.url',
+        explicitPath: 'schema.spec.hydra.logoutUrl',
+      }),
     }),
     kratos: compact({
       ...(config.kratos ?? {}),
@@ -324,12 +369,22 @@ function resolveConfig(config: OryIdentityStackConfig): OryIdentityStackConfig {
       publicBaseUrl: configUrl(
         config.kratos?.publicBaseUrl,
         sources?.kratos?.publicBaseUrl?.url,
-        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
+        {
+          sourcePath: 'schema.spec.dependencySources.kratos.publicBaseUrl.url',
+          explicitPath: 'schema.spec.kratos.publicBaseUrl',
+          fallbackExpression: kratosPublicServiceFallbackExpression(),
+        }
       ),
       browserBaseUrl: configUrl(
         config.kratos?.browserBaseUrl,
         sources?.kratos?.browserBaseUrl?.url,
-        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`
+        `http://${name}-kratos-public.${config.namespace ?? 'ory-system'}.svc.cluster.local`,
+        {
+          sourcePath: 'schema.spec.dependencySources.kratos.browserBaseUrl.url',
+          explicitPath: 'schema.spec.kratos.browserBaseUrl',
+          fallbackExpression: kratosPublicServiceFallbackExpression(),
+        }
       ),
       secrets: Object.keys(kratosSecrets).length > 0 ? kratosSecrets : config.kratos?.secrets,
     }),
