@@ -202,10 +202,6 @@ function mergeDependencySources(
         cipher: mergeDependencySource(managed.kratos?.secrets?.cipher, kratos?.secrets?.cipher),
       }),
       courier: mergeDependencySource(managed.kratos?.courier, kratos?.courier),
-      identitySchemas: mergeDependencySource(
-        managed.kratos?.identitySchemas,
-        kratos?.identitySchemas
-      ),
     }),
     keto: defined({
       database: defined({

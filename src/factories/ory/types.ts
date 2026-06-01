@@ -185,12 +185,11 @@ export interface OryDependencySourceConfig {
     consentUrl?: OryUrlDependencySource;
     logoutUrl?: OryUrlDependencySource;
   };
-  /** Kratos database, secrets, browser URLs, identity schema, and courier sources. */
+  /** Kratos database, secrets, browser URLs, and courier sources. */
   kratos?: {
     database?: OryDatabaseDependencySource;
     publicBaseUrl?: OryUrlDependencySource;
     browserBaseUrl?: OryUrlDependencySource;
-    identitySchemas?: OryDependencySource;
     secrets?: Record<string, OryDependencySource>;
     courier?: OryDependencySource;
   };
@@ -972,7 +971,6 @@ const oryDependencySourceConfigSchema = type({
     'database?': oryDatabaseDependencySourceSchema,
     'publicBaseUrl?': oryUrlDependencySourceSchema,
     'browserBaseUrl?': oryUrlDependencySourceSchema,
-    'identitySchemas?': oryDependencySourceSchema,
     'secrets?': oryDependencySourceMapSchema,
     'courier?': oryDependencySourceSchema,
   },
