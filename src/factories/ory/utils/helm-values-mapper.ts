@@ -165,23 +165,13 @@ function defaultKratosIdentitySchema(): string {
   });
 }
 
-function dynamicKratosIdentitySchemas(): Record<string, string> {
-  return Cel.expr<Record<string, string>>(
-    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas : {"identity.default.schema.json": ',
-    JSON.stringify(defaultKratosIdentitySchema()),
-    '}'
-  ) as Record<string, string>;
-}
-
 function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
-  return Cel.expr<Array<{ id: string; url: string }>>(
-    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas.keys().map(filename, {"id": filename, "url": "file:///etc/config/" + filename}) : [{"id": "default", "url": "file:///etc/config/identity.default.schema.json"}]'
-  ) as Array<{ id: string; url: string }>;
+  return [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }];
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
   if (isKubernetesRef(config?.identitySchemas)) {
-    return dynamicKratosIdentitySchemas();
+    return { 'identity.default.schema.json': defaultKratosIdentitySchema() };
   }
 
   if (config?.identitySchemas && Object.keys(config.identitySchemas).length > 0) {
@@ -250,6 +240,14 @@ function dependencyValueSource(
 ): OryValueSource | undefined {
   if (!source) return undefined;
   if (source.mode === 'external') return source.value;
+  if (source.secretName || source.resourceName || source.secretKey) {
+    return {
+      secretRef: {
+        name: source.secretName ?? source.resourceName ?? fallbackName,
+        key: source.secretKey ?? fallbackKey,
+      },
+    };
+  }
   const externalSecretRef = (source as { value?: { secretRef?: OrySecretKeyRef } }).value?.secretRef;
   return {
     secretRef: {
@@ -282,7 +280,7 @@ function graphUrl(
   const sourceUrlPath = `${sourcePath}.url`;
   const sourceNamePath = `${sourcePath}.resourceName`;
   return Cel.expr<string>(
-    `${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : ${hasPath(explicitPath)} ? ${explicitPath} : ${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${fallbackExpression}`
+    `(${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : (${hasPath(explicitPath)} ? ${explicitPath} : (${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${fallbackExpression})))`
   ) as string;
 }
 
