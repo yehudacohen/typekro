@@ -174,7 +174,9 @@ function dynamicKratosIdentitySchemas(): Record<string, string> {
 }
 
 function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
-  return [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }];
+  return Cel.expr<Array<{ id: string; url: string }>>(
+    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemaRefs) ? schema.spec.kratos.identitySchemaRefs : [{"id": "default", "url": "file:///etc/config/identity.default.schema.json"}]'
+  ) as Array<{ id: string; url: string }>;
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
@@ -189,6 +191,10 @@ function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record
 }
 
 function kratosIdentitySchemaRefs(config: OryIdentityStackConfig['kratos']): Array<{ id: string; url: string }> {
+  if (config?.identitySchemaRefs && config.identitySchemaRefs.length > 0) {
+    return config.identitySchemaRefs;
+  }
+
   if (isKubernetesRef(config?.identitySchemas)) {
     return dynamicKratosIdentitySchemaRefs();
   }

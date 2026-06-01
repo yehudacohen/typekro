@@ -149,9 +149,12 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
     expect(yaml).toContain('schema.spec.dependencySources.keto.database.dsn');
+    expect(yaml).toContain('schema.spec.dependencySources.hydra.issuerUrl.url.url');
+    expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url.url');
     expect(yaml).toContain('has(schema.spec.hydra) && has(schema.spec.hydra.issuerUrl)');
     expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
     expect(yaml).toContain('schema.spec.kratos.identitySchemas');
+    expect(yaml).toContain('schema.spec.kratos.identitySchemaRefs');
     expect(yaml).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"');
     expect(yaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
@@ -164,6 +167,9 @@ describe('Ory platform stack composition', () => {
     expect(yaml).toContain('schema.spec.managed.databases');
     expect(yaml).not.toContain('${schema.spec.managed.databases != false ?');
     expect(yaml).toMatch(/id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
+    expect(yaml).toMatch(/id: hydraDsnSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
+    expect(yaml).toMatch(/id: hydraSystemSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.secrets/);
+    expect(yaml).toMatch(/id: sampleUpstream[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.sampleUpstream/);
     expect(yaml).toMatch(/id: kratosDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
     expect(yaml).toMatch(/id: ketoDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
     expect(yaml).not.toContain('__typekroSchemaKey');

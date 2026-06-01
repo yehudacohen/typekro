@@ -270,13 +270,21 @@ function routeEndpoint(url: string, port = 80): OryEndpointStatus {
   };
 }
 
-function optionalSpecString(path: string, fallback: string): string {
+function hasPath(path: string): string {
   const parts = path.split('.');
   const guards: string[] = [];
   for (let index = 2; index < parts.length; index++) {
     guards.push(`has(${parts.slice(0, index + 1).join('.')})`);
   }
-  return Cel.expr<string>(`${guards.join(' && ')} ? ${path} : ${JSON.stringify(fallback)}`) as string;
+  return guards.join(' && ');
+}
+
+function platformGraphUrl(sourcePath: string, explicitPath: string, fallback: string): string {
+  const sourceUrlPath = `${sourcePath}.url`;
+  const sourceNamePath = `${sourcePath}.resourceName`;
+  return Cel.expr<string>(
+    `(${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : (${hasPath(explicitPath)} ? ${explicitPath} : (${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${JSON.stringify(fallback)})))`
+  ) as string;
 }
 
 function nestedEndpoint(endpoint: OryEndpointStatus): OryEndpointStatus {
@@ -369,17 +377,41 @@ export const oryPlatformStack = kubernetesComposition(
       ? spec.hydra
       : {
           ...(spec.hydra ?? {}),
-          issuerUrl: optionalSpecString('schema.spec.hydra.issuerUrl', 'http://hydra.localhost'),
-          loginUrl: optionalSpecString('schema.spec.hydra.loginUrl', 'http://kratos.localhost'),
-          consentUrl: optionalSpecString('schema.spec.hydra.consentUrl', 'http://kratos.localhost'),
-          logoutUrl: optionalSpecString('schema.spec.hydra.logoutUrl', 'http://kratos.localhost'),
+          issuerUrl: platformGraphUrl(
+            'schema.spec.dependencySources.hydra.issuerUrl.url',
+            'schema.spec.hydra.issuerUrl',
+            'http://hydra.localhost'
+          ),
+          loginUrl: platformGraphUrl(
+            'schema.spec.dependencySources.hydra.loginUrl.url',
+            'schema.spec.hydra.loginUrl',
+            'http://kratos.localhost'
+          ),
+          consentUrl: platformGraphUrl(
+            'schema.spec.dependencySources.hydra.consentUrl.url',
+            'schema.spec.hydra.consentUrl',
+            'http://kratos.localhost'
+          ),
+          logoutUrl: platformGraphUrl(
+            'schema.spec.dependencySources.hydra.logoutUrl.url',
+            'schema.spec.hydra.logoutUrl',
+            'http://kratos.localhost'
+          ),
         };
     const kratosConfig = concreteSpec
       ? spec.kratos
       : {
           ...(spec.kratos ?? {}),
-          publicBaseUrl: optionalSpecString('schema.spec.kratos.publicBaseUrl', 'http://kratos.localhost'),
-          browserBaseUrl: optionalSpecString('schema.spec.kratos.browserBaseUrl', 'http://kratos.localhost'),
+          publicBaseUrl: platformGraphUrl(
+            'schema.spec.dependencySources.kratos.publicBaseUrl.url',
+            'schema.spec.kratos.publicBaseUrl',
+            'http://kratos.localhost'
+          ),
+          browserBaseUrl: platformGraphUrl(
+            'schema.spec.dependencySources.kratos.browserBaseUrl.url',
+            'schema.spec.kratos.browserBaseUrl',
+            'http://kratos.localhost'
+          ),
         };
 
     if (createManagedDatabases) {
@@ -399,7 +431,7 @@ export const oryPlatformStack = kubernetesComposition(
         metadata: { name: `${spec.name}-hydra-db`, namespace: namespaceName },
         type: 'Opaque',
         stringData: { dsn: `postgres://hydra@${spec.name}-hydra-db-rw.${namespaceName}.svc.cluster.local:5432/hydra` },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
       cluster({
         id: 'kratosDatabase',
         name: `${spec.name}-kratos-db`,
@@ -416,7 +448,7 @@ export const oryPlatformStack = kubernetesComposition(
         metadata: { name: `${spec.name}-kratos-db`, namespace: namespaceName },
         type: 'Opaque',
         stringData: { dsn: `postgres://kratos@${spec.name}-kratos-db-rw.${namespaceName}.svc.cluster.local:5432/kratos` },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
       cluster({
         id: 'ketoDatabase',
         name: `${spec.name}-keto-db`,
@@ -433,7 +465,7 @@ export const oryPlatformStack = kubernetesComposition(
         metadata: { name: `${spec.name}-keto-db`, namespace: namespaceName },
         type: 'Opaque',
         stringData: { dsn: `postgres://keto@${spec.name}-keto-db-rw.${namespaceName}.svc.cluster.local:5432/keto` },
-      });
+      }).withIncludeWhen(manageDatabasesIncludeWhen);
     }
 
     if (createManagedSecrets) {
@@ -446,7 +478,7 @@ export const oryPlatformStack = kubernetesComposition(
         },
         type: 'Opaque',
         stringData: { system: 'hydra-local-system-secret-000000' },
-      });
+      }).withIncludeWhen(manageSecrets);
       hydraSystemSecretName = hydraSystemSecret.metadata.name ?? hydraSystemSecretName;
       const kratosSecrets = secret({
         id: 'kratosSecrets',
@@ -460,7 +492,7 @@ export const oryPlatformStack = kubernetesComposition(
           cookie: 'kratos-local-cookie-secret-00000',
           cipher: 'kratos-local-cipher-secret-00010',
         },
-      });
+      }).withIncludeWhen(manageSecrets);
       kratosSecretsName = kratosSecrets.metadata.name ?? kratosSecretsName;
       const oathkeeperSecrets = secret({
         id: 'oathkeeperSecrets',
@@ -471,7 +503,7 @@ export const oryPlatformStack = kubernetesComposition(
         },
         type: 'Opaque',
         stringData: { jwks: '{"keys":[]}' },
-      });
+      }).withIncludeWhen(manageSecrets);
       oathkeeperSecretsName = oathkeeperSecrets.metadata.name ?? oathkeeperSecretsName;
     }
 
@@ -483,14 +515,14 @@ export const oryPlatformStack = kubernetesComposition(
         image: 'nginx:1.27-alpine',
         replicas: 1,
         ports: [{ containerPort: 80 }],
-      });
+      }).withIncludeWhen(manageSampleUpstream);
       const sampleUpstreamService = simple.Service({
         id: 'sampleUpstreamService',
         name: `${spec.name}-sample-upstream`,
         namespace: namespaceName,
         selector: { app: `${spec.name}-sample-upstream` },
         ports: [{ port: 80, targetPort: 80 }],
-      });
+      }).withIncludeWhen(manageSampleUpstream);
       sampleUpstreamName = sampleUpstreamService.metadata.name ?? sampleUpstreamName;
     }
 
