@@ -1,6 +1,6 @@
 import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
-import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   OryConfigValidationResult,
   OryDependencySource,
@@ -165,13 +165,21 @@ function defaultKratosIdentitySchema(): string {
   });
 }
 
+function dynamicKratosIdentitySchemas(): Record<string, string> {
+  return Cel.expr<Record<string, string>>(
+    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchemas) ? schema.spec.kratos.identitySchemas : {"identity.default.schema.json": ',
+    JSON.stringify(defaultKratosIdentitySchema()),
+    '}'
+  ) as Record<string, string>;
+}
+
 function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
   return [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }];
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
   if (isKubernetesRef(config?.identitySchemas)) {
-    return { 'identity.default.schema.json': defaultKratosIdentitySchema() };
+    return dynamicKratosIdentitySchemas();
   }
 
   if (config?.identitySchemas && Object.keys(config.identitySchemas).length > 0) {
@@ -275,12 +283,14 @@ function hasPath(path: string): string {
 function graphUrl(
   sourcePath: string,
   explicitPath: string,
-  fallbackExpression = 'omit()'
+  fallbackExpression = 'omit()',
+  managedUrlExpression?: string
 ): string {
   const sourceUrlPath = `${sourcePath}.url`;
   const sourceNamePath = `${sourcePath}.resourceName`;
+  const fallback = managedUrlExpression ?? fallbackExpression;
   return Cel.expr<string>(
-    `(${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : (${hasPath(explicitPath)} ? ${explicitPath} : (${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${fallbackExpression})))`
+    `(${hasPath(sourceUrlPath)} ? ${sourceUrlPath} : (${hasPath(explicitPath)} ? ${explicitPath} : (${hasPath(sourceNamePath)} ? "http://" + string(${sourceNamePath}) : ${fallback})))`
   ) as string;
 }
 
@@ -294,8 +304,16 @@ function configUrl(
     fallbackExpression?: string;
   }
 ): string | undefined {
+  if (graph && isCelExpression(explicit)) {
+    return explicit as string;
+  }
   if (graph && (isKubernetesRef(source?.url) || isKubernetesRef(source?.resourceName) || isKubernetesRef(explicit))) {
-    return graphUrl(graph.sourcePath, graph.explicitPath, graph.fallbackExpression);
+    return graphUrl(
+      graph.sourcePath,
+      graph.explicitPath,
+      graph.fallbackExpression,
+      typeof source?.url === 'string' ? JSON.stringify(source.url) : undefined
+    );
   }
   const resolvedSource = dependencyUrl(source, fallbackUrl);
   return isKubernetesRef(explicit) ? resolvedSource ?? explicit : explicit ?? resolvedSource;
