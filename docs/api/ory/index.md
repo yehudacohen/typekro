@@ -68,6 +68,11 @@ await stack.deploy({
   kratos: {
     dsn: { secretRef: { name: 'ory-dsns', key: 'kratos' } },
     publicBaseUrl: 'https://kratos.example.com',
+    identitySchema: JSON.stringify({
+      $id: 'https://example.com/schemas/customer.identity.schema.json',
+      type: 'object',
+      properties: { traits: { type: 'object' } },
+    }),
     secrets: {
       cookie: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
       cipher: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
@@ -85,6 +90,8 @@ await stack.deploy({
 ```
 
 Explicit literal value sources are supported for controlled environments, but TypeKro rejects unsafe literals supplied through unapproved chart escape hatches.
+
+Use `kratos.identitySchema` to replace Kratos' default mounted identity schema in both direct and KRO modes. TypeKro mounts it as `identity.default.schema.json` and wires `kratos.config.identity.schemas` to the matching default ref, so custom schema content does not require duplicate filename/ref configuration.
 
 ## Managed Local Platform
 
