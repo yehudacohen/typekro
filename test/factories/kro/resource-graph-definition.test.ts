@@ -191,6 +191,39 @@ describe('ResourceGraphDefinition Factory', () => {
       expect(result.message).toBe('ResourceGraphDefinition is active and ready.');
     });
 
+    it('should wait for Ready condition from the current RGD generation', () => {
+      const rgdConfig = createTestRGD();
+      const enhanced = resourceGraphDefinition(rgdConfig);
+      const evaluator = requireReadinessEvaluator(enhanced);
+
+      const staleReady = evaluator({
+        metadata: { name: 'testRgd', uid: '12345', generation: 2 },
+        spec: {},
+        status: {
+          state: 'Active',
+          conditions: [
+            { type: 'Ready', status: 'True', observedGeneration: 1, message: 'Old graph ready' },
+          ],
+        },
+      });
+
+      expect(staleReady.ready).toBe(false);
+      expect(staleReady.reason).toBe('GenerationPending');
+
+      const currentReady = evaluator({
+        metadata: { name: 'testRgd', uid: '12345', generation: 2 },
+        spec: {},
+        status: {
+          state: 'Active',
+          conditions: [
+            { type: 'Ready', status: 'True', observedGeneration: 2, message: 'Current graph ready' },
+          ],
+        },
+      });
+
+      expect(currentReady.ready).toBe(true);
+    });
+
     it('should evaluate as not ready when failed condition exists', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);

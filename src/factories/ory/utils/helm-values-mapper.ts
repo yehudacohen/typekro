@@ -88,6 +88,9 @@ function mergeValues<T extends object>(
   base: T,
   typed?: TypeKroChartValue<T>
 ): T {
+  if (isValuesMergeExpression(base)) {
+    return mergeValuesExpression(base, typed) as unknown as T;
+  }
   if (isKubernetesRef(typed) || isCelExpression(typed) || isValuesMergeExpression(typed)) {
     return mergeValuesExpression(base, typed) as unknown as T;
   }
@@ -100,6 +103,15 @@ function concreteChartValues<T extends object>(
   return isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)
     ? undefined
     : values;
+}
+
+function dependencyModeIsManaged(source: OryDependencySource | undefined): boolean {
+  const mode: unknown = source?.mode;
+  if (isKubernetesRef(mode) || isCelExpression(mode)) {
+    return Cel.expr<boolean>(mode, ' == "managed"') as boolean;
+  }
+
+  return mode === 'managed';
 }
 
 function sharedGlobal(config: OryIdentityStackConfig): Record<string, unknown> | undefined {
@@ -551,7 +563,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         replicaCount: resolvedConfig.hydra?.replicaCount,
         hydra: compact({
           dev:
-            resolvedConfig.dependencySources?.hydra?.database?.dsn.mode === 'managed' ||
+            dependencyModeIsManaged(resolvedConfig.dependencySources?.hydra?.database?.dsn) ||
             !!hydraConcreteValues?.hydra?.dev,
           config: compact({
             dsn: secretValue(resolvedConfig.hydra?.dsn),
@@ -573,7 +585,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         replicaCount: resolvedConfig.kratos?.replicaCount,
         kratos: compact({
           development:
-            resolvedConfig.dependencySources?.kratos?.database?.dsn.mode === 'managed' ||
+            dependencyModeIsManaged(resolvedConfig.dependencySources?.kratos?.database?.dsn) ||
             !!kratosConcreteValues?.kratos?.development,
           identitySchemas: kratosIdentitySchemas(resolvedConfig.kratos),
           config: kratosConfig(resolvedConfig.kratos),
@@ -603,25 +615,35 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
     oathkeeper: mergeValues<OryOathkeeperChartValues>(
       compact<OryOathkeeperChartValues>({
         ...globalValues,
-        oathkeeper: compact({ managedAccessRules: resolvedConfig.oathkeeper?.managedAccessRules ?? true, mutatorIdTokenJWKs: stringValue(resolvedConfig.oathkeeper?.mutatorIdTokenJwks) }),
+        oathkeeper: compact({
+          managedAccessRules:
+            resolvedConfig.maester?.oathkeeper?.enabled !== false
+              ? false
+              : (resolvedConfig.oathkeeper?.managedAccessRules ?? true),
+          mutatorIdTokenJWKs: stringValue(resolvedConfig.oathkeeper?.mutatorIdTokenJwks),
+        }),
         ...deploymentTargets(secretEnv('OATHKEEPER_MUTATOR_ID_TOKEN_JWKS', resolvedConfig.oathkeeper?.mutatorIdTokenJwks), resolvedConfig.oathkeeper?.resources),
         maester: { enabled: resolvedConfig.maester?.oathkeeper?.enabled ?? true },
         serviceMonitor: resolvedConfig.oathkeeper?.serviceMonitor,
       }),
       oathkeeperValues
     ),
-    hydraMaester: compact<OryHydraMaesterChartValues>({
-      ...(concreteChartValues(resolvedConfig.maester?.hydraValues) ?? {}),
-      singleNamespaceMode: resolvedConfig.maester?.hydra?.singleNamespaceMode ?? true,
-      enabledNamespaces: resolvedConfig.maester?.hydra?.enabledNamespaces,
-      serviceMonitor: resolvedConfig.maester?.hydra?.serviceMonitor,
-    }),
-    oathkeeperMaester: compact<OryOathkeeperMaesterChartValues>({
-      ...(concreteChartValues(resolvedConfig.maester?.oathkeeperValues) ?? {}),
-      singleNamespaceMode: resolvedConfig.maester?.oathkeeper?.singleNamespaceMode ?? true,
-      rulesConfigmapNamespace: resolvedConfig.maester?.oathkeeper?.rulesConfigmapNamespace,
-      rulesFileName: resolvedConfig.maester?.oathkeeper?.rulesFileName,
-    }),
+    hydraMaester: mergeValues<OryHydraMaesterChartValues>(
+      compact<OryHydraMaesterChartValues>({
+        singleNamespaceMode: resolvedConfig.maester?.hydra?.singleNamespaceMode ?? true,
+        enabledNamespaces: resolvedConfig.maester?.hydra?.enabledNamespaces,
+        serviceMonitor: resolvedConfig.maester?.hydra?.serviceMonitor,
+      }),
+      resolvedConfig.maester?.hydraValues
+    ),
+    oathkeeperMaester: mergeValues<OryOathkeeperMaesterChartValues>(
+      compact<OryOathkeeperMaesterChartValues>({
+        singleNamespaceMode: resolvedConfig.maester?.oathkeeper?.singleNamespaceMode ?? true,
+        rulesConfigmapNamespace: resolvedConfig.maester?.oathkeeper?.rulesConfigmapNamespace,
+        rulesFileName: resolvedConfig.maester?.oathkeeper?.rulesFileName,
+      }),
+      resolvedConfig.maester?.oathkeeperValues
+    ),
   };
 
   if (isKubernetesRef(config.global)) {

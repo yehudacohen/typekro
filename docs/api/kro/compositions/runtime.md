@@ -43,14 +43,14 @@ The bootstrap deploys:
 interface TypeKroRuntimeConfig {
   namespace?: string;     // Target namespace (default: 'flux-system')
   fluxVersion?: string;   // Flux version (default: 'v2.7.5')
-  kroVersion?: string;    // Kro version (default: '0.9.1')
+  kroVersion?: string;    // Kro version (default: '0.9.2')
   rbac?: RbacMode;        // Flux controller RBAC mode (default: 'cluster-admin')
 }
 
 type RbacMode = 'cluster-admin' | 'scoped' | { clusterRoleRef: string };
 ```
 
-TypeKro requires KRO `0.9.1+` because generated ResourceGraphDefinitions use the `omit()` CEL function behind the `CELOmitFunction` feature gate.
+TypeKro requires KRO `0.9.2+` because generated ResourceGraphDefinitions use the `omit()` CEL function behind the `CELOmitFunction` feature gate.
 
 `rbac` controls the permissions granted to Flux controllers:
 
@@ -66,7 +66,7 @@ TypeKro requires KRO `0.9.1+` because generated ResourceGraphDefinitions use the
 const runtime = typeKroRuntimeBootstrap({
   namespace: 'flux-system',
   fluxVersion: 'v2.7.5',
-  kroVersion: '0.9.1',
+  kroVersion: '0.9.2',
   rbac: 'scoped',
 });
 ```

@@ -268,7 +268,7 @@ describe('Three-Composition Demo Integration', () => {
     const bootstrap = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.9.1',
+      kroVersion: '0.9.2',
     });
 
     expect(bootstrap).toBeDefined();
@@ -299,7 +299,7 @@ describe('Three-Composition Demo Integration', () => {
     const bootstrap = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.9.1',
+      kroVersion: '0.9.2',
     });
     const bootstrapYaml = bootstrap.toYaml();
 

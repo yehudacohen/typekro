@@ -1,5 +1,9 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { isValuesMergeExpression, mergeValuesExpression } from '../../../core/aspects/values-merge.js';
+import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+  type ValuesMergeExpression,
+} from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -33,6 +37,16 @@ function withMaesterSubchartValues<T extends object>(
   key: string,
   maesterValues: object
 ): T {
+  if (isValuesMergeExpression(values) && isPlainObject(values.base)) {
+    const overlays = Array.isArray(values.overlays) ? values.overlays : [values.overlays];
+    const expression: ValuesMergeExpression = {
+      __typekroValuesMerge: true,
+      base: { ...values.base, [key]: maesterValues },
+      overlays,
+    };
+    return expression as unknown as T;
+  }
+
   if (isValuesMergeExpression(values) || isValuesMergeExpression(maesterValues)) {
     return mergeValuesExpression(values, { [key]: maesterValues }) as unknown as T;
   }
@@ -40,12 +54,42 @@ function withMaesterSubchartValues<T extends object>(
   return { ...values, [key]: maesterValues };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function deepMergeKnownValues(base: unknown, overlay: unknown): unknown {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) return overlay;
+
+  return Object.fromEntries(
+    Array.from(new Set([...Object.keys(base), ...Object.keys(overlay)])).map((key) => {
+      const baseValue = base[key];
+      const overlayValue = overlay[key];
+      if (overlayValue === undefined) return [key, baseValue];
+      if (isPlainObject(baseValue) && isPlainObject(overlayValue)) {
+        return [key, deepMergeKnownValues(baseValue, overlayValue)];
+      }
+      return [key, overlayValue];
+    })
+  );
+}
+
 function withChartValuesOverlay<T extends object>(values: T, overlay: object): T {
   if (isValuesMergeExpression(values)) {
+    if (isPlainObject(values.base)) {
+      const overlays = Array.isArray(values.overlays) ? values.overlays : [values.overlays];
+      const expression: ValuesMergeExpression = {
+        __typekroValuesMerge: true,
+        base: deepMergeKnownValues(values.base, overlay),
+        overlays,
+      };
+      return expression as unknown as T;
+    }
+
     return mergeValuesExpression(values, overlay) as unknown as T;
   }
 
-  return { ...values, ...overlay };
+  return deepMergeKnownValues(values, overlay) as T;
 }
 
 function oathkeeperProbeValues(): Record<string, unknown> {
@@ -198,14 +242,22 @@ function mergeDependencySource(
   const explicitManaged = explicit.mode === 'managed' ? explicit : undefined;
 
   return defined({
-    mode: explicit.mode ?? defaults.mode,
+    mode: defaulted(explicit.mode, defaults.mode),
     value: explicitValue,
-    url: explicit.url ?? defaults.url,
-    resourceName: explicit.resourceName ?? defaults.resourceName,
-    namespace: explicitManaged?.namespace ?? defaultManaged?.namespace,
-    secretName: explicitManaged?.secretName ?? defaultManaged?.secretName,
-    secretKey: explicitManaged?.secretKey ?? defaultManaged?.secretKey,
+    url: defaulted(explicit.url, defaults.url),
+    resourceName: defaulted(explicit.resourceName, defaults.resourceName),
+    namespace: defaulted(explicitManaged?.namespace, defaultManaged?.namespace),
+    secretName: defaulted(explicitManaged?.secretName, defaultManaged?.secretName),
+    secretKey: defaulted(explicitManaged?.secretKey, defaultManaged?.secretKey),
   }) as OryDependencySource;
+}
+
+function defaulted<T extends string>(explicit: T | undefined, fallback: T | undefined): T | undefined {
+  if (explicit === undefined) return fallback;
+  if (fallback !== undefined && isKubernetesRef(explicit)) {
+    return Cel.default(explicit, fallback) as T;
+  }
+  return explicit;
 }
 
 function mergeDependencySourceDefaults(

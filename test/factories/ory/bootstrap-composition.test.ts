@@ -120,12 +120,17 @@ describe('Ory identity stack composition', () => {
     const yaml = oryIdentityStack.toYaml();
 
     expect(yaml).toContain('schema.spec.global');
-    expect(yaml).toContain('.merge(');
+    expect(yaml).not.toContain('deployment: "${');
+    expect(yaml).not.toContain('kratos: "${');
     expect(yaml).toContain('schema.spec.hydra.values');
     expect(yaml).toContain('schema.spec.kratos.values');
     expect(yaml).toContain('schema.spec.keto.values');
     expect(yaml).toContain('schema.spec.oathkeeper.values');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values))');
+    expect(yaml).toContain('OATHKEEPER_MUTATOR_ID_TOKEN_JWKS');
+    expect(yaml).toContain('customReadinessProbe');
+    expect(yaml).toContain('customStartupProbe');
+    expect(yaml).toContain('/health/alive');
     expect(yaml).not.toContain(') + (');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
     expect(yaml).not.toContain('[object Object]');

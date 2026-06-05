@@ -241,14 +241,22 @@ function mergeDependencySource(
   const explicitManaged = explicit.mode === 'managed' ? explicit : undefined;
 
   return defined({
-    mode: explicit.mode ?? defaults.mode,
+    mode: defaulted(explicit.mode, defaults.mode),
     value: explicitValue,
-    url: explicit.url ?? defaults.url,
-    resourceName: explicit.resourceName ?? defaults.resourceName,
-    namespace: explicitManaged?.namespace ?? defaultManaged?.namespace,
-    secretName: explicitManaged?.secretName ?? defaultManaged?.secretName,
-    secretKey: explicitManaged?.secretKey ?? defaultManaged?.secretKey,
+    url: defaulted(explicit.url, defaults.url),
+    resourceName: defaulted(explicit.resourceName, defaults.resourceName),
+    namespace: defaulted(explicitManaged?.namespace, defaultManaged?.namespace),
+    secretName: defaulted(explicitManaged?.secretName, defaultManaged?.secretName),
+    secretKey: defaulted(explicitManaged?.secretKey, defaultManaged?.secretKey),
   }) as OryDependencySource;
+}
+
+function defaulted<T extends string>(explicit: T | undefined, fallback: T | undefined): T | undefined {
+  if (explicit === undefined) return fallback;
+  if (fallback !== undefined && isKubernetesRef(explicit)) {
+    return Cel.default(explicit, fallback) as T;
+  }
+  return explicit;
 }
 
 function mode(value: { mode: 'external' | 'managed' } | undefined): 'external' | 'managed' {

@@ -1,7 +1,7 @@
 /**
  * YAML generation functionality for Kro ResourceGraphDefinitions
  *
- * Supports Kro 0.9.1+ ResourceGraphDefinition serialization, including
+ * Supports Kro 0.9.2+ ResourceGraphDefinition serialization, including
  * forEach, includeWhen, readyWhen, externalRef, mixed-template CEL, omit(),
  * schema group, and allowBreakingChanges annotation.
  */
@@ -907,7 +907,7 @@ function buildResourceEntry(
 /**
  * Serializes resources to Kro YAML (ResourceGraphDefinition).
  *
- * Supports Kro 0.9.1+ features:
+ * Supports Kro 0.9.2+ features:
  * - externalRef: Resources marked with __externalRef emit `externalRef` instead of `template`
  * - includeWhen: Non-enumerable includeWhen arrays are emitted per resource
  * - readyWhen: Non-enumerable readyWhen arrays are emitted per resource

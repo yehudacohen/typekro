@@ -95,9 +95,30 @@ export function resourceGraphDefinition(
         };
       }
 
-      // 2. Check for explicit failure conditions first for faster feedback.
+      // 2. KRO can leave a previous graph revision active while a newer RGD
+      // generation is still compiling. Only evaluate generated conditions for
+      // the current generation when KRO reports observedGeneration on them.
       const conditions = Array.isArray(status.conditions) ? status.conditions : [];
-      const failedCondition = conditions.find(
+      const generation = typeof metadata?.generation === 'number' ? metadata.generation : undefined;
+      const hasObservedGeneration = conditions.some(
+        (c: KubernetesCondition) => typeof c?.observedGeneration === 'number'
+      );
+      const currentConditions =
+        hasObservedGeneration && generation !== undefined
+          ? conditions.filter((c: KubernetesCondition) => (c.observedGeneration ?? 0) >= generation)
+          : conditions;
+
+      if (hasObservedGeneration && generation !== undefined && currentConditions.length === 0) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ResourceGraphDefinition generation ${generation}.`,
+          details: { generation, conditions },
+        };
+      }
+
+      // 3. Check for explicit failure conditions first for faster feedback.
+      const failedCondition = currentConditions.find(
         (c: KubernetesCondition) => c && c.status === 'False'
       );
       if (status.state === 'failed' || failedCondition) {
@@ -105,37 +126,37 @@ export function resourceGraphDefinition(
           ready: false,
           reason: 'RGDProcessingFailed',
           message: `RGD processing failed: ${failedCondition?.message || 'Unknown error'}`,
-          details: { state: status.state, conditions },
+          details: { state: status.state, generation, conditions },
         };
       }
 
-      // 3. Check if RGD is in Active state with proper conditions
+      // 4. Check if RGD is in Active state with proper conditions
       const isStateReady = status.state === 'Active';
 
       // Check for key readiness conditions (be defensive about conditions structure).
       // Support both Kro v0.3.x condition names (ReconcilerReady, GraphVerified,
       // CustomResourceDefinitionSynced) and v0.8.x names (Ready, ControllerReady,
       // KindReady, ResourceGraphAccepted).
-      const hasV08Conditions = conditions.some(
+      const hasV08Conditions = currentConditions.some(
         (c: KubernetesCondition) => c?.type === 'Ready' || c?.type === 'ControllerReady'
       );
 
       let allConditionsReady: boolean;
       if (hasV08Conditions) {
         // Kro v0.8.x: check Ready condition
-        const readyCondition = conditions.find(
+        const readyCondition = currentConditions.find(
           (c: KubernetesCondition) => c?.type === 'Ready' && c?.status === 'True'
         );
         allConditionsReady = !!readyCondition;
       } else {
         // Kro v0.3.x: check legacy conditions
-        const reconcilerReady = conditions.find(
+        const reconcilerReady = currentConditions.find(
           (c: KubernetesCondition) => c?.type === 'ReconcilerReady' && c?.status === 'True'
         );
-        const graphVerified = conditions.find(
+        const graphVerified = currentConditions.find(
           (c: KubernetesCondition) => c?.type === 'GraphVerified' && c?.status === 'True'
         );
-        const crdSynced = conditions.find(
+        const crdSynced = currentConditions.find(
           (c: KubernetesCondition) =>
             c?.type === 'CustomResourceDefinitionSynced' && c?.status === 'True'
         );
@@ -149,12 +170,12 @@ export function resourceGraphDefinition(
         };
       }
 
-      // 4. If none of the above, the RGD is still progressing.
+      // 5. If none of the above, the RGD is still progressing.
       return {
         ready: false,
         reason: 'ReconciliationPending',
         message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
-        details: { state: status.state, conditions },
+        details: { state: status.state, generation, conditions },
       };
     } catch (error: unknown) {
       // Log the error for debugging but don't let it crash the readiness evaluation

@@ -2239,6 +2239,85 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       expect(yamlStr).toContain('us-east-1');
     });
 
+    it('Cel.default() guards nested optional schema parents', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'cel-default-nested-parent-helper',
+          apiVersion: 'v1alpha1',
+          kind: 'CelDefaultNestedParentHelperTest',
+          spec: type({
+            name: 'string',
+            dependencySources: {
+              hydra: {
+                database: {
+                  dsn: {
+                    'resourceName?': 'string',
+                  },
+                },
+              },
+            },
+          }),
+          status: type({ resourceName: 'string' }),
+        },
+        (spec) => {
+          Deployment({
+            name: spec.name,
+            image: 'nginx',
+            env: {
+              RESOURCE_NAME: Cel.default(
+                spec.dependencySources.hydra.database.dsn.resourceName,
+                `${spec.name}-hydra-db-app`
+              ),
+            },
+            id: 'app',
+          });
+
+          return {
+            resourceName: Cel.default(
+              spec.dependencySources.hydra.database.dsn.resourceName,
+              `${spec.name}-hydra-db-app`
+            ),
+          };
+        }
+      );
+
+      const yamlStr = graph.toYaml();
+      expect(yamlStr).toContain(
+        'has(schema.spec.dependencySources) && has(schema.spec.dependencySources.hydra)'
+      );
+      expect(yamlStr).toContain('has(schema.spec.dependencySources.hydra.database.dsn.resourceName)');
+    });
+
+    it('Cel.default() parenthesizes nested default fallback expressions', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'cel-default-nested-helper',
+          apiVersion: 'v1alpha1',
+          kind: 'CelDefaultNestedHelperTest',
+          spec: type({ name: 'string', primary: 'string?', secondary: 'string?' }),
+          status: type({ value: 'string' }),
+        },
+        (spec) => {
+          Deployment({
+            name: spec.name,
+            image: 'nginx',
+            env: {
+              VALUE: Cel.default(spec.primary, Cel.default(spec.secondary, 'fallback')),
+            },
+            id: 'app',
+          });
+
+          return { value: Cel.default(spec.primary, Cel.default(spec.secondary, 'fallback')) };
+        }
+      );
+
+      const yamlStr = graph.toYaml();
+      expect(yamlStr).toContain(
+        'has(schema.spec.primary) ? schema.spec.primary : (has(schema.spec.secondary)'
+      );
+      expect(yamlStr).toContain('? schema.spec.secondary : \\"fallback\\")');
+    });
+
     it('observedResource() serializes with the externalRef primitive', () => {
       const graph = kubernetesComposition(
         {

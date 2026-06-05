@@ -851,6 +851,10 @@ function unwrapKroExpression(value: unknown): string | undefined {
   return value.slice(2, -1);
 }
 
+function celValueTreeBranch(expression: string): string {
+  return expression.includes(' ? ') && expression.includes(' : ') ? `(${expression})` : expression;
+}
+
 function celLiteralForValueTree(
   value: unknown,
   context: SerializationContext | undefined,
@@ -861,7 +865,8 @@ function celLiteralForValueTree(
   }
 
   if (isKubernetesRef(value) || isCelExpression(value)) {
-    return unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
+    const expression = unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
+    return celValueTreeBranch(expression);
   }
 
   if (typeof value === 'string') {
@@ -950,12 +955,33 @@ function mergeValueTrees(base: unknown, overlay: unknown, path: string): unknown
 function needsRuntimeMapMerge(value: unknown): boolean {
   if (isKubernetesRef(value) || isCelExpression(value)) return true;
   if (isValuesMergeExpression(value)) {
+    const normalizedOverlays = Array.isArray(value.overlays) ? value.overlays : [value.overlays];
     return (
       needsRuntimeMapMerge(value.base) ||
-      value.overlays.some((overlay) => needsRuntimeMapMerge(overlay))
+      normalizedOverlays.some((overlay) => needsRuntimeMapMerge(overlay))
     );
   }
   return false;
+}
+
+function isKnownMergeObject(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    isPlainSerializableObject(value) &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value) &&
+    !isValuesMergeExpression(value)
+  );
+}
+
+function mapKeyAccess(mapExpression: string, key: string): string {
+  return `(${mapExpression})[${JSON.stringify(key)}]`;
+}
+
+function mapHasKey(mapExpression: string, key: string): string {
+  return `${JSON.stringify(key)} in (${mapExpression})`;
 }
 
 function celMapMergeOperand(
@@ -984,16 +1010,101 @@ function celRuntimeMapMergeExpression(
   context: SerializationContext | undefined,
   path: string
 ): string {
-  let expression = celMapMergeOperand(base, context, path);
-  overlays.forEach((overlay, index) => {
+  let expression: string | undefined;
+  let knownBase: unknown = base;
+  const normalizedOverlays = Array.isArray(overlays) ? overlays : [overlays];
+  normalizedOverlays.forEach((overlay, index) => {
     if (overlay === undefined) return;
-    expression = `${expression}.merge(${celMapMergeOperand(
-      overlay,
-      context,
-      path || `spec.values.overlay[${index}]`
-    )})`;
+
+    const overlayPath = path || `spec.values.overlay[${index}]`;
+    if (expression === undefined) {
+      if (isKnownMergeObject(knownBase) && isKnownMergeObject(overlay)) {
+        knownBase = mergeValueTrees(knownBase, overlay, overlayPath);
+        return;
+      }
+
+      if (isKnownMergeObject(knownBase)) {
+        expression = isKnownMergeObject(overlay)
+          ? celDeepMergeKnownOverlay(
+              celMapMergeOperand(knownBase, context, path),
+              overlay,
+              context,
+              overlayPath
+            )
+          : celDeepMergeRuntimeOverlay(
+              knownBase,
+              celMapMergeOperand(overlay, context, overlayPath),
+              context,
+              overlayPath
+            );
+        return;
+      }
+
+      expression = isKnownMergeObject(overlay)
+        ? celDeepMergeKnownOverlay(
+            celMapMergeOperand(knownBase, context, path),
+            overlay,
+            context,
+            overlayPath
+          )
+        : `(${celMapMergeOperand(knownBase, context, path)}).merge(${celMapMergeOperand(
+            overlay,
+            context,
+            overlayPath
+          )})`;
+      return;
+    }
+
+    expression = isKnownMergeObject(overlay)
+      ? celDeepMergeKnownOverlay(expression, overlay, context, overlayPath)
+      : `(${expression}).merge(${celMapMergeOperand(overlay, context, overlayPath)})`;
   });
-  return expression;
+  return expression ?? celLiteralForValueTree(knownBase, context, path);
+}
+
+function celDeepMergeRuntimeOverlay(
+  base: Record<string, unknown>,
+  overlayExpression: string,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const entries = Object.entries(base).flatMap(([key, baseValue]) => {
+    if (baseValue === undefined) return [];
+    const overlayValue = mapKeyAccess(overlayExpression, key);
+    const baseExpression = celLiteralForValueTree(baseValue, context, childPath(path, key));
+    const mergedValue = isKnownMergeObject(baseValue)
+      ? celDeepMergeRuntimeOverlay(baseValue, overlayValue, context, childPath(path, key))
+      : overlayValue;
+    return [
+      `${JSON.stringify(key)}: ${mapHasKey(overlayExpression, key)} ? ${mergedValue} : ${baseExpression}`,
+    ];
+  });
+
+  return `(${overlayExpression}).merge({${entries.join(', ')}})`;
+}
+
+function celDeepMergeKnownOverlay(
+  baseExpression: string,
+  overlay: Record<string, unknown>,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const entries = Object.entries(overlay).flatMap(([key, overlayValue]) => {
+    if (overlayValue === undefined) return [];
+    const overlayExpression = celLiteralForValueTree(overlayValue, context, childPath(path, key));
+    const baseValue = mapKeyAccess(baseExpression, key);
+    const mergedValue = isKnownMergeObject(overlayValue)
+      ? `${mapHasKey(baseExpression, key)} ? ${celDeepMergeKnownOverlay(
+          baseValue,
+          overlayValue,
+          context,
+          childPath(path, key)
+        )} : ${overlayExpression}`
+      : overlayExpression;
+    return [`${JSON.stringify(key)}: ${mergedValue}`];
+  });
+
+  return `(${baseExpression}).merge({${entries.join(', ')}})`;
 }
 
 function celValuesMergeExpression(
@@ -1002,16 +1113,168 @@ function celValuesMergeExpression(
   context: SerializationContext | undefined,
   path: string
 ): string {
-  if (needsRuntimeMapMerge(base) || overlays.some((overlay) => needsRuntimeMapMerge(overlay))) {
-    return celRuntimeMapMergeExpression(base, overlays, context, path || 'spec.values');
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  base = flattened.base;
+  const normalizedOverlays = flattened.overlays;
+  if (
+    needsRuntimeMapMerge(base) ||
+    normalizedOverlays.some((overlay) => needsRuntimeMapMerge(overlay))
+  ) {
+    return celRuntimeMapMergeExpression(base, normalizedOverlays, context, path || 'spec.values');
   }
 
   let merged = base;
-  const normalizedOverlays = Array.isArray(overlays) ? overlays : [overlays];
   normalizedOverlays.forEach((overlay, index) => {
     merged = mergeValueTrees(merged, overlay, path || `spec.values.overlay[${index}]`);
   });
   return celLiteralForValueTree(merged, context, path);
+}
+
+function flattenValuesMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[]
+): { base: unknown; overlays: unknown[] } {
+  let flattenedBase = base;
+  const flattenedOverlays = Array.isArray(overlays) ? [...overlays] : [overlays];
+
+  while (isValuesMergeExpression(flattenedBase)) {
+    const nestedOverlays = Array.isArray(flattenedBase.overlays)
+      ? flattenedBase.overlays
+      : [flattenedBase.overlays];
+    flattenedOverlays.unshift(...nestedOverlays);
+    flattenedBase = flattenedBase.base;
+  }
+
+  return { base: flattenedBase, overlays: flattenedOverlays };
+}
+
+function collectKnownMergeKeys(value: unknown, keys = new Set<string>()): Set<string> {
+  if (isValuesMergeExpression(value)) {
+    collectKnownMergeKeys(value.base, keys);
+    const normalizedOverlays = Array.isArray(value.overlays) ? value.overlays : [value.overlays];
+    normalizedOverlays.forEach((overlay) => collectKnownMergeKeys(overlay, keys));
+    return keys;
+  }
+
+  if (isKnownMergeObject(value)) {
+    Object.keys(value).forEach((key) => keys.add(key));
+  }
+
+  return keys;
+}
+
+function celValuesMergeTemplateObject(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): Record<string, unknown> | undefined {
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  base = flattened.base;
+  const normalizedOverlays = flattened.overlays;
+  const knownKeys = collectKnownMergeKeys(base);
+  normalizedOverlays.forEach((overlay) => collectKnownMergeKeys(overlay, knownKeys));
+  const orderedKeys = Array.from(knownKeys);
+  if (orderedKeys.length === 0) return undefined;
+
+  return Object.fromEntries(
+    orderedKeys.map((key) => {
+      const value = celValuesMergeTemplateValue(base, normalizedOverlays, key, context, path);
+      return [key, value];
+    })
+  );
+}
+
+function celValuesMergeTemplateValue(
+  base: unknown,
+  overlays: readonly unknown[],
+  key: string,
+  context: SerializationContext | undefined,
+  path: string
+): unknown {
+  let knownValue = isKnownMergeObject(base) ? base[key] : undefined;
+
+  for (const [index, overlay] of overlays.entries()) {
+    if (overlay === undefined) continue;
+    const overlayPath = path || `spec.values.overlay[${index}]`;
+
+    if (isKnownMergeObject(overlay)) {
+      if (!Object.hasOwn(overlay, key)) continue;
+      knownValue = mergeValueTrees(knownValue, overlay[key], childPath(overlayPath, key));
+      continue;
+    }
+
+    return celValuesMergeRuntimeTemplateValue(
+      knownValue,
+      celMapMergeOperand(overlay, context, overlayPath),
+      key,
+      context,
+      childPath(path, key)
+    );
+  }
+
+  return processResourceReferences(knownValue, context, childPath(path, key));
+}
+
+function celValuesMergeRuntimeTemplateValue(
+  fallbackValue: unknown,
+  overlayExpression: string,
+  key: string,
+  context: SerializationContext | undefined,
+  path: string
+): unknown {
+  if (isValuesMergeExpression(fallbackValue)) {
+    const templateObject = celValuesMergeTemplateObject(
+      fallbackValue.base,
+      fallbackValue.overlays,
+      context,
+      path
+    );
+    if (templateObject) {
+      return celValuesMergeRuntimeTemplateValue(
+        templateObject,
+        overlayExpression,
+        key,
+        context,
+        path
+      );
+    }
+  }
+
+  if (isKnownMergeObject(fallbackValue)) {
+    const childOverlay = `(${mapHasKey(overlayExpression, key)} ? ${mapKeyAccess(
+      overlayExpression,
+      key
+    )} : {})`;
+    return Object.fromEntries(
+      Object.entries(fallbackValue).flatMap(([childKey, childValue]) => {
+        if (childValue === undefined) return [];
+        return [
+          [
+            childKey,
+            celValuesMergeRuntimeTemplateValue(
+              childValue,
+              childOverlay,
+              childKey,
+              context,
+              childPath(path, childKey)
+            ),
+          ],
+        ];
+      })
+    );
+  }
+
+  if (Array.isArray(fallbackValue)) {
+    return processResourceReferences(fallbackValue, context, path);
+  }
+
+  const fallbackExpression = celLiteralForValueTree(fallbackValue, context, path);
+  const expression = `${mapHasKey(overlayExpression, key)} ? ${mapKeyAccess(
+    overlayExpression,
+    key
+  )} : (${fallbackExpression})`;
+  return finalizeCelForKro(expression, context?.nestedStatusCel, context);
 }
 
 export function processResourceReferences(
@@ -1022,6 +1285,11 @@ export function processResourceReferences(
   const inValueTree = valueTreePath(path);
 
   if (isValuesMergeExpression(obj)) {
+    if (path === 'spec.values') {
+      const templateObject = celValuesMergeTemplateObject(obj.base, obj.overlays, context, path);
+      if (templateObject) return templateObject;
+    }
+
     return finalizeCelForKro(
       celValuesMergeExpression(obj.base, obj.overlays, context, path),
       context?.nestedStatusCel,

@@ -1668,7 +1668,7 @@ export class KroResourceFactoryImpl<
         waitForReady: true,
         timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
       });
-      this.logger.info('RGD deployed, waiting for CRD', { rgdName: this.rgdName });
+      this.logger.info('RGD accepted, waiting for CRD', { rgdName: this.rgdName });
 
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);

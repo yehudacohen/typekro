@@ -51,7 +51,7 @@ export const integrationTestBootstrap = kubernetesComposition(
     const kroRuntimeComposition = typeKroRuntimeBootstrap({
       namespace: config.namespace,
       fluxVersion: 'v2.7.5',
-      kroVersion: '0.9.1',
+      kroVersion: '0.9.2',
     });
     const kroRuntime = getCurrentCompositionContext()?.isReExecution
       ? kroRuntimeComposition({ namespace: config.namespace })

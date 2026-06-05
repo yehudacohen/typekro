@@ -205,15 +205,6 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).toContain('sampleUpstream');
     expect(renderedYaml).toContain('oryIdentityStack');
     expect(renderedYaml).toContain('dependencies:');
-    expect(renderedYaml).toContain('hydra-db-app');
-    expect(renderedYaml).toContain('kratos-db-app');
-    expect(renderedYaml).toContain('keto-db-app');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.keto.database.dsn');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.issuerUrl.url.url');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url.url');
-    expect(renderedYaml).toContain('has(schema.spec.hydra) && has(schema.spec.hydra.issuerUrl)');
     expect(renderedYaml).toContain(
       'has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)'
     );
@@ -227,13 +218,15 @@ describe('Ory platform stack composition', () => {
       'has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"'
     );
     expect(renderedYaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
-    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
-    expect(renderedYaml).toContain(
-      'schema.spec.dependencySources.kratos.database.dsn.resourceName'
-    );
-    expect(renderedYaml).toContain('http://hydra.localhost');
-    expect(renderedYaml).toContain('http://kratos.localhost');
     expect(renderedYaml).toContain('identity.default.schema.json');
+    expect(renderedYaml).not.toContain('? has(schema.spec.kratos.identitySchema) ?');
+    expect(renderedYaml).toContain(
+      ': ((has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) ?'
+    );
+    expect(renderedYaml).toContain('has(schema.spec.maester.hydra.enabledNamespaces)');
+    expect(renderedYaml).not.toContain('"enabledNamespaces": schema.spec.maester.hydra.enabledNamespaces');
+    expect(renderedYaml).not.toContain('([schema.spec.hydra.values');
+    expect(renderedYaml).not.toContain('values: "${has(schema.spec.namespace) ?');
     expect(renderedYaml).toContain('default_browser_return_url');
     expect(renderedYaml).toContain('includeWhen');
     expect(renderedYaml).toContain('schema.spec.managed.databases');

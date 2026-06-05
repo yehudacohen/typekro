@@ -211,6 +211,16 @@ function has(ref: RefOrValue<unknown>): CelExpression<boolean> & boolean {
   );
 }
 
+function schemaSpecHasGuard(celPath: string): string | undefined {
+  const schemaPath = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(celPath)?.[1];
+  if (!schemaPath) return undefined;
+
+  const segments = schemaPath.split('.').filter(Boolean);
+  return segments
+    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
+    .join(' && ');
+}
+
 /**
  * Negate a CEL boolean expression or a KubernetesRef.
  *
@@ -282,7 +292,7 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
     return getInnerCelPath(value);
   }
   if (isCelExpression(value)) {
-    return value.expression;
+    return `(${value.expression})`;
   }
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
@@ -391,7 +401,10 @@ function defaultValue<T extends CelValue>(
   value: RefOrValue<T>,
   fallback: RefOrValue<NonNullable<T>>
 ): CelExpression<NonNullable<T>> & NonNullable<T> {
-  const expression = `${has(value).expression} ? ${celValueForTernary(value)} : ${celValueForTernary(fallback)}`;
+  const guard = isKubernetesRef(value)
+    ? (schemaSpecHasGuard(getInnerCelPath(value)) ?? has(value).expression)
+    : has(value).expression;
+  const expression = `${guard} ? ${celValueForTernary(value)} : ${celValueForTernary(fallback)}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,

@@ -7,6 +7,7 @@
 
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import type { ToYamlOptions } from '../aspects/types.js';
+import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import {
   createCompositionContext,
   getCurrentCompositionContext,
@@ -45,7 +46,7 @@ import type {
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
-import { finalizeCelForKro } from './cel-references.js';
+import { finalizeCelForKro, processResourceReferences } from './cel-references.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
@@ -568,7 +569,8 @@ function processCompositionBodyAnalysis(
               falseRes,
               conditionCel,
               nestedStatusCel,
-              resourceIds
+              resourceIds,
+              optionalFieldNames
             );
           }
         }
@@ -664,7 +666,8 @@ function processCompositionBodyAnalysis(
                   singleFieldSet,
                   fieldConditions,
                   nestedStatusCel,
-                  resourceIds
+                  resourceIds,
+                  optionalFieldNames
                 );
               }
             }
@@ -1015,7 +1018,8 @@ function applyDifferentialFieldConditionals(
   overriddenFields: Set<string>,
   overrideConditions: Map<string, string>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  omitFields?: ReadonlySet<string>
 ): void {
   walkAndConditionalize(
     currentRes,
@@ -1024,7 +1028,8 @@ function applyDifferentialFieldConditionals(
     overriddenFields,
     overrideConditions,
     nestedStatusCel,
-    resourceIds
+    resourceIds,
+    omitFields
   );
 }
 
@@ -1035,7 +1040,8 @@ function walkAndConditionalize(
   overriddenFields: Set<string>,
   overrideConditions: Map<string, string>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  omitFields?: ReadonlySet<string>
 ): unknown {
   if (Array.isArray(current) && Array.isArray(baseline) && Array.isArray(hybrid)) {
     if (baseline.length !== hybrid.length) {
@@ -1046,7 +1052,8 @@ function walkAndConditionalize(
             overriddenFields,
             overrideConditions,
             nestedStatusCel,
-            resourceIds
+            resourceIds,
+            omitFields
           )
         : current;
     }
@@ -1066,6 +1073,9 @@ function walkAndConditionalize(
         continue;
       }
       if (isLeafValue(b) && isLeafValue(h)) {
+        if (isValuesMergeExpression(b) && isValuesMergeExpression(h)) {
+          continue;
+        }
         if (!leafEquals(b, h) && leafEquals(c, b)) {
           current[i] = buildCelConditional(
             b,
@@ -1073,7 +1083,8 @@ function walkAndConditionalize(
             overriddenFields,
             overrideConditions,
             nestedStatusCel,
-            resourceIds
+            resourceIds,
+            omitFields
           );
         }
       } else {
@@ -1084,7 +1095,8 @@ function walkAndConditionalize(
           overriddenFields,
           overrideConditions,
           nestedStatusCel,
-          resourceIds
+          resourceIds,
+          omitFields
         );
         if (conditionalized !== c) {
           current[i] = conditionalized;
@@ -1112,6 +1124,9 @@ function walkAndConditionalize(
         continue;
       }
       if (isLeafValue(b) && isLeafValue(h)) {
+        if (isValuesMergeExpression(b) && isValuesMergeExpression(h)) {
+          continue;
+        }
         if (!leafEquals(b, h) && leafEquals(c, b)) {
           (current as Record<string, unknown>)[key] = buildCelConditional(
             b,
@@ -1119,7 +1134,8 @@ function walkAndConditionalize(
             overriddenFields,
             overrideConditions,
             nestedStatusCel,
-            resourceIds
+            resourceIds,
+            omitFields
           );
         }
       } else {
@@ -1130,7 +1146,8 @@ function walkAndConditionalize(
           overriddenFields,
           overrideConditions,
           nestedStatusCel,
-          resourceIds
+          resourceIds,
+          omitFields
         );
         if (conditionalized !== c) {
           (current as Record<string, unknown>)[key] = conditionalized;
@@ -1150,6 +1167,7 @@ function isLeafValue(v: unknown): boolean {
     typeof v === 'string' ||
     typeof v === 'number' ||
     typeof v === 'boolean' ||
+    isValuesMergeExpression(v) ||
     isCelExpressionLike(v) ||
     // KubernetesRef proxies register as functions (typeof fn is 'function')
     typeof v === 'function'
@@ -1373,7 +1391,8 @@ function applyResourceStatusBranchDiff(
   falseRes: Record<string, unknown>,
   conditionCel: string,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  omitFields?: ReadonlySet<string>
 ): void {
   for (const key of new Set([...Object.keys(trueRes), ...Object.keys(falseRes)])) {
     if (key === '__resourceId' || key.startsWith('__')) continue;
@@ -1382,24 +1401,28 @@ function applyResourceStatusBranchDiff(
     const fv = falseRes[key];
 
     if (tv === undefined && fv !== undefined) {
-      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
-      targetRes[key] = `\${${conditionCel} ? omit() : ${falseRepr}}`;
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
+      targetRes[key] = `\${${conditionCel} ? omit() : ${celBranchRepr(falseRepr)}}`;
       continue;
     }
 
     if (fv === undefined && tv !== undefined) {
-      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
-      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : omit()}`;
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
+      targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : omit()}`;
       continue;
     }
 
     if (tv === undefined || fv === undefined) continue;
 
+    if (isValuesMergeExpression(tv) && isValuesMergeExpression(fv)) {
+      continue;
+    }
+
     if (isCelExpressionLike(tv) || isCelExpressionLike(fv)) {
       if (!leafEquals(tv, fv)) {
-        const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
-        const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
-        targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+        const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
+        const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
+        targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
       }
       continue;
     }
@@ -1411,10 +1434,11 @@ function applyResourceStatusBranchDiff(
         targetRes[key] as Record<string, unknown>,
         tv,
         fv,
-        conditionCel,
-        nestedStatusCel,
-        resourceIds
-      );
+          conditionCel,
+          nestedStatusCel,
+          resourceIds,
+          omitFields
+        );
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length === fv.length) {
       if (!Array.isArray(targetValue)) targetRes[key] = [...tv];
       const targetArray = targetRes[key] as unknown[];
@@ -1427,22 +1451,23 @@ function applyResourceStatusBranchDiff(
             fv[i] as Record<string, unknown>,
             conditionCel,
             nestedStatusCel,
-            resourceIds
+            resourceIds,
+            omitFields
           );
         } else if (!leafEquals(tv[i], fv[i])) {
-          const trueRepr = celValueRepr(tv[i], nestedStatusCel, resourceIds);
-          const falseRepr = celValueRepr(fv[i], nestedStatusCel, resourceIds);
-          targetArray[i] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+          const trueRepr = celValueRepr(tv[i], nestedStatusCel, resourceIds, omitFields);
+          const falseRepr = celValueRepr(fv[i], nestedStatusCel, resourceIds, omitFields);
+          targetArray[i] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
         }
       }
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length !== fv.length) {
-      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
-      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
-      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
+      targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
     } else if (!leafEquals(tv, fv)) {
-      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds);
-      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds);
-      targetRes[key] = `\${${conditionCel} ? ${trueRepr} : ${falseRepr}}`;
+      const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
+      const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
+      targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
     }
   }
 }
@@ -1502,7 +1527,13 @@ function isNestedCompositionChild(
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) && !isCelExpressionLike(v);
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    !isCelExpressionLike(v) &&
+    !isValuesMergeExpression(v)
+  );
 }
 
 function isWalkableRecord(v: unknown): v is Record<string, unknown> {
@@ -1540,15 +1571,16 @@ function buildCelConditional(
   overriddenFields: Set<string>,
   overrideConditions: Map<string, string>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  omitFields?: ReadonlySet<string>
 ): string {
   const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
-  const proxyRepr = celValueRepr(proxyValue, nestedStatusCel, resourceIds);
-  const hybridRepr = celValueRepr(hybridValue, nestedStatusCel, resourceIds);
+  const proxyRepr = celValueRepr(proxyValue, nestedStatusCel, resourceIds, omitFields);
+  const hybridRepr = celValueRepr(hybridValue, nestedStatusCel, resourceIds, omitFields);
 
   const explicitCondition = overrideConditions.get(field);
   if (explicitCondition) {
-    return `\${${explicitCondition} ? ${proxyRepr} : ${hybridRepr}}`;
+    return `\${${explicitCondition} ? ${celBranchRepr(proxyRepr)} : ${celBranchRepr(hybridRepr)}}`;
   }
 
   // Chain has() guards when the proxy value references a nested optional
@@ -1565,13 +1597,19 @@ function buildCelConditional(
   const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
   if (schemaPathMatch) {
     const fullRefPath = schemaPathMatch[1]?.replace(/\.+$/, '');
-    if (!fullRefPath) return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
+    if (!fullRefPath) {
+      return `\${${guard} ? ${celBranchRepr(proxyRepr)} : ${celBranchRepr(hybridRepr)}}`;
+    }
     if (fullRefPath === field || fullRefPath.startsWith(`${field}.`)) {
       guard = buildSchemaSpecHasGuard(fullRefPath);
     }
   }
 
-  return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
+  return `\${${guard} ? ${celBranchRepr(proxyRepr)} : ${celBranchRepr(hybridRepr)}}`;
+}
+
+function celBranchRepr(repr: string): string {
+  return repr.includes(' ? ') && repr.includes(' : ') ? `(${repr})` : repr;
 }
 
 function buildSchemaSpecHasGuard(path: string): string {
@@ -1640,26 +1678,41 @@ import { escapeCelString as escapeCelLiteral } from '../../utils/cel-escape.js';
 function celValueRepr(
   value: unknown,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  omitFields?: ReadonlySet<string>,
+  guardSchemaRefs = false
 ): string {
   if (value === null || value === undefined) return '""';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (isValuesMergeExpression(value)) {
+    const processed = processResourceReferences(
+      value,
+      createBranchCelContext(nestedStatusCel, resourceIds, omitFields),
+      'spec.values._branch'
+    );
+    return celValueRepr(processed, nestedStatusCel, resourceIds, omitFields, guardSchemaRefs);
+  }
   // CelExpression object — use the expression string directly.
   if (isCelExpressionLike(value)) {
     return unwrapKroExpression(
       finalizeCelForKro(
         (value as { expression: string }).expression,
         nestedStatusCel,
-        createBranchCelContext(nestedStatusCel, resourceIds)
+        createBranchCelContext(nestedStatusCel, resourceIds, omitFields)
       )
     );
   }
   if (typeof value === 'function') {
     // KubernetesRef proxy — toString yields the marker token which we
     // convert to a bare CEL path via the marker → CEL rules.
-    return markerStringToCelBare(String(value));
+    const repr = markerStringToCelBare(String(value));
+    return guardSchemaRefs ? guardSchemaSpecRepr(repr) : repr;
   }
   if (typeof value === 'string') {
+    const kroExpression = unwrapKroExpression(value);
+    if (kroExpression !== value) {
+      return guardSchemaRefs ? guardSchemaSpecRepr(kroExpression) : kroExpression;
+    }
     if (value.includes('__KUBERNETES_REF_')) {
       return markerStringToCelExpr(value);
     }
@@ -1667,29 +1720,37 @@ function celValueRepr(
     return `"${escapeCelLiteral(value)}"`;
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => celValueRepr(item, nestedStatusCel, resourceIds)).join(', ')}]`;
+    return `[${value.map((item) => celValueRepr(item, nestedStatusCel, resourceIds, omitFields, guardSchemaRefs)).join(', ')}]`;
   }
   if (isPlainObject(value)) {
     return `{${Object.entries(value)
       .map(
         ([key, entryValue]) =>
-          `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds)}`
+          `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue, nestedStatusCel, resourceIds, omitFields, true)}`
       )
       .join(', ')}}`;
   }
   return '""';
 }
 
+function guardSchemaSpecRepr(repr: string): string {
+  const schemaPath = /^schema\.spec\.([a-zA-Z0-9_.]+)$/.exec(repr)?.[1];
+  if (!schemaPath) return repr;
+  return `${buildSchemaSpecHasGuard(schemaPath)} ? ${repr} : omit()`;
+}
+
 function createBranchCelContext(
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds: ReadonlySet<string> | undefined
+  resourceIds: ReadonlySet<string> | undefined,
+  omitFields: ReadonlySet<string> | undefined
 ): SerializationContext | undefined {
-  if (!nestedStatusCel && !resourceIds) return undefined;
+  if (!nestedStatusCel && !resourceIds && !omitFields) return undefined;
   return {
     celPrefix: '',
     resourceIdStrategy: 'deterministic',
     ...(nestedStatusCel ? { nestedStatusCel } : {}),
     ...(resourceIds ? { resourceIds } : {}),
+    ...(omitFields ? { omitFields } : {}),
   };
 }
 

@@ -123,7 +123,7 @@ describe('Ory Helm values mapper', () => {
     });
     expect(values.hydraMaester.singleNamespaceMode).toBe(true);
     expect(values.oathkeeperMaester.singleNamespaceMode).toBe(true);
-    expect(values.oathkeeper.oathkeeper?.managedAccessRules).toBe(true);
+    expect(values.oathkeeper.oathkeeper?.managedAccessRules).toBe(false);
   });
 
   it('Resolve managed route dependency URLs from their runtime URL, not resource name', () => {
