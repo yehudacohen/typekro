@@ -24,6 +24,7 @@ import {
   aspect,
   Cel,
   hotReload,
+  helmRelease,
   kubernetesComposition,
   merge,
   metadata,
@@ -373,6 +374,33 @@ describe('typed resource aspects', () => {
     expect(yaml).not.toContain(
       'metadata:\n          name: static-demo\n          namespace: test-ns\n          labels:\n            app: static-demo'
     );
+  });
+
+  it('keeps non-Helm aspect merge operations shallow', () => {
+    const factory = app.factory('direct', {
+      aspects: [
+        aspect
+          .on(
+            simple.Deployment,
+            override<DeploymentAspectSchema>({
+              spec: {
+                template: {
+                  metadata: merge({ labels: { injected: 'true' } }),
+                },
+              },
+            })
+          )
+          .where({ slot: 'app' })
+          .expectOne(),
+      ],
+    });
+
+    const graph = factory.createResourceGraphForInstance({ name: 'demo', image: 'nginx' });
+    const deployment = graph.resources.find(
+      (resource) => resource.manifest.kind === 'Deployment'
+    ) as { manifest: { spec: { template: { metadata: { labels: Record<string, string> } } } } };
+
+    expect(deployment.manifest.spec.template.metadata.labels).toEqual({ injected: 'true' });
   });
 
   it('applies spec-derived overrides to a selected workload slot', () => {
@@ -1166,6 +1194,57 @@ describe('typed resource aspects', () => {
     expect(() => concrete.toYaml({ aspects: mergeAspects })).toThrow(
       /reference-backed|payload|Kro|merge/i
     );
+  });
+
+  it('allows reference-backed merge operations against Helm spec.values in Kro mode', () => {
+    const dynamicOverlay = Cel.expr<string>('schema.spec.overlay');
+    const aspects = [
+      aspect
+        .on(
+          resources,
+          override({
+            spec: {
+              values: merge({
+                generated: { overlay: dynamicOverlay as unknown as string },
+              }),
+            },
+          })
+        )
+        .where({ id: 'chart' })
+        .expectOne(),
+    ];
+    const chartApp = kubernetesComposition(
+      {
+        name: 'aspect-helm-values-merge',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'AspectHelmValuesMerge',
+        spec: type({ base: 'string', overlay: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        helmRelease({
+          id: 'chart',
+          name: 'demo-chart',
+          chart: {
+            repository: 'https://charts.bitnami.com/bitnami',
+            name: 'nginx',
+          },
+          values: {
+            generated: { base: spec.base },
+          },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = chartApp.toYaml({ aspects });
+
+    expect(yaml).toContain('id: chart');
+    expect(yaml).toContain('values:');
+    expect(yaml).not.toContain(' + ');
+    expect(yaml).toContain('schema.spec.base');
+    expect(yaml).toContain('schema.spec.overlay');
   });
 
   it('allows append operations when the current Kro array is concrete', () => {

@@ -1,5 +1,7 @@
+import type { TypeKroChartValues } from '../../core/types/common.js';
+
 // Helm Release Resource Types
-export interface HelmReleaseSpec {
+export interface HelmReleaseSpec<TValues extends object = Record<string, unknown>> {
   interval?: string;
   timeout?: string;
   chart: {
@@ -13,8 +15,11 @@ export interface HelmReleaseSpec {
       };
     };
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Helm values are arbitrary user-defined objects
-  values?: Record<string, unknown>;
+  /**
+   * Helm values are graph-aware TypeKro value trees: refs, CEL expressions,
+   * mixed templates, arrays, and plain objects are serialized recursively.
+   */
+  values?: TypeKroChartValues<TValues>;
   targetNamespace?: string;
   install?: {
     createNamespace?: boolean;

@@ -7,6 +7,10 @@
  * Supports two calling conventions:
  * 1. Positional: externalRef(apiVersion, kind, instanceName, namespace?)
  * 2. Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace? } })
+ *
+ * `observedResource(...)` is a readability alias for the same Kro externalRef
+ * primitive when a composition observes child resources managed by another
+ * controller, such as Helm chart children.
  */
 
 import { getCurrentCompositionContext } from '../composition/context.js';
@@ -20,6 +24,12 @@ import type { Enhanced, KubernetesResource } from '../types.js';
 // of user-specified kinds, but we need the factoryName 'externalRef' in the registry.
 registerFactory({
   factoryName: 'externalRef',
+  kind: 'ExternalRef',
+  apiVersion: 'typekro/v1',
+});
+
+registerFactory({
+  factoryName: 'observedResource',
   kind: 'ExternalRef',
   apiVersion: 'typekro/v1',
 });
@@ -132,6 +142,39 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   }
 
   return enhanced;
+}
+
+/**
+ * Observe an existing resource without managing it.
+ *
+ * This is a semantic alias over {@link externalRef}. Use it when TypeKro needs
+ * typed references to child resources created by another controller rather than
+ * resources owned by the current composition.
+ */
+export function observedResource<TSpec extends object, TStatus extends object>(
+  config: ExternalRefConfig
+): Enhanced<TSpec, TStatus>;
+export function observedResource<TSpec extends object, TStatus extends object>(
+  apiVersion: string,
+  kind: string,
+  instanceName: string,
+  namespace?: string
+): Enhanced<TSpec, TStatus>;
+export function observedResource<TSpec extends object, TStatus extends object>(
+  configOrApiVersion: ExternalRefConfig | string,
+  kind?: string,
+  instanceName?: string,
+  namespace?: string
+): Enhanced<TSpec, TStatus> {
+  if (typeof configOrApiVersion === 'object') {
+    return externalRef<TSpec, TStatus>(configOrApiVersion);
+  }
+
+  if (!kind || !instanceName) {
+    throw new Error('observedResource positional form requires kind and instanceName');
+  }
+
+  return externalRef<TSpec, TStatus>(configOrApiVersion, kind, instanceName, namespace);
 }
 
 /**

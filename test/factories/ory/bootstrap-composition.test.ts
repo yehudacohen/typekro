@@ -104,7 +104,7 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.browserBaseUrl.url');
-    expect(yaml).toContain('schema.spec.kratos.identitySchema');
+    expect(yaml).not.toContain('schema.spec.kratos.identitySchema');
     expect(yaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
     expect(yaml).toContain('identity.default.schema.json');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
@@ -114,6 +114,21 @@ describe('Ory identity stack composition', () => {
     expect(yaml).not.toContain('schema.spec.resources');
     expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
+  });
+
+  it('Omits graph-mode Ory whole-object Helm values that Kro cannot merge', () => {
+    const yaml = oryIdentityStack.toYaml();
+
+    expect(yaml).toContain('schema.spec.global');
+    expect(yaml).not.toContain('schema.spec.hydra.values');
+    expect(yaml).not.toContain('schema.spec.kratos.values');
+    expect(yaml).not.toContain('schema.spec.keto.values');
+    expect(yaml).not.toContain('schema.spec.oathkeeper.values');
+    expect(yaml).not.toContain('schema.spec.maester.hydraValues');
+    expect(yaml).not.toContain('schema.spec.maester.oathkeeperValues');
+    expect(yaml).not.toContain(') + (');
+    expect(yaml).not.toContain('__KUBERNETES_REF_');
+    expect(yaml).not.toContain('[object Object]');
   });
 
   it('Generate direct-mode YAML for managed local dependency sources with starter OAuth2Client and Rule resources', async () => {
@@ -192,6 +207,59 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('apiVersion: hydra.ory.sh/v1alpha1');
     expect(yaml).toContain('apiVersion: oathkeeper.ory.sh/v1alpha1');
     expect(yaml).not.toContain('undefined');
+  });
+
+  it('Preserves direct-mode Ory values through the values passthrough', async () => {
+    const factory = oryIdentityStack.factory('direct', { namespace: 'ory-test' });
+    const yaml = await factory.toYaml({
+      name: 'identity-values-test',
+      namespace: 'ory-test',
+      dependencySources: {
+        hydra: {
+          database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-hydra-db' } },
+          systemSecret: { mode: 'managed', secretName: 'identity-values-test-hydra-secrets', secretKey: 'system' },
+        },
+        kratos: {
+          database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-kratos-db' } },
+          secrets: {
+            cookie: { mode: 'managed', secretName: 'identity-values-test-kratos-secrets', secretKey: 'cookie' },
+            cipher: { mode: 'managed', secretName: 'identity-values-test-kratos-secrets', secretKey: 'cipher' },
+          },
+        },
+        keto: {
+          database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-keto-db' } },
+        },
+        oathkeeper: {
+          mutatorIdTokenJwks: {
+            mode: 'managed',
+            secretName: 'identity-values-test-oathkeeper-secrets',
+            secretKey: 'jwks',
+          },
+        },
+      },
+      global: { imageRegistry: 'registry.example.com' },
+      hydra: {
+        values: {
+          deployment: { annotations: { owner: 'platform' } },
+        },
+      },
+      kratos: {
+        values: {
+          kratos: { config: { log: { level: 'debug' } } },
+        },
+      },
+      maester: {
+        hydra: { enabled: true, singleNamespaceMode: true },
+        oathkeeper: { enabled: true, singleNamespaceMode: true },
+        hydraValues: { replicaCount: 1 },
+      },
+    });
+
+    expect(yaml).toContain('imageRegistry: registry.example.com');
+    expect(yaml).toContain('owner: platform');
+    expect(yaml).toContain('level: debug');
+    expect(yaml).toContain('replicaCount: 1');
+    expect(yaml).not.toContain('customValues');
   });
 
 });

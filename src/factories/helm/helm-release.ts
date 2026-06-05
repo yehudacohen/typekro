@@ -4,11 +4,16 @@ import {
 } from '../../core/config/defaults.js';
 import { getComponentLogger } from '../../core/logging/index.js';
 import type { Enhanced } from '../../core/types/index.js';
+import type { TypeKroChartValue, TypeKroValueTreeObject } from '../../core/types/common.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
 
-export interface HelmReleaseConfig {
+type HelmReleaseAuthoringSpec<TValues extends object> = Omit<HelmReleaseSpec<TValues>, 'values'> & {
+  values?: TypeKroChartValue<TValues>;
+};
+
+export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObject> {
   name: string;
   namespace?: string;
   /** @default '5m' */
@@ -30,7 +35,11 @@ export interface HelmReleaseConfig {
     /** @default 'HelmRepository' */
     kind?: 'HelmRepository';
   };
-  values?: Record<string, unknown>;
+  /**
+   * Graph-aware Helm values. TypeKro serializes nested refs, CEL expressions,
+   * mixed-template strings, arrays, and plain objects recursively.
+   */
+  values?: TypeKroChartValue<TValues>;
   driftDetection?: HelmReleaseSpec['driftDetection'];
   id?: string;
 }
@@ -102,9 +111,9 @@ export interface HelmReleaseConfig {
  * })
  * ```
  */
-export function helmRelease(
-  config: HelmReleaseConfig
-): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
+  config: HelmReleaseConfig<TValues>
+): Enhanced<HelmReleaseSpec<TValues>, HelmReleaseStatus> {
   // Determine sourceRef — use explicit config or auto-detect from repository URL
   let sourceRefName: string;
   let sourceRefNamespace: string;
@@ -139,7 +148,7 @@ export function helmRelease(
     }
   }
 
-  return createResource<HelmReleaseSpec, HelmReleaseStatus>({
+  return createResource<HelmReleaseAuthoringSpec<TValues>, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
     kind: 'HelmRelease',
@@ -167,7 +176,10 @@ export function helmRelease(
       ...(config.driftDetection && { driftDetection: config.driftDetection }),
       ...(config.values && { values: config.values }),
     },
-  }).withReadinessEvaluator(helmReleaseReadinessEvaluator);
+  }).withReadinessEvaluator(helmReleaseReadinessEvaluator) as Enhanced<
+    HelmReleaseSpec<TValues>,
+    HelmReleaseStatus
+  >;
 }
 
 /**
@@ -232,7 +244,7 @@ export function simpleHelmChart(
   name: string,
   repository: string,
   chart: string,
-  values?: Record<string, unknown>
+  values?: TypeKroValueTreeObject
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   getComponentLogger('helm-release').warn(
     "simpleHelmChart() is deprecated. Use simple.HelmChart() instead — import { simple } from 'typekro'"

@@ -13,6 +13,7 @@
  */
 
 import { type } from 'arktype';
+import type { TypeKroChartValues } from '../../core/types/common.js';
 
 // ============================================================================
 // Shared Schema Shapes
@@ -233,4 +234,10 @@ export const InngestHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the Inngest Helm release. */
-export type InngestHelmReleaseConfig = typeof InngestHelmReleaseConfigSchema.infer;
+export type InngestHelmReleaseConfig = Omit<
+  typeof InngestHelmReleaseConfigSchema.infer,
+  'values'
+> & {
+  /** Graph-aware Helm values serialized recursively by TypeKro. */
+  values?: TypeKroChartValues<Record<string, unknown>>;
+};

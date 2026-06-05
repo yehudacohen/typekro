@@ -1551,12 +1551,10 @@ function buildCelConditional(
     return `\${${explicitCondition} ? ${proxyRepr} : ${hybridRepr}}`;
   }
 
-  // Chain has() guards when the proxy value references a sub-field deeper
-  // than the controlling optional field. A single has(schema.spec.X) is
-  // insufficient when the value accesses X.Y — the user may provide X: {}
-  // without Y, and KRO would fail with "no such key: Y".
-  const guardField = `schema.spec.${field}`;
-  let guard = `has(${guardField})`;
+  // Chain has() guards when the proxy value references a nested optional
+  // path. A single has(schema.spec.X.Y) is insufficient when X is absent —
+  // KRO still evaluates through X and fails with "no such key: X".
+  let guard = buildSchemaSpecHasGuard(field);
 
   // Extract the full schema path from the proxy repr to check depth.
   // proxyRepr may be a bare path like `schema.spec.cnpgOperator.version`
@@ -1567,21 +1565,22 @@ function buildCelConditional(
   const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
   if (schemaPathMatch) {
     const fullRefPath = schemaPathMatch[1]?.replace(/\.+$/, '');
-    if (!fullRefPath) return `\${has(${guardField}) ? ${proxyRepr} : ${hybridRepr}}`;
-    const fullPath = `schema.spec.${fullRefPath}`;
-    if (fullPath !== guardField && fullPath.startsWith(`${guardField}.`)) {
-      const guardSegments = field.split('.').length;
-      const leafSegments = fullRefPath.split('.');
-      const guards = [`has(${guardField})`];
-      for (let j = guardSegments + 1; j <= leafSegments.length; j++) {
-        const intermediatePath = `schema.spec.${leafSegments.slice(0, j).join('.')}`;
-        guards.push(`has(${intermediatePath})`);
-      }
-      guard = guards.join(' && ');
+    if (!fullRefPath) return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
+    if (fullRefPath === field || fullRefPath.startsWith(`${field}.`)) {
+      guard = buildSchemaSpecHasGuard(fullRefPath);
     }
   }
 
   return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
+}
+
+function buildSchemaSpecHasGuard(path: string): string {
+  const segments = path.split('.').filter(Boolean);
+  const guards: string[] = [];
+  for (let index = 1; index <= segments.length; index++) {
+    guards.push(`has(schema.spec.${segments.slice(0, index).join('.')})`);
+  }
+  return guards.join(' && ');
 }
 
 /**

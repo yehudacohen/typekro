@@ -307,16 +307,13 @@ describe('Ory Helm values mapper', () => {
     );
   });
 
-  it('Merge typed values before customValues and validate final unsafe-value safety after all merges', () => {
+  it('Validate unsafe production values after typed values are merged', () => {
     expect(() =>
       mapOryConfigToHelmValues({
         ...externalConfig,
         hydra: {
           ...externalConfig.hydra,
-          values: { replicaCount: 2, hydra: { dev: false } },
-        },
-        customValues: {
-          hydra: { hydra: { dev: true } },
+          values: { replicaCount: 2, hydra: { dev: true } },
         },
       })
     ).toThrow(/ORY_UNSAFE_PRODUCTION_VALUE|dev/i);
@@ -381,7 +378,7 @@ describe('Ory Helm values mapper', () => {
     expect(JSON.stringify(values)).not.toContain('postgres://');
   });
 
-  it('Allow explicit external literal value sources while still rejecting unsafe customValues literals', () => {
+  it('Allow explicit external literal value sources for production dependencies', () => {
     const values = mapOryConfigToHelmValues({
       ...externalConfig,
       hydra: {
@@ -405,7 +402,7 @@ describe('Ory Helm values mapper', () => {
     expect(values.keto.keto?.config?.dsn).toBe('postgres://keto.example.com:5432/keto');
   });
 
-  it('Map high-level global and resource convenience fields before typed values and customValues', () => {
+  it('Map high-level global and resource convenience fields before typed values', () => {
     const values = mapOryConfigToHelmValues({
       ...externalConfig,
       global: { imageRegistry: 'registry.example.com', imagePullSecrets: ['registry-creds'] },

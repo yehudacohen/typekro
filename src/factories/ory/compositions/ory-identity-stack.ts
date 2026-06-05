@@ -1,5 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { externalRef } from '../../../core/references/external-refs.js';
+import { isValuesMergeExpression, mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -24,15 +24,6 @@ import {
 } from '../types.js';
 import { mapOryConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
-interface ObservedServiceSpec {
-  clusterIP?: string;
-  ports: [{ port: number }, ...Array<{ port: number }>];
-}
-
-interface ObservedServiceStatus {
-  loadBalancer?: { ingress?: Array<{ ip?: string; hostname?: string }> };
-}
-
 function readyCondition(conditions: unknown): boolean {
   return Cel.expr<boolean>(conditions, '.exists(c, c.type == "Ready" && c.status == "True")');
 }
@@ -42,6 +33,10 @@ function withMaesterSubchartValues<T extends object>(
   key: string,
   maesterValues: object
 ): T {
+  if (isValuesMergeExpression(values) || isValuesMergeExpression(maesterValues)) {
+    return mergeValuesExpression(values, { [key]: maesterValues }) as T;
+  }
+
   return { ...values, [key]: maesterValues };
 }
 
@@ -69,70 +64,88 @@ function oathkeeperProbeValues(): Record<string, unknown> {
 }
 
 function serviceEndpoint(
-  service: ReturnType<typeof externalRef<ObservedServiceSpec, ObservedServiceStatus>>,
+  serviceName: string,
   namespaceName: string,
+  port: number,
   scheme = 'http'
 ): OryEndpointStatus {
-  const serviceName = service.metadata.name;
-  const serviceNamespace = service.metadata.namespace ?? namespaceName;
-  const clusterIP = service.spec.clusterIP;
-  const port = service.spec.ports[0]?.port;
-  const hasConcreteServiceAddress =
-    !isKubernetesRef(serviceName) && !isKubernetesRef(serviceNamespace);
-  const host = hasConcreteServiceAddress
-    ? `${serviceName}.${serviceNamespace}.svc.cluster.local`
-    : clusterIP;
+  const host = `${serviceName}.${namespaceName}.svc.cluster.local`;
   return {
-    url: `${scheme}://${clusterIP}:${port}`,
+    url: `${scheme}://${host}:${port}`,
     scheme,
     host,
-    ...(port ? { port } : {}),
-    ...(clusterIP ? { clusterIP } : {}),
-    ...(hasConcreteServiceAddress && serviceName ? { serviceName } : {}),
-    ...(hasConcreteServiceAddress && serviceNamespace ? { namespace: serviceNamespace } : {}),
+    port,
+    serviceName,
+    namespace: namespaceName,
   };
 }
 
-function omitCustomValuesForGraph(config: OryIdentityStackConfig): OryIdentityStackConfig {
-  const {
-    customValues: _customValues,
-    global: _global,
-    hydra,
-    kratos,
-    keto,
-    oathkeeper,
-    maester,
-    ...rest
-  } = config;
-  const {
-    customValues: _hydraCustomValues,
-    values: _hydraValues,
-    ...hydraRest
-  } = hydra ?? {};
-  const { customValues: _kratosCustomValues, values: _kratosValues, ...kratosRest } = kratos ?? {};
-  const {
-    customValues: _ketoCustomValues,
-    values: _ketoValues,
-    ...ketoRest
-  } = keto ?? {};
-  const {
-    customValues: _oathkeeperCustomValues,
-    values: _oathkeeperValues,
-    ...oathkeeperRest
-  } = oathkeeper ?? {};
-  const {
-    hydraValues: _hydraMaesterValues,
-    oathkeeperValues: _oathkeeperMaesterValues,
-    ...maesterRest
-  } = maester ?? {};
+function graphSafeConfig(
+  config: OryIdentityStackConfig,
+  forceSchemaRefs = false
+): OryIdentityStackConfig {
+  if (forceSchemaRefs || isSchemaSpec(config) || isKubernetesRef(config.name)) {
+    return defined({
+      name: config.name,
+      namespace: config.namespace,
+      version: config.version,
+      dependencySources: config.dependencySources,
+      shared: config.shared,
+      global: config.global,
+      hydra: defined({
+        dsn: config.hydra?.dsn,
+        issuerUrl: config.hydra?.issuerUrl,
+        loginUrl: config.hydra?.loginUrl,
+        consentUrl: config.hydra?.consentUrl,
+        logoutUrl: config.hydra?.logoutUrl,
+        systemSecret: config.hydra?.systemSecret,
+        replicaCount: config.hydra?.replicaCount,
+        resources: config.hydra?.resources,
+        serviceMonitor: config.hydra?.serviceMonitor,
+        values: config.hydra?.values,
+      }),
+      kratos: defined({
+        dsn: config.kratos?.dsn,
+        publicBaseUrl: config.kratos?.publicBaseUrl,
+        browserBaseUrl: config.kratos?.browserBaseUrl,
+        identitySchema: config.kratos?.identitySchema,
+        courier: config.kratos?.courier,
+        secrets: config.kratos?.secrets,
+        replicaCount: config.kratos?.replicaCount,
+        resources: config.kratos?.resources,
+        serviceMonitor: config.kratos?.serviceMonitor,
+        values: config.kratos?.values,
+      }),
+      keto: defined({
+        dsn: config.keto?.dsn,
+        namespaces: config.keto?.namespaces,
+        replicaCount: config.keto?.replicaCount,
+        resources: config.keto?.resources,
+        serviceMonitor: config.keto?.serviceMonitor,
+        values: config.keto?.values,
+      }),
+      oathkeeper: defined({
+        managedAccessRules: config.oathkeeper?.managedAccessRules,
+        mutatorIdTokenJwks: config.oathkeeper?.mutatorIdTokenJwks,
+        replicaCount: config.oathkeeper?.replicaCount,
+        resources: config.oathkeeper?.resources,
+        serviceMonitor: config.oathkeeper?.serviceMonitor,
+        values: config.oathkeeper?.values,
+      }),
+      maester: config.maester,
+      resources: config.resources,
+    });
+  }
+
+  const { hydra, kratos, keto, oathkeeper, maester, ...rest } = config;
 
   return {
     ...rest,
-    ...(hydra ? { hydra: hydraRest } : {}),
-    ...(kratos ? { kratos: kratosRest } : {}),
-    ...(keto ? { keto: ketoRest } : {}),
-    ...(oathkeeper ? { oathkeeper: oathkeeperRest } : {}),
-    ...(maester ? { maester: maesterRest } : {}),
+    ...(hydra ? { hydra } : {}),
+    ...(kratos ? { kratos } : {}),
+    ...(keto ? { keto } : {}),
+    ...(oathkeeper ? { oathkeeper } : {}),
+    ...(maester ? { maester } : {}),
   };
 }
 
@@ -289,7 +302,7 @@ export const oryIdentityStack = kubernetesComposition(
         typedSpec.version,
         typedSpec.dependencySources,
       ].some((value) => isKubernetesRef(value));
-    const graphSpec = omitCustomValuesForGraph(typedSpec);
+    const graphSpec = graphSafeConfig(typedSpec, !concreteSpec);
     const graphFallbackSpec = graphSpec;
     const graphDependencySources = mergeDependencySourceDefaults(
       defaultManagedDependencySources(typedSpec.name) ?? {},
@@ -424,55 +437,6 @@ export const oryIdentityStack = kubernetesComposition(
     const kratosReleaseName = kratos.metadata.name ?? `${typedSpec.name}-kratos`;
     const ketoReleaseName = keto.metadata.name ?? `${typedSpec.name}-keto`;
     const oathkeeperReleaseName = oathkeeper.metadata.name ?? `${typedSpec.name}-oathkeeper`;
-    const hydraPublicService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'hydraPublicService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${hydraReleaseName}-public`, namespace: resolvedNamespace },
-    });
-    const hydraAdminService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'hydraAdminService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${hydraReleaseName}-admin`, namespace: resolvedNamespace },
-    });
-    const kratosPublicService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'kratosPublicService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${kratosReleaseName}-public`, namespace: resolvedNamespace },
-    });
-    const kratosAdminService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'kratosAdminService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${kratosReleaseName}-admin`, namespace: resolvedNamespace },
-    });
-    const ketoReadService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'ketoReadService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${ketoReleaseName}-read`, namespace: resolvedNamespace },
-    });
-    const ketoWriteService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'ketoWriteService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${ketoReleaseName}-write`, namespace: resolvedNamespace },
-    });
-    const oathkeeperProxyService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'oathkeeperProxyService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${oathkeeperReleaseName}-proxy`, namespace: resolvedNamespace },
-    });
-    const oathkeeperApiService = externalRef<ObservedServiceSpec, ObservedServiceStatus>({
-      id: 'oathkeeperApiService',
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: { name: `${oathkeeperReleaseName}-api`, namespace: resolvedNamespace },
-    });
-
     return {
       ready: allServicesReady,
       phase: Cel.expr<'Ready' | 'Installing'>(allServicesReady, ' ? "Ready" : "Installing"'),
@@ -487,14 +451,14 @@ export const oryIdentityStack = kubernetesComposition(
         oathkeeper: oathkeeperReady,
       },
       endpoints: {
-        hydraPublic: serviceEndpoint(hydraPublicService, resolvedNamespace),
-        hydraAdmin: serviceEndpoint(hydraAdminService, resolvedNamespace),
-        kratosPublic: serviceEndpoint(kratosPublicService, resolvedNamespace),
-        kratosAdmin: serviceEndpoint(kratosAdminService, resolvedNamespace),
-        ketoRead: serviceEndpoint(ketoReadService, resolvedNamespace),
-        ketoWrite: serviceEndpoint(ketoWriteService, resolvedNamespace),
-        oathkeeperProxy: serviceEndpoint(oathkeeperProxyService, resolvedNamespace),
-        oathkeeperApi: serviceEndpoint(oathkeeperApiService, resolvedNamespace),
+        hydraPublic: serviceEndpoint(`${hydraReleaseName}-public`, resolvedNamespace, 4444),
+        hydraAdmin: serviceEndpoint(`${hydraReleaseName}-admin`, resolvedNamespace, 4445),
+        kratosPublic: serviceEndpoint(`${kratosReleaseName}-public`, resolvedNamespace, 4433),
+        kratosAdmin: serviceEndpoint(`${kratosReleaseName}-admin`, resolvedNamespace, 4434),
+        ketoRead: serviceEndpoint(`${ketoReleaseName}-read`, resolvedNamespace, 4466),
+        ketoWrite: serviceEndpoint(`${ketoReleaseName}-write`, resolvedNamespace, 4467),
+        oathkeeperProxy: serviceEndpoint(`${oathkeeperReleaseName}-proxy`, resolvedNamespace, 4455),
+        oathkeeperApi: serviceEndpoint(`${oathkeeperReleaseName}-api`, resolvedNamespace, 4456),
       },
       version: Cel.template('%s', resolvedVersion),
     };

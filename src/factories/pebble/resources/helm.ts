@@ -16,7 +16,7 @@ import {
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
-import type { PebbleHelmReleaseConfig, PebbleHelmRepositoryConfig } from '../types.js';
+import type { PebbleHelmReleaseConfig, PebbleHelmRepositoryConfig, PebbleHelmValues } from '../types.js';
 
 // =============================================================================
 // PEBBLE HELM REPOSITORY WRAPPER
@@ -137,8 +137,8 @@ const pebbleHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('P
  */
 export function pebbleHelmRelease(
   config: PebbleHelmReleaseConfig
-): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  return createResource<HelmReleaseSpec, HelmReleaseStatus>({
+): Enhanced<HelmReleaseSpec<PebbleHelmValues>, HelmReleaseStatus> {
+  return createResource<HelmReleaseSpec<PebbleHelmValues>, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
     kind: 'HelmRelease',
@@ -159,7 +159,7 @@ export function pebbleHelmRelease(
         },
       },
       interval: config.interval || '5m',
-      ...(config.values && { values: config.values as Record<string, unknown> }),
+      ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(pebbleHelmReleaseReadinessEvaluator);
 }

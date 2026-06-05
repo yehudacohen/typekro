@@ -770,9 +770,11 @@ describe('Schema Nullish Defaults', () => {
       );
       const yaml: string = searxngBootstrap.toYaml();
 
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? true');
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? \\"Disabled\\"');
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? false');
+      expect(yaml).toContain('has(schema.spec.enabled) && schema.spec.enabled == false ? true');
+      expect(yaml).toContain(
+        'has(schema.spec.enabled) && schema.spec.enabled == false ? \\"Disabled\\"'
+      );
+      expect(yaml).toContain('has(schema.spec.enabled) && schema.spec.enabled == false ? false');
       expect(yaml).toContain('searxngDeployment.status.conditions.exists');
     });
 

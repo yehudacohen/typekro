@@ -1,5 +1,6 @@
 import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
+import type { TypeKroChartValue, TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   OryConfigValidationResult,
@@ -64,6 +65,7 @@ function mergeExtraEnv(base: unknown[], override: unknown[]): unknown[] {
 
 function deepMergeValue(base: unknown, override: unknown, key?: string): unknown {
   if (override === undefined) return base;
+  if (isKubernetesRef(override) || isCelExpression(override)) return override;
   if (key === 'extraEnv' && Array.isArray(base) && Array.isArray(override)) {
     return mergeExtraEnv(base, override);
   }
@@ -80,15 +82,15 @@ function deepMergeValue(base: unknown, override: unknown, key?: string): unknown
 
 function mergeValues<T extends object>(
   base: T,
-  typed?: T,
-  serviceCustom?: Record<string, unknown>,
-  stackCustom?: Record<string, unknown>
+  typed?: TypeKroChartValues<T>
 ): T {
-  let merged: unknown = base;
-  for (const next of [typed, serviceCustom, stackCustom]) {
-    merged = deepMergeValue(merged, next ?? {});
-  }
-  return merged as T;
+  return (typed === undefined ? base : deepMergeValue(base, typed)) as T;
+}
+
+function mergeableChartValues<T extends object>(
+  values: TypeKroChartValue<T> | undefined
+): TypeKroChartValues<T> | undefined {
+  return isKubernetesRef(values) || isCelExpression(values) ? undefined : values;
 }
 
 function sharedGlobal(config: OryIdentityStackConfig): Record<string, unknown> | undefined {
@@ -165,24 +167,12 @@ function defaultKratosIdentitySchema(): string {
   });
 }
 
-function dynamicKratosIdentitySchemas(): Record<string, string> {
-  return Cel.expr<Record<string, string>>(
-    'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) ? {"identity.default.schema.json": schema.spec.kratos.identitySchema} : {"identity.default.schema.json": ',
-    JSON.stringify(defaultKratosIdentitySchema()),
-    '}'
-  ) as Record<string, string>;
-}
-
 function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
   return [{ id: 'default', url: 'file:///etc/config/identity.default.schema.json' }];
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
-  if (isKubernetesRef(config?.identitySchema)) {
-    return dynamicKratosIdentitySchemas();
-  }
-
-  if (config?.identitySchema) {
+  if (config?.identitySchema && !isKubernetesRef(config.identitySchema)) {
     return { 'identity.default.schema.json': config.identitySchema };
   }
 
@@ -529,6 +519,10 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
   const kratosEnv = [secretEnv('DSN', resolvedConfig.kratos?.dsn), ...namedSecretEnvs('SECRETS_', resolvedConfig.kratos?.secrets)];
   const ketoEnv = [secretEnv('DSN', resolvedConfig.keto?.dsn)];
   const globalValues = sharedGlobal(resolvedConfig);
+  const hydraValues = mergeableChartValues(resolvedConfig.hydra?.values);
+  const kratosValues = mergeableChartValues(resolvedConfig.kratos?.values);
+  const ketoValues = mergeableChartValues(resolvedConfig.keto?.values);
+  const oathkeeperValues = mergeableChartValues(resolvedConfig.oathkeeper?.values);
 
   const values: OryMappedHelmValues = {
     hydra: mergeValues<OryHydraChartValues>(
@@ -538,7 +532,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         hydra: compact({
           dev:
             resolvedConfig.dependencySources?.hydra?.database?.dsn.mode === 'managed' ||
-            !!resolvedConfig.hydra?.values?.hydra?.dev,
+            !!hydraValues?.hydra?.dev,
           config: compact({
             dsn: secretValue(resolvedConfig.hydra?.dsn),
             secrets: compact({ system: secretValue(resolvedConfig.hydra?.systemSecret) }),
@@ -551,9 +545,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         maester: { enabled: resolvedConfig.maester?.hydra?.enabled ?? true },
         serviceMonitor: resolvedConfig.hydra?.serviceMonitor,
       }),
-      resolvedConfig.hydra?.values,
-      resolvedConfig.hydra?.customValues,
-      resolvedConfig.customValues?.hydra
+      hydraValues
     ),
     kratos: mergeValues<OryKratosChartValues>(
       compact<OryKratosChartValues>({
@@ -562,7 +554,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         kratos: compact({
           development:
             resolvedConfig.dependencySources?.kratos?.database?.dsn.mode === 'managed' ||
-            !!resolvedConfig.kratos?.values?.kratos?.development,
+            !!kratosValues?.kratos?.development,
           identitySchemas: kratosIdentitySchemas(resolvedConfig.kratos),
           config: kratosConfig(resolvedConfig.kratos),
           automigration: automigrationEnv(kratosEnv),
@@ -572,9 +564,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         ...jobTargets(kratosEnv),
         serviceMonitor: resolvedConfig.kratos?.serviceMonitor,
       }),
-      resolvedConfig.kratos?.values,
-      resolvedConfig.kratos?.customValues,
-      resolvedConfig.customValues?.kratos
+      kratosValues
     ),
     keto: mergeValues<OryKetoChartValues>(
       compact<OryKetoChartValues>({
@@ -588,9 +578,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         ...jobTargets(ketoEnv),
         serviceMonitor: resolvedConfig.keto?.serviceMonitor,
       }),
-      resolvedConfig.keto?.values,
-      resolvedConfig.keto?.customValues,
-      resolvedConfig.customValues?.keto
+      ketoValues
     ),
     oathkeeper: mergeValues<OryOathkeeperChartValues>(
       compact<OryOathkeeperChartValues>({
@@ -600,23 +588,29 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         maester: { enabled: resolvedConfig.maester?.oathkeeper?.enabled ?? true },
         serviceMonitor: resolvedConfig.oathkeeper?.serviceMonitor,
       }),
-      resolvedConfig.oathkeeper?.values,
-      resolvedConfig.oathkeeper?.customValues,
-      resolvedConfig.customValues?.oathkeeper
+      oathkeeperValues
     ),
     hydraMaester: compact<OryHydraMaesterChartValues>({
-      ...(resolvedConfig.maester?.hydraValues ?? {}),
+      ...(mergeableChartValues(resolvedConfig.maester?.hydraValues) ?? {}),
       singleNamespaceMode: resolvedConfig.maester?.hydra?.singleNamespaceMode ?? true,
       enabledNamespaces: resolvedConfig.maester?.hydra?.enabledNamespaces,
       serviceMonitor: resolvedConfig.maester?.hydra?.serviceMonitor,
     }),
     oathkeeperMaester: compact<OryOathkeeperMaesterChartValues>({
-      ...(resolvedConfig.maester?.oathkeeperValues ?? {}),
+      ...(mergeableChartValues(resolvedConfig.maester?.oathkeeperValues) ?? {}),
       singleNamespaceMode: resolvedConfig.maester?.oathkeeper?.singleNamespaceMode ?? true,
       rulesConfigmapNamespace: resolvedConfig.maester?.oathkeeper?.rulesConfigmapNamespace,
       rulesFileName: resolvedConfig.maester?.oathkeeper?.rulesFileName,
     }),
   };
+
+  if (isKubernetesRef(config.global)) {
+    const graphGlobal = config.global ? { global: config.global } : undefined;
+    values.hydra = mergeValues(values.hydra, graphGlobal);
+    values.kratos = mergeValues(values.kratos, graphGlobal);
+    values.keto = mergeValues(values.keto, graphGlobal);
+    values.oathkeeper = mergeValues(values.oathkeeper, graphGlobal);
+  }
 
   assertProductionSafe(resolvedConfig, values);
   return values;

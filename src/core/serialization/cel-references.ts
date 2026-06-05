@@ -9,9 +9,10 @@
  * conversion.  No other module should duplicate this logic.
  */
 
-import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { escapeCelString } from '../../utils/cel-escape.js';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
+import { escapeCelString } from '../../utils/cel-escape.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
@@ -253,7 +254,11 @@ const MARKER_PATTERN_FULL = new RegExp(`^${MARKER_PATTERN_SOURCE}$`);
  * `__schema__` sentinel by emitting `schema.<fieldPath>`; otherwise
  * emits `<resourceId>.<fieldPath>`.
  */
-function markerToCelPath(resourceId: string, fieldPath: string, context?: SerializationContext): string {
+function markerToCelPath(
+  resourceId: string,
+  fieldPath: string,
+  context?: SerializationContext
+): string {
   return normalizeCelArrayIndexPaths(`${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`);
 }
 
@@ -438,7 +443,7 @@ export function lookupNestedExpression(
   resourceId: string,
   fieldName: string,
   nestedStatusCel: Record<string, string>,
-  allowFieldFallback: boolean = true,
+  allowFieldFallback: boolean = true
 ): string | undefined {
   // Strategy 1: exact match.
   const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
@@ -461,9 +466,7 @@ export function lookupNestedExpression(
 
   // Strategy 2: base-name match (instance digits stripped).
   const refBase = resourceId.replace(/\d+$/, '');
-  const baseNameMatches = fieldMatches.filter(
-    (m) => m.baseId.replace(/\d+$/, '') === refBase
-  );
+  const baseNameMatches = fieldMatches.filter((m) => m.baseId.replace(/\d+$/, '') === refBase);
   if (baseNameMatches.length === 1) {
     const match = baseNameMatches[0];
     return match ? nestedStatusCel[match.key] : undefined;
@@ -630,7 +633,8 @@ function resolveNestedRefMarkers(
     const fieldPath = path.replace(/^status\./, '');
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined) return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
+      if (strictInnerExpr !== undefined)
+        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
       return match;
     }
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
@@ -728,6 +732,10 @@ export function finalizeCelForKro(
   return `\${${resolved}}`;
 }
 
+function normalizeSchemaSpecShorthand(expr: string): string {
+  return expr.replace(/(^|[^A-Za-z0-9_$.])spec\./g, '$1schema.spec.');
+}
+
 // ---------------------------------------------------------------------------
 // __KUBERNETES_REF__ marker → KRO CEL conversion
 // ---------------------------------------------------------------------------
@@ -806,7 +814,160 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
  *
  * This is the **only** function that should perform this transformation.
  */
-export function processResourceReferences(obj: unknown, context?: SerializationContext): unknown {
+function valueTreePath(path: string): boolean {
+  return path === 'spec.values' || path.includes('.values.') || path.endsWith('.values');
+}
+
+function childPath(parent: string, key: string): string {
+  return parent ? `${parent}.${key}` : key;
+}
+
+function arrayChildPath(parent: string, index: number): string {
+  return `${parent}[${index}]`;
+}
+
+function isPlainSerializableObject(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function valueTreeSerializationError(path: string, reason: string): Error {
+  return new Error(
+    `Cannot serialize ${path} in graph mode. ${reason} Provide a serializable value or move this logic to a direct-only API.`
+  );
+}
+
+function unwrapKroExpression(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (!value.startsWith('${') || !value.endsWith('}')) return undefined;
+  return value.slice(2, -1);
+}
+
+function celLiteralForValueTree(
+  value: unknown,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  if (isValuesMergeExpression(value)) {
+    return celValuesMergeExpression(value.base, value.overlays, context, path);
+  }
+
+  if (isKubernetesRef(value) || isCelExpression(value)) {
+    return unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
+  }
+
+  if (typeof value === 'string') {
+    const processed = processResourceReferences(value, context, path);
+    return unwrapKroExpression(processed) ?? JSON.stringify(processed);
+  }
+
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+
+  if (value === undefined) return 'null';
+
+  if (Array.isArray(value)) {
+    return `[${value
+      .filter((entry) => entry !== undefined)
+      .map((entry, index) => celLiteralForValueTree(entry, context, arrayChildPath(path, index)))
+      .join(', ')}]`;
+  }
+
+  if (typeof value === 'object' && isPlainSerializableObject(value)) {
+    const entries = Object.entries(value).flatMap(([key, child]) => {
+      if (child === undefined) return [];
+      return [
+        `${JSON.stringify(key)}: ${celLiteralForValueTree(child, context, childPath(path, key))}`,
+      ];
+    });
+    return `{${entries.join(', ')}}`;
+  }
+
+  throw valueTreeSerializationError(
+    path,
+    'Only plain data, refs, CEL expressions, and templates can be merged.'
+  );
+}
+
+function mergeValueTrees(base: unknown, overlay: unknown, path: string): unknown {
+  if (overlay === undefined) return base;
+
+  if (isValuesMergeExpression(overlay)) {
+    let mergedOverlay = overlay.base;
+    const normalizedOverlays = Array.isArray(overlay.overlays)
+      ? overlay.overlays
+      : [overlay.overlays];
+    normalizedOverlays.forEach((nestedOverlay, index) => {
+      mergedOverlay = mergeValueTrees(mergedOverlay, nestedOverlay, `${path}.overlay[${index}]`);
+    });
+    return mergeValueTrees(base, mergedOverlay, path);
+  }
+
+  if (Array.isArray(overlay)) return overlay;
+
+  if (isKubernetesRef(overlay) || isCelExpression(overlay)) {
+    if (path === 'spec.values') {
+      throw valueTreeSerializationError(
+        path,
+        'Kro CEL does not support merging whole-object values refs or CEL maps. Use an object with refs/CEL at specific leaves instead.'
+      );
+    }
+    return overlay;
+  }
+
+  if (
+    typeof base === 'object' &&
+    base !== null &&
+    isPlainSerializableObject(base) &&
+    typeof overlay === 'object' &&
+    overlay !== null &&
+    isPlainSerializableObject(overlay)
+  ) {
+    return Object.fromEntries(
+      Array.from(new Set([...Object.keys(base), ...Object.keys(overlay)])).flatMap((key) => {
+        const merged = mergeValueTrees(
+          (base as Record<string, unknown>)[key],
+          (overlay as Record<string, unknown>)[key],
+          childPath(path, key)
+        );
+        return merged === undefined ? [] : [[key, merged]];
+      })
+    );
+  }
+
+  return overlay;
+}
+
+function celValuesMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  let merged = base;
+  const normalizedOverlays = Array.isArray(overlays) ? overlays : [overlays];
+  normalizedOverlays.forEach((overlay, index) => {
+    merged = mergeValueTrees(merged, overlay, path || `spec.values.overlay[${index}]`);
+  });
+  return celLiteralForValueTree(merged, context, path);
+}
+
+export function processResourceReferences(
+  obj: unknown,
+  context?: SerializationContext,
+  path = ''
+): unknown {
+  const inValueTree = valueTreePath(path);
+
+  if (isValuesMergeExpression(obj)) {
+    return finalizeCelForKro(
+      celValuesMergeExpression(obj.base, obj.overlays, context, path),
+      context?.nestedStatusCel,
+      context
+    );
+  }
+
   if (isKubernetesRef(obj)) {
     return generateCelExpression(obj, context);
   }
@@ -814,23 +975,41 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   if (isCelExpression(obj)) {
     if (obj.__isTemplate) {
       return obj.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
-        finalizeCelForKro(innerExpr, context?.nestedStatusCel, context)
+        finalizeCelForKro(
+          normalizeSchemaSpecShorthand(innerExpr),
+          context?.nestedStatusCel,
+          context
+        )
       );
     }
     // Bare CelExpression — may be a single schema.spec.X reference (possibly
     // wrapped in `string(...)`). Delegate any single schema ref to
     // maybeWrapWithOmit so nested optional ancestors get the same guard chain
     // as KubernetesRef objects.
-    const expr = resolveNestedCompositionRefs(obj.expression, context?.nestedStatusCel, context?.resourceIds);
+    const expr = resolveNestedCompositionRefs(
+      obj.expression,
+      context?.nestedStatusCel,
+      context?.resourceIds
+    );
     const bareRef = /^schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.exec(expr)?.[0];
     if (bareRef) {
       return `\${${maybeWrapWithOmit(bareRef, false, context?.omitFields)}}`;
     }
-    const stringRef = /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(expr)?.[1];
+    const stringRef = /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(
+      expr
+    )?.[1];
     if (stringRef) {
       return `\${${maybeWrapWithOmit(stringRef, true, context?.omitFields)}}`;
     }
     return finalizeCelForKro(expr, context?.nestedStatusCel, context);
+  }
+
+  if (inValueTree && typeof obj === 'function') {
+    throw valueTreeSerializationError(path, 'Functions are direct-mode only.');
+  }
+
+  if (inValueTree && typeof obj === 'symbol') {
+    throw valueTreeSerializationError(path, 'Symbols are runtime-only values.');
   }
 
   // Strings containing __KUBERNETES_REF__ markers from template literals.
@@ -840,7 +1019,12 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   // remaining markers (schema refs and direct resource refs) are converted
   // to KRO mixed-template form.
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel, context?.resourceIds, context);
+    const resolved = resolveNestedRefMarkers(
+      obj,
+      context?.nestedStatusCel,
+      context?.resourceIds,
+      context
+    );
     if (resolved.includes('__KUBERNETES_REF_')) {
       return convertKubernetesRefMarkersTocel(resolved, context);
     }
@@ -850,16 +1034,27 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   }
 
   if (Array.isArray(obj)) {
-    return obj.map((item) => processResourceReferences(item, context));
+    return obj.flatMap((item, index) => {
+      if (inValueTree && item === undefined) return [];
+      return [processResourceReferences(item, context, arrayChildPath(path, index))];
+    });
   }
 
   if (obj && typeof obj === 'object') {
+    if (inValueTree && !isPlainSerializableObject(obj)) {
+      throw valueTreeSerializationError(
+        path,
+        `${obj.constructor?.name ?? 'This value'} is not a plain serializable object.`
+      );
+    }
+
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
       // Exclude hidden resourceId metadata; nested `id` fields can be valid resource config.
       if (key === '__resourceId') continue;
-      result[key] = processResourceReferences(value, context);
+      if (inValueTree && value === undefined) continue;
+      result[key] = processResourceReferences(value, context, childPath(path, key));
     }
 
     // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
@@ -917,11 +1112,11 @@ export function serializeStatusMappingsToCel(
         normalized = normalized
           .replace(
             new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.(?:status|spec|metadata)\\.)`, 'g'),
-            resolvedId,
+            resolvedId
           )
           .replace(
             new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
-            `__KUBERNETES_REF_${resolvedId}_`,
+            `__KUBERNETES_REF_${resolvedId}_`
           );
       }
     }
@@ -932,30 +1127,17 @@ export function serializeStatusMappingsToCel(
   }
 
   /**
-   * Rewrite `schema.spec.*` references inside a resolved CEL expression so
-   * the result is valid KRO status CEL. KRO does not accept `schema.spec.*`
-   * in status CEL, so we apply two rewrites:
+   * Rewrite resolved schema refs for KRO status CEL.
    *
-   *  - `schema.spec.X.Y.orValue(Z)` → `Z` (substitute the default)
-   *  - `schema.spec.X.Y` → `X.spec.Y` iff `X` is a known resource ID
-   *    (routes the reference to the deployed resource's spec field)
-   *
-   * Unknown schema references are left intact; the KRO factory's deploy-
-   * time hydration handles them.
+   * KRO validates CR spec references as `schema.spec.*` in status mappings.
+   * The only schema-to-resource rewrite we keep is the explicit legacy shape
+   * `schema.spec.<resourceId>.<field>`, where `<resourceId>` is a real graph
+   * resource. Plain CR spec fields must remain `schema.spec.*`.
    */
   function rewriteSchemaRefsForKroStatus(expr: string): string {
-    let out = expr.replace(
-      /__schema__\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
-      '$1'
-    );
-    out = out.replace(
-      /__schema__\.spec\.([a-zA-Z0-9_.]+)/g,
-      'spec.$1'
-    );
-    out = out.replace(
-      /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
-      '$1'
-    );
+    let out = expr.replace(/__schema__\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g, '$1');
+    out = out.replace(/__schema__\.spec\.([a-zA-Z0-9_.]+)/g, 'schema.spec.$1');
+    out = out.replace(/schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g, '$1');
     out = out.replace(
       /schema\.spec\.([a-zA-Z0-9]+)\.([a-zA-Z0-9.]+)/g,
       (_match, firstSegment, rest) => {
@@ -965,7 +1147,6 @@ export function serializeStatusMappingsToCel(
         return _match;
       }
     );
-    out = out.replace(/schema\.spec\.([a-zA-Z_$][\w$]*)/g, 'spec.$1');
     return out;
   }
 
@@ -975,7 +1156,7 @@ export function serializeStatusMappingsToCel(
    * Centralized here so the two branches don't drift on what "produce
    * KRO status CEL from a resolved expression" means.
    */
-  function statusFieldFromExpression(expr: string): string {
+  function statusFieldFromExpression(expr: string, rewriteSchemaRefs = true): string {
     const resolved = normalizeCelArrayIndexPaths(
       normalizeLocalResourceExpr(
         resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
@@ -983,14 +1164,16 @@ export function serializeStatusMappingsToCel(
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
-      return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
+      const converted = convertKubernetesRefMarkersTocel(resolved);
+      return rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(converted) : converted;
     }
     if (resolved.includes('${')) {
       // Already a KRO mixed-template value. Do not wrap it again as
       // `${http://${...}}`, which is invalid CEL/YAML for status fields.
-      return rewriteSchemaRefsForKroStatus(resolved);
+      return rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(resolved) : resolved;
     }
-    return `\${${rewriteSchemaRefsForKroStatus(resolved)}}`;
+    const expression = rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(resolved) : resolved;
+    return `\${${expression}}`;
   }
 
   function serializeValue(value: unknown): string | Record<string, unknown> | unknown[] {
@@ -1018,7 +1201,7 @@ export function serializeStatusMappingsToCel(
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
         return value.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
-          statusFieldFromExpression(innerExpr)
+          statusFieldFromExpression(normalizeSchemaSpecShorthand(innerExpr), false)
         );
       }
       return statusFieldFromExpression(value.expression);
@@ -1040,7 +1223,11 @@ export function serializeStatusMappingsToCel(
       if (value.includes('__KUBERNETES_REF_')) {
         // Resolve nested refs first (substitution is a no-op on pure marker
         // strings but handles mixed forms), then convert markers to KRO CEL.
-        const resolved = resolveNestedRefMarkers(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
+        const resolved = resolveNestedRefMarkers(
+          normalizeLocalResourceExpr(value),
+          nestedStatusCel,
+          resourceIds
+        );
         return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
       }
       return `\${"${escapeCelString(value)}"}`;

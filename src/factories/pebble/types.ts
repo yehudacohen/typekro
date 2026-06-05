@@ -2,6 +2,7 @@
 // Following the JupyterHub Pebble Helm Chart configuration
 
 import { type } from 'arktype';
+import type { TypeKroChartValues } from '../../core/types/common.js';
 
 // Common Kubernetes types
 export interface ResourceRequirements {
@@ -134,7 +135,7 @@ export interface PebbleHelmReleaseConfig {
     name: string;
     namespace?: string;
   };
-  values?: PebbleHelmValues;
+  values?: TypeKroChartValues<PebbleHelmValues>;
   interval?: string;
   id?: string;
 }

@@ -124,6 +124,34 @@ export function shouldPreserveRgd(
   return others.length > 0;
 }
 
+function deepMergeStatusPlaceholders(
+  staticFields: Record<string, unknown>,
+  dynamicFields: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...staticFields };
+
+  for (const [key, dynamicValue] of Object.entries(dynamicFields)) {
+    const staticValue = merged[key];
+    if (
+      staticValue &&
+      typeof staticValue === 'object' &&
+      !Array.isArray(staticValue) &&
+      dynamicValue &&
+      typeof dynamicValue === 'object' &&
+      !Array.isArray(dynamicValue)
+    ) {
+      merged[key] = deepMergeStatusPlaceholders(
+        staticValue as Record<string, unknown>,
+        dynamicValue as Record<string, unknown>
+      );
+    } else if (!(key in merged)) {
+      merged[key] = dynamicValue;
+    }
+  }
+
+  return merged;
+}
+
 /**
  * KroResourceFactory implementation
  *
@@ -2051,8 +2079,12 @@ export class KroResourceFactoryImpl<
     // Evaluate static CEL expressions with actual spec values
     const evaluatedStaticFields = await this.evaluateStaticFields(staticFields, spec);
 
-    // Start with evaluated static fields as the base status
-    const status: TStatus = { ...evaluatedStaticFields } as TStatus;
+    // Start with evaluated static fields plus dynamic placeholders so local
+    // direct-mode access preserves nested status object shape before Kro hydrates it.
+    const status: TStatus = deepMergeStatusPlaceholders(
+      evaluatedStaticFields,
+      dynamicFields
+    ) as TStatus;
 
     // Create the initial Enhanced proxy
     // The Enhanced proxy should represent the actual instance, which uses the full API version

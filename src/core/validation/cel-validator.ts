@@ -8,10 +8,9 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { getComponentLogger } from '../logging/index.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
-import { lookupNestedExpression } from '../serialization/cel-references.js';
-import { isStaticExpression } from '../serialization/cel-references.js';
+import { getComponentLogger } from '../logging/index.js';
+import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
 
 const logger = getComponentLogger('cel-validator');
@@ -148,18 +147,22 @@ function requiresKroResolution(
     if (fieldPath.startsWith('status.')) return true;
     if (fieldPath.startsWith('spec.')) return true;
     if (fieldPath.startsWith('metadata.')) {
-      const staticMetadataFields = ['metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations'];
+      const staticMetadataFields = [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+      ];
       return !staticMetadataFields.some((f) => fieldPath === f || fieldPath.startsWith(`${f}.`));
     }
     return false;
   }
 
   if (isCelExpression(value)) {
-    // Transitive check: resolve any nested refs inside the expression and
-    // ask whether the result contains non-schema refs.
-    const normalizedExpression = localResourceIds.length > 0
-      ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
-      : value.expression;
+    const normalizedExpression =
+      localResourceIds.length > 0
+        ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
+        : value.expression;
     return !isStaticExpression(normalizedExpression, nestedStatusCel);
   }
 
@@ -169,9 +172,10 @@ function requiresKroResolution(
   // contains markers.
   if (typeof value === 'string') {
     if (!value.includes('__KUBERNETES_REF_')) return false;
-    const normalizedValue = localResourceIds.length > 0
-      ? remapVariableNames(value, localResourceIds, preserveVariables)
-      : value;
+    const normalizedValue =
+      localResourceIds.length > 0
+        ? remapVariableNames(value, localResourceIds, preserveVariables)
+        : value;
     return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
 
@@ -337,9 +341,10 @@ export function validateStatusCelExpressions(
   ]);
   const preserveVariables = new Set<string>();
   const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
-  const nestedStatusCelForValidation = nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
-    ? nestedDescriptor.value as Record<string, string>
-    : undefined;
+  const nestedStatusCelForValidation =
+    nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
+      ? (nestedDescriptor.value as Record<string, string>)
+      : undefined;
   if (nestedStatusCelForValidation) {
     for (const key of Object.keys(nestedStatusCelForValidation)) {
       const match = key.match(/^__nestedStatus:([^:]+):/);
@@ -359,7 +364,7 @@ export function validateStatusCelExpressions(
       const expression = remapVariableNames(
         value.expression,
         Array.from(resourceIds).filter((id): id is string => typeof id === 'string'),
-        preserveVariables,
+        preserveVariables
       );
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)

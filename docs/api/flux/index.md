@@ -90,7 +90,20 @@ const repo = helmRepository({
 
 ## Type-Safe Helm Values
 
-Schema references work in Helm values:
+`values` is a recursive TypeKro value tree. In graph mode, TypeKro walks the
+object and serializes supported data leaves automatically:
+
+- primitives, arrays, and plain objects
+- schema and resource magic-proxy references
+- CEL expressions
+- mixed template strings such as `` `https://${spec.host}` ``
+
+Unsupported runtime-only leaves are rejected with a path-specific error. Do not
+put functions, callbacks, clients, symbols, class instances, or live cluster reads
+inside `values`; move that logic to a first-class factory field or a direct-only
+API instead. `undefined` fields are omitted recursively.
+
+Schema references work naturally in Helm values:
 
 ```typescript
 import { kubernetesComposition, helmRelease } from 'typekro';
@@ -105,6 +118,7 @@ const app = kubernetesComposition(definition, (spec) => {
       image: { tag: spec.version },     // Nested reference
       config: {
         database: spec.dbName,
+        publicUrl: `https://${spec.host}`,
         logLevel: spec.logLevel
       }
     }

@@ -1766,23 +1766,21 @@ describe('T16 — dynamic nested status marker strings rewrite schema refs for K
     }
   );
 
-  it('does not leave schema.spec refs in dynamic KRO status mixed templates', () => {
+  it('keeps schema.spec refs in dynamic KRO status mixed templates', () => {
     const parsed = parseRgd(outerComp.toYaml());
     const url = parsed.spec.schema.status?.url as string | undefined;
 
-    expect(url).toContain('http://${string(spec.name)}-');
+    expect(url).toContain('http://${string(schema.spec.name)}-');
     expect(url).toContain('.status.readyReplicas');
-    expect(url).not.toContain('schema.spec.name');
     expect(url).not.toContain('__KUBERNETES_REF_');
   });
 
-  it('does not leave schema.spec refs when the nested status is inside a template literal', () => {
+  it('keeps schema.spec refs when the nested status is inside a template literal', () => {
     const parsed = parseRgd(templatedOuterComp.toYaml());
     const url = parsed.spec.schema.status?.url as string | undefined;
 
-    expect(url).toContain('http://${string(spec.name)}-');
+    expect(url).toContain('http://${string(schema.spec.name)}-');
     expect(url).toContain('.status.readyReplicas');
-    expect(url).not.toContain('schema.spec.name');
     expect(url).not.toContain('__KUBERNETES_REF_');
   });
 });

@@ -607,7 +607,7 @@ describe('Live Status Hydration', () => {
       );
 
       expect(String(serialized.prefixedUrl)).toContain('prefix-${');
-      expect(String(serialized.prefixedUrl)).toContain('string(spec.name)');
+      expect(String(serialized.prefixedUrl)).toContain('string(schema.spec.name)');
       expect(String(serialized.prefixedUrl)).not.toContain('nested.status.appUrl');
       expect(String(serialized.prefixedUrl)).not.toContain('__KUBERNETES_REF_nested');
     });
@@ -621,10 +621,11 @@ describe('Live Status Hydration', () => {
         },
       });
 
-      expect(serialized.namespace).toBe('${spec.namespace}');
-      expect((serialized.details as Record<string, string>).namespace).toBe('${spec.namespace}');
+      expect(serialized.namespace).toBe('${schema.spec.namespace}');
+      expect((serialized.details as Record<string, string>).namespace).toBe(
+        '${schema.spec.namespace}'
+      );
       expect(JSON.stringify(serialized)).not.toContain('__schema__');
-      expect(JSON.stringify(serialized)).not.toContain('schema.spec');
     });
 
     it('escapes plain string status values and preserves null literals', () => {

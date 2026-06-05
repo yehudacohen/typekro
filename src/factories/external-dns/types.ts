@@ -2,7 +2,7 @@
 // Following external-dns Helm chart and CRD specifications
 
 import { type Type, type } from 'arktype';
-import type { CelExpression } from '../../core/types/common.js';
+import type { CelExpression, TypeKroChartValues } from '../../core/types/common.js';
 
 // Re-export common types from cert-manager for consistency
 export type {
@@ -120,7 +120,7 @@ export interface ExternalDnsHelmReleaseConfig {
   namespace?: string;
   repositoryName: string;
   version?: string; // Chart version
-  values?: ExternalDnsHelmValues | CelExpression<Record<string, unknown>>;
+  values?: TypeKroChartValues<ExternalDnsHelmValues> | CelExpression<Record<string, unknown>>;
   id?: string;
 }
 

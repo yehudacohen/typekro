@@ -7,10 +7,10 @@
  * `schemas/`.
  *
  * Interface decision: model current pinned chart/CRD fields as explicit TypeScript
- * contracts and reserve `customValues` only for future chart keys and upstream
- * free-form extension points. The rejected alternative was a thin wrapper around
- * `Record<string, unknown>` values, which would not preserve the dependency-source safety
- * and field-coverage guarantees required by the approved plan.
+ * contracts and expose `values` as the single chart passthrough surface. The
+ * rejected alternative was a thin wrapper around `Record<string, unknown>` values,
+ * which would not preserve the dependency-source safety and field-coverage
+ * guarantees required by the approved plan.
  *
  * Interface organization decision: keep source-of-truth chart and CRD contracts
  * physically split by Ory subproduct while this module owns the cross-product stack
@@ -26,6 +26,7 @@ import type {
   KroResourceFactory,
   PublicFactoryOptions,
 } from '../../core/types/index.js';
+import type { TypeKroChartValue } from '../../core/types/common.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../helm/helm-repository.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../helm/types.js';
 import type { ResourceRequirements } from '../cert-manager/types.js';
@@ -230,10 +231,11 @@ export interface OryServiceConfigBase<TValues extends object> {
   resources?: ResourceRequirements;
   /** Prometheus ServiceMonitor convenience toggle. */
   serviceMonitor?: OryServiceMonitorConfig;
-  /** Exhaustive pinned upstream chart values for this service. */
-  values?: TValues;
-  /** Forward-compatibility escape hatch for future chart fields. */
-  customValues?: Record<string, unknown>;
+  /**
+   * Upstream chart values for this service. This is the primary passthrough
+   * surface and accepts TypeKro refs/CEL/templates recursively.
+   */
+  values?: TypeKroChartValue<TValues>;
 }
 
 /** Hydra high-level config plus exhaustive pinned chart values. */
@@ -328,14 +330,6 @@ export interface OryMaesterConfig {
   oathkeeperValues?: OryOathkeeperMaesterChartValues;
 }
 
-/** Service-specific custom value escape hatch grouped at stack level. */
-export interface OryIdentityStackCustomValues {
-  hydra?: Record<string, unknown>;
-  kratos?: Record<string, unknown>;
-  keto?: Record<string, unknown>;
-  oathkeeper?: Record<string, unknown>;
-}
-
 /** Optional starter Maester resources created with the identity stack. */
 export interface OryIdentityStackStarterResources {
   /** OAuth2 clients reconciled by Hydra Maester. */
@@ -368,8 +362,6 @@ export interface OryIdentityStackConfig {
   oathkeeper?: OryOathkeeperConfig;
   /** Maester controller config. */
   maester?: OryMaesterConfig;
-  /** Stack-level future chart field escape hatch. */
-  customValues?: OryIdentityStackCustomValues;
   /** Optional representative Maester resources to create with the stack. */
   resources?: OryIdentityStackStarterResources;
 }
@@ -706,11 +698,19 @@ export interface OryHelmReleaseConfigBase<TValues extends object> {
   version?: string;
   /** Flux reconcile interval. */
   interval?: string;
-  /** Fully typed pinned chart values. */
-  values?: TValues;
+  /** Graph-aware chart values serialized recursively by TypeKro. */
+  values?: TypeKroChartValue<TValues>;
   /** TypeKro composition resource id. */
   id?: string;
 }
+
+/** Composition-friendly Ory HelmRelease config that does not over-wrap `values`. */
+export type OryHelmReleaseConfigInput<TValues extends object> = Composable<
+  Omit<OryHelmReleaseConfigBase<TValues>, 'values'>
+> & {
+  /** Graph-aware chart values serialized recursively by TypeKro. */
+  values?: TypeKroChartValue<TValues>;
+};
 
 /** Hydra HelmRelease wrapper config. */
 export interface OryHydraHelmReleaseConfig extends OryHelmReleaseConfigBase<OryHydraChartValues> {}
@@ -734,32 +734,36 @@ export type OryHelmRepositoryFactory = OryResourceFactorySignature<
 >;
 
 /** Public factory signature for creating the Hydra HelmRelease. */
-export type OryHydraHelmReleaseFactory = OryResourceFactorySignature<
-  OryHydraHelmReleaseConfig,
-  HelmReleaseSpec,
-  HelmReleaseStatus
->;
+export type OryHydraHelmReleaseFactory = {
+  (
+    config: OryHelmReleaseConfigInput<OryHydraChartValues>
+  ): Enhanced<HelmReleaseSpec<OryHydraChartValues>, HelmReleaseStatus>;
+  readonly errorType?: OryOperationError;
+};
 
 /** Public factory signature for creating the Kratos HelmRelease. */
-export type OryKratosHelmReleaseFactory = OryResourceFactorySignature<
-  OryKratosHelmReleaseConfig,
-  HelmReleaseSpec,
-  HelmReleaseStatus
->;
+export type OryKratosHelmReleaseFactory = {
+  (
+    config: OryHelmReleaseConfigInput<OryKratosChartValues>
+  ): Enhanced<HelmReleaseSpec<OryKratosChartValues>, HelmReleaseStatus>;
+  readonly errorType?: OryOperationError;
+};
 
 /** Public factory signature for creating the Keto HelmRelease. */
-export type OryKetoHelmReleaseFactory = OryResourceFactorySignature<
-  OryKetoHelmReleaseConfig,
-  HelmReleaseSpec,
-  HelmReleaseStatus
->;
+export type OryKetoHelmReleaseFactory = {
+  (
+    config: OryHelmReleaseConfigInput<OryKetoChartValues>
+  ): Enhanced<HelmReleaseSpec<OryKetoChartValues>, HelmReleaseStatus>;
+  readonly errorType?: OryOperationError;
+};
 
 /** Public factory signature for creating the Oathkeeper HelmRelease. */
-export type OryOathkeeperHelmReleaseFactory = OryResourceFactorySignature<
-  OryOathkeeperHelmReleaseConfig,
-  HelmReleaseSpec,
-  HelmReleaseStatus
->;
+export type OryOathkeeperHelmReleaseFactory = {
+  (
+    config: OryHelmReleaseConfigInput<OryOathkeeperChartValues>
+  ): Enhanced<HelmReleaseSpec<OryOathkeeperChartValues>, HelmReleaseStatus>;
+  readonly errorType?: OryOperationError;
+};
 
 /** Public factory signature for Hydra Maester `OAuth2Client` resources. */
 export type OryOAuth2ClientFactory = OryResourceFactorySignature<
@@ -1381,7 +1385,6 @@ export const OryIdentityStackConfigSchema = type({
     'resources?': oryResourceRequirementsSchema,
     'serviceMonitor?': oryServiceMonitorSchema,
     'values?': oryHydraChartValuesSchema,
-    'customValues?': 'object',
   },
   'kratos?': {
     'dsn?': oryValueSourceSchema,
@@ -1394,7 +1397,6 @@ export const OryIdentityStackConfigSchema = type({
     'resources?': oryResourceRequirementsSchema,
     'serviceMonitor?': oryServiceMonitorSchema,
     'values?': oryKratosChartValuesSchema,
-    'customValues?': 'object',
   },
   'keto?': {
     'dsn?': oryValueSourceSchema,
@@ -1403,7 +1405,6 @@ export const OryIdentityStackConfigSchema = type({
     'resources?': oryResourceRequirementsSchema,
     'serviceMonitor?': oryServiceMonitorSchema,
     'values?': oryKetoChartValuesSchema,
-    'customValues?': 'object',
   },
   'oathkeeper?': {
     'managedAccessRules?': 'boolean',
@@ -1412,7 +1413,6 @@ export const OryIdentityStackConfigSchema = type({
     'resources?': oryResourceRequirementsSchema,
     'serviceMonitor?': oryServiceMonitorSchema,
     'values?': oryOathkeeperChartValuesSchema,
-    'customValues?': 'object',
   },
   'maester?': {
     'hydra?': {
@@ -1429,12 +1429,6 @@ export const OryIdentityStackConfigSchema = type({
     },
     'hydraValues?': oryHydraMaesterChartValuesSchema,
     'oathkeeperValues?': oryOathkeeperMaesterChartValuesSchema,
-  },
-  'customValues?': {
-    'hydra?': 'object',
-    'kratos?': 'object',
-    'keto?': 'object',
-    'oathkeeper?': 'object',
   },
   'resources?': {
     'oauth2Clients?': oauth2ClientConfigSchema.array(),

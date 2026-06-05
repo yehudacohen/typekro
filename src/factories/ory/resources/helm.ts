@@ -6,7 +6,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Composable, Enhanced } from '../../../core/types/index.js';
+import type { Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   helmRepository,
@@ -19,16 +19,23 @@ import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import type {
   OryDefaultChartVersion,
   OryDefaultHelmRepositoryUrl,
+  OryHelmReleaseConfigInput,
   OryHelmRepositoryFactory,
-  OryHydraHelmReleaseConfig,
   OryHydraHelmReleaseFactory,
-  OryKetoHelmReleaseConfig,
+  OryHydraChartValues,
   OryKetoHelmReleaseFactory,
-  OryKratosHelmReleaseConfig,
+  OryKetoChartValues,
   OryKratosHelmReleaseFactory,
-  OryOathkeeperHelmReleaseConfig,
+  OryKratosChartValues,
   OryOathkeeperHelmReleaseFactory,
+  OryOathkeeperChartValues,
 } from '../types.js';
+
+type OryChartValues =
+  | OryHydraChartValues
+  | OryKratosChartValues
+  | OryKetoChartValues
+  | OryOathkeeperChartValues;
 
 export const ORY_HELM_REPOSITORY_URL: OryDefaultHelmRepositoryUrl =
   'https://k8s.ory.sh/helm/charts';
@@ -53,15 +60,26 @@ export const oryHelmRepository: OryHelmRepositoryFactory = (
 };
 
 function createOryHelmRelease(
+  chart: 'hydra',
+  config: OryHelmReleaseConfigInput<OryHydraChartValues>
+): Enhanced<HelmReleaseSpec<OryHydraChartValues>, HelmReleaseStatus>;
+function createOryHelmRelease(
+  chart: 'kratos',
+  config: OryHelmReleaseConfigInput<OryKratosChartValues>
+): Enhanced<HelmReleaseSpec<OryKratosChartValues>, HelmReleaseStatus>;
+function createOryHelmRelease(
+  chart: 'keto',
+  config: OryHelmReleaseConfigInput<OryKetoChartValues>
+): Enhanced<HelmReleaseSpec<OryKetoChartValues>, HelmReleaseStatus>;
+function createOryHelmRelease(
+  chart: 'oathkeeper',
+  config: OryHelmReleaseConfigInput<OryOathkeeperChartValues>
+): Enhanced<HelmReleaseSpec<OryOathkeeperChartValues>, HelmReleaseStatus>;
+function createOryHelmRelease<TValues extends OryChartValues>(
   chart: 'hydra' | 'kratos' | 'keto' | 'oathkeeper',
-  config: Composable<
-    | OryHydraHelmReleaseConfig
-    | OryKratosHelmReleaseConfig
-    | OryKetoHelmReleaseConfig
-    | OryOathkeeperHelmReleaseConfig
-  >
-): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  return helmRelease({
+  config: OryHelmReleaseConfigInput<TValues>
+): Enhanced<HelmReleaseSpec<TValues>, HelmReleaseStatus> {
+  return helmRelease<TValues>({
     ...(config.id && { id: config.id }),
     name: config.name,
     namespace: config.namespace ?? 'default',
@@ -75,7 +93,7 @@ function createOryHelmRelease(
       name: config.repositoryName ?? 'ory',
       namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
     },
-    ...(config.values && { values: config.values as Record<string, unknown> }),
+    ...(config.values && { values: config.values }),
   }).withReadinessEvaluator(oryHelmReleaseReadinessEvaluator);
 }
 

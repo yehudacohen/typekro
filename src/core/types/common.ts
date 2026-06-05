@@ -105,6 +105,74 @@ export interface KubernetesRef<T = unknown> {
   readonly _type?: T;
 }
 
+/** Primitive leaves supported in recursive TypeKro value trees. */
+export type TypeKroValuePrimitive = string | number | boolean | null;
+
+/**
+ * Recursive value tree accepted by graph-aware passthrough fields such as Helm
+ * chart `values`.
+ *
+ * In graph mode, TypeKro should recursively serialize supported data leaves:
+ * primitives, arrays, plain objects, magic proxy `KubernetesRef` values, CEL
+ * expressions, and mixed-template strings. Runtime-only values such as
+ * functions, symbols, clients, and class instances are intentionally excluded
+ * from this type and must be rejected by the serializer with path-specific
+ * errors.
+ */
+export type TypeKroValueTree =
+  | TypeKroValuePrimitive
+  | undefined
+  | KubernetesRef<unknown>
+  | CelExpression<unknown>
+  | TypeKroValueTree[]
+  | { [key: string]: TypeKroValueTree };
+
+/** Object-shaped recursive TypeKro value tree. */
+export type TypeKroValueTreeObject = { [key: string]: TypeKroValueTree };
+
+/**
+ * Preserve a known config shape while allowing TypeKro refs/CEL/templates at
+ * every serializable leaf.
+ */
+type TypeKroNonNullable<T> = Exclude<T, null | undefined>;
+
+export type TypeKroValue<T> =
+  | undefined
+  | Extract<T, null>
+  | (TypeKroNonNullable<T> extends string
+      ? string | KubernetesRef<string> | KubernetesRef<string | undefined> | CelExpression<string>
+      : TypeKroNonNullable<T> extends number
+        ? number | KubernetesRef<number> | KubernetesRef<number | undefined> | CelExpression<number>
+        : TypeKroNonNullable<T> extends boolean
+          ? boolean | KubernetesRef<boolean> | KubernetesRef<boolean | undefined> | CelExpression<boolean>
+          : TypeKroNonNullable<T> extends Array<infer U>
+            ? Array<TypeKroValue<U> | undefined>
+            : TypeKroNonNullable<T> extends ReadonlyArray<infer U>
+              ? ReadonlyArray<TypeKroValue<U> | undefined>
+              : TypeKroNonNullable<T> extends object
+                ? {
+                    [K in keyof TypeKroNonNullable<T>]?:
+                      | TypeKroValue<TypeKroNonNullable<T>[K]>
+                      | undefined;
+                  } & { [key: string]: TypeKroValueTree }
+                : TypeKroValueTree);
+
+/**
+ * Graph-aware chart values for factories with a known upstream values shape.
+ *
+ * Concrete chart values remain assignable as-is, and individual leaves can be
+ * replaced by TypeKro refs/CEL/templates through {@link TypeKroValue}.
+ */
+export type TypeKroChartValues<T extends object> = T | TypeKroValue<T>;
+
+/** Graph-aware chart values plus whole-object refs/CEL expressions. */
+export type TypeKroChartValue<T extends object> =
+  | T
+  | TypeKroValue<T>
+  | KubernetesRef<T>
+  | KubernetesRef<T | undefined>
+  | CelExpression<T>;
+
 /**
  * Deep proxy type for KubernetesRef that allows nested property access
  * AND primitive value operations (boolean expressions, arithmetic, etc.)

@@ -1,6 +1,8 @@
 // Cert-Manager Type Definitions
 // Following cert-manager.io/v1 API specifications
 
+import type { TypeKroChartValues } from '../../core/types/common.js';
+
 // Common Kubernetes types
 export interface ResourceRequirements {
   limits?: {
@@ -1137,7 +1139,7 @@ export interface CertManagerHelmReleaseConfig {
   namespace?: string;
   repositoryName?: string; // Name of the HelmRepository to reference
   version?: string; // Chart version
-  values?: CertManagerHelmValues;
+  values?: TypeKroChartValues<CertManagerHelmValues>;
   id?: string;
 }
 

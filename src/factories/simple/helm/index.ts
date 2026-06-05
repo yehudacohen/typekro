@@ -3,6 +3,7 @@
  */
 
 import type { Enhanced } from '../../../core/types/index.js';
+import type { TypeKroValueTreeObject } from '../../../core/types/common.js';
 import { helmRelease } from '../../helm/helm-release.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 
@@ -29,7 +30,7 @@ export function HelmChart(
   name: string,
   repository: string,
   chart: string,
-  values?: Record<string, unknown>
+  values?: TypeKroValueTreeObject
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   return helmRelease({
     name,

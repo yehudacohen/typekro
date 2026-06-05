@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import * as yaml from 'js-yaml';
 import { oryPlatformStack } from '../../../src/factories/ory/index.js';
 import {
   OryPlatformStackConfigSchema,
@@ -90,7 +91,13 @@ describe('Ory platform stack composition', () => {
     const result = OryPlatformStackStatusSchema({
       ready: true,
       phase: 'Ready',
-      infrastructure: { databases: true, secrets: true, routes: true, upstream: true, courier: false },
+      infrastructure: {
+        databases: true,
+        secrets: true,
+        routes: true,
+        upstream: true,
+        courier: false,
+      },
       dependencies: {
         hydraDatabase: 'managed',
         kratosDatabase: 'managed',
@@ -106,26 +113,78 @@ describe('Ory platform stack composition', () => {
         components: { hydra: true, kratos: true, keto: true, oathkeeper: true },
         maester: { hydra: true, oathkeeper: true },
         endpoints: {
-          hydraPublic: endpoint('http://hydra-public.ory-local.svc.cluster.local:4444', 'hydra-public.ory-local.svc.cluster.local', 4444),
-          hydraAdmin: endpoint('http://hydra-admin.ory-local.svc.cluster.local:4445', 'hydra-admin.ory-local.svc.cluster.local', 4445),
-          kratosPublic: endpoint('http://kratos-public.ory-local.svc.cluster.local:4433', 'kratos-public.ory-local.svc.cluster.local', 4433),
-          kratosAdmin: endpoint('http://kratos-admin.ory-local.svc.cluster.local:4434', 'kratos-admin.ory-local.svc.cluster.local', 4434),
-          ketoRead: endpoint('http://keto-read.ory-local.svc.cluster.local:4466', 'keto-read.ory-local.svc.cluster.local', 4466),
-          ketoWrite: endpoint('http://keto-write.ory-local.svc.cluster.local:4467', 'keto-write.ory-local.svc.cluster.local', 4467),
-          oathkeeperProxy: endpoint('http://oathkeeper-proxy.ory-local.svc.cluster.local:4455', 'oathkeeper-proxy.ory-local.svc.cluster.local', 4455),
-          oathkeeperApi: endpoint('http://oathkeeper-api.ory-local.svc.cluster.local:4456', 'oathkeeper-api.ory-local.svc.cluster.local', 4456),
+          hydraPublic: endpoint(
+            'http://hydra-public.ory-local.svc.cluster.local:4444',
+            'hydra-public.ory-local.svc.cluster.local',
+            4444
+          ),
+          hydraAdmin: endpoint(
+            'http://hydra-admin.ory-local.svc.cluster.local:4445',
+            'hydra-admin.ory-local.svc.cluster.local',
+            4445
+          ),
+          kratosPublic: endpoint(
+            'http://kratos-public.ory-local.svc.cluster.local:4433',
+            'kratos-public.ory-local.svc.cluster.local',
+            4433
+          ),
+          kratosAdmin: endpoint(
+            'http://kratos-admin.ory-local.svc.cluster.local:4434',
+            'kratos-admin.ory-local.svc.cluster.local',
+            4434
+          ),
+          ketoRead: endpoint(
+            'http://keto-read.ory-local.svc.cluster.local:4466',
+            'keto-read.ory-local.svc.cluster.local',
+            4466
+          ),
+          ketoWrite: endpoint(
+            'http://keto-write.ory-local.svc.cluster.local:4467',
+            'keto-write.ory-local.svc.cluster.local',
+            4467
+          ),
+          oathkeeperProxy: endpoint(
+            'http://oathkeeper-proxy.ory-local.svc.cluster.local:4455',
+            'oathkeeper-proxy.ory-local.svc.cluster.local',
+            4455
+          ),
+          oathkeeperApi: endpoint(
+            'http://oathkeeper-api.ory-local.svc.cluster.local:4456',
+            'oathkeeper-api.ory-local.svc.cluster.local',
+            4456
+          ),
         },
         version: '0.62.0',
       },
       endpoints: {
         hydraPublic: endpoint('http://hydra.localhost', 'hydra.localhost', 80),
-        hydraAdmin: endpoint('http://hydra-admin.ory-local.svc.cluster.local:4445', 'hydra-admin.ory-local.svc.cluster.local', 4445),
+        hydraAdmin: endpoint(
+          'http://hydra-admin.ory-local.svc.cluster.local:4445',
+          'hydra-admin.ory-local.svc.cluster.local',
+          4445
+        ),
         kratosPublic: endpoint('http://kratos.localhost', 'kratos.localhost', 80),
-        kratosAdmin: endpoint('http://kratos-admin.ory-local.svc.cluster.local:4434', 'kratos-admin.ory-local.svc.cluster.local', 4434),
-        ketoRead: endpoint('http://keto-read.ory-local.svc.cluster.local:4466', 'keto-read.ory-local.svc.cluster.local', 4466),
-        ketoWrite: endpoint('http://keto-write.ory-local.svc.cluster.local:4467', 'keto-write.ory-local.svc.cluster.local', 4467),
+        kratosAdmin: endpoint(
+          'http://kratos-admin.ory-local.svc.cluster.local:4434',
+          'kratos-admin.ory-local.svc.cluster.local',
+          4434
+        ),
+        ketoRead: endpoint(
+          'http://keto-read.ory-local.svc.cluster.local:4466',
+          'keto-read.ory-local.svc.cluster.local',
+          4466
+        ),
+        ketoWrite: endpoint(
+          'http://keto-write.ory-local.svc.cluster.local:4467',
+          'keto-write.ory-local.svc.cluster.local',
+          4467
+        ),
         oathkeeperProxy: endpoint('http://identity.localhost', 'identity.localhost', 4455),
-        oathkeeperApi: endpoint('http://oathkeeper-api.ory-local.svc.cluster.local:4456', 'oathkeeper-api.ory-local.svc.cluster.local', 4456),
+        oathkeeperApi: endpoint(
+          'http://oathkeeper-api.ory-local.svc.cluster.local:4456',
+          'oathkeeper-api.ory-local.svc.cluster.local',
+          4456
+        ),
       },
     });
 
@@ -133,47 +192,87 @@ describe('Ory platform stack composition', () => {
   });
 
   it('Create a graph-native ResourceGraphDefinition with managed infrastructure and Ory wiring', () => {
-    const yaml = oryPlatformStack.toYaml();
+    const renderedYaml = oryPlatformStack.toYaml();
+    const document = yaml.load(renderedYaml) as {
+      spec?: { schema?: { status?: { endpoints?: object; ory?: { endpoints?: object } } } };
+    };
 
-    expect(yaml).toContain('kind: ResourceGraphDefinition');
-    expect(yaml).toContain('name: ory-platform-stack');
-    expect(yaml).toContain('cnpg');
-    expect(yaml).toContain('Secret');
-    expect(yaml).not.toContain('apisix.apache.org/v2');
-    expect(yaml).toContain('sampleUpstream');
-    expect(yaml).toContain('oryIdentityStack');
-    expect(yaml).toContain('dependencies:');
-    expect(yaml).toContain('hydra-db-app');
-    expect(yaml).toContain('kratos-db-app');
-    expect(yaml).toContain('keto-db-app');
-    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
-    expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
-    expect(yaml).toContain('schema.spec.dependencySources.keto.database.dsn');
-    expect(yaml).toContain('schema.spec.dependencySources.hydra.issuerUrl.url.url');
-    expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url.url');
-    expect(yaml).toContain('has(schema.spec.hydra) && has(schema.spec.hydra.issuerUrl)');
-    expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
-    expect(yaml).toContain('schema.spec.kratos.identitySchema');
-    expect(yaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
-    expect(yaml).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"');
-    expect(yaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
-    expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
-    expect(yaml).toContain('schema.spec.dependencySources.kratos.database.dsn.resourceName');
-    expect(yaml).toContain('http://hydra.localhost');
-    expect(yaml).toContain('http://kratos.localhost');
-    expect(yaml).toContain('identity.default.schema.json');
-    expect(yaml).toContain('default_browser_return_url');
-    expect(yaml).toContain('includeWhen');
-    expect(yaml).toContain('schema.spec.managed.databases');
-    expect(yaml).not.toContain('${schema.spec.managed.databases != false ?');
-    expect(yaml).toMatch(/id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
-    expect(yaml).toMatch(/id: hydraDsnSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
-    expect(yaml).toMatch(/id: hydraSystemSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.secrets/);
-    expect(yaml).toMatch(/id: sampleUpstream[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.sampleUpstream/);
-    expect(yaml).toMatch(/id: kratosDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
-    expect(yaml).toMatch(/id: ketoDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/);
-    expect(yaml).not.toContain('__typekroSchemaKey');
-    expect(yaml).not.toContain('undefined');
+    expect(renderedYaml).toContain('kind: ResourceGraphDefinition');
+    expect(renderedYaml).toContain('name: ory-platform-stack');
+    expect(renderedYaml).toContain('cnpg');
+    expect(renderedYaml).toContain('Secret');
+    expect(renderedYaml).not.toContain('apisix.apache.org/v2');
+    expect(renderedYaml).toContain('sampleUpstream');
+    expect(renderedYaml).toContain('oryIdentityStack');
+    expect(renderedYaml).toContain('dependencies:');
+    expect(renderedYaml).toContain('hydra-db-app');
+    expect(renderedYaml).toContain('kratos-db-app');
+    expect(renderedYaml).toContain('keto-db-app');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.database.dsn');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.kratos.database.dsn');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.keto.database.dsn');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.issuerUrl.url.url');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url.url');
+    expect(renderedYaml).toContain('has(schema.spec.hydra) && has(schema.spec.hydra.issuerUrl)');
+    expect(renderedYaml).toContain(
+      'has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)'
+    );
+    expect(renderedYaml).toContain(
+      'has(schema.spec.global) && has(schema.spec.global.imagePullSecrets)'
+    );
+    expect(renderedYaml).not.toContain('(has(schema.spec.global.imagePullSecrets) ?');
+    expect(renderedYaml).not.toContain('schema.spec.kratos.identitySchema');
+    expect(renderedYaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
+    expect(renderedYaml).toContain(
+      'has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"'
+    );
+    expect(renderedYaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
+    expect(renderedYaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
+    expect(renderedYaml).toContain(
+      'schema.spec.dependencySources.kratos.database.dsn.resourceName'
+    );
+    expect(renderedYaml).toContain('http://hydra.localhost');
+    expect(renderedYaml).toContain('http://kratos.localhost');
+    expect(renderedYaml).toContain('identity.default.schema.json');
+    expect(renderedYaml).toContain('default_browser_return_url');
+    expect(renderedYaml).toContain('includeWhen');
+    expect(renderedYaml).toContain('schema.spec.managed.databases');
+    expect(renderedYaml).not.toContain('${schema.spec.managed.databases != false ?');
+    expect(renderedYaml).toMatch(
+      /id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
+    );
+    expect(renderedYaml).toMatch(
+      /id: hydraDsnSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
+    );
+    expect(renderedYaml).toMatch(
+      /id: hydraSystemSecret[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.secrets/
+    );
+    expect(renderedYaml).toMatch(
+      /id: sampleUpstream[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.sampleUpstream/
+    );
+    expect(renderedYaml).toMatch(
+      /id: kratosDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
+    );
+    expect(renderedYaml).toMatch(
+      /id: ketoDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
+    );
+    expect(renderedYaml).not.toContain('__typekroSchemaKey');
+    expect(renderedYaml).not.toContain('undefined');
+
+    expect(document.spec?.schema?.status?.endpoints).toBeUndefined();
+    expect(document.spec?.schema?.status?.ory?.endpoints).toBeUndefined();
+    expect(renderedYaml).not.toContain(
+      '${schema.spec.name}-hydra-public.${schema.spec.namespace}.svc.cluster.local'
+    );
+    expect(renderedYaml).not.toContain(
+      '${spec.name}-hydra-public.${spec.namespace}.svc.cluster.local'
+    );
+    expect(renderedYaml).not.toMatch(
+      /hydraPublicService|hydraAdminService|kratosPublicService|kratosAdminService|ketoReadService|ketoWriteService|oathkeeperProxyService|oathkeeperApiService/
+    );
+    expect(renderedYaml).not.toContain('oryIdentityStack1.status.endpoints');
+    expect(renderedYaml).not.toContain('ory.status.endpoints');
+    expect(renderedYaml).not.toContain('${${');
   });
 
   it('Reject disabled managed dependencies unless external replacements are supplied', async () => {
@@ -201,18 +300,33 @@ describe('Ory platform stack composition', () => {
       managed: { databases: false, secrets: false, routes: false, sampleUpstream: false },
       dependencySources: {
         hydra: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'hydra' } } } },
-          systemSecret: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'hydra-system' } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'hydra' } } },
+          },
+          systemSecret: {
+            mode: 'external',
+            value: { secretRef: { name: 'ory-secrets', key: 'hydra-system' } },
+          },
         },
         kratos: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } },
+          },
           secrets: {
-            cookie: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
-            cipher: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } } },
+            cookie: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+            },
+            cipher: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
+            },
           },
         },
         keto: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'keto' } } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'keto' } } },
+          },
         },
         oathkeeper: {
           proxyRoute: { url: { mode: 'external', url: 'https://identity.example.com' } },

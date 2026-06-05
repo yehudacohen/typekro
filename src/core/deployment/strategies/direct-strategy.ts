@@ -5,8 +5,12 @@
  * individual Kubernetes resources directly to the cluster.
  */
 
-import { isCelExpression, isKubernetesRef, containsKubernetesRefs, containsCelExpressions } from '../../../utils/type-guards.js';
-import { RESOURCE_ID_ANNOTATION } from '../resource-tagging.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../../utils/type-guards.js';
 import { getMetadataField, getResourceId } from '../../metadata/index.js';
 import type {
   DeployedResource,
@@ -25,6 +29,7 @@ import type {
 } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { ResourceDeploymentError } from '../errors.js';
+import { RESOURCE_ID_ANNOTATION } from '../resource-tagging.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
 
@@ -51,7 +56,11 @@ export class DirectDeploymentStrategy<
       ): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
       getResourceKeysForHydration?(): Record<string, KubernetesResource> | undefined;
-      reExecuteWithLiveStatus?(spec: TSpec, liveStatusMap: Map<string, Record<string, unknown>>): TStatus | null;
+      getClosuresForDeployment?(): NonNullable<FactoryOptions['closures']>;
+      reExecuteWithLiveStatus?(
+        spec: TSpec,
+        liveStatusMap: Map<string, Record<string, unknown>>
+      ): TStatus | null;
     } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
@@ -85,11 +94,14 @@ export class DirectDeploymentStrategy<
         factoryName: this.factoryName,
         instanceName,
         ...(opts?.targetScopes !== undefined && { targetScopes: opts.targetScopes }),
-        ...(opts?.singletonSpecFingerprint && { singletonSpecFingerprint: opts.singletonSpecFingerprint }),
+        ...(opts?.singletonSpecFingerprint && {
+          singletonSpecFingerprint: opts.singletonSpecFingerprint,
+        }),
       };
 
       // Pass closures to deployment engine for level-based execution
-      const closures = this.factoryOptions.closures || {};
+      const closures =
+        this.resourceResolver.getClosuresForDeployment?.() ?? this.factoryOptions.closures ?? {};
 
       // Deploy using the direct deployment engine with closures if available, otherwise use regular deploy
       let deploymentResult: DeploymentResult;
@@ -152,10 +164,7 @@ export class DirectDeploymentStrategy<
     // Get the base proxy first
     const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
 
-    if (
-      this.factoryOptions.waitForReady === false ||
-      this.factoryOptions.hydrateStatus === false
-    ) {
+    if (this.factoryOptions.waitForReady === false || this.factoryOptions.hydrateStatus === false) {
       return baseProxy;
     }
 
@@ -163,10 +172,7 @@ export class DirectDeploymentStrategy<
     // status data from the cluster injected into the proxy system. This makes
     // status comparisons like `database.status.readyInstances >= 1` evaluate
     // correctly instead of returning proxy artifacts.
-    if (
-      deploymentResult.status === 'success' &&
-      this.resourceResolver.reExecuteWithLiveStatus
-    ) {
+    if (deploymentResult.status === 'success' && this.resourceResolver.reExecuteWithLiveStatus) {
       const liveStatusMap = await this.buildLiveStatusMap(deploymentResult);
 
       if (liveStatusMap.size > 0) {
@@ -191,7 +197,7 @@ export class DirectDeploymentStrategy<
           mergedStatus = repairReadyFromResolvedComponents(
             mergedStatus,
             baseProxy.status,
-            reExecutedStatus,
+            reExecutedStatus
           );
 
           return {
@@ -246,7 +252,7 @@ export class DirectDeploymentStrategy<
     const k8sApi = this.deploymentEngine.getKubernetesApi();
 
     const readyResources = deploymentResult.resources.filter(
-      r => r.status === 'ready' || r.status === 'deployed'
+      (r) => r.status === 'ready' || r.status === 'deployed'
     );
 
     const results = await Promise.allSettled(
@@ -262,13 +268,18 @@ export class DirectDeploymentStrategy<
         });
 
         const status = (liveResource as Record<string, unknown>).status;
-        const annotationId =
-          (resource.manifest.metadata as { annotations?: Record<string, string> } | undefined)
-            ?.annotations?.[RESOURCE_ID_ANNOTATION];
+        const annotationId = (
+          resource.manifest.metadata as { annotations?: Record<string, string> } | undefined
+        )?.annotations?.[RESOURCE_ID_ANNOTATION];
         const originalId = getResourceId(resource.manifest) || annotationId || resource.id;
 
         if (status && typeof status === 'object') {
-          return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
+          return {
+            originalId,
+            deployedId: resource.id,
+            kind: resource.kind,
+            status: status as Record<string, unknown>,
+          };
         }
 
         // Statusless resources (Service, ConfigMap, Secret, etc.) still count as
@@ -282,7 +293,10 @@ export class DirectDeploymentStrategy<
         const { originalId, deployedId, kind, status } = result.value;
         liveStatusMap.set(originalId, status);
         this.logger.debug('Captured live status for resource', {
-          originalId, deployedId, kind, statusKeys: Object.keys(status),
+          originalId,
+          deployedId,
+          kind,
+          statusKeys: Object.keys(status),
         });
       }
     }
@@ -338,10 +352,7 @@ export class DirectDeploymentStrategy<
  *
  * Internal fields (keys starting with `__`) are always taken from live.
  */
-function deepMergeLiveStatus(
-  liveValue: unknown,
-  baseValue: unknown
-): unknown {
+function deepMergeLiveStatus(liveValue: unknown, baseValue: unknown): unknown {
   // Internal metadata fields — always from live
   // (handled by callers for top-level, but included for safety)
 
@@ -386,22 +397,22 @@ function deepMergeLiveStatus(
 
 function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: unknown): unknown {
   const looksLikeExpressionObject =
-    currentValue !== null
-    && typeof currentValue === 'object'
-    && !Array.isArray(currentValue)
-    && 'expression' in (currentValue as Record<string, unknown>)
-    && typeof (currentValue as { expression?: unknown }).expression === 'string';
+    currentValue !== null &&
+    typeof currentValue === 'object' &&
+    !Array.isArray(currentValue) &&
+    'expression' in (currentValue as Record<string, unknown>) &&
+    typeof (currentValue as { expression?: unknown }).expression === 'string';
 
-  if (
-    isCelExpression(currentValue)
-    || isKubernetesRef(currentValue)
-    || looksLikeExpressionObject
-  ) {
+  if (isCelExpression(currentValue) || isKubernetesRef(currentValue) || looksLikeExpressionObject) {
     return reExecutedValue ?? currentValue;
   }
 
   if (currentValue !== null && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
-    if (reExecutedValue === null || typeof reExecutedValue !== 'object' || Array.isArray(reExecutedValue)) {
+    if (
+      reExecutedValue === null ||
+      typeof reExecutedValue !== 'object' ||
+      Array.isArray(reExecutedValue)
+    ) {
       return currentValue;
     }
 
@@ -418,7 +429,9 @@ function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: un
     if (!Array.isArray(reExecutedValue)) {
       return currentValue;
     }
-    return currentValue.map((item, index) => mergeResolvedStatusArtifacts(item, reExecutedValue[index]));
+    return currentValue.map((item, index) =>
+      mergeResolvedStatusArtifacts(item, reExecutedValue[index])
+    );
   }
 
   return currentValue;
@@ -430,29 +443,29 @@ export const mergeResolvedStatusArtifactsForTest = mergeResolvedStatusArtifacts;
 function repairReadyFromResolvedComponents<T>(
   status: T,
   baseStatus: unknown,
-  reExecutedStatus: unknown,
+  reExecutedStatus: unknown
 ): T {
   if (!status || typeof status !== 'object' || Array.isArray(status)) return status;
 
   const statusRecord = status as Record<string, unknown>;
-  const baseRecord = baseStatus && typeof baseStatus === 'object' && !Array.isArray(baseStatus)
-    ? (baseStatus as Record<string, unknown>)
-    : null;
-  const reExecutedRecord = reExecutedStatus && typeof reExecutedStatus === 'object' && !Array.isArray(reExecutedStatus)
-    ? (reExecutedStatus as Record<string, unknown>)
-    : null;
+  const baseRecord =
+    baseStatus && typeof baseStatus === 'object' && !Array.isArray(baseStatus)
+      ? (baseStatus as Record<string, unknown>)
+      : null;
+  const reExecutedRecord =
+    reExecutedStatus && typeof reExecutedStatus === 'object' && !Array.isArray(reExecutedStatus)
+      ? (reExecutedStatus as Record<string, unknown>)
+      : null;
 
   const baseReady = baseRecord?.ready;
   const baseReadyLooksUnresolved =
-    isCelExpression(baseReady)
-    || isKubernetesRef(baseReady)
-    || containsKubernetesRefs(baseReady)
-    || (
-      baseReady !== null
-      && typeof baseReady === 'object'
-      && 'expression' in (baseReady as Record<string, unknown>)
-      && typeof (baseReady as { expression?: unknown }).expression === 'string'
-    );
+    isCelExpression(baseReady) ||
+    isKubernetesRef(baseReady) ||
+    containsKubernetesRefs(baseReady) ||
+    (baseReady !== null &&
+      typeof baseReady === 'object' &&
+      'expression' in (baseReady as Record<string, unknown>) &&
+      typeof (baseReady as { expression?: unknown }).expression === 'string');
 
   if (typeof statusRecord.ready !== 'boolean') {
     return status;

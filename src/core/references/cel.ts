@@ -382,6 +382,32 @@ function cond<T = unknown>(
 }
 
 /**
+ * Use a value when its optional CEL path is present, otherwise use a fallback.
+ *
+ * This is shorthand for `has(value) ? value : fallback` with the same literal
+ * quoting and template-marker handling as {@link cond}.
+ */
+function defaultValue<T extends CelValue>(
+  value: RefOrValue<T>,
+  fallback: RefOrValue<NonNullable<T>>
+): CelExpression<NonNullable<T>> & NonNullable<T> {
+  const expression = `${has(value).expression} ? ${celValueForTernary(value)} : ${celValueForTernary(fallback)}`;
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression,
+  } as CelExpression<NonNullable<T>> & NonNullable<T>;
+}
+
+/** Alias for {@link defaultValue}. */
+function coalesce<T extends CelValue>(
+  value: RefOrValue<T>,
+  fallback: RefOrValue<NonNullable<T>>
+): CelExpression<NonNullable<T>> & NonNullable<T> {
+  return defaultValue(value, fallback);
+}
+
+/**
  * Creates a mixed string template that combines literal strings with CEL expressions
  *
  * This function creates YAML strings with embedded CEL expressions.
@@ -553,6 +579,10 @@ export const Cel = {
   join,
   conditional,
   cond,
+  /** Shorthand for `has(value) ? value : fallback`. */
+  default: defaultValue,
+  /** Alias for `Cel.default(...)`. */
+  coalesce,
   math,
   template,
   concat,
