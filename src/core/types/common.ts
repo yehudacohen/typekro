@@ -7,6 +7,7 @@
  * while maintaining type safety with KubernetesRef types.
  */
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import type { ValuesMergeExpression } from '../aspects/values-merge.js';
 
 /**
  * A branded type representing a Common Expression Language (CEL) expression
@@ -169,6 +170,7 @@ export type TypeKroChartValues<T extends object> = T | TypeKroValue<T>;
 export type TypeKroChartValue<T extends object> =
   | T
   | TypeKroValue<T>
+  | ValuesMergeExpression
   | KubernetesRef<T>
   | KubernetesRef<T | undefined>
   | CelExpression<T>;

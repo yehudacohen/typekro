@@ -104,7 +104,7 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('has(schema.spec.kratos) && has(schema.spec.kratos.publicBaseUrl)');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.publicBaseUrl.url');
     expect(yaml).toContain('schema.spec.dependencySources.kratos.browserBaseUrl.url');
-    expect(yaml).not.toContain('schema.spec.kratos.identitySchema');
+    expect(yaml).toContain('schema.spec.kratos.identitySchema');
     expect(yaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
     expect(yaml).toContain('identity.default.schema.json');
     expect(yaml).toContain('schema.spec.dependencySources.hydra.database.dsn.resourceName');
@@ -116,16 +116,16 @@ describe('Ory identity stack composition', () => {
     expect(yaml).not.toContain('undefined');
   });
 
-  it('Omits graph-mode Ory whole-object Helm values that Kro cannot merge', () => {
+  it('Merges graph-mode Ory whole-object Helm values through Kro map merge', () => {
     const yaml = oryIdentityStack.toYaml();
 
     expect(yaml).toContain('schema.spec.global');
-    expect(yaml).not.toContain('schema.spec.hydra.values');
-    expect(yaml).not.toContain('schema.spec.kratos.values');
-    expect(yaml).not.toContain('schema.spec.keto.values');
-    expect(yaml).not.toContain('schema.spec.oathkeeper.values');
-    expect(yaml).not.toContain('schema.spec.maester.hydraValues');
-    expect(yaml).not.toContain('schema.spec.maester.oathkeeperValues');
+    expect(yaml).toContain('.merge(');
+    expect(yaml).toContain('schema.spec.hydra.values');
+    expect(yaml).toContain('schema.spec.kratos.values');
+    expect(yaml).toContain('schema.spec.keto.values');
+    expect(yaml).toContain('schema.spec.oathkeeper.values');
+    expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values))');
     expect(yaml).not.toContain(') + (');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
     expect(yaml).not.toContain('[object Object]');

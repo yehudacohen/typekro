@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { mergeValuesExpression } from '../../../src/core/aspects/values-merge.js';
 import { toResourceGraph } from '../../../src/core/serialization/index.js';
 import { Cel } from '../../../src/core/references/cel.js';
 import { configMap } from '../../../src/factories/kubernetes/config/config-map.js';
@@ -222,6 +223,44 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).toContain('value: ${string(schema.spec.replicas)}');
     expect(yaml).not.toContain('CelExpression');
     expect(yaml).not.toContain('[object Object]');
+  });
+
+  it('serializes whole-object Helm values overlays with Kro map merge', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-values-map-merge',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({ values: 'object?' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'my-app',
+          chart: {
+            repository: 'https://charts.example.com',
+            name: 'my-chart',
+          },
+          values: mergeValuesExpression(
+            {
+              generated: { enabled: true },
+              config: { host: 'default.example.com' },
+            },
+            schema.spec.values
+          ),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+
+    expect(yaml).toContain('values: "${json.unmarshal(json.marshal({');
+    expect(yaml).toContain('.merge(');
+    expect(yaml).toContain('schema.spec.values');
+    expect(yaml).toContain('has(schema.spec.values)');
+    expect(yaml).not.toContain('Kro CEL does not support merging whole-object values refs');
+    expect(yaml).not.toContain('__KUBERNETES_REF_');
   });
 
   it('allows helper-built plain value trees that contain TypeKro references', () => {

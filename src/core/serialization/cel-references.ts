@@ -141,12 +141,20 @@ function maybeWrapWithOmit(
   omitFields: ReadonlySet<string> | undefined
 ): string {
   const value = stringWrap ? `string(${celPath})` : celPath;
-  if (!omitFields || omitFields.size === 0) return value;
+  const guard = optionalSchemaSpecGuard(celPath, omitFields);
+  return guard ? `${guard} ? ${value} : omit()` : value;
+}
+
+function optionalSchemaSpecGuard(
+  celPath: string,
+  omitFields: ReadonlySet<string> | undefined
+): string | undefined {
+  if (!omitFields || omitFields.size === 0) return undefined;
 
   // Only handle refs rooted at `schema.spec.`.
   const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(celPath);
   const refPath = refMatch?.[1];
-  if (!refPath) return value;
+  if (!refPath) return undefined;
 
   // Walk the full path and collect every optional prefix that applies.
   // We chain from the SHALLOWEST optional ancestor through the leaf.
@@ -175,10 +183,10 @@ function maybeWrapWithOmit(
       const guardPath = `schema.spec.${segments.slice(0, i).join('.')}`;
       guards.push(`has(${guardPath})`);
     }
-    return `${guards.join(' && ')} ? ${value} : omit()`;
+    return guards.join(' && ');
   }
 
-  return value;
+  return undefined;
 }
 
 /**
@@ -910,7 +918,7 @@ function mergeValueTrees(base: unknown, overlay: unknown, path: string): unknown
     if (path === 'spec.values') {
       throw valueTreeSerializationError(
         path,
-        'Kro CEL does not support merging whole-object values refs or CEL maps. Use an object with refs/CEL at specific leaves instead.'
+        'Kro CEL map merge support is required for whole-object values refs or CEL maps.'
       );
     }
     return overlay;
@@ -939,12 +947,65 @@ function mergeValueTrees(base: unknown, overlay: unknown, path: string): unknown
   return overlay;
 }
 
+function needsRuntimeMapMerge(value: unknown): boolean {
+  if (isKubernetesRef(value) || isCelExpression(value)) return true;
+  if (isValuesMergeExpression(value)) {
+    return (
+      needsRuntimeMapMerge(value.base) ||
+      value.overlays.some((overlay) => needsRuntimeMapMerge(overlay))
+    );
+  }
+  return false;
+}
+
+function celMapMergeOperand(
+  value: unknown,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  if (isValuesMergeExpression(value)) {
+    return celValuesMergeExpression(value.base, value.overlays, context, path);
+  }
+
+  if (isKubernetesRef(value)) {
+    const celPath = getInnerCelPath(value);
+    const guard = optionalSchemaSpecGuard(celPath, context?.omitFields);
+    const operand = `json.unmarshal(json.marshal(${celPath}))`;
+    return guard ? `${guard} ? ${operand} : {}` : operand;
+  }
+
+  const expression = celLiteralForValueTree(value, context, path);
+  return `json.unmarshal(json.marshal(${expression}))`;
+}
+
+function celRuntimeMapMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  let expression = celMapMergeOperand(base, context, path);
+  overlays.forEach((overlay, index) => {
+    if (overlay === undefined) return;
+    expression = `${expression}.merge(${celMapMergeOperand(
+      overlay,
+      context,
+      path || `spec.values.overlay[${index}]`
+    )})`;
+  });
+  return expression;
+}
+
 function celValuesMergeExpression(
   base: unknown,
   overlays: readonly unknown[],
   context: SerializationContext | undefined,
   path: string
 ): string {
+  if (needsRuntimeMapMerge(base) || overlays.some((overlay) => needsRuntimeMapMerge(overlay))) {
+    return celRuntimeMapMergeExpression(base, overlays, context, path || 'spec.values');
+  }
+
   let merged = base;
   const normalizedOverlays = Array.isArray(overlays) ? overlays : [overlays];
   normalizedOverlays.forEach((overlay, index) => {

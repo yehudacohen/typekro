@@ -1,4 +1,8 @@
 import { TypeKroError } from '../../../core/errors.js';
+import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+} from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValue, TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
@@ -82,15 +86,20 @@ function deepMergeValue(base: unknown, override: unknown, key?: string): unknown
 
 function mergeValues<T extends object>(
   base: T,
-  typed?: TypeKroChartValues<T>
+  typed?: TypeKroChartValue<T>
 ): T {
+  if (isKubernetesRef(typed) || isCelExpression(typed) || isValuesMergeExpression(typed)) {
+    return mergeValuesExpression(base, typed) as unknown as T;
+  }
   return (typed === undefined ? base : deepMergeValue(base, typed)) as T;
 }
 
-function mergeableChartValues<T extends object>(
+function concreteChartValues<T extends object>(
   values: TypeKroChartValue<T> | undefined
 ): TypeKroChartValues<T> | undefined {
-  return isKubernetesRef(values) || isCelExpression(values) ? undefined : values;
+  return isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)
+    ? undefined
+    : values;
 }
 
 function sharedGlobal(config: OryIdentityStackConfig): Record<string, unknown> | undefined {
@@ -172,6 +181,15 @@ function dynamicKratosIdentitySchemaRefs(): Array<{ id: string; url: string }> {
 }
 
 function kratosIdentitySchemas(config: OryIdentityStackConfig['kratos']): Record<string, string> | undefined {
+  if (isKubernetesRef(config?.identitySchema)) {
+    return {
+      'identity.default.schema.json': Cel.default(
+        config.identitySchema,
+        defaultKratosIdentitySchema()
+      ),
+    };
+  }
+
   if (config?.identitySchema && !isKubernetesRef(config.identitySchema)) {
     return { 'identity.default.schema.json': config.identitySchema };
   }
@@ -519,10 +537,12 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
   const kratosEnv = [secretEnv('DSN', resolvedConfig.kratos?.dsn), ...namedSecretEnvs('SECRETS_', resolvedConfig.kratos?.secrets)];
   const ketoEnv = [secretEnv('DSN', resolvedConfig.keto?.dsn)];
   const globalValues = sharedGlobal(resolvedConfig);
-  const hydraValues = mergeableChartValues(resolvedConfig.hydra?.values);
-  const kratosValues = mergeableChartValues(resolvedConfig.kratos?.values);
-  const ketoValues = mergeableChartValues(resolvedConfig.keto?.values);
-  const oathkeeperValues = mergeableChartValues(resolvedConfig.oathkeeper?.values);
+  const hydraValues = resolvedConfig.hydra?.values;
+  const kratosValues = resolvedConfig.kratos?.values;
+  const ketoValues = resolvedConfig.keto?.values;
+  const oathkeeperValues = resolvedConfig.oathkeeper?.values;
+  const hydraConcreteValues = concreteChartValues(hydraValues);
+  const kratosConcreteValues = concreteChartValues(kratosValues);
 
   const values: OryMappedHelmValues = {
     hydra: mergeValues<OryHydraChartValues>(
@@ -532,7 +552,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         hydra: compact({
           dev:
             resolvedConfig.dependencySources?.hydra?.database?.dsn.mode === 'managed' ||
-            !!hydraValues?.hydra?.dev,
+            !!hydraConcreteValues?.hydra?.dev,
           config: compact({
             dsn: secretValue(resolvedConfig.hydra?.dsn),
             secrets: compact({ system: secretValue(resolvedConfig.hydra?.systemSecret) }),
@@ -554,7 +574,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
         kratos: compact({
           development:
             resolvedConfig.dependencySources?.kratos?.database?.dsn.mode === 'managed' ||
-            !!kratosValues?.kratos?.development,
+            !!kratosConcreteValues?.kratos?.development,
           identitySchemas: kratosIdentitySchemas(resolvedConfig.kratos),
           config: kratosConfig(resolvedConfig.kratos),
           automigration: automigrationEnv(kratosEnv),
@@ -591,13 +611,13 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
       oathkeeperValues
     ),
     hydraMaester: compact<OryHydraMaesterChartValues>({
-      ...(mergeableChartValues(resolvedConfig.maester?.hydraValues) ?? {}),
+      ...(concreteChartValues(resolvedConfig.maester?.hydraValues) ?? {}),
       singleNamespaceMode: resolvedConfig.maester?.hydra?.singleNamespaceMode ?? true,
       enabledNamespaces: resolvedConfig.maester?.hydra?.enabledNamespaces,
       serviceMonitor: resolvedConfig.maester?.hydra?.serviceMonitor,
     }),
     oathkeeperMaester: compact<OryOathkeeperMaesterChartValues>({
-      ...(mergeableChartValues(resolvedConfig.maester?.oathkeeperValues) ?? {}),
+      ...(concreteChartValues(resolvedConfig.maester?.oathkeeperValues) ?? {}),
       singleNamespaceMode: resolvedConfig.maester?.oathkeeper?.singleNamespaceMode ?? true,
       rulesConfigmapNamespace: resolvedConfig.maester?.oathkeeper?.rulesConfigmapNamespace,
       rulesFileName: resolvedConfig.maester?.oathkeeper?.rulesFileName,

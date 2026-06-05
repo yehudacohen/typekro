@@ -221,7 +221,7 @@ describe('Ory platform stack composition', () => {
       'has(schema.spec.global) && has(schema.spec.global.imagePullSecrets)'
     );
     expect(renderedYaml).not.toContain('(has(schema.spec.global.imagePullSecrets) ?');
-    expect(renderedYaml).not.toContain('schema.spec.kratos.identitySchema');
+    expect(renderedYaml).toContain('schema.spec.kratos.identitySchema');
     expect(renderedYaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
     expect(renderedYaml).toContain(
       'has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"'

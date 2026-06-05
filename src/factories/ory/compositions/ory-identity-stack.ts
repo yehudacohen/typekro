@@ -34,10 +34,18 @@ function withMaesterSubchartValues<T extends object>(
   maesterValues: object
 ): T {
   if (isValuesMergeExpression(values) || isValuesMergeExpression(maesterValues)) {
-    return mergeValuesExpression(values, { [key]: maesterValues }) as T;
+    return mergeValuesExpression(values, { [key]: maesterValues }) as unknown as T;
   }
 
   return { ...values, [key]: maesterValues };
+}
+
+function withChartValuesOverlay<T extends object>(values: T, overlay: object): T {
+  if (isValuesMergeExpression(values)) {
+    return mergeValuesExpression(values, overlay) as unknown as T;
+  }
+
+  return { ...values, ...overlay };
 }
 
 function oathkeeperProbeValues(): Record<string, unknown> {
@@ -399,7 +407,7 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: withMaesterSubchartValues(
-        { ...values.oathkeeper, ...oathkeeperProbeValues() },
+        withChartValuesOverlay(values.oathkeeper, oathkeeperProbeValues()),
         'oathkeeper-maester',
         values.oathkeeperMaester
       ),
