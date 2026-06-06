@@ -855,6 +855,81 @@ function celValueTreeBranch(expression: string): string {
   return expression.includes(' ? ') && expression.includes(' : ') ? `(${expression})` : expression;
 }
 
+function celStringTemplateExpression(template: string): string {
+  const parts: string[] = [];
+  let lastIndex = 0;
+
+  for (const match of template.matchAll(/\$\{([^}]+)\}/g)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      parts.push(JSON.stringify(template.slice(lastIndex, index)));
+    }
+
+    const innerExpression = match[1]?.trim();
+    if (innerExpression) {
+      parts.push(
+        innerExpression.startsWith('string(') ? innerExpression : `string(${innerExpression})`
+      );
+    }
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < template.length) {
+    parts.push(JSON.stringify(template.slice(lastIndex)));
+  }
+
+  return parts.length > 0 ? parts.join(' + ') : JSON.stringify(template);
+}
+
+function celMarkerStringLiteralForValueTree(
+  value: string,
+  context: SerializationContext | undefined
+): string {
+  const resolved = resolveNestedRefMarkers(
+    value,
+    context?.nestedStatusCel,
+    context?.resourceIds,
+    context
+  );
+
+  if (!resolved.includes('__KUBERNETES_REF_')) {
+    return resolved.includes('${') ? celStringTemplateExpression(resolved) : JSON.stringify(resolved);
+  }
+
+  const parts: string[] = [];
+  let lastIndex = 0;
+  for (const match of resolved.matchAll(new RegExp(MARKER_PATTERN_SOURCE, 'g'))) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      parts.push(JSON.stringify(resolved.slice(lastIndex, index)));
+    }
+
+    const [, resourceId, fieldPath] = match;
+    if (resourceId && fieldPath) {
+      parts.push(`string(${markerToCelPath(resourceId, fieldPath, context)})`);
+    } else {
+      parts.push(JSON.stringify(match[0]));
+    }
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < resolved.length) {
+    parts.push(JSON.stringify(resolved.slice(lastIndex)));
+  }
+
+  return parts.length > 0 ? parts.join(' + ') : JSON.stringify(resolved);
+}
+
+function finalizeValueTreeCelForKro(
+  expr: string,
+  context: SerializationContext | undefined
+): string {
+  const resolved = normalizeCelArrayIndexPaths(
+    resolveNestedCompositionRefs(expr, context?.nestedStatusCel, context?.resourceIds)
+  );
+  return `\${${resolved}}`;
+}
+
 function celLiteralForValueTree(
   value: unknown,
   context: SerializationContext | undefined,
@@ -870,8 +945,9 @@ function celLiteralForValueTree(
   }
 
   if (typeof value === 'string') {
-    const processed = processResourceReferences(value, context, path);
-    return unwrapKroExpression(processed) ?? JSON.stringify(processed);
+    return value.includes('__KUBERNETES_REF_') || value.includes('${')
+      ? celMarkerStringLiteralForValueTree(value, context)
+      : JSON.stringify(value);
   }
 
   if (value === null || typeof value === 'number' || typeof value === 'boolean') {
@@ -1130,6 +1206,14 @@ function celValuesMergeExpression(
   return celLiteralForValueTree(merged, context, path);
 }
 
+function valuesMergeNeedsRuntimeMapMerge(base: unknown, overlays: readonly unknown[]): boolean {
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  return (
+    needsRuntimeMapMerge(flattened.base) ||
+    flattened.overlays.some((overlay) => needsRuntimeMapMerge(overlay))
+  );
+}
+
 function flattenValuesMergeExpression(
   base: unknown,
   overlays: readonly unknown[]
@@ -1285,14 +1369,13 @@ export function processResourceReferences(
   const inValueTree = valueTreePath(path);
 
   if (isValuesMergeExpression(obj)) {
-    if (path === 'spec.values') {
+    if (path === 'spec.values' && !valuesMergeNeedsRuntimeMapMerge(obj.base, obj.overlays)) {
       const templateObject = celValuesMergeTemplateObject(obj.base, obj.overlays, context, path);
       if (templateObject) return templateObject;
     }
 
-    return finalizeCelForKro(
+    return finalizeValueTreeCelForKro(
       celValuesMergeExpression(obj.base, obj.overlays, context, path),
-      context?.nestedStatusCel,
       context
     );
   }

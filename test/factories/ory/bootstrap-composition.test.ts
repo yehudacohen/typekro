@@ -120,8 +120,10 @@ describe('Ory identity stack composition', () => {
     const yaml = oryIdentityStack.toYaml();
 
     expect(yaml).toContain('schema.spec.global');
-    expect(yaml).not.toContain('deployment: "${');
-    expect(yaml).not.toContain('kratos: "${');
+    expect(yaml).toContain('values: "${((has(schema.spec.hydra) && has(schema.spec.hydra.values)');
+    expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values)) : {}).merge');
+    expect(yaml).toContain('[\\"deployment\\"]).merge');
+    expect(yaml).toContain('[\\"hydra\\"]).merge');
     expect(yaml).toContain('schema.spec.hydra.values');
     expect(yaml).toContain('schema.spec.kratos.values');
     expect(yaml).toContain('schema.spec.keto.values');
