@@ -76,6 +76,14 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
   }
 }
 
+function celExpressionPart(part: CelExpression<unknown>, shouldGroup: boolean): string {
+  if (!shouldGroup || part.__isTemplate) {
+    return part.expression;
+  }
+
+  return `(${part.expression})`;
+}
+
 /**
  * Build a CEL expression from parts. Accepts resource references (`schema.spec.*`,
  * `resources.*.status.*`), other CEL expressions, and literal strings/numbers/booleans.
@@ -104,14 +112,14 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
 function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T {
   validateExprParts(parts);
 
-  const celParts = parts.map((part) => {
+  const celParts = parts.map((part, index) => {
     if (isKubernetesRef(part)) {
       // Use inner reference without ${} wrapper for building expressions
       return getInnerCelPath(part);
     }
 
     if (isCelExpression(part)) {
-      return part.expression;
+      return celExpressionPart(part, parts.length > 1 && index < parts.length - 1);
     }
 
     if (typeof part === 'string') {

@@ -232,6 +232,8 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).toContain('includeWhen');
     expect(renderedYaml).toContain('schema.spec.managed.databases');
     expect(renderedYaml).not.toContain('${schema.spec.managed.databases != false ?');
+    expect(renderedYaml).not.toContain(': \\"managed\\" == \\"managed\\"');
+    expect(renderedYaml).toContain(') == \\"managed\\"');
     expect(renderedYaml).toMatch(
       /id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
     );
