@@ -259,18 +259,19 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
 
     const yaml = graph.toYaml();
 
-    expect(yaml).toContain('values:\n            deployment:');
-    expect(yaml).toContain('config:');
-    expect(yaml).not.toContain('deployment: "${');
-    expect(yaml).not.toContain('config: "${');
+    expect(yaml).toContain('values: "${(has(schema.spec.values)');
+    expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.values)) : {}).merge');
+    expect(yaml).toContain('.merge({\\"deployment\\"');
+    expect(yaml).toContain('\\"config\\"');
+    expect(yaml).not.toContain('values:\n            deployment:');
     expect(yaml).toContain('schema.spec.values');
     expect(yaml).toContain('has(schema.spec.values)');
     expect(yaml).toContain('extraEnv');
     expect(yaml).toContain('secretKeyRef');
     expect(yaml).toContain('\\"host\\" in (');
     expect(yaml).toContain('\\"config\\" in (has(schema.spec.values)');
-    expect(yaml).not.toContain(
-      '\\"host\\" in ((has(schema.spec.values) ? json.unmarshal(json.marshal(schema.spec.values)) : {})[\\"config\\"])'
+    expect(yaml).toMatch(
+      /\\"config\\" in \(has\(schema\.spec\.values\)[\s\S]*\\"host\\" in \(\(has\(schema\.spec\.values\)/
     );
     expect(yaml).not.toContain('Kro CEL does not support merging whole-object values refs');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
