@@ -8,10 +8,9 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { getComponentLogger } from '../logging/index.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
-import { lookupNestedExpression } from '../serialization/cel-references.js';
-import { isStaticExpression } from '../serialization/cel-references.js';
+import { getComponentLogger } from '../logging/index.js';
+import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
 
 const logger = getComponentLogger('cel-validator');
@@ -78,6 +77,7 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *
  * Dynamic (KRO resolves):
  *   - status.*             — only available after deployment
+ *   - spec.*               — may include controller/defaulted or externalRef fields
  *   - metadata.uid         — assigned by API server
  *   - metadata.creationTimestamp / resourceVersion / generation
  *
@@ -141,23 +141,28 @@ function requiresKroResolution(
       return true;
     }
 
-    // Direct resource refs — status.* and generated metadata.* are dynamic,
+    // Direct resource refs — status.*, spec.*, and generated metadata.* are dynamic,
     // composition-set metadata.* is static.
     const fieldPath = value.fieldPath;
     if (fieldPath.startsWith('status.')) return true;
+    if (fieldPath.startsWith('spec.')) return true;
     if (fieldPath.startsWith('metadata.')) {
-      const staticMetadataFields = ['metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations'];
+      const staticMetadataFields = [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+      ];
       return !staticMetadataFields.some((f) => fieldPath === f || fieldPath.startsWith(`${f}.`));
     }
     return false;
   }
 
   if (isCelExpression(value)) {
-    // Transitive check: resolve any nested refs inside the expression and
-    // ask whether the result contains non-schema refs.
-    const normalizedExpression = localResourceIds.length > 0
-      ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
-      : value.expression;
+    const normalizedExpression =
+      localResourceIds.length > 0
+        ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
+        : value.expression;
     return !isStaticExpression(normalizedExpression, nestedStatusCel);
   }
 
@@ -167,9 +172,10 @@ function requiresKroResolution(
   // contains markers.
   if (typeof value === 'string') {
     if (!value.includes('__KUBERNETES_REF_')) return false;
-    const normalizedValue = localResourceIds.length > 0
-      ? remapVariableNames(value, localResourceIds, preserveVariables)
-      : value;
+    const normalizedValue =
+      localResourceIds.length > 0
+        ? remapVariableNames(value, localResourceIds, preserveVariables)
+        : value;
     return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
 
@@ -206,7 +212,26 @@ function separateNestedObject(
   const dynamicPart: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      !isKubernetesRef(value) &&
+      !isCelExpression(value)
+    ) {
+      const nested = separateNestedObject(
+        value as Record<string, unknown>,
+        nestedStatusCel,
+        resourceIds
+      );
+
+      if (nested.hasStatic) {
+        staticPart[key] = nested.staticPart;
+      }
+      if (nested.hasDynamic) {
+        dynamicPart[key] = nested.dynamicPart;
+      }
+    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;
@@ -316,9 +341,10 @@ export function validateStatusCelExpressions(
   ]);
   const preserveVariables = new Set<string>();
   const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
-  const nestedStatusCelForValidation = nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
-    ? nestedDescriptor.value as Record<string, string>
-    : undefined;
+  const nestedStatusCelForValidation =
+    nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
+      ? (nestedDescriptor.value as Record<string, string>)
+      : undefined;
   if (nestedStatusCelForValidation) {
     for (const key of Object.keys(nestedStatusCelForValidation)) {
       const match = key.match(/^__nestedStatus:([^:]+):/);
@@ -338,7 +364,7 @@ export function validateStatusCelExpressions(
       const expression = remapVariableNames(
         value.expression,
         Array.from(resourceIds).filter((id): id is string => typeof id === 'string'),
-        preserveVariables,
+        preserveVariables
       );
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)

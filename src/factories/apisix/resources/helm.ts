@@ -7,6 +7,7 @@
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import type { TypeKroChartValues } from '../../../core/types/common.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -39,7 +40,7 @@ export interface APISixHelmReleaseConfig {
   version?: string;
   interval?: string;
   timeout?: string;
-  values?: APISixHelmValues;
+  values?: TypeKroChartValues<APISixHelmValues>;
   repositoryName?: string; // Allow specifying the repository name
 
   id?: string;
@@ -84,9 +85,9 @@ export function apisixHelmRelease(
   // Determine if values should be passed through raw or mapped
   // If values has 'config' key (ingress controller chart structure), pass through raw
   // Otherwise, map using APISix values mapper
-  const rawValues = config.values as Record<string, unknown> | undefined;
+  const rawValues = config.values;
   const isRawValues =
-    rawValues && ('config' in rawValues || 'serviceAccount' in rawValues || 'rbac' in rawValues);
+    rawValues && typeof rawValues === 'object' && ('config' in rawValues || 'serviceAccount' in rawValues || 'rbac' in rawValues);
   const helmValues = isRawValues ? rawValues : mapAPISixConfigToHelmValues(config.values || {});
 
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -136,7 +137,9 @@ export function apisixHelmRelease(
  * @param config - The APISix Helm values
  * @returns Helm values object for the APISix chart
  */
-export function mapAPISixConfigToHelmValues(config: APISixHelmValues): Record<string, unknown> {
+export function mapAPISixConfigToHelmValues(
+  config: NonNullable<TypeKroChartValues<APISixHelmValues>>
+): Record<string, unknown> {
   const values: Record<string, unknown> = {
     // Installation configuration - default to true for TypeKro comprehensive deployment
     installCRDs: config.installCRDs ?? true,

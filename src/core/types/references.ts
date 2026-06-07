@@ -12,7 +12,7 @@ export interface ResourceReference<_T = unknown> {
   readonly expectedType: string;
 }
 
-export type RefOrValue<T> = T | KubernetesRef<NonNullable<T>> | CelExpression<T>;
+export type RefOrValue<T> = T | KubernetesRef<T> | KubernetesRef<NonNullable<T>> | CelExpression<T>;
 
 /**
  * Helper type to exclude undefined/null from a type for property access.

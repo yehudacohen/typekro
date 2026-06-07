@@ -134,7 +134,7 @@ export interface SearxngStatus {
 // Bootstrap Composition Config
 // ============================================================================
 
-export const SearxngBootstrapConfigSchema = type({
+const SearxngBootstrapBaseConfigSchema = type({
   /** Instance name. */
   name: 'string',
   /** Target namespace (default: 'searxng'). */
@@ -188,6 +188,20 @@ export const SearxngBootstrapConfigSchema = type({
     'limits?': { 'cpu?': 'string', 'memory?': 'string' },
   },
 });
+
+export const SearxngBootstrapConfigSchema = SearxngBootstrapBaseConfigSchema.narrow(
+  (config, ctx) => {
+    if (
+      config.enabled === false ||
+      config.secretKeyRef !== undefined ||
+      config.server?.secret_key !== undefined
+    ) {
+      return true;
+    }
+
+    return ctx.mustBe('enabled=false, server.secret_key, or secretKeyRef');
+  }
+);
 
 export type SearxngBootstrapConfig = typeof SearxngBootstrapConfigSchema.infer;
 

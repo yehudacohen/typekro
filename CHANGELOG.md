@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-07
+
+### Added
+
+- **Ory integration**: typed Ory Identity and Platform stack compositions with Hydra, Kratos, Keto, Oathkeeper, Maester resources, chart value contracts, upstream coverage, and API documentation.
+- **Ory Helm utilities**: typed chart values mappers and resource factories for Ory Helm releases, OAuth2 clients, and Oathkeeper rules.
+- **Helm runtime values coverage**: regression tests for graph-mode Helm values merging and runtime passthrough behavior.
+
+### Changed
+
+- SearXNG bootstrap configs now require an explicit secret source for enabled instances: either `server.secret_key` for an auto-created Secret or `secretKeyRef` for an external Secret.
+- SearXNG KRO mode now rejects `enabled: false` instances; direct mode still supports disabled instances by creating no resources. KRO users should omit disabled instances instead.
+- TypeKro runtime bootstrap now defaults to KRO `0.9.2` and Flux `v2.7.5` in examples and docs.
+
+### Fixed
+
+- Graph-mode Helm values now preserve runtime values during graph merges, including Ory chart values.
+- Composed CEL operands are grouped correctly to preserve intended expression precedence.
+- SearXNG KRO bootstrap status and resource guards no longer reference omitted resources for missing secret sources.
+- Nested resource serialization and schema proxy handling were tightened for external refs, `omit()` conversion, and status field generation.
+
 ## [0.10.1] - 2026-05-04
 
 ### Fixed
@@ -46,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING**: Default KRO version bumped from `0.8.5` to `0.9.1`. TypeKro's serialization pipeline now emits the KRO 0.9+ mixed-template CEL format (`literal${string(ref)}literal`) and uses the `CELOmitFunction` feature gate for `omit()` support. Existing clusters must upgrade KRO to 0.9.1+ with `--set config.featureGates.CELOmitFunction=true` (the `typeKroRuntimeBootstrap` bootstrap sets this automatically). Running TypeKro 0.8+ against KRO 0.8.x will cause RGD validation failures at reconcile time.
+- **BREAKING**: Default KRO version bumped from `0.8.5` to `0.9.2`. TypeKro's serialization pipeline now emits the KRO 0.9+ mixed-template CEL format (`literal${string(ref)}literal`) and uses the `CELOmitFunction` feature gate for `omit()` support. Existing clusters must upgrade KRO to 0.9.2+ with `--set config.featureGates.CELOmitFunction=true` (the `typeKroRuntimeBootstrap` bootstrap sets this automatically). Running TypeKro 0.8+ against KRO 0.8.x will cause RGD validation failures at reconcile time.
 - **BREAKING**: Mixed-template CEL format — references embedded in template literals now emit as `${string(ref)}` wrapped rather than CEL string concatenation (`"literal" + ref + "literal"`). This requires KRO 0.9+.
 - `webAppWithProcessing` now defaults `database.database` to `app` when omitted instead of deriving the database name from the app name.
 
@@ -211,7 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/yehudacohen/typekro/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/yehudacohen/typekro/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yehudacohen/typekro/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yehudacohen/typekro/compare/v0.8.0...v0.9.0

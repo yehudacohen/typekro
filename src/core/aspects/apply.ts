@@ -27,6 +27,7 @@ import type {
   PatchEachOperation,
   ReplaceOperation,
 } from './types.js';
+import { mergeValuesExpression } from './values-merge.js';
 
 type MutableResource = KubernetesResource & Record<string, unknown>;
 type RuntimeAspectDefinition = AspectDefinition<AspectTarget | readonly AspectTarget[]>;
@@ -238,6 +239,44 @@ function applyMapOperation(
       );
 }
 
+function isHelmValuesPath(fieldPath: string): boolean {
+  return fieldPath === 'spec.values' || fieldPath.endsWith('.spec.values');
+}
+
+function mergeObjectsDeep(
+  current: Record<string, unknown>,
+  override: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(override)) {
+    if (value === undefined) {
+      delete merged[key];
+      continue;
+    }
+    const existing = merged[key];
+    if (
+      existing &&
+      typeof existing === 'object' &&
+      !Array.isArray(existing) &&
+      !isKubernetesRef(existing) &&
+      !isCelExpression(existing) &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !isKubernetesRef(value) &&
+      !isCelExpression(value)
+    ) {
+      merged[key] = mergeObjectsDeep(
+        existing as Record<string, unknown>,
+        value as Record<string, unknown>
+      );
+    } else {
+      merged[key] = cloneValue(value);
+    }
+  }
+  return merged;
+}
+
 function isOperation(
   value: unknown
 ): value is
@@ -418,6 +457,7 @@ function applyOperation(
   if (
     context.mode === 'kro' &&
     (operation.kind === 'merge' || operation.kind === 'append') &&
+    !(operation.kind === 'merge' && isHelmValuesPath(fieldPath)) &&
     (currentValueContainsReferences || operationValueContainsReferences)
   ) {
     throw new AspectApplicationError(
@@ -452,7 +492,20 @@ function applyOperation(
         { ...context, operation: operation.kind, fieldPath }
       );
     }
-    target[key] = { ...(current as Record<string, unknown>), ...operation.value };
+    if (
+      context.mode === 'kro' &&
+      isHelmValuesPath(fieldPath) &&
+      (currentValueContainsReferences || operationValueContainsReferences)
+    ) {
+      target[key] = mergeValuesExpression(current, operation.value);
+    } else if (isHelmValuesPath(fieldPath)) {
+      target[key] = mergeObjectsDeep(
+        current as Record<string, unknown>,
+        operation.value as Record<string, unknown>
+      );
+    } else {
+      target[key] = { ...(current as Record<string, unknown>), ...operation.value };
+    }
   } else if (operation.kind === 'append') {
     if (current === undefined) {
       target[key] = cloneValue(operation.value);

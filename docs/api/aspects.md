@@ -143,6 +143,8 @@ Factory targets match by produced Kubernetes kind/capability, not strict factory
 
 Kro mode rejects unsafe `merge(...)` and `append(...)` operations when either the current field or operation payload contains Kubernetes references or CEL expressions. Use `replace(...)` when the full field should become symbolic or when the existing KRO field is already symbolic.
 
+The narrow exception is Helm `spec.values`: TypeKro can defer an object `merge(...)` into `spec.values`, merge the known object tree before serialization, and still preserve schema refs/CEL expressions at specific leaves. On Kro 0.9+, whole-object refs/CEL maps are serialized through Kro's shallow CEL map `.merge(...)` support.
+
 Unsupported patterns include:
 
 - `merge(...)` into a KRO object that is reference-backed

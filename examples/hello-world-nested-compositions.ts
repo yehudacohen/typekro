@@ -105,7 +105,7 @@ export const demoBootstrap = kubernetesComposition(
     const kroBootstrap = typeKroRuntimeBootstrap({
       namespace: spec.namespace,
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.9.1',
+      kroVersion: '0.9.2',
     });
 
     // Use pre-loaded AWS credentials

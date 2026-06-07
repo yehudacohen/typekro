@@ -47,9 +47,11 @@ export const SINGLETON_HANDLE_BRAND = Symbol.for('TypeKro.SingletonHandle');
  * - resourceId: marker-safe resource id with optional single `_` segments.
  *   This permits underscores in resource ids while preventing matches from
  *   consuming across the `__` marker terminator.
- * - fieldPath: dot-separated path with optional single `_` and `$` segments.
+ * - fieldPath: dot-separated path with optional single `_` and `$` segments and
+ *   JavaScript-style numeric array indexes.
  *   Optional resource access uses Kro's `.?field` segment form.
- *   (e.g., 'status.ready', 'status.?loadBalancer', 'spec.workers.$item.name')
+ *   (e.g., 'status.ready', 'status.?loadBalancer', 'spec.workers.$item.name',
+ *   'spec.ports[0].port')
  * - Excludes __schema__ refs via negative lookahead
  *
  * This grammar is the single source of truth — all marker detection/resolution
@@ -58,7 +60,8 @@ export const SINGLETON_HANDLE_BRAND = Symbol.for('TypeKro.SingletonHandle');
  * the global flag.
  */
 export const KUBERNETES_REF_MARKER_RESOURCE_ID_SOURCE = '[a-zA-Z0-9$-]+(?:_[a-zA-Z0-9$-]+)*';
-export const KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE = '(?:spec|status|metadata|data)(?:(?:[.$]|\\.\\?)[a-zA-Z0-9$-]+(?:_[a-zA-Z0-9$-]+)*)*';
+export const KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE =
+  '(?:spec|status|metadata|data)(?:(?:[.$]|\\.\\?)[a-zA-Z0-9$-]+(?:_[a-zA-Z0-9$-]+)*|\\[\\d+\\])*';
 export const KUBERNETES_REF_MARKER_SOURCE = `__KUBERNETES_REF_(__schema__|${KUBERNETES_REF_MARKER_RESOURCE_ID_SOURCE})_(${KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE})__`;
 export const KUBERNETES_REF_SCHEMA_MARKER_SOURCE = `__KUBERNETES_REF___schema___(${KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE})__`;
 export const KUBERNETES_REF_MARKER_PATTERN = new RegExp(

@@ -226,7 +226,7 @@ const webAppComposition = kubernetesComposition(
     });
 
     // ✨ CEL expressions checking HelmRelease conditions for readiness
-    const isReady = (hr: typeof database) =>
+    const isReady = (hr: { status: typeof database.status }) =>
       Cel.expr<boolean>(
         hr.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True")'

@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'bun:test';
 import { helmRelease } from '../../src/factories/helm/helm-release.js';
 import { helmRepository } from '../../src/factories/helm/helm-repository.js';
+import { createResourcesProxy } from '../../src/core/references/schema-proxy.js';
 import { simple } from '../../src/index.js';
 import {
   asKubernetesRef,
@@ -122,6 +123,25 @@ describe('Factory Magic Proxy Behavior', () => {
   });
 
   describe('Kubernetes factory functions', () => {
+    it('should preserve array indexing as bracket syntax in resource reference paths', () => {
+      const resources = createResourcesProxy({
+        service: {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'test-service' },
+        },
+      });
+
+      const port = (
+        resources.service as unknown as { spec: { ports: Array<{ port: number }> } }
+      ).spec.ports[0]?.port;
+
+      expectKubernetesRef(port, {
+        resourceId: 'service',
+        fieldPath: 'spec.ports[0].port',
+      });
+    });
+
     it('should create Deployment resources with KubernetesRef status fields', () => {
       const deployment = simple.Deployment({
         name: 'test-app',

@@ -6,6 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { isKubernetesRef } from '../../utils/type-guards.js';
 import {
   DEFAULT_CRD_READY_TIMEOUT,
   DEFAULT_DEPLOYMENT_TIMEOUT,
@@ -48,14 +49,14 @@ import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debu
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { logHandleSnapshot } from './handle-tracing.js';
+import { ResourceReadinessChecker } from './readiness.js';
+import { ReadinessWaiter } from './readiness-waiter.js';
+import { ResourceApplier } from './resource-applier.js';
 import {
   getEffectiveScopes,
   scopesMatchDeployTarget,
   scopesMatchFilter,
 } from './resource-tagging.js';
-import { ResourceReadinessChecker } from './readiness.js';
-import { ReadinessWaiter } from './readiness-waiter.js';
-import { ResourceApplier } from './resource-applier.js';
 import { ResourceRollbackManager } from './rollback-manager.js';
 
 /** Result of deploying a single resource or executing a closure within a level */
@@ -379,6 +380,7 @@ export class DirectDeploymentEngine {
           options,
           alchemyScope,
           abortSignal,
+          spec,
           startTime,
           deploymentId,
           deploymentLogger
@@ -673,6 +675,44 @@ export class DirectDeploymentEngine {
     }
   }
 
+  private resolveClosureReference(ref: unknown, spec: unknown): unknown {
+    if (!isKubernetesRef(ref)) {
+      return ref;
+    }
+
+    if (ref.resourceId !== '__schema__' && ref.resourceId !== 'schema') {
+      throw new ResourceGraphFactoryError(
+        `Closure reference ${ref.resourceId}.${ref.fieldPath} cannot be resolved before dependent resources deploy`,
+        ref.resourceId,
+        'deployment'
+      );
+    }
+
+    const parts = ref.fieldPath.split('.');
+    if (parts[0] !== 'spec') {
+      throw new ResourceGraphFactoryError(
+        `Closure schema reference '${ref.fieldPath}' is not a spec reference`,
+        ref.resourceId,
+        'deployment'
+      );
+    }
+
+    let current: unknown = spec;
+    for (const part of parts.slice(1)) {
+      if (current && typeof current === 'object' && part in current) {
+        current = (current as Record<string, unknown>)[part];
+      } else {
+        throw new ResourceGraphFactoryError(
+          `Closure schema reference '${ref.fieldPath}' could not be resolved from deployment spec`,
+          ref.resourceId,
+          'deployment'
+        );
+      }
+    }
+
+    return current;
+  }
+
   /**
    * Deploy a single level of resources and closures in parallel. Processes results,
    * handles rollback on failure if configured, and logs level performance metrics.
@@ -703,6 +743,7 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions,
     alchemyScope: Scope | undefined,
     abortSignal: AbortSignal,
+    spec: unknown,
     startTime: number,
     deploymentId: string,
     deploymentLogger: ReturnType<typeof this.logger.child>
@@ -730,11 +771,10 @@ export class DirectDeploymentEngine {
       kubeConfig: this.kubeClient,
       ...(alchemyScope && { alchemyScope }),
       ...(options.namespace && { namespace: options.namespace }),
+      abortSignal,
       deployedResources: deployedResourcesMap,
-      resolveReference: async (ref: unknown): Promise<unknown> => {
-        // Enhanced reference resolution - will be improved in future tasks
-        return ref;
-      },
+      resolveReference: async (ref: unknown): Promise<unknown> =>
+        this.resolveClosureReference(ref, spec),
     };
 
     // Prepare promises for both resources and closures

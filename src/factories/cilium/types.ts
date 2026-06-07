@@ -6,6 +6,8 @@
  * and common types used across Cilium resources.
  */
 
+import type { TypeKroChartValues } from '../../core/types/common.js';
+
 // =============================================================================
 // BOOTSTRAP COMPOSITION TYPES
 // =============================================================================
@@ -945,7 +947,7 @@ export interface CiliumHelmReleaseConfig {
   replace?: boolean;
   createNamespace?: boolean;
   cleanupOnFail?: boolean;
-  values?: Record<string, unknown>;
+  values?: TypeKroChartValues<CiliumHelmValues>;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
   id?: string;

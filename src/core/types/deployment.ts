@@ -3,7 +3,11 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
-import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
+import {
+  CALLABLE_COMPOSITION_BRAND,
+  NESTED_COMPOSITION_BRAND,
+  SINGLETON_HANDLE_BRAND,
+} from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { ASTAnalysisResult } from '../expressions/composition/composition-analyzer-types.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
@@ -58,6 +62,8 @@ export interface DeploymentContext {
   alchemyScope?: Scope;
   /** True when a closure is being executed only to validate KRO compatibility. */
   validationOnly?: boolean;
+  /** Signal for cancelling closure work when the parent deployment times out. */
+  abortSignal?: AbortSignal;
   namespace?: string;
   // Level-based execution context - enables future closure extensibility
   deployedResources: Map<string, DeployedResource>; // Resources available at this level
@@ -497,7 +503,9 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly __resources: KubernetesResource[];
   /** Declare that this composition's resources depend on another resource being ready.
    * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
-  readonly dependsOn: (dependency: string | KubernetesResource | { readonly __compositionId: string }) => this;
+  readonly dependsOn: (
+    dependency: string | KubernetesResource | { readonly __compositionId: string }
+  ) => this;
 }
 
 export interface SingletonHandleBase<TStatus> {
@@ -508,7 +516,8 @@ export interface SingletonHandleBase<TStatus> {
 }
 
 export interface SingletonOwnedHandle<TSpec, TStatus>
-  extends NestedCompositionResource<TSpec, TStatus>, SingletonHandleBase<TStatus> {}
+  extends NestedCompositionResource<TSpec, TStatus>,
+    SingletonHandleBase<TStatus> {}
 
 export interface SingletonReferenceHandle<TStatus> extends SingletonHandleBase<TStatus> {
   readonly kind: 'singleton-reference';
@@ -740,14 +749,14 @@ export interface ResourceFactory<
   TStatus extends KroCompatibleType,
 > {
   // Core deployment - single method handles all cases
-  deploy(
-    spec: TSpec,
-    opts?: ResourceFactoryDeployOptions
-  ): Promise<Enhanced<TSpec, TStatus>>;
+  deploy(spec: TSpec, opts?: ResourceFactoryDeployOptions): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
-  deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void>;
+  deleteInstance(
+    name: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<void>;
   getStatus(): Promise<FactoryStatus>;
   dispose(): Promise<void>;
 
@@ -770,7 +779,10 @@ export interface DirectResourceFactory<
   toDryRun(spec: TSpec): Promise<DeploymentResult>;
   toYaml(spec: TSpec): string;
   /** Build the resolved resource graph for an instance spec. */
-  createResourceGraphForInstance(spec: TSpec, instanceNameOverride?: string): DeploymentResourceGraph;
+  createResourceGraphForInstance(
+    spec: TSpec,
+    instanceNameOverride?: string
+  ): DeploymentResourceGraph;
 }
 
 export interface KroResourceFactory<

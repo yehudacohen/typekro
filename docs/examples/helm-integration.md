@@ -70,8 +70,9 @@ await factory.deploy({ name: 'mydb', size: '10Gi', password: 'secret', replicas:
 
 ## Key Concepts
 
-- **Type-safe Helm values**: Schema references work in chart values
+- **Type-safe Helm values**: `values` recursively supports schema refs, resource refs, CEL expressions, and mixed template strings
 - **Cross-resource references**: `dbSecret.metadata.name` references the secret
+- **Data-only passthrough**: `values` accepts serializable data; functions, clients, symbols, and class instances are rejected in graph mode
 - **HelmRelease status**: Access `postgres.status.conditions` for readiness
 - **Flux CD compatible**: Uses HelmRelease CRD for GitOps workflows
 

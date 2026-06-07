@@ -61,7 +61,7 @@ async function setupE2EEnvironment() {
     timeout: 300000,
     waitForReady: true,
     eventMonitoring: {
-      enabled: true,
+      enabled: false,
       eventTypes: ['Warning', 'Error', 'Normal'],
       includeChildResources: true,
     },

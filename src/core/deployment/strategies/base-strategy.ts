@@ -39,6 +39,26 @@ export interface DeploymentStrategy<
   deploy(spec: TSpec, opts?: DeployStrategyOptions): Promise<Enhanced<TSpec, TStatus>>;
 }
 
+export function deriveNestedCompositionResourceAlias(originalKey: string): string | undefined {
+  const nestedAliasMatch = /^([a-z][A-Za-z]*[a-z])\d+([A-Z].+)$/.exec(originalKey);
+  if (!nestedAliasMatch?.[2]) return undefined;
+  return nestedAliasMatch[2].charAt(0).toLowerCase() + nestedAliasMatch[2].slice(1);
+}
+
+function addResourceKeyMappingAliases(
+  resourceKeyMapping: Map<string, unknown>,
+  originalKey: string,
+  resource: unknown
+): void {
+  if (!resourceKeyMapping.has(originalKey)) {
+    resourceKeyMapping.set(originalKey, resource);
+  }
+  const alias = deriveNestedCompositionResourceAlias(originalKey);
+  if (alias && !resourceKeyMapping.has(alias)) {
+    resourceKeyMapping.set(alias, resource);
+  }
+}
+
 /**
  * Abstract base class for deployment strategies
  */
@@ -375,7 +395,9 @@ export abstract class BaseDeploymentStrategy<
       });
 
       // Map original resource keys to deployed resources by matching kind and name.
-      // Query each resource from the cluster ONCE to get live status.
+      // Query each resource from the cluster ONCE to get live status. Registered
+      // externalRef resources are not deployed, but direct-mode status builders can
+      // still reference their hydrated live spec/status.
       for (const [originalKey, originalResource] of Object.entries(this.resourceKeys)) {
         // Find deployed resource by matching kind and name
         const deployedResource = deploymentResult.resources.find(
@@ -383,26 +405,29 @@ export abstract class BaseDeploymentStrategy<
             dr.manifest?.kind === originalResource.kind &&
             dr.manifest?.metadata?.name === originalResource.metadata?.name
         );
+        const isExternalRef = Reflect.get(originalResource, '__externalRef') === true;
 
-        if (deployedResource?.manifest) {
+        if (deployedResource?.manifest || isExternalRef) {
           // Try to get the actual resource status from the cluster
-          let actualResource = deployedResource.manifest;
+          let actualResource = deployedResource?.manifest ?? originalResource;
 
           if (k8sApi) {
             try {
               actualResource = (await k8sApi.read({
-                apiVersion: deployedResource.manifest.apiVersion,
-                kind: deployedResource.manifest.kind,
+                apiVersion: actualResource.apiVersion,
+                kind: actualResource.kind,
                 metadata: {
-                  name: deployedResource.manifest.metadata?.name || '',
+                  name: actualResource.metadata?.name || '',
                   namespace:
-                    deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
+                    actualResource.metadata?.namespace || this.namespace || 'default',
                 },
               })) as KubernetesResource<unknown, unknown>;
             } catch (error: unknown) {
               // Cluster read failed — fall back to the deployment manifest.
               // This is expected for resources that don't support GET (e.g., events).
-              this.logger.debug('Cluster read failed, falling back to deployment manifest', {
+              this.logger.debug('Cluster read failed, falling back to resource manifest', {
+                originalKey,
+                isExternalRef,
                 err: error,
               });
             }
@@ -494,7 +519,7 @@ export abstract class BaseDeploymentStrategy<
             // Reuse live resource from the first query loop if available
             const liveResource = liveResourcesByKey.get(originalKey);
             if (liveResource) {
-              resourceKeyMapping.set(originalKey, liveResource);
+              addResourceKeyMappingAliases(resourceKeyMapping, originalKey, liveResource);
               this.logger.debug('Reused live resource for CEL mapping', {
                 originalKey,
                 resourceKind: deployedResource.kind,
@@ -512,14 +537,7 @@ export abstract class BaseDeploymentStrategy<
                     namespace: deployedResource.namespace || this.namespace || 'default',
                   },
                 });
-              resourceKeyMapping.set(originalKey, actualResource);
-              const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
-              if (nestedAliasMatch?.[1]) {
-                const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
-                if (!resourceKeyMapping.has(alias)) {
-                  resourceKeyMapping.set(alias, actualResource);
-                }
-              }
+              addResourceKeyMappingAliases(resourceKeyMapping, originalKey, actualResource);
               this.logger.debug('Queried live resource for CEL mapping', {
                 originalKey,
                 resourceKind: deployedResource.kind,
@@ -527,14 +545,7 @@ export abstract class BaseDeploymentStrategy<
                 });
               } catch (_error: unknown) {
                 // Fall back to manifest if cluster query fails
-                resourceKeyMapping.set(originalKey, deployedResource.manifest);
-                const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
-                if (nestedAliasMatch?.[1]) {
-                  const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
-                  if (!resourceKeyMapping.has(alias)) {
-                    resourceKeyMapping.set(alias, deployedResource.manifest);
-                  }
-                }
+                addResourceKeyMappingAliases(resourceKeyMapping, originalKey, deployedResource.manifest);
                 this.logger.debug('Fallback to manifest for CEL mapping', {
                   originalKey,
                   reason: 'cluster query failed',
@@ -542,20 +553,17 @@ export abstract class BaseDeploymentStrategy<
               }
             } else {
               // No K8s client available — use manifest
-              resourceKeyMapping.set(originalKey, deployedResource.manifest);
-              const nestedAliasMatch = originalKey.match(/\d+([A-Z].+)$/);
-              if (nestedAliasMatch?.[1]) {
-                const alias = nestedAliasMatch[1].charAt(0).toLowerCase() + nestedAliasMatch[1].slice(1);
-                if (!resourceKeyMapping.has(alias)) {
-                  resourceKeyMapping.set(alias, deployedResource.manifest);
-                }
-              }
+              addResourceKeyMappingAliases(resourceKeyMapping, originalKey, deployedResource.manifest);
               this.logger.debug('Fallback to manifest for CEL mapping', {
                 originalKey,
                 reason: 'no k8sApi available',
               });
             }
           }
+        }
+
+        for (const [originalKey, liveResource] of liveResourcesByKey.entries()) {
+          addResourceKeyMappingAliases(resourceKeyMapping, originalKey, liveResource);
         }
 
         this.logger.debug('Resource key mapping created', {

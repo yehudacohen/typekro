@@ -12,6 +12,12 @@ import {
   KUBERNETES_REF_MARKER_SOURCE,
 } from '../../src/shared/brands.js';
 
+function extractYamlResourceBlock(yaml: string, id: string): string {
+  const match = yaml.match(new RegExp(`- id: ${id}[\\s\\S]*?(?=\\n    - id: |\\n$)`));
+  expect(match).not.toBeNull();
+  return match?.[0] ?? '';
+}
+
 describe('Schema Nullish Defaults', () => {
   describe('extractNullishDefaults (fn.toString regex)', () => {
     it('should extract string literal defaults', () => {
@@ -725,16 +731,32 @@ describe('Schema Nullish Defaults', () => {
       const json = SearxngBootstrapConfigSchema.json as Record<string, unknown>;
       expect(json).toBeDefined();
       // Positive cases — these should type-check and validate.
-      const good0 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 0 } });
-      const good1 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 1 } });
-      const good2 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 2 } });
+      const good0 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 0 },
+      });
+      const good1 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 1 },
+      });
+      const good2 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 2 },
+      });
       // Must not have produced an error-shaped return (ArkType returns
       // `ArkErrors` on validation failure, objects on success).
       expect((good0 as { search?: { safe_search?: number } }).search?.safe_search).toBe(0);
       expect((good1 as { search?: { safe_search?: number } }).search?.safe_search).toBe(1);
       expect((good2 as { search?: { safe_search?: number } }).search?.safe_search).toBe(2);
       // Out-of-range numeric values must be rejected.
-      const bad = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 3 } });
+      const bad = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 3 },
+      });
       // ArkType returns an ArkErrors instance (iterable + has `.summary`)
       // on failure; a successful result is a plain object without it.
       expect('summary' in (bad as object)).toBe(true);
@@ -759,21 +781,49 @@ describe('Schema Nullish Defaults', () => {
       );
       const yaml: string = searxngBootstrap.toYaml();
 
-      expect(yaml).toContain('includeWhen');
-      expect(yaml).toContain('!(has(schema.spec.enabled))');
-      expect(yaml).toContain('schema.spec.enabled != false');
+      for (const id of [
+        'searxngNamespace',
+        'searxngConfig',
+        'searxngSecret',
+        'searxngDeployment',
+        'searxngService',
+      ]) {
+        const block = extractYamlResourceBlock(yaml, id);
+        expect(block).toContain('includeWhen');
+        expect(block).toContain('!(has(schema.spec.enabled))');
+        expect(block).toContain('schema.spec.enabled != false');
+      }
     });
 
-    it('KRO mode: status CEL guards disabled instances before deployment refs', async () => {
+    it('KRO mode: generated Secret and Deployment require a secret source', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
       const yaml: string = searxngBootstrap.toYaml();
 
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? true');
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? \\"Disabled\\"');
-      expect(yaml).toContain('has(spec.enabled) && spec.enabled == false ? false');
+      const secretIncludeWhen =
+        extractYamlResourceBlock(yaml, 'searxngSecret').split('includeWhen:')[1] ?? '';
+      expect(secretIncludeWhen).toContain('!has(schema.spec.secretKeyRef)');
+      expect(secretIncludeWhen).toContain('has(schema.spec.server)');
+      expect(secretIncludeWhen).toContain('has(schema.spec.server.secret_key)');
+
+      const deploymentIncludeWhen =
+        extractYamlResourceBlock(yaml, 'searxngDeployment').split('includeWhen:')[1] ?? '';
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.secretKeyRef)');
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.server)');
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.server.secret_key)');
+    });
+
+    it('KRO mode: status CEL avoids CR spec refs unsupported by KRO status schemas', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
       expect(yaml).toContain('searxngDeployment.status.conditions.exists');
+      expect(yaml).not.toContain('phase: ${has(schema.spec.enabled)');
+      expect(yaml).not.toContain('ready: ${has(schema.spec.enabled)');
+      expect(yaml).not.toContain('failed: ${has(schema.spec.enabled)');
     });
 
     it('Direct mode: bootstrap does not auto-enable limiter when only redisUrl is provided', async () => {
@@ -796,6 +846,33 @@ describe('Schema Nullish Defaults', () => {
       expect(settingsYaml).toContain('limiter: false');
     });
 
+    it('Schema: default-enabled bootstrap requires an explicit secret source', async () => {
+      const { SearxngBootstrapConfigSchema } = await import(
+        '../../src/factories/searxng/types.js'
+      );
+
+      const missing = SearxngBootstrapConfigSchema({ name: 'searxng' });
+      const disabled = SearxngBootstrapConfigSchema({ name: 'searxng', enabled: false });
+      const generated = SearxngBootstrapConfigSchema({
+        name: 'searxng',
+        server: { secret_key: 'test-secret' },
+      });
+      const external = SearxngBootstrapConfigSchema({
+        name: 'searxng',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+      });
+
+      expect('summary' in (missing as object)).toBe(true);
+      expect(String(missing)).toContain('server.secret_key, or secretKeyRef');
+      expect((disabled as { enabled?: boolean }).enabled).toBe(false);
+      expect((generated as { server?: { secret_key?: string } }).server?.secret_key).toBe(
+        'test-secret'
+      );
+      expect((external as { secretKeyRef?: { name?: string } }).secretKeyRef?.name).toBe(
+        'search-secret'
+      );
+    });
+
     it('Direct mode: default-enabled bootstrap requires an explicit secret source', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
@@ -805,6 +882,34 @@ describe('Schema Nullish Defaults', () => {
       expect(() => factory.createResourceGraphForInstance({ name: 'searxng' })).toThrow(
         'requires server.secret_key or secretKeyRef'
       );
+    });
+
+    it('KRO mode: disabled instances are rejected because status depends on Deployment', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('kro', { namespace: 'test' });
+
+      expect(() => factory.toYaml({ name: 'disabled-search', enabled: false })).toThrow(
+        'KRO mode does not support enabled=false'
+      );
+    });
+
+    it('KRO mode: enabled instances require a schema-valid secret source', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('kro', { namespace: 'test' });
+
+      expect(() => factory.toYaml({ name: 'searxng' })).toThrow(
+        'requires server.secret_key or secretKeyRef'
+      );
+      expect(() =>
+        factory.toYaml({ name: 'searxng', secretKeyRef: { name: 'search-secret', key: 'secret_key' } })
+      ).not.toThrow();
+      expect(() =>
+        factory.toYaml({ name: 'searxng', server: { secret_key: 'test-secret' } })
+      ).not.toThrow();
     });
 
     it('Direct mode: generated secret uses the explicit server secret key', async () => {

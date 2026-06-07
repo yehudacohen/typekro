@@ -1,7 +1,7 @@
 /**
  * YAML generation functionality for Kro ResourceGraphDefinitions
  *
- * Supports Kro 0.9.1+ ResourceGraphDefinition serialization, including
+ * Supports Kro 0.9.2+ ResourceGraphDefinition serialization, including
  * forEach, includeWhen, readyWhen, externalRef, mixed-template CEL, omit(),
  * schema group, and allowBreakingChanges annotation.
  */
@@ -529,7 +529,18 @@ function normalizeOptionalArrayConditional(value: string): string | undefined {
   if (!match?.[1] || !match[2] || !match[3]) return undefined;
   const [, basePath, truthyPrefix, fallbackList] = match;
   if (`${truthyPrefix}]` !== fallbackList) return undefined;
-  return `\${${fallbackList} + (has(${basePath}) ? ${basePath} : [])}`;
+  return `\${${fallbackList} + (${hasGuardForPath(basePath)} ? ${basePath} : [])}`;
+}
+
+function hasGuardForPath(path: string): string {
+  if (!path.startsWith('schema.spec.')) return `has(${path})`;
+
+  const segments = path.slice('schema.spec.'.length).split('.').filter(Boolean);
+  const guards: string[] = [];
+  for (let index = 1; index <= segments.length; index++) {
+    guards.push(`has(schema.spec.${segments.slice(0, index).join('.')})`);
+  }
+  return guards.join(' && ');
 }
 
 function findOrphanedItemBase(value: unknown): string | undefined {
@@ -570,7 +581,7 @@ function collapseOrphanedArraySpreads(items: unknown[]): string | undefined {
     sawSpread = true;
     flushLiterals();
     const serialized = JSON.stringify(item) ?? '';
-    parts.push(serialized.includes(`has(${basePath})`) ? `(has(${basePath}) ? ${basePath} : [])` : basePath);
+    parts.push(serialized.includes(`has(${basePath})`) ? `(${hasGuardForPath(basePath)} ? ${basePath} : [])` : basePath);
   }
 
   if (!sawSpread) return undefined;
@@ -896,7 +907,7 @@ function buildResourceEntry(
 /**
  * Serializes resources to Kro YAML (ResourceGraphDefinition).
  *
- * Supports Kro 0.9.1+ features:
+ * Supports Kro 0.9.2+ features:
  * - externalRef: Resources marked with __externalRef emit `externalRef` instead of `template`
  * - includeWhen: Non-enumerable includeWhen arrays are emitted per resource
  * - readyWhen: Non-enumerable readyWhen arrays are emitted per resource

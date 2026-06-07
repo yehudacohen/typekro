@@ -9,9 +9,10 @@
  * conversion.  No other module should duplicate this logic.
  */
 
-import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { escapeCelString } from '../../utils/cel-escape.js';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
+import { escapeCelString } from '../../utils/cel-escape.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
@@ -22,6 +23,59 @@ const logger = getComponentLogger('cel-references');
 
 function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function normalizeCelArrayIndexPaths(expr: string): string {
+  let result = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < expr.length; i++) {
+    const char = expr[i];
+    if (!char) continue;
+
+    if (quote) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      result += char;
+      continue;
+    }
+
+    if (char === '.') {
+      const digitStart = i + 1;
+      let digitEnd = digitStart;
+      while (digitEnd < expr.length && /\d/.test(expr[digitEnd] ?? '')) {
+        digitEnd++;
+      }
+
+      const previous = expr[i - 1] ?? '';
+      const next = expr[digitEnd] ?? '';
+      if (
+        digitEnd > digitStart &&
+        /[A-Za-z_$\]]/.test(previous) &&
+        (next === '' || /[.\])}\s?:,+\-*/<>=!&|]/.test(next))
+      ) {
+        result += `[${expr.slice(digitStart, digitEnd)}]`;
+        i = digitEnd - 1;
+        continue;
+      }
+    }
+
+    result += char;
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,7 +93,7 @@ function escapeRegExpLiteral(value: string): string {
  */
 export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
   const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
-  return `${resourceId}.${ref.fieldPath}`;
+  return normalizeCelArrayIndexPaths(`${resourceId}.${ref.fieldPath}`);
 }
 
 function resolveResourceIdAlias(resourceId: string, context?: SerializationContext): string {
@@ -87,12 +141,20 @@ function maybeWrapWithOmit(
   omitFields: ReadonlySet<string> | undefined
 ): string {
   const value = stringWrap ? `string(${celPath})` : celPath;
-  if (!omitFields || omitFields.size === 0) return value;
+  const guard = optionalSchemaSpecGuard(celPath, omitFields);
+  return guard ? `${guard} ? ${value} : omit()` : value;
+}
+
+function optionalSchemaSpecGuard(
+  celPath: string,
+  omitFields: ReadonlySet<string> | undefined
+): string | undefined {
+  if (!omitFields || omitFields.size === 0) return undefined;
 
   // Only handle refs rooted at `schema.spec.`.
   const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(celPath);
   const refPath = refMatch?.[1];
-  if (!refPath) return value;
+  if (!refPath) return undefined;
 
   // Walk the full path and collect every optional prefix that applies.
   // We chain from the SHALLOWEST optional ancestor through the leaf.
@@ -121,10 +183,10 @@ function maybeWrapWithOmit(
       const guardPath = `schema.spec.${segments.slice(0, i).join('.')}`;
       guards.push(`has(${guardPath})`);
     }
-    return `${guards.join(' && ')} ? ${value} : omit()`;
+    return guards.join(' && ');
   }
 
-  return value;
+  return undefined;
 }
 
 /**
@@ -155,7 +217,9 @@ function generateCelExpression(
     }
   }
 
-  const expression = `${resolveResourceIdAlias(ref.resourceId, context)}.${ref.fieldPath}`;
+  const expression = normalizeCelArrayIndexPaths(
+    `${resolveResourceIdAlias(ref.resourceId, context)}.${ref.fieldPath}`
+  );
   const body = maybeWrapWithOmit(expression, false, context?.omitFields);
   return `\${${body}}`;
 }
@@ -198,8 +262,12 @@ const MARKER_PATTERN_FULL = new RegExp(`^${MARKER_PATTERN_SOURCE}$`);
  * `__schema__` sentinel by emitting `schema.<fieldPath>`; otherwise
  * emits `<resourceId>.<fieldPath>`.
  */
-function markerToCelPath(resourceId: string, fieldPath: string, context?: SerializationContext): string {
-  return `${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`;
+function markerToCelPath(
+  resourceId: string,
+  fieldPath: string,
+  context?: SerializationContext
+): string {
+  return normalizeCelArrayIndexPaths(`${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`);
 }
 
 /**
@@ -383,7 +451,7 @@ export function lookupNestedExpression(
   resourceId: string,
   fieldName: string,
   nestedStatusCel: Record<string, string>,
-  allowFieldFallback: boolean = true,
+  allowFieldFallback: boolean = true
 ): string | undefined {
   // Strategy 1: exact match.
   const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
@@ -406,9 +474,7 @@ export function lookupNestedExpression(
 
   // Strategy 2: base-name match (instance digits stripped).
   const refBase = resourceId.replace(/\d+$/, '');
-  const baseNameMatches = fieldMatches.filter(
-    (m) => m.baseId.replace(/\d+$/, '') === refBase
-  );
+  const baseNameMatches = fieldMatches.filter((m) => m.baseId.replace(/\d+$/, '') === refBase);
   if (baseNameMatches.length === 1) {
     const match = baseNameMatches[0];
     return match ? nestedStatusCel[match.key] : undefined;
@@ -575,7 +641,8 @@ function resolveNestedRefMarkers(
     const fieldPath = path.replace(/^status\./, '');
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined) return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
+      if (strictInnerExpr !== undefined)
+        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
       return match;
     }
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
@@ -625,7 +692,7 @@ function innerExprToYamlSegment(
   }
   if (resolved.includes('${')) {
     // Already a KRO template (from Cel.template) — pass through.
-    return resolved;
+    return normalizeCelArrayIndexPaths(resolved);
   }
   // Bare literal reached via a template-literal coercion — wrap with
   // `string(...)` so KRO evaluates it to a string value. This matches
@@ -660,15 +727,21 @@ export function finalizeCelForKro(
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext
 ): string {
-  const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds);
+  const resolved = normalizeCelArrayIndexPaths(
+    resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds)
+  );
   if (resolved.includes('__KUBERNETES_REF_')) {
     return convertKubernetesRefMarkersTocel(resolved, context);
   }
   if (resolved.includes('${')) {
     // Already contains KRO template placeholders — pass through.
-    return resolved;
+    return normalizeCelArrayIndexPaths(resolved);
   }
   return `\${${resolved}}`;
+}
+
+function normalizeSchemaSpecShorthand(expr: string): string {
+  return expr.replace(/(^|[^A-Za-z0-9_$.])spec\./g, '$1schema.spec.');
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +822,564 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
  *
  * This is the **only** function that should perform this transformation.
  */
-export function processResourceReferences(obj: unknown, context?: SerializationContext): unknown {
+function valueTreePath(path: string): boolean {
+  return path === 'spec.values' || path.includes('.values.') || path.endsWith('.values');
+}
+
+function childPath(parent: string, key: string): string {
+  return parent ? `${parent}.${key}` : key;
+}
+
+function arrayChildPath(parent: string, index: number): string {
+  return `${parent}[${index}]`;
+}
+
+function isPlainSerializableObject(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function valueTreeSerializationError(path: string, reason: string): Error {
+  return new Error(
+    `Cannot serialize ${path} in graph mode. ${reason} Provide a serializable value or move this logic to a direct-only API.`
+  );
+}
+
+function unwrapKroExpression(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (!value.startsWith('${') || !value.endsWith('}')) return undefined;
+  return value.slice(2, -1);
+}
+
+function celValueTreeBranch(expression: string): string {
+  return expression.includes(' ? ') && expression.includes(' : ') ? `(${expression})` : expression;
+}
+
+function celStringTemplateExpression(template: string): string {
+  const parts: string[] = [];
+  let lastIndex = 0;
+
+  for (const match of template.matchAll(/\$\{([^}]+)\}/g)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      parts.push(JSON.stringify(template.slice(lastIndex, index)));
+    }
+
+    const innerExpression = match[1]?.trim();
+    if (innerExpression) {
+      parts.push(
+        innerExpression.startsWith('string(') ? innerExpression : `string(${innerExpression})`
+      );
+    }
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < template.length) {
+    parts.push(JSON.stringify(template.slice(lastIndex)));
+  }
+
+  return parts.length > 0 ? parts.join(' + ') : JSON.stringify(template);
+}
+
+function celMarkerStringLiteralForValueTree(
+  value: string,
+  context: SerializationContext | undefined
+): string {
+  const resolved = resolveNestedRefMarkers(
+    value,
+    context?.nestedStatusCel,
+    context?.resourceIds,
+    context
+  );
+
+  if (!resolved.includes('__KUBERNETES_REF_')) {
+    return resolved.includes('${') ? celStringTemplateExpression(resolved) : JSON.stringify(resolved);
+  }
+
+  const parts: string[] = [];
+  let lastIndex = 0;
+  for (const match of resolved.matchAll(new RegExp(MARKER_PATTERN_SOURCE, 'g'))) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      parts.push(JSON.stringify(resolved.slice(lastIndex, index)));
+    }
+
+    const [, resourceId, fieldPath] = match;
+    if (resourceId && fieldPath) {
+      parts.push(`string(${markerToCelPath(resourceId, fieldPath, context)})`);
+    } else {
+      parts.push(JSON.stringify(match[0]));
+    }
+    lastIndex = index + match[0].length;
+  }
+
+  if (lastIndex < resolved.length) {
+    parts.push(JSON.stringify(resolved.slice(lastIndex)));
+  }
+
+  return parts.length > 0 ? parts.join(' + ') : JSON.stringify(resolved);
+}
+
+function finalizeValueTreeCelForKro(
+  expr: string,
+  context: SerializationContext | undefined
+): string {
+  const resolved = normalizeCelArrayIndexPaths(
+    resolveNestedCompositionRefs(expr, context?.nestedStatusCel, context?.resourceIds)
+  );
+  return `\${${resolved}}`;
+}
+
+function celLiteralForValueTree(
+  value: unknown,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  if (isValuesMergeExpression(value)) {
+    return celValuesMergeExpression(value.base, value.overlays, context, path);
+  }
+
+  if (isKubernetesRef(value) || isCelExpression(value)) {
+    const expression = unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
+    return celValueTreeBranch(expression);
+  }
+
+  if (typeof value === 'string') {
+    return value.includes('__KUBERNETES_REF_') || value.includes('${')
+      ? celMarkerStringLiteralForValueTree(value, context)
+      : JSON.stringify(value);
+  }
+
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+
+  if (value === undefined) return 'null';
+
+  if (Array.isArray(value)) {
+    return `[${value
+      .filter((entry) => entry !== undefined)
+      .map((entry, index) => celLiteralForValueTree(entry, context, arrayChildPath(path, index)))
+      .join(', ')}]`;
+  }
+
+  if (typeof value === 'object' && isPlainSerializableObject(value)) {
+    const entries = Object.entries(value).flatMap(([key, child]) => {
+      if (child === undefined) return [];
+      return [
+        `${JSON.stringify(key)}: ${celLiteralForValueTree(child, context, childPath(path, key))}`,
+      ];
+    });
+    return `{${entries.join(', ')}}`;
+  }
+
+  throw valueTreeSerializationError(
+    path,
+    'Only plain data, refs, CEL expressions, and templates can be merged.'
+  );
+}
+
+function mergeValueTrees(base: unknown, overlay: unknown, path: string): unknown {
+  if (overlay === undefined) return base;
+
+  if (isValuesMergeExpression(overlay)) {
+    let mergedOverlay = overlay.base;
+    const normalizedOverlays = Array.isArray(overlay.overlays)
+      ? overlay.overlays
+      : [overlay.overlays];
+    normalizedOverlays.forEach((nestedOverlay, index) => {
+      mergedOverlay = mergeValueTrees(mergedOverlay, nestedOverlay, `${path}.overlay[${index}]`);
+    });
+    return mergeValueTrees(base, mergedOverlay, path);
+  }
+
+  if (Array.isArray(overlay)) return overlay;
+
+  if (isKubernetesRef(overlay) || isCelExpression(overlay)) {
+    if (path === 'spec.values') {
+      throw valueTreeSerializationError(
+        path,
+        'Kro CEL map merge support is required for whole-object values refs or CEL maps.'
+      );
+    }
+    return overlay;
+  }
+
+  if (
+    typeof base === 'object' &&
+    base !== null &&
+    isPlainSerializableObject(base) &&
+    typeof overlay === 'object' &&
+    overlay !== null &&
+    isPlainSerializableObject(overlay)
+  ) {
+    return Object.fromEntries(
+      Array.from(new Set([...Object.keys(base), ...Object.keys(overlay)])).flatMap((key) => {
+        const merged = mergeValueTrees(
+          (base as Record<string, unknown>)[key],
+          (overlay as Record<string, unknown>)[key],
+          childPath(path, key)
+        );
+        return merged === undefined ? [] : [[key, merged]];
+      })
+    );
+  }
+
+  return overlay;
+}
+
+function needsRuntimeMapMerge(value: unknown): boolean {
+  if (isKubernetesRef(value) || isCelExpression(value)) return true;
+  if (isValuesMergeExpression(value)) {
+    const normalizedOverlays = Array.isArray(value.overlays) ? value.overlays : [value.overlays];
+    return (
+      needsRuntimeMapMerge(value.base) ||
+      normalizedOverlays.some((overlay) => needsRuntimeMapMerge(overlay))
+    );
+  }
+  return false;
+}
+
+function isKnownMergeObject(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    isPlainSerializableObject(value) &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value) &&
+    !isValuesMergeExpression(value)
+  );
+}
+
+function mapKeyAccess(mapExpression: string, key: string): string {
+  return `(${mapExpression})[${JSON.stringify(key)}]`;
+}
+
+function mapHasKey(mapExpression: string, key: string): string {
+  return `${JSON.stringify(key)} in (${mapExpression})`;
+}
+
+function celMapMergeOperand(
+  value: unknown,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  if (isValuesMergeExpression(value)) {
+    return celValuesMergeExpression(value.base, value.overlays, context, path);
+  }
+
+  if (isKubernetesRef(value)) {
+    const celPath = getInnerCelPath(value);
+    const guard = optionalSchemaSpecGuard(celPath, context?.omitFields);
+    const operand = `json.unmarshal(json.marshal(${celPath}))`;
+    return guard ? `${guard} ? ${operand} : {}` : operand;
+  }
+
+  const expression = celLiteralForValueTree(value, context, path);
+  return `json.unmarshal(json.marshal(${expression}))`;
+}
+
+function celRuntimeMapMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  let expression: string | undefined;
+  let knownBase: unknown = base;
+  const normalizedOverlays = Array.isArray(overlays) ? overlays : [overlays];
+  normalizedOverlays.forEach((overlay, index) => {
+    if (overlay === undefined) return;
+
+    const overlayPath = path || `spec.values.overlay[${index}]`;
+    if (expression === undefined) {
+      if (isKnownMergeObject(knownBase) && isKnownMergeObject(overlay)) {
+        knownBase = mergeValueTrees(knownBase, overlay, overlayPath);
+        return;
+      }
+
+      if (isKnownMergeObject(knownBase)) {
+        expression = isKnownMergeObject(overlay)
+          ? celDeepMergeKnownOverlay(
+              celMapMergeOperand(knownBase, context, path),
+              overlay,
+              context,
+              overlayPath
+            )
+          : celDeepMergeRuntimeOverlay(
+              knownBase,
+              celMapMergeOperand(overlay, context, overlayPath),
+              context,
+              overlayPath
+            );
+        return;
+      }
+
+      expression = isKnownMergeObject(overlay)
+        ? celDeepMergeKnownOverlay(
+            celMapMergeOperand(knownBase, context, path),
+            overlay,
+            context,
+            overlayPath
+          )
+        : `(${celMapMergeOperand(knownBase, context, path)}).merge(${celMapMergeOperand(
+            overlay,
+            context,
+            overlayPath
+          )})`;
+      return;
+    }
+
+    expression = isKnownMergeObject(overlay)
+      ? celDeepMergeKnownOverlay(expression, overlay, context, overlayPath)
+      : `(${expression}).merge(${celMapMergeOperand(overlay, context, overlayPath)})`;
+  });
+  return expression ?? celLiteralForValueTree(knownBase, context, path);
+}
+
+function celDeepMergeRuntimeOverlay(
+  base: Record<string, unknown>,
+  overlayExpression: string,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const entries = Object.entries(base).flatMap(([key, baseValue]) => {
+    if (baseValue === undefined) return [];
+    const overlayValue = mapKeyAccess(overlayExpression, key);
+    const baseExpression = celLiteralForValueTree(baseValue, context, childPath(path, key));
+    const mergedValue = isKnownMergeObject(baseValue)
+      ? celDeepMergeRuntimeOverlay(baseValue, overlayValue, context, childPath(path, key))
+      : overlayValue;
+    return [
+      `${JSON.stringify(key)}: ${mapHasKey(overlayExpression, key)} ? ${mergedValue} : ${baseExpression}`,
+    ];
+  });
+
+  return `(${overlayExpression}).merge({${entries.join(', ')}})`;
+}
+
+function celDeepMergeKnownOverlay(
+  baseExpression: string,
+  overlay: Record<string, unknown>,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const entries = Object.entries(overlay).flatMap(([key, overlayValue]) => {
+    if (overlayValue === undefined) return [];
+    const overlayExpression = celLiteralForValueTree(overlayValue, context, childPath(path, key));
+    const baseValue = mapKeyAccess(baseExpression, key);
+    const mergedValue = isKnownMergeObject(overlayValue)
+      ? `${mapHasKey(baseExpression, key)} ? ${celDeepMergeKnownOverlay(
+          baseValue,
+          overlayValue,
+          context,
+          childPath(path, key)
+        )} : ${overlayExpression}`
+      : overlayExpression;
+    return [`${JSON.stringify(key)}: ${mergedValue}`];
+  });
+
+  return `(${baseExpression}).merge({${entries.join(', ')}})`;
+}
+
+function celValuesMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  base = flattened.base;
+  const normalizedOverlays = flattened.overlays;
+  if (
+    needsRuntimeMapMerge(base) ||
+    normalizedOverlays.some((overlay) => needsRuntimeMapMerge(overlay))
+  ) {
+    return celRuntimeMapMergeExpression(base, normalizedOverlays, context, path || 'spec.values');
+  }
+
+  let merged = base;
+  normalizedOverlays.forEach((overlay, index) => {
+    merged = mergeValueTrees(merged, overlay, path || `spec.values.overlay[${index}]`);
+  });
+  return celLiteralForValueTree(merged, context, path);
+}
+
+function valuesMergeNeedsRuntimeMapMerge(base: unknown, overlays: readonly unknown[]): boolean {
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  return (
+    needsRuntimeMapMerge(flattened.base) ||
+    flattened.overlays.some((overlay) => needsRuntimeMapMerge(overlay))
+  );
+}
+
+function flattenValuesMergeExpression(
+  base: unknown,
+  overlays: readonly unknown[]
+): { base: unknown; overlays: unknown[] } {
+  let flattenedBase = base;
+  const flattenedOverlays = Array.isArray(overlays) ? [...overlays] : [overlays];
+
+  while (isValuesMergeExpression(flattenedBase)) {
+    const nestedOverlays = Array.isArray(flattenedBase.overlays)
+      ? flattenedBase.overlays
+      : [flattenedBase.overlays];
+    flattenedOverlays.unshift(...nestedOverlays);
+    flattenedBase = flattenedBase.base;
+  }
+
+  return { base: flattenedBase, overlays: flattenedOverlays };
+}
+
+function collectKnownMergeKeys(value: unknown, keys = new Set<string>()): Set<string> {
+  if (isValuesMergeExpression(value)) {
+    collectKnownMergeKeys(value.base, keys);
+    const normalizedOverlays = Array.isArray(value.overlays) ? value.overlays : [value.overlays];
+    normalizedOverlays.forEach((overlay) => collectKnownMergeKeys(overlay, keys));
+    return keys;
+  }
+
+  if (isKnownMergeObject(value)) {
+    Object.keys(value).forEach((key) => keys.add(key));
+  }
+
+  return keys;
+}
+
+function celValuesMergeTemplateObject(
+  base: unknown,
+  overlays: readonly unknown[],
+  context: SerializationContext | undefined,
+  path: string
+): Record<string, unknown> | undefined {
+  const flattened = flattenValuesMergeExpression(base, overlays);
+  base = flattened.base;
+  const normalizedOverlays = flattened.overlays;
+  const knownKeys = collectKnownMergeKeys(base);
+  normalizedOverlays.forEach((overlay) => collectKnownMergeKeys(overlay, knownKeys));
+  const orderedKeys = Array.from(knownKeys);
+  if (orderedKeys.length === 0) return undefined;
+
+  return Object.fromEntries(
+    orderedKeys.map((key) => {
+      const value = celValuesMergeTemplateValue(base, normalizedOverlays, key, context, path);
+      return [key, value];
+    })
+  );
+}
+
+function celValuesMergeTemplateValue(
+  base: unknown,
+  overlays: readonly unknown[],
+  key: string,
+  context: SerializationContext | undefined,
+  path: string
+): unknown {
+  let knownValue = isKnownMergeObject(base) ? base[key] : undefined;
+
+  for (const [index, overlay] of overlays.entries()) {
+    if (overlay === undefined) continue;
+    const overlayPath = path || `spec.values.overlay[${index}]`;
+
+    if (isKnownMergeObject(overlay)) {
+      if (!Object.hasOwn(overlay, key)) continue;
+      knownValue = mergeValueTrees(knownValue, overlay[key], childPath(overlayPath, key));
+      continue;
+    }
+
+    return celValuesMergeRuntimeTemplateValue(
+      knownValue,
+      celMapMergeOperand(overlay, context, overlayPath),
+      key,
+      context,
+      childPath(path, key)
+    );
+  }
+
+  return processResourceReferences(knownValue, context, childPath(path, key));
+}
+
+function celValuesMergeRuntimeTemplateValue(
+  fallbackValue: unknown,
+  overlayExpression: string,
+  key: string,
+  context: SerializationContext | undefined,
+  path: string
+): unknown {
+  if (isValuesMergeExpression(fallbackValue)) {
+    const templateObject = celValuesMergeTemplateObject(
+      fallbackValue.base,
+      fallbackValue.overlays,
+      context,
+      path
+    );
+    if (templateObject) {
+      return celValuesMergeRuntimeTemplateValue(
+        templateObject,
+        overlayExpression,
+        key,
+        context,
+        path
+      );
+    }
+  }
+
+  if (isKnownMergeObject(fallbackValue)) {
+    const childOverlay = `(${mapHasKey(overlayExpression, key)} ? ${mapKeyAccess(
+      overlayExpression,
+      key
+    )} : {})`;
+    return Object.fromEntries(
+      Object.entries(fallbackValue).flatMap(([childKey, childValue]) => {
+        if (childValue === undefined) return [];
+        return [
+          [
+            childKey,
+            celValuesMergeRuntimeTemplateValue(
+              childValue,
+              childOverlay,
+              childKey,
+              context,
+              childPath(path, childKey)
+            ),
+          ],
+        ];
+      })
+    );
+  }
+
+  if (Array.isArray(fallbackValue)) {
+    return processResourceReferences(fallbackValue, context, path);
+  }
+
+  const fallbackExpression = celLiteralForValueTree(fallbackValue, context, path);
+  const expression = `${mapHasKey(overlayExpression, key)} ? ${mapKeyAccess(
+    overlayExpression,
+    key
+  )} : (${fallbackExpression})`;
+  return finalizeCelForKro(expression, context?.nestedStatusCel, context);
+}
+
+export function processResourceReferences(
+  obj: unknown,
+  context?: SerializationContext,
+  path = ''
+): unknown {
+  const inValueTree = valueTreePath(path);
+
+  if (isValuesMergeExpression(obj)) {
+    if (path === 'spec.values' && !valuesMergeNeedsRuntimeMapMerge(obj.base, obj.overlays)) {
+      const templateObject = celValuesMergeTemplateObject(obj.base, obj.overlays, context, path);
+      if (templateObject) return templateObject;
+    }
+
+    return finalizeValueTreeCelForKro(
+      celValuesMergeExpression(obj.base, obj.overlays, context, path),
+      context
+    );
+  }
+
   if (isKubernetesRef(obj)) {
     return generateCelExpression(obj, context);
   }
@@ -757,23 +1387,41 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   if (isCelExpression(obj)) {
     if (obj.__isTemplate) {
       return obj.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
-        finalizeCelForKro(innerExpr, context?.nestedStatusCel, context)
+        finalizeCelForKro(
+          normalizeSchemaSpecShorthand(innerExpr),
+          context?.nestedStatusCel,
+          context
+        )
       );
     }
     // Bare CelExpression — may be a single schema.spec.X reference (possibly
     // wrapped in `string(...)`). Delegate any single schema ref to
     // maybeWrapWithOmit so nested optional ancestors get the same guard chain
     // as KubernetesRef objects.
-    const expr = resolveNestedCompositionRefs(obj.expression, context?.nestedStatusCel, context?.resourceIds);
+    const expr = resolveNestedCompositionRefs(
+      obj.expression,
+      context?.nestedStatusCel,
+      context?.resourceIds
+    );
     const bareRef = /^schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.exec(expr)?.[0];
     if (bareRef) {
       return `\${${maybeWrapWithOmit(bareRef, false, context?.omitFields)}}`;
     }
-    const stringRef = /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(expr)?.[1];
+    const stringRef = /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(
+      expr
+    )?.[1];
     if (stringRef) {
       return `\${${maybeWrapWithOmit(stringRef, true, context?.omitFields)}}`;
     }
     return finalizeCelForKro(expr, context?.nestedStatusCel, context);
+  }
+
+  if (inValueTree && typeof obj === 'function') {
+    throw valueTreeSerializationError(path, 'Functions are direct-mode only.');
+  }
+
+  if (inValueTree && typeof obj === 'symbol') {
+    throw valueTreeSerializationError(path, 'Symbols are runtime-only values.');
   }
 
   // Strings containing __KUBERNETES_REF__ markers from template literals.
@@ -783,7 +1431,12 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   // remaining markers (schema refs and direct resource refs) are converted
   // to KRO mixed-template form.
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel, context?.resourceIds, context);
+    const resolved = resolveNestedRefMarkers(
+      obj,
+      context?.nestedStatusCel,
+      context?.resourceIds,
+      context
+    );
     if (resolved.includes('__KUBERNETES_REF_')) {
       return convertKubernetesRefMarkersTocel(resolved, context);
     }
@@ -793,16 +1446,27 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   }
 
   if (Array.isArray(obj)) {
-    return obj.map((item) => processResourceReferences(item, context));
+    return obj.flatMap((item, index) => {
+      if (inValueTree && item === undefined) return [];
+      return [processResourceReferences(item, context, arrayChildPath(path, index))];
+    });
   }
 
   if (obj && typeof obj === 'object') {
+    if (inValueTree && !isPlainSerializableObject(obj)) {
+      throw valueTreeSerializationError(
+        path,
+        `${obj.constructor?.name ?? 'This value'} is not a plain serializable object.`
+      );
+    }
+
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
-      // Exclude hidden resourceId property and id field from the final template
-      if (key === '__resourceId' || key === 'id') continue;
-      result[key] = processResourceReferences(value, context);
+      // Exclude hidden resourceId metadata; nested `id` fields can be valid resource config.
+      if (key === '__resourceId') continue;
+      if (inValueTree && value === undefined) continue;
+      result[key] = processResourceReferences(value, context, childPath(path, key));
     }
 
     // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
@@ -860,11 +1524,11 @@ export function serializeStatusMappingsToCel(
         normalized = normalized
           .replace(
             new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.(?:status|spec|metadata)\\.)`, 'g'),
-            resolvedId,
+            resolvedId
           )
           .replace(
             new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
-            `__KUBERNETES_REF_${resolvedId}_`,
+            `__KUBERNETES_REF_${resolvedId}_`
           );
       }
     }
@@ -875,30 +1539,17 @@ export function serializeStatusMappingsToCel(
   }
 
   /**
-   * Rewrite `schema.spec.*` references inside a resolved CEL expression so
-   * the result is valid KRO status CEL. KRO does not accept `schema.spec.*`
-   * in status CEL, so we apply two rewrites:
+   * Rewrite resolved schema refs for KRO status CEL.
    *
-   *  - `schema.spec.X.Y.orValue(Z)` → `Z` (substitute the default)
-   *  - `schema.spec.X.Y` → `X.spec.Y` iff `X` is a known resource ID
-   *    (routes the reference to the deployed resource's spec field)
-   *
-   * Unknown schema references are left intact; the KRO factory's deploy-
-   * time hydration handles them.
+   * KRO validates CR spec references as `schema.spec.*` in status mappings.
+   * The only schema-to-resource rewrite we keep is the explicit legacy shape
+   * `schema.spec.<resourceId>.<field>`, where `<resourceId>` is a real graph
+   * resource. Plain CR spec fields must remain `schema.spec.*`.
    */
   function rewriteSchemaRefsForKroStatus(expr: string): string {
-    let out = expr.replace(
-      /__schema__\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
-      '$1'
-    );
-    out = out.replace(
-      /__schema__\.spec\.([a-zA-Z0-9_.]+)/g,
-      'spec.$1'
-    );
-    out = out.replace(
-      /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
-      '$1'
-    );
+    let out = expr.replace(/__schema__\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g, '$1');
+    out = out.replace(/__schema__\.spec\.([a-zA-Z0-9_.]+)/g, 'schema.spec.$1');
+    out = out.replace(/schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g, '$1');
     out = out.replace(
       /schema\.spec\.([a-zA-Z0-9]+)\.([a-zA-Z0-9.]+)/g,
       (_match, firstSegment, rest) => {
@@ -908,7 +1559,6 @@ export function serializeStatusMappingsToCel(
         return _match;
       }
     );
-    out = out.replace(/schema\.spec\.([a-zA-Z_$][\w$]*)/g, 'spec.$1');
     return out;
   }
 
@@ -918,20 +1568,24 @@ export function serializeStatusMappingsToCel(
    * Centralized here so the two branches don't drift on what "produce
    * KRO status CEL from a resolved expression" means.
    */
-  function statusFieldFromExpression(expr: string): string {
-    const resolved = normalizeLocalResourceExpr(
-      resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+  function statusFieldFromExpression(expr: string, rewriteSchemaRefs = true): string {
+    const resolved = normalizeCelArrayIndexPaths(
+      normalizeLocalResourceExpr(
+        resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+      )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
-      return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
+      const converted = convertKubernetesRefMarkersTocel(resolved);
+      return rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(converted) : converted;
     }
     if (resolved.includes('${')) {
       // Already a KRO mixed-template value. Do not wrap it again as
       // `${http://${...}}`, which is invalid CEL/YAML for status fields.
-      return rewriteSchemaRefsForKroStatus(resolved);
+      return rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(resolved) : resolved;
     }
-    return `\${${rewriteSchemaRefsForKroStatus(resolved)}}`;
+    const expression = rewriteSchemaRefs ? rewriteSchemaRefsForKroStatus(resolved) : resolved;
+    return `\${${expression}}`;
   }
 
   function serializeValue(value: unknown): string | Record<string, unknown> | unknown[] {
@@ -959,7 +1613,7 @@ export function serializeStatusMappingsToCel(
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
         return value.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
-          statusFieldFromExpression(innerExpr)
+          statusFieldFromExpression(normalizeSchemaSpecShorthand(innerExpr), false)
         );
       }
       return statusFieldFromExpression(value.expression);
@@ -981,7 +1635,11 @@ export function serializeStatusMappingsToCel(
       if (value.includes('__KUBERNETES_REF_')) {
         // Resolve nested refs first (substitution is a no-op on pure marker
         // strings but handles mixed forms), then convert markers to KRO CEL.
-        const resolved = resolveNestedRefMarkers(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
+        const resolved = resolveNestedRefMarkers(
+          normalizeLocalResourceExpr(value),
+          nestedStatusCel,
+          resourceIds
+        );
         return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
       }
       return `\${"${escapeCelString(value)}"}`;

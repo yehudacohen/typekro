@@ -221,6 +221,23 @@ describe('CEL Expression Builder', () => {
     });
   });
 
+  describe('Cel.expr() composition', () => {
+    it('parenthesizes composed CEL expression operands before appending operators', () => {
+      const mode = Cel.default(
+        Cel.expr<'external' | 'managed' | undefined>(
+          'schema.spec.dependencySources.hydra.database.dsn.mode'
+        ),
+        'managed'
+      );
+
+      const managed = Cel.expr<boolean>(mode, ' == "managed"');
+
+      expect(managed.expression).toBe(
+        '(has(schema.spec.dependencySources.hydra.database.dsn.mode) ? (schema.spec.dependencySources.hydra.database.dsn.mode) : "managed") == "managed"'
+      );
+    });
+  });
+
   describe('Typed convenience methods', () => {
     it('Cel.boolean() should produce a CelExpression with boolean type', () => {
       const database = simple.Deployment({

@@ -10,7 +10,7 @@ try {
   const bootstrap = typeKroRuntimeBootstrap({
     namespace: 'flux-system',
     fluxVersion: 'v2.4.0',
-    kroVersion: '0.9.1',
+    kroVersion: '0.9.2',
   });
 
   console.log('✅ TypeKro runtime bootstrap created successfully');

@@ -84,7 +84,7 @@ async function deploySimpleStack() {
     const runtimeFactory = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.9.1',
+      kroVersion: '0.9.2',
     }).factory('direct', {
       namespace: 'flux-system',
       skipTLSVerify: true,

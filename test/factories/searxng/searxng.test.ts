@@ -135,6 +135,7 @@ describe('SearXNG Factory', () => {
       const yaml = searxngBootstrap.toYaml({
         name: 'search',
         server: {
+          secret_key: 'test-secret',
           limiter: true,
           bind_address: '0.0.0.0:8080',
           method: 'POST',

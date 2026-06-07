@@ -483,7 +483,7 @@ describe('Comprehensive Factory Tests', () => {
 
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test',
-        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
+        alchemyScope: {} as unknown as Scope, // Invalid scope to verify deployment failure handling
       });
 
       // Test deployment with alchemy (should fail gracefully in test environment)
@@ -502,7 +502,7 @@ describe('Comprehensive Factory Tests', () => {
       expect(deployError).toBeInstanceOf(Error);
       const message = (deployError as Error).message;
       expect(message).toMatch(
-        /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|namespaces .*test.* not found|Cannot hydrate status for 'test-app': deployment failed|Failed to fetch resource metadata/
+        /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|Alchemy scope is invalid|namespaces .*test.* not found|Cannot hydrate status for 'test-app': deployment failed|Failed to fetch resource metadata/
       );
 
       if (message.includes('Cannot hydrate status')) {

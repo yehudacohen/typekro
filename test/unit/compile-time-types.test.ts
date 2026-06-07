@@ -46,8 +46,14 @@ import type {
   MagicValue,
   RefOrValue,
   SchemaProxy,
+  TypeKroChartValues,
+  TypeKroValue,
+  TypeKroValueTree,
+  TypeKroValueTreeObject,
 } from '../../src/index.js';
-import { Cel, toResourceGraph } from '../../src/index.js';
+import { Cel, observedResource, toResourceGraph } from '../../src/index.js';
+import type { HelmReleaseConfig } from '../../src/factories/helm/index.js';
+import type { OryHydraConfig, OryKratosConfig } from '../../src/factories/ory/index.js';
 
 // =============================================================================
 // Test helpers — these functions exist only for type-level assertions.
@@ -199,6 +205,37 @@ describe('CelExpression<T> compile-time types', () => {
     // @ts-expect-error — CelExpression<string> is not assignable to CelExpression<number>
     const _numCel: CelExpression<number> = strCel;
     void _numCel;
+
+    expect(true).toBe(true);
+  });
+
+  test('Cel default helpers preserve fallback value type', () => {
+    if (COMPILE_ONLY) {
+      const optionalRef = phantom<KubernetesRef<string | undefined>>();
+
+      assertType<string>(Cel.default(optionalRef, 'fallback'));
+      assertType<string>(Cel.coalesce(optionalRef, 'fallback'));
+
+      // @ts-expect-error — string fallback is not valid for a numeric ref
+      Cel.default(phantom<KubernetesRef<number | undefined>>(), 'fallback');
+    }
+
+    expect(true).toBe(true);
+  });
+});
+
+describe('observedResource compile-time types', () => {
+  test('observedResource returns typed enhanced references', () => {
+    if (COMPILE_ONLY) {
+      const service = observedResource<{ type?: string }, { clusterIP: string }>({
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'svc' },
+      });
+
+      assertType<string>(service.status.clusterIP);
+      assertType<string | undefined>(service.spec.type);
+    }
 
     expect(true).toBe(true);
   });
@@ -651,6 +688,177 @@ describe('Cel helper compile-time types', () => {
   test('Cel.template returns CelExpression<string>', () => {
     const tmpl = Cel.template('https://%s', phantom<KubernetesRef<string>>());
     assertType<CelExpression<string>>(tmpl);
+
+    expect(true).toBe(true);
+  });
+});
+
+// =============================================================================
+// 14. Recursive TypeKro value tree interface tests
+// =============================================================================
+
+describe('TypeKro value tree compile-time types', () => {
+  test('TypeKroValueTree accepts serializable data and TypeKro refs recursively', () => {
+    if (COMPILE_ONLY) {
+      const host = phantom<KubernetesRef<string>>();
+      const replicas = phantom<KubernetesRef<number>>();
+      const ready = phantom<CelExpression<boolean>>();
+
+      assertType<TypeKroValueTree>({
+        config: {
+          host,
+          url: Cel.template('https://%s', host),
+          replicas,
+          ready,
+          literals: ['one', 2, true, null, undefined],
+        },
+      });
+
+      assertType<TypeKroValueTreeObject>({
+        nested: [{ host }, { replicas }],
+      });
+
+      // @ts-expect-error functions are runtime-only, not graph-serializable data leaves.
+      assertType<TypeKroValueTree>({ transform: () => 'direct-only' });
+
+      // @ts-expect-error symbols are runtime-only, not graph-serializable data leaves.
+      assertType<TypeKroValueTree>({ token: Symbol('runtime') });
+
+      // @ts-expect-error class instances are not plain TypeKro value-tree objects.
+      assertType<TypeKroValueTree>({ client: new Date() });
+    }
+
+    expect(true).toBe(true);
+  });
+
+  test('TypeKroValue preserves known config shape while allowing refs at leaves', () => {
+    if (COMPILE_ONLY) {
+      type KnownValues = {
+        config: {
+          url: string;
+          replicas: number;
+          enabled: boolean;
+          env: Array<{ name: string; value: string }>;
+        };
+      };
+
+      const host = phantom<KubernetesRef<string>>();
+      const replicas = phantom<KubernetesRef<number>>();
+
+      assertType<TypeKroValue<KnownValues>>({
+        config: {
+          url: Cel.template('https://%s', host),
+          replicas,
+          enabled: Cel.expr<boolean>`true`,
+          env: [{ name: 'APP_HOST', value: host }],
+        },
+      });
+
+      // @ts-expect-error typed numeric leaves should not accept string refs.
+      assertType<TypeKroValue<KnownValues>>({ config: { replicas: host } });
+    }
+
+    expect(true).toBe(true);
+  });
+
+  test('TypeKroChartValues accepts concrete chart values and ref-enhanced chart values', () => {
+    if (COMPILE_ONLY) {
+      type ChartValues = {
+        config?: {
+          url?: string;
+          replicas?: number;
+          env?: Array<{ name: string; value: string }>;
+        };
+      };
+
+      const host = phantom<KubernetesRef<string>>();
+      const replicas = phantom<KubernetesRef<number>>();
+
+      assertType<TypeKroChartValues<ChartValues>>({
+        config: {
+          url: 'https://example.com',
+          replicas: 2,
+          env: [{ name: 'STATIC', value: 'yes' }],
+        },
+      });
+
+      assertType<TypeKroChartValues<ChartValues>>({
+        config: {
+          url: Cel.template('https://%s', host),
+          replicas,
+          env: [{ name: 'APP_HOST', value: host }],
+        },
+      });
+
+      // @ts-expect-error chart values are data-only; callbacks are not valid leaves.
+      assertType<TypeKroChartValues<ChartValues>>({ config: { url: () => 'direct-only' } });
+    }
+
+    expect(true).toBe(true);
+  });
+
+  test('HelmReleaseConfig values use the recursive TypeKro value-tree API', () => {
+    if (COMPILE_ONLY) {
+      const host = phantom<KubernetesRef<string>>();
+      const replicas = phantom<KubernetesRef<number>>();
+
+      assertType<HelmReleaseConfig>({
+        name: 'app',
+        chart: { repository: 'https://charts.example.com', name: 'app' },
+        values: {
+          config: {
+            publicUrl: `https://${host}`,
+            replicas,
+            celUrl: Cel.template('https://%s', host),
+          },
+        },
+      });
+
+      assertType<HelmReleaseConfig>({
+        name: 'app',
+        chart: { repository: 'https://charts.example.com', name: 'app' },
+        // @ts-expect-error functions cannot be supplied as graph-aware Helm values.
+        values: { config: { transform: () => 'direct-only' } },
+      });
+    }
+
+    expect(true).toBe(true);
+  });
+
+  test('Ory service values are the primary graph-aware passthrough surface', () => {
+    if (COMPILE_ONLY) {
+      const url = phantom<KubernetesRef<string>>();
+
+      assertType<OryKratosConfig>({
+        values: {
+          kratos: {
+            config: {
+              serve: {
+                public: { base_url: url },
+              },
+            },
+          },
+        },
+      });
+
+      assertType<OryHydraConfig>({
+        values: {
+          hydra: {
+            config: {
+              urls: {
+                self: { issuer: Cel.template('https://%s', url) },
+                login: `https://${url}/login`,
+              },
+            },
+          },
+        },
+      });
+
+      assertType<OryHydraConfig>({
+        // @ts-expect-error values is data-only; callbacks belong in direct-only APIs.
+        values: { hydra: { config: { hooks: { before: () => 'direct-only' } } } },
+      });
+    }
 
     expect(true).toBe(true);
   });

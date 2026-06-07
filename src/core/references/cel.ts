@@ -76,6 +76,14 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
   }
 }
 
+function celExpressionPart(part: CelExpression<unknown>, shouldGroup: boolean): string {
+  if (!shouldGroup || part.__isTemplate) {
+    return part.expression;
+  }
+
+  return `(${part.expression})`;
+}
+
 /**
  * Build a CEL expression from parts. Accepts resource references (`schema.spec.*`,
  * `resources.*.status.*`), other CEL expressions, and literal strings/numbers/booleans.
@@ -104,14 +112,14 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
 function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T {
   validateExprParts(parts);
 
-  const celParts = parts.map((part) => {
+  const celParts = parts.map((part, index) => {
     if (isKubernetesRef(part)) {
       // Use inner reference without ${} wrapper for building expressions
       return getInnerCelPath(part);
     }
 
     if (isCelExpression(part)) {
-      return part.expression;
+      return celExpressionPart(part, parts.length > 1 && index < parts.length - 1);
     }
 
     if (typeof part === 'string') {
@@ -211,6 +219,16 @@ function has(ref: RefOrValue<unknown>): CelExpression<boolean> & boolean {
   );
 }
 
+function schemaSpecHasGuard(celPath: string): string | undefined {
+  const schemaPath = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(celPath)?.[1];
+  if (!schemaPath) return undefined;
+
+  const segments = schemaPath.split('.').filter(Boolean);
+  return segments
+    .map((_, index) => `has(schema.spec.${segments.slice(0, index + 1).join('.')})`)
+    .join(' && ');
+}
+
 /**
  * Negate a CEL boolean expression or a KubernetesRef.
  *
@@ -282,7 +300,7 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
     return getInnerCelPath(value);
   }
   if (isCelExpression(value)) {
-    return value.expression;
+    return `(${value.expression})`;
   }
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
@@ -379,6 +397,35 @@ function cond<T = unknown>(
   };
 
   return result as unknown as CelExpression<T> & T;
+}
+
+/**
+ * Use a value when its optional CEL path is present, otherwise use a fallback.
+ *
+ * This is shorthand for `has(value) ? value : fallback` with the same literal
+ * quoting and template-marker handling as {@link cond}.
+ */
+function defaultValue<T extends CelValue>(
+  value: RefOrValue<T>,
+  fallback: RefOrValue<NonNullable<T>>
+): CelExpression<NonNullable<T>> & NonNullable<T> {
+  const guard = isKubernetesRef(value)
+    ? (schemaSpecHasGuard(getInnerCelPath(value)) ?? has(value).expression)
+    : has(value).expression;
+  const expression = `${guard} ? ${celValueForTernary(value)} : ${celValueForTernary(fallback)}`;
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression,
+  } as CelExpression<NonNullable<T>> & NonNullable<T>;
+}
+
+/** Alias for {@link defaultValue}. */
+function coalesce<T extends CelValue>(
+  value: RefOrValue<T>,
+  fallback: RefOrValue<NonNullable<T>>
+): CelExpression<NonNullable<T>> & NonNullable<T> {
+  return defaultValue(value, fallback);
 }
 
 /**
@@ -553,6 +600,10 @@ export const Cel = {
   join,
   conditional,
   cond,
+  /** Shorthand for `has(value) ? value : fallback`. */
+  default: defaultValue,
+  /** Alias for `Cel.default(...)`. */
+  coalesce,
   math,
   template,
   concat,

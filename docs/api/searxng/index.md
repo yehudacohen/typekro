@@ -9,8 +9,8 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 
 ## Requirements
 
-- **KRO 0.9.1+** with the `CELOmitFunction` feature gate enabled. The composition uses `omit()` in its CEL expressions to drop optional fields that the user leaves unset — KRO 0.8.x will reject the resulting RGD at reconciliation time.
-- TypeKro's bundled runtime already pins KRO 0.9.1 and enables the feature gate, so no manual configuration is needed if you bootstrap your cluster via `typeKroRuntimeBootstrap().factory(...)` from the root `typekro` package. If you install KRO yourself, add this to your Helm values:
+- **KRO 0.9.2+** with the `CELOmitFunction` feature gate enabled. The composition uses `omit()` in its CEL expressions to drop optional fields that the user leaves unset — KRO 0.8.x will reject the resulting RGD at reconciliation time.
+- TypeKro's bundled runtime already pins KRO 0.9.2 and enables the feature gate, so no manual configuration is needed if you bootstrap your cluster via `typeKroRuntimeBootstrap().factory(...)` from the root `typekro` package. If you install KRO yourself, add this to your Helm values:
   ```yaml
   config:
     featureGates:
@@ -21,7 +21,7 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 
 - **`search.formats` is direct-mode only.** In KRO mode the user-supplied `formats` array is currently ignored and the composition falls back to the literal default `['html', 'json']`. This is because KRO's CEL mixed templates don't yet support iterating a schema array into a YAML list. If you need a custom `formats` list, deploy via direct mode. Array-valued CEL templating is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) and this limitation will be removed once it lands.
 - **Optional generated settings fields are direct-mode only.** `server.bind_address`, `server.method`, `search.default_lang`, `search.autocomplete`, and `search.safe_search` are emitted into generated `settings.yml` when the spec is concrete. In KRO mode those optional fields are schema proxies, so the composition omits them rather than emitting invalid YAML for absent values.
-- **KRO 0.9.1+ required.** See [Requirements](#requirements) above.
+- **KRO 0.9.2+ required.** See [Requirements](#requirements) above.
 
 ## Quick Start
 
@@ -60,7 +60,7 @@ await factory.deploy({
 |-------|------|---------|-------------|
 | `name` | `string` | required | Instance name |
 | `namespace` | `string` | `'searxng'` | Target namespace |
-| `enabled` | `boolean` | `true` | When `false`, direct mode creates no SearXNG resources; KRO mode gates resources with `includeWhen` so disabled instances reconcile without creating the workload |
+| `enabled` | `boolean` | `true` | Direct-mode only. When `false`, direct mode creates no SearXNG resources. KRO mode rejects disabled instances because status depends on the Deployment; omit the KRO instance instead. |
 | `image` | `string` | `'searxng/searxng:2026.3.29-7ac4ff39f'` | Container image (pinned to avoid breaking config changes between releases) |
 | `replicas` | `number` | `1` | Number of replicas |
 | `instanceName` | `string` | `name` | Displayed in the UI |

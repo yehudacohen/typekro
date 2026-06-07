@@ -89,6 +89,8 @@ app.factory('kro', { namespace: 'prod', aspects });
 
 Kro mode is stricter for composite mutations. TypeKro rejects unsafe `merge(...)` and `append(...)` operations when the current field or payload contains Kubernetes references or CEL expressions.
 
+Helm `spec.values` is the only reference-backed merge exception. TypeKro can defer an object `merge(...)` into `spec.values`, merge the known object tree before serialization, and preserve schema refs/CEL expressions at specific leaves. On Kro 0.9+, whole-object refs/CEL maps are serialized through Kro's shallow CEL map `.merge(...)` support.
+
 Use `replace(...)` when a field is symbolic in Kro output or when you need to replace the full list/object. Use `merge(...)` and `append(...)` only when the existing field is concrete in the final rendered resource.
 
 ## Convenience Helpers
@@ -123,7 +125,7 @@ Use lower-level `aspect.on(...)`, `metadata(...)`, and `override(...)` when you 
 
 ## Unsupported Patterns
 
-- Do not use `merge(...)` or `append(...)` against KRO fields that are built from resource refs or CEL expressions.
+- Do not use `merge(...)` or `append(...)` against KRO fields that are built from resource refs or CEL expressions, except for object overlays into Helm `spec.values`.
 - Do not use aspects as raw YAML rewrites; aspects operate on TypeKro resource objects before serialization.
 - Do not rely on factory provenance for exact matching; use `slot(...)`, `id`, labels, or other selectors.
 - Do not expect arbitrary deep merge semantics from helpers. Use `replace(...)` for whole-field replacement and narrow helpers for curated workload changes.

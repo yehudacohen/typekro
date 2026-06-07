@@ -11,6 +11,7 @@
  */
 
 import { type } from 'arktype';
+import type { TypeKroChartValues } from '../../core/types/common.js';
 
 // ============================================================================
 // Shared Schema Shapes
@@ -284,4 +285,7 @@ export const ValkeyHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the Valkey operator Helm release. */
-export type ValkeyHelmReleaseConfig = typeof ValkeyHelmReleaseConfigSchema.infer;
+export type ValkeyHelmReleaseConfig = Omit<typeof ValkeyHelmReleaseConfigSchema.infer, 'values'> & {
+  /** Graph-aware Helm values serialized recursively by TypeKro. */
+  values?: TypeKroChartValues<Record<string, unknown>>;
+};

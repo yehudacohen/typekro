@@ -31,6 +31,7 @@ import {
   mergePreservedCelExpressions,
   separateResourcesAndClosures,
 } from '../../src/core/serialization/core.js';
+import { deriveNestedCompositionResourceAlias } from '../../src/core/deployment/strategies/base-strategy.js';
 import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 
@@ -322,6 +323,39 @@ describe('detectAndPreserveCelExpressions', () => {
 
     expect(result.staticFields).toEqual({});
     expect(result.dynamicFields.phases).toEqual([celExpr]);
+  });
+
+  test('recursively separates static sibling fields from dynamic status objects', () => {
+    const clusterIP = makeKubeRef('service', 'spec.clusterIP');
+    const url = makeCelExpr('service.spec.clusterIP');
+    const result = separateStatusFields({
+      endpoint: {
+        url,
+        scheme: 'http',
+        nested: {
+          host: clusterIP,
+          label: 'public',
+        },
+      },
+    });
+
+    expect(result.dynamicFields).toEqual({
+      endpoint: {
+        url,
+        nested: { host: clusterIP },
+      },
+    });
+    expect(result.staticFields).toEqual({
+      endpoint: {
+        scheme: 'http',
+        nested: { label: 'public' },
+      },
+    });
+  });
+
+  test('derives nested composition aliases without rewriting incidental numeric resource names', () => {
+    expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe('hydraService');
+    expect(deriveNestedCompositionResourceAlias('s3Bucket')).toBeUndefined();
   });
 
   test('serializes status arrays recursively', () => {

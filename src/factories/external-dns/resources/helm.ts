@@ -9,6 +9,7 @@
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import type { TypeKroChartValue, TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -23,6 +24,19 @@ import type {
   ExternalDnsHelmRepositoryConfig,
   ExternalDnsHelmValues,
 } from '../types.js';
+
+type ExternalDnsHelmReleaseAuthoringSpec = Omit<
+  HelmReleaseSpec<Record<string, unknown>>,
+  'values'
+> & {
+  values?: TypeKroChartValue<Record<string, unknown>>;
+};
+
+function isExternalDnsHelmValues(
+  value: ExternalDnsHelmReleaseConfig['values']
+): value is NonNullable<TypeKroChartValues<ExternalDnsHelmValues>> {
+  return value !== undefined && !isCelExpression(value);
+}
 
 // =============================================================================
 // EXTERNAL-DNS HELM REPOSITORY WRAPPER
@@ -132,13 +146,15 @@ export function externalDnsHelmRelease(
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   const values = config.values
     ? isCelExpression(config.values)
-      ? (config.values as unknown as Record<string, unknown>)
-      : mapExternalDnsConfigToHelmValues(config.values)
+      ? config.values
+      : isExternalDnsHelmValues(config.values)
+        ? mapExternalDnsConfigToHelmValues(config.values)
+        : undefined
     : undefined;
 
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
-  return createResource<HelmReleaseSpec, HelmReleaseStatus>({
+  return createResource<ExternalDnsHelmReleaseAuthoringSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
     kind: 'HelmRelease',
@@ -164,7 +180,10 @@ export function externalDnsHelmRelease(
           values,
         }),
     },
-  }).withReadinessEvaluator(externalDnsHelmReleaseReadinessEvaluator);
+  }).withReadinessEvaluator(externalDnsHelmReleaseReadinessEvaluator) as Enhanced<
+    HelmReleaseSpec,
+    HelmReleaseStatus
+  >;
 }
 
 // =============================================================================
@@ -191,7 +210,7 @@ export function externalDnsHelmRelease(
  * ```
  */
 export function mapExternalDnsConfigToHelmValues(
-  config: ExternalDnsHelmValues
+  config: NonNullable<TypeKroChartValues<ExternalDnsHelmValues>>
 ): Record<string, unknown> {
   const values: Record<string, unknown> = {};
 

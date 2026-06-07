@@ -15,7 +15,7 @@ export * from './cel.js';
 // CEL evaluation
 export { CelEvaluator } from './cel-evaluator.js';
 // External references
-export { createExternalRefWithoutRegistration, externalRef } from './external-refs.js';
+export { createExternalRefWithoutRegistration, externalRef, observedResource } from './external-refs.js';
 // Reference resolution (DeploymentMode is both a const object and a type via TS namespacing)
 export { DeploymentMode, ReferenceResolver } from './resolver.js';
 // Schema proxy
