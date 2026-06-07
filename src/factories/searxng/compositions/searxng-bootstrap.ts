@@ -73,8 +73,7 @@ function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
 
   if (!spec.secretKeyRef && spec.server?.secret_key === undefined) {
     throw new TypeKroError(
-      'searxngBootstrap KRO mode requires server.secret_key or secretKeyRef when enabled. ' +
-        'KRO cannot report ready status for an instance whose Deployment is skipped for a missing secret source.',
+      'searxngBootstrap KRO mode requires server.secret_key or secretKeyRef for enabled instances.',
       'REQUIRED_CONFIG_MISSING',
       { field: 'server.secret_key', alternative: 'secretKeyRef', mode: 'kro' }
     );

@@ -731,16 +731,32 @@ describe('Schema Nullish Defaults', () => {
       const json = SearxngBootstrapConfigSchema.json as Record<string, unknown>;
       expect(json).toBeDefined();
       // Positive cases — these should type-check and validate.
-      const good0 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 0 } });
-      const good1 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 1 } });
-      const good2 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 2 } });
+      const good0 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 0 },
+      });
+      const good1 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 1 },
+      });
+      const good2 = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 2 },
+      });
       // Must not have produced an error-shaped return (ArkType returns
       // `ArkErrors` on validation failure, objects on success).
       expect((good0 as { search?: { safe_search?: number } }).search?.safe_search).toBe(0);
       expect((good1 as { search?: { safe_search?: number } }).search?.safe_search).toBe(1);
       expect((good2 as { search?: { safe_search?: number } }).search?.safe_search).toBe(2);
       // Out-of-range numeric values must be rejected.
-      const bad = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 3 } });
+      const bad = SearxngBootstrapConfigSchema({
+        name: 'x',
+        server: { secret_key: 'test-secret' },
+        search: { safe_search: 3 },
+      });
       // ArkType returns an ArkErrors instance (iterable + has `.summary`)
       // on failure; a successful result is a plain object without it.
       expect('summary' in (bad as object)).toBe(true);
@@ -830,6 +846,33 @@ describe('Schema Nullish Defaults', () => {
       expect(settingsYaml).toContain('limiter: false');
     });
 
+    it('Schema: default-enabled bootstrap requires an explicit secret source', async () => {
+      const { SearxngBootstrapConfigSchema } = await import(
+        '../../src/factories/searxng/types.js'
+      );
+
+      const missing = SearxngBootstrapConfigSchema({ name: 'searxng' });
+      const disabled = SearxngBootstrapConfigSchema({ name: 'searxng', enabled: false });
+      const generated = SearxngBootstrapConfigSchema({
+        name: 'searxng',
+        server: { secret_key: 'test-secret' },
+      });
+      const external = SearxngBootstrapConfigSchema({
+        name: 'searxng',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+      });
+
+      expect('summary' in (missing as object)).toBe(true);
+      expect(String(missing)).toContain('server.secret_key, or secretKeyRef');
+      expect((disabled as { enabled?: boolean }).enabled).toBe(false);
+      expect((generated as { server?: { secret_key?: string } }).server?.secret_key).toBe(
+        'test-secret'
+      );
+      expect((external as { secretKeyRef?: { name?: string } }).secretKeyRef?.name).toBe(
+        'search-secret'
+      );
+    });
+
     it('Direct mode: default-enabled bootstrap requires an explicit secret source', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
@@ -852,7 +895,7 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
-    it('KRO mode: enabled instances require a concrete secret source', async () => {
+    it('KRO mode: enabled instances require a schema-valid secret source', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
