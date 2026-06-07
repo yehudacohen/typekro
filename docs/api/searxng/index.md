@@ -60,7 +60,7 @@ await factory.deploy({
 |-------|------|---------|-------------|
 | `name` | `string` | required | Instance name |
 | `namespace` | `string` | `'searxng'` | Target namespace |
-| `enabled` | `boolean` | `true` | When `false`, direct mode creates no SearXNG resources; KRO mode gates resources with `includeWhen` so disabled instances reconcile without creating the workload |
+| `enabled` | `boolean` | `true` | Direct-mode only. When `false`, direct mode creates no SearXNG resources. KRO mode rejects disabled instances because status depends on the Deployment; omit the KRO instance instead. |
 | `image` | `string` | `'searxng/searxng:2026.3.29-7ac4ff39f'` | Container image (pinned to avoid breaking config changes between releases) |
 | `replicas` | `number` | `1` | Number of replicas |
 | `instanceName` | `string` | `name` | Displayed in the UI |
