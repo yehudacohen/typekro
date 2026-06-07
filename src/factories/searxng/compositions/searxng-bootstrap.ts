@@ -23,7 +23,7 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { TypeKroError } from '../../../core/errors.js';
-import { setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
+import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -52,6 +52,10 @@ function stripSecretKey<T extends { secret_key?: unknown }>(server: T): Omit<T, 
   return rest;
 }
 
+function appendIncludeWhen(resource: WeakKey, conditions: unknown[]): void {
+  setIncludeWhen(resource, [...(getIncludeWhen(resource) ?? []), ...conditions]);
+}
+
 export const searxngBootstrap = kubernetesComposition(
   {
     name: 'searxng-bootstrap',
@@ -69,6 +73,16 @@ export const searxngBootstrap = kubernetesComposition(
     const resolvedReplicas = isKubernetesRef(spec.replicas)
       ? Cel.default(spec.replicas, 1)
       : (spec.replicas ?? 1);
+    const isGraphMode = isKubernetesRef(spec.name);
+    const enabledWhen = Cel.expr<boolean>(
+      '!(has(schema.spec.enabled)) || schema.spec.enabled != false'
+    );
+    const generatedSecretKeyWhen = Cel.expr<boolean>(
+      'has(schema.spec.server) && has(schema.spec.server.secret_key)'
+    );
+    const secretSourceWhen = Cel.expr<boolean>(
+      'has(schema.spec.secretKeyRef) || (has(schema.spec.server) && has(schema.spec.server.secret_key))'
+    );
     const port = DEFAULT_SEARXNG_PORT;
     let deployment: ReturnType<typeof searxng> | undefined;
 
@@ -86,6 +100,9 @@ export const searxngBootstrap = kubernetesComposition(
         },
         id: 'searxngNamespace',
       });
+      if (isGraphMode) {
+        appendIncludeWhen(_ns, [enabledWhen]);
+      }
 
       // ── Settings ConfigMap ─────────────────────────────────────────────
       //
@@ -193,6 +210,9 @@ ${redisSection}`;
         data: { 'settings.yml': settingsYaml },
         id: 'searxngConfig',
       });
+      if (isGraphMode) {
+        appendIncludeWhen(_config, [enabledWhen]);
+      }
 
       // ── Secret (SEARXNG_SECRET delivery) ───────────────────────────────
       //
@@ -254,7 +274,13 @@ ${redisSection}`;
         id: 'searxngSecret',
       });
 
-      if (hasDynamicSecretKeyRef) {
+      if (isGraphMode) {
+        setIncludeWhen(generatedSecret, [
+          Cel.expr<boolean>('!has(schema.spec.secretKeyRef)'),
+          generatedSecretKeyWhen,
+          enabledWhen,
+        ]);
+      } else if (hasDynamicSecretKeyRef) {
         setIncludeWhen(generatedSecret, [Cel.not(dynamicSecretKeyRef)]);
       } else if (spec.secretKeyRef) {
         setIncludeWhen(generatedSecret, [false]);
@@ -310,10 +336,13 @@ ${redisSection}`;
         },
         id: 'searxngDeployment',
       });
+      if (isGraphMode) {
+        appendIncludeWhen(deployment, [secretSourceWhen, enabledWhen]);
+      }
 
       // ── Service ────────────────────────────────────────────────────────
 
-      simple.Service({
+      const svc = simple.Service({
         name: spec.name,
         namespace: resolvedNamespace,
         selector: {
@@ -323,6 +352,9 @@ ${redisSection}`;
         ports: [{ port, targetPort: port, name: 'http' }],
         id: 'searxngService',
       });
+      if (isGraphMode) {
+        appendIncludeWhen(svc, [enabledWhen]);
+      }
     }
 
     if (!deployment) {

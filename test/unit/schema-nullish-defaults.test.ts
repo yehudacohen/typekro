@@ -12,6 +12,12 @@ import {
   KUBERNETES_REF_MARKER_SOURCE,
 } from '../../src/shared/brands.js';
 
+function extractYamlResourceBlock(yaml: string, id: string): string {
+  const match = yaml.match(new RegExp(`- id: ${id}[\\s\\S]*?(?=\\n    - id: |\\n$)`));
+  expect(match).not.toBeNull();
+  return match?.[0] ?? '';
+}
+
 describe('Schema Nullish Defaults', () => {
   describe('extractNullishDefaults (fn.toString regex)', () => {
     it('should extract string literal defaults', () => {
@@ -759,9 +765,37 @@ describe('Schema Nullish Defaults', () => {
       );
       const yaml: string = searxngBootstrap.toYaml();
 
-      expect(yaml).toContain('includeWhen');
-      expect(yaml).toContain('!(has(schema.spec.enabled))');
-      expect(yaml).toContain('schema.spec.enabled != false');
+      for (const id of [
+        'searxngNamespace',
+        'searxngConfig',
+        'searxngSecret',
+        'searxngDeployment',
+        'searxngService',
+      ]) {
+        const block = extractYamlResourceBlock(yaml, id);
+        expect(block).toContain('includeWhen');
+        expect(block).toContain('!(has(schema.spec.enabled))');
+        expect(block).toContain('schema.spec.enabled != false');
+      }
+    });
+
+    it('KRO mode: generated Secret and Deployment require a secret source', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      const secretIncludeWhen =
+        extractYamlResourceBlock(yaml, 'searxngSecret').split('includeWhen:')[1] ?? '';
+      expect(secretIncludeWhen).toContain('!has(schema.spec.secretKeyRef)');
+      expect(secretIncludeWhen).toContain('has(schema.spec.server)');
+      expect(secretIncludeWhen).toContain('has(schema.spec.server.secret_key)');
+
+      const deploymentIncludeWhen =
+        extractYamlResourceBlock(yaml, 'searxngDeployment').split('includeWhen:')[1] ?? '';
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.secretKeyRef)');
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.server)');
+      expect(deploymentIncludeWhen).toContain('has(schema.spec.server.secret_key)');
     });
 
     it('KRO mode: status CEL avoids CR spec refs unsupported by KRO status schemas', async () => {
