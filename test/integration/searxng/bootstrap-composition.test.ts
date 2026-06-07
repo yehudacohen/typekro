@@ -144,8 +144,10 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     // CEL expressions in status (not raw property access)
     expect(yaml).toContain('.exists(c,');
 
-    // ConfigMap settings YAML uses a mixed template with string()-wrapped CEL refs.
-    expect(yaml).toContain('string(schema.spec.server.limiter)');
+    // ConfigMap settings YAML guards optional fields before reading them.
+    expect(yaml).toContain(
+      'string(has(schema.spec.server) && has(schema.spec.server.limiter) ? schema.spec.server.limiter : false)'
+    );
 
     // REGRESSION: required fields in template literals (like `${spec.name}-config`)
     // should produce clean mixed templates, NOT be wrapped in has() conditionals.

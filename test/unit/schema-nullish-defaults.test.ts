@@ -764,18 +764,16 @@ describe('Schema Nullish Defaults', () => {
       expect(yaml).toContain('schema.spec.enabled != false');
     });
 
-    it('KRO mode: status CEL guards disabled instances before deployment refs', async () => {
+    it('KRO mode: status CEL avoids CR spec refs unsupported by KRO status schemas', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
       const yaml: string = searxngBootstrap.toYaml();
 
-      expect(yaml).toContain('has(schema.spec.enabled) && schema.spec.enabled == false ? true');
-      expect(yaml).toContain(
-        'has(schema.spec.enabled) && schema.spec.enabled == false ? \\"Disabled\\"'
-      );
-      expect(yaml).toContain('has(schema.spec.enabled) && schema.spec.enabled == false ? false');
       expect(yaml).toContain('searxngDeployment.status.conditions.exists');
+      expect(yaml).not.toContain('phase: ${has(schema.spec.enabled)');
+      expect(yaml).not.toContain('ready: ${has(schema.spec.enabled)');
+      expect(yaml).not.toContain('failed: ${has(schema.spec.enabled)');
     });
 
     it('Direct mode: bootstrap does not auto-enable limiter when only redisUrl is provided', async () => {
