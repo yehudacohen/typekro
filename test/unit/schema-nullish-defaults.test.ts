@@ -841,6 +841,34 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
+    it('KRO mode: disabled instances are rejected because status depends on Deployment', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('kro', { namespace: 'test' });
+
+      expect(() => factory.toYaml({ name: 'disabled-search', enabled: false })).toThrow(
+        'KRO mode does not support enabled=false'
+      );
+    });
+
+    it('KRO mode: enabled instances require a concrete secret source', async () => {
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const factory = searxngBootstrap.factory('kro', { namespace: 'test' });
+
+      expect(() => factory.toYaml({ name: 'searxng' })).toThrow(
+        'requires server.secret_key or secretKeyRef'
+      );
+      expect(() =>
+        factory.toYaml({ name: 'searxng', secretKeyRef: { name: 'search-secret', key: 'secret_key' } })
+      ).not.toThrow();
+      expect(() =>
+        factory.toYaml({ name: 'searxng', server: { secret_key: 'test-secret' } })
+      ).not.toThrow();
+    });
+
     it('Direct mode: generated secret uses the explicit server secret key', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'

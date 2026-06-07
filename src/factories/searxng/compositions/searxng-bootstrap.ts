@@ -25,6 +25,11 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
+import type {
+  DirectResourceFactory,
+  KroResourceFactory,
+  PublicFactoryOptions,
+} from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -56,7 +61,58 @@ function appendIncludeWhen(resource: WeakKey, conditions: unknown[]): void {
   setIncludeWhen(resource, [...(getIncludeWhen(resource) ?? []), ...conditions]);
 }
 
-export const searxngBootstrap = kubernetesComposition(
+function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
+  if (spec.enabled === false) {
+    throw new TypeKroError(
+      'searxngBootstrap KRO mode does not support enabled=false because status depends on the Deployment resource. ' +
+        'Use direct mode for disabled instances or omit the KRO instance.',
+      'UNSUPPORTED_KRO_CONFIG',
+      { field: 'enabled', mode: 'kro' }
+    );
+  }
+
+  if (!spec.secretKeyRef && spec.server?.secret_key === undefined) {
+    throw new TypeKroError(
+      'searxngBootstrap KRO mode requires server.secret_key or secretKeyRef when enabled. ' +
+        'KRO cannot report ready status for an instance whose Deployment is skipped for a missing secret source.',
+      'REQUIRED_CONFIG_MISSING',
+      { field: 'server.secret_key', alternative: 'secretKeyRef', mode: 'kro' }
+    );
+  }
+}
+
+function withKroInstanceValidation(
+  factory: KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
+): KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer> {
+  return new Proxy(factory, {
+    get(target, prop, receiver) {
+      if (prop === 'deploy') {
+        return (
+          spec: SearxngBootstrapConfig,
+          opts?: Parameters<KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>['deploy']>[1]
+        ) => {
+          validateKroBootstrapInstanceSpec(spec);
+          return target.deploy(spec, opts);
+        };
+      }
+
+      if (prop === 'toYaml') {
+        return (spec?: SearxngBootstrapConfig) => {
+          if (spec !== undefined) {
+            validateKroBootstrapInstanceSpec(spec);
+            return target.toYaml(spec);
+          }
+          return target.toYaml();
+        };
+      }
+
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+const searxngBootstrapComposition = kubernetesComposition(
   {
     name: 'searxng-bootstrap',
     kind: 'SearxngBootstrap',
@@ -385,3 +441,31 @@ ${redisSection}`;
     };
   }
 );
+
+const baseFactory = searxngBootstrapComposition.factory.bind(searxngBootstrapComposition);
+
+function searxngBootstrapFactory(
+  mode: 'kro',
+  options?: PublicFactoryOptions
+): KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>;
+function searxngBootstrapFactory(
+  mode: 'direct',
+  options?: PublicFactoryOptions
+): DirectResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>;
+function searxngBootstrapFactory(mode: 'kro' | 'direct', options?: PublicFactoryOptions) {
+  const factory = baseFactory(mode, options);
+  return mode === 'kro'
+    ? withKroInstanceValidation(
+        factory as KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
+      )
+    : factory;
+}
+
+Object.defineProperty(searxngBootstrapComposition, 'factory', {
+  value: searxngBootstrapFactory,
+  writable: true,
+  enumerable: true,
+  configurable: true,
+});
+
+export const searxngBootstrap = searxngBootstrapComposition;
