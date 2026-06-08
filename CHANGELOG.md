@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-08
+
+### Added
+
+- **Dagster integration**: typed Helm values mapper, Flux HelmRepository/HelmRelease factories, and `dagsterBootstrap` composition for Dagster OSS deployments.
+- **Dagster package export and documentation**: new `typekro/dagster` entry point with API docs and live direct/KRO validation coverage.
+
+### Fixed
+
+- Dagster graph-mode Helm values now preserve nested runtime references and CEL expressions, including global and subchart overrides.
+- Dagster RabbitMQ credential conveniences now map to the official chart paths under `rabbitmq.rabbitmq.*`.
+- KRO factory YAML generation now validates specs consistently with direct `deploy()` execution.
+
 ## [0.11.0] - 2026-06-07
 
 ### Added
@@ -232,7 +245,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/yehudacohen/typekro/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yehudacohen/typekro/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/yehudacohen/typekro/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yehudacohen/typekro/compare/v0.9.0...v0.10.0
