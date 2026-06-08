@@ -96,6 +96,12 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('schema.spec.userDeployments.deployments');
     expect(yaml).toContain('schema.spec.webserver.image');
     expect(yaml).toContain('schema.spec.daemon.image');
+    expect(yaml).toContain('schema.spec.global.dagsterHome');
+    expect(yaml).toContain('schema.spec.global.celeryConfigSecretName');
+    expect(yaml).toContain('schema.spec.global.dagsterInstanceConfigMap');
+    expect(yaml).toContain('schema.spec.postgresql.values');
+    expect(yaml).toContain('schema.spec.rabbitmq.values');
+    expect(yaml).toContain('schema.spec.redis.values');
     expect(yaml).toContain('postgresqlHost');
     expect(yaml).toContain('k8sRunLauncher');
     expect(yaml).toContain(
@@ -107,6 +113,28 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('[object Object]');
     expect(yaml).not.toContain('undefined');
+  });
+
+  it('Reject KRO instance YAML with invalid typed user deployment arguments', () => {
+    const factory = dagsterBootstrap.factory('kro', {
+      namespace: 'typekro-dagster-test',
+    });
+
+    expect(() =>
+      factory.toYaml({
+        name: 'broken-dagster',
+        namespace: 'dagster-broken',
+        userDeployments: {
+          enabled: true,
+          deployments: [
+            {
+              name: 'broken-repo',
+              image: { repository: 'ghcr.io/acme/broken', tag: '1' },
+            },
+          ],
+        },
+      })
+    ).toThrow(/exactly one of dagsterApiGrpcArgs or codeServerArgs|user deployment/);
   });
 
   it('Generate direct-mode YAML with Dagster deployment values', async () => {

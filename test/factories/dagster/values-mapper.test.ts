@@ -8,7 +8,11 @@ import {
   mapDagsterConfigToHelmValues,
   validateDagsterConfig,
 } from '../../../src/factories/dagster/utils/helm-values-mapper.js';
-import type { CelExpression, KubernetesRef } from '../../../src/core/types/common.js';
+import type {
+  CelExpression,
+  KubernetesRef,
+  TypeKroValueTreeObject,
+} from '../../../src/core/types/common.js';
 import type {
   DagsterBootstrapConfig,
   DagsterHelmValues,
@@ -283,9 +287,10 @@ describe('Dagster Helm values mapper', () => {
     }));
 
     expect(values.generateCeleryConfigSecret).toBe(false);
+    expect(values.global).toMatchObject({ celeryConfigSecretName: 'dagster-celery-config' });
     expect(values.rabbitmq).toMatchObject({
       enabled: true,
-      username: 'dagster',
+      rabbitmq: { username: 'dagster' },
       service: { port: 5672 },
       persistence: { enabled: true },
     });
@@ -296,6 +301,63 @@ describe('Dagster Helm values mapper', () => {
       master: { persistence: { enabled: true } },
     });
     expect(values.redis?.values).toBeUndefined();
+  });
+
+  it('Map RabbitMQ credentials to the official nested chart path', () => {
+    const values = concreteValues(mapDagsterConfigToHelmValues({
+      ...minimalConfig,
+      global: { celeryConfigSecretName: 'dagster-celery-config' },
+      runLauncher: { type: 'CeleryK8sRunLauncher' },
+      rabbitmq: {
+        enabled: true,
+        username: 'dagster-user',
+        password: 'dagster-password',
+      },
+    }));
+
+    expect(values.rabbitmq).toMatchObject({
+      enabled: true,
+      rabbitmq: {
+        username: 'dagster-user',
+        password: 'dagster-password',
+      },
+    });
+    expect(values.rabbitmq?.username).toBeUndefined();
+    expect(values.rabbitmq?.password).toBeUndefined();
+  });
+
+  it('Preserve graph-aware subchart values as nested values merge expressions', () => {
+    const postgresqlValues = {
+      [KUBERNETES_REF_BRAND]: true,
+      resourceId: 'postgresqlValues',
+      fieldPath: 'status.values',
+    } satisfies KubernetesRef<TypeKroValueTreeObject>;
+    const rabbitmqValues = {
+      [KUBERNETES_REF_BRAND]: true,
+      resourceId: 'rabbitmqValues',
+      fieldPath: 'status.values',
+    } satisfies KubernetesRef<TypeKroValueTreeObject>;
+    const redisValues = {
+      [KUBERNETES_REF_BRAND]: true,
+      resourceId: 'redisValues',
+      fieldPath: 'status.values',
+    } satisfies KubernetesRef<TypeKroValueTreeObject>;
+
+    const values = concreteValues(mapDagsterConfigToHelmValues({
+      ...minimalConfig,
+      global: { celeryConfigSecretName: 'dagster-celery-config' },
+      runLauncher: { type: 'CeleryK8sRunLauncher' },
+      postgresql: { enabled: true, values: postgresqlValues },
+      rabbitmq: { enabled: true, values: rabbitmqValues },
+      redis: { enabled: true, values: redisValues },
+    }));
+
+    expect(isValuesMergeExpression(values.postgresql)).toBe(true);
+    expect(isValuesMergeExpression(values.rabbitmq)).toBe(true);
+    expect(isValuesMergeExpression(values.redis)).toBe(true);
+    expect((values.postgresql as { overlays?: unknown[] }).overlays?.[0]).toBe(postgresqlValues);
+    expect((values.rabbitmq as { overlays?: unknown[] }).overlays?.[0]).toBe(rabbitmqValues);
+    expect((values.redis as { overlays?: unknown[] }).overlays?.[0]).toBe(redisValues);
   });
 
   it('Preserve TypeKro refs and CEL expressions inside nested raw values', () => {

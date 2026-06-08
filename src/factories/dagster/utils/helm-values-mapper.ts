@@ -177,11 +177,7 @@ function validatePostgresql(
 }
 
 function mergeGlobalValues(values: DagsterHelmValues, config: DagsterBootstrapConfig): void {
-  const globalValues: TypeKroValueTreeObject = {};
-  const copiedGlobalValues = copyDefinedObject(config.global);
-  if (copiedGlobalValues && isMergeObject(copiedGlobalValues)) {
-    deepMerge(globalValues, copiedGlobalValues);
-  }
+  const globalValues = mapGlobalConfig(config.global) ?? {};
 
   setIfDefined(globalValues, 'serviceAccountName', config.serviceAccountName);
   setIfDefined(globalValues, 'postgresqlSecretName', config.postgresql?.passwordSecretName);
@@ -189,6 +185,23 @@ function mergeGlobalValues(values: DagsterHelmValues, config: DagsterBootstrapCo
   if (Object.keys(globalValues).length > 0) {
     values.global = globalValues;
   }
+}
+
+function mapGlobalConfig(
+  global: DagsterBootstrapConfig['global']
+): TypeKroValueTreeObject | undefined {
+  if (!global) return undefined;
+  if (!isGraphAwareValue(global)) return copyDefinedObject(global);
+
+  const mapped: TypeKroValueTreeObject = {};
+  setIfDefined(mapped, 'dagsterHome', global.dagsterHome);
+  setIfDefined(mapped, 'serviceAccountName', global.serviceAccountName);
+  setIfDefined(mapped, 'postgresqlSecretName', global.postgresqlSecretName);
+  setIfDefined(mapped, 'postgresqlAuthWifEnabled', global.postgresqlAuthWifEnabled);
+  setIfDefined(mapped, 'celeryConfigSecretName', global.celeryConfigSecretName);
+  setIfDefined(mapped, 'dagsterInstanceConfigMap', global.dagsterInstanceConfigMap);
+
+  return mapped;
 }
 
 function mapWebserverConfig(
@@ -301,13 +314,9 @@ function mapPostgresql(values: DagsterHelmValues, config: DagsterBootstrapConfig
     mapped.service = { port: postgresql.servicePort };
   }
 
-  const subValues = asValueObject(postgresql.values);
-  if (subValues) {
-    deepMerge(mapped, subValues);
-  }
-
-  if (Object.keys(mapped).length > 0) {
-    values.postgresql = mapped;
+  const mappedWithSubValues = mergeSubValues(mapped, postgresql.values);
+  if (isEmittableValue(mappedWithSubValues)) {
+    setIfDefined(values, 'postgresql', mappedWithSubValues);
   }
 
   const generatePostgresqlPasswordSecret = falseWhenValuePresent(
@@ -340,29 +349,29 @@ function mapRunLauncher(config: DagsterBootstrapConfig): TypeKroValueTreeObject 
   return mapped;
 }
 
-function mapRabbitmq(config: DagsterBootstrapConfig): TypeKroValueTreeObject | undefined {
+function mapRabbitmq(config: DagsterBootstrapConfig): DagsterRuntimeValueTree | undefined {
   const rabbitmq = config.rabbitmq;
   if (!rabbitmq) return undefined;
 
   const mapped: TypeKroValueTreeObject = {};
   setIfDefined(mapped, 'enabled', rabbitmq.enabled);
   setIfDefined(mapped, 'image', copyDefinedObject(rabbitmq.image));
-  setIfDefined(mapped, 'username', rabbitmq.username);
-  setIfDefined(mapped, 'password', rabbitmq.password);
+
+  const rabbitmqCredentials: TypeKroValueTreeObject = {};
+  setIfDefined(rabbitmqCredentials, 'username', rabbitmq.username);
+  setIfDefined(rabbitmqCredentials, 'password', rabbitmq.password);
+  if (Object.keys(rabbitmqCredentials).length > 0) {
+    mapped.rabbitmq = rabbitmqCredentials;
+  }
 
   if (rabbitmq.servicePort !== undefined) {
     mapped.service = { port: rabbitmq.servicePort };
   }
 
-  const subValues = asValueObject(rabbitmq.values);
-  if (subValues) {
-    deepMerge(mapped, subValues);
-  }
-
-  return mapped;
+  return mergeSubValues(mapped, rabbitmq.values);
 }
 
-function mapRedis(config: DagsterBootstrapConfig): TypeKroValueTreeObject | undefined {
+function mapRedis(config: DagsterBootstrapConfig): DagsterRuntimeValueTree | undefined {
   const redis = config.redis;
   if (!redis) return undefined;
 
@@ -379,12 +388,29 @@ function mapRedis(config: DagsterBootstrapConfig): TypeKroValueTreeObject | unde
   setIfDefined(mapped, 'brokerUrl', redis.brokerUrl);
   setIfDefined(mapped, 'backendUrl', redis.backendUrl);
 
-  const subValues = asValueObject(redis.values);
+  return mergeSubValues(mapped, redis.values);
+}
+
+function mergeSubValues(
+  mapped: TypeKroValueTreeObject,
+  values: unknown
+): DagsterRuntimeValueTree {
+  if (values === undefined) return mapped;
+  if (isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)) {
+    return mergeValuesExpression(mapped, values);
+  }
+
+  const subValues = asValueObject(values);
   if (subValues) {
     deepMerge(mapped, subValues);
   }
 
   return mapped;
+}
+
+function isEmittableValue(value: DagsterRuntimeValueTree): boolean {
+  if (isValuesMergeExpression(value) || isKubernetesRef(value) || isCelExpression(value)) return true;
+  return !isMergeObject(value) || Object.keys(value).length > 0;
 }
 
 function hasRawPath(values: unknown, key: string): boolean {

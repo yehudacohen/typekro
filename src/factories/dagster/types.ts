@@ -257,6 +257,13 @@ const userDeploymentSchema = type({
   'startupProbe?': objectMapSchema,
   'deploymentStrategy?': objectMapSchema,
   'service?': { 'annotations?': 'Record<string, string>' },
+}).narrow((deployment, ctx) => {
+  const hasGrpcArgs = Array.isArray(deployment.dagsterApiGrpcArgs) && deployment.dagsterApiGrpcArgs.length > 0;
+  const hasCodeServerArgs = Array.isArray(deployment.codeServerArgs) && deployment.codeServerArgs.length > 0;
+
+  if (hasGrpcArgs !== hasCodeServerArgs) return true;
+
+  return ctx.mustBe('a user deployment with exactly one of dagsterApiGrpcArgs or codeServerArgs');
 });
 
 const userDeploymentsSchemaShape = {
