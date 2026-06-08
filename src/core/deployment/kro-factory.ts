@@ -1453,6 +1453,11 @@ export class KroResourceFactoryImpl<
    */
   toYaml(spec?: TSpec): string {
     if (spec) {
+      validateSpec(spec, this.schemaDefinition, {
+        kind: this.schemaDefinition.kind,
+        name: this.name,
+      });
+
       // Generate CRD instance YAML
       const instanceName = generateInstanceName(spec, this.name);
       const customResource = this.createCustomResourceInstance(instanceName, spec);
