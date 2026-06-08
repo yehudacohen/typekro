@@ -98,7 +98,15 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('schema.spec.daemon.image');
     expect(yaml).toContain('schema.spec.global.dagsterHome');
     expect(yaml).toContain('schema.spec.global.celeryConfigSecretName');
+    expect(yaml).toContain('schema.spec.global.serviceAccountName');
+    expect(yaml).toContain('schema.spec.global.postgresqlSecretName');
     expect(yaml).toContain('schema.spec.global.dagsterInstanceConfigMap');
+    expect(yaml).toContain(
+      'has(schema.spec.serviceAccountName) ? schema.spec.serviceAccountName : has(schema.spec.global) && has(schema.spec.global.serviceAccountName) ? schema.spec.global.serviceAccountName : omit()'
+    );
+    expect(yaml).toContain(
+      'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? schema.spec.postgresql.passwordSecretName : has(schema.spec.global) && has(schema.spec.global.postgresqlSecretName) ? schema.spec.global.postgresqlSecretName : omit()'
+    );
     expect(yaml).toContain('schema.spec.postgresql.values');
     expect(yaml).toContain('schema.spec.rabbitmq.values');
     expect(yaml).toContain('schema.spec.redis.values');

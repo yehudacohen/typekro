@@ -303,6 +303,38 @@ describe('Dagster Helm values mapper', () => {
     expect(values.redis?.values).toBeUndefined();
   });
 
+  it('Preserve global chart fields unless top-level conveniences override them', () => {
+    const globalOnly = concreteValues(mapDagsterConfigToHelmValues({
+      ...minimalConfig,
+      global: {
+        serviceAccountName: 'global-service-account',
+        postgresqlSecretName: 'global-postgresql-secret',
+      },
+    }));
+    const topLevelOverride = concreteValues(mapDagsterConfigToHelmValues({
+      ...minimalConfig,
+      serviceAccountName: 'top-level-service-account',
+      global: {
+        serviceAccountName: 'global-service-account',
+        postgresqlSecretName: 'global-postgresql-secret',
+      },
+      postgresql: {
+        enabled: false,
+        host: 'dagster-postgres.postgres.svc.cluster.local',
+        passwordSecretName: 'top-level-postgresql-secret',
+      },
+    }));
+
+    expect(globalOnly.global).toMatchObject({
+      serviceAccountName: 'global-service-account',
+      postgresqlSecretName: 'global-postgresql-secret',
+    });
+    expect(topLevelOverride.global).toMatchObject({
+      serviceAccountName: 'top-level-service-account',
+      postgresqlSecretName: 'top-level-postgresql-secret',
+    });
+  });
+
   it('Map RabbitMQ credentials to the official nested chart path', () => {
     const values = concreteValues(mapDagsterConfigToHelmValues({
       ...minimalConfig,

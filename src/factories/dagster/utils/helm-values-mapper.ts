@@ -179,11 +179,45 @@ function validatePostgresql(
 function mergeGlobalValues(values: DagsterHelmValues, config: DagsterBootstrapConfig): void {
   const globalValues = mapGlobalConfig(config.global) ?? {};
 
-  setIfDefined(globalValues, 'serviceAccountName', config.serviceAccountName);
-  setIfDefined(globalValues, 'postgresqlSecretName', config.postgresql?.passwordSecretName);
+  overlayGlobalValue(
+    globalValues,
+    'serviceAccountName',
+    config.serviceAccountName,
+    'schema.spec.serviceAccountName',
+    'schema.spec.global.serviceAccountName'
+  );
+  overlayGlobalValue(
+    globalValues,
+    'postgresqlSecretName',
+    config.postgresql?.passwordSecretName,
+    'schema.spec.postgresql.passwordSecretName',
+    'schema.spec.global.postgresqlSecretName'
+  );
 
   if (Object.keys(globalValues).length > 0) {
     values.global = globalValues;
+  }
+}
+
+function overlayGlobalValue(
+  target: TypeKroValueTreeObject,
+  key: string,
+  overlayValue: unknown,
+  overlayPath: string,
+  fallbackPath: string
+): void {
+  const fallbackValue = target[key];
+  if (overlayValue === undefined) return;
+
+  if (isGraphAwareValue(overlayValue) || isValuesMergeExpression(overlayValue)) {
+    target[key] = Cel.expr<string>(
+      `${hasSchemaPath(overlayPath)} ? ${overlayPath} : ${hasSchemaPath(fallbackPath)} ? ${fallbackPath} : omit()`
+    ) as TypeKroValueTree;
+    return;
+  }
+
+  if (fallbackValue !== undefined || overlayValue !== undefined) {
+    target[key] = overlayValue as TypeKroValueTree;
   }
 }
 
