@@ -303,7 +303,7 @@ function mapUserDeployments(config: DagsterBootstrapConfig): TypeKroValueTreeObj
 
   const mapped: TypeKroValueTreeObject = {};
   setIfDefined(mapped, 'enabled', userDeployments.enabled);
-  setIfDefined(mapped, 'enableSubchart', userDeployments.enableSubchart ?? true);
+  setIfDefined(mapped, 'enableSubchart', userDeployments.enableSubchart ?? userDeployments.enabled ?? false);
   setIfDefined(mapped, 'imagePullSecrets', copyDefinedArray(userDeployments.imagePullSecrets));
 
   const deployments = userDeployments.deployments;

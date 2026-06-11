@@ -10,6 +10,7 @@ import type { Type } from 'arktype';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { createSchemaProxy } from '../references/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { pascalCase } from '../../utils/string.js';
@@ -274,6 +275,13 @@ interface ReExecutionResult {
    * conditionals.
    */
   ternaryConditionals: TernaryConditional[];
+  /**
+   * Cross-field presence chains (`a ?? b ?? 'lit'`) reconstructed by probing.
+   * Each is a CEL conditional to write directly at a resource's structural path.
+   * The single defaults run can only capture literal defaults, so these carry the
+   * multi-field `has(...) ? ... : ...` chains it cannot express.
+   */
+  crossFieldOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
 }
 
 /**
@@ -311,9 +319,19 @@ function resolveDefaultsByReExecution(
     const optionalFieldNames = new Set((specJson.optional ?? []).map(p => p.key));
 
     const tempCtx = createCompositionContext('defaults-extraction');
-    runWithCompositionContext(tempCtx, () => {
-      compositionFn(defaultsSpec);
-    });
+    // The all-undefined defaults run can throw when a composition dereferences an
+    // absent optional parent (`spec.settings.tier` with settings undefined). Contain
+    // it: literal-default extraction is then simply empty, but cross-field probing
+    // (which runs its own per-probe presence specs) must still proceed.
+    try {
+      runWithCompositionContext(tempCtx, () => {
+        compositionFn(defaultsSpec);
+      });
+    } catch (defaultsRunErr) {
+      logger.debug('Defaults run threw (absent optional parent?); continuing with probing only', {
+        error: defaultsRunErr instanceof Error ? defaultsRunErr.message : String(defaultsRunErr),
+      });
+    }
 
     const defaults: Record<string, string | number | boolean> = {};
     const ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
@@ -345,22 +363,38 @@ function resolveDefaultsByReExecution(
       );
     }
 
+    const crossFieldOverrides: ReExecutionResult['crossFieldOverrides'] = [];
     for (const [id, proxyRes] of proxyEntries) {
       const defaultsRes = defaultsMap.get(id);
-      if (!defaultsRes) continue; // resource only in proxy run — skip
-      extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
-      extractTernaryConditionals(
+      // Literal-default + ternary extraction need the defaults-run counterpart;
+      // skip them when it's absent (only in the proxy run, or the defaults run threw).
+      if (defaultsRes) {
+        extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
+        extractTernaryConditionals(
+          proxyRes,
+          defaultsRes,
+          ternaryConditionals,
+          optionalFieldNames,
+          ternaryConditionFieldHints
+        );
+      }
+      // Cross-field `??` chain reconstruction is independent of the defaults run —
+      // it does its own presence-probing — so it always runs.
+      reconstructCrossFieldChains(
+        compositionFn,
+        specJson,
+        id,
         proxyRes,
-        defaultsRes,
-        ternaryConditionals,
-        optionalFieldNames,
-        ternaryConditionFieldHints
+        defaults,
+        crossFieldOverrides
       );
     }
 
     const hasResults =
-      Object.keys(defaults).length > 0 || ternaryConditionals.length > 0;
-    return hasResults ? { defaults, ternaryConditionals } : undefined;
+      Object.keys(defaults).length > 0 ||
+      ternaryConditionals.length > 0 ||
+      crossFieldOverrides.length > 0;
+    return hasResults ? { defaults, ternaryConditionals, crossFieldOverrides } : undefined;
   } catch (err) {
     // Best-effort: composition functions with undefined spec fields may throw
     // (e.g., accessing spec.nested.field without optional chaining). Log at
@@ -369,6 +403,222 @@ function resolveDefaultsByReExecution(
       error: err instanceof Error ? err.message : String(err),
     });
     return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-field presence-chain reconstruction (interprocedural via execution)
+// ---------------------------------------------------------------------------
+//
+// The single defaults run (all optionals → undefined) captures only LITERAL
+// defaults (`a ?? 'lit'`). A CROSS-FIELD chain (`a ?? b ?? 'lit'`) defeats it: the
+// proxy run shows the output tracks `a`, the defaults run shows `'lit'`, so the
+// comparison wrongly records `a → 'lit'` and drops `b`. We reconstruct the true
+// chain by PROBING — running the composition under targeted presence combinations
+// (driving the magic schema proxy so present fields emit markers and absent fields
+// are `undefined`) and observing which field/literal each output path tracks. This
+// executes the real composition AND any helper it calls (mutation, Object.assign,
+// cross-module — all just run), so it needs no source resolution. Presence-based
+// only; value-based branching inside helpers is out of scope (handled inline by the
+// AST analyzer). Purely additive: emits only when a genuine multi-field chain is
+// confirmed, so it never changes existing single-field/literal behavior.
+
+const FULL_MARKER_RE = new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`);
+
+/** A leaf classified during probing: a tracked spec field, a literal, or neither. */
+type Leaf =
+  | { kind: 'field'; field: string }
+  | { kind: 'literal'; value: string | number | boolean }
+  | { kind: 'none' };
+
+/** Classify a single output-leaf value (marker-ref vs literal vs other). */
+function classifyLeaf(value: unknown): Leaf {
+  const s = typeof value === 'function' || typeof value === 'string' ? String(value) : null;
+  const m = s?.match(FULL_MARKER_RE);
+  const fp = m?.[1];
+  if (fp?.startsWith('spec.')) return { kind: 'field', field: fp.slice('spec.'.length) };
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (isSentinelDerivedValue(value)) return { kind: 'none' };
+    return { kind: 'literal', value };
+  }
+  return { kind: 'none' };
+}
+
+/** Read the value at a structural path within a (proxy/probe) resource object. */
+function readAtPath(obj: unknown, path: string[]): unknown {
+  let cur: unknown = obj;
+  for (const key of path) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur;
+}
+
+/** Write a value at a structural path within a resource object (no-op if missing). */
+export function setAtResourcePath(obj: unknown, path: string[], value: unknown): void {
+  const last = path[path.length - 1];
+  if (last === undefined) return;
+  let cur: unknown = obj;
+  for (const key of path.slice(0, -1)) {
+    if (cur == null || typeof cur !== 'object') return;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  if (cur && typeof cur === 'object') {
+    (cur as Record<string, unknown>)[last] = value;
+  }
+}
+
+/** Collect every leaf in the proxy-run resource that is exactly a `spec.X` marker. */
+function collectMarkerLeaves(
+  node: unknown,
+  path: string[],
+  out: Array<{ path: string[]; field: string }>
+): void {
+  const c = classifyLeaf(node);
+  if (c.kind === 'field') {
+    out.push({ path: [...path], field: c.field });
+    return;
+  }
+  // An embedded (non-exact) marker is a transformation, not a bare ref — skip it
+  // but still recurse into structured values.
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => collectMarkerLeaves(v, [...path, String(i)], out));
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node as Record<string, unknown>)) {
+      collectMarkerLeaves((node as Record<string, unknown>)[key], [...path, key], out);
+    }
+  }
+}
+
+/**
+ * Build a probe `spec`: the magic schema proxy (so any field access emits its
+ * `spec.X` marker) wrapped so the dotted paths in `absent` resolve to `undefined`.
+ * Driving presence this way lets a probe reveal which field a `??` chain falls
+ * through to when earlier links are absent.
+ */
+function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
+  const root = (createSchemaProxy(specJson) as { spec: unknown }).spec;
+  const wrap = (target: object, prefix: string): unknown =>
+    new Proxy(target, {
+      get(t, prop) {
+        if (typeof prop !== 'string') return Reflect.get(t, prop);
+        const full = prefix ? `${prefix}.${prop}` : prop;
+        if (absent.has(full)) return undefined;
+        const v = (t as Record<string, unknown>)[prop];
+        const hasDeeperAbsent = [...absent].some((a) => a.startsWith(`${full}.`));
+        if (hasDeeperAbsent && v && (typeof v === 'object' || typeof v === 'function')) {
+          return wrap(v as object, full);
+        }
+        return v;
+      },
+    });
+  return wrap(root as object, '');
+}
+
+/** Run the composition with a probe spec; return the resource matching `resourceId`. */
+function runProbe(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
+  absent: Set<string>,
+  resourceId: string
+): Record<string, unknown> | undefined {
+  try {
+    const ctx = createCompositionContext('cross-field-probe');
+    runWithCompositionContext(ctx, () => {
+      compositionFn(buildProbeSpec(specJson, absent));
+    });
+    return (ctx.resources as Record<string, Record<string, unknown>>)[resourceId];
+  } catch {
+    return undefined;
+  }
+}
+
+const celField = (field: string): string => `schema.spec.${field}`;
+
+/**
+ * Presence guard for a (possibly nested) optional field — every ancestor must be
+ * present too. `userDeployments.enableSubchart` →
+ * `has(schema.spec.userDeployments) && has(schema.spec.userDeployments.enableSubchart)`.
+ * Matches the optional-chain guard the inline analyzer emits, so a bare nested ref is
+ * never read through an absent parent.
+ */
+function presenceGuard(field: string): string {
+  const segs = field.split('.');
+  return segs.map((_, i) => `has(schema.spec.${segs.slice(0, i + 1).join('.')})`).join(' && ');
+}
+
+/** Render the chain's CEL: <guard(a)> ? a : (<guard(b)> ? b : <tail>). */
+function buildChainCel(chain: string[], tail: Leaf): string {
+  const tailCel =
+    tail.kind === 'literal'
+      ? typeof tail.value === 'string'
+        ? `"${escapeCelString(tail.value)}"`
+        : String(tail.value)
+      : tail.kind === 'field'
+        ? celField(tail.field)
+        : 'omit()';
+  let expr = tailCel;
+  let nested = false;
+  for (const f of [...chain].reverse()) {
+    expr = `${presenceGuard(f)} ? ${celField(f)} : ${nested ? `(${expr})` : expr}`;
+    nested = true;
+  }
+  return `\${${expr}}`;
+}
+
+/**
+ * For each `spec.X` marker leaf in the proxy-run resource, probe to reconstruct its
+ * full `??` chain. When the chain has more than one field (a genuine cross-field
+ * fallback the literal path can't express), emit a CEL conditional override and drop
+ * the (wrong) single-literal default the comparison recorded for the head field.
+ */
+function reconstructCrossFieldChains(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
+  resourceId: string,
+  proxyRes: Record<string, unknown>,
+  defaults: Record<string, string | number | boolean>,
+  out: Array<{ resourceId: string; path: string[]; cel: string }>
+): void {
+  const leaves: Array<{ path: string[]; field: string }> = [];
+  collectMarkerLeaves(proxyRes, [], leaves);
+
+  for (const { path, field } of leaves) {
+    // Probe every marker leaf. We don't pre-filter on declared optionality (the
+    // arktype `.json` shape varies for complex/nested schemas): a field that isn't
+    // presence-controlling simply won't change the leaf when toggled absent, leaving
+    // the chain at length 1 → no emit. The `chain.length >= 2` gate below is the real
+    // guard, so this stays additive while covering nested fields the optional-set misses.
+    const chain: string[] = [];
+    const absent = new Set<string>();
+    let current = field;
+    let tail: Leaf = { kind: 'none' };
+
+    for (let step = 0; step < 8; step++) {
+      chain.push(current);
+      absent.add(current);
+      const probeRes = runProbe(compositionFn, specJson, absent, resourceId);
+      const next = classifyLeaf(readAtPath(probeRes, path));
+      if (next.kind === 'field' && !chain.includes(next.field)) {
+        current = next.field; // chain falls through to another field — keep going
+        continue;
+      }
+      tail = next; // literal, a self/cyclic ref, or nothing → chain ends
+      break;
+    }
+
+    // Emit ONLY for genuine cross-field chains (≥2 fields) — the thing the single
+    // defaults run fundamentally cannot express. The comparison's single-literal
+    // default for the head field is wrong here, so drop it and use the conditional.
+    // Single-field cases (`x ?? lit`, bare optional refs) are left entirely to the
+    // existing default/omit-wrapping mechanisms, so this change can't regress them.
+    const [head] = chain;
+    if (chain.length >= 2 && head !== undefined) {
+      delete defaults[head];
+      out.push({ resourceId, path, cel: buildChainCel(chain, tail) });
+    }
   }
 }
 
@@ -1056,6 +1306,11 @@ export function arktypeToKroSchema(
     if (reExecutionResult) {
       applyNullishDefaults(specFields, reExecutionResult.defaults, true);
       ternaryConditionals.push(...reExecutionResult.ternaryConditionals);
+      // Cross-field `??` chains reconstructed by probing: write each CEL conditional
+      // directly at its resource path (overwriting the bare head-field marker).
+      for (const ov of reExecutionResult.crossFieldOverrides) {
+        setAtResourcePath(resources[ov.resourceId], ov.path, ov.cel);
+      }
     }
   }
 

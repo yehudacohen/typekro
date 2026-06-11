@@ -851,6 +851,21 @@ function unwrapKroExpression(value: unknown): string | undefined {
   return value.slice(2, -1);
 }
 
+/**
+ * Unwrap a string that is a WHOLE-VALUE Kro expression: the entire string is a
+ * single `${…}` wrapper with no surrounding text and no second interpolation.
+ * Distinguishes `"${has(x) ? x : false}"` (a raw expression to embed directly)
+ * from a string template like `"redis://${host}:6379"` or `"${a}-${b}"` (which
+ * must go through the string-concatenation path). Returns the inner expression,
+ * or undefined when the string isn't a clean single wrapper.
+ */
+function wholeValueKroExpression(value: string): string | undefined {
+  if (!value.startsWith('${') || !value.endsWith('}')) return undefined;
+  if (value.indexOf('${', 2) !== -1) return undefined; // a second interpolation → template
+  if (value.includes('__KUBERNETES_REF_')) return undefined; // unresolved marker → template path
+  return value.slice(2, -1);
+}
+
 function celValueTreeBranch(expression: string): string {
   return expression.includes(' ? ') && expression.includes(' : ') ? `(${expression})` : expression;
 }
@@ -945,6 +960,15 @@ function celLiteralForValueTree(
   }
 
   if (typeof value === 'string') {
+    // A whole-value CEL expression — the entire string is a single `${…}` wrapper
+    // (no surrounding literal text, no second interpolation) — must embed as a raw
+    // expression. Routing it through the string-template path would wrap it in
+    // `string(…)`, coercing a boolean/number conditional (e.g. a cross-field
+    // `has(x) ? x : false` default reconstructed by probing) into a string.
+    const whole = wholeValueKroExpression(value);
+    if (whole !== undefined) {
+      return celValueTreeBranch(whole);
+    }
     return value.includes('__KUBERNETES_REF_') || value.includes('${')
       ? celMarkerStringLiteralForValueTree(value, context)
       : JSON.stringify(value);
