@@ -45,9 +45,15 @@ function walk(
 /**
  * Build + substitute every container image referenced by `resources`. Returns the resolved
  * `containerId → imageUri` map (also useful for logging/diagnostics). Mutates the resources in place.
+ *
+ * `build` defaults to the real {@link buildContainer}; it is injectable purely so tests can resolve
+ * without a Docker daemon (avoids globally mocking the build module, which would leak across files).
  */
 export async function resolveContainerImages(
-  resources: readonly unknown[]
+  resources: readonly unknown[],
+  build: (
+    options: ContainerImageRef['buildOptions']
+  ) => Promise<{ imageUri: string }> = buildContainer
 ): Promise<Map<string, string>> {
   // 1. Collect the distinct containers referenced anywhere in the resource set.
   const byId = new Map<string, ContainerImageRef>();
@@ -65,7 +71,7 @@ export async function resolveContainerImages(
       containerId,
       imageName: ref.buildOptions.imageName,
     });
-    const { imageUri } = await buildContainer(ref.buildOptions);
+    const { imageUri } = await build(ref.buildOptions);
     uriByContainer.set(containerId, imageUri);
     logger.info('Resolved container image', { containerId, imageUri });
   }

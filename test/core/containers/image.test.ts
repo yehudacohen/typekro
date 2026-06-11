@@ -2,12 +2,16 @@
  * Unit tests for the `container()` first-class image utility + its deploy-time resolution.
  *
  * `container()` and ref detection are pure (no Docker). The resolution pass delegates to
- * `buildContainer`, which is mocked here so substitution + dedup are tested without a Docker daemon.
+ * `buildContainer`; the test injects a fake builder so substitution + dedup are exercised without a
+ * Docker daemon (and without globally mocking the build module, which would leak across test files).
  */
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { container, isContainerImageRef } from '../../../src/core/containers/image.js';
-import { hasContainerImageRefs } from '../../../src/core/containers/resolve.js';
+import {
+  hasContainerImageRefs,
+  resolveContainerImages,
+} from '../../../src/core/containers/resolve.js';
 
 describe('container() image utility', () => {
   it('returns an imageUri that is a ContainerImageRef carrying the build options', () => {
@@ -62,21 +66,13 @@ describe('container() image utility', () => {
 
 describe('resolveContainerImages', () => {
   it('builds each distinct container once and substitutes the literal URI in place', async () => {
+    // Inject a fake builder (NOT mock.module — that would leak a global mock of buildContainer into
+    // the real build.test.ts running in the same process).
     const calls: string[] = [];
-    mock.module('../../../src/core/containers/build.js', () => ({
-      buildContainer: async (opts: { imageName: string }) => {
-        calls.push(opts.imageName);
-        return {
-          imageUri: `123.dkr.ecr.us-east-1.amazonaws.com/${opts.imageName}:sha-abc`,
-          tag: 'sha-abc',
-          duration: 1,
-          pushed: true,
-        };
-      },
-      computeContentHash: async () => 'sha-abc',
-    }));
-    // Import AFTER the mock so resolve.ts binds the mocked buildContainer.
-    const { resolveContainerImages } = await import('../../../src/core/containers/resolve.js');
+    const fakeBuild = async (opts: { imageName: string }) => {
+      calls.push(opts.imageName);
+      return { imageUri: `123.dkr.ecr.us-east-1.amazonaws.com/${opts.imageName}:sha-abc` };
+    };
 
     const img = container({ context: './app', imageName: 'app', registry: { type: 'ecr' } });
     // Two resources reference the SAME container — must build only once.
@@ -89,7 +85,7 @@ describe('resolveContainerImages', () => {
       spec: { template: { spec: { containers: [{ name: 'c2', image: img.imageUri }] } } },
     };
 
-    const resolved = await resolveContainerImages([dep, dep2]);
+    const resolved = await resolveContainerImages([dep, dep2], fakeBuild);
 
     const uri = '123.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc';
     expect(calls).toEqual(['app']); // built ONCE despite two references
