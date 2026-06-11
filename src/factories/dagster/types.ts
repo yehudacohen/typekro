@@ -853,8 +853,6 @@ export const DagsterBootstrapConfigSchema = type({
   name: 'string',
   'namespace?': 'string',
   'version?': 'string',
-  'repositoryName?': 'string',
-  'repositoryNamespace?': 'string',
   'serviceAccountName?': 'string',
   'nameOverride?': 'string',
   'fullnameOverride?': 'string',
@@ -965,6 +963,23 @@ export const DagsterHelmRepositoryConfigSchema = type({
 
 /** Configuration for the Dagster HelmRepository wrapper. */
 export type DagsterHelmRepositoryConfig = typeof DagsterHelmRepositoryConfigSchema.infer;
+
+/**
+ * Spec for the shared Dagster HelmRepository singleton composition. The official
+ * Dagster chart repository is one cluster-level Flux source shared by every
+ * Dagster instance, so it is deployed once via `singleton(...)`. These three
+ * fields form the singleton's identity — all consumers must agree on them.
+ */
+export const DagsterHelmRepositorySingletonSpecSchema = type({
+  name: 'string',
+  namespace: 'string',
+  url: 'string',
+});
+
+/** Status surfaced by the shared Dagster HelmRepository singleton. */
+export const DagsterHelmRepositorySingletonStatusSchema = type({
+  ready: 'boolean',
+});
 
 /** ArkType schema for the Dagster Helm chart release wrapper. */
 export const DagsterHelmReleaseConfigSchema = type({

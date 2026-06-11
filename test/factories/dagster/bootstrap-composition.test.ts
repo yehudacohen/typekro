@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { dagsterBootstrap } from '../../../src/factories/dagster/index.js';
+import {
+  dagsterBootstrap,
+  dagsterHelmRepositoryBootstrap,
+} from '../../../src/factories/dagster/index.js';
 import {
   DagsterBootstrapConfigSchema,
   DagsterBootstrapStatusSchema,
@@ -74,18 +77,59 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: dagster-bootstrap');
     expect(yaml).toContain('dagsterNamespace');
-    expect(yaml).toContain('dagsterHelmRepository');
     expect(yaml).toContain('dagsterHelmRelease');
     expect(yaml).toContain('kind: Namespace');
-    expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('kind: HelmRelease');
-    expect(yaml).toContain('https://dagster-io.github.io/helm');
+    // The HelmRepository is a shared cluster-level singleton referenced via
+    // externalRef (not owned per-instance), so a dev + prod pair of instances
+    // doesn't collide on KRO's per-instance ApplySet ownership of it.
+    expect(yaml).toContain('externalRef');
+    expect(yaml).toContain('kind: DagsterHelmRepository');
+    // sourceRef still points the HelmRelease at the (shared) HelmRepository.
+    expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('chart: dagster');
     expect(yaml).toContain('1.13.8');
     expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
     expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
     expect(yaml).not.toContain('kind: Deployment');
     expect(yaml).not.toContain('kind: Pod');
+  });
+
+  it('Own the shared HelmRepository in the singleton composition', () => {
+    // The repository moved out of the per-instance bootstrap RGD into a shared
+    // singleton composition (kind DagsterHelmRepository) that owns the actual
+    // HelmRepository. Its URL is templated from the singleton spec; the concrete
+    // official URL is supplied by dagsterBootstrap at the singleton() call site.
+    const repoYaml = dagsterHelmRepositoryBootstrap.toYaml();
+
+    expect(repoYaml).toContain('kind: ResourceGraphDefinition');
+    expect(repoYaml).toContain('kind: DagsterHelmRepository');
+    expect(repoYaml).toContain('kind: HelmRepository');
+    expect(repoYaml).toContain('url: ${schema.spec.url}');
+  });
+
+  it('Emit the HelmRepository singleton owner in the GitOps toYaml bundle', () => {
+    // The bootstrap RGD only externalRefs the shared DagsterHelmRepository singleton.
+    // For a GitOps apply to be complete, toYaml() must also emit the singleton owner
+    // RGD (deps-first) and toYaml(spec) the owner instance (with the spec-fingerprint
+    // annotation that deploy() writes), or the externalRef dangles.
+    const rgdBundle = dagsterBootstrap.toYaml();
+    const rgdDocs = rgdBundle.split(/^---$/m).map((doc) => doc.trim());
+    expect(rgdDocs).toHaveLength(2);
+    expect(rgdBundle).toContain('name: dagster-helm-repository');
+    expect(rgdBundle).toContain('name: dagster-bootstrap');
+    // Owner RGD before the consuming RGD (deps-first apply order).
+    expect(rgdBundle.indexOf('name: dagster-helm-repository')).toBeLessThan(
+      rgdBundle.indexOf('name: dagster-bootstrap')
+    );
+
+    const instanceBundle = dagsterBootstrap
+      .factory('kro', { namespace: 'dagster' })
+      .toYaml({ name: 'analytics', namespace: 'dagster', postgresql: { enabled: true } } as never);
+    expect(instanceBundle).toContain('kind: DagsterHelmRepository');
+    expect(instanceBundle).toContain('namespace: typekro-singletons');
+    expect(instanceBundle).toContain('typekro.io/singleton-spec-fingerprint');
+    expect(instanceBundle).toContain('kind: DagsterBootstrap');
   });
 
   it('Preserve graph-aware Helm values in ResourceGraphDefinition YAML without raw markers', () => {

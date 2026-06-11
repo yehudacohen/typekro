@@ -76,6 +76,11 @@ import {
   validateSpec,
 } from './shared-utilities.js';
 import {
+  joinYamlDocuments,
+  singletonOwnerInstanceYamls,
+  singletonRgdYamls,
+} from './singleton-gitops.js';
+import {
   assertNoDeployedSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
@@ -1461,11 +1466,21 @@ export class KroResourceFactoryImpl<
       // Generate CRD instance YAML
       const instanceName = generateInstanceName(spec, this.name);
       const customResource = this.createCustomResourceInstance(instanceName, spec);
+      const instanceYaml = yaml
+        .dump(customResource, { lineWidth: -1, noRefs: true, sortKeys: false })
+        .trimEnd();
 
-      return yaml.dump(customResource, { lineWidth: -1, noRefs: true, sortKeys: false }).trimEnd();
+      // Shared singleton owner instances are created by `deploy()`; for the
+      // GitOps path we emit them alongside the consuming instance, deps-first,
+      // so the consuming RGD's externalRef resolves. No-op without singletons.
+      const ownerYamls = singletonOwnerInstanceYamls(this.singletonDefinitions);
+      return ownerYamls.length === 0 ? instanceYaml : joinYamlDocuments(ownerYamls, instanceYaml);
     }
 
-    return this.buildRgdYaml();
+    const rgdYaml = this.buildRgdYaml();
+    return this.singletonDefinitions.length === 0
+      ? rgdYaml
+      : joinYamlDocuments(singletonRgdYamls(this.singletonDefinitions), rgdYaml);
   }
 
   /**

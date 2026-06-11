@@ -23,6 +23,7 @@ import type { Enhanced, KubernetesResource } from '../../src/core/types/kubernet
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
 import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
 import { externalRef, kubernetesComposition, singleton } from '../../src/index.js';
+import { Deployment } from '../../src/factories/simple/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 // ---------------------------------------------------------------------------
@@ -876,22 +877,30 @@ describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
   });
 });
 
-describe('KroResourceFactory: toYaml() singleton owner isolation', () => {
-  it('does not synthesize singleton owner resources from singleton definitions', () => {
+describe('KroResourceFactory: toYaml() singleton owner emission', () => {
+  it('emits the singleton owner RGD without injecting owner resources into the consumer graph', () => {
+    const singletonBootstrap = kubernetesComposition(
+      {
+        name: 'singleton-bootstrap',
+        apiVersion: 'v1alpha1',
+        kind: 'SingletonBootstrap',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
+        return { ready: true };
+      }
+    );
+
     const resources: Record<string, KubernetesResource> = {};
-    const singletonKey = 'kro.run/v1alpha1/SingletonBootstrap:singleton-bootstrap#shared-platform';
+    const singletonKey = 'v1alpha1/SingletonBootstrap:singleton-bootstrap#shared-platform';
     const singletonDefinition = {
       id: 'shared-platform',
       key: singletonKey,
       specFingerprint: 'fp',
       registryNamespace: 'typekro-singletons',
-      composition: {
-        _definition: {
-          apiVersion: 'v1alpha1',
-          kind: 'SingletonBootstrap',
-          name: 'singleton-bootstrap',
-        },
-      } as unknown as SingletonDefinitionRecord['composition'],
+      composition: singletonBootstrap as unknown as SingletonDefinitionRecord['composition'],
       spec: { name: 'shared-platform' },
     } satisfies SingletonDefinitionRecord;
 
@@ -906,13 +915,20 @@ describe('KroResourceFactory: toYaml() singleton owner isolation', () => {
     );
     const ownerId = getSingletonResourceId(singletonKey);
 
-    const yaml = factory.toYaml();
-    expect(yaml).not.toContain(ownerId);
+    const yamlOut = factory.toYaml();
+    const parsedDocs = yaml.loadAll(yamlOut) as Array<{ metadata?: { name?: string } }>;
+
+    // Isolation invariant (unchanged): the owner is NEVER injected into the
+    // consumer's own resource graph — it is emitted as a separate RGD document.
     expect(Object.hasOwn(resources, ownerId)).toBe(false);
 
-    const buildRgdYaml = getPrivateMethod(factory, 'buildRgdYaml');
-    const deployYaml = buildRgdYaml() as string;
-    expect(deployYaml).not.toContain(ownerId);
+    // New GitOps contract: the owner RGD IS emitted, deps-first (owner before
+    // consumer), so a GitOps apply of toYaml() output is complete.
+    expect(parsedDocs).toHaveLength(2);
+    const docNames = parsedDocs.map((doc) => doc?.metadata?.name);
+    expect(docNames[0]).toBe('singleton-bootstrap');
+    expect(docNames[1]).toBe('singleton-consumer');
+    expect(yamlOut).toContain('kind: SingletonBootstrap');
   });
 });
 

@@ -21,11 +21,18 @@ import {
 
 ## What Gets Created
 
-`dagsterBootstrap` creates three TypeKro-owned resources:
+Each `dagsterBootstrap` instance owns:
 
 - A `Namespace` for the Dagster deployment namespace.
-- A Flux `HelmRepository` for `https://dagster-io.github.io/helm`.
 - A Flux `HelmRelease` for chart `dagster`, default version `1.13.8`.
+
+The Flux `HelmRepository` for `https://dagster-io.github.io/helm` is a **shared
+cluster-level singleton** (`DagsterHelmRepository`), deployed once and referenced by every
+Dagster instance. Modelling it per-instance would make each instance's KRO ApplySet try to
+own the same `flux-system/dagster` HelmRepository exclusively, so a second instance (e.g. a
+dev + prod pair) would fail to reconcile. The singleton owner lives in the `typekro-singletons`
+namespace; the factory's `deploy()` creates it automatically. See
+[Singletons & GitOps](#singletons-and-gitops) for the GitOps (`toYaml`) workflow.
 
 The bootstrap status is derived from owned Flux resources only. Component booleans such as
 `webserver`, `daemon`, and `userDeployments` mean the owning HelmRelease is ready, not that
@@ -91,12 +98,35 @@ await direct.deploy({
 Use YAML generation for GitOps:
 
 ```ts
+// RGDs: the shared HelmRepository singleton owner RGD plus the bootstrap RGD,
+// emitted deps-first as a multi-document stream.
 const rgdYaml = dagsterBootstrap.toYaml();
+
+// Instances: the shared singleton owner instance plus this Dagster instance.
+const instanceYaml = dagsterBootstrap
+  .factory('kro', { namespace: 'analytics' })
+  .toYaml({ name: 'analytics', namespace: 'analytics' });
 ```
 
 Generated ResourceGraphDefinition YAML does not read the cluster. Raw `values` are serialized as
 runtime graph-aware Helm values, so schema refs and CEL values are preserved instead of being
 stringified.
+
+### Singletons and GitOps
+
+Because the HelmRepository is a shared singleton, the GitOps bundle has **two RGDs** and (per
+instance) **two custom resources**:
+
+- `dagsterBootstrap.toYaml()` emits the `dagster-helm-repository` singleton RGD **before** the
+  `dagster-bootstrap` RGD (deps-first), as a multi-document YAML stream.
+- `factory.toYaml(spec)` emits the shared `DagsterHelmRepository` owner instance (in the
+  `typekro-singletons` namespace, carrying the `typekro.io/singleton-spec-fingerprint`
+  annotation) **before** the `DagsterBootstrap` instance.
+
+Apply all of them. The owner instance is identical to what `deploy()` creates, so mixing GitOps
+and imperative `deploy()` against the same cluster is safe — the second writer finds the existing
+owner and passes its drift check. Deploying multiple Dagster instances? They all share the one
+owner; emit its RGD/instance once.
 
 ## Low-Level Helm Wrappers
 

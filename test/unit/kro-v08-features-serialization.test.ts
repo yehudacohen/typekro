@@ -71,7 +71,11 @@ interface ParsedRgd {
 
 /** Parse YAML and return typed object */
 function parseRgdYaml(yamlStr: string): ParsedRgd {
-  return yaml.load(yamlStr) as ParsedRgd;
+  // toYaml() emits any singleton owner RGDs deps-first ahead of the consuming
+  // RGD, so the composition under test is always the LAST document. loadAll
+  // also handles the common single-document case (last === only).
+  const docs = yaml.loadAll(yamlStr) as ParsedRgd[];
+  return docs[docs.length - 1] as ParsedRgd;
 }
 
 /** Find a resource entry by id in parsed RGD. Throws if not found. */
