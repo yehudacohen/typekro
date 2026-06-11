@@ -13,6 +13,7 @@ import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { hasContainerImageRefs, resolveContainerImages } from '../containers/index.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
@@ -529,6 +530,9 @@ export class KroResourceFactoryImpl<
 
     // Execute closures before RGD creation (Kro mode requirement)
     await this.executeClosuresBeforeRGD(spec);
+    // Resolve any container() image refs to literal URIs (build + push via buildContainer) BEFORE the
+    // RGD is serialized — Kro reconciles in-cluster and can't build images, so it must see a literal.
+    await this.resolveContainerImagesBeforeRGD();
     await this.ensureSingletonOwners(spec);
 
     if (this.isAlchemyManaged) {
@@ -540,6 +544,18 @@ export class KroResourceFactoryImpl<
     } else {
       return this.deployDirect(spec, opts?.instanceNameOverride, opts?.singletonSpecFingerprint);
     }
+  }
+
+  /**
+   * Build + substitute any `container()` image references in the resource set to literal image URIs,
+   * delegating to `buildContainer` (no duplicated build logic). Runs client-side before RGD
+   * serialization; a no-op when nothing references a container image. Mutates `this.resources` so the
+   * subsequent `buildRgdYaml` serializes literal images (Kro never sees a build).
+   */
+  private async resolveContainerImagesBeforeRGD(): Promise<void> {
+    const resources = Object.values(this.resources);
+    if (!hasContainerImageRefs(resources)) return;
+    await resolveContainerImages(resources);
   }
 
   private async ensureSingletonOwners(spec: TSpec): Promise<void> {
