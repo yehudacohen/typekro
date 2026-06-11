@@ -1,12 +1,13 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
+import { singleton } from '../../../core/singleton/singleton.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_DAGSTER_REPO_NAME,
+  DEFAULT_DAGSTER_REPO_URL,
   DEFAULT_DAGSTER_VERSION,
   dagsterHelmRelease,
-  dagsterHelmRepository,
 } from '../resources/helm.js';
 import {
   type DagsterBootstrapConfig,
@@ -14,6 +15,7 @@ import {
   DagsterBootstrapStatusSchema,
 } from '../types.js';
 import { mapDagsterConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import { dagsterHelmRepositoryBootstrap } from './dagster-helm-repository.js';
 
 type DagsterBootstrapSchemaConfig = typeof DagsterBootstrapConfigSchema.infer;
 
@@ -33,8 +35,6 @@ export const dagsterBootstrap = kubernetesComposition(
   (spec) => {
     const resolvedNamespace = spec.namespace || 'dagster';
     const resolvedVersion = spec.version || DEFAULT_DAGSTER_VERSION;
-    const repositoryName = spec.repositoryName || DEFAULT_DAGSTER_REPO_NAME;
-    const repositoryNamespace = spec.repositoryNamespace || DEFAULT_FLUX_NAMESPACE;
     const helmValues = buildHelmValues(spec);
 
     const _dagsterNamespace = namespace({
@@ -50,26 +50,30 @@ export const dagsterBootstrap = kubernetesComposition(
       id: 'dagsterNamespace',
     });
 
-    const _dagsterHelmRepository = dagsterHelmRepository({
-      name: repositoryName,
-      namespace: repositoryNamespace,
-      id: 'dagsterHelmRepository',
+    // The official Dagster chart repository is one cluster-level Flux source shared
+    // by every Dagster instance, so deploy it once via singleton(...) with a fixed
+    // identity. Inlining it would make each instance's KRO ApplySet try to own the
+    // HelmRepository exclusively, breaking a second instance (dev + prod) with an
+    // ApplySet reassignment error. Every instance's HelmRelease references the same
+    // shared repository by the official `sourceRef` defaults.
+    const _dagsterHelmRepository = singleton(dagsterHelmRepositoryBootstrap, {
+      id: 'dagster-helm-repository',
+      spec: {
+        name: DEFAULT_DAGSTER_REPO_NAME,
+        namespace: DEFAULT_FLUX_NAMESPACE,
+        url: DEFAULT_DAGSTER_REPO_URL,
+      },
     });
 
     const _dagsterHelmRelease = dagsterHelmRelease({
       name: spec.name,
       namespace: resolvedNamespace,
       version: resolvedVersion,
-      repositoryName,
-      repositoryNamespace,
       values: helmValues,
       id: 'dagsterHelmRelease',
     });
 
-    const helmRepositoryReady = Cel.expr<boolean>(
-      _dagsterHelmRepository.status.conditions,
-      '.exists(c, c.type == "Ready" && c.status == "True")'
-    );
+    const helmRepositoryReady = _dagsterHelmRepository.status.ready;
     const helmReleaseReady = Cel.expr<boolean>(
       _dagsterHelmRelease.status.conditions,
       '.exists(c, c.type == "Ready" && c.status == "True")'
@@ -107,8 +111,6 @@ function buildMapperConfig(spec: DagsterBootstrapSchemaConfig): DagsterBootstrap
     { name: spec.name },
     spec.namespace !== undefined && { namespace: spec.namespace },
     spec.version !== undefined && { version: spec.version },
-    spec.repositoryName !== undefined && { repositoryName: spec.repositoryName },
-    spec.repositoryNamespace !== undefined && { repositoryNamespace: spec.repositoryNamespace },
     spec.serviceAccountName !== undefined && { serviceAccountName: spec.serviceAccountName },
     spec.nameOverride !== undefined && { nameOverride: spec.nameOverride },
     spec.fullnameOverride !== undefined && { fullnameOverride: spec.fullnameOverride },

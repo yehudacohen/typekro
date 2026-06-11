@@ -200,16 +200,12 @@ describe('Dagster Helm values mapper', () => {
     const values = concreteValues(mapDagsterConfigToHelmValues({
       ...minimalConfig,
       version: '1.13.8',
-      repositoryName: 'dagster-source',
-      repositoryNamespace: 'flux-system',
       serviceAccountName: 'dagster-runtime',
     }));
 
     expect('name' in values).toBe(false);
     expect('namespace' in values).toBe(false);
     expect('version' in values).toBe(false);
-    expect('repositoryName' in values).toBe(false);
-    expect('repositoryNamespace' in values).toBe(false);
     expect(values.global).toMatchObject({ serviceAccountName: 'dagster-runtime' });
   });
 
