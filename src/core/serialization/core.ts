@@ -16,6 +16,8 @@ import {
 } from '../composition/context.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
+import { joinYamlDocuments, singletonRgdYamls } from '../deployment/singleton-gitops.js';
+import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import { ensureError, ValidationError } from '../errors.js';
 import {
   type ASTAnalysisResult,
@@ -2324,7 +2326,23 @@ function createTypedResourceGraph<
         }
       }
 
-      return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
+      const rgdYaml = serializeResourceGraphToYaml(
+        definition.name,
+        resourcesWithKeys,
+        options,
+        kroSchema
+      );
+
+      // Singleton owners are deployed once outside any consuming instance's
+      // ApplySet (see `singleton(...)`). The factory's `deploy()` creates them
+      // imperatively; for the GitOps `toYaml()` path we must emit their RGDs too,
+      // deps-first, or the consuming RGD's externalRef dangles. No-op when the
+      // composition uses no singletons.
+      const singletonDefs =
+        (this as { _singletonDefinitions?: SingletonDefinitionRecord[] })._singletonDefinitions ??
+        [];
+      if (singletonDefs.length === 0) return rgdYaml;
+      return joinYamlDocuments(singletonRgdYamls(singletonDefs), rgdYaml);
     },
   };
 

@@ -1041,10 +1041,14 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
 describe('Fix #35 additional coverage — nullish default propagation', () => {
   /** Parse the RGD YAML and extract the spec portion of the schema block. */
   function extractSchemaSpec(yamlStr: string): Record<string, unknown> {
-    const parsed = jsYaml.load(yamlStr) as {
+    // toYaml() emits any singleton owner RGDs deps-first ahead of the
+    // composition under test, so the consumer RGD is the LAST document.
+    const docs = jsYaml.loadAll(yamlStr) as Array<{
       spec: { schema: { spec: Record<string, unknown> } };
-    };
-    return parsed.spec.schema.spec;
+    }>;
+    const consumer = docs[docs.length - 1];
+    if (!consumer) throw new Error('expected at least one RGD document');
+    return consumer.spec.schema.spec;
   }
 
   it('creates a leaf field with default for spec.field ?? literal', () => {

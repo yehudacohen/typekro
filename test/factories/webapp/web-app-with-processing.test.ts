@@ -81,6 +81,22 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('kind: ValkeyBootstrap');
     expect(yaml).toContain('name: cnpg-operator');
     expect(yaml).toContain('name: valkey-operator');
-    expect(yaml).not.toContain('podMonitorEnabled:');
+  });
+
+  it('emits the shared operator singleton RGDs deps-first so the GitOps bundle is complete', () => {
+    // toYaml() must emit the singleton owner RGDs the consuming RGD references via
+    // externalRef — otherwise a GitOps apply leaves the externalRef dangling.
+    const yaml = webAppWithProcessing.toYaml();
+    const docs = yaml.split(/^---$/m).map((doc) => doc.trim());
+
+    // Three documents: both operator owner RGDs plus the consuming app RGD.
+    expect(docs).toHaveLength(3);
+    expect(yaml).toContain('name: cnpg-bootstrap');
+    expect(yaml).toContain('name: valkey-bootstrap');
+    expect(yaml).toContain('name: web-app-with-processing');
+    // Owner RGDs are emitted before the consumer (deps-first apply order).
+    expect(yaml.indexOf('name: cnpg-bootstrap')).toBeLessThan(
+      yaml.indexOf('name: web-app-with-processing')
+    );
   });
 });

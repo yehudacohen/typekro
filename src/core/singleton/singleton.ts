@@ -37,6 +37,23 @@ function getSingletonApiVersion(compositionRecord: SingletonCompositionMetadata)
   return `${group}/${rawApiVersion}`;
 }
 
+/**
+ * The custom-resource `apiVersion`/`kind` of a singleton owner instance, derived
+ * exactly as {@link useSingleton} derives the externalRef target. Exported so the
+ * GitOps emitter can produce an owner-instance manifest that the consuming RGD's
+ * externalRef resolves against.
+ */
+export function singletonInstanceTypeMeta(composition: unknown): {
+  apiVersion: string;
+  kind: string;
+} {
+  const record = composition as SingletonCompositionMetadata;
+  return {
+    apiVersion: getSingletonApiVersion(record),
+    kind: String(record._definition?.kind ?? record.kind ?? 'unknown'),
+  };
+}
+
 function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   composition: CallableComposition<TSpec, TStatus>,
 ): Map<string, SingletonDefinitionRecord<TSpec, TStatus>> {
