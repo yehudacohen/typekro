@@ -11,7 +11,6 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
-import { hasContainerImageRefs, resolveContainerImages } from '../containers/index.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
@@ -206,13 +205,6 @@ export class DirectResourceFactoryImpl<
       kind: this.schemaDefinition.kind,
       name: this.name,
     });
-
-    // Build + substitute any container() image refs to literal URIs (via buildContainer) before any
-    // resource is applied — images are client-side artifacts, never cluster references.
-    const resourceList = Object.values(this.resources);
-    if (hasContainerImageRefs(resourceList)) {
-      await resolveContainerImages(resourceList);
-    }
 
     // Use the consolidated deployment strategy
     const strategy = this.getDeploymentStrategy();
