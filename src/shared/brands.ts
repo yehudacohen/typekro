@@ -41,6 +41,16 @@ export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableCompositio
 export const SINGLETON_HANDLE_BRAND = Symbol.for('TypeKro.SingletonHandle');
 
 /**
+ * Brand symbol for ContainerImageRef objects — the `.imageUri` of a `container()` utility.
+ *
+ * Unlike a KubernetesRef (which serializes to a CEL expression Kro resolves from CLUSTER state), a
+ * container image ref is resolved CLIENT-SIDE to a literal string (the built + pushed image URI)
+ * before apply / RGD serialization. Images have no dependency on cluster resources, so a container is
+ * defined OUTSIDE a composition and only referenced within one.
+ */
+export const CONTAINER_IMAGE_REF_BRAND = Symbol.for('TypeKro.ContainerImageRef');
+
+/**
  * Regex pattern for matching __KUBERNETES_REF__ marker strings in values.
  *
  * Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
