@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-06-12
+
+### Fixed
+
+- Fixed KRO status serialization so schema-only status fields are hydrated by TypeKro instead of
+  being emitted into the ResourceGraphDefinition status schema.
+- Fixed nested status expression handling so embedded template expressions remain valid CEL and
+  resource-backed status fields continue to be emitted for KRO reconciliation.
+- Fixed integration test typecheck regressions in the status hydration and Cilium test suites.
+
 ## [0.15.0]
 
 ### Changed
