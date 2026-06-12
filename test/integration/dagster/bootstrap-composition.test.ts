@@ -390,9 +390,12 @@ describe('Dagster bootstrap composition integration surfaces', () => {
 
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('dagsterNamespace');
-    expect(yaml).toContain('dagsterHelmRepository');
+    // The HelmRepository is a shared singleton owner, emitted as its own RGD (the GitOps singleton
+    // contract); its url is the owner's schema input rather than a literal inlined in the RGD.
+    expect(yaml).toContain('dagster-helm-repository');
+    expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('dagsterHelmRelease');
-    expect(yaml).toContain('https://dagster-io.github.io/helm');
+    expect(yaml).toContain('url: ${schema.spec.url}');
     expect(yaml).toContain('chart: dagster');
     expect(yaml).toContain('1.13.8');
     expect(yaml).toContain('dagsterHelmRelease.status.conditions');

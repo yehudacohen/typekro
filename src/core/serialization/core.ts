@@ -48,7 +48,11 @@ import type {
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
-import { finalizeCelForKro, processResourceReferences } from './cel-references.js';
+import {
+  finalizeCelForKro,
+  isStaticExpression,
+  processResourceReferences,
+} from './cel-references.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
@@ -2297,12 +2301,28 @@ function createTypedResourceGraph<
 
       // Inject status overrides into schema status section.
       // Convert "..." to '...' in CEL string literals for YAML compatibility.
+      //
+      // KRO status CEL can only reference resource fields — it has no `schema`
+      // identifier in the status environment (even a bare `${schema.spec.x}`
+      // is rejected with "references unknown identifiers: [schema]"). So a
+      // status override that references ONLY schema.spec (no resource) must be
+      // left out of the KRO schema and instead hydrated client-side by the
+      // factory's inline-CEL evaluator (see `evaluateStaticFieldValue`).
       const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
       if (statusOverrides.length > 0) {
-        if (!kroSchema.status) {
-          kroSchema.status = {};
-        }
+        const resourceIdList = Object.keys(resourcesWithKeys);
+        const nestedCelForClassification =
+          Object.keys(nestedStatusCel).length > 0 ? nestedStatusCel : undefined;
         for (const override of statusOverrides) {
+          // Schema-only overrides (no resource refs) are hydrated client-side by
+          // the static-field path, like any other static status field — KRO
+          // status CEL cannot reference `schema.spec.*`. Only inject the
+          // resource-referencing (dynamic) overrides into the KRO schema.
+          if (isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList))
+            continue;
+          if (!kroSchema.status) {
+            kroSchema.status = {};
+          }
           const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
           kroSchema.status[override.propertyPath] = yamlSafe;
         }

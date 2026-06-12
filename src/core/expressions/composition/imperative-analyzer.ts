@@ -598,8 +598,40 @@ function evaluateStaticExpression(node: any): any {
  * Comparison operators (`>=`, `&&`, `===`) and resource references
  * (`app.status.readyReplicas`) are already valid CEL and pass through.
  */
+/**
+ * Convert backtick template literals EMBEDDED within a larger expression (e.g. a ternary branch)
+ * into CEL string concatenation. A top-level template literal is handled by
+ * {@link convertTemplateLiteralToCel}, but an embedded one (`cond ? `${x}-y` : 'z'`) must NOT stay
+ * a `${…}` template — Kro rejects a `${…}` placeholder nested inside another `${…}`. Each embedded
+ * template is replaced by its parenthesized concat form (`(x + "-y")`).
+ */
+function convertEmbeddedTemplateLiterals(source: string): string {
+  if (!source.includes('`')) return source;
+  let result = '';
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === '`') {
+      const close = source.indexOf('`', i + 1);
+      if (close === -1) {
+        // Unbalanced — leave the rest untouched.
+        result += source.slice(i);
+        break;
+      }
+      const template = source.slice(i, close + 1); // includes both backticks
+      result += `(${convertTemplateLiteralToCel(template, {})})`;
+      i = close + 1;
+    } else {
+      result += source[i];
+      i++;
+    }
+  }
+  return result;
+}
+
 function applyJsToCelConversions(source: string): string {
-  let result = source;
+  // Flatten any embedded template literals to CEL concat FIRST, so the regexes below operate on a
+  // template-free string and we never emit a `${…}` nested inside another `${…}`.
+  let result = convertEmbeddedTemplateLiterals(source);
 
   // Prefix bare `spec.` references with `schema.` for KRO CEL
   // Only match standalone `spec.` (not `schema.spec.` or `X.spec.`)

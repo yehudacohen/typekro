@@ -40,6 +40,7 @@ import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 // instead of dynamic import() from higher layers.
 import { getMetadataField, setMetadataField } from '../metadata/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
+import { isStaticExpression } from '../serialization/cel-references.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
@@ -1491,8 +1492,18 @@ export class KroResourceFactoryImpl<
 
     const statusOverrides = this.factoryOptions.compositionAnalysis?.statusOverrides ?? [];
     if (statusOverrides.length > 0) {
-      kroSchema.status ??= {};
+      // Only resource-referencing (dynamic) overrides belong in the KRO schema;
+      // schema-only ones (e.g. `spec.x ? a : b`) are rejected by KRO ("unknown
+      // identifiers: [schema]") and are hydrated client-side instead, like any
+      // other static status field.
+      const resourceIdList = Object.keys(aspectResources);
+      const nestedCel = this.getNestedStatusCel();
+      const nestedCelForClassification =
+        nestedCel && Object.keys(nestedCel).length > 0 ? nestedCel : undefined;
       for (const override of statusOverrides) {
+        if (isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList))
+          continue;
+        kroSchema.status ??= {};
         const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
         kroSchema.status[override.propertyPath] = yamlSafe;
       }

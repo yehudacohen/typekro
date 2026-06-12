@@ -163,13 +163,85 @@ export function extractFactoryId(call: CallExpression): string | undefined {
  *   condition vacuous.
  * - Wraps the result in `${}` for Kro CEL syntax.
  */
+/**
+ * Flatten JavaScript template literals (`\`...${e}...\``) embedded in an
+ * expression's source into CEL string concatenation (`"..." + (e) + "..."`).
+ *
+ * `conditionToCel` works on raw source text and wraps the whole result in a
+ * single `${…}` for Kro. A template literal left intact keeps its own `${…}`
+ * interpolation, which then sits nested inside that outer `${…}` — a shape Kro
+ * rejects ("nested expressions are not allowed unless inside string literals").
+ * Converting each template to concatenation removes the inner `${…}` while
+ * preserving the value. Interpolated expressions are emitted verbatim so the
+ * caller's later `spec.` → `schema.spec.` rewrite still applies to them.
+ */
+function flattenEmbeddedTemplateLiterals(source: string): string {
+  if (!source.includes('`')) return source;
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] !== '`') {
+      out += source[i];
+      i++;
+      continue;
+    }
+    const close = source.indexOf('`', i + 1);
+    if (close === -1) {
+      out += source.slice(i);
+      break;
+    }
+    out += templateContentToCelConcat(source.slice(i + 1, close));
+    i = close + 1;
+  }
+  return out;
+}
+
+function templateContentToCelConcat(content: string): string {
+  const parts: string[] = [];
+  let literal = '';
+  let i = 0;
+  while (i < content.length) {
+    if (content[i] === '$' && content[i + 1] === '{') {
+      if (literal) {
+        parts.push(JSON.stringify(literal));
+        literal = '';
+      }
+      let depth = 1;
+      let j = i + 2;
+      let inner = '';
+      while (j < content.length && depth > 0) {
+        const ch = content[j];
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) break;
+        }
+        inner += ch;
+        j++;
+      }
+      if (inner.trim()) parts.push(`(${inner.trim()})`);
+      i = j + 1;
+    } else {
+      literal += content[i];
+      i++;
+    }
+  }
+  if (literal) parts.push(JSON.stringify(literal));
+  if (parts.length === 0) return '""';
+  return parts.length === 1 ? (parts[0] as string) : `(${parts.join(' + ')})`;
+}
+
 export function conditionToCel(
   node: ASTNode,
   fullSource: string,
   specParamName: string,
   optionalFieldNames?: Set<string>
 ): string {
-  let source = getSource(node, fullSource);
+  // Flatten any embedded template literals to CEL concat up front, before the
+  // raw-source rewrites and the final `${…}` wrap below — otherwise a template
+  // used as a ternary branch leaves a `${…}` nested inside the outer `${…}`,
+  // which Kro rejects.
+  let source = flattenEmbeddedTemplateLiterals(getSource(node, fullSource));
 
   const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
     if (!optionalFieldNames || optionalFieldNames.size === 0) return undefined;

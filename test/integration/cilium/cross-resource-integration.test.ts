@@ -94,7 +94,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     }
 
     console.log('✅ Cilium cross-resource integration test environment ready!');
-  });
+  }, 120000); // namespace creation may wait out a prior terminating namespace (up to 60s)
 
   afterAll(async () => {
     if (!clusterAvailable || !coreApi) return;
@@ -179,7 +179,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     } catch (error: any) {
       console.log(`⚠️ Could not delete test namespace: ${error.message}`);
     }
-  });
+  }, 180000); // live cleanup (instance finalizer wait + RGD/namespace deletion) exceeds the default hook timeout
 
   describe('Cross-Resource References and Dependency Resolution', () => {
     it('should handle cross-resource references between Kubernetes and Cilium resources', async () => {
@@ -393,7 +393,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       expect(deploymentResult.status.policiesApplied).toBe(2);
 
       console.log('✅ Dependency resolution with multiple Cilium policies successful');
-    });
+    }, 600000); // live KRO deploy + wait-for-ready + status hydration can be slow
   });
 
   describe('Serialization and YAML Generation', () => {

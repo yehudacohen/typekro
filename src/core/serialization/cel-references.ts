@@ -357,7 +357,7 @@ function collectLambdaVars(expr: string): Set<string> {
  * legitimate macro body would falsely classify the parent expression
  * as dynamic for the wrong reason.
  */
-function containsNoNonSchemaRefs(expr: string): boolean {
+function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): boolean {
   const lambdaVars = collectLambdaVars(expr);
   const pattern = /\b([a-zA-Z_$][\w$]*)\.(status|metadata|spec)\./g;
   for (const m of expr.matchAll(pattern)) {
@@ -365,6 +365,21 @@ function containsNoNonSchemaRefs(expr: string): boolean {
     if (id === 'schema') continue;
     if (id && lambdaVars.has(id)) continue;
     return false;
+  }
+  // A bare reference to a known resource id (e.g. `size(workerDep)` from a
+  // forEach-collection aggregate) is also a non-schema ref even though it has
+  // no `.status`/`.spec`/`.metadata` field path. This needs the resource id
+  // set, so it only fires when callers provide it.
+  if (resourceIds) {
+    for (const id of resourceIds) {
+      if (lambdaVars.has(id)) continue;
+      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Token not preceded by `.` (so it's the resource itself, not a schema
+      // field like `schema.spec.<id>`) and not part of a longer identifier.
+      if (new RegExp(`(^|[^\\w.$])${escaped}(?![\\w$])`).test(expr)) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -388,11 +403,12 @@ function containsNoNonSchemaRefs(expr: string): boolean {
  */
 export function isStaticExpression(
   expr: string,
-  nestedStatusCel: Record<string, string> | undefined
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: Iterable<string>
 ): boolean {
   const afterNesting = resolveNestedCompositionRefs(expr, nestedStatusCel);
   const afterMarkers = normalizeMarkerString(afterNesting);
-  return containsNoNonSchemaRefs(afterMarkers);
+  return containsNoNonSchemaRefs(afterMarkers, resourceIds);
 }
 
 // ---------------------------------------------------------------------------

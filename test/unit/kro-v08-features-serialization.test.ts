@@ -2793,8 +2793,13 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           status: type({ phase: 'string' }),
         },
         (spec) => {
-          ConfigMap({ name: spec.name, data: {}, id: 'config' });
-          return { phase: spec.replicas > 0 ? 'running' : 'stopped' };
+          const dep = Deployment({ name: spec.name, image: 'nginx', id: 'dep' });
+          // Spec-conditioned ternary whose branch references a resource → a
+          // dynamic status override KRO can evaluate, so it is preserved verbatim
+          // in the KRO schema. (A schema-only override references no resource and
+          // is hydrated client-side instead, since KRO status CEL cannot
+          // reference `schema.spec.*`.)
+          return { phase: spec.replicas > 0 ? `running-${dep.status.readyReplicas}` : 'stopped' };
         }
       );
 
@@ -3087,11 +3092,14 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           status: type({ tier: 'string' }),
         },
         (spec) => {
-          Deployment({ name: spec.name, image: spec.image, id: 'dep' });
+          const dep = Deployment({ name: spec.name, image: spec.image, id: 'dep' });
+          // Spec-conditioned nested ternary with a resource-referencing branch →
+          // a dynamic status field, so the nested conditional is emitted as KRO
+          // status CEL. (A schema-only nested ternary is hydrated client-side.)
           return {
             tier:
               spec.env === 'production'
-                ? 'critical'
+                ? `critical-${dep.status.readyReplicas}`
                 : spec.env === 'staging'
                   ? 'standard'
                   : 'minimal',
@@ -3103,9 +3111,10 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       // Should contain nested ternary in CEL
       // CEL uses single quotes to avoid YAML double-quote escaping issues
       expect(yamlStr).toContain("schema.spec.env == 'production'");
-      expect(yamlStr).toContain("'critical'");
+      expect(yamlStr).toContain("schema.spec.env == 'staging'");
       expect(yamlStr).toContain("'standard'");
       expect(yamlStr).toContain("'minimal'");
+      expect(yamlStr).toContain('dep.status.readyReplicas');
     });
 
     it('non-string value in string template warns or wraps with string()', () => {

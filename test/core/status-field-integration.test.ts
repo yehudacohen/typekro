@@ -72,10 +72,9 @@ describe('Status Field Integration', () => {
     // Should contain user-defined status fields as CEL expressions
     expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
     expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
+    // Instance spec fields are referenced via `schema.spec.*` — the canonical Kro CEL form
+    // (the `schema` variable IS the instance spec; see https://kro.run/docs/concepts/rgd/cel-expressions/).
     expect(yaml).toContain(
-      'url: http://${spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
-    );
-    expect(yaml).not.toContain(
       'url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
     );
 

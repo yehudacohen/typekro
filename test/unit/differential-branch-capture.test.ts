@@ -358,15 +358,20 @@ describe('Differential Branch Capture', () => {
           status: type({ mode: 'string' }),
         },
         (spec) => {
-          ConfigMap({ name: spec.name, data: { ok: 'true' }, id: 'cfg' });
-          return { mode: spec.feature ? 'on' : 'off' };
+          const dep = Deployment({ name: spec.name, image: 'nginx', id: 'dep' });
+          // The branch references a resource, so the whole ternary is a dynamic
+          // status field that KRO evaluates — and the optional `spec.feature`
+          // used as the condition must be has()-guarded so the CEL is valid when
+          // the field is absent. (A schema-only ternary is hydrated client-side,
+          // where the inline-CEL evaluator handles absent optionals directly.)
+          return { mode: spec.feature ? `${dep.status.readyReplicas}` : 'off' };
         }
       );
 
       const yaml = composition.toYaml();
       expect(yaml).toContain('has(schema.spec.feature) ?');
       expect(yaml).not.toContain('schema.spec.feature ?');
-      expect(yaml).toContain('on');
+      expect(yaml).toContain('dep.status.readyReplicas');
       expect(yaml).toContain('off');
     });
 

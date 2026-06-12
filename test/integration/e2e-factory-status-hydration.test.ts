@@ -263,9 +263,10 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(yaml).toContain('kind: ResourceGraphDefinition');
       expect(yaml).toContain('name: webapp-with-mixed-status');
 
-      // Verify that only dynamic fields are in the Kro schema
+      // Verify that only dynamic fields are in the Kro schema. The serializer parenthesizes the
+      // ternary condition (`(cond) ? a : b`) — semantically identical, valid CEL.
       expect(yaml).toContain(
-        'phase: \"${webapp.status.readyReplicas > 0 ? \\\"running\\\" : \\\"pending\\\"}\"'
+        'phase: \"${(webapp.status.readyReplicas > 0) ? \\\"running\\\" : \\\"pending\\\"}\"'
       );
       expect(yaml).toContain('replicas: ${webapp.status.replicas}');
       expect(yaml).toContain('readyReplicas: ${webapp.status.readyReplicas}');
@@ -395,19 +396,25 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
       const { staticFields, dynamicFields } = separateStatusFields(deepStatusMappings);
 
-      // Current behavior: if any part of a nested object is dynamic, the entire object is dynamic
-      // This is a conservative approach that ensures proper Kro resolution
+      // Behavior: nested objects are split per-leaf — each static leaf is routed to `staticFields`
+      // and each dynamic (CEL) leaf to `dynamicFields`, preserving the nesting path in both. (This
+      // is the hardened nested-status behavior; the old conservative "any-dynamic => whole-object-
+      // dynamic" approach has been replaced.)
       expect(staticFields).toHaveProperty('topLevelStatic');
       expect(staticFields.topLevelStatic).toBe('top-static');
 
-      expect(dynamicFields).toHaveProperty('level1');
-      const level1 = dynamicFields.level1 as Record<string, unknown>;
-      expect(level1).toHaveProperty('dynamicAtLevel1');
-      const level2 = level1.level2 as Record<string, unknown>;
-      expect(level2).toHaveProperty('staticAtLevel2');
-      const level3 = level2.level3 as Record<string, unknown>;
-      expect(level3).toHaveProperty('staticField');
-      expect(level3).toHaveProperty('dynamicField');
+      // Static leaves keep their nesting path under staticFields.
+      const sLevel1 = staticFields.level1 as Record<string, Record<string, unknown>>;
+      expect(sLevel1.level2.staticAtLevel2).toBe('static-value');
+      expect((sLevel1.level2.level3 as Record<string, unknown>).staticField).toBe('deep-static-value');
+
+      // Dynamic leaves keep their nesting path under dynamicFields.
+      const dLevel1 = dynamicFields.level1 as Record<string, unknown>;
+      expect(dLevel1).toHaveProperty('dynamicAtLevel1');
+      const dLevel2 = dLevel1.level2 as Record<string, unknown>;
+      const dLevel3 = dLevel2.level3 as Record<string, unknown>;
+      expect(dLevel3).toHaveProperty('dynamicField');
+      expect(dLevel3).not.toHaveProperty('staticField');
     });
 
     it('should handle arrays in status mappings', () => {
@@ -429,9 +436,10 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       // Arrays with only static content should be static
       expect(staticFields.staticArray).toEqual(['item1', 'item2', 'item3']);
 
-      // LIMITATION: Arrays with mixed content are currently treated as static
-      // This is a known limitation - arrays containing CEL expressions should be dynamic
-      const dynamicArray = staticFields.dynamicArray as unknown[];
+      // Arrays containing CEL expressions are routed to DYNAMIC (the prior limitation — mixed
+      // arrays treated as static — has been fixed by the nested-status hardening).
+      expect(staticFields.dynamicArray).toBeUndefined();
+      const dynamicArray = dynamicFields.dynamicArray as unknown[];
       expect(dynamicArray).toBeDefined();
       expect(dynamicArray).toHaveLength(3);
       expect(isCelExpression(dynamicArray[0])).toBe(true);
