@@ -1285,7 +1285,11 @@ export class KroResourceFactoryImpl<
         kubeConfigOptions,
         kroDeletion,
         options: {
-          waitForReady: false,
+          // Honor the factory's `waitForReady` (default true, matching the imperative deploy path at
+          // `deploy()`), so a declarative converge blocks until the CR instance's KRO-managed resources
+          // (e.g. a HelmRelease + its pods) are actually ready — end-to-end readiness, not merely
+          // "CR applied". A consumer that wants fire-and-forget passes `waitForReady: false` to the factory.
+          waitForReady: this.factoryOptions.waitForReady ?? true,
           timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
         },
       },

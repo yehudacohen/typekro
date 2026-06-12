@@ -699,10 +699,20 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
     expect(rgd.props.kroDeletion?.rgdName).toBe(factory.rgdName);
     expect(rgd.props.kroDeletion?.kind).toBe('TestApp');
 
-    // Instance: one per deploy, not ready-gated at the alchemy layer.
+    // Instance: one per deploy. Ready-gated by default (matching the imperative deploy path), so a
+    // declarative converge blocks until the CR's KRO-managed resources are actually ready.
     expect((instance.props.resource as { kind?: string }).kind).toBe('TestApp');
     expect(instance.props.deploymentStrategy).toBe('kro');
+    expect(instance.props.options?.waitForReady).toBe(true);
+  });
+
+  it('honors an explicit waitForReady: false on the CR instance declaration', async () => {
+    const factory = withKubeConfig(makeFactory('alchemyApp', { waitForReady: false }));
+    const decls = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
+    const instance = decls[1]!;
+    // Fire-and-forget opt-out is honored; the RGD still ready-gates on CRD establishment.
     expect(instance.props.options?.waitForReady).toBe(false);
+    expect(decls[0]!.props.options?.waitForReady).toBe(true);
   });
 
   it('gives the RGD and instance distinct, deterministic ids', async () => {
