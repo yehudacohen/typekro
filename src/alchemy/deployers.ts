@@ -115,7 +115,11 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     };
   }
 
-  async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
+  async deploy<T extends Enhanced<any, any>>(
+    resource: T,
+    options: DeploymentOptions,
+    seedResources?: import('../core/types/deployment.js').DeployedResource[]
+  ): Promise<T> {
     // Ensure the resource has a readiness evaluator using factory functions or registry lookup
     // The ensureReadinessEvaluator function:
     // 1. Returns the resource if it already has a readinessEvaluator attached
@@ -139,7 +143,8 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       timeout: options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
     };
 
-    const result = await this.engine.deploy(resourceGraph, deploymentOptions);
+    // Seed sibling live state so this resource's cross-resource refs/CEL resolve against it.
+    const result = await this.engine.deploy(resourceGraph, deploymentOptions, seedResources);
 
     if (result.status === 'failed') {
       const firstError = result.errors[0]?.error;
@@ -155,8 +160,13 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       throw deploymentError;
     }
 
-    // Return the deployed resource with readiness evaluator
-    return resourceWithEvaluator;
+    // Return the LIVE resource (with status) when the engine captured it — consumers persist this
+    // as the `deployedResource` output and dependents resolve cross-resource refs against its
+    // status. Match this resource's id; fall back to the input (with readiness evaluator) if no
+    // live state was captured.
+    const deployedId = getResourceId(resourceWithEvaluator, 'unnamed');
+    const live = result.resources?.find((r) => r.id === deployedId)?.liveManifest;
+    return (live as T) ?? resourceWithEvaluator;
   }
 
   async delete<T extends Enhanced<any, any>>(
@@ -198,7 +208,11 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     await this.engine.dispose();
   }
 
-  async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
+  async deploy<T extends Enhanced<any, any>>(
+    resource: T,
+    options: DeploymentOptions,
+    _seedResources?: import('../core/types/deployment.js').DeployedResource[] // KRO resolves refs via its controller; seed is direct-mode only.
+  ): Promise<T> {
     const resourceId =
       resource.id ||
       generateDeterministicResourceId(

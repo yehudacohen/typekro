@@ -14,7 +14,7 @@ TypeKro supports multiple deployment strategies. Choose based on your workflow a
 
 > **Note:** `auto` mode is reserved for future use. When specified in `DeploymentOptions.mode`, it will automatically select `direct` or `kro` based on whether a Kro controller is detected in the cluster. Currently, use `direct` or `kro` explicitly.
 >
-> **Note:** `alchemy` mode deploys through the [Alchemy](https://github.com/sam-goodwin/alchemy) framework, providing state management and lifecycle tracking. Pass `alchemyScope` in factory options to enable it.
+> **Note:** TypeKro deploys through the [Alchemy](https://alchemy.run) v2 runtime declaratively, providing state management and lifecycle tracking. Call `factory.toAlchemyResources(spec)` to emit per-resource declarations, then materialize them inside an Alchemy `Stack` (see [Alchemy Integration](/advanced/alchemy-integration)). The v1 `alchemyScope` factory option has been removed.
 
 ## Value Resolution Behavior
 

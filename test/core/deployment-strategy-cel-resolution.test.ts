@@ -10,9 +10,20 @@ import { beforeEach, describe, expect, it, jest } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { BaseDeploymentStrategy } from '../../src/core/deployment/strategies/base-strategy.js';
-import { strategyInternals } from '../utils/mock-factories.js';
 
 const emptySchema = type({});
+
+/**
+ * Access the protected `executeDeployment` method on a strategy instance for
+ * white-box testing of the generic CEL-resolution logic.
+ */
+function strategyInternals(strategy: TestDeploymentStrategy): {
+  executeDeployment(spec: unknown, instanceName: string): Promise<unknown>;
+} {
+  return strategy as unknown as {
+    executeDeployment(spec: unknown, instanceName: string): Promise<unknown>;
+  };
+}
 
 /** Shape of a resolved CEL field from reference resolver */
 interface ResolvedCelField {

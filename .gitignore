@@ -69,3 +69,6 @@ src/**/*.d.ts.map
 .opencode/node_modules/
 .opencode/package-lock.json
 .opencode/openartisan-errors.log
+
+# alchemy local state/log artifacts
+.alchemy/

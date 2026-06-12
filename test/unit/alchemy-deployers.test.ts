@@ -15,10 +15,7 @@ import {
   deleteKroInstanceFinalizerSafeForTest,
   listKroInstancesForTest,
 } from '../../src/alchemy/kro-delete.js';
-import {
-  handleResourceDeletionForTest,
-  inferKroDeletionOptionsForTest,
-} from '../../src/alchemy/resource-registration.js';
+import { inferKroDeletionOptionsForTest } from '../../src/alchemy/resource-registration.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { getMetadataField } from '../../src/core/metadata/index.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
@@ -893,40 +890,6 @@ describe('KroTypeKroDeployer', () => {
     expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
   });
 
-  it('keeps Alchemy state without failing when RGD deletion is deferred', async () => {
-    const rgd = {
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'ResourceGraphDefinition',
-      metadata: { name: 'test-app' },
-      spec: {},
-    } as any;
-    const destroy = mock(() => ({ destroyed: true }));
-    const deployer = {
-      delete: mock(() => Promise.reject(new ResourceGraphDefinitionDeletionDeferredError('test-app'))),
-    };
-    const logger = {
-      debug: mock(() => undefined),
-      error: mock(() => undefined),
-    } as any;
-
-    const result = await handleResourceDeletionForTest(
-      { destroy, id: 'rgd-state' } as any,
-      {
-        resource: rgd,
-        namespace: 'test-ns',
-        deploymentStrategy: 'kro',
-        deployer,
-      } as any,
-      logger
-    );
-
-    expect(destroy).not.toHaveBeenCalled();
-    expect(logger.error).not.toHaveBeenCalled();
-    expect(result.resource).toBe(rgd);
-    expect(result.deployedResource).toBe(rgd);
-    expect(result.ready).toBe(false);
-  });
-
   it('refuses generic KRO custom resource deletion without finalizer-safe metadata', async () => {
     const mockEngine = createMockEngine() as any;
     const deployer = new KroTypeKroDeployer(mockEngine);
@@ -959,39 +922,4 @@ describe('KroTypeKroDeployer', () => {
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
-  it('does not destroy Alchemy state when resource deletion fails', async () => {
-    const testDeployment = deployment({
-      metadata: { name: 'delete-failure-test', namespace: 'default' },
-      spec: {
-        replicas: 1,
-        selector: { matchLabels: { app: 'delete-failure-test' } },
-        template: {
-          metadata: { labels: { app: 'delete-failure-test' } },
-          spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] },
-        },
-      },
-    });
-    const destroy = mock(() => ({ destroyed: true }));
-    const deployer = {
-      delete: mock(() => Promise.reject(new Error('delete failed'))),
-    };
-    const logger = {
-      error: mock(() => undefined),
-    } as any;
-
-    await expect(
-      handleResourceDeletionForTest(
-        { destroy } as any,
-        {
-          resource: testDeployment,
-          namespace: 'test-ns',
-          deploymentStrategy: 'direct',
-          deployer,
-        } as any,
-        logger
-      )
-    ).rejects.toThrow('delete failed');
-
-    expect(destroy).not.toHaveBeenCalled();
-  });
 });

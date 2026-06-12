@@ -112,16 +112,14 @@ export class DirectDeploymentStrategy<
             graph: DeploymentResourceGraph,
             closures: Record<string, unknown>,
             options: Parameters<DirectDeploymentEngine['deploy']>[1],
-            spec: TSpec,
-            alchemyScope?: unknown
+            spec: TSpec
           ): Promise<DeploymentResult>;
         };
         deploymentResult = await engineWithClosures.deployWithClosures(
           resourceGraph,
           closures,
           deploymentOptions,
-          spec,
-          this.factoryOptions.alchemyScope
+          spec
         );
       } else {
         // Fallback to regular deployment for backward compatibility
@@ -327,7 +325,6 @@ export class DirectDeploymentStrategy<
 
     return {
       kubernetesApi,
-      ...(this.factoryOptions.alchemyScope && { alchemyScope: this.factoryOptions.alchemyScope }),
       ...(this.namespace && { namespace: this.namespace }),
       deployedResources,
       resolveReference,

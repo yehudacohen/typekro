@@ -7,7 +7,6 @@
 
 import type { DependencyGraph } from '../dependencies/graph.js';
 import type {
-  AlchemyDeploymentOptions,
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
@@ -18,7 +17,7 @@ import type {
 } from './deployment.js';
 import type { Enhanced } from './kubernetes.js';
 import type { SchemaMagicProxy } from './references.js';
-import type { KroCompatibleType, Scope } from './schema.js';
+import type { KroCompatibleType } from './schema.js';
 
 /**
  * Represents a complete resource graph with deployment capabilities
@@ -54,11 +53,6 @@ export interface ResourceGraph<
    * Deploy the resource graph to a Kubernetes cluster
    */
   deploy(options?: DeploymentOptions): Promise<DeploymentResult>;
-
-  /**
-   * Deploy the resource graph through alchemy's resource management system
-   */
-  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph

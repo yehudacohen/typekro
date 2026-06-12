@@ -5,7 +5,6 @@
  * organized into focused, single-responsibility modules.
  */
 
-export { AlchemyDeploymentStrategy } from './alchemy-strategy.js';
 // Export base strategy interface and abstract class
 export type { DeploymentStrategy } from './base-strategy.js';
 export { BaseDeploymentStrategy } from './base-strategy.js';

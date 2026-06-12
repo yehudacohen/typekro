@@ -4,7 +4,6 @@
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import type { Scope } from 'alchemy';
 import { type } from 'arktype';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import type { ReferenceResolver } from '../../src/core/references/resolver.js';
@@ -1203,7 +1202,6 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
 
       expect(factory.mode).toBe('direct');
       expect(factory.namespace).toBe('test-namespace');
-      expect(factory.isAlchemyManaged).toBe(false);
     });
 
     it('should handle factory deployment with proper resource resolution', async () => {
@@ -1298,7 +1296,6 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       expect(status.name).toBe('test-app');
       expect(status.mode).toBe('direct');
       expect(status.namespace).toBe('test-namespace');
-      expect(status.isAlchemyManaged).toBe(false);
 
       // Test instance management
       const instances = await factory.getInstances();
@@ -1404,61 +1401,6 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       // Note: We can't easily test the actual dry run execution in this test environment
       // because it requires a real Kubernetes client setup. The method existence test
       // validates that the factory pattern integration is working correctly.
-    });
-
-    it('should handle alchemy integration detection', async () => {
-      const TestSpecSchema = type({
-        name: 'string',
-        image: 'string',
-      });
-
-      const TestStatusSchema = type({
-        readyReplicas: 'number%1',
-      });
-
-      const schemaDefinition = {
-        apiVersion: 'test.com/v1',
-        kind: 'TestApp',
-        spec: TestSpecSchema,
-        status: TestStatusSchema,
-      };
-
-      const graph = toResourceGraph(
-        {
-          name: 'test-app',
-          ...schemaDefinition,
-        },
-        (schema) => ({
-          deployment: simple.Deployment({
-            id: 'testDeployment',
-            name: schema.spec.name,
-            image: schema.spec.image,
-            replicas: 1,
-          }),
-        }),
-        (_schema, resources) => ({
-          readyReplicas: resources.deployment.status.readyReplicas,
-        })
-      );
-
-      // Test without alchemy scope
-      const directFactory = await graph.factory('direct', {
-        namespace: 'test-namespace',
-      });
-
-      expect(directFactory.isAlchemyManaged).toBe(false);
-
-      // Test with mock alchemy scope
-      const mockAlchemyScope = {
-        register: mock(() => Promise.resolve()),
-      };
-
-      const alchemyFactory = await graph.factory('direct', {
-        namespace: 'test-namespace',
-        alchemyScope: mockAlchemyScope as unknown as Scope,
-      });
-
-      expect(alchemyFactory.isAlchemyManaged).toBe(true);
     });
   });
 });

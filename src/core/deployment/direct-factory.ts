@@ -46,11 +46,9 @@ import type {
   SingletonDefinitionRecord,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
-// Alchemy integration
 import type {
   KroCompatibleType,
   SchemaDefinition,
-  Scope,
   StatusBuilder,
 } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
@@ -59,7 +57,12 @@ import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
+import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
+import { extractResourceReferencesFromExpression } from '../expressions/analysis/scope-resolver.js';
+import { createAlchemyResourceId } from '../../alchemy/utilities.js';
+import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import {
+  extractSerializableKubeConfigOptions,
   generateInstanceName,
   getSingletonInstanceName,
   validateSpec,
@@ -69,7 +72,7 @@ import {
   assertNoDiscoveredSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
-import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
+import { DirectDeploymentStrategy } from './strategies/index.js';
 
 /**
  * DirectResourceFactory implementation
@@ -85,7 +88,6 @@ export class DirectResourceFactoryImpl<
   readonly mode = 'direct' as const;
   readonly name: string;
   readonly namespace: string;
-  readonly isAlchemyManaged: boolean;
 
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
@@ -93,7 +95,6 @@ export class DirectResourceFactoryImpl<
   // biome-ignore lint/suspicious/noExplicitAny: status builders accept composition-specific resource maps that cannot be expressed more tightly here.
   private readonly statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined;
   private deploymentEngine: DirectDeploymentEngine | undefined;
-  private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
@@ -113,8 +114,6 @@ export class DirectResourceFactoryImpl<
   ) {
     this.name = name;
     this.namespace = options.namespace || 'default';
-    this.alchemyScope = options.alchemyScope;
-    this.isAlchemyManaged = !!options.alchemyScope;
     this.resources = resources;
     this.closures = options.closures || {};
     this.schemaDefinition = schemaDefinition;
@@ -236,8 +235,7 @@ export class DirectResourceFactoryImpl<
    * Get the appropriate deployment strategy based on configuration
    */
   private getDeploymentStrategy() {
-    // Create base strategy
-    const baseStrategy = new DirectDeploymentStrategy(
+    return new DirectDeploymentStrategy(
       this.name,
       this.namespace,
       this.schemaDefinition,
@@ -247,22 +245,6 @@ export class DirectResourceFactoryImpl<
       this.getDeploymentEngine(),
       this // This factory acts as the resource resolver
     );
-
-    // Wrap with alchemy if needed
-    if (this.isAlchemyManaged && this.alchemyScope) {
-      return new AlchemyDeploymentStrategy(
-        this.name,
-        this.namespace,
-        this.schemaDefinition,
-        this.statusBuilder,
-        this.resources,
-        this.factoryOptions,
-        this.alchemyScope,
-        baseStrategy
-      );
-    }
-
-    return baseStrategy;
   }
 
   /**
@@ -539,7 +521,6 @@ export class DirectResourceFactoryImpl<
     return {
       name: this.name,
       mode: this.mode,
-      isAlchemyManaged: this.isAlchemyManaged,
       namespace: this.namespace,
       instanceCount: instances.length,
       health,
@@ -1027,6 +1008,98 @@ export class DirectResourceFactoryImpl<
       resources: formattedResources,
       dependencyGraph,
     };
+  }
+
+  /**
+   * Emit this composition's resolved resources as declarative alchemy **v2** resources — one
+   * {@link AlchemyResourceDeclaration} per Kubernetes resource (matching the v1 integration's
+   * per-resource state granularity), topologically ordered with `dependsOn` wired from the
+   * composition's dependency graph. The v2 analog of the removed imperative direct-mode alchemy
+   * deploy. Instantiate them with `materializeAlchemyResources(KroResource, …)`, which turns
+   * `dependsOn` into alchemy `Output` edges so (a) each resource deploys only after the resources
+   * it references and (b) each reconcile resolves its cross-resource `KubernetesRef`s against those
+   * dependencies' live state before applying.
+   */
+  async toAlchemyResources(
+    spec: TSpec,
+    opts?: { instanceNameOverride?: string }
+  ): Promise<AlchemyResourceDeclaration[]> {
+    const graph = this.createResourceGraphForInstance(spec, opts?.instanceNameOverride);
+    const kubeConfigOptions = extractSerializableKubeConfigOptions(
+      this.getClientProvider().getKubeConfig(),
+      this.factoryOptions.skipTLSVerify === true ? true : undefined
+    );
+
+    // Per graph node: its alchemy resource id (for `dependsOn` / `KroResource` id), its logical id
+    // (what sibling `KubernetesRef`s + the resolver match on — the original composition id), and a
+    // serialized form used to recover dependencies the resolved graph dropped (see below).
+    interface Node {
+      resource: Enhanced<unknown, unknown>;
+      alchemyId: string;
+      logicalId: string;
+      serialized: string;
+    }
+    const byGraphId = new Map<string, Node>();
+    for (const { id: graphId, manifest } of graph.resources) {
+      const resource = ensureReadinessEvaluator(manifest as Enhanced<unknown, unknown>);
+      byGraphId.set(graphId, {
+        resource,
+        alchemyId: createAlchemyResourceId(resource, this.namespace),
+        logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
+        serialized: JSON.stringify(manifest),
+      });
+    }
+    const nodeByLogicalId = new Map(Array.from(byGraphId.values(), (n) => [n.logicalId, n]));
+    const logicalIds = new Set(nodeByLogicalId.keys());
+    const alchemyIdByLogicalId = new Map(
+      Array.from(byGraphId.values(), (n) => [n.logicalId, n.alchemyId])
+    );
+
+    // Compute each node's dependency logical-ids. The dependency graph captures `KubernetesRef`
+    // OBJECT references, but by the time the instance is resolved most cross-resource references
+    // have been serialized to CEL strings (`${otherResource.status.field}`) that the graph no
+    // longer sees — so we ALSO scan each manifest's serialized form for references to sibling
+    // logical ids. Union of both is the complete dependency set.
+    const depsByLogicalId = new Map<string, Set<string>>();
+    for (const [graphId, node] of byGraphId) {
+      const deps = new Set<string>();
+      for (const depGraphId of graph.dependencyGraph.getDependencies(graphId)) {
+        const dep = byGraphId.get(depGraphId);
+        if (dep) deps.add(dep.logicalId);
+      }
+      for (const ref of extractResourceReferencesFromExpression(node.serialized)) {
+        const head = ref.split(/[.[]/, 1)[0];
+        if (head && head !== node.logicalId && logicalIds.has(head)) deps.add(head);
+      }
+      depsByLogicalId.set(node.logicalId, deps);
+    }
+
+    const waitForReady = this.factoryOptions.waitForReady ?? false;
+    const timeout = this.factoryOptions.timeout;
+
+    // Topologically sort by the COMPLETE dependency set (Kahn) so each declaration precedes its
+    // dependents — `getTopologicalOrder` alone would miss the CEL-string edges recovered above.
+    const ordered = topoSortLogicalIds(logicalIds, depsByLogicalId);
+
+    return ordered.flatMap((logicalId) => {
+      const node = nodeByLogicalId.get(logicalId);
+      if (!node) return [];
+      const dependsOn = Array.from(depsByLogicalId.get(logicalId) ?? [])
+        .map((depLogicalId) => alchemyIdByLogicalId.get(depLogicalId))
+        .filter((id): id is string => id !== undefined);
+      return {
+        id: node.alchemyId,
+        dependsOn,
+        props: {
+          resource: node.resource,
+          resourceId: node.logicalId,
+          namespace: this.namespace,
+          deploymentStrategy: 'direct' as const,
+          kubeConfigOptions,
+          options: { waitForReady, ...(timeout !== undefined && { timeout }) },
+        },
+      };
+    });
   }
 
   /**
@@ -2031,6 +2104,42 @@ interface UnresolvedReference {
   path: string;
   /** Human-readable description of the reference type */
   description: string;
+}
+
+/**
+ * Kahn topological sort of `ids` by their dependency set (`deps`: id → set of ids it depends on),
+ * returning dependencies-first order. Edges to ids outside the set are ignored; if a cycle leaves
+ * nodes unprocessed they're appended in stable order (best effort) rather than throwing.
+ */
+function topoSortLogicalIds(ids: Set<string>, deps: Map<string, Set<string>>): string[] {
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const id of ids) {
+    inDegree.set(id, 0);
+    dependents.set(id, []);
+  }
+  for (const id of ids) {
+    for (const dep of deps.get(id) ?? []) {
+      if (!ids.has(dep)) continue;
+      inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+      dependents.get(dep)?.push(id);
+    }
+  }
+  const queue = Array.from(ids).filter((id) => (inDegree.get(id) ?? 0) === 0);
+  const result: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    result.push(id);
+    for (const dependent of dependents.get(id) ?? []) {
+      const next = (inDegree.get(dependent) ?? 0) - 1;
+      inDegree.set(dependent, next);
+      if (next === 0) queue.push(dependent);
+    }
+  }
+  if (result.length < ids.size) {
+    for (const id of ids) if (!result.includes(id)) result.push(id);
+  }
+  return result;
 }
 
 /**

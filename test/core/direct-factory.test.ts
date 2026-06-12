@@ -63,7 +63,6 @@ describe('DirectResourceFactory', () => {
       expect(factory.mode).toBe('direct');
       expect(factory.name).toBe('test-webapp');
       expect(factory.namespace).toBe('test-namespace');
-      expect(factory.isAlchemyManaged).toBe(false);
     });
 
     it('should create factory with default options', async () => {
@@ -95,7 +94,6 @@ describe('DirectResourceFactory', () => {
       expect(factory.mode).toBe('direct');
       expect(factory.name).toBe('simple-app');
       expect(factory.namespace).toBe('default');
-      expect(factory.isAlchemyManaged).toBe(false);
     });
   });
 
@@ -213,7 +211,6 @@ describe('DirectResourceFactory', () => {
 
       expect(status.name).toBe('status-test');
       expect(status.mode).toBe('direct');
-      expect(status.isAlchemyManaged).toBe(false);
       expect(status.namespace).toBe('test');
       expect(status.instanceCount).toBe(0); // No instances deployed yet
       expect(status.health).toBe('healthy');
@@ -318,7 +315,6 @@ describe('DirectResourceFactory', () => {
       expect(factory1.name).toBe(factory2.name);
       expect(factory1.namespace).toBe(factory2.namespace);
       expect(factory1.mode).toBe(factory2.mode);
-      expect(factory1.isAlchemyManaged).toBe(factory2.isAlchemyManaged);
 
       // YAML generation should also be identical
       const spec: WebAppSpec = {
@@ -332,6 +328,81 @@ describe('DirectResourceFactory', () => {
       const yaml2 = factory2.toYaml(spec);
 
       expect(yaml1).toBe(yaml2);
+    });
+  });
+
+  describe('toAlchemyResources (alchemy v2)', () => {
+    // A ConfigMap whose data references the Deployment's *status* (a runtime-only value, not
+    // derivable from the schema) — that's a genuine cross-resource KubernetesRef, so the
+    // dependency graph yields a real edge: configMap depends on deployment.
+    const makeGraph = () =>
+      toResourceGraph(
+        {
+          name: 'webapp',
+          apiVersion: 'v1alpha1',
+          kind: 'WebApp',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        (schema) => {
+          const deployment = simple.Deployment({
+            name: schema.spec.name,
+            image: schema.spec.image,
+            replicas: schema.spec.replicas,
+            id: 'webappDeployment',
+          });
+          return {
+            deployment,
+            config: simple.ConfigMap({
+              name: Cel.template('%s-cfg', schema.spec.name),
+              data: {
+                // Runtime cross-resource reference → forces config-depends-on-deployment.
+                readyReplicas: Cel.template('%s', deployment.status.readyReplicas),
+              },
+              id: 'webappConfig',
+            }),
+          };
+        },
+        (_schema, _resources) => ({
+          phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
+          url: 'http://webapp-svc',
+          readyReplicas: 1,
+        })
+      );
+
+    const spec: WebAppSpec = { name: 'web', image: 'nginx:latest', replicas: 2, port: 8080 };
+
+    it('emits one declaration per resource, marked direct, with logical ids', async () => {
+      const factory = await makeGraph().factory('direct', { namespace: 'apps' });
+      const decls = await factory.toAlchemyResources(spec);
+
+      expect(decls.length).toBe(2);
+      for (const d of decls) {
+        expect(d.props.deploymentStrategy).toBe('direct');
+        expect(d.props.namespace).toBe('apps');
+        expect(typeof d.props.resourceId).toBe('string');
+        expect(d.id.length).toBeGreaterThan(0);
+      }
+      // Distinct alchemy ids per resource (independent state entries).
+      expect(decls[0]!.id).not.toBe(decls[1]!.id);
+    });
+
+    it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {
+      const factory = await makeGraph().factory('direct', { namespace: 'apps' });
+      const decls = await factory.toAlchemyResources(spec);
+
+      const byLogicalId = new Map(decls.map((d) => [d.props.resourceId, d]));
+      const deployment = byLogicalId.get('webappDeployment')!;
+      const config = byLogicalId.get('webappConfig')!;
+      expect(deployment).toBeDefined();
+      expect(config).toBeDefined();
+
+      // The configMap references the deployment's status, so it must depend on it…
+      expect(config.dependsOn).toContain(deployment.id);
+      // …and the deployment (no deps) must come first in the returned order.
+      expect(decls.indexOf(deployment)).toBeLessThan(decls.indexOf(config));
+      // The independent resource has no dependencies.
+      expect(deployment.dependsOn).toEqual([]);
     });
   });
 });

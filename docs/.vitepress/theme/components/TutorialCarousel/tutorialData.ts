@@ -141,68 +141,57 @@ writeFileSync('k8s/webapp-instance.yaml', instanceYaml);`,
   },
   {
     id: 'alchemy-integration',
-    title: 'Integrate with Multi-Cloud Infrastructure',
-    description: 'Unified TypeScript for cloud resources and Kubernetes workloads',
+    title: 'Deploy Through the Alchemy v2 Runtime',
+    description: 'Declarative, stateful deployment with per-resource lifecycle tracking',
     codeExample: {
       language: 'typescript',
-      code: `import alchemy from 'alchemy';
-import { Bucket, Function as Lambda } from 'alchemy/aws';
-import { kubernetesComposition, type } from 'typekro';
+      code: `import { kubernetesComposition, type } from 'typekro';
 import { Deployment } from 'typekro/simple';
+import {
+  KroResource,
+  kroProvider,
+  materializeAlchemyResources,
+} from 'typekro/alchemy';
+// + your Alchemy v2 runtime (providers must include kroProvider, plus a state backend)
 
-const app = await alchemy('cloud-native-app');
+// Define Kubernetes resources as usual
+const cloudApp = kubernetesComposition(
+  {
+    name: 'cloud-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'CloudApp',
+    spec: type({ name: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
+    const app = Deployment({
+      name: spec.name,
+      image: 'myapp:latest',
+      replicas: spec.replicas
+    });
 
-await app.run(async () => {
-  // Create cloud resources within alchemy scope
-  const uploadBucket = await Bucket('app-uploads');
-  const apiFunction = await Lambda('api-handler', {
-    code: './functions/api.js',
-    environment: { BUCKET_NAME: uploadBucket.name }
-  });
+    return {
+      // ✨ JavaScript expressions automatically converted to CEL
+      ready: app.status.readyReplicas > 0
+    };
+  }
+);
 
-  // Create Kubernetes resources that reference cloud resources
-  const cloudApp = kubernetesComposition(
-    {
-      name: 'cloud-app',
-      apiVersion: 'example.com/v1alpha1',
-      kind: 'CloudApp',
-      spec: type({ name: 'string', replicas: 'number' }),
-      status: type({ ready: 'boolean' })
-    },
-    (spec) => {
-      const app = Deployment({
-        name: spec.name,
-        image: 'myapp:latest',
-        replicas: spec.replicas,
-        env: {
-          API_URL: apiFunction.url,
-          UPLOAD_BUCKET: uploadBucket.name
-        }
-      });
+// 1. Build the factory and emit per-resource declarations (topo-ordered)
+const factory = await cloudApp.factory('direct', { namespace: 'production' });
+const decls = await factory.toAlchemyResources({ name: 'webapp', replicas: 3 });
 
-      return {
-        // ✨ JavaScript expressions automatically converted to CEL
-        ready: app.status.readyReplicas > 0
-      };
-    }
-  );
-
-  // Deploy unified infrastructure
-  const factory = cloudApp.factory('direct', { 
-    namespace: 'production', 
-    alchemyScope: app 
-  });
-  await factory.deploy({ name: 'webapp', replicas: 3 });
-});`,
+// 2. Inside an Alchemy Stack body, with kroProvider in the runtime:
+const outputs = yield* materializeAlchemyResources(KroResource, decls);`,
       highlights: [
-        'Unified TypeScript',
-        'Cloud + Kubernetes',
-        'Cross-platform references',
-        'Type-safe integration',
+        'Declarative Alchemy v2',
+        'Per-resource state',
+        'Dependency-ordered deploy',
+        'Reverse-topological teardown',
       ],
     },
     explanation:
-      'Alchemy integration enables unified infrastructure management across cloud providers and Kubernetes. Write everything in TypeScript with type-safe references between cloud resources and Kubernetes workloads.',
+      'TypeKro deploys through the Alchemy v2 runtime declaratively. factory.toAlchemyResources(spec) emits one declaration per resource, and materializeAlchemyResources instantiates them as KroResources — each tracked as its own Alchemy state entry, deployed in dependency order and torn down in reverse.',
     nextSteps: [
       {
         text: 'Alchemy Documentation',

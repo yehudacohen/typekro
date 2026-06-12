@@ -13,7 +13,6 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import alchemy from 'alchemy';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import { createCoreV1ApiClient, getIntegrationTestKubeConfig } from './shared-kubeconfig.js';
@@ -34,8 +33,6 @@ const generateTestNamespace = (testName: string): string => {
 
 describe('E2E Factory Pattern Validation Tests', () => {
   let kc: k8s.KubeConfig;
-  let kroAlchemyScope: any;
-  let directAlchemyScope: any;
   const createdNamespaces: string[] = [];
 
   beforeAll(async () => {
@@ -45,38 +42,9 @@ describe('E2E Factory Pattern Validation Tests', () => {
     } catch (_error) {
       console.log('⚠️  No kubectl config available, some tests will be limited');
     }
-
-    // Create real alchemy scopes for tests that pass an alchemyScope
-    try {
-      const { FileSystemStateStore } = await import('alchemy/state');
-      kroAlchemyScope = await alchemy('kro-alchemy-scope-test', {
-        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' }),
-      });
-      directAlchemyScope = await alchemy('direct-alchemy-scope-test', {
-        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' }),
-      });
-    } catch (e) {
-      console.log('⚠️  Failed to create test Alchemy scopes, some tests may skip:', e);
-    }
   });
 
   afterAll(async () => {
-    // Best-effort cleanup of alchemy scopes
-    try {
-      if (kroAlchemyScope?.cleanup) {
-        await kroAlchemyScope.cleanup();
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
-    try {
-      if (directAlchemyScope?.cleanup) {
-        await directAlchemyScope.cleanup();
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
-
     // Clean up any namespaces created during tests
     if (createdNamespaces.length > 0 && kc) {
       const { deleteNamespaceAndWait } = await import('./shared-kubeconfig.js');
@@ -84,124 +52,6 @@ describe('E2E Factory Pattern Validation Tests', () => {
       await Promise.allSettled(createdNamespaces.map((ns) => deleteNamespaceAndWait(ns, kc)));
       console.log('✅ Test namespace cleanup complete');
     }
-  });
-
-  describe('KroResourceFactory + Alchemy Scope', () => {
-    it('should create factory with correct properties and generate valid YAML', async () => {
-      const testNamespace = generateTestNamespace('kro-alchemy-scope');
-      // Define schema for our test application
-      const WebAppSpecSchema = type({
-        name: 'string',
-        image: 'string',
-        replicas: 'number',
-        port: 'number',
-      });
-
-      const WebAppStatusSchema = type({
-        phase: 'string',
-        ready: 'boolean',
-        deployedReplicas: 'number',
-      });
-
-      // Create resource graph with KroResourceFactory + Alchemy
-      const resourceGraph = toResourceGraph(
-        {
-          name: 'kro-alchemy-webapp',
-          apiVersion: 'v1alpha1',
-          kind: 'WebApp',
-          spec: WebAppSpecSchema,
-          status: WebAppStatusSchema,
-        },
-        (schema) => ({
-          configMap: simple.ConfigMap({
-            name: `${schema.spec.name}-config`,
-            data: {
-              'app.properties': `port=${schema.spec.port}\\nreplicas=${schema.spec.replicas}`,
-            },
-            id: 'webappConfig',
-          }),
-
-          deployment: simple.Deployment({
-            name: schema.spec.name,
-            image: schema.spec.image,
-            replicas: schema.spec.replicas,
-            env: {
-              PORT: Cel.string(schema.spec.port),
-              CONFIG_PATH: '/etc/config/app.properties',
-            },
-            ports: [{ name: 'http', containerPort: 8080, protocol: 'TCP' }],
-            volumeMounts: [
-              {
-                name: 'config-volume',
-                mountPath: '/etc/config',
-              },
-            ],
-            volumes: [
-              {
-                name: 'config-volume',
-                configMap: { name: `${schema.spec.name}-config` },
-              },
-            ],
-            id: 'webappDeployment',
-          }),
-
-          service: simple.Service({
-            name: `${schema.spec.name}-service`,
-            selector: { app: schema.spec.name },
-            ports: [{ port: 80, targetPort: schema.spec.port }],
-            id: 'webappService',
-          }),
-        }),
-        (_schema, resources) => ({
-          phase: Cel.expr<string>`'running'`,
-          ready: Cel.expr<boolean>`true`,
-          deployedReplicas: resources.deployment?.status.readyReplicas || 0,
-        })
-      );
-
-      // Create factory with alchemy scope
-      const factory = resourceGraph.factory('kro', {
-        namespace: testNamespace,
-        alchemyScope: kroAlchemyScope,
-      });
-
-      // Validate factory properties
-      expect(factory.mode).toBe('kro');
-      expect(factory.name).toBe('kro-alchemy-webapp');
-      expect(factory.namespace).toBe(testNamespace);
-      expect(factory.isAlchemyManaged).toBe(true);
-      expect(factory).toHaveProperty('toYaml');
-      expect(factory).toHaveProperty('deploy');
-      expect(factory).toHaveProperty('getStatus');
-      expect(factory).toHaveProperty('getInstances');
-      expect(factory).toHaveProperty('rgdName');
-      expect(factory).toHaveProperty('schema');
-
-      // Generate and validate RGD YAML
-      const rgdYaml = factory.toYaml();
-      expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
-      expect(rgdYaml).toContain('name: kro-alchemy-webapp');
-      expect(rgdYaml).toContain(`namespace: ${testNamespace}`);
-      expect(rgdYaml).toContain('kind: Deployment');
-      expect(rgdYaml).toContain('kind: Service');
-      expect(rgdYaml).toContain('kind: ConfigMap');
-
-      // Generate and validate instance YAML
-      const instanceYaml = factory.toYaml({
-        name: 'test-webapp-kro-alchemy',
-        image: 'nginx:latest',
-        replicas: 2,
-        port: 8080,
-      });
-
-      expect(instanceYaml).toContain('kind: WebApp');
-      expect(instanceYaml).toContain('name: test-webapp-kro-alchemy');
-      expect(instanceYaml).toContain('nginx:latest');
-      expect(instanceYaml).toContain('2');
-      expect(instanceYaml).toContain('8080');
-
-      console.log('✅ KroResourceFactory + Alchemy Scope validation completed successfully');
-    });
   });
 
   describe('KroResourceFactory without Alchemy Scope', () => {
@@ -253,7 +103,6 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(factory.mode).toBe('kro');
       expect(factory.name).toBe('kro-simple-app');
       expect(factory.namespace).toBe(testNamespace);
-      expect(factory.isAlchemyManaged).toBe(false);
 
       // Generate RGD YAML
       const rgdYaml = factory.toYaml();
@@ -273,158 +122,6 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(instanceYaml).toContain('1.20');
 
       console.log('✅ KroResourceFactory without Alchemy validation completed successfully');
-    });
-  });
-
-  describe('DirectResourceFactory + Alchemy Scope', () => {
-    it('should create factory with alchemy scope and handle deployment correctly', async () => {
-      const testNamespace = generateTestNamespace('direct-alchemy-scope');
-      const DatabaseSpecSchema = type({
-        name: 'string',
-        storage: 'string',
-        replicas: 'number',
-      });
-
-      const DatabaseStatusSchema = type({
-        ready: 'boolean',
-        connections: 'number',
-      });
-
-      const resourceGraph = toResourceGraph(
-        {
-          name: 'direct-alchemy-database',
-          apiVersion: 'v1alpha1',
-          kind: 'Database',
-          spec: DatabaseSpecSchema,
-          status: DatabaseStatusSchema,
-        },
-        (schema) => ({
-          configMap: simple.ConfigMap({
-            name: Cel.expr(schema.spec.name, '-db-config'),
-            data: {
-              'postgresql.conf': `max_connections = 100\\nshared_buffers = 128MB`,
-              'storage.conf': Cel.expr('storage_size = ', schema.spec.storage),
-            },
-            id: 'dbConfig',
-          }),
-
-          deployment: simple.Deployment({
-            name: Cel.expr(schema.spec.name, '-db'),
-            image: 'postgres:13',
-            replicas: schema.spec.replicas,
-            env: {
-              POSTGRES_DB: schema.spec.name,
-              POSTGRES_USER: 'admin',
-              POSTGRES_PASSWORD: 'secret',
-              PGDATA: '/var/lib/postgresql/data/pgdata',
-            },
-            ports: [{ name: 'postgres', containerPort: 5432, protocol: 'TCP' }],
-            volumeMounts: [
-              {
-                name: 'config-volume',
-                mountPath: '/etc/postgresql',
-              },
-            ],
-            volumes: [
-              {
-                name: 'config-volume',
-                configMap: { name: Cel.expr(schema.spec.name, '-db-config') },
-              },
-            ],
-            id: 'dbDeployment',
-          }),
-
-          service: simple.Service({
-            name: Cel.expr(schema.spec.name, '-db-service'),
-            selector: { app: Cel.expr(schema.spec.name, '-db') },
-            ports: [{ port: 5432, targetPort: 5432 }],
-            id: 'dbService',
-          }),
-        }),
-        (_schema, resources) => ({
-          ready: Cel.expr<boolean>`true`,
-          connections: resources.deployment?.status.readyReplicas || 0,
-        })
-      );
-
-      // Create DirectResourceFactory WITH alchemy scope
-      const factory = await resourceGraph.factory('direct', {
-        namespace: testNamespace,
-        kubeConfig: kc,
-        alchemyScope: directAlchemyScope,
-      });
-
-      // Validate factory properties
-      expect(factory.mode).toBe('direct');
-      expect(factory.name).toBe('direct-alchemy-database');
-      expect(factory.namespace).toBe(testNamespace);
-      expect(factory.isAlchemyManaged).toBe(true);
-      expect(factory).toHaveProperty('deploy');
-      expect(factory).toHaveProperty('getStatus');
-      expect(factory).toHaveProperty('rollback');
-      expect(factory).toHaveProperty('toDryRun');
-      expect(factory).toHaveProperty('toYaml');
-
-      // Test YAML generation for instance
-      const instanceYaml = factory.toYaml({
-        name: 'test-postgres',
-        storage: '10Gi',
-        replicas: 1,
-      });
-
-      expect(instanceYaml).toContain('kind: ConfigMap');
-      expect(instanceYaml).toContain('kind: Deployment');
-      expect(instanceYaml).toContain('kind: Service');
-      expect(instanceYaml).toContain('test-postgres-db-config');
-      expect(instanceYaml).toContain('test-postgres-db');
-      expect(instanceYaml).toContain('storage_size = 10Gi');
-
-      // Create the test namespace before deployment
-      const k8sApi = createCoreV1ApiClient(kc);
-      try {
-        await k8sApi.createNamespace({
-          body: { metadata: { name: testNamespace } },
-        });
-        createdNamespaces.push(testNamespace);
-        console.log(`✅ Created test namespace: ${testNamespace}`);
-      } catch (error) {
-        // Namespace might already exist
-        console.log(
-          `⚠️  Namespace ${testNamespace} might already exist: ${(error as Error).message}`
-        );
-      }
-
-      // Test deployment attempt
-      try {
-        await factory.deploy({
-          name: 'test-postgres',
-          storage: '10Gi',
-          replicas: 1,
-        });
-        // If this succeeds, alchemy is working
-        console.log('✅ DirectResourceFactory + Alchemy Scope deployment succeeded');
-      } catch (error) {
-        // Expected in test environment without full alchemy setup or cluster
-        const errorMessage = (error as Error).message;
-        console.log(`📝 Deployment failed as expected: ${errorMessage}`);
-
-        // Accept any deployment failure as expected in test environment
-        const isExpectedError =
-          errorMessage.includes('Not running within an Alchemy Scope') ||
-          errorMessage.includes('No active cluster') ||
-          errorMessage.includes('Deployment failed') ||
-          errorMessage.includes('Failed to deploy') ||
-          errorMessage.includes('All resources failed') ||
-          errorMessage.includes('timeout') ||
-          errorMessage.includes('TLS') ||
-          errorMessage.includes('connection');
-        expect(isExpectedError).toBe(true);
-        console.log(
-          '✅ DirectResourceFactory + Alchemy Scope correctly detected missing environment'
-        );
-      }
-
-      console.log('✅ DirectResourceFactory + Alchemy Scope validation completed successfully');
     });
   });
 
@@ -487,7 +184,6 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(factory.mode).toBe('direct');
       expect(factory.name).toBe('direct-simple-api');
       expect(factory.namespace).toBe(testNamespace);
-      expect(factory.isAlchemyManaged).toBe(false);
 
       // Test YAML generation
       const instanceYaml = factory.toYaml({

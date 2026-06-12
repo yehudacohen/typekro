@@ -5,14 +5,13 @@
 import type { Type } from 'arktype';
 import type { MagicAssignable } from './common.js';
 import type {
-  AlchemyDeploymentOptions,
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
   RollbackResult,
 } from './deployment.js';
 import type { Enhanced } from './kubernetes.js';
-import type { KroCompatibleType, Prev, SchemaProxy, Scope } from './schema.js';
+import type { KroCompatibleType, Prev, SchemaProxy } from './schema.js';
 
 // Re-export schema types for backward compatibility (originally defined here)
 export type {
@@ -20,7 +19,6 @@ export type {
   KroCompatibleType,
   KroCompatibleValue,
   SchemaProxy,
-  Scope,
 } from './schema.js';
 
 // =============================================================================
@@ -221,11 +219,6 @@ export interface ResourceGraphWithDeployment {
    * Deploy the resource graph to a Kubernetes cluster
    */
   deploy(options?: DeploymentOptions): Promise<DeploymentResult>;
-
-  /**
-   * Deploy the resource graph through alchemy's resource management system
-   */
-  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph

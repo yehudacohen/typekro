@@ -2,57 +2,12 @@
  * Comprehensive tests for factory implementations
  *
  * This test suite validates all factory implementations and interfaces
- * including DirectResourceFactory, KroResourceFactory, and their integration
- * with alchemy.
+ * including DirectResourceFactory and KroResourceFactory.
  */
 
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import type { Scope } from '../../../src/core/types/schema.js';
 import { Cel, simple, toResourceGraph } from '../../../src/index.js';
-
-// Mock alchemy scope for testing - simplified mock that doesn't fully implement Scope
-class MockAlchemyScope {
-  private resources = new Map<string, any>();
-
-  readonly stage = 'test';
-  readonly name = 'mock-scope';
-  readonly local = true;
-  readonly watch = false;
-
-  async set<T>(id: string, resource: T): Promise<void> {
-    this.resources.set(id, resource);
-  }
-
-  async get<T>(id: string): Promise<T> {
-    const value = this.resources.get(id);
-    if (value === undefined) {
-      throw new Error(`Resource not found: ${id}`);
-    }
-    return value as T;
-  }
-
-  async delete(id: string): Promise<void> {
-    this.resources.delete(id);
-  }
-
-  async run<T>(fn: (scope: any) => Promise<T>): Promise<T> {
-    return fn(this);
-  }
-
-  // Legacy method for backward compatibility
-  async register(id: string, resource: any): Promise<void> {
-    return this.set(id, resource);
-  }
-
-  getRegisteredResources(): Map<string, any> {
-    return new Map(this.resources);
-  }
-
-  clear(): void {
-    this.resources.clear();
-  }
-}
 
 // Helper function to create test schemas
 function createTestSchemas() {
@@ -125,12 +80,6 @@ function createComprehensiveResourceGraph() {
 }
 
 describe('Comprehensive Factory Tests', () => {
-  let mockAlchemyScope: MockAlchemyScope;
-
-  beforeEach(() => {
-    mockAlchemyScope = new MockAlchemyScope();
-  });
-
   describe('DirectResourceFactory Comprehensive Tests', () => {
     it('should create DirectResourceFactory with all configuration options', async () => {
       const graph = createComprehensiveResourceGraph();
@@ -153,7 +102,6 @@ describe('Comprehensive Factory Tests', () => {
       expect(factory.mode).toBe('direct');
       expect(factory.name).toBe('comprehensive-webapp');
       expect(factory.namespace).toBe('production');
-      expect(factory.isAlchemyManaged).toBe(false);
     });
 
     it('should handle complex deployment scenarios', async () => {
@@ -239,19 +187,6 @@ describe('Comprehensive Factory Tests', () => {
       }
     });
 
-    it('should support alchemy integration', async () => {
-      const graph = createComprehensiveResourceGraph();
-
-      const alchemyFactory = await graph.factory('direct', {
-        namespace: 'test',
-        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
-      });
-
-      expect(alchemyFactory.isAlchemyManaged).toBe(true);
-      expect(alchemyFactory.mode).toBe('direct');
-      expect(alchemyFactory.namespace).toBe('test');
-    });
-
     it('should handle error scenarios gracefully', async () => {
       const graph = createComprehensiveResourceGraph();
       const factory = await graph.factory('direct', {
@@ -299,7 +234,6 @@ describe('Comprehensive Factory Tests', () => {
       expect(factory.name).toBe('comprehensive-webapp');
       expect(factory.namespace).toBe('production');
       expect(factory.rgdName).toBe('comprehensive-webapp');
-      expect(factory.isAlchemyManaged).toBe(false);
       expect(factory.schema).toBeDefined();
     });
 
@@ -375,20 +309,6 @@ describe('Comprehensive Factory Tests', () => {
         // Expected to fail in test environment
         expect(error).toBeInstanceOf(Error);
       }
-    });
-
-    it('should support alchemy integration', async () => {
-      const graph = createComprehensiveResourceGraph();
-
-      const alchemyFactory = await graph.factory('kro', {
-        namespace: 'test',
-        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
-      });
-
-      expect(alchemyFactory.isAlchemyManaged).toBe(true);
-      expect(alchemyFactory.mode).toBe('kro');
-      expect(alchemyFactory.namespace).toBe('test');
-      expect(alchemyFactory.rgdName).toBe('comprehensive-webapp');
     });
 
     it('should handle instance management operations', async () => {
@@ -476,38 +396,6 @@ describe('Comprehensive Factory Tests', () => {
       expect(factory).toBeDefined();
       expect(factory.mode).toBe('direct');
       expect(factory.namespace).toBe('default'); // Should use default namespace
-    });
-
-    it('should handle alchemy deployment failures gracefully', async () => {
-      const graph = createComprehensiveResourceGraph();
-
-      const alchemyFactory = await graph.factory('direct', {
-        namespace: 'test',
-        alchemyScope: {} as unknown as Scope, // Invalid scope to verify deployment failure handling
-      });
-
-      // Test deployment with alchemy (should fail gracefully in test environment)
-      let deployError: unknown;
-      try {
-        await alchemyFactory.deploy({
-          name: 'test-app',
-          image: 'nginx:latest',
-          replicas: 2,
-          environment: 'development',
-        });
-      } catch (error) {
-        deployError = error;
-      }
-
-      expect(deployError).toBeInstanceOf(Error);
-      const message = (deployError as Error).message;
-      expect(message).toMatch(
-        /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope|Alchemy scope is invalid|namespaces .*test.* not found|Cannot hydrate status for 'test-app': deployment failed|Failed to fetch resource metadata/
-      );
-
-      if (message.includes('Cannot hydrate status')) {
-        expect(message).toContain('Failed resources');
-      }
     });
   });
 

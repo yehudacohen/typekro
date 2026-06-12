@@ -1,21 +1,35 @@
 /**
- * Alchemy Resource Type Registration
+ * Alchemy v2 KRO Resource Provider
  *
- * This module handles dynamic resource type registration for TypeKro
- * resources with alchemy's resource management system.
+ * Exposes TypeKro KRO deploys as an alchemy **v2** custom resource. Under v2 a
+ * resource is declarative: callers instantiate `KroResource` inside their alchemy
+ * Stack and merge `kroProvider` (an Effect `Layer`) into their runtime's providers,
+ * so the deployed RGD/instance joins the caller's unified alchemy state (reverse-topo
+ * teardown + idempotent reconcile). This replaces the v1 (`alchemy@0.62`) integration,
+ * which dynamically registered per-kind providers in a global `PROVIDERS` registry and
+ * drove them imperatively via `scope.run(() => Provider(id, props))` — a model alchemy
+ * v2 does not have.
  *
- * Uses ensureResourceTypeRegistered() to avoid "Resource already exists" errors
- * and provides centralized type registration logic.
+ * The Kubernetes machinery (`deployers`, `kro-delete`, client/deployer construction) is
+ * alchemy-version-agnostic and reused verbatim; only the registration glue changed.
  */
 
 import type { KubeConfig } from '@kubernetes/client-node';
-import { type Context, PROVIDERS, Resource } from 'alchemy';
+import { Effect } from 'effect';
+import * as Output from 'alchemy/Output';
+import * as ProviderMod from 'alchemy/Provider';
+import * as ResourceMod from 'alchemy/Resource';
+import type { Resource as ResourceT } from 'alchemy/Resource';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
-import type { DeploymentOptions } from '../core/types/deployment.js';
-import type { Enhanced } from '../core/types/kubernetes.js';
+import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
+import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
+import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
+import { stableSerialize } from '../core/singleton/singleton.js';
+import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
+import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
   DirectTypeKroDeployer,
   KroTypeKroDeployer,
@@ -23,8 +37,13 @@ import {
 } from './deployers.js';
 import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
 import type { KroDeletionOptions } from './kro-delete.js';
-import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
-import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
+import type {
+  AlchemyResourceDeclaration,
+  SerializableKubeConfigOptions,
+  TypeKroDeployer,
+  TypeKroResource,
+  TypeKroResourceProps,
+} from './types.js';
 
 /**
  * Serializable resource properties stored by Alchemy after deployment.
@@ -32,110 +51,340 @@ import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './t
  */
 interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   resource: T;
+  resourceId?: string;
   namespace: string;
+  // Persisted so `delete` can reconstruct how to reach + tear down the resource after a fresh
+  // process rehydrates only the output (alchemy passes no `news` on a state-driven destroy).
+  deploymentStrategy: 'direct' | 'kro';
+  kubeConfigOptions?: SerializableKubeConfigOptions;
+  kroDeletion?: KroDeletionOptions;
   deployedResource: T;
   ready: boolean;
   deployedAt: number;
 }
 
-// Process-global registry to track registered resource types. Some test and
-// runtime paths can load this module through different specifiers; anchoring the
-// cache on globalThis keeps provider identity stable for a given Alchemy type.
-const REGISTERED_TYPES_KEY = Symbol.for('typekro.alchemy.registeredTypes');
-const globalRegisteredTypes = globalThis as Record<symbol, unknown>;
-if (!globalRegisteredTypes[REGISTERED_TYPES_KEY]) {
-  globalRegisteredTypes[REGISTERED_TYPES_KEY] = new Map<string, unknown>();
-}
-const REGISTERED_TYPES = globalRegisteredTypes[REGISTERED_TYPES_KEY] as Map<string, unknown>;
-
-const REGISTERED_TYPE_NAMES_KEY = Symbol.for('typekro.alchemy.registeredTypeNames');
-if (!globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY]) {
-  globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] = new Set<string>();
-}
-const REGISTERED_TYPE_NAMES = globalRegisteredTypes[REGISTERED_TYPE_NAMES_KEY] as Set<string>;
+/** The single alchemy v2 resource type for any TypeKro KRO resource (RGD or CR instance). */
+export const KRO_RESOURCE_TYPE = 'TypeKro.KroResource' as const;
 
 /**
- * Dynamic registration function with full type safety
- *
- * This function ensures each resource type is registered only once,
- * avoiding "Resource already exists" errors while maintaining type safety.
+ * The v2 resource shape: `TypeKroResourceProps` are the (serializable) inputs alchemy
+ * persists + re-applies on reconcile; `TypeKroResource` is the deployed-state output.
  */
-// Return type is intentionally `any` because alchemy's Provider/Handler types have complex
-// `this` context bindings (Context<any, any>) that cannot be cleanly represented without `any`.
-// Callers invoke the returned provider as a regular function, but alchemy's internal types
-// require `this: Context<...>` which is bound at runtime by the alchemy framework.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown>>(
-  resource: T
-): any {
-  const alchemyType = inferAlchemyTypeFromTypeKroResource(resource);
+export type KroResourceR = ResourceT<
+  typeof KRO_RESOURCE_TYPE,
+  TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  TypeKroResource<Enhanced<unknown, unknown>>
+>;
 
-  // Check if already registered in our local cache
-  if (REGISTERED_TYPES.has(alchemyType)) {
-    return REGISTERED_TYPES.get(alchemyType)!;
-  }
+/**
+ * The declarative v2 resource. Instantiate inside an alchemy Stack — one per RGD and one
+ * per CR instance — e.g. `yield* KroResource(rgdId, { resource, namespace, deploymentStrategy: 'kro', … })`.
+ * Order instances after their RGD (pass the RGD output through) so reverse-topo teardown
+ * removes instances before the shared RGD.
+ */
+export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE);
 
-  // Check if already registered in alchemy's global registry
-  if (PROVIDERS.has(alchemyType)) {
-    const existingProvider = PROVIDERS.get(alchemyType);
-    REGISTERED_TYPES.set(alchemyType, existingProvider);
-    REGISTERED_TYPE_NAMES.add(alchemyType);
-    return existingProvider;
-  }
-
-  // Register new resource type following alchemy's pseudo-class pattern
-  const ResourceProvider = Resource(
-    alchemyType,
-    async function (
-      this: Context<TypeKroResource<T>>,
-      _id: string,
-      props: TypeKroResourceProps<T>
-    ): Promise<TypeKroResource<T>> {
-      const alchemyLogger = getComponentLogger('alchemy-deployment').child({ alchemyType });
-
-      // Log the context details for debugging
-      alchemyLogger.debug('Alchemy resource handler called', {
-        alchemyType,
-        resourceId: _id,
-        phase: this.phase,
-        contextId: this.id,
-        contextFqn: this.fqn,
-        resourceKind: props.resource.kind,
-        resourceName: props.resource.metadata?.name,
-      });
-
-      // Handle deletion phase
-      if (this.phase === 'delete') {
-        return await _handleResourceDeletion(this, props, alchemyLogger);
+/**
+ * The provider `Layer` that backs {@link KroResource}. Merge into the runtime's providers
+ * (alongside the cloud providers) so reconcile/delete run. `reconcile` is the single
+ * convergent create/update (apply the manifest, wait for readiness); `delete` performs the
+ * finalizer-safe, shared-RGD-aware teardown.
+ */
+export const kroProvider = ProviderMod.effect(
+  KroResource,
+  Effect.succeed({
+    // `namespace` is identity-stable: a namespace change is a replacement, not an in-place update.
+    stables: ['namespace'] as const,
+    reconcile: Effect.fn(function* ({ news }: { news: TypeKroResourceProps<Enhanced<unknown, unknown>> }) {
+      return yield* Effect.promise(() => deployKroResource(news));
+    }),
+    delete: Effect.fn(function* ({
+      output,
+      news,
+    }: {
+      output?: TypeKroResource<Enhanced<unknown, unknown>>;
+      news?: TypeKroResourceProps<Enhanced<unknown, unknown>>;
+    }) {
+      // Prefer the live spec; fall back to reconstructing minimal props from persisted output
+      // (a delete after the spec is gone — e.g. resource removed from the stack).
+      const props = news ?? propsFromOutput(output);
+      if (props) {
+        yield* Effect.promise(() => deleteKroResource(props));
+      } else {
+        // Neither a live spec nor a usable output (e.g. a create that failed before persisting a
+        // complete output). Warn rather than silently no-op so a possible leaked cluster object is
+        // visible — there's nothing reconstructable to tear down here.
+        getComponentLogger('alchemy-deployment')
+          .child({ alchemyType: KRO_RESOURCE_TYPE })
+          .warn('Skipping delete: no live spec and no reconstructable output to tear down', {
+            hasOutput: !!output,
+          });
       }
+    }),
+  })
+);
 
-      try {
-        const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
-
-        try {
-          // Deploy resource and create result
-          const { resourceProperties } = await _deployAndCreateResult(props, deployer);
-
-          // Log deployment success
-          _logDeploymentSuccess(alchemyLogger, alchemyType, props, resourceProperties, this);
-
-          // Execute Alchemy context function
-          return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
-        } finally {
-          await dispose();
+/**
+ * Instantiate a set of {@link AlchemyResourceDeclaration}s (from a factory's `toAlchemyResources`)
+ * as `KroResource`s inside an alchemy Stack, wiring each declaration's `dependsOn` into alchemy
+ * `Output` dependencies. This is what gives the fan-out its **ordering** (alchemy deploys a
+ * resource only after every resource it `dependsOn` is ready) and, in direct mode, feeds each
+ * dependency's resolved live state into the dependent's reconcile for cross-resource reference
+ * resolution. Returns the map of declaration id → deployed output.
+ *
+ * ```ts
+ * // inside a Stack/generator:
+ * const outputs = yield* materializeAlchemyResources(KroResource, await factory.toAlchemyResources(spec));
+ * ```
+ *
+ * Declarations must be topologically ordered (as `toAlchemyResources` returns them) so each
+ * dependency's output exists before its dependents reference it.
+ */
+export function materializeAlchemyResources(
+  kroResource: typeof KroResource,
+  declarations: readonly AlchemyResourceDeclaration[]
+) {
+  return Effect.gen(function* () {
+    // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
+    // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
+    const handles: Record<string, KroResourceR> = {};
+    for (const decl of declarations) {
+      const deps = decl.dependsOn.map((id) => {
+        const handle = handles[id];
+        if (!handle) {
+          // Declarations must be topologically ordered so every dependency is instantiated first.
+          // A missing handle means an out-of-order/unknown id — fail loudly rather than silently
+          // dropping the edge (which would cause a deploy-order race or unresolved reference).
+          throw new Error(
+            `materializeAlchemyResources: '${decl.id}' dependsOn '${id}', which is not (yet) instantiated. ` +
+              `Declarations must be topologically ordered.`
+          );
         }
-      } catch (error: unknown) {
-        alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
-        throw error;
-      }
+        return handle;
+      });
+      // `Output.all([...Output.of(dep)])` both (a) creates the alchemy dependency edges so these
+      // deploy first and (b) resolves to the concrete dependency outputs handed to `reconcile`.
+      const props =
+        deps.length > 0
+          ? { ...decl.props, dependencies: Output.all(...deps.map((d) => Output.of(d))) }
+          : decl.props;
+      // Cast: `props` carries an `Output` for `dependencies` that the `KroResource` constructor
+      // accepts as an `Input<…>` and alchemy resolves before reconcile — the field's static type
+      // is the resolved (post-evaluation) shape.
+      handles[decl.id] = yield* kroResource(
+        decl.id,
+        props as unknown as Parameters<typeof kroResource>[1]
+      );
     }
-  );
+    return handles;
+  });
+}
 
-  // Cache the registered provider
-  REGISTERED_TYPES.set(alchemyType, ResourceProvider);
-  REGISTERED_TYPE_NAMES.add(alchemyType);
+/**
+ * Reconcile: deploy a single KRO resource (RGD or CR instance) and return its persisted state.
+ * Convergent — alchemy calls this for both create and update; the deployer is idempotent apply.
+ */
+async function deployKroResource<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): Promise<TypeKroResource<T>> {
+  const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
+  // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
+  // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
+  await _assertNoSingletonDrift(props, logger);
+  const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
+  try {
+    // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
+    // resolves its cross-resource references + CEL expressions against them (the deps deployed
+    // first via alchemy ordering). KRO docs are self-contained, so the seed is irrelevant there.
+    const seedResources = _seedFromDependencies(props);
+    // alchemy serializes props to state, flattening this resource's CEL refs to `${…}` STRINGS.
+    // The engine resolver only evaluates CEL OBJECTS, so (direct mode, with dependency state to
+    // resolve against) re-hydrate those strings into template CEL objects before deploying — but
+    // ONLY strings that reference a known dependency id, so genuine `${…}` literals (e.g. a shell
+    // `${HOME}` in an env var) are left untouched.
+    const deployProps =
+      seedResources && props.deploymentStrategy === 'direct'
+        ? {
+            ...props,
+            resource: _rehydrateCelStrings(
+              props.resource,
+              new Set(seedResources.map((s) => s.id))
+            ) as T,
+          }
+        : props;
+    const { resourceProperties } = await _deployAndCreateResult(deployProps, deployer, seedResources);
+    _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, props, resourceProperties);
+    return resourceProperties as unknown as TypeKroResource<T>;
+  } catch (error: unknown) {
+    logger.error('Error deploying resource through Alchemy', ensureError(error));
+    throw error;
+  } finally {
+    await dispose();
+  }
+}
 
-  return ResourceProvider;
+/** The live singleton owner as seen for a drift check. */
+interface LiveSingletonOwner {
+  metadata?: { annotations?: Record<string, string> };
+  spec?: unknown;
+}
+
+/**
+ * Pure drift verdict (no I/O) for a singleton instance being deployed, given:
+ *  - `expectedFingerprint`: the spec-fingerprint annotation on the resource being deployed,
+ *  - `deployingSpec`: that resource's spec,
+ *  - `live`: the existing same-named owner on the cluster (or undefined if none).
+ *
+ * Mirrors the imperative `assertNoDeployedSingletonSpecDrift`, INCLUDING its fallback: an existing
+ * owner with NO fingerprint annotation (a legacy/unfingerprinted owner) is still verified by
+ * comparing serialized specs — so a different-spec legacy owner is NOT silently accepted.
+ */
+export function singletonDriftVerdict(
+  expectedFingerprint: string,
+  deployingSpec: unknown,
+  live: LiveSingletonOwner | undefined
+): { drift: false } | { drift: true; reason: string } {
+  if (!live) return { drift: false };
+  const actual = live.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  if (actual === expectedFingerprint) return { drift: false };
+  if (actual) {
+    return { drift: true, reason: `existing fingerprint ${actual} does not match ${expectedFingerprint}` };
+  }
+  // Unfingerprinted (legacy) owner — fall back to comparing serialized specs.
+  if (stableSerialize(live.spec) !== stableSerialize(deployingSpec)) {
+    return { drift: true, reason: 'an existing unfingerprinted singleton owner has a different spec' };
+  }
+  return { drift: false };
+}
+
+/**
+ * Refuse to deploy a singleton owner whose identity already exists on the cluster with a DIFFERENT
+ * spec — the declarative-path equivalent of the imperative `assertNoDeployedSingletonSpecDrift`. Only
+ * fires for resources carrying the singleton spec-fingerprint annotation (i.e. singleton instances);
+ * a missing instance / absent CRD / unreachable cluster is treated as "nothing to drift from".
+ */
+async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<void> {
+  const resource = props.resource as {
+    metadata?: { name?: string; annotations?: Record<string, string> };
+    spec?: unknown;
+  };
+  const expected = resource.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  if (!expected) return; // not a fingerprinted singleton instance
+
+  let live: LiveSingletonOwner | undefined;
+  try {
+    const kc = _createClientProvider(props, 'singleton-drift-check');
+    const api = createBunCompatibleKubernetesObjectApi(kc);
+    live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as LiveSingletonOwner;
+  } catch {
+    return; // not found / CRD not yet created / cluster unreachable → no existing spec to clash with
+  }
+
+  const verdict = singletonDriftVerdict(expected, resource.spec, live);
+  if (verdict.drift) {
+    throw new Error(
+      `Singleton config drift detected for ${resource.metadata?.name ?? '<unknown>'}: ${verdict.reason}. ` +
+        'A singleton identity must not be deployed with multiple specs.'
+    );
+  }
+  logger.debug('Singleton spec verified (no drift)', {
+    name: resource.metadata?.name,
+    fingerprint: expected,
+  });
+}
+
+/**
+ * Build the engine resolution seed (direct mode) from `props.dependencies`: each dependency output
+ * carries its live `deployedResource` (apiVersion/kind + status) and its logical `resourceId` — the
+ * id this resource's `KubernetesRef`s / CEL expressions (`${resourceId.field}`) point at. The engine
+ * resolves against these without redeploying them.
+ */
+function _seedFromDependencies<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): DeployedResource[] | undefined {
+  const deps = props.dependencies;
+  if (props.deploymentStrategy !== 'direct' || !deps || deps.length === 0) return undefined;
+
+  const seed = deps
+    .filter((d): d is TypeKroResource<Enhanced<unknown, unknown>> => !!d?.deployedResource && !!d.resourceId)
+    .map((d) => {
+      const manifest = d.deployedResource as unknown as KubernetesResource;
+      return {
+        id: d.resourceId as string,
+        kind: manifest.kind ?? 'Unknown',
+        name: manifest.metadata?.name ?? 'unknown',
+        namespace: manifest.metadata?.namespace ?? props.namespace,
+        manifest,
+        status: 'deployed',
+        applied: true,
+        deployedAt: new Date(0),
+      } satisfies DeployedResource;
+    });
+  return seed.length > 0 ? seed : undefined;
+}
+
+/**
+ * Deep-clone `value`, converting strings that contain a `${dependencyId.…}` placeholder into a
+ * template {@link CelExpression} object so the engine resolver evaluates them (alchemy's state
+ * serialization had flattened the original CEL objects to these strings). Only strings whose
+ * placeholder references one of `seedIds` (this resource's dependencies) are converted — genuine
+ * `${…}` literals that don't reference a dependency (e.g. a shell `${HOME}`) are left untouched.
+ *
+ * Template form means placeholders are resolved and string-concatenated; this is correct for the
+ * string-valued fields (env/data/annotations) where cross-resource refs survive serialization. A
+ * cross-resource ref in a NON-string field would be coerced to a string — an accepted limitation
+ * of round-tripping CEL through serialized state.
+ */
+function _rehydrateCelStrings(value: unknown, seedIds: Set<string>): unknown {
+  if (typeof value === 'string') {
+    return _referencesSeed(value, seedIds)
+      ? { [CEL_EXPRESSION_BRAND]: true, expression: value, __isTemplate: true }
+      : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => _rehydrateCelStrings(v, seedIds));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = _rehydrateCelStrings(v, seedIds);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** True if `s` contains a `${<id>.…}` placeholder whose leading identifier is a known dependency. */
+function _referencesSeed(s: string, seedIds: Set<string>): boolean {
+  if (!s.includes('${')) return false;
+  const re = /\$\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+  let m: RegExpExecArray | null = re.exec(s);
+  while (m !== null) {
+    if (m[1] && seedIds.has(m[1])) return true;
+    m = re.exec(s);
+  }
+  return false;
+}
+
+/**
+ * Rebuild the minimal delete-time props from persisted output. The output carries the deployed
+ * resource (with `metadata.labels['typekro.io/rgd']` for instances / `spec.schema` for RGDs),
+ * which is all {@link inferKroDeletionOptions} + the deployer need to tear down finalizer-safe.
+ */
+function propsFromOutput<T extends Enhanced<unknown, unknown>>(
+  output?: TypeKroResource<T>
+): TypeKroResourceProps<T> | undefined {
+  if (!output?.resource) return undefined;
+  return {
+    resource: output.resource,
+    ...(output.resourceId !== undefined && { resourceId: output.resourceId }),
+    namespace: output.namespace,
+    deploymentStrategy: output.deploymentStrategy ?? 'kro',
+    ...(output.kubeConfigOptions !== undefined && { kubeConfigOptions: output.kubeConfigOptions }),
+    ...(output.kroDeletion !== undefined && { kroDeletion: output.kroDeletion }),
+  };
 }
 
 /**
@@ -284,13 +533,16 @@ async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
 }
 
 /**
- * Handle resource deletion phase
+ * Delete: tear down a single KRO resource finalizer-safe. Under v2 reverse-topo teardown,
+ * CR instances are deleted before their RGD, so by the time an RGD's delete runs its
+ * instances are gone. If the deployer still defers an RGD delete (a shared RGD that other
+ * stacks' instances reference), we log and let alchemy drop the state entry — the orphaned
+ * RGD is cluster-scoped and dies with the cluster; it must not wedge the destroy.
  */
-async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
-  context: Context<TypeKroResource<T>>,
-  props: TypeKroResourceProps<T>,
-  logger: TypeKroLogger
-): Promise<TypeKroResource<T>> {
+async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): Promise<void> {
+  const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
   const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
     await deployer.delete(props.resource, {
@@ -300,42 +552,35 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
     });
   } catch (error: unknown) {
     if (error instanceof ResourceGraphDefinitionDeletionDeferredError) {
-      logger.debug('Deferring Alchemy state deletion for ResourceGraphDefinition', {
+      logger.debug('Deferring ResourceGraphDefinition delete (still referenced); dropping state entry', {
         resourceName: props.resource.metadata?.name,
         reason: error.message,
       });
-      return {
-        ...context,
-        resource: props.resource,
-        namespace: props.namespace,
-        deployedResource: props.resource,
-        ready: false,
-        deployedAt: Date.now(),
-      } as unknown as TypeKroResource<T>;
+      return;
     }
     logger.error('Error deleting resource', ensureError(error));
     throw error;
   } finally {
     await dispose();
   }
-  return context.destroy();
 }
 
 /** Internal test hook for deletion semantics. */
-export const handleResourceDeletionForTest = _handleResourceDeletion;
+export const deleteKroResourceForTest = deleteKroResource;
 
 /**
  * Deploy resource and create deployment result
  */
 async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  deployer: TypeKroDeployer
+  deployer: TypeKroDeployer,
+  seedResources?: DeployedResource[]
 ): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
   const deploymentOptions = buildAlchemyDeploymentOptions(props);
 
-  // Deploy using the created deployer - pass the original resource with KubernetesRef objects
-  // The deployer will handle reference resolution internally
-  const deployedResource = await deployer.deploy(props.resource, deploymentOptions);
+  // Deploy using the created deployer. The deployer/engine resolves references + CEL expressions,
+  // seeded (direct mode) with dependencies' live state so cross-resource refs resolve.
+  const deployedResource = await deployer.deploy(props.resource, deploymentOptions, seedResources);
 
   // Create clean, serializable versions for Alchemy storage.
   // We use JSON.parse(JSON.stringify()) deliberately instead of structuredClone because:
@@ -348,9 +593,13 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource)) as T;
 
   // Create the resource properties for Alchemy
-  const resourceProperties = {
+  const resourceProperties: DeployedResourceProperties<T> = {
     resource: cleanResource,
+    ...(props.resourceId !== undefined && { resourceId: props.resourceId }),
     namespace: props.namespace,
+    deploymentStrategy: props.deploymentStrategy,
+    ...(props.kubeConfigOptions !== undefined && { kubeConfigOptions: props.kubeConfigOptions }),
+    ...(props.kroDeletion !== undefined && { kroDeletion: props.kroDeletion }),
     deployedResource: cleanDeployedResource,
     ready: true,
     deployedAt: Date.now(),
@@ -378,16 +627,14 @@ export function buildAlchemyDeploymentOptions<T extends Enhanced<unknown, unknow
 }
 
 /**
- * Log deployment success and context details
+ * Log deployment success.
  */
 function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
   logger: TypeKroLogger,
   alchemyType: string,
   props: TypeKroResourceProps<T>,
-  resourceProperties: DeployedResourceProperties<T>,
-  context: Context<TypeKroResource<T>>
+  resourceProperties: DeployedResourceProperties<T>
 ): void {
-  // Log successful deployment
   logger.debug('Successfully deployed resource through Alchemy', {
     alchemyType,
     resourceKind: props.resource.kind,
@@ -401,67 +648,4 @@ function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
       deployedAt: resourceProperties.deployedAt,
     },
   });
-
-  // Log the exact data we're about to pass to Alchemy's context function
-  logger.debug('About to call Alchemy context function', {
-    alchemyType,
-    contextPhase: context.phase,
-    contextId: context.id,
-    contextFqn: context.fqn,
-    resourcePropertiesKeys: Object.keys(resourceProperties),
-    resourcePropertiesStringified: JSON.stringify(
-      resourceProperties,
-      (_key, value) => {
-        // Handle circular references and complex objects
-        if (typeof value === 'object' && value !== null) {
-          if (value.constructor && value.constructor.name !== 'Object') {
-            return `[${value.constructor.name}]`;
-          }
-        }
-        return value;
-      },
-      2
-    ),
-  });
-}
-
-/**
- * Execute Alchemy context function with proper error handling
- */
-function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
-  context: Context<TypeKroResource<T>>,
-  resourceProperties: DeployedResourceProperties<T>,
-  logger: TypeKroLogger,
-  alchemyType: string
-): TypeKroResource<T> {
-  try {
-    const result = context(resourceProperties);
-
-    logger.debug('Alchemy context function returned successfully', {
-      alchemyType,
-      resultType: typeof result,
-      resultKeys: result ? Object.keys(result) : [],
-      hasAlchemySymbols: result ? Object.getOwnPropertySymbols(result).length > 0 : false,
-    });
-
-    return result;
-  } catch (contextError: unknown) {
-    logger.error('Alchemy context function failed', ensureError(contextError), {
-      alchemyType,
-      errorMessage: ensureError(contextError).message,
-      errorStack: ensureError(contextError).stack,
-    });
-    throw contextError;
-  }
-}
-
-/**
- * Clear the registered types cache (useful for testing)
- */
-export function clearRegisteredTypes(): void {
-  for (const alchemyType of REGISTERED_TYPE_NAMES) {
-    PROVIDERS.delete(alchemyType);
-  }
-  REGISTERED_TYPES.clear();
-  REGISTERED_TYPE_NAMES.clear();
 }

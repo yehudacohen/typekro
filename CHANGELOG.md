@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0]
+
+### Changed
+
+- **Alchemy integration migrated v1 → v2 (BREAKING).** TypeKro's alchemy integration now targets
+  alchemy `2.0.0-beta` (Effect-based) instead of `0.62`. The dependency was bumped (`alchemy`
+  `^0.62.3` → `2.0.0-beta.51`) and `effect` (`4.0.0-beta.75`) is now a direct dependency.
+
+### Added
+
+- **Declarative alchemy v2 resources.** `typekro/alchemy` now exports `KroResource` (an alchemy v2
+  `Resource`), `kroProvider` (its provider `Layer`), `materializeAlchemyResources(KroResource, decls)`,
+  and the `AlchemyResourceDeclaration` type.
+- **`factory.toAlchemyResources(spec, opts?)`** on both direct and Kro factories — emits a typekro
+  deployment as per-resource alchemy v2 declarations (KRO: any shared singleton owners + the RGD +
+  one CR instance; direct: one per resolved resource, topologically ordered with `dependsOn`). Feed them to
+  `materializeAlchemyResources` inside an alchemy Stack (with `kroProvider` merged into the runtime)
+  to deploy them as unified-state, reverse-topo-torn-down resources. The v2 analog of the removed
+  imperative path; see `docs/advanced/alchemy-integration.md`.
+
+### Removed
+
+- **The imperative alchemy v1 API.** Removed `ResourceGraph.deployWithAlchemy(scope)`, the
+  `alchemyScope` factory option, `isAlchemyManaged` (on factories + `FactoryStatus`), the
+  `AlchemyDeploymentStrategy`, dynamic per-kind provider registration, and the `Scope` re-export.
+  Migration: replace `factory('…', { alchemyScope }).deploy(spec)` with
+  `materializeAlchemyResources(KroResource, await factory.toAlchemyResources(spec))` inside your
+  alchemy v2 Stack.
+
+### Security
+
+- `toAlchemyResources` persists the factory's `kubeConfigOptions` into alchemy state so a state-driven
+  delete can reconnect. If the kubeconfig uses static credentials (`token`/`certData`/`keyData`) those
+  are written to the state store. Prefer re-derived auth (`exec`, e.g. `aws eks get-token`, or
+  `authProvider`) and a secured state backend.
+
 ## [0.12.0] - 2026-06-08
 
 ### Added
