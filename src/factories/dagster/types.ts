@@ -412,7 +412,9 @@ const globalSchemaShape = {
 const serviceAccountSchemaShape = {
   'create?': 'boolean',
   'name?': 'string',
-  'annotations?': objectMapSchema,
+  // Record<string,string> (not objectMapSchema/`object`) so the generated CRD field is an object map with
+  // string values — `object` serializes to `type: string`, which k8s rejects for an annotations map (422).
+  'annotations?': 'Record<string, string>',
 } as const;
 
 const helmValuesSchemaShape = {
