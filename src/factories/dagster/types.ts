@@ -408,9 +408,17 @@ const globalSchemaShape = {
   'dagsterInstanceConfigMap?': 'string',
 } as const;
 
+/** Official chart `serviceAccount` block — notably `annotations` (e.g. IRSA `eks.amazonaws.com/role-arn`). */
+const serviceAccountSchemaShape = {
+  'create?': 'boolean',
+  'name?': 'string',
+  'annotations?': objectMapSchema,
+} as const;
+
 const helmValuesSchemaShape = {
   ...globalSchemaShape,
   'global?': globalSchemaShape,
+  'serviceAccount?': serviceAccountSchemaShape,
   'nameOverride?': 'string',
   'fullnameOverride?': 'string',
   'rbacEnabled?': 'boolean',
