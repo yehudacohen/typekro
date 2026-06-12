@@ -531,52 +531,51 @@ export class KroResourceFactoryImpl<
     return this.deployDirect(spec, opts?.instanceNameOverride, opts?.singletonSpecFingerprint);
   }
 
-  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
-    const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
-
+  /**
+   * Discover the singleton-owner definitions this composition depends on (deduped by key): from
+   * re-executing the composition fn under a discovery context, plus any injected definitions.
+   * Shared by {@link ensureSingletonOwners} (imperative deploy) and {@link toAlchemyResources}.
+   */
+  private discoverSingletonDefinitions(spec: TSpec): SingletonDefinitionRecord[] {
+    const discovered = new Map<string, SingletonDefinitionRecord>();
     if (this.factoryOptions.compositionFn) {
-      const singletonContext = createCompositionContext('singleton-owner-discovery');
-      runWithCompositionContext(singletonContext, () => {
+      const ctx = createCompositionContext('singleton-owner-discovery');
+      runWithCompositionContext(ctx, () => {
         this.factoryOptions.compositionFn?.(spec);
       });
-
-      for (const [key, definition] of singletonContext.singletonDefinitions ?? []) {
-        discoveredSingletons.set(key, definition);
+      for (const [key, definition] of ctx.singletonDefinitions ?? []) {
+        discovered.set(key, definition);
       }
     }
-
     for (const definition of this.singletonDefinitions) {
-      if (!discoveredSingletons.has(definition.key)) {
-        discoveredSingletons.set(definition.key, definition);
-      }
+      if (!discovered.has(definition.key)) discovered.set(definition.key, definition);
     }
+    return Array.from(discovered.values());
+  }
 
-    if (discoveredSingletons.size === 0) return;
+  /** Build the KRO factory that owns a singleton's RGD + instance (its registry namespace). */
+  private singletonFactoryFor(
+    definition: SingletonDefinitionRecord
+  ): KroResourceFactory<KroCompatibleType, KroCompatibleType> {
+    return definition.composition.factory('kro', {
+      namespace: definition.registryNamespace,
+      waitForReady: true,
+      ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+      ...(this.factoryOptions.kubeConfig !== undefined
+        ? { kubeConfig: this.factoryOptions.kubeConfig }
+        : {}),
+      ...(this.factoryOptions.skipTLSVerify !== undefined
+        ? { skipTLSVerify: this.factoryOptions.skipTLSVerify }
+        : {}),
+    }) as KroResourceFactory<KroCompatibleType, KroCompatibleType>;
+  }
 
-    const singletonRecords = new Map<string, SingletonDefinitionRecord>();
-    for (const definition of discoveredSingletons.values()) {
-      if (!singletonRecords.has(definition.key)) {
-        singletonRecords.set(definition.key, definition);
-      }
-    }
-
-    for (const definition of singletonRecords.values()) {
+  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
+    for (const definition of this.discoverSingletonDefinitions(spec)) {
       await this.ensureTargetNamespace(definition.registryNamespace);
 
       const singletonInstanceName = getSingletonInstanceName(definition.id);
-      const singletonFactory = definition.composition.factory('kro', {
-        namespace: definition.registryNamespace,
-        waitForReady: true,
-        ...(this.factoryOptions.timeout !== undefined
-          ? { timeout: this.factoryOptions.timeout }
-          : {}),
-        ...(this.factoryOptions.kubeConfig !== undefined
-          ? { kubeConfig: this.factoryOptions.kubeConfig }
-          : {}),
-        ...(this.factoryOptions.skipTLSVerify !== undefined
-          ? { skipTLSVerify: this.factoryOptions.skipTLSVerify }
-          : {}),
-      }) as KroResourceFactory<KroCompatibleType, KroCompatibleType>;
+      const singletonFactory = this.singletonFactoryFor(definition);
 
       try {
         this.logger.info('Ensuring singleton owner boundary', {
@@ -1190,8 +1189,10 @@ export class KroResourceFactoryImpl<
 
   /**
    * Emit this factory's KRO deployment as declarative alchemy **v2** resources — the v2
-   * analog of the removed imperative `deployWithAlchemy(scope)`. Returns one declaration for
-   * the **RGD** (shared, deployed once) and one for the **CR instance** (one per `spec`),
+   * analog of the removed imperative `deployWithAlchemy(scope)`. Returns, in dependency order, a
+   * declaration for each discovered **singleton owner** (its own RGD + instance — mirroring
+   * `ensureSingletonOwners` in the imperative `deploy()` path), then the **RGD** (shared, deployed
+   * once), then the **CR instance** (one per `spec`, which `dependsOn` the RGD + the singletons),
    * matching the old integration's per-resource state granularity. The caller instantiates
    * each with `KroResource` inside their Stack (RGD first so reverse-topo removes the
    * instance before the shared RGD):
@@ -1212,6 +1213,30 @@ export class KroResourceFactoryImpl<
   ): Promise<AlchemyResourceDeclaration[]> {
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
     const kroDeletion = this.createAlchemyKroDeletionOptions();
+
+    // 0. Singleton owners. The imperative `deploy()` ensures shared singleton owners (each its own
+    // RGD + instance, in its registry namespace) via `ensureSingletonOwners` BEFORE the main
+    // instance; emit them as declarations too so the declarative path has the same boundaries.
+    // Their deterministic ids/names mean alchemy dedupes a singleton shared across compositions.
+    // (The runtime spec-drift check from `ensureSingletonOwners` is omitted here — `toAlchemyResources`
+    // stays cluster-free — but the spec-fingerprint annotation it relied on is still emitted.)
+    const singletonDeclarations: AlchemyResourceDeclaration[] = [];
+    const singletonInstanceIds: string[] = [];
+    for (const definition of this.discoverSingletonDefinitions(spec)) {
+      const singletonFactory = this.singletonFactoryFor(definition);
+      try {
+        const decls = await singletonFactory.toAlchemyResources(definition.spec as KroCompatibleType, {
+          instanceNameOverride: getSingletonInstanceName(definition.id),
+          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
+        });
+        singletonDeclarations.push(...decls);
+        // The instance is the declaration that depends on its RGD; the main instance waits on it.
+        const instanceDecl = decls.find((d) => d.dependsOn.length > 0) ?? decls[decls.length - 1];
+        if (instanceDecl) singletonInstanceIds.push(instanceDecl.id);
+      } finally {
+        await singletonFactory.dispose?.();
+      }
+    }
 
     // 1. RGD declaration (deployed once per factory; shared by all instances). Reuse the normal
     // serializer so externalRef/forEach/includeWhen/readyWhen + singleton boundaries match
@@ -1247,7 +1272,9 @@ export class KroResourceFactoryImpl<
     const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
     const instanceDeclaration: AlchemyResourceDeclaration = {
       id: createAlchemyResourceId(crdAsEnhanced, this.namespace),
-      dependsOn: [rgdId],
+      // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
+      // before the main deploy), so the instance applies only once its dependencies exist.
+      dependsOn: [rgdId, ...singletonInstanceIds],
       props: {
         resource: crdAsEnhanced,
         namespace: this.namespace,
@@ -1261,7 +1288,7 @@ export class KroResourceFactoryImpl<
       },
     };
 
-    return [rgdDeclaration, instanceDeclaration];
+    return [...singletonDeclarations, rgdDeclaration, instanceDeclaration];
   }
 
   /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */

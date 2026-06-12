@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Resource`), `kroProvider` (its provider `Layer`), `materializeAlchemyResources(KroResource, decls)`,
   and the `AlchemyResourceDeclaration` type.
 - **`factory.toAlchemyResources(spec, opts?)`** on both direct and Kro factories — emits a typekro
-  deployment as per-resource alchemy v2 declarations (KRO: the RGD + one CR instance; direct: one
-  per resolved resource, topologically ordered with `dependsOn`). Feed them to
+  deployment as per-resource alchemy v2 declarations (KRO: any shared singleton owners + the RGD +
+  one CR instance; direct: one per resolved resource, topologically ordered with `dependsOn`). Feed them to
   `materializeAlchemyResources` inside an alchemy Stack (with `kroProvider` merged into the runtime)
   to deploy them as unified-state, reverse-topo-torn-down resources. The v2 analog of the removed
   imperative path; see `docs/advanced/alchemy-integration.md`.

@@ -726,6 +726,51 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
       (decls[1]!.props.resource as { metadata?: { name?: string } }).metadata?.name
     ).toBe('custom-instance');
   });
+
+  it('emits singleton owner declarations (RGD + instance) before the consumer, not skipped', async () => {
+    const singletonBootstrap = kubernetesComposition(
+      {
+        name: 'singleton-bootstrap',
+        apiVersion: 'v1alpha1',
+        kind: 'SingletonBootstrap',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (s) => {
+        Deployment({ name: s.name, image: 'nginx', id: 'bootstrapApp' });
+        return { ready: true };
+      }
+    );
+    const singletonKey = 'v1alpha1/SingletonBootstrap:singleton-bootstrap#shared-platform';
+    const singletonDefinition = {
+      id: 'shared-platform',
+      key: singletonKey,
+      specFingerprint: 'fp',
+      registryNamespace: 'typekro-singletons',
+      composition: singletonBootstrap as unknown as SingletonDefinitionRecord['composition'],
+      spec: { name: 'shared-platform' },
+    } satisfies SingletonDefinitionRecord;
+
+    const factory = withKubeConfig(
+      makeFactory('singletonConsumer', { singletonDefinitions: [singletonDefinition] })
+    );
+    const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
+
+    // Singleton owner's RGD + instance are emitted (the bug: they were skipped entirely).
+    const kinds = decls.map((d) => (d.props.resource as { kind?: string }).kind);
+    expect(kinds.filter((k) => k === 'ResourceGraphDefinition').length).toBe(2); // singleton RGD + consumer RGD
+    expect(kinds.some((k) => k === 'SingletonBootstrap')).toBe(true); // the singleton's CR instance
+
+    // Singleton declarations come BEFORE the consumer's, and the consumer instance waits on the
+    // singleton instance (deps-first ordering, mirroring ensureSingletonOwners).
+    const singletonInstance = decls.find(
+      (d) => (d.props.resource as { kind?: string }).kind === 'SingletonBootstrap'
+    )!;
+    const consumerInstance = decls[decls.length - 1]!;
+    expect((consumerInstance.props.resource as { kind?: string }).kind).toBe('TestApp');
+    expect(decls.indexOf(singletonInstance)).toBeLessThan(decls.indexOf(consumerInstance));
+    expect(consumerInstance.dependsOn).toContain(singletonInstance.id);
+  });
 });
 
 describe('KroResourceFactory: toYaml() singleton owner emission', () => {
