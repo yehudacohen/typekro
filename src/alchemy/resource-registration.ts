@@ -203,16 +203,37 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
     // resolve against) re-hydrate those strings into template CEL objects before deploying — but
     // ONLY strings that reference a known dependency id, so genuine `${…}` literals (e.g. a shell
     // `${HOME}` in an env var) are left untouched.
-    const deployProps =
-      seedResources && props.deploymentStrategy === 'direct'
-        ? {
-            ...props,
-            resource: _rehydrateCelStrings(
-              props.resource,
-              new Set(seedResources.map((s) => s.id))
-            ) as T,
-          }
-        : props;
+    let resourceForDeploy: T = props.resource;
+    if (seedResources && props.deploymentStrategy === 'direct') {
+      resourceForDeploy = _rehydrateCelStrings(
+        props.resource,
+        new Set(seedResources.map((s) => s.id))
+      ) as T;
+    } else if (
+      props.deploymentStrategy === 'kro' &&
+      (props.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
+    ) {
+      // KRO CR instance (the custom resource an RGD defines — not the RGD itself). After alchemy
+      // serializes props to state, the resource is a plain manifest with no readiness evaluator, so a
+      // `waitForReady` deploy throws "No readiness evaluator found for <Kind>". Re-wrap it with
+      // `kroCustomResource`, whose evaluator gates on the CR's KRO status reaching ACTIVE (Ready /
+      // InstanceSynced) — the same KRO-instance readiness the imperative deploy path waits on. The RGD
+      // is excluded (it carries its own evaluator via the resourceGraphDefinition factory).
+      const { kroCustomResource } = await import('../factories/kro/kro-custom-resource.js');
+      const r = props.resource as {
+        apiVersion?: string;
+        kind?: string;
+        metadata?: { name: string; namespace?: string };
+        spec?: unknown;
+      };
+      resourceForDeploy = kroCustomResource({
+        apiVersion: r.apiVersion ?? '',
+        kind: r.kind ?? '',
+        metadata: { ...(r.metadata ?? { name: '' }) },
+        spec: (r.spec ?? {}) as Record<string, unknown>,
+      }) as unknown as T;
+    }
+    const deployProps = resourceForDeploy === props.resource ? props : { ...props, resource: resourceForDeploy };
     const { resourceProperties } = await _deployAndCreateResult(deployProps, deployer, seedResources);
     _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, props, resourceProperties);
     return resourceProperties as unknown as TypeKroResource<T>;
