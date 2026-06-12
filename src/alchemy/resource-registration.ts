@@ -27,6 +27,7 @@ import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
+import { stableSerialize } from '../core/singleton/singleton.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
@@ -223,6 +224,40 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   }
 }
 
+/** The live singleton owner as seen for a drift check. */
+interface LiveSingletonOwner {
+  metadata?: { annotations?: Record<string, string> };
+  spec?: unknown;
+}
+
+/**
+ * Pure drift verdict (no I/O) for a singleton instance being deployed, given:
+ *  - `expectedFingerprint`: the spec-fingerprint annotation on the resource being deployed,
+ *  - `deployingSpec`: that resource's spec,
+ *  - `live`: the existing same-named owner on the cluster (or undefined if none).
+ *
+ * Mirrors the imperative `assertNoDeployedSingletonSpecDrift`, INCLUDING its fallback: an existing
+ * owner with NO fingerprint annotation (a legacy/unfingerprinted owner) is still verified by
+ * comparing serialized specs — so a different-spec legacy owner is NOT silently accepted.
+ */
+export function singletonDriftVerdict(
+  expectedFingerprint: string,
+  deployingSpec: unknown,
+  live: LiveSingletonOwner | undefined
+): { drift: false } | { drift: true; reason: string } {
+  if (!live) return { drift: false };
+  const actual = live.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  if (actual === expectedFingerprint) return { drift: false };
+  if (actual) {
+    return { drift: true, reason: `existing fingerprint ${actual} does not match ${expectedFingerprint}` };
+  }
+  // Unfingerprinted (legacy) owner — fall back to comparing serialized specs.
+  if (stableSerialize(live.spec) !== stableSerialize(deployingSpec)) {
+    return { drift: true, reason: 'an existing unfingerprinted singleton owner has a different spec' };
+  }
+  return { drift: false };
+}
+
 /**
  * Refuse to deploy a singleton owner whose identity already exists on the cluster with a DIFFERENT
  * spec — the declarative-path equivalent of the imperative `assertNoDeployedSingletonSpecDrift`. Only
@@ -235,28 +270,28 @@ async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
 ): Promise<void> {
   const resource = props.resource as {
     metadata?: { name?: string; annotations?: Record<string, string> };
+    spec?: unknown;
   };
   const expected = resource.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
   if (!expected) return; // not a fingerprinted singleton instance
 
-  let live: { metadata?: { annotations?: Record<string, string> } } | undefined;
+  let live: LiveSingletonOwner | undefined;
   try {
     const kc = _createClientProvider(props, 'singleton-drift-check');
     const api = createBunCompatibleKubernetesObjectApi(kc);
-    live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as typeof live;
+    live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as LiveSingletonOwner;
   } catch {
     return; // not found / CRD not yet created / cluster unreachable → no existing spec to clash with
   }
 
-  const actual = live?.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
-  if (actual && actual !== expected) {
+  const verdict = singletonDriftVerdict(expected, resource.spec, live);
+  if (verdict.drift) {
     throw new Error(
-      `Singleton config drift detected for ${resource.metadata?.name ?? '<unknown>'}: an existing ` +
-        `singleton owner has fingerprint ${actual}, which does not match ${expected}. ` +
+      `Singleton config drift detected for ${resource.metadata?.name ?? '<unknown>'}: ${verdict.reason}. ` +
         'A singleton identity must not be deployed with multiple specs.'
     );
   }
-  logger.debug('Singleton spec-fingerprint verified (no drift)', {
+  logger.debug('Singleton spec verified (no drift)', {
     name: resource.metadata?.name,
     fingerprint: expected,
   });
