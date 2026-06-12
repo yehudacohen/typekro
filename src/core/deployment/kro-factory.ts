@@ -1230,9 +1230,11 @@ export class KroResourceFactoryImpl<
           singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
         });
         singletonDeclarations.push(...decls);
-        // The instance is the declaration that depends on its RGD; the main instance waits on it.
-        const instanceDecl = decls.find((d) => d.dependsOn.length > 0) ?? decls[decls.length - 1];
-        if (instanceDecl) singletonInstanceIds.push(instanceDecl.id);
+        // `toAlchemyResources` returns the owner's OWN CR instance LAST (after any of ITS nested
+        // singletons + its RGD), so the consumer must wait on `decls[last]` — using "first decl
+        // with a dependency" would wrongly point at a nested singleton's instance.
+        const ownerInstance = decls[decls.length - 1];
+        if (ownerInstance) singletonInstanceIds.push(ownerInstance.id);
       } finally {
         await singletonFactory.dispose?.();
       }

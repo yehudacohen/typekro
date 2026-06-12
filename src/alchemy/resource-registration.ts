@@ -25,6 +25,8 @@ import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
+import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
+import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
@@ -185,6 +187,10 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
 ): Promise<TypeKroResource<T>> {
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
+  // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
+  // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
+  await _assertNoSingletonDrift(props, logger);
   const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
@@ -215,6 +221,45 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   } finally {
     await dispose();
   }
+}
+
+/**
+ * Refuse to deploy a singleton owner whose identity already exists on the cluster with a DIFFERENT
+ * spec — the declarative-path equivalent of the imperative `assertNoDeployedSingletonSpecDrift`. Only
+ * fires for resources carrying the singleton spec-fingerprint annotation (i.e. singleton instances);
+ * a missing instance / absent CRD / unreachable cluster is treated as "nothing to drift from".
+ */
+async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<void> {
+  const resource = props.resource as {
+    metadata?: { name?: string; annotations?: Record<string, string> };
+  };
+  const expected = resource.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  if (!expected) return; // not a fingerprinted singleton instance
+
+  let live: { metadata?: { annotations?: Record<string, string> } } | undefined;
+  try {
+    const kc = _createClientProvider(props, 'singleton-drift-check');
+    const api = createBunCompatibleKubernetesObjectApi(kc);
+    live = (await api.read(props.resource as Parameters<typeof api.read>[0])) as typeof live;
+  } catch {
+    return; // not found / CRD not yet created / cluster unreachable → no existing spec to clash with
+  }
+
+  const actual = live?.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  if (actual && actual !== expected) {
+    throw new Error(
+      `Singleton config drift detected for ${resource.metadata?.name ?? '<unknown>'}: an existing ` +
+        `singleton owner has fingerprint ${actual}, which does not match ${expected}. ` +
+        'A singleton identity must not be deployed with multiple specs.'
+    );
+  }
+  logger.debug('Singleton spec-fingerprint verified (no drift)', {
+    name: resource.metadata?.name,
+    fingerprint: expected,
+  });
 }
 
 /**

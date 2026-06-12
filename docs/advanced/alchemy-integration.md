@@ -25,7 +25,7 @@ toAlchemyResources(spec, opts?): Promise<AlchemyResourceDeclaration[]>
 
 It emits the resource(s) as declarations:
 
-- **KRO mode** → two declarations: the RGD plus one CR instance (the instance `dependsOn` the RGD).
+- **KRO mode** → a declaration for each discovered **singleton owner** (its own RGD + CR instance), then the composition's RGD, then its CR instance. The instance `dependsOn` the RGD and any singleton instances, so a deployment with no singletons is just two declarations (RGD + instance), and one that depends on shared singletons emits those first.
 - **Direct mode** → one declaration per resolved Kubernetes resource, topologically ordered, with `dependsOn` taken from the resource dependency graph.
 
 The result is the same per-resource state granularity as the old v1 integration — one Alchemy state entry per resource, reverse-topological teardown, idempotent reconcile — but expressed declaratively.
@@ -101,21 +101,22 @@ const outputs = yield* materializeAlchemyResources(KroResource, decls);
 
 Because the ConfigMap reads the Deployment's live `status.readyReplicas`, its declaration `dependsOn` the Deployment. Alchemy therefore deploys the Deployment first, captures its live status, and only then deploys the ConfigMap — resolving the cross-resource reference against real cluster state.
 
-## Kro mode: RGD + instance
+## Kro mode: RGD + instance (+ singleton owners)
 
-In KRO mode, `toAlchemyResources` returns two declarations — the RGD and a CR instance that `dependsOn` it:
+In KRO mode, `toAlchemyResources` returns the composition's RGD and a CR instance that `dependsOn` it — preceded by a declaration for each **singleton owner** the composition depends on (each its own RGD + instance). A composition with no singletons therefore yields exactly two declarations:
 
 ```typescript
 const factory = await graph.factory('kro', { namespace: 'apps' });
 
 const decls = await factory.toAlchemyResources({ name: 'web', image: 'nginx', replicas: 3 });
-// decls[0] → the RGD
-// decls[1] → the CR instance (dependsOn the RGD)
+// (any singleton owners' RGD + instance come first, deps-first)
+// decls[-2] → the composition's RGD
+// decls[-1] → its CR instance (dependsOn the RGD + any singleton instances)
 
 const outputs = yield* materializeAlchemyResources(KroResource, decls);
 ```
 
-Alchemy applies the RGD first, then the instance, and the Kro controller reconciles the rest at runtime — with each piece tracked as its own Alchemy state entry.
+Alchemy applies singleton owners and the RGD first, then the instance, and the Kro controller reconciles the rest at runtime — each piece tracked as its own state entry. Singleton owners use deterministic ids, so a singleton shared across compositions is deduplicated to one state entry. Singleton **spec-drift protection** is enforced at reconcile time: deploying a singleton identity whose live spec fingerprint differs from the one being applied fails rather than silently clobbering the shared owner.
 
 ## Security: kubeconfig in Alchemy state
 

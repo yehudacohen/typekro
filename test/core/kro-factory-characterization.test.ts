@@ -771,6 +771,65 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
     expect(decls.indexOf(singletonInstance)).toBeLessThan(decls.indexOf(consumerInstance));
     expect(consumerInstance.dependsOn).toContain(singletonInstance.id);
   });
+
+  it('points a consumer at the DIRECT singleton owner, not its nested singleton', async () => {
+    // A singleton owner (`MidOp`) that itself depends on a nested singleton (`DeeperOp`).
+    const deeperOp = kubernetesComposition(
+      {
+        name: 'deeper-op',
+        apiVersion: 'v1alpha1',
+        kind: 'DeeperOp',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (s) => {
+        Deployment({ name: s.name, image: 'nginx', id: 'deeperDep' });
+        return { ready: true };
+      }
+    );
+    const midOp = kubernetesComposition(
+      {
+        name: 'mid-op',
+        apiVersion: 'v1alpha1',
+        kind: 'MidOp',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (s) => {
+        singleton(deeperOp, { id: 'deeper-op', spec: { name: 'deeper' } });
+        Deployment({ name: s.name, image: 'nginx', id: 'midDep' });
+        return { ready: true };
+      }
+    );
+    const midDefinition = {
+      id: 'mid-op',
+      key: 'v1alpha1/MidOp:mid-op#mid-op',
+      specFingerprint: 'fp',
+      registryNamespace: 'typekro-singletons',
+      composition: midOp as unknown as SingletonDefinitionRecord['composition'],
+      spec: { name: 'mid' },
+    } satisfies SingletonDefinitionRecord;
+
+    const factory = withKubeConfig(
+      makeFactory('nestedConsumer', { singletonDefinitions: [midDefinition] })
+    );
+    const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
+
+    const byKind = (k: string) => decls.find((d) => (d.props.resource as { kind?: string }).kind === k)!;
+    const deeperInstance = byKind('DeeperOp');
+    const midInstance = byKind('MidOp');
+    const consumerInstance = decls[decls.length - 1]!;
+    expect(deeperInstance).toBeDefined();
+    expect(midInstance).toBeDefined();
+    expect((consumerInstance.props.resource as { kind?: string }).kind).toBe('TestApp');
+
+    // The consumer must wait on its DIRECT singleton (MidOp), NOT the nested one (DeeperOp).
+    expect(consumerInstance.dependsOn).toContain(midInstance.id);
+    expect(consumerInstance.dependsOn).not.toContain(deeperInstance.id);
+    // MidOp transitively waits on DeeperOp; deeper is emitted before mid.
+    expect(midInstance.dependsOn).toContain(deeperInstance.id);
+    expect(decls.indexOf(deeperInstance)).toBeLessThan(decls.indexOf(midInstance));
+  });
 });
 
 describe('KroResourceFactory: toYaml() singleton owner emission', () => {
