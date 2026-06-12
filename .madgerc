@@ -1,0 +1,8 @@
+{
+  "//": "Skip `import type` edges: type-only imports are erased at compile time and create no runtime cycle, so they're irrelevant to the circular-dependency check (which guards against runtime module-init cycles). Runtime imports are still analyzed.",
+  "detectiveOptions": {
+    "ts": {
+      "skipTypeImports": true
+    }
+  }
+}
