@@ -209,6 +209,26 @@ describe('Dagster Helm values mapper', () => {
     expect(values.global).toMatchObject({ serviceAccountName: 'dagster-runtime' });
   });
 
+  it('Pass serviceAccount (annotations/create/name) through the raw values surface (IRSA)', () => {
+    const values = concreteValues(mapDagsterConfigToHelmValues({
+      ...minimalConfig,
+      serviceAccountName: 'dbt',
+      values: {
+        serviceAccount: {
+          create: true,
+          name: 'dbt',
+          annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123:role/dbt-data' },
+        },
+      },
+    }));
+
+    expect(values.serviceAccount).toEqual({
+      create: true,
+      name: 'dbt',
+      annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123:role/dbt-data' },
+    });
+  });
+
   it('Merge raw values last while preserving typed values at unrelated paths', () => {
     const values = concreteValues(mapDagsterConfigToHelmValues({
       ...minimalConfig,
