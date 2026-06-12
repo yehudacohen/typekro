@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-06-12
+
+### Fixed
+
+- Fixed declarative Alchemy KRO resources so CR instance declarations honor the factory
+  `waitForReady` option and default to end-to-end readiness, matching the imperative deploy path.
+
 ## [0.15.1] - 2026-06-12
 
 ### Fixed
