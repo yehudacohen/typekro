@@ -404,9 +404,10 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(staticFields.topLevelStatic).toBe('top-static');
 
       // Static leaves keep their nesting path under staticFields.
-      const sLevel1 = staticFields.level1 as Record<string, Record<string, unknown>>;
-      expect(sLevel1.level2.staticAtLevel2).toBe('static-value');
-      expect((sLevel1.level2.level3 as Record<string, unknown>).staticField).toBe('deep-static-value');
+      const sLevel1 = staticFields.level1 as Record<string, unknown>;
+      const sLevel2 = sLevel1.level2 as Record<string, unknown>;
+      expect(sLevel2.staticAtLevel2).toBe('static-value');
+      expect((sLevel2.level3 as Record<string, unknown>).staticField).toBe('deep-static-value');
 
       // Dynamic leaves keep their nesting path under dynamicFields.
       const dLevel1 = dynamicFields.level1 as Record<string, unknown>;

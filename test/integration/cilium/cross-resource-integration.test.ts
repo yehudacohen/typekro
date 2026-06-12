@@ -5,7 +5,7 @@
  * and integration with TypeKro features for Cilium networking resources.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
@@ -47,6 +47,12 @@ if (!clusterAvailable) {
 const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe.skip;
 
 describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
+  // Live KRO deploy + wait-for-ready + status hydration, and the afterAll cleanup
+  // (instance finalizer wait + RGD/namespace deletion), exceed the default 5s
+  // timeout. bun:test's hook types take no per-hook timeout arg, so set it for the
+  // whole file here; the deploy `it` overrides with its own longer timeout.
+  setDefaultTimeout(180000);
+
   let kubeConfig: k8s.KubeConfig;
   let _k8sApi: k8s.KubernetesObjectApi;
   let coreApi: k8s.CoreV1Api;
@@ -94,7 +100,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     }
 
     console.log('✅ Cilium cross-resource integration test environment ready!');
-  }, 120000); // namespace creation may wait out a prior terminating namespace (up to 60s)
+  });
 
   afterAll(async () => {
     if (!clusterAvailable || !coreApi) return;
@@ -179,7 +185,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     } catch (error: any) {
       console.log(`⚠️ Could not delete test namespace: ${error.message}`);
     }
-  }, 180000); // live cleanup (instance finalizer wait + RGD/namespace deletion) exceeds the default hook timeout
+  });
 
   describe('Cross-Resource References and Dependency Resolution', () => {
     it('should handle cross-resource references between Kubernetes and Cilium resources', async () => {
