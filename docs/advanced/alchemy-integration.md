@@ -1,211 +1,137 @@
 # Alchemy Integration
 
-TypeKro integrates with [Alchemy](https://alchemy.run) to provide a unified TypeScript experience for managing cloud and Kubernetes resources together.
+TypeKro integrates with [Alchemy](https://alchemy.run) to deploy your TypeKro resources through Alchemy's declarative, stateful runtime — so they get per-resource state, dependency-ordered deployment, idempotent reconcile, and reverse-topological teardown alongside the rest of your Alchemy-managed infrastructure.
+
+> **Alchemy v2.** This integration targets Alchemy v2 (the Effect-based `2.0.0-beta` line). It is declarative: TypeKro emits resource *declarations*, and your Alchemy runtime materializes them as Alchemy resources. The older v1 imperative model (`graph.deployWithAlchemy(...)`, the `alchemyScope` factory option, the global `alchemy(...)` scope-driven deploy) has been **removed**.
 
 ## What is Alchemy?
 
-Alchemy is an infrastructure-as-TypeScript tool for deploying to cloud providers (AWS, Cloudflare, etc.). TypeKro's integration lets you:
+Alchemy is an infrastructure-as-TypeScript tool with a stateful runtime: it tracks every resource it manages in a state store, deploys them in dependency order, reconciles them idempotently, and tears them down in reverse-topological order. TypeKro's integration represents each TypeKro KRO resource as an Alchemy resource, so a TypeKro deployment becomes a first-class part of an Alchemy stack.
 
-- Create cloud resources (S3 buckets, Lambda functions) alongside Kubernetes workloads
-- Reference cloud resource outputs in Kubernetes deployments
-- Manage the entire stack with a single TypeScript codebase
+## The v2 model
 
-## Quick Example
+TypeKro exports a declarative Alchemy v2 integration from `typekro/alchemy`:
+
+- **`KroResource`** — a declarative Alchemy v2 `Resource` representing one TypeKro KRO resource. That single resource can be an RGD (ResourceGraphDefinition), a CR instance, or a direct-mode Kubernetes resource.
+- **`kroProvider`** — the Alchemy `Provider` (an Effect `Layer`) that backs `KroResource`. Merge it into your Alchemy runtime's providers.
+- **`materializeAlchemyResources(KroResource, declarations)`** — a helper that returns an Effect. Run it *inside* an Alchemy `Stack` body to instantiate a list of declarations as `KroResource`s. It wires each declaration's `dependsOn` into Alchemy `Output` dependencies, so resources deploy in dependency order and direct-mode cross-resource references resolve against their dependencies' live state.
+- **`AlchemyResourceDeclaration`** — `{ id: string; props; dependsOn: string[] }`. This is what `toAlchemyResources` returns.
+
+Both `DirectResourceFactory` and `KroResourceFactory` expose:
 
 ```typescript
-import alchemy from 'alchemy';
-import { Bucket } from 'alchemy/aws';
-import { kubernetesComposition } from 'typekro';
-import { Deployment } from 'typekro/simple';
+toAlchemyResources(spec, opts?): Promise<AlchemyResourceDeclaration[]>
+```
+
+It emits the resource(s) as declarations:
+
+- **KRO mode** → two declarations: the RGD plus one CR instance (the instance `dependsOn` the RGD).
+- **Direct mode** → one declaration per resolved Kubernetes resource, topologically ordered, with `dependsOn` taken from the resource dependency graph.
+
+The result is the same per-resource state granularity as the old v1 integration — one Alchemy state entry per resource, reverse-topological teardown, idempotent reconcile — but expressed declaratively.
+
+## Canonical Usage
+
+This is the verified pattern (see `test/integration/alchemy/direct-fan-out-e2e.test.ts`):
+
+```typescript
+import { Cel, simple, toResourceGraph } from 'typekro';
+import { KroResource, kroProvider, materializeAlchemyResources } from 'typekro/alchemy';
+// + your Alchemy v2 runtime — its `providers` must include `kroProvider`, plus a state backend.
+
+// 1. Build the factory as usual.
+const factory = await graph.factory('direct', { namespace: 'apps', waitForReady: true });
+
+// 2. Emit per-resource declarations (topologically ordered, dependsOn wired).
+const decls = await factory.toAlchemyResources(spec);
+
+// 3. Inside an Alchemy Stack body (an Effect generator), with kroProvider in the runtime:
+const outputs = yield* materializeAlchemyResources(KroResource, decls);
+```
+
+Once deployed, each TypeKro resource is a per-resource entry in Alchemy's state: Alchemy reconciles them idempotently and tears them down in reverse-topological order.
+
+The Alchemy *runtime* itself — how you construct the runtime, which providers and state backend you supply — is part of your own Alchemy v2 setup and is not provided by TypeKro. The only TypeKro requirement is that `kroProvider` is merged into the runtime's providers, and that a state backend is configured. Everything above the `toAlchemyResources` / `materializeAlchemyResources` calls is TypeKro-side and is what this page documents.
+
+## Direct mode: per-resource fan-out
+
+In direct mode, `toAlchemyResources` returns one declaration per resolved Kubernetes resource, ordered so that dependencies come first:
+
+```typescript
+import { Cel, simple, toResourceGraph } from 'typekro';
+import { KroResource, kroProvider, materializeAlchemyResources } from 'typekro/alchemy';
 import { type } from 'arktype';
 
-// Create an Alchemy scope
-const app = await alchemy('my-app');
+const graph = toResourceGraph(
+  {
+    name: 'fanoutapp',
+    apiVersion: 'v1alpha1',
+    kind: 'FanoutApp',
+    spec: type({ name: 'string', image: 'string', replicas: 'number%1' }),
+    status: type({ readyReplicas: 'number%1' }),
+  },
+  (schema) => {
+    const deployment = simple.Deployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      id: 'appDeployment',
+    });
+    return {
+      deployment,
+      // Reads the Deployment's LIVE status → a genuine cross-resource dependency.
+      config: simple.ConfigMap({
+        name: Cel.template('%s-cfg', schema.spec.name),
+        data: { readyReplicas: Cel.template('%s', deployment.status.readyReplicas) },
+        id: 'appConfig',
+      }),
+    };
+  },
+  (_schema, resources) => ({ readyReplicas: resources.deployment?.status.readyReplicas })
+);
 
-// Create cloud resources
-const bucket = await Bucket('uploads', {
-  bucketName: 'my-app-uploads'
-});
+const factory = await graph.factory('direct', { namespace: 'apps', waitForReady: true });
 
-// Define Kubernetes composition
-const webapp = kubernetesComposition({
-  name: 'webapp',
-  apiVersion: 'example.com/v1',
-  kind: 'WebApp',
-  spec: type({ name: 'string', image: 'string' }),
-  status: type({ ready: 'boolean' })
-}, (spec) => {
-  const deploy = Deployment({
-    id: 'app',
-    name: spec.name,
-    image: spec.image,
-    env: {
-      BUCKET_NAME: bucket.name,      // Reference cloud resource
-      BUCKET_ARN: bucket.arn
-    }
-  });
-  return { ready: deploy.status.readyReplicas > 0 };
-});
+// One declaration per resource; the ConfigMap dependsOn the Deployment.
+const decls = await factory.toAlchemyResources({ name: 'fanapp', image: 'nginx', replicas: 1 });
 
-// Deploy with Alchemy scope
-await app.run(async () => {
-  const factory = webapp.factory('direct', { 
-    namespace: 'production',
-    alchemyScope: app  // Pass the Alchemy scope
-  });
-  await factory.deploy({ name: 'web', image: 'nginx' });
-});
+// In the Stack body, with kroProvider in the runtime's providers:
+const outputs = yield* materializeAlchemyResources(KroResource, decls);
 ```
 
-## The alchemyScope Option
+Because the ConfigMap reads the Deployment's live `status.readyReplicas`, its declaration `dependsOn` the Deployment. Alchemy therefore deploys the Deployment first, captures its live status, and only then deploys the ConfigMap — resolving the cross-resource reference against real cluster state.
 
-Pass an Alchemy scope to factory deployment to enable cloud-Kubernetes integration:
+## Kro mode: RGD + instance
+
+In KRO mode, `toAlchemyResources` returns two declarations — the RGD and a CR instance that `dependsOn` it:
 
 ```typescript
-const factory = webapp.factory('direct', {
-  namespace: 'default',
-  alchemyScope: app  // Alchemy scope from alchemy('app-name')
-});
+const factory = await graph.factory('kro', { namespace: 'apps' });
+
+const decls = await factory.toAlchemyResources({ name: 'web', image: 'nginx', replicas: 3 });
+// decls[0] → the RGD
+// decls[1] → the CR instance (dependsOn the RGD)
+
+const outputs = yield* materializeAlchemyResources(KroResource, decls);
 ```
 
-When `alchemyScope` is provided:
-- Resources are tracked in Alchemy's state store
-- Cloud resource outputs can be referenced in Kubernetes manifests
-- Deployments are coordinated across cloud and Kubernetes
+Alchemy applies the RGD first, then the instance, and the Kro controller reconciles the rest at runtime — with each piece tracked as its own Alchemy state entry.
 
-## Cloud-First Pattern
+## Security: kubeconfig in Alchemy state
 
-Create cloud resources first, then reference them in Kubernetes:
+`toAlchemyResources` captures the factory's kubeconfig into each declaration's `kubeConfigOptions`, and Alchemy persists that to its state store — so that a later state-driven delete can reconnect to the cluster to remove the resource.
 
-```typescript
-import alchemy from 'alchemy';
-import { Bucket, SQSQueue } from 'alchemy/aws';
-import { kubernetesComposition } from 'typekro';
-import { Deployment } from 'typekro/simple';
+This means: **if the kubeconfig uses static credentials (`token`, `certData`, `keyData`), those credentials land in Alchemy's state store.** To avoid persisting long-lived secrets:
 
-const app = await alchemy('worker-app');
-
-// 1. Create cloud resources
-const queue = await SQSQueue('tasks', { queueName: 'task-queue' });
-const bucket = await Bucket('results', { bucketName: 'task-results' });
-
-// 2. Define Kubernetes workload that uses them
-const worker = kubernetesComposition({
-  name: 'worker',
-  apiVersion: 'example.com/v1',
-  kind: 'Worker',
-  spec: type({ replicas: 'number' }),
-  status: type({ ready: 'boolean' })
-}, (spec) => {
-  const deploy = Deployment({
-    id: 'worker',
-    name: 'task-worker',
-    image: 'worker:latest',
-    replicas: spec.replicas,
-    env: {
-      QUEUE_URL: queue.url,        // SQS queue URL
-      BUCKET_NAME: bucket.name,    // S3 bucket name
-      AWS_REGION: 'us-east-1'
-    }
-  });
-  return { ready: deploy.status.readyReplicas > 0 };
-});
-
-// 3. Deploy everything
-await app.run(async () => {
-  const factory = worker.factory('direct', { alchemyScope: app });
-  await factory.deploy({ replicas: 3 });
-});
-```
-
-## K8s-First Pattern
-
-Deploy Kubernetes workloads that create cloud resources on demand:
-
-```typescript
-import alchemy from 'alchemy';
-import { Function } from 'alchemy/aws';
-import { kubernetesComposition } from 'typekro';
-import { Deployment } from 'typekro/simple';
-
-const app = await alchemy('api-app');
-
-// 1. Create Lambda function for async processing
-const processor = await Function('processor', {
-  functionName: 'async-processor',
-  runtime: 'nodejs20.x',
-  handler: 'index.handler',
-  code: { zipFile: './processor.zip' }
-});
-
-// 2. Kubernetes API that invokes the Lambda
-const api = kubernetesComposition({
-  name: 'api',
-  apiVersion: 'example.com/v1',
-  kind: 'API',
-  spec: type({ name: 'string' }),
-  status: type({ ready: 'boolean', processorUrl: 'string' })
-}, (spec) => {
-  const deploy = Deployment({
-    id: 'api',
-    name: spec.name,
-    image: 'api:latest',
-    env: {
-      PROCESSOR_ARN: processor.arn,
-      PROCESSOR_URL: processor.functionUrl || ''
-    }
-  });
-  
-  return {
-    ready: deploy.status.readyReplicas > 0,
-    processorUrl: processor.functionUrl || 'pending'
-  };
-});
-
-await app.run(async () => {
-  const factory = api.factory('direct', { alchemyScope: app });
-  await factory.deploy({ name: 'my-api' });
-});
-```
-
-## Unified TypeScript Experience
-
-TypeKro + Alchemy provides:
-
-- **Single Language**: Define cloud and Kubernetes resources in TypeScript
-- **Type Safety**: Full autocomplete and type checking across the stack
-- **Coordinated Deployment**: Resources deploy in the correct order
-- **State Management**: Alchemy tracks all resources for updates and cleanup
-
-```typescript
-// Everything is TypeScript - no YAML, no HCL, no CloudFormation
-const app = await alchemy('fullstack');
-
-// Cloud resources
-const db = await RDSInstance('db', { engine: 'postgres' });
-const cache = await ElastiCacheCluster('cache', { engine: 'redis' });
-
-// Kubernetes workloads
-const api = kubernetesComposition({ /* ... */ }, (spec) => {
-  return Deployment({
-    id: 'api',
-    name: 'api',
-    image: 'api:latest',
-    env: {
-      DATABASE_URL: db.endpoint,
-      REDIS_URL: cache.endpoint
-    }
-  });
-});
-```
+- Prefer **re-derived auth** — an `exec` credential plugin (e.g. `aws eks get-token`) or an `authProvider` — so each operation mints fresh, short-lived credentials instead of storing static ones.
+- Use a **secured state backend** for your Alchemy runtime regardless, since the state store may hold connection details.
 
 ## Without Alchemy
 
-If you don't need cloud resources, TypeKro works standalone:
+If you don't need Alchemy's state and lifecycle management, TypeKro deploys standalone — just call the factory directly:
 
 ```typescript
-// No alchemyScope needed for pure Kubernetes
-const factory = webapp.factory('direct', { namespace: 'default' });
+const factory = await graph.factory('direct', { namespace: 'default' });
 await factory.deploy({ name: 'app', image: 'nginx' });
 ```
 

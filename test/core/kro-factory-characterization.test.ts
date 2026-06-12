@@ -19,10 +19,10 @@ import { getCurrentCompositionContext } from '../../src/core/composition/context
 import { ValidationError } from '../../src/core/errors.js';
 import type { KroResourceFactory } from '../../src/core/types/deployment.js';
 import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
-import type { Enhanced, KubernetesResource } from '../../src/core/types/kubernetes.js';
+import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
 import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
-import { externalRef, kubernetesComposition, singleton } from '../../src/index.js';
+import { kubernetesComposition, singleton } from '../../src/index.js';
 import { Deployment } from '../../src/factories/simple/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
@@ -181,206 +181,7 @@ function getPrivateMethod(
   return method.bind(factory);
 }
 
-describe('KroResourceFactory: Alchemy RGD serialization', () => {
-  it('preserves exec and authProvider auth in serialized Alchemy kubeconfig options', () => {
-    const factory = createKroResourceFactory(
-      'alchemyExecAuth',
-      {},
-      makeSchema(),
-      {},
-      {
-        hydrateStatus: false,
-      }
-    );
-    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
-      getCurrentCluster: () => ({ name: 'cluster', server: 'https://example.invalid' }),
-      getCurrentContext: () => 'ctx',
-      getCurrentUser: () => ({
-        name: 'user',
-        exec: { command: 'aws', args: ['eks', 'get-token'] },
-        authProvider: { name: 'gcp', config: { 'access-token': 'token' } },
-      }),
-    });
-
-    const extractKubeConfigOptionsForAlchemy = getPrivateMethod(
-      factory as unknown as KroResourceFactory<TestSpec, TestStatus>,
-      'extractKubeConfigOptionsForAlchemy'
-    ) as () => { user?: { exec?: unknown; authProvider?: unknown } };
-
-    const options = extractKubeConfigOptionsForAlchemy();
-
-    expect(options.user?.exec).toEqual({ command: 'aws', args: ['eks', 'get-token'] });
-    expect(options.user?.authProvider).toEqual({
-      name: 'gcp',
-      config: { 'access-token': 'token' },
-    });
-  });
-
-  it('validates injected Alchemy scope before provider execution', async () => {
-    const factory = createKroResourceFactory(
-      'alchemyInvalidScope',
-      {},
-      makeSchema(),
-      {},
-      {
-        alchemyScope: {} as any,
-        hydrateStatus: false,
-      }
-    );
-
-    const deployWithAlchemy = getPrivateMethod(factory, 'deployWithAlchemy') as (
-      spec: TestSpec,
-      instanceNameOverride?: string
-    ) => Promise<unknown>;
-
-    await expect(deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo')).rejects.toThrow(
-      'KRO Alchemy deployment: Alchemy scope is invalid'
-    );
-  });
-
-  it('preserves externalRef entries when deploying the RGD through Alchemy', async () => {
-    const resources: Record<string, KubernetesResource> = {
-      platformConfig: externalRef({
-        apiVersion: 'v1',
-        kind: 'ConfigMap',
-        metadata: { name: 'platform-config', namespace: 'platform-system' },
-        id: 'platformConfig',
-      }) as unknown as KubernetesResource,
-    };
-    const providerCalls: Array<{
-      id: string;
-      input: {
-        resource: Record<string, unknown>;
-        deployer?: unknown;
-        deploymentStrategy?: string;
-        kubeConfigOptions?: Record<string, unknown>;
-        kroDeletion?: Record<string, unknown>;
-        options?: Record<string, unknown>;
-      };
-    }> = [];
-    const events: string[] = [];
-    let insideAlchemyScope = false;
-
-    const factory = createKroResourceFactory(
-      'alchemyExternalRef',
-      resources,
-      makeSchema(),
-      {},
-      {
-        alchemyScope: {
-          run: async (fn: () => Promise<unknown>) => {
-            events.push('scope:start');
-            insideAlchemyScope = true;
-            try {
-              return await fn();
-            } finally {
-              insideAlchemyScope = false;
-              events.push('scope:end');
-            }
-          },
-        } as any,
-        hydrateStatus: false,
-        rgdProvider: (rgd) =>
-          rgd as unknown as Enhanced<Record<string, unknown>, Record<string, unknown>>,
-        alchemyBridge: {
-          createDeployer() {
-            throw new Error('KRO Alchemy props must not carry live deployer objects');
-          },
-          ensureResourceTypeRegistered() {
-            return async (
-              id: string,
-              input: {
-                resource: Record<string, unknown>;
-                deployer?: unknown;
-                deploymentStrategy?: string;
-                kubeConfigOptions?: Record<string, unknown>;
-                kroDeletion?: Record<string, unknown>;
-                options?: Record<string, unknown>;
-              }
-            ) => {
-              expect(insideAlchemyScope).toBe(true);
-              events.push(`provider:${input.resource.kind}`);
-              providerCalls.push({ id, input });
-            };
-          },
-          createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string) {
-            return `${namespace ?? 'default'}:${resource.kind}:${resource.metadata.name}`;
-          },
-        },
-      }
-    );
-    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
-      getCurrentCluster: () => ({ server: 'https://example.invalid' }),
-    });
-    let ensuredTargetNamespace = false;
-    const readinessCalls: Array<{ instanceName: string; timeout: number }> = [];
-    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {
-      ensuredTargetNamespace = true;
-    };
-    (factory as unknown as Record<string, unknown>).waitForCRDReadyWithEngine = async () => {
-      events.push('crd-ready');
-    };
-    (factory as unknown as Record<string, unknown>).waitForKroInstanceReady = async (
-      instanceName: string,
-      timeout: number
-    ) => {
-      readinessCalls.push({ instanceName, timeout });
-    };
-
-    const deployWithAlchemy = getPrivateMethod(factory, 'deployWithAlchemy') as (
-      spec: TestSpec,
-      instanceNameOverride?: string
-    ) => Promise<unknown>;
-    await deployWithAlchemy({ name: 'demo', replicas: 1 }, 'demo');
-
-    const rgdCall = providerCalls.find(
-      (call) => call.input.resource.kind === 'ResourceGraphDefinition'
-    );
-    const rgd = rgdCall?.input.resource as
-      | {
-          spec?: { resources?: Array<{ id: string; externalRef?: unknown; template?: unknown }> };
-        }
-      | undefined;
-    const instanceCall = providerCalls.find((call) => call.input.resource.kind === 'TestApp');
-    const extRefResource = rgd?.spec?.resources?.find(
-      (resource) => resource.id === 'platformConfig'
-    );
-
-    expect(extRefResource?.externalRef).toEqual({
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: { name: 'platform-config', namespace: 'platform-system' },
-    });
-    expect(extRefResource).not.toHaveProperty('template');
-    expect(ensuredTargetNamespace).toBe(true);
-    expect(rgdCall?.input.deploymentStrategy).toBe('kro');
-    expect(instanceCall?.input.deploymentStrategy).toBe('kro');
-    expect(rgdCall?.input.deployer).toBeUndefined();
-    expect(instanceCall?.input.deployer).toBeUndefined();
-    expect(rgdCall?.input.kubeConfigOptions).toMatchObject({
-      server: 'https://example.invalid',
-      skipTLSVerify: false,
-    });
-    expect(instanceCall?.input.kroDeletion).toMatchObject({
-      apiVersion: 'v1alpha1',
-      kind: 'TestApp',
-      namespace: 'default',
-      rgdName: 'alchemy-external-ref',
-      timeout: 300000,
-    });
-    expect(instanceCall?.input.options?.waitForReady).toBe(false);
-    expect(events).toEqual([
-      'scope:start',
-      'provider:ResourceGraphDefinition',
-      'scope:end',
-      'crd-ready',
-      'scope:start',
-      'provider:TestApp',
-      'scope:end',
-    ]);
-    expect(readinessCalls).toEqual([{ instanceName: 'demo', timeout: 600000 }]);
-  });
-
+describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
   it('disposes the RGD deployment engine after successful deployment', async () => {
     const factory = makeFactory('rgdDispose');
     (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
@@ -520,17 +321,6 @@ describe('KroResourceFactory: constructor', () => {
   it('uses provided namespace', () => {
     const factory = makeFactory('myApp', { namespace: 'production' });
     expect(factory.namespace).toBe('production');
-  });
-
-  it('sets isAlchemyManaged to false when no alchemyScope', () => {
-    const factory = makeFactory('myApp');
-    expect(factory.isAlchemyManaged).toBe(false);
-  });
-
-  it('sets isAlchemyManaged to true when alchemyScope is provided', () => {
-    // Use a truthy value as alchemyScope
-    const factory = makeFactory('myApp', { alchemyScope: {} });
-    expect(factory.isAlchemyManaged).toBe(true);
   });
 
   it('computes rgdName as kebab-case of name', () => {
@@ -874,6 +664,67 @@ describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
     const yamlText = factory.toYaml(spec);
     const parsed = yaml.load(yamlText) as { spec: typeof spec };
     expect(parsed.spec).toEqual(spec);
+  });
+});
+
+describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
+  function withKubeConfig(
+    factory: KroResourceFactory<TestSpec, TestStatus>
+  ): KroResourceFactory<TestSpec, TestStatus> {
+    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
+      getCurrentCluster: () => ({
+        name: 'test-cluster',
+        server: 'https://example.invalid',
+        skipTLSVerify: false,
+      }),
+      getCurrentUser: () => ({ name: 'admin', token: 'tok' }),
+      getCurrentContext: () => 'ctx',
+    });
+    return factory;
+  }
+
+  it('emits the RGD + CR instance as two independent declarations', async () => {
+    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const decls = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
+
+    expect(decls).toHaveLength(2);
+    const rgd = decls[0]!;
+    const instance = decls[1]!;
+
+    // RGD: shared, ready-gated, carries serialized cluster + finalizer-safe deletion metadata.
+    expect((rgd.props.resource as { kind?: string }).kind).toBe('ResourceGraphDefinition');
+    expect(rgd.props.deploymentStrategy).toBe('kro');
+    expect(rgd.props.options?.waitForReady).toBe(true);
+    expect(rgd.props.kubeConfigOptions?.cluster?.server).toBe('https://example.invalid');
+    expect(rgd.props.kroDeletion?.rgdName).toBe(factory.rgdName);
+    expect(rgd.props.kroDeletion?.kind).toBe('TestApp');
+
+    // Instance: one per deploy, not ready-gated at the alchemy layer.
+    expect((instance.props.resource as { kind?: string }).kind).toBe('TestApp');
+    expect(instance.props.deploymentStrategy).toBe('kro');
+    expect(instance.props.options?.waitForReady).toBe(false);
+  });
+
+  it('gives the RGD and instance distinct, deterministic ids', async () => {
+    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const first = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
+    const second = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
+
+    expect(first[0]!.id).not.toBe(first[1]!.id);
+    // Same factory + same spec → stable ids (so re-runs converge instead of duplicating state).
+    expect(second[0]!.id).toBe(first[0]!.id);
+    expect(second[1]!.id).toBe(first[1]!.id);
+  });
+
+  it('honors instanceNameOverride for the instance declaration', async () => {
+    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const decls = await factory.toAlchemyResources(
+      { name: 'web', replicas: 1 },
+      { instanceNameOverride: 'custom-instance' }
+    );
+    expect(
+      (decls[1]!.props.resource as { metadata?: { name?: string } }).metadata?.name
+    ).toBe('custom-instance');
   });
 });
 

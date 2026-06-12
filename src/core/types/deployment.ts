@@ -14,7 +14,8 @@ import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
+import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
+import type { InferType, KroCompatibleType, SchemaProxy } from './schema.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status.
@@ -30,6 +31,13 @@ export interface DeployedResource {
   name: string;
   namespace: string;
   manifest: KubernetesResource;
+  /**
+   * The live resource read back from the cluster after apply (incl. `status`), when captured.
+   * Kept separate from `manifest` (the applied spec) so status-hydration paths that read typekro
+   * metadata off `manifest` are unaffected. Consumers wanting live status (e.g. the alchemy
+   * deployer's returned `deployedResource`) should prefer this and fall back to `manifest`.
+   */
+  liveManifest?: KubernetesResource;
   status: 'deployed' | 'ready' | 'failed';
   /** True once the resource has been applied to the Kubernetes API. */
   applied?: boolean;
@@ -59,7 +67,6 @@ export interface AppliedResource {
 export interface DeploymentContext {
   kubernetesApi?: KubernetesObjectApi;
   kubeConfig?: KubeConfig; // For operations that need direct API access (e.g., CRD patching)
-  alchemyScope?: Scope;
   /** True when a closure is being executed only to validate KRO compatibility. */
   validationOnly?: boolean;
   /** Signal for cancelling closure work when the parent deployment times out. */
@@ -159,8 +166,7 @@ export interface AutoFixConfig {
 // =============================================================================
 
 /**
- * Common deployment configuration shared by DeploymentOptions,
- * FactoryOptions, and AlchemyDeploymentOptions.
+ * Common deployment configuration shared by DeploymentOptions and FactoryOptions.
  */
 export interface BaseDeploymentConfig {
   /** Kubernetes namespace for deployment */
@@ -297,20 +303,6 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
    * ```
    */
   targetScopes?: string[];
-}
-
-export interface AlchemyDeploymentOptions extends BaseDeploymentConfig {
-  dryRun?: boolean;
-  rollbackOnFailure?: boolean;
-
-  /**
-   * SECURITY WARNING: Only set to true in non-production environments.
-   * This disables TLS certificate verification and makes connections vulnerable
-   * to man-in-the-middle attacks.
-   *
-   * @default false (secure by default)
-   */
-  skipTLSVerify?: boolean;
 }
 
 /**
@@ -580,8 +572,6 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
-  /** Alchemy scope — when provided the factory will deploy via Alchemy */
-  alchemyScope?: Scope;
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 
@@ -657,28 +647,6 @@ export type ResourceGraphDefinitionProvider = (rgd: {
   [key: string]: unknown;
 }) => Enhanced<Record<string, unknown>, Record<string, unknown>>;
 
-/** Options passed when creating an Alchemy-backed Kro deployer. */
-export interface AlchemyKroDeployerOptions {
-  /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
-  deleteInstance?: (name: string) => Promise<void>;
-}
-
-/**
- * Alchemy integration bridge.
- *
- * Only required when `alchemyScope` is provided. Supplies the three
- * capabilities that `kro-factory.ts` previously obtained via dynamic imports
- * from `alchemy/deployment.js`.
- */
-export interface AlchemyBridge {
-  /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
-  createDeployer(engine: unknown, options?: AlchemyKroDeployerOptions): unknown;
-  /** Register a resource type in alchemy's global provider registry. */
-  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): unknown;
-  /** Generate a deterministic alchemy resource ID. */
-  createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string): string;
-}
-
 /**
  * Internal factory options used by the serialization and deployment engine.
  *
@@ -707,8 +675,6 @@ export interface InternalFactoryOptions {
   kroCustomResourceProvider?: KroCustomResourceProvider;
   /** Provider for creating Enhanced RGD resources with readiness evaluation */
   rgdProvider?: ResourceGraphDefinitionProvider;
-  /** Alchemy integration bridge (only needed when alchemyScope is set) */
-  alchemyBridge?: AlchemyBridge;
   /** Collected singleton definitions used by this graph (internal use) */
   singletonDefinitions?: SingletonDefinitionRecord[];
 }
@@ -764,7 +730,6 @@ export interface ResourceFactory<
   readonly mode: 'kro' | 'direct';
   readonly name: string;
   readonly namespace: string;
-  readonly isAlchemyManaged: boolean;
 }
 
 // Mode-specific factories extend the base interface
@@ -783,6 +748,17 @@ export interface DirectResourceFactory<
     spec: TSpec,
     instanceNameOverride?: string
   ): DeploymentResourceGraph;
+
+  /**
+   * Emit this composition's resolved resources as declarative alchemy v2 resources — one
+   * {@link AlchemyResourceDeclaration} per resource, topologically ordered with `dependsOn` wired
+   * from the dependency graph. Instantiate with `materializeAlchemyResources`. The v2 analog of
+   * the removed imperative direct-mode alchemy deploy.
+   */
+  toAlchemyResources(
+    spec: TSpec,
+    opts?: { instanceNameOverride?: string }
+  ): Promise<AlchemyResourceDeclaration[]>;
 }
 
 export interface KroResourceFactory<
@@ -797,6 +773,16 @@ export interface KroResourceFactory<
   toYaml(): string; // Generate RGD YAML (no args needed)
   toYaml(spec: TSpec): string; // Generate CRD instance YAML
 
+  /**
+   * Emit this factory's deployment as declarative alchemy v2 resources (the RGD + the CR
+   * instance for `spec`) for the caller to instantiate with `KroResource`. The v2 analog of
+   * the removed imperative `deployWithAlchemy`. See {@link AlchemyResourceDeclaration}.
+   */
+  toAlchemyResources(
+    spec: TSpec,
+    opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
+  ): Promise<AlchemyResourceDeclaration[]>;
+
   // Schema proxy for type-safe instance creation
   schema: SchemaProxy<TSpec, TStatus>;
 }
@@ -804,7 +790,6 @@ export interface KroResourceFactory<
 export interface FactoryStatus {
   name: string;
   mode: 'kro' | 'direct';
-  isAlchemyManaged: boolean;
   namespace: string;
   instanceCount: number;
   lastDeployment?: Date;

@@ -9,9 +9,6 @@
 import type { Type } from 'arktype';
 import type { SchemaMagicProxy } from './references.js';
 
-// Re-export alchemy Scope type for compatibility
-export type { Scope } from 'alchemy';
-
 // =============================================================================
 // ARKTYPE TYPE EXTRACTION
 // =============================================================================

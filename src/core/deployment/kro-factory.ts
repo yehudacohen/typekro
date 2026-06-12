@@ -8,7 +8,6 @@
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
-import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
@@ -30,6 +29,12 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+// Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
+// declarations the caller feeds to `KroResource`. Imported from focused modules (NOT the
+// alchemy barrel) so the factory never statically pulls the `alchemy/Provider` runtime.
+import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
+import type { AlchemyResourceDeclaration, SerializableKubeConfigOptions } from '../../alchemy/types.js';
+import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -41,7 +46,6 @@ import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
-  AlchemyBridge,
   AppliedResource,
   DeploymentClosure,
   DeploymentContext,
@@ -60,7 +64,6 @@ import type {
   MagicAssignableShape,
   SchemaDefinition,
   SchemaProxy,
-  Scope,
 } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
@@ -69,10 +72,10 @@ import { isNotFoundError } from './k8s-helpers.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import {
   convertToKubernetesName,
+  extractSerializableKubeConfigOptions,
   generateInstanceName,
   getSingletonInstanceName,
   pluralizeKind,
-  validateAlchemyScope,
   validateSpec,
 } from './shared-utilities.js';
 import {
@@ -171,7 +174,6 @@ export class KroResourceFactoryImpl<
   readonly mode = 'kro' as const;
   readonly name: string;
   readonly namespace: string;
-  readonly isAlchemyManaged: boolean;
   readonly rgdName: string;
   readonly schema: SchemaProxy<TSpec, TStatus>;
 
@@ -179,7 +181,6 @@ export class KroResourceFactoryImpl<
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
   private readonly statusMappings: Record<string, unknown>;
-  private readonly alchemyScope: Scope | undefined;
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
   private readonly logger = getComponentLogger('kro-factory');
@@ -212,7 +213,6 @@ export class KroResourceFactoryImpl<
   // instead of dynamic import() from factories/ and alchemy/ layers.
   private readonly kroCustomResourceProvider: KroCustomResourceProvider | undefined;
   private readonly rgdProvider: ResourceGraphDefinitionProvider | undefined;
-  private readonly alchemyBridge: AlchemyBridge | undefined;
 
   constructor(
     name: string,
@@ -223,8 +223,6 @@ export class KroResourceFactoryImpl<
   ) {
     this.name = name;
     this.namespace = options.namespace || 'default';
-    this.alchemyScope = options.alchemyScope;
-    this.isAlchemyManaged = !!options.alchemyScope;
     this.rgdName = convertToKubernetesName(name); // Convert to valid Kubernetes resource name
     this.resources = resources;
     this.closures = options.closures || {};
@@ -245,7 +243,6 @@ export class KroResourceFactoryImpl<
     // Injected providers — fall back to dynamic import() for backward compatibility
     this.kroCustomResourceProvider = options.kroCustomResourceProvider;
     this.rgdProvider = options.rgdProvider;
-    this.alchemyBridge = options.alchemyBridge;
 
     // Validate closures for Kro mode - detect KubernetesRef inputs and raise clear errors
     this.validateClosuresForKroMode();
@@ -531,15 +528,7 @@ export class KroResourceFactoryImpl<
     await this.executeClosuresBeforeRGD(spec);
     await this.ensureSingletonOwners(spec);
 
-    if (this.isAlchemyManaged) {
-      return this.deployWithAlchemy(
-        spec,
-        opts?.instanceNameOverride,
-        opts?.singletonSpecFingerprint
-      );
-    } else {
-      return this.deployDirect(spec, opts?.instanceNameOverride, opts?.singletonSpecFingerprint);
-    }
+    return this.deployDirect(spec, opts?.instanceNameOverride, opts?.singletonSpecFingerprint);
   }
 
   private async ensureSingletonOwners(spec: TSpec): Promise<void> {
@@ -725,7 +714,6 @@ export class KroResourceFactoryImpl<
     const deploymentContext: DeploymentContext = {
       kubernetesApi: createBunCompatibleKubernetesObjectApi(kubeConfig),
       kubeConfig: kubeConfig,
-      ...(this.alchemyScope && { alchemyScope: this.alchemyScope }),
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution
       resolveReference: async (ref: KubernetesRef) => {
@@ -878,107 +866,6 @@ export class KroResourceFactoryImpl<
       return await this.createEnhancedProxy(spec, instanceName);
     } finally {
       await deploymentEngine.dispose();
-    }
-  }
-
-  /**
-   * Deploy using type-safe alchemy resource wrapping
-   *
-   * In alchemy mode, the RGD gets one typed alchemy Resource and each instance gets another
-   */
-  private async deployWithAlchemy(
-    spec: TSpec,
-    instanceNameOverride?: string,
-    singletonSpecFingerprint?: string
-  ): Promise<Enhanced<TSpec, TStatus>> {
-    validateAlchemyScope(this.alchemyScope, 'KRO Alchemy deployment');
-    const alchemyScope = this.alchemyScope as Scope & {
-      run<T>(fn: () => Promise<T>): Promise<T>;
-    };
-
-    // Use static registration functions
-
-    // Create deployer instance using DirectDeploymentEngine with KRO mode
-    const kroEngine = new DirectDeploymentEngine(
-      this.getKubeConfig(),
-      undefined,
-      undefined,
-      DeploymentMode.KRO
-    );
-    const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
-    const kroDeletion = this.createAlchemyKroDeletionOptions();
-
-    try {
-      // 1. Ensure RGD is deployed via alchemy (once per factory). Reuse the
-      // normal serializer so externalRef/forEach/includeWhen/readyWhen and
-      // singleton owner boundaries match non-Alchemy KRO deploys.
-      const rgdManifest = yaml.load(this.buildRgdYaml()) as Record<string, unknown>;
-
-      // Register RGD type dynamically
-      const rgdFactory =
-        this.rgdProvider ??
-        (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
-      const rgdEnhanced = rgdFactory(rgdManifest);
-      const bridge = this.alchemyBridge ?? (await import('../../alchemy/deployment.js'));
-      const RGDProvider = bridge.ensureResourceTypeRegistered(rgdEnhanced);
-      const rgdId = bridge.createAlchemyResourceId(rgdEnhanced, this.namespace);
-
-      await alchemyScope.run(async () => {
-        await RGDProvider(rgdId, {
-          resource: rgdEnhanced,
-          namespace: this.namespace,
-          deploymentStrategy: 'kro' as const,
-          kubeConfigOptions,
-          kroDeletion,
-          options: {
-            waitForReady: true,
-            timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
-          },
-        });
-      });
-      await this.waitForCRDReadyWithEngine(kroEngine);
-
-      // 2. Create instance via alchemy (once per deploy call)
-      await this.ensureTargetNamespace();
-      const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
-      const crdInstanceManifest = this.createCustomResourceInstance(
-        instanceName,
-        spec,
-        singletonSpecFingerprint
-      );
-
-      // Register CRD instance type dynamically
-      // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
-      // expect Enhanced<unknown, unknown>. They only access kind/metadata.name for type inference.
-      const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
-      const CRDInstanceProvider = bridge.ensureResourceTypeRegistered(crdAsEnhanced);
-      const instanceId = bridge.createAlchemyResourceId(crdAsEnhanced, this.namespace);
-
-      await alchemyScope.run(async () => {
-        await CRDInstanceProvider(instanceId, {
-          resource: crdAsEnhanced,
-          namespace: this.namespace,
-          deploymentStrategy: 'kro' as const,
-          kubeConfigOptions,
-          kroDeletion,
-          options: {
-            waitForReady: false,
-            timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
-          },
-        });
-      });
-
-      if (this.factoryOptions.waitForReady ?? true) {
-        await this.waitForKroInstanceReady(
-          instanceName,
-          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
-        );
-      }
-
-      // Create Enhanced proxy for the deployed instance
-      return await this.createEnhancedProxy(spec, instanceName);
-    } finally {
-      await kroEngine.dispose();
     }
   }
 
@@ -1301,44 +1188,91 @@ export class KroResourceFactoryImpl<
     // (including Namespaces) via its applyset — no manual cleanup needed.
   }
 
-  private extractKubeConfigOptionsForAlchemy(): Record<string, unknown> {
-    const kc = this.getKubeConfig();
-    const cluster = kc.getCurrentCluster();
-    const user = typeof kc.getCurrentUser === 'function' ? kc.getCurrentUser() : undefined;
-    const context = typeof kc.getCurrentContext === 'function' ? kc.getCurrentContext() : undefined;
-    const finalSkipTLS =
-      this.factoryOptions.skipTLSVerify === true ? true : (cluster?.skipTLSVerify ?? false);
+  /**
+   * Emit this factory's KRO deployment as declarative alchemy **v2** resources — the v2
+   * analog of the removed imperative `deployWithAlchemy(scope)`. Returns one declaration for
+   * the **RGD** (shared, deployed once) and one for the **CR instance** (one per `spec`),
+   * matching the old integration's per-resource state granularity. The caller instantiates
+   * each with `KroResource` inside their Stack (RGD first so reverse-topo removes the
+   * instance before the shared RGD):
+   *
+   * ```ts
+   * for (const { id, props } of await factory.toAlchemyResources(spec)) {
+   *   yield* KroResource(id, props);
+   * }
+   * ```
+   *
+   * Each declaration carries serialized `kubeConfigOptions` (so reconcile can reconnect to the
+   * cluster after state rehydration) and `kroDeletion` (so delete is finalizer-safe / shared-RGD
+   * aware). The actual deploy/teardown runs in `kroProvider`'s reconcile/delete.
+   */
+  async toAlchemyResources(
+    spec: TSpec,
+    opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
+  ): Promise<AlchemyResourceDeclaration[]> {
+    const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
+    const kroDeletion = this.createAlchemyKroDeletionOptions();
 
-    return {
-      skipTLSVerify: finalSkipTLS,
-      ...(cluster?.server && { server: cluster.server }),
-      ...(context && { context }),
-      ...(cluster && {
-        cluster: {
-          name: cluster.name,
-          server: cluster.server,
-          skipTLSVerify: finalSkipTLS,
-          ...(cluster.caData && { caData: cluster.caData }),
-          ...(cluster.caFile && { caFile: cluster.caFile }),
-        },
-      }),
-      ...(user && {
-        user: {
-          name: user.name,
-          ...(user.token && { token: user.token }),
-          ...(user.certData && { certData: user.certData }),
-          ...(user.certFile && { certFile: user.certFile }),
-          ...(user.keyData && { keyData: user.keyData }),
-          ...(user.keyFile && { keyFile: user.keyFile }),
-          ...((user as { exec?: object }).exec ? { exec: (user as { exec?: object }).exec } : {}),
-          ...((user as { authProvider?: object }).authProvider
-            ? { authProvider: (user as { authProvider?: object }).authProvider }
-            : {}),
-        },
-      }),
+    // 1. RGD declaration (deployed once per factory; shared by all instances). Reuse the normal
+    // serializer so externalRef/forEach/includeWhen/readyWhen + singleton boundaries match
+    // non-alchemy KRO deploys.
+    const rgdManifest = yaml.load(this.buildRgdYaml()) as Record<string, unknown>;
+    const rgdFactory =
+      this.rgdProvider ??
+      (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
+    const rgdEnhanced = rgdFactory(rgdManifest);
+    const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
+    const rgdDeclaration: AlchemyResourceDeclaration = {
+      id: rgdId,
+      dependsOn: [],
+      props: {
+        resource: rgdEnhanced as Enhanced<unknown, unknown>,
+        namespace: this.namespace,
+        deploymentStrategy: 'kro',
+        kubeConfigOptions,
+        kroDeletion,
+        options: { waitForReady: true, timeout: DEFAULT_RGD_TIMEOUT },
+      },
     };
+
+    // 2. CR instance declaration (one per deploy call). Depends on the RGD so alchemy applies the
+    // instance only after the RGD's CRD is established (else the CR apply races a missing kind).
+    const instanceName = opts?.instanceNameOverride ?? generateInstanceName(spec, this.name);
+    const crdInstanceManifest = this.createCustomResourceInstance(
+      instanceName,
+      spec,
+      opts?.singletonSpecFingerprint
+    );
+    // Cast: a plain KubernetesResource is fine — the alchemy path only reads kind/metadata.
+    const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
+    const instanceDeclaration: AlchemyResourceDeclaration = {
+      id: createAlchemyResourceId(crdAsEnhanced, this.namespace),
+      dependsOn: [rgdId],
+      props: {
+        resource: crdAsEnhanced,
+        namespace: this.namespace,
+        deploymentStrategy: 'kro',
+        kubeConfigOptions,
+        kroDeletion,
+        options: {
+          waitForReady: false,
+          timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+        },
+      },
+    };
+
+    return [rgdDeclaration, instanceDeclaration];
   }
 
+  /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */
+  private extractKubeConfigOptionsForAlchemy(): SerializableKubeConfigOptions {
+    return extractSerializableKubeConfigOptions(
+      this.getKubeConfig(),
+      this.factoryOptions.skipTLSVerify === true ? true : undefined
+    );
+  }
+
+  /** Build the finalizer-safe, shared-RGD-aware deletion metadata for this factory's instances. */
   private createAlchemyKroDeletionOptions(): KroDeletionOptions {
     return {
       apiVersion: this.schemaDefinition.apiVersion,
@@ -1361,7 +1295,6 @@ export class KroResourceFactoryImpl<
     return {
       name: this.name,
       mode: this.mode,
-      isAlchemyManaged: this.isAlchemyManaged,
       namespace: this.namespace,
       instanceCount: instances.length,
       health: rgdStatus.phase === 'ready' ? 'healthy' : 'degraded',

@@ -675,48 +675,6 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       expect(factory).toBeDefined();
       expect(factory.mode).toBe('direct');
-      expect(factory.isAlchemyManaged).toBe(false);
-    });
-
-    it('should work with AlchemyDeploymentStrategy when alchemy scope is provided', async () => {
-      const graph = toResourceGraph(
-        {
-          name: 'alchemy-strategy-test',
-          apiVersion: 'v1alpha1',
-          kind: 'WebApp',
-          spec: WebAppSpecSchema,
-          status: WebAppStatusSchema,
-        },
-        (schema) => ({
-          deployment: simple.Deployment({
-            name: schema.spec.name,
-            image: schema.spec.image,
-            replicas: schema.spec.replicas,
-            id: 'webapp',
-          }),
-        }),
-        (_schema, resources) => ({
-          url: 'http://alchemy-strategy-service',
-          ready: true,
-          readyReplicas: resources.deployment.status.readyReplicas,
-          phase: 'running' as const,
-        })
-      );
-
-      // Mock alchemy scope for testing
-      const mockAlchemyScope = {
-        name: 'test-scope',
-        // Add minimal alchemy scope properties needed for testing
-      };
-
-      const factory = await graph.factory('direct', {
-        namespace: 'alchemy-strategy-test',
-        alchemyScope: mockAlchemyScope,
-      } as Parameters<typeof graph.factory>[1]);
-
-      expect(factory).toBeDefined();
-      expect((factory as unknown as Record<string, unknown>).mode).toBe('direct');
-      expect((factory as unknown as Record<string, unknown>).isAlchemyManaged).toBe(true);
     });
   });
 

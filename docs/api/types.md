@@ -299,8 +299,9 @@ interface FactoryOptions {
   progressCallback?: (event: DeploymentEvent) => void;
   hydrateStatus?: boolean;
 
-  // Alchemy integration
-  alchemyScope?: Scope;
+  // Alchemy v2 integration is no longer a factory option. Build the factory as
+  // usual, then call `factory.toAlchemyResources(spec)` to emit declarations for
+  // Alchemy's v2 runtime. See /advanced/alchemy-integration.
 
   // Kubernetes client configuration
   kubeConfig?: KubeConfig;

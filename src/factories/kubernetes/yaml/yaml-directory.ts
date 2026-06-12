@@ -120,24 +120,11 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
           }
 
           try {
-            // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
-            if (deploymentContext.alchemyScope) {
-              // For now, use the Kubernetes API even when alchemy scope is available
-              // TODO: Implement proper alchemy integration for YAML resources
-              if (deploymentContext.kubernetesApi) {
-                await deploymentContext.kubernetesApi.create(manifest);
-              } else {
-                throw new ResourceGraphFactoryError(
-                  'No Kubernetes API available for YAML deployment',
-                  config.name,
-                  'deployment'
-                );
-              }
-            } else if (deploymentContext.kubernetesApi) {
+            if (deploymentContext.kubernetesApi) {
               await deploymentContext.kubernetesApi.create(manifest);
             } else {
               throw new ResourceGraphFactoryError(
-                'No deployment method available: neither alchemyScope nor kubernetesApi provided',
+                'No Kubernetes API available for YAML deployment',
                 config.name,
                 'deployment'
               );

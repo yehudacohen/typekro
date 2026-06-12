@@ -28,11 +28,17 @@ export {
   resolveReferencesWithAlchemy,
   resolveTypeKroReferencesOnly,
 } from './resolver.js';
-// Convenience barrel re-exports (deployment.ts re-exports a curated subset)
+// Alchemy v2 KRO resource (declarative): instantiate `KroResource` in a Stack and merge
+// `kroProvider` into the runtime's providers. Replaces the v1 imperative registration.
 export {
-  clearRegisteredTypes,
-  ensureResourceTypeRegistered,
+  KRO_RESOURCE_TYPE,
+  KroResource,
+  kroProvider,
+  materializeAlchemyResources,
+  buildAlchemyDeploymentOptions,
 } from './resource-registration.js';
+export type { KroResourceR } from './resource-registration.js';
+export type { AlchemyResourceDeclaration } from './types.js';
 
 // Type inference
 export { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
@@ -50,4 +56,4 @@ export type {
 export { createAlchemyResourceId } from './utilities.js';
 
 // Wrapper utilities
-export { generateDeterministicResourceId, isAlchemyWrapped } from './wrapper.js';
+export { generateDeterministicResourceId } from './wrapper.js';

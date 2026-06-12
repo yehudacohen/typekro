@@ -17,7 +17,7 @@ import type {
   TypedResourceGraph,
 } from '../../src/core/types/deployment.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
-import type { SchemaProxy, Scope } from '../../src/core/types/schema.js';
+import type { SchemaProxy } from '../../src/core/types/schema.js';
 
 describe('Factory Pattern Types', () => {
   // Test schema types
@@ -104,16 +104,6 @@ describe('Factory Pattern Types', () => {
     it('should work with empty options', () => {
       const options: FactoryOptions = {};
       expect(options).toEqual({});
-    });
-
-    it('should support alchemy scope', () => {
-      const mockScope = {} as unknown as Scope; // Mock alchemy scope
-
-      const options: FactoryOptions = {
-        alchemyScope: mockScope,
-      };
-
-      expect(options.alchemyScope).toBe(mockScope);
     });
   });
 
@@ -207,7 +197,6 @@ describe('Factory Pattern Types', () => {
         mode: 'direct',
         name: 'test-factory',
         namespace: 'default',
-        isAlchemyManaged: false,
 
         async deploy(_spec) {
           // Mock implementation - never called in type-validation tests
@@ -226,7 +215,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test-factory',
             mode: 'direct',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -241,7 +229,6 @@ describe('Factory Pattern Types', () => {
       expect(mockFactory.mode).toBe('direct');
       expect(mockFactory.name).toBe('test-factory');
       expect(mockFactory.namespace).toBe('default');
-      expect(mockFactory.isAlchemyManaged).toBe(false);
       expect(typeof mockFactory.deploy).toBe('function');
       expect(typeof mockFactory.getInstances).toBe('function');
       expect(typeof mockFactory.deleteInstance).toBe('function');
@@ -255,7 +242,6 @@ describe('Factory Pattern Types', () => {
         mode: 'direct',
         name: 'test-direct-factory',
         namespace: 'default',
-        isAlchemyManaged: false,
 
         async deploy(_spec) {
           return {} as unknown as Enhanced<TestSpec, TestStatus>;
@@ -273,7 +259,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test-direct-factory',
             mode: 'direct',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -306,6 +291,10 @@ describe('Factory Pattern Types', () => {
         createResourceGraphForInstance(_spec) {
           return { name: 'test', resources: [], dependencyGraph: {} } as any;
         },
+
+        async toAlchemyResources() {
+          return [];
+        },
       };
 
       expect(mockDirectFactory.mode).toBe('direct');
@@ -321,7 +310,6 @@ describe('Factory Pattern Types', () => {
         mode: 'kro',
         name: 'test-kro-factory',
         namespace: 'default',
-        isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>, // Mock schema proxy
 
@@ -341,7 +329,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test-kro-factory',
             mode: 'kro',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -367,6 +354,10 @@ describe('Factory Pattern Types', () => {
           }
           return 'mock rgd yaml';
         },
+
+        async toAlchemyResources() {
+          return [];
+        },
       };
 
       expect(mockKroFactory.mode).toBe('kro');
@@ -381,7 +372,6 @@ describe('Factory Pattern Types', () => {
         mode: 'kro',
         name: 'test-kro-factory',
         namespace: 'default',
-        isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>,
 
@@ -401,7 +391,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test-kro-factory',
             mode: 'kro',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -426,6 +415,10 @@ describe('Factory Pattern Types', () => {
           }
           return 'rgd yaml without spec';
         },
+
+        async toAlchemyResources() {
+          return [];
+        },
       };
 
       // Test both overloads
@@ -444,7 +437,6 @@ describe('Factory Pattern Types', () => {
         mode: 'kro',
         name: 'test',
         namespace: 'default',
-        isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>,
 
@@ -464,7 +456,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test',
             mode: 'kro',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -486,6 +477,10 @@ describe('Factory Pattern Types', () => {
         toYaml(_spec?) {
           return 'yaml';
         },
+
+        async toAlchemyResources() {
+          return [];
+        },
       };
 
       expect(mockKroFactory.mode).toBe('kro');
@@ -500,7 +495,6 @@ describe('Factory Pattern Types', () => {
         mode: 'direct',
         name: 'test',
         namespace: 'default',
-        isAlchemyManaged: false,
 
         async deploy(_spec) {
           return {} as unknown as Enhanced<TestSpec, TestStatus>;
@@ -518,7 +512,6 @@ describe('Factory Pattern Types', () => {
           return {
             name: 'test',
             mode: 'direct',
-            isAlchemyManaged: false,
             namespace: 'default',
             instanceCount: 0,
             health: 'healthy',
@@ -549,6 +542,10 @@ describe('Factory Pattern Types', () => {
 
         createResourceGraphForInstance(_spec) {
           return { name: 'test', resources: [], dependencyGraph: {} } as any;
+        },
+
+        async toAlchemyResources() {
+          return [];
         },
       };
 

@@ -546,50 +546,6 @@ export function createMockEnhancedStub(
 // PRIVATE MEMBER ACCESS HELPERS
 // =============================================================================
 
-/**
- * Type-safe interface for accessing AlchemyDeploymentStrategy internals in tests.
- *
- * The AlchemyDeploymentStrategy has private/protected members that tests need to inspect.
- * This interface exposes them without `as any` casts.
- *
- * Usage:
- * ```ts
- * const internals = strategyInternals(strategy);
- * expect(internals.factoryName).toBe('test-factory');
- * await internals.executeDeployment(spec, 'instance');
- * ```
- */
-export interface AlchemyStrategyInternals {
-  readonly factoryName: string;
-  readonly namespace: string;
-  readonly alchemyScope: unknown;
-  readonly baseStrategy: unknown;
-  readonly factoryOptions: unknown;
-  readonly schemaDefinition: unknown;
-  readonly statusBuilder: unknown;
-  readonly resourceKeys: unknown;
-  executeDeployment(spec: unknown, instanceName: string, opts?: unknown): Promise<unknown>;
-  getStrategyMode(): 'direct' | 'kro';
-  createResourceGraphForInstance(spec: unknown, instanceName?: string): unknown;
-  extractKubeConfigOptions(): Record<string, unknown>;
-}
-
-/**
- * Casts a strategy instance to its internal interface for white-box testing.
- * NOTE: This is a documentation cast, not a type-safe accessor. If private methods
- * on AlchemyDeploymentStrategy are renamed, TypeScript will NOT catch the mismatch here.
- * When refactoring AlchemyDeploymentStrategy, also update AlchemyStrategyInternals.
- *
- * Eliminates patterns like:
- * ```ts
- * (strategy as any).factoryName
- * (strategy as any).executeDeployment(spec, name)
- * ```
- */
-export function strategyInternals(strategy: unknown): AlchemyStrategyInternals {
-  return strategy as AlchemyStrategyInternals;
-}
-
 // =============================================================================
 // KUBERNETES ERROR HELPERS
 // =============================================================================

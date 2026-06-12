@@ -19,7 +19,6 @@ import type {
   DeploymentResourceGraph,
 } from '../../src/core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
-import type { Scope } from '../../src/core/types/schema.js';
 import { clusterRole } from '../../src/factories/kubernetes/rbac/cluster-role.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
@@ -414,39 +413,6 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
       await engine.deployWithClosures(graph, closures, defaultOptions, {});
 
       expect(hasResolveRef).toBe(true);
-    });
-
-    it('should forward alchemyScope when provided', async () => {
-      const graph = createEmptyResourceGraph();
-      let receivedScope: unknown;
-      const mockScope = { id: 'mock-scope' } as unknown as Scope;
-
-      const closures: Record<string, DeploymentClosure> = {
-        checkScope: async (ctx: DeploymentContext) => {
-          receivedScope = ctx.alchemyScope;
-          return [];
-        },
-      };
-
-      await engine.deployWithClosures(graph, closures, defaultOptions, {}, mockScope);
-
-      expect(receivedScope).toBe(mockScope);
-    });
-
-    it('should not include alchemyScope when not provided', async () => {
-      const graph = createEmptyResourceGraph();
-      let contextHasScope = false;
-
-      const closures: Record<string, DeploymentClosure> = {
-        checkNoScope: async (ctx: DeploymentContext) => {
-          contextHasScope = 'alchemyScope' in ctx;
-          return [];
-        },
-      };
-
-      await engine.deployWithClosures(graph, closures, defaultOptions, {});
-
-      expect(contextHasScope).toBe(false);
     });
   });
 

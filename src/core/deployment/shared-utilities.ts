@@ -5,10 +5,64 @@
  * to eliminate code duplication and ensure consistent behavior.
  */
 
-import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
+import type { KubeConfig } from '@kubernetes/client-node';
+import type { SerializableKubeConfigOptions } from '../../alchemy/types.js';
+import { ResourceGraphFactoryError, ValidationError } from '../errors.js';
 import type { DeploymentOptions, FactoryOptions } from '../types/deployment.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../types/serialization.js';
+
+/**
+ * Serialize a live `KubeConfig` into the cloneable {@link SerializableKubeConfigOptions} that an
+ * alchemy resource persists in state and uses to reconnect to the cluster after rehydration (the
+ * ambient kubeconfig isn't available on a later reconcile). Captures the current cluster + user,
+ * including `exec`/`authProvider` blocks (e.g. `aws eks get-token`).
+ *
+ * ⚠️ SECURITY: when the current user uses STATIC credentials (`token` / `certData` / `keyData`),
+ * those are captured verbatim and — because the alchemy resource persists this to state — written
+ * to the state store (plaintext for the local/HTTP stores). For untrusted/shared state, prefer a
+ * kubeconfig that authenticates via `exec` (e.g. `aws eks get-token`, `gke-gcloud-auth-plugin`) or
+ * `authProvider`: those are re-derived at call time, so no long-lived secret is persisted.
+ */
+export function extractSerializableKubeConfigOptions(
+  kc: KubeConfig,
+  skipTLSVerifyOverride?: boolean
+): SerializableKubeConfigOptions {
+  const cluster = kc.getCurrentCluster();
+  const user = typeof kc.getCurrentUser === 'function' ? kc.getCurrentUser() : undefined;
+  const context = typeof kc.getCurrentContext === 'function' ? kc.getCurrentContext() : undefined;
+  const finalSkipTLS =
+    skipTLSVerifyOverride === true ? true : (cluster?.skipTLSVerify ?? false);
+
+  return {
+    skipTLSVerify: finalSkipTLS,
+    ...(cluster?.server && { server: cluster.server }),
+    ...(context && { context }),
+    ...(cluster && {
+      cluster: {
+        name: cluster.name,
+        server: cluster.server,
+        skipTLSVerify: finalSkipTLS,
+        ...(cluster.caData && { caData: cluster.caData }),
+        ...(cluster.caFile && { caFile: cluster.caFile }),
+      },
+    }),
+    ...(user && {
+      user: {
+        name: user.name,
+        ...(user.token && { token: user.token }),
+        ...(user.certData && { certData: user.certData }),
+        ...(user.certFile && { certFile: user.certFile }),
+        ...(user.keyData && { keyData: user.keyData }),
+        ...(user.keyFile && { keyFile: user.keyFile }),
+        ...((user as { exec?: object }).exec ? { exec: (user as { exec?: object }).exec } : {}),
+        ...((user as { authProvider?: object }).authProvider
+          ? { authProvider: (user as { authProvider?: object }).authProvider }
+          : {}),
+      },
+    }),
+  } as SerializableKubeConfigOptions;
+}
 
 /**
  * Common spec validation logic used by all factories.
@@ -164,28 +218,6 @@ export function handleDeploymentError(error: unknown, context: string): never {
     );
   }
   throw new ResourceGraphFactoryError(`${context}: ${String(error)}`, context, 'deployment');
-}
-
-/**
- * Common alchemy scope validation
- */
-export function validateAlchemyScope(alchemyScope: unknown, context: string): void {
-  if (!alchemyScope) {
-    throw new TypeKroError(
-      `${context}: Alchemy scope is required for alchemy deployment`,
-      'MISSING_ALCHEMY_SCOPE',
-      { context }
-    );
-  }
-  // Ensure the provided scope looks like a valid Alchemy scope (has a run function)
-  const hasRunFunction = typeof (alchemyScope as { run?: unknown })?.run === 'function';
-  if (!hasRunFunction) {
-    throw new TypeKroError(
-      `${context}: Alchemy scope is invalid (missing run function)`,
-      'INVALID_ALCHEMY_SCOPE',
-      { context }
-    );
-  }
 }
 
 /**

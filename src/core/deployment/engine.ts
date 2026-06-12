@@ -35,7 +35,6 @@ import type {
   ResolutionContext,
   RollbackResult,
 } from '../types/deployment.js';
-import type { Scope } from '../types/serialization.js';
 import type {
   DeployableK8sResource,
   DeployedResource,
@@ -299,25 +298,34 @@ export class DirectDeploymentEngine {
    */
   async deploy(
     graph: DeploymentResourceGraph,
-    options: DeploymentOptions
+    options: DeploymentOptions,
+    seedResources?: DeployedResource[]
   ): Promise<DeploymentResult> {
     // Delegate to deployWithClosures with no closures and a dummy spec.
     // The closure integration code is a no-op when the closures map is empty.
-    return this.deployWithClosures(graph, {}, options, undefined);
+    return this.deployWithClosures(graph, {}, options, undefined, seedResources);
   }
 
   /**
-   * Deploy a resource graph with deployment closures integrated into level-based execution
+   * Deploy a resource graph with deployment closures integrated into level-based execution.
+   *
+   * `seedResources` pre-populates the resolution context with resources deployed OUTSIDE this
+   * call (e.g. by sibling alchemy resources that ran first). They are NOT redeployed — they only
+   * let this graph's references/CEL expressions resolve against their live state (apiVersion/kind
+   * for cluster reads, plus any status already present on the seeded manifest).
    */
   async deployWithClosures<TSpec>(
     graph: DeploymentResourceGraph,
     closures: Record<string, DeploymentClosure>,
     options: DeploymentOptions,
     spec: TSpec,
-    alchemyScope?: Scope
+    seedResources?: DeployedResource[]
   ): Promise<DeploymentResult> {
     const deploymentId = this.generateDeploymentId();
     const startTime = Date.now();
+    // Resources THIS call deploys — becomes `result.resources` + the rollback set. Seeds are NOT
+    // merged here (that would mark sibling-deployed resources as deployed-by-us and expose them to
+    // rollback); they only feed the resolution context via `resourceKeyMapping` below.
     const deployedResources: DeployedResource[] = [];
     const errors: DeploymentError[] = [];
     const deploymentLogger = this.logger.child({
@@ -362,6 +370,16 @@ export class DirectDeploymentEngine {
         deploymentId
       );
 
+      // Seed externally-deployed resources into the resolution mapping ONLY (never into
+      // `deployedResources`, which is the result/rollback set) so this graph's references/CEL
+      // resolve against their live manifests (apiVersion/kind + status). The graph's own resources
+      // keep precedence — only fill keys not already present.
+      for (const seed of seedResources ?? []) {
+        if (!resourceKeyMapping.has(seed.id)) {
+          resourceKeyMapping.set(seed.id, seed.liveManifest ?? seed.manifest);
+        }
+      }
+
       // Deploy resources and closures level by level with proper dependency handling
       for (let levelIndex = 0; levelIndex < enhancedPlan.levels.length; levelIndex++) {
         const currentLevel = enhancedPlan.levels[levelIndex];
@@ -378,7 +396,6 @@ export class DirectDeploymentEngine {
           context,
           resourceKeyMapping,
           options,
-          alchemyScope,
           abortSignal,
           spec,
           startTime,
@@ -725,7 +742,6 @@ export class DirectDeploymentEngine {
    * @param context - Resolution context for cross-resource references
    * @param resourceKeyMapping - Map from resource IDs to their manifests (updated with live data)
    * @param options - Deployment options
-   * @param alchemyScope - Optional alchemy scope for closure deployment context
    * @param abortSignal - Signal to abort deployment operations
    * @param startTime - Deployment start timestamp (used for rollback duration calculation)
    * @param deploymentId - Unique deployment ID for result building
@@ -741,7 +757,6 @@ export class DirectDeploymentEngine {
     context: ResolutionContext,
     resourceKeyMapping: Map<string, unknown>,
     options: DeploymentOptions,
-    alchemyScope: Scope | undefined,
     abortSignal: AbortSignal,
     spec: unknown,
     startTime: number,
@@ -769,7 +784,6 @@ export class DirectDeploymentEngine {
     const deploymentContext: DeploymentContext = {
       kubernetesApi: this.k8sApi,
       kubeConfig: this.kubeClient,
-      ...(alchemyScope && { alchemyScope }),
       ...(options.namespace && { namespace: options.namespace }),
       abortSignal,
       deployedResources: deployedResourcesMap,
@@ -1123,7 +1137,10 @@ export class DirectDeploymentEngine {
     logger: ReturnType<typeof getComponentLogger>
   ): Promise<void> {
     const originalResourceId = getResourceMetadataId(deployedRes.manifest);
-    if (!originalResourceId || !resourceKeyMapping.has(originalResourceId)) {
+    // The live READ only needs kind/name/namespace; the metadata id is only for the mapping KEY.
+    // Don't require the id — it can be absent when the resource was rehydrated from serialized
+    // state (e.g. the alchemy path), and we still want live status on the DeployedResource.
+    if (!deployedRes.kind || !deployedRes.name) {
       return;
     }
     try {
@@ -1135,15 +1152,21 @@ export class DirectDeploymentEngine {
           namespace: deployedRes.namespace,
         },
       });
-      resourceKeyMapping.set(originalResourceId, liveResource);
-      logger.debug('Updated resourceKeyMapping with live resource status', {
+      // Surface the live state (incl. status) on a SEPARATE field so callers that want it (e.g. the
+      // alchemy deployer's returned `deployedResource`) get live status, WITHOUT mutating `manifest`
+      // — status-hydration paths read typekro WeakMap metadata off `manifest` (the applied spec).
+      deployedRes.liveManifest = liveResource as typeof deployedRes.manifest;
+      if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
+        resourceKeyMapping.set(originalResourceId, liveResource);
+      }
+      logger.debug('Updated DeployedResource with live resource status', {
         originalResourceId,
         kind: deployedRes.kind,
         name: deployedRes.name,
         hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
       });
     } catch (error: unknown) {
-      logger.warn('Failed to update resourceKeyMapping with live resource', {
+      logger.warn('Failed to read live resource', {
         originalResourceId,
         error: ensureError(error).message,
       });
