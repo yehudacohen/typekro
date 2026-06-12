@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-06-12
+
+### Fixed
+
+- Fixed declarative Alchemy KRO custom-resource deploys so rehydrated CR instances regain the
+  KRO readiness evaluator before waiting for readiness.
+
 ## [0.15.2] - 2026-06-12
 
 ### Fixed
