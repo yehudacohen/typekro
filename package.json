@@ -66,6 +66,10 @@
       "import": "./dist/factories/dagster/index.js",
       "types": "./dist/factories/dagster/index.d.ts"
     },
+    "./caddy": {
+      "import": "./dist/factories/caddy/index.js",
+      "types": "./dist/factories/caddy/index.d.ts"
+    },
     "./pebble": {
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"

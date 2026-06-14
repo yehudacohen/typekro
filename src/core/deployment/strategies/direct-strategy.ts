@@ -11,6 +11,7 @@ import {
   isCelExpression,
   isKubernetesRef,
 } from '../../../utils/type-guards.js';
+import { LIVE_SPEC_KEY } from '../../composition/context.js';
 import { getMetadataField, getResourceId } from '../../metadata/index.js';
 import type {
   DeployedResource,
@@ -265,24 +266,30 @@ export class DirectDeploymentStrategy<
           },
         });
 
-        const status = (liveResource as Record<string, unknown>).status;
+        const live = liveResource as Record<string, unknown>;
+        const status = live.status;
+        const spec = live.spec;
         const annotationId = (
           resource.manifest.metadata as { annotations?: Record<string, string> } | undefined
         )?.annotations?.[RESOURCE_ID_ANNOTATION];
         const originalId = getResourceId(resource.manifest) || annotationId || resource.id;
 
-        if (status && typeof status === 'object') {
-          return {
-            originalId,
-            deployedId: resource.id,
-            kind: resource.kind,
-            status: status as Record<string, unknown>,
-          };
+        // The map value is the live `.status` object (a fresh copy so we don't mutate the
+        // k8s-read object). The live `.spec` is stashed under LIVE_SPEC_KEY (a Symbol → invisible
+        // to Object.keys/JSON) so spec refs resolve in re-execution too — see the proxy sites.
+        // Statusless resources (Service, ConfigMap, Secret, etc.) still get an entry: they count
+        // as successfully visible children for nested-composition recovery, and may carry a spec.
+        const record: Record<PropertyKey, unknown> =
+          status && typeof status === 'object' ? { ...(status as Record<string, unknown>) } : {};
+        if (spec && typeof spec === 'object') {
+          record[LIVE_SPEC_KEY] = spec;
         }
-
-        // Statusless resources (Service, ConfigMap, Secret, etc.) still count as
-        // successfully visible children for nested-composition recovery.
-        return { originalId, deployedId: resource.id, kind: resource.kind, status: {} };
+        return {
+          originalId,
+          deployedId: resource.id,
+          kind: resource.kind,
+          status: record as Record<string, unknown>,
+        };
       })
     );
 
