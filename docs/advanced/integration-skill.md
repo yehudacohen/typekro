@@ -45,6 +45,19 @@ For Helm-chart integrations, the main design decision is not "how can we model t
 "which chart paths need TypeKro validation, defaults, references, or status-safe access?" Model those
 paths. Leave the rest to `values`.
 
+**Two integration shapes.** Most of this skill assumes shape (a), but recognise which you're building:
+
+- **(a) Helm/operator bootstrap** — wraps a chart (HelmRepository + HelmRelease) or an operator's CRDs.
+  Status is derived from the HelmRelease/CR conditions via `Cel.expr`. The `values`/mapper/sanitizer steps
+  below apply.
+- **(b) Config-driven workload** — runs an upstream image directly with user-supplied config: a ConfigMap
+  holding the config + a Deployment mounting it + a Service + (optionally) a PVC, with **no** Helm, operator,
+  or CRD (e.g. the Caddy reverse-proxy integration). For these, **skip the entire Helm/`values`/mapper
+  apparatus**. Use the built-in `configMap()/deployment()/service()/persistentVolumeClaim()/namespace()`
+  factories, build status with **direct proxy comparisons** (not `Cel.expr`), and ship config as a rendered
+  string built by a pure helper. The workload-specific gotchas are rules 51–60. The two shapes share
+  everything about KRO-safety, the magic proxy, `??` defaults, `id`s, tests, docs, and self-review.
+
 ## Generation Prompt
 
 Use the following as a system prompt or task description:
@@ -434,6 +447,8 @@ return {
 ```
 `Cel.expr` is only needed for bootstrap (Helm-based) compositions where status is derived from conditions arrays.
 
+⚠️ For a Deployment, prefer comparing against the resource's own desired count (`app.status.readyReplicas >= app.spec.replicas`) over a captured JS const (`>= appReplicas`) — the const bakes the literal into KRO and makes readiness ignore the configured replica count, and `status.replicas` is a t=0 false-positive. See rule 53. (For a CRD whose desired count is a spec field, the same principle applies; `?? 1` on a proxy still bakes a literal in KRO.)
+
 **Platform compositions with nested stacks:** If a composition creates managed infrastructure and then calls a nested integration stack:
 - Keep the infrastructure ownership in the platform composition and pass dependencies through typed dependency sources.
 - Rebuild status field-by-field from nested status handles. Do not pass a nested `status` object wholesale into the parent status; KRO may serialize nested object references into invalid expressions.
@@ -709,3 +724,27 @@ git diff master...HEAD -- src/ # review all source changes
 48. **Graph-aware arrays are not always concrete arrays** — A schema ref to an array is a runtime value. Do not wrap it in another array or call `.map()` on it unless you first know it is a concrete array. Concrete arrays can receive defaults item-by-item; graph-aware array refs should usually pass through directly.
 49. **Skipped live deploy is not acceptance for deployment integrations** — YAML and unit tests are necessary but insufficient when the integration claims a full deploy path. Use architecture-compatible images, local image builders, or explicit pullable images and prove direct/KRO readiness when the acceptance scenario requires it.
 50. **Stale generated KRO definitions can hide schema fixes** — If a live KRO test keeps reporting old schema behavior after the source changed, check whether an old ResourceGraphDefinition or generated CRD is still present. Prefer normal cleanup, but for tests that intentionally recreate the same RGD name, reset stale definitions in setup and document why.
+
+---
+
+**Rules 51–60 — config-driven workload compositions (shape (b)).** These come from building the Caddy integration (run an upstream image with user config, no Helm/operator/CRD). Several are sharp edges that unit tests pass right over — a live deploy is what catches them.
+
+51. **Model list-shaped config as a rendered STRING, not a structured array** — If the workload's config is a list (routes, rules, vhosts), do NOT add a `routes[]` schema field and `.map()` it inside the composition: in KRO that array is a graph proxy that can't be mapped at graph-generation time (rule #48). Model the field as the raw config string (`caddyfile: 'string'`) and ship a PURE `renderX(routes, opts?)` helper that consumers call in concrete contexts to build the string. The composition stays a string passthrough — byte-identical in direct and KRO modes — and the helper is trivially unit-testable in isolation.
+
+52. **Default container images: one full `repo:tag` field, never `` `${image}:${version}` ``** — A template literal that interpolates an optional `version` derefs it in KRO and emits a tagless `repo:` when version is unset (the default never applies). Use a single full-ref field with one default: `const image = spec.image ?? DEFAULT_IMAGE` where `DEFAULT_IMAGE = 'repo:1.2.3'`. That compiles to `has(spec.image) ? spec.image : "repo:1.2.3"`. If you also want a `version` label, keep it cosmetic (`app.kubernetes.io/version` + `status.version`) and document that the running tag comes from `image`.
+
+53. **Workload readiness: compare to the resource's own `spec.replicas`, not a JS const or `status.replicas`** — `readyReplicas >= (spec.replicaCount ?? 1)` evaluates `??` eagerly on the proxy and bakes the literal `1` into the KRO CEL, so readiness ignores the actual count. `readyReplicas >= <dep>.status.replicas` is a t=0 FALSE-POSITIVE (`status.replicas` is `0` before the controller observes the spec → `0 >= 0` reports ready before any pod exists). Use `<dep>.status.readyReplicas >= <dep>.spec.replicas` — the desired count is a concrete ≥1 and resolves in BOTH kro CEL and direct-mode hydration (direct mode hydrates `.spec` refs alongside `.status` via `LIVE_SPEC_KEY`). The status const MUST be named to match the resource's `id` (`const caddyDeployment = deployment({ id: 'caddyDeployment' })`) or the analyzer warns "variable not a registered resource" and the ref won't resolve.
+
+54. **No `phase`-style ternary referencing a resource ref in a direct-proxy status** — In a non-Helm direct-comparison status (the multi-resource pattern above), a `ready ? 'Ready' : 'Installing'` field that references a resource proxy currently serializes to malformed CEL (`<dep>.schema.spec.X` — a stray `schema.`). Let a boolean (`ready`) carry the signal and omit `phase`. Same family as #13/#48 (no nested CEL ternaries), but it bites the direct-proxy path too, not just `Cel.expr`.
+
+55. **Override the container entrypoint with the full `command`, not just `args`** — Official images typically put the binary in ENTRYPOINT and flags in CMD. Overriding only `args` drops the entrypoint → `exec: <flag>: not found` at startup. Set the full `command: ['binary', 'run', '--config', '/etc/x/conf', ...]`.
+
+56. **Encode storage/topology constraints — don't expose a knob that produces a broken config** — If a workload keeps state on a `ReadWriteOnce` PVC (e.g. Caddy's `tls internal` CA in `/data`), it is single-replica by nature: multiple pods can't co-mount RWO, and each may generate divergent state (a different CA → clients see mismatched certs). Do NOT expose a `replicaCount`; pin `replicas: 1` and set `strategy: { type: 'Recreate' }` — the default `RollingUpdate` surges a second pod that can't mount the RWO volume held by the outgoing one and wedges the rollout. Reject unsupported keys LOUDLY with arktype `'+': 'reject'` on the config schema so a stray `replicaCount` fails with a clear message instead of being silently dropped. Document the HA path (RWX storage or externalized state) as out of scope.
+
+57. **A passing unit/YAML test can mask a wrong direct-mode status — a live deploy is the only proof** — Direct-mode status hydration and KRO CEL resolve refs by different paths, so a status expression can serialize to correct-looking YAML (unit test green) yet hydrate to the WRONG value in a direct deploy. Real example: `<dep>.spec.replicas` passed the YAML `toContain` assertion but reported `status.ready === false` on a live `direct` deploy until core direct-mode spec hydration landed. For any shape-(b) integration, deploy to a real cluster with `waitForReady: true` and assert `status.ready === true`. (Reinforces #38/#49 for the non-Helm case.)
+
+58. **arktype validation failures are `ArkErrors` — test with `instanceof type.errors`** — `import { type } from 'arktype'` and assert `result instanceof type.errors`. `instanceof Error` is always `false` for arktype results, so a reject test written that way passes vacuously and proves nothing. This is the only assertion that actually exercises a schema rejection (e.g. the `'+': 'reject'` rule above, or a missing required field).
+
+59. **Run the FULL `bun run typecheck` before committing, not just `typecheck:lib`** — Test-only type errors are invisible to `typecheck:lib`. The one that bit: passing a second timeout arg to a one-arg `afterAll` cleanup helper → `TS2554`. bun's default hook timeout is 5s; for teardown that may run long, use a NON-waiting cleanup (initiate the delete and return) rather than reaching for a timeout arg the helper doesn't accept. (The Step-8 checkpoint runs `typecheck:lib` for speed mid-build — but the final gate is the full `bun run typecheck`.)
+
+60. **Workload status is a multi-resource direct-proxy status — see the non-bootstrap pattern, never `Cel.expr`** — Shape-(b) compositions have no HelmRelease conditions to read, so build `ready` from direct proxy comparisons on the resources you created (Deployment readiness, Service, PVC), exactly as in the "Multi-resource compositions (non-bootstrap)" example above. `Cel.expr` is only for condition-array status on Helm/operator integrations; reaching for it here is a smell (rule #32).
