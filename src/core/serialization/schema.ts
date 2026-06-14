@@ -7,13 +7,13 @@
  */
 
 import type { Type } from 'arktype';
-import { escapeCelString } from '../../utils/cel-escape.js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
+import { escapeCelString } from '../../utils/cel-escape.js';
+import { pascalCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
-import { createSchemaProxy } from '../references/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
-import { pascalCase } from '../../utils/string.js';
+import { createSchemaProxy } from '../references/index.js';
 import type {
   KroSimpleSchemaWithMetadata,
   SchemaDefinition,
@@ -60,11 +60,7 @@ function getKroTypeFromJson(node: unknown): string {
     // Map / Record types — arktype represents `Record<string, V>` as
     // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
     // KRO SimpleSchema uses `map[string]<value-type>` notation for these.
-    if (
-      nodeObj.domain === 'object' &&
-      Array.isArray(nodeObj.index) &&
-      nodeObj.index.length === 1
-    ) {
+    if (nodeObj.domain === 'object' && Array.isArray(nodeObj.index) && nodeObj.index.length === 1) {
       const indexEntry = nodeObj.index[0] as { signature?: unknown; value?: unknown };
       if (indexEntry.signature === 'string') {
         return `map[string]${getKroTypeFromJson(indexEntry.value)}`;
@@ -193,19 +189,21 @@ function arktypeJsonToKroFields(node: unknown): Record<string, unknown> {
  * - `spec.field ?? true/false` (booleans, including minified !0/!1)
  * - `spec.parent?.child ?? value` (optional chaining)
  */
-export function extractNullishDefaults(fnSource: string): Record<string, string | number | boolean> {
+export function extractNullishDefaults(
+  fnSource: string
+): Record<string, string | number | boolean> {
   const defaults: Record<string, string | number | boolean> = {};
 
   const pattern =
     /spec\.([\w]+(?:\??\.\w+)*)\s*\?\?\s*(?:(['"])([^'"]*)\2|(-?\d+(?:\.\d+)?)|true|false|!0|!1)(?=\s*[;,)}\n])/g;
 
-    let match: RegExpExecArray | null = pattern.exec(fnSource);
-    while (match !== null) {
-      const fieldPath = match[1]?.replace(/\?\./g, '.');
-      if (!fieldPath) {
-        match = pattern.exec(fnSource);
-        continue;
-      }
+  let match: RegExpExecArray | null = pattern.exec(fnSource);
+  while (match !== null) {
+    const fieldPath = match[1]?.replace(/\?\./g, '.');
+    if (!fieldPath) {
+      match = pattern.exec(fnSource);
+      continue;
+    }
     const stringValue = match[3];
     const numericValue = match[4];
 
@@ -216,8 +214,7 @@ export function extractNullishDefaults(fnSource: string): Record<string, string 
     } else {
       const fullMatch = match[0];
       if (fullMatch.endsWith('true') || fullMatch.endsWith('!0')) defaults[fieldPath] = true;
-      else if (fullMatch.endsWith('false') || fullMatch.endsWith('!1'))
-        defaults[fieldPath] = false;
+      else if (fullMatch.endsWith('false') || fullMatch.endsWith('!1')) defaults[fieldPath] = false;
     }
     match = pattern.exec(fnSource);
   }
@@ -316,7 +313,7 @@ function resolveDefaultsByReExecution(
 
     // Build the set of optional top-level field names. Only optional fields
     // can be ternary-controlled (required fields always have a value).
-    const optionalFieldNames = new Set((specJson.optional ?? []).map(p => p.key));
+    const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
 
     const tempCtx = createCompositionContext('defaults-extraction');
     // The all-undefined defaults run can throw when a composition dereferences an
@@ -345,8 +342,14 @@ function resolveDefaultsByReExecution(
     // ternary detection. Key-based matching is robust against conditional
     // resource creation: resources present in only one run are simply skipped
     // for comparison.
-    const proxyEntries = Object.entries(proxyResources) as unknown as [string, Record<string, unknown>][];
-    const defaultsEntries = Object.entries(tempCtx.resources) as unknown as [string, Record<string, unknown>][];
+    const proxyEntries = Object.entries(proxyResources) as unknown as [
+      string,
+      Record<string, unknown>,
+    ][];
+    const defaultsEntries = Object.entries(tempCtx.resources) as unknown as [
+      string,
+      Record<string, unknown>,
+    ][];
     const defaultsMap = new Map<string, Record<string, unknown>>(defaultsEntries);
 
     if (proxyEntries.length !== defaultsEntries.length) {
@@ -636,16 +639,14 @@ function extractDefaultsByComparison(
 ): void {
   // KubernetesRef proxies are functions whose toString() returns a marker string.
   // Coerce to string to check for __KUBERNETES_REF__ markers.
-  const proxyStr = typeof proxyVal === 'function' || typeof proxyVal === 'string'
-    ? String(proxyVal) : null;
+  const proxyStr =
+    typeof proxyVal === 'function' || typeof proxyVal === 'string' ? String(proxyVal) : null;
 
   // Only match when the proxy value IS the marker (exact, single reference).
   // If the marker is embedded inside a larger string (template literal), the
   // value is a transformation, not a default — e.g., `\`has-${spec.extra}\``
   // produces `"has-<marker>"` which is NOT a default for `extra`.
-  const exactMarkerMatch = proxyStr?.match(
-    new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`)
-  );
+  const exactMarkerMatch = proxyStr?.match(new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`));
   const exactFieldPath = exactMarkerMatch?.[1];
   if (exactFieldPath?.startsWith('spec.')) {
     if (
@@ -861,13 +862,15 @@ function extractTernaryConditionals(
 
 function extractTernaryConditionFieldHints(source: string): Map<string, string> {
   const hints = new Map<string, string>();
-  const ternaryTemplatePattern = /spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)\s*\?\s*`([\s\S]*?)`\s*:\s*(?:''|""|``)/g;
+  const ternaryTemplatePattern =
+    /spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)\s*\?\s*`([\s\S]*?)`\s*:\s*(?:''|""|``)/g;
   let match: RegExpExecArray | null = ternaryTemplatePattern.exec(source);
   while (match) {
     const conditionField = normalizeSpecFieldPath(match[1]);
     const consequent = match[2] ?? '';
     if (conditionField) {
-      const refPattern = /\$\{\s*spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)/g;
+      const refPattern =
+        /\$\{\s*spec\.([A-Za-z_$][\w$]*(?:\?\.[A-Za-z_$][\w$]*|\.[A-Za-z_$][\w$]*)*)/g;
       let refMatch: RegExpExecArray | null = refPattern.exec(consequent);
       while (refMatch) {
         const referencedField = normalizeSpecFieldPath(refMatch[1]);
@@ -899,6 +902,21 @@ function normalizeSpecFieldPath(path: string | undefined): string | undefined {
  *     Phase 1 annotation for the same field, ensuring a wrong Phase 1
  *     result doesn't survive when Phase 2 produces a corrected value.
  */
+/**
+ * Append a marker to a KRO SimpleSchema type string. KRO's format is `<type> | <m1> <m2> ...`: a SINGLE
+ * `|` separates the type from a SPACE-separated marker block. So the FIRST marker is introduced with
+ * ` | ` and every SUBSEQUENT marker with a space — emitting ` | ` between markers leaves a stray `|`
+ * that KRO folds into the next marker's key (e.g. `enum="..." | default=` → unknown marker key `|default`,
+ * which fails the OpenAPI schema build). Detecting an existing marker block via the ` | ` the type
+ * already carries keeps single-marker fields (`string | default=...`) unchanged.
+ */
+function appendKroMarker(type: string, marker: string): string {
+  return type.includes(' | ') ? `${type} ${marker}` : `${type} | ${marker}`;
+}
+
+/** Matches an existing `default=` marker in EITHER the pipe- or space-separated form, for replacement. */
+const STRIP_DEFAULT_MARKER = /(?:\s*\|\s*|\s+)default=(?:"[^"]*"|[^|\s]*)/;
+
 function applyNullishDefaults(
   specFields: Record<string, unknown>,
   defaults: Record<string, string | number | boolean>,
@@ -929,19 +947,15 @@ function applyNullishDefaults(
     // Escape special characters in string defaults so they survive
     // the KRO SimpleSchema default= annotation format. Without this,
     // multiline strings (e.g., YAML config blobs) break the parser.
-    const defaultStr = typeof value === 'string'
-      ? `"${escapeCelString(value)}"`
-      : String(value);
+    const defaultStr = typeof value === 'string' ? `"${escapeCelString(value)}"` : String(value);
     const hasDefault = existingType.includes('default=');
     if (!hasDefault) {
-      current[fieldName] = `${existingType} | default=${defaultStr}`;
+      current[fieldName] = appendKroMarker(existingType, `default=${defaultStr}`);
     } else if (overwrite) {
-      // Strip any existing `| default=...` segment and replace with the
-      // authoritative Phase 2 value. The segment may appear as `| default="x"`,
-      // `| default=123`, or `| default=true` — match to the end of the value
-      // or to the next `|` (for additional annotations chained after it).
-      const withoutDefault = existingType.replace(/\s*\|\s*default=(?:"[^"]*"|[^|]*)/, '');
-      current[fieldName] = `${withoutDefault} | default=${defaultStr}`;
+      // Strip any existing `default=...` marker (pipe- OR space-separated form) and re-append the
+      // authoritative Phase 2 value. The value may be `"x"`, `123`, or `true`.
+      const withoutDefault = existingType.replace(STRIP_DEFAULT_MARKER, '');
+      current[fieldName] = appendKroMarker(withoutDefault, `default=${defaultStr}`);
     }
   }
 }
@@ -954,9 +968,7 @@ function kroTypeForLiteral(value: string | number | boolean): string {
     return `string | default="${escapeCelString(value)}"`;
   }
   if (typeof value === 'number') {
-    return Number.isInteger(value)
-      ? `integer | default=${value}`
-      : `number | default=${value}`;
+    return Number.isInteger(value) ? `integer | default=${value}` : `number | default=${value}`;
   }
   if (typeof value === 'boolean') {
     return `boolean | default=${value}`;
@@ -1105,10 +1117,7 @@ function remapTernaryConditionals(
  * while a ref to `cache.shards` (required scalar with no default,
  * not in the set) falls back to the ancestor `cache` guard.
  */
-function collectOmitFields(
-  specFields: Record<string, unknown>,
-  specType: Type
-): string[] {
+function collectOmitFields(specFields: Record<string, unknown>, specType: Type): string[] {
   const omitFields: string[] = [];
   walk(specFields, specType.json, '');
   return omitFields;
@@ -1129,11 +1138,7 @@ function collectOmitFields(
       const isOptional = optionalKeys.has(fieldName);
 
       // Scalar optional without default → needs its own omit() guard.
-      if (
-        isOptional &&
-        typeof existingType === 'string' &&
-        !existingType.includes('default=')
-      ) {
+      if (isOptional && typeof existingType === 'string' && !existingType.includes('default=')) {
         omitFields.push(fullPath);
         continue;
       }
@@ -1149,11 +1154,7 @@ function collectOmitFields(
         if (isOptional) {
           omitFields.push(fullPath);
         }
-        walk(
-          existingType as Record<string, unknown>,
-          entry.value,
-          fullPath
-        );
+        walk(existingType as Record<string, unknown>, entry.value, fullPath);
       }
     }
   }
@@ -1254,24 +1255,22 @@ export function arktypeToKroSchema(
   if (nestedFnsRaw instanceof Map) {
     for (const [baseId, fn] of nestedFnsRaw) {
       if (typeof fn !== 'function') continue;
-      const specMappings = nestedSpecMappingsRaw instanceof Map
-        ? nestedSpecMappingsRaw.get(baseId)
-        : undefined;
+      const specMappings =
+        nestedSpecMappingsRaw instanceof Map ? nestedSpecMappingsRaw.get(baseId) : undefined;
       if (!specMappings || typeof specMappings !== 'object') continue;
       const extractedDefaults = extractNullishDefaults(fn.toString());
-      const nestedDefinition = nestedDefinitionsRaw instanceof Map
-        ? nestedDefinitionsRaw.get(baseId)
-        : undefined;
-      const nestedResources = nestedResourcesRaw instanceof Map
-        ? nestedResourcesRaw.get(baseId)
-        : undefined;
-      const reExecutionResult = nestedDefinition && nestedResources
-        ? resolveDefaultsByReExecution(
-            fn as (...args: unknown[]) => unknown,
-            nestedDefinition.spec,
-            nestedResources,
-          )
-        : undefined;
+      const nestedDefinition =
+        nestedDefinitionsRaw instanceof Map ? nestedDefinitionsRaw.get(baseId) : undefined;
+      const nestedResources =
+        nestedResourcesRaw instanceof Map ? nestedResourcesRaw.get(baseId) : undefined;
+      const reExecutionResult =
+        nestedDefinition && nestedResources
+          ? resolveDefaultsByReExecution(
+              fn as (...args: unknown[]) => unknown,
+              nestedDefinition.spec,
+              nestedResources
+            )
+          : undefined;
       const reExecutionDefaults = reExecutionResult?.defaults ?? {};
       const innerDefaults = remapNullishDefaults(
         { ...extractedDefaults, ...reExecutionDefaults },
@@ -1317,9 +1316,10 @@ export function arktypeToKroSchema(
   // Collect optional fields that DON'T have | default= after ?? extraction
   // AND aren't already handled by ternary conditionals.
   // These need omit() wrapping in resource templates (KRO 0.9+).
-  const ternaryFieldNames = new Set(ternaryConditionals.map(t => t.conditionField));
-  const omitFields = collectOmitFields(specFields, schemaDefinition.spec)
-    .filter(f => !ternaryFieldNames.has(f));
+  const ternaryFieldNames = new Set(ternaryConditionals.map((t) => t.conditionField));
+  const omitFields = collectOmitFields(specFields, schemaDefinition.spec).filter(
+    (f) => !ternaryFieldNames.has(f)
+  );
 
   // Filter internal fields (prefixed with __) before classification.
   // These are TypeKro metadata (e.g., __nestedStatusCel, __originalCompositionFn)
@@ -1370,11 +1370,11 @@ export function arktypeToKroSchema(
   const schemaApiVersion = schemaDefinition.apiVersion.includes('/')
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
     : schemaDefinition.apiVersion;
-  const schemaGroup = schemaDefinition.group ?? (
-    schemaDefinition.apiVersion.includes('/')
+  const schemaGroup =
+    schemaDefinition.group ??
+    (schemaDefinition.apiVersion.includes('/')
       ? schemaDefinition.apiVersion.split('/')[0]
-      : undefined
-  );
+      : undefined);
 
   const schema: KroSimpleSchemaWithMetadata = {
     apiVersion: schemaApiVersion,
