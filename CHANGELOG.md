@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-14
+
+### Added
+
+- Added a typed Caddy integration for config-driven reverse proxy deployments.
+
+### Changed
+
+- Caddy bootstrap is intentionally single-replica with `Recreate` rollout semantics because it owns a
+  single ReadWriteOnce data volume.
+- Direct-mode re-execution now hydrates `.spec` references from live Kubernetes resources, improving
+  parity with KRO CEL status evaluation.
+
 ## [0.15.3] - 2026-06-12
 
 ### Fixed
