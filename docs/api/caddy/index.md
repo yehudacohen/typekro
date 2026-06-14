@@ -59,8 +59,8 @@ so the composition stays a string passthrough (KRO-safe — see below).
 | `name` | — | required |
 | `caddyfile` | — | **required**; the full Caddyfile content (a string) |
 | `namespace` | `caddy-system` | Caddy workload namespace |
-| `image` | `caddy` | container image |
-| `version` | `2.11.2` | image tag; also the `app.kubernetes.io/version` label + `status.version` |
+| `image` | `caddy:2.11.2` | full container image ref **including the tag** (one field — not `image:version` — so the KRO default applies cleanly) |
+| `version` | `2.11.2` | version label/status hint (`app.kubernetes.io/version` + `status.version`); cosmetic — set it to match your `image` tag |
 | `replicaCount` | `1` | stays 1 by default — `tls internal` keeps its CA in a RWO PVC one pod owns |
 | `httpPort` / `httpsPort` | `80` / `443` | Service + container ports |
 | `serviceType` | `ClusterIP` | reach it via a tunnel; no public LB by default |
@@ -80,9 +80,8 @@ services), then pass it as `caddyfile`.
 
 | Field | Meaning |
 | --- | --- |
-| `ready` | the Deployment has `readyReplicas >= replicaCount` |
-| `phase` | `Ready` once ready, else `Installing` (two-state) |
-| `version` | the deploy-time image tag (static, not runtime) |
+| `ready` | the Deployment has `readyReplicas >=` its desired replicas (respects `replicaCount` in both modes) |
+| `version` | the deploy-time version label (static, not runtime) |
 
 ## Factory modes
 

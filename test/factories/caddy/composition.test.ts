@@ -27,7 +27,7 @@ describe('Caddy ingress composition', () => {
   });
 
   it('accepts a valid status through the schema', () => {
-    const result = CaddyIngressStatusSchema({ ready: true, phase: 'Ready', version: '2.11.2' });
+    const result = CaddyIngressStatusSchema({ ready: true, version: '2.11.2' });
     expect(result instanceof type.errors).toBe(false);
   });
 
@@ -43,10 +43,24 @@ describe('Caddy ingress composition', () => {
     expect(yaml).toContain('kind: PersistentVolumeClaim');
     // The Caddyfile is a string passthrough from the schema, wired into the ConfigMap.
     expect(yaml).toContain('schema.spec.caddyfile');
-    // Readiness derives from the Deployment's readyReplicas (direct proxy comparison → CEL).
-    expect(yaml).toContain('readyReplicas');
     // No Helm anywhere — this is a raw-resource composition.
     expect(yaml).not.toContain('kind: HelmRelease');
+  });
+
+  it('readiness respects replicaCount (compares to the Deployment reflected desired count, not a baked literal)', () => {
+    const yaml = caddyIngress.toYaml();
+    // status.replicas (a .status field) resolves in BOTH kro CEL and direct hydration; NOT the literal `1`.
+    expect(yaml).toContain(
+      'caddyDeployment.status.readyReplicas >= caddyDeployment.status.replicas'
+    );
+  });
+
+  it('applies the image default in KRO without dereferencing an optional version tag', () => {
+    const yaml = caddyIngress.toYaml();
+    // image default applied as a single field...
+    expect(yaml).toContain('caddy:2.11.2');
+    // ...and the image is NOT built by interpolating the optional schema version (which would yield `caddy:`).
+    expect(yaml).not.toMatch(/image:.*string\(schema\.spec\.version\)/);
   });
 
   it('creates both kro and direct factories', () => {

@@ -19,7 +19,7 @@ describe('Caddy public exports', () => {
     expect(typeof caddy.renderCaddyfile).toBe('function');
     expect(caddy.CaddyIngressConfigSchema).toBeDefined();
     expect(caddy.CaddyIngressStatusSchema).toBeDefined();
-    expect(caddy.DEFAULT_CADDY_IMAGE).toBe('caddy');
+    expect(caddy.DEFAULT_CADDY_IMAGE).toBe('caddy:2.11.2');
     expect(caddy.DEFAULT_CADDY_VERSION).toBe('2.11.2');
     expect(caddy.DEFAULT_CADDY_NAMESPACE).toBe('caddy-system');
   });

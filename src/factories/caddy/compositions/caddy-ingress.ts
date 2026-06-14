@@ -18,9 +18,14 @@ import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volum
 import { deployment } from '../../kubernetes/workloads/deployment.js';
 import { CaddyIngressConfigSchema, CaddyIngressStatusSchema } from '../types.js';
 
-/** Default Caddy image + tag. Verified current stable on Docker Hub (caddy:2.11.2, 2026-03). */
-export const DEFAULT_CADDY_IMAGE = 'caddy';
+/** Current stable Caddy version (Docker Hub, 2026-03); the `app.kubernetes.io/version` label + status. */
 export const DEFAULT_CADDY_VERSION = '2.11.2';
+/**
+ * Full default image ref (repo:tag). Deliberately ONE field, not `${image}:${version}` — a template
+ * literal derefs the optional `version` in KRO mode without applying its default (yields `caddy:`), whereas
+ * a single `?? DEFAULT_CADDY_IMAGE` field compiles to a proper `has(...) ? ... : "caddy:2.11.2"` default.
+ */
+export const DEFAULT_CADDY_IMAGE = `caddy:${DEFAULT_CADDY_VERSION}`;
 export const DEFAULT_CADDY_NAMESPACE = 'caddy-system';
 export const DEFAULT_CADDY_HTTP_PORT = 80;
 export const DEFAULT_CADDY_HTTPS_PORT = 443;
@@ -93,7 +98,7 @@ export const caddyIngress = kubernetesComposition(
             containers: [
               {
                 name: 'caddy',
-                image: `${image}:${version}`,
+                image,
                 // Full command (overrides entrypoint): the caddy image puts `caddy` in CMD, so overriding
                 // only args would drop it ("exec: run: not found"). Reads the mounted Caddyfile.
                 command: [
@@ -140,14 +145,14 @@ export const caddyIngress = kubernetesComposition(
       id: 'caddyService',
     });
 
-    // Multi-resource non-Helm status: direct proxy comparisons (no Cel.expr / conditions array). The
-    // ternary's literal branches are cast to the union so the unannotated return object doesn't widen them
-    // to `string`; the composition analyzer compiles the ternary to CEL at graph generation.
+    // Multi-resource non-Helm status: direct proxy comparison (no Cel.expr / conditions array). Compare
+    // readyReplicas to the Deployment's reflected desired count in `status.replicas` — a `.status` field, so
+    // it resolves in BOTH kro CEL and direct-mode status hydration. (Not the JS `replicas` const: `?? 1`
+    // evaluates eagerly and bakes the literal `1`, making kro ignore replicaCount. Not `spec.replicas`:
+    // that resolves in kro CEL but not in direct hydration, which only reads `.status`. No `phase`: the
+    // `ready ? … : …` ternary mangles a resource ref in CEL — see the status type.)
     return {
-      ready: caddyDeployment.status.readyReplicas >= replicas,
-      phase: (caddyDeployment.status.readyReplicas >= replicas ? 'Ready' : 'Installing') as
-        | 'Ready'
-        | 'Installing',
+      ready: caddyDeployment.status.readyReplicas >= caddyDeployment.status.replicas,
       version,
     };
   }

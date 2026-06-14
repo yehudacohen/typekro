@@ -39,9 +39,12 @@ export const CaddyIngressConfigSchema = type({
   'namespace?': 'string',
   /** Full Caddyfile content. Build it from routes via `renderCaddyfile()` when you have concrete routes. */
   caddyfile: 'string',
-  /** Container image (default `caddy`). */
+  /** Full container image ref INCLUDING the tag (default `caddy:2.11.2`). */
   'image?': 'string',
-  /** Image tag (default `2`); also surfaced as the `app.kubernetes.io/version` label + status.version. */
+  /**
+   * Version label/status hint — surfaced as `app.kubernetes.io/version` + `status.version` (default
+   * `2.11.2`). Cosmetic only; the running tag comes from `image`. Set it to match your `image` tag.
+   */
   'version?': 'string',
   /**
    * Replica count (default 1). Stays 1 by default because `tls internal` keeps its CA in the PVC `/data`
@@ -61,12 +64,17 @@ export const CaddyIngressConfigSchema = type({
 export type CaddyIngressConfig = typeof CaddyIngressConfigSchema.infer;
 
 /**
- * Caddy ingress status. Derived from the Deployment proxy via direct comparisons (this is a multi-resource
- * non-Helm composition, so no `Cel.expr`/conditions array). `version` is the deploy-time image tag.
+ * Caddy ingress status. `ready` is a direct Deployment-proxy comparison (multi-resource non-Helm
+ * composition → no `Cel.expr`/conditions array): `status.readyReplicas >= status.replicas` (the reflected
+ * desired count). Both operands are `.status` fields so it resolves in BOTH kro CEL and direct-mode status
+ * hydration — `spec.replicas` would resolve only in kro, and the JS `replicaCount ?? 1` const bakes the
+ * literal `1` into kro. `version` is the deploy-time version label (static). No `phase` field: a
+ * `ready ? 'Ready' : 'Installing'` ternary referencing a resource ref currently serializes to a malformed
+ * CEL (`caddyDeployment.schema.spec.replicas`) — a typekro analyzer bug to fix separately; `ready` carries
+ * the signal anyway.
  */
 export const CaddyIngressStatusSchema = type({
   ready: 'boolean',
-  phase: '"Ready" | "Installing"',
   'version?': 'string',
 });
 export type CaddyIngressStatus = typeof CaddyIngressStatusSchema.infer;
