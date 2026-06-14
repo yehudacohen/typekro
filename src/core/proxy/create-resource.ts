@@ -15,11 +15,15 @@
  * backward compatibility.
  */
 
-import { getCurrentCompositionContext, isInStatusBuilderContext } from '../composition/context.js';
+import { setAspectMetadata } from '../aspects/metadata.js';
+import {
+  getCurrentCompositionContext,
+  isInStatusBuilderContext,
+  LIVE_SPEC_KEY,
+} from '../composition/context.js';
 import { isDebugMode } from '../config/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
-import { setAspectMetadata } from '../aspects/metadata.js';
 import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
@@ -150,7 +154,7 @@ function createRefFactory(resourceId: string, basePath: string): unknown {
         return () => markerString;
       }
       if (prop === Symbol.toPrimitive) {
-        return (hint: string) => hint === 'string' ? markerString : NaN;
+        return (hint: string) => (hint === 'string' ? markerString : NaN);
       }
 
       // toMarkerString() — explicit access to the marker string
@@ -244,10 +248,11 @@ function createPropertyProxy<T extends object>(
       // we have live status data available (post-deployment re-execution), in which
       // case we fall through to return real values for status comparisons.
       if (isInStatusBuilderContext() && (basePath === 'status' || basePath === 'spec')) {
-        // In SBC with live status data, fall through to return real values for
-        // status comparisons (e.g., `readyInstances >= 1`).
-        const hasLiveStatus = basePath === 'status' && getCurrentCompositionContext()?.liveStatusMap;
-        if (!hasLiveStatus) {
+        // In SBC with live data, fall through to return real values for status/spec
+        // comparisons (e.g., `readyReplicas >= spec.replicas`). The live `.spec` is stashed
+        // on the same map entry under LIVE_SPEC_KEY, so spec resolves in re-execution too.
+        const hasLiveData = getCurrentCompositionContext()?.liveStatusMap;
+        if (!hasLiveData) {
           return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
         }
       }
@@ -265,6 +270,18 @@ function createPropertyProxy<T extends object>(
             if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
               return liveStatus[prop];
             }
+          }
+        }
+
+        // Spec refs resolve from the live `.spec` stashed under LIVE_SPEC_KEY (parity with kro CEL).
+        if (basePath === 'spec') {
+          const ctx = getCurrentCompositionContext();
+          const entry = ctx?.liveStatusMap?.get(resourceId) as
+            | Record<PropertyKey, unknown>
+            | undefined;
+          const liveSpec = entry?.[LIVE_SPEC_KEY] as Record<string, unknown> | undefined;
+          if (liveSpec && Object.hasOwn(liveSpec, prop as string)) {
+            return liveSpec[prop];
           }
         }
 
@@ -546,12 +563,15 @@ export function createResource<TSpec extends object, TStatus extends object>(
   setAspectMetadata(enhanced, {
     factoryTarget: resource.kind,
     targetGroups,
-    surfaces: resource.spec && typeof resource.spec === 'object' ? ['metadata', 'override'] : ['metadata'],
+    surfaces:
+      resource.spec && typeof resource.spec === 'object' ? ['metadata', 'override'] : ['metadata'],
     kind: resource.kind,
     id: resourceId,
     ...(resource.metadata?.name !== undefined ? { name: resource.metadata.name } : {}),
     ...(resource.metadata?.labels !== undefined ? { labels: resource.metadata.labels } : {}),
-    ...(resource.metadata?.namespace !== undefined ? { namespace: resource.metadata.namespace } : {}),
+    ...(resource.metadata?.namespace !== undefined
+      ? { namespace: resource.metadata.namespace }
+      : {}),
   });
 
   // Mark DNS-addressable resources so the dependency resolver can detect
@@ -631,9 +651,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
       if (!depId && typeof dependency === 'object' && dependency !== null) {
         depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
         if (depId) {
-          debugLogger.warn('dependsOn: resolved via __compositionId — this may not match a KRO graph resource. Prefer calling dependsOn on the nested composition resource directly.', {
-            compositionId: depId,
-          });
+          debugLogger.warn(
+            'dependsOn: resolved via __compositionId — this may not match a KRO graph resource. Prefer calling dependsOn on the nested composition resource directly.',
+            {
+              compositionId: depId,
+            }
+          );
         }
       }
       if (!depId) {

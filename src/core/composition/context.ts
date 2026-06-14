@@ -12,11 +12,23 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { DeploymentClosure } from '../types/deployment.js';
-import type { SingletonDefinitionRecord } from '../types/deployment.js';
+import type { DeploymentClosure, SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType, ResourceGraphDefinition } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
+
+/**
+ * Symbol key under which a resource's live `.spec` subobject is stashed on its
+ * `liveStatusMap` entry during direct-mode post-deployment re-execution.
+ *
+ * A Symbol (not a string key) so it never appears in `Object.keys(status)`,
+ * JSON, or status-field iteration, and cannot collide with a real status field.
+ * The proxy reads it to resolve `<resource>.spec.<field>` against live cluster
+ * state — parity with kro CEL, where spec refs resolve. Without it, a status
+ * builder like `readyReplicas >= spec.replicas` silently evaluated to `false`
+ * in direct mode (the spec ref stayed an unresolved proxy → NaN comparison).
+ */
+export const LIVE_SPEC_KEY = Symbol('typekro.liveSpec');
 
 // =============================================================================
 // COMPOSITION CONTEXT TYPES
@@ -54,6 +66,12 @@ export interface CompositionContext {
    * When set, the proxy system returns real status values instead of
    * KubernetesRef objects. Used during post-deployment re-execution
    * so status comparisons (e.g., `readyInstances >= 1`) evaluate correctly.
+   *
+   * Each value is the resource's live `.status` object; the live `.spec`
+   * object is stashed alongside it under {@link LIVE_SPEC_KEY} (a Symbol, so
+   * it never shows up in `Object.keys`/JSON/status iteration) so that spec
+   * references (e.g. `readyReplicas >= spec.replicas`) resolve too — matching
+   * kro CEL, where spec refs resolve. See `buildLiveStatusMap` in direct-strategy.
    */
   liveStatusMap?: Map<string, Record<string, unknown>>;
   /**
@@ -82,7 +100,10 @@ export interface CompositionContext {
   // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
   nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
   /** Map of nested composition baseId -> nested composition schema definition. */
-  nestedCompositionDefinitions?: Map<string, ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>>;
+  nestedCompositionDefinitions?: Map<
+    string,
+    ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>
+  >;
   /** Map of nested composition baseId -> resources emitted during its proxy execution. */
   nestedCompositionResources?: Map<string, Record<string, KubernetesResource>>;
   /** Map of nested composition baseId -> inner spec path prefix to parent spec path prefix. */

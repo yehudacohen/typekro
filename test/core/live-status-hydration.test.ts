@@ -15,17 +15,18 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { Cel } from '../../src/index.js';
 import {
   createCompositionContext,
+  LIVE_SPEC_KEY,
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
+import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { synthesizeNestedCompositionStatus } from '../../src/core/deployment/nested-composition-status.js';
+import { createResource } from '../../src/core/proxy/create-resource.js';
 import { createSchemaProxy } from '../../src/core/references/schema-proxy.js';
 import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
 import { simple } from '../../src/factories/simple/index.js';
-import { createResource } from '../../src/core/proxy/create-resource.js';
+import { Cel } from '../../src/index.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -159,10 +160,13 @@ describe('Live Status Hydration', () => {
     it('should handle nested status objects from live data', () => {
       const ctx = createCompositionContext('nested-test', { deduplicateIds: true });
       ctx.liveStatusMap = new Map([
-        ['database', {
-          cluster: { healthy: true, pods: 3 },
-          phase: 'Running',
-        }],
+        [
+          'database',
+          {
+            cluster: { healthy: true, pods: 3 },
+            phase: 'Running',
+          },
+        ],
       ]);
 
       const result = runWithCompositionContext(ctx, () => {
@@ -184,13 +188,65 @@ describe('Live Status Hydration', () => {
     });
   });
 
+  describe('spec hydration via LIVE_SPEC_KEY (direct-mode parity with kro)', () => {
+    // buildLiveStatusMap stashes a resource's live `.spec` under LIVE_SPEC_KEY on its status-map
+    // entry, so `spec.*` refs resolve in direct-mode re-execution — matching kro CEL, where spec
+    // refs resolve. Without it, a status builder like `readyReplicas >= spec.replicas` silently
+    // evaluated to `false` (the spec ref stayed an unresolved proxy → NaN comparison).
+    it('resolves spec.* against live data stashed under LIVE_SPEC_KEY', () => {
+      const ctx = createCompositionContext('spec-hydration-test', { deduplicateIds: true });
+      const entry: Record<PropertyKey, unknown> = { readyReplicas: 3 };
+      entry[LIVE_SPEC_KEY] = { replicas: 3 };
+      ctx.liveStatusMap = new Map([['app', entry as Record<string, unknown>]]);
+
+      const result = runWithCompositionContext(ctx, () => {
+        // spec field absent from the resource literal → resolution falls through to the live map.
+        const app = testCrdResource({ name: 'myapp', id: 'app' });
+        return {
+          desiredReplicas: app.spec.replicas,
+          // The desired-vs-observed readiness idiom: readyReplicas >= the resource's own desired count.
+          ready: app.status.readyReplicas >= app.spec.replicas,
+        };
+      });
+
+      expect(result.desiredReplicas).toBe(3);
+      expect(result.ready).toBe(true); // 3 >= 3
+    });
+
+    it('reports not-ready when readyReplicas < the live spec.replicas', () => {
+      const ctx = createCompositionContext('spec-hydration-not-ready', { deduplicateIds: true });
+      const entry: Record<PropertyKey, unknown> = { readyReplicas: 1 };
+      entry[LIVE_SPEC_KEY] = { replicas: 3 };
+      ctx.liveStatusMap = new Map([['app', entry as Record<string, unknown>]]);
+
+      const result = runWithCompositionContext(ctx, () => {
+        const app = testCrdResource({ name: 'myapp', id: 'app' });
+        return { ready: app.status.readyReplicas >= app.spec.replicas };
+      });
+
+      expect(result.ready).toBe(false); // 1 < 3
+    });
+
+    it('leaves spec refs unresolved when no LIVE_SPEC_KEY is stashed (pre-fix behavior)', () => {
+      const ctx = createCompositionContext('spec-hydration-absent', { deduplicateIds: true });
+      // Status present, but NO spec stash (e.g. a synthesized/branch map entry).
+      ctx.liveStatusMap = new Map([['app', { readyReplicas: 3 }]]);
+
+      const result = runWithCompositionContext(ctx, () => {
+        const app = testCrdResource({ name: 'myapp', id: 'app' });
+        // Unresolved spec ref coerces to NaN → comparison is false.
+        return { ready: app.status.readyReplicas >= app.spec.replicas };
+      });
+
+      expect(result.ready).toBe(false);
+    });
+  });
+
   describe('createKubernetesRefProxy with liveStatusMap (nested compositions)', () => {
     it('should inject live status into nested composition status proxy', () => {
       const ctx = createCompositionContext('nested-comp-test', { deduplicateIds: true });
       // Simulate synthesized nested composition status
-      ctx.liveStatusMap = new Map([
-        ['inner1', { ready: true, phase: 'Ready' }],
-      ]);
+      ctx.liveStatusMap = new Map([['inner1', { ready: true, phase: 'Ready' }]]);
 
       const result = runWithCompositionContext(ctx, () => {
         // Call the inner composition — this creates a NestedCompositionResource
@@ -214,10 +270,13 @@ describe('Live Status Hydration', () => {
     it('should handle nested composition status with deep fields', () => {
       const ctx = createCompositionContext('deep-nested-test', { deduplicateIds: true });
       ctx.liveStatusMap = new Map([
-        ['inner1', {
-          ready: true,
-          components: { deploy: true, service: true },
-        }],
+        [
+          'inner1',
+          {
+            ready: true,
+            components: { deploy: true, service: true },
+          },
+        ],
       ]);
 
       const result = runWithCompositionContext(ctx, () => {
@@ -286,10 +345,13 @@ describe('Live Status Hydration', () => {
         { debug() {} } as never,
         new Set(['inner1']),
         new Map([
-          ['inner1', {
-            appUrl: '__KUBERNETES_REF_inner1_status.appUrl__',
-            components: { app: true },
-          }],
+          [
+            'inner1',
+            {
+              appUrl: '__KUBERNETES_REF_inner1_status.appUrl__',
+              components: { app: true },
+            },
+          ],
         ])
       );
 
@@ -390,9 +452,9 @@ describe('Live Status Hydration', () => {
       expect(status.appUrl).toBe('http://myapp:80');
 
       // Status-derived — should use live data
-      expect(status.components.app).toBe(true);      // 2 >= 2
-      expect(status.components.database).toBe(true);  // 1 >= 1
-      expect(status.components.inner).toBe(true);     // live: true
+      expect(status.components.app).toBe(true); // 2 >= 2
+      expect(status.components.database).toBe(true); // 1 >= 1
+      expect(status.components.inner).toBe(true); // live: true
 
       // Top-level ready (all && together)
       expect(status.ready).toBe(true);
@@ -402,7 +464,7 @@ describe('Live Status Hydration', () => {
       const ctx = createCompositionContext('not-ready-test', { deduplicateIds: true });
       ctx.liveStatusMap = new Map([
         ['app', { readyReplicas: 1, availableReplicas: 1 }], // only 1, need 3
-        ['database', { readyInstances: 0 }],                  // 0, need 1
+        ['database', { readyInstances: 0 }], // 0, need 1
         ['cache', { ready: false }],
         ['inner1', { ready: false, phase: 'Installing' }],
       ]);
@@ -436,9 +498,9 @@ describe('Live Status Hydration', () => {
       });
 
       expect(status.ready).toBe(false);
-      expect(status.components.app).toBe(false);      // 1 < 3
-      expect(status.components.database).toBe(false);  // 0 < 1
-      expect(status.components.inner).toBe(false);     // live: false
+      expect(status.components.app).toBe(false); // 1 < 3
+      expect(status.components.database).toBe(false); // 0 < 1
+      expect(status.components.inner).toBe(false); // live: false
     });
 
     it('should handle mixed readiness (some ready, some not)', () => {
@@ -471,7 +533,7 @@ describe('Live Status Hydration', () => {
         };
       });
 
-      expect(status.ready).toBe(false);             // inner is false
+      expect(status.ready).toBe(false); // inner is false
       expect(status.components.app).toBe(true);
       expect(status.components.database).toBe(true);
       expect(status.components.cache).toBe(true);
@@ -479,7 +541,9 @@ describe('Live Status Hydration', () => {
     });
 
     it('normalizes top-level ready from fully resolved component booleans', () => {
-      const ctx = createCompositionContext('component-normalization-test', { deduplicateIds: true });
+      const ctx = createCompositionContext('component-normalization-test', {
+        deduplicateIds: true,
+      });
       ctx.liveStatusMap = new Map([
         ['app', { readyReplicas: 1 }],
         ['database', { ready: true }],
@@ -603,7 +667,7 @@ describe('Live Status Hydration', () => {
         },
         {
           '__nestedStatus:nested:appUrl': '"http://" + string(schema.spec.name) + ":80"',
-        },
+        }
       );
 
       expect(String(serialized.prefixedUrl)).toContain('prefix-${');

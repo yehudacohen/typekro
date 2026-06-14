@@ -7,19 +7,13 @@
  * as the existing toResourceGraph API.
  */
 
+import { toCamelCase } from '../../utils/string.js';
 import {
-  copyResourceMetadata,
-  getMetadataField,
-  getResourceId,
-  setMetadataField,
-  setResourceId,
-} from '../metadata/index.js';
-import {
-  buildNestedCompositionAliasTargets,
-  buildNestedCompositionAliases,
-  extractNestedStatusCel as extractNestedStatusCelFn,
-  remapVariableNames,
-} from './nested-status-cel.js';
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
@@ -28,6 +22,13 @@ import {
 } from '../constants/brands.js';
 import { CompositionExecutionError, ensureError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import {
+  copyResourceMetadata,
+  getMetadataField,
+  getResourceId,
+  setMetadataField,
+  setResourceId,
+} from '../metadata/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type {
   CallableComposition,
@@ -35,6 +36,7 @@ import type {
   StatusProxy,
   TypedResourceGraph,
 } from '../types/deployment.js';
+import type { KubernetesResource } from '../types/kubernetes.js';
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -42,22 +44,21 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import type { KubernetesResource } from '../types/kubernetes.js';
 import type { CelExpression, Enhanced } from '../types.js';
-import {
-  containsCelExpressions,
-  containsKubernetesRefs,
-  isCelExpression,
-  isKubernetesRef,
-} from '../../utils/type-guards.js';
-import { toCamelCase } from '../../utils/string.js';
 import type { CompositionContext } from './context.js';
 import {
   createCompositionContext,
   getCurrentCompositionContext,
+  LIVE_SPEC_KEY,
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from './context.js';
+import {
+  buildNestedCompositionAliases,
+  buildNestedCompositionAliasTargets,
+  extractNestedStatusCel as extractNestedStatusCelFn,
+  remapVariableNames,
+} from './nested-status-cel.js';
 
 /**
  * Enable debug mode for composition execution
@@ -77,7 +78,7 @@ export function computeMergedId(
   baseId: string,
   innerResourceId: string,
   resourceCount: number,
-  preserveSingleResourceId: boolean = false,
+  preserveSingleResourceId: boolean = false
 ): string {
   if (resourceCount === 1) {
     return preserveSingleResourceId ? innerResourceId : baseId;
@@ -87,7 +88,7 @@ export function computeMergedId(
 
 function createNestedReExecutionLiveStatusMap(
   parentLiveStatusMap: Map<string, Record<string, unknown>>,
-  baseId: string,
+  baseId: string
 ): Map<string, Record<string, unknown>> {
   const hasPrefixedChildren = [...parentLiveStatusMap.keys()].some((key) => {
     const boundaryChar = key[baseId.length];
@@ -401,7 +402,7 @@ function executeNestedCompositionWithSpec<
   if (parentContext.isReExecution && parentContext.liveStatusMap) {
     executionContext.liveStatusMap = createNestedReExecutionLiveStatusMap(
       parentContext.liveStatusMap,
-      baseId,
+      baseId
     );
   }
 
@@ -440,7 +441,7 @@ function executeNestedCompositionWithSpec<
   if (baseId.includes('-')) {
     throw new Error(
       `Nested composition ID "${baseId}" contains hyphens. ` +
-      `toCamelCase should have removed them from "${compositionName}".`
+        `toCamelCase should have removed them from "${compositionName}".`
     );
   }
 
@@ -469,7 +470,7 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionDefinitions.set(
     baseId,
-    definition as ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>,
+    definition as ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>
   );
 
   if (!parentContext.nestedCompositionResources) {
@@ -477,7 +478,7 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionResources.set(
     baseId,
-    executionContext.resources as Record<string, KubernetesResource>,
+    executionContext.resources as Record<string, KubernetesResource>
   );
 
   const nestedSpecMappings = collectNestedSpecMappings(spec);
@@ -492,8 +493,15 @@ function executeNestedCompositionWithSpec<
     parentContext.nestedStatusSnapshots = new Map();
   }
   const currentStatusSnapshot = (result as unknown as { status?: unknown }).status;
-  if (currentStatusSnapshot && typeof currentStatusSnapshot === 'object' && !Array.isArray(currentStatusSnapshot)) {
-    parentContext.nestedStatusSnapshots.set(baseId, currentStatusSnapshot as Record<string, unknown>);
+  if (
+    currentStatusSnapshot &&
+    typeof currentStatusSnapshot === 'object' &&
+    !Array.isArray(currentStatusSnapshot)
+  ) {
+    parentContext.nestedStatusSnapshots.set(
+      baseId,
+      currentStatusSnapshot as Record<string, unknown>
+    );
   }
 
   // Determine if this composition has a single resource
@@ -503,11 +511,21 @@ function executeNestedCompositionWithSpec<
   // Merge the executed composition's resources into the parent context
   const mergedInnerResourceIds: string[] = [];
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
-    const uniqueId = computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId));
-    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<unknown, unknown>;
+    const uniqueId = computeMergedId(
+      baseId,
+      resourceId,
+      resourceCount,
+      nestedResourceIds.has(resourceId)
+    );
+    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<
+      unknown,
+      unknown
+    >;
     copyResourceMetadata(resource, mergedResource);
 
-    const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as string[] | undefined;
+    const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as
+      | string[]
+      | undefined;
     const aliases = new Set(existingAliases ?? []);
     aliases.add(resourceId);
     setMetadataField(mergedResource, 'resourceAliases', Array.from(aliases));
@@ -530,10 +548,10 @@ function executeNestedCompositionWithSpec<
               baseId,
               dependency.resourceId,
               resourceCount,
-              nestedResourceIds.has(dependency.resourceId),
+              nestedResourceIds.has(dependency.resourceId)
             ),
           };
-        }),
+        })
       );
     }
 
@@ -567,7 +585,11 @@ function executeNestedCompositionWithSpec<
   //    target lives in the inner's variableMappings but never makes it to
   //    the outer's. This is what enables 3+ level nesting.
   const innerAnalysis = (result as unknown as Record<string, unknown>)._analysisResults as
-    { analyzedStatusMappings?: Record<string, unknown>; phaseBStatusMappings?: Record<string, unknown> } | undefined;
+    | {
+        analyzedStatusMappings?: Record<string, unknown>;
+        phaseBStatusMappings?: Record<string, unknown>;
+      }
+    | undefined;
 
   const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
   const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
@@ -575,7 +597,7 @@ function executeNestedCompositionWithSpec<
     Object.keys(
       buildNestedCompositionAliasTargets(
         compositionFn.toString(),
-        executionContext.nestedCompositionIds,
+        executionContext.nestedCompositionIds
       )
     )
   );
@@ -583,12 +605,17 @@ function executeNestedCompositionWithSpec<
     preserveVariables.add(nestedId);
   }
   if (innerStatusSource) {
-    extractNestedStatusCelFn(innerStatusSource, {
-      baseId,
-      innerResourceIds: mergedInnerResourceIds,
-      preserveVariables,
-      registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
-    }, '', innerPhaseBFallback);
+    extractNestedStatusCelFn(
+      innerStatusSource,
+      {
+        baseId,
+        innerResourceIds: mergedInnerResourceIds,
+        preserveVariables,
+        registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
+      },
+      '',
+      innerPhaseBFallback
+    );
   }
 
   // Propagate the inner composition's deeper nested-status entries up to
@@ -649,7 +676,10 @@ function executeNestedCompositionWithSpec<
     }
   }
 
-  if (executionContext.nestedCompositionSpecMappings && Object.keys(nestedSpecMappings).length > 0) {
+  if (
+    executionContext.nestedCompositionSpecMappings &&
+    Object.keys(nestedSpecMappings).length > 0
+  ) {
     if (!parentContext.nestedCompositionSpecMappings) {
       parentContext.nestedCompositionSpecMappings = new Map();
     }
@@ -701,7 +731,7 @@ function executeNestedCompositionWithSpec<
     status: isReExec
       ? (mergeNestedReExecutionStatus(
           (result as unknown as { status?: TStatus }).status ?? ({} as TStatus),
-          parentContext.liveStatusMap?.get(baseId),
+          parentContext.liveStatusMap?.get(baseId)
         ) as TStatus)
       : createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
@@ -734,7 +764,7 @@ function executeNestedCompositionWithSpec<
         baseId,
         lastInnerResourceId,
         innerResourceIds.length,
-        nestedResourceIds.has(lastInnerResourceId),
+        nestedResourceIds.has(lastInnerResourceId)
       );
       const mergedResource = parentContext.resources[mergedId];
       if (!mergedResource) return nestedCompositionResource;
@@ -757,7 +787,7 @@ function executeNestedCompositionWithSpec<
           baseId,
           depId,
           innerResourceIds.length,
-          nestedResourceIds.has(depId),
+          nestedResourceIds.has(depId)
         );
       }
 
@@ -827,10 +857,10 @@ function mergeNestedReExecutionStatus(rawValue: unknown, liveValue: unknown): un
   }
 
   if (
-    rawValue === null
-    || typeof rawValue !== 'object'
-    || liveValue === null
-    || typeof liveValue !== 'object'
+    rawValue === null ||
+    typeof rawValue !== 'object' ||
+    liveValue === null ||
+    typeof liveValue !== 'object'
   ) {
     return liveValue ?? rawValue;
   }
@@ -946,6 +976,20 @@ function createKubernetesRefProxy(
           const liveStatus = ctx?.liveStatusMap?.get(resourceId);
           if (liveStatus && Object.hasOwn(liveStatus, prop)) {
             return liveStatus[prop];
+          }
+        }
+
+        // Spec refs resolve too in re-execution: the live `.spec` is stashed on the same
+        // map entry under LIVE_SPEC_KEY. Parity with kro CEL, where `spec.*` resolves —
+        // without this, `readyReplicas >= spec.replicas` silently went `false` in direct mode.
+        if (basePath === 'spec') {
+          const ctx = getCurrentCompositionContext();
+          const entry = ctx?.liveStatusMap?.get(resourceId) as
+            | Record<PropertyKey, unknown>
+            | undefined;
+          const liveSpec = entry?.[LIVE_SPEC_KEY] as Record<string, unknown> | undefined;
+          if (liveSpec && Object.hasOwn(liveSpec, prop)) {
+            return liveSpec[prop];
           }
         }
 
@@ -1108,16 +1152,34 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             Reflect.set(capturedStatus, '__nestedCompositionFns', context.nestedCompositionFns);
           }
 
-          if (context.nestedCompositionDefinitions && context.nestedCompositionDefinitions.size > 0) {
-            Reflect.set(capturedStatus, '__nestedCompositionDefinitions', context.nestedCompositionDefinitions);
+          if (
+            context.nestedCompositionDefinitions &&
+            context.nestedCompositionDefinitions.size > 0
+          ) {
+            Reflect.set(
+              capturedStatus,
+              '__nestedCompositionDefinitions',
+              context.nestedCompositionDefinitions
+            );
           }
 
           if (context.nestedCompositionResources && context.nestedCompositionResources.size > 0) {
-            Reflect.set(capturedStatus, '__nestedCompositionResources', context.nestedCompositionResources);
+            Reflect.set(
+              capturedStatus,
+              '__nestedCompositionResources',
+              context.nestedCompositionResources
+            );
           }
 
-          if (context.nestedCompositionSpecMappings && context.nestedCompositionSpecMappings.size > 0) {
-            Reflect.set(capturedStatus, '__nestedCompositionSpecMappings', context.nestedCompositionSpecMappings);
+          if (
+            context.nestedCompositionSpecMappings &&
+            context.nestedCompositionSpecMappings.size > 0
+          ) {
+            Reflect.set(
+              capturedStatus,
+              '__nestedCompositionSpecMappings',
+              context.nestedCompositionSpecMappings
+            );
           }
 
           const resourceBuildEnd = Date.now();
@@ -1254,7 +1316,9 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
         configurable: true,
       });
       Object.defineProperty(result, '_singletonDefinitions', {
-        value: context.singletonDefinitions ? Array.from(context.singletonDefinitions.values()) : [],
+        value: context.singletonDefinitions
+          ? Array.from(context.singletonDefinitions.values())
+          : [],
         writable: false,
         enumerable: false,
         configurable: true,
@@ -1413,7 +1477,7 @@ export function kubernetesComposition<
     Object.defineProperty(callableComposition, 'status', {
       value: nestedResult
         ? createStatusProxy<TStatus>(compositionName, parentContext, nestedResult, true)
-        : {},  // Re-execution: unused — status comes from the callable's return value
+        : {}, // Re-execution: unused — status comes from the callable's return value
       enumerable: true,
       configurable: false,
       writable: false,
