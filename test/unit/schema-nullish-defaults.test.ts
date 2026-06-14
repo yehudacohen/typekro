@@ -115,7 +115,11 @@ describe('Schema Nullish Defaults', () => {
 
     let processResourceReferences: (
       obj: unknown,
-      ctx?: { celPrefix: string; resourceIdStrategy: 'deterministic' | 'random'; omitFields?: ReadonlySet<string> }
+      ctx?: {
+        celPrefix: string;
+        resourceIdStrategy: 'deterministic' | 'random';
+        omitFields?: ReadonlySet<string>;
+      }
     ) => unknown;
 
     beforeAll(async () => {
@@ -147,9 +151,7 @@ describe('Schema Nullish Defaults', () => {
     it('does not wrap fields not in the omit list', () => {
       const nameMarker = '__KUBERNETES_REF___schema___spec.name__';
       const imageMarker = '__KUBERNETES_REF___schema___spec.image__';
-      expect(processResourceReferences(nameMarker, ctx(['image']))).toBe(
-        '${schema.spec.name}'
-      );
+      expect(processResourceReferences(nameMarker, ctx(['image']))).toBe('${schema.spec.name}');
       expect(processResourceReferences(imageMarker, ctx(['image']))).toBe(
         '${has(schema.spec.image) ? schema.spec.image : omit()}'
       );
@@ -187,7 +189,9 @@ describe('Schema Nullish Defaults', () => {
         ['__schema__', 'spec.name'],
         ['my_db', 'status.image_tag'],
       ]);
-      expect(KUBERNETES_REF_MARKER_PATTERN.exec('__KUBERNETES_REF___schema___spec.name__')).toBeNull();
+      expect(
+        KUBERNETES_REF_MARKER_PATTERN.exec('__KUBERNETES_REF___schema___spec.name__')
+      ).toBeNull();
     });
 
     it('wraps CelExpression objects that are a single schema.spec.<field>', async () => {
@@ -204,9 +208,7 @@ describe('Schema Nullish Defaults', () => {
       const { Cel } = await import('../../src/core/references/cel.js');
       const expr = Cel.expr('string(schema.spec.baseUrl)');
       const result = processResourceReferences(expr, ctx(['baseUrl']));
-      expect(result).toBe(
-        '${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}'
-      );
+      expect(result).toBe('${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}');
     });
 
     it('wraps nested CelExpression schema refs under an optional ancestor', async () => {
@@ -261,7 +263,8 @@ describe('Schema Nullish Defaults', () => {
       const resources = {
         config: {
           data: {
-            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.redisUrl__',
+            'settings.yml':
+              'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.redisUrl__',
           },
         },
       };
@@ -284,7 +287,8 @@ describe('Schema Nullish Defaults', () => {
       const resources = {
         config: {
           data: {
-            'settings.yml': 'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
+            'settings.yml':
+              'base: true\nredis:\n  url: __KUBERNETES_REF___schema___spec.cache.redisUrl__',
           },
         },
       };
@@ -298,9 +302,7 @@ describe('Schema Nullish Defaults', () => {
       ]);
 
       const result = (resources.config.data as Record<string, string>)['settings.yml'];
-      expect(result).toContain(
-        'has(schema.spec.cache) && has(schema.spec.cache.redisUrl) ?'
-      );
+      expect(result).toContain('has(schema.spec.cache) && has(schema.spec.cache.redisUrl) ?');
       expect(result).toContain('string(schema.spec.cache.redisUrl)');
     });
 
@@ -500,6 +502,52 @@ describe('Schema Nullish Defaults', () => {
       const replicasMatches = yaml.match(/replicas: integer \| default=\d+/g) ?? [];
       expect(replicasMatches.length).toBe(1);
       expect(yaml).toContain('replicas: integer | default=3');
+    });
+
+    it('an enum field WITH a ?? default emits a single-pipe, space-separated marker block (KRO-valid)', async () => {
+      // Regression: KRO's SimpleSchema is `<type> | <m1> <m2> ...` — ONE pipe, then SPACE-separated
+      // markers. An enum field with a `??` default used to emit `string | enum="..." | default="..."`
+      // (a second pipe), which KRO rejects with `invalid marker key "|default"` at OpenAPI-schema build
+      // (it folds the stray `|` into the next marker's key). The marker block must be space-joined.
+      const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
+      const { simple } = await import('../../src/factories/simple/index.js');
+      const { type } = await import('arktype');
+
+      const composition = kubernetesComposition(
+        {
+          name: 'enum-default',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'EnumDefault',
+          spec: type({
+            name: 'string',
+            'serviceType?': '"ClusterIP" | "NodePort" | "LoadBalancer"',
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.Deployment({ name: spec.name, image: 'nginx:stable', id: 'app' });
+          // The `?? 'ClusterIP'` default on an enum field is what triggers the enum + default combo.
+          const serviceType = spec.serviceType ?? 'ClusterIP';
+          simple.Service({
+            name: spec.name,
+            selector: { app: spec.name },
+            ports: [{ port: 80, targetPort: 80 }],
+            type: serviceType,
+            id: 'svc',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      const line = yaml.split('\n').find((l) => l.includes('serviceType:')) ?? '';
+      // Both markers present...
+      expect(line).toContain('enum="ClusterIP,LoadBalancer,NodePort"');
+      expect(line).toContain('default="ClusterIP"');
+      // ...joined into ONE marker block: exactly one `|`, and NO ` | default` second pipe.
+      expect(line.match(/\|/g)?.length).toBe(1);
+      expect(line).not.toContain('| default=');
+      expect(line).toContain('enum="ClusterIP,LoadBalancer,NodePort" default="ClusterIP"');
     });
   });
 
@@ -722,9 +770,7 @@ describe('Schema Nullish Defaults', () => {
       // Regression: ArkType `'0 | 1 | 2'` should parse as a numeric literal
       // union, not a string literal union. A runtime ArkType validation
       // ensures the schema doesn't drift into string types.
-      const { SearxngBootstrapConfigSchema } = await import(
-        '../../src/factories/searxng/types.js'
-      );
+      const { SearxngBootstrapConfigSchema } = await import('../../src/factories/searxng/types.js');
       // Navigate to the safe_search node via the search object. ArkType
       // exposes the JSON AST, which should report the safe_search branch
       // as a numeric union.
@@ -837,19 +883,20 @@ describe('Schema Nullish Defaults', () => {
         server: { secret_key: 'test-secret' },
       });
       const config = graph.resources.find(
-        (resource) => resource.manifest.kind === 'ConfigMap' &&
+        (resource) =>
+          resource.manifest.kind === 'ConfigMap' &&
           resource.manifest.metadata?.name === 'search-with-redis-config'
       );
-      const settingsYaml = (config?.manifest.data as Record<string, string> | undefined)?.['settings.yml'];
+      const settingsYaml = (config?.manifest.data as Record<string, string> | undefined)?.[
+        'settings.yml'
+      ];
 
       expect(settingsYaml).toContain('url: redis://valkey:6379/0');
       expect(settingsYaml).toContain('limiter: false');
     });
 
     it('Schema: default-enabled bootstrap requires an explicit secret source', async () => {
-      const { SearxngBootstrapConfigSchema } = await import(
-        '../../src/factories/searxng/types.js'
-      );
+      const { SearxngBootstrapConfigSchema } = await import('../../src/factories/searxng/types.js');
 
       const missing = SearxngBootstrapConfigSchema({ name: 'searxng' });
       const disabled = SearxngBootstrapConfigSchema({ name: 'searxng', enabled: false });
@@ -905,7 +952,10 @@ describe('Schema Nullish Defaults', () => {
         'requires server.secret_key or secretKeyRef'
       );
       expect(() =>
-        factory.toYaml({ name: 'searxng', secretKeyRef: { name: 'search-secret', key: 'secret_key' } })
+        factory.toYaml({
+          name: 'searxng',
+          secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+        })
       ).not.toThrow();
       expect(() =>
         factory.toYaml({ name: 'searxng', server: { secret_key: 'test-secret' } })
@@ -922,7 +972,8 @@ describe('Schema Nullish Defaults', () => {
         server: { secret_key: 'test-secret' },
       });
       const secret = graph.resources.find(
-        (resource) => resource.manifest.kind === 'Secret' &&
+        (resource) =>
+          resource.manifest.kind === 'Secret' &&
           resource.manifest.metadata?.name === 'searxng-secret'
       );
       const stringData = secret?.manifest.stringData as Record<string, string> | undefined;
