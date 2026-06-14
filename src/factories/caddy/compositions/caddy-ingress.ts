@@ -146,13 +146,13 @@ export const caddyIngress = kubernetesComposition(
     });
 
     // Multi-resource non-Helm status: direct proxy comparison (no Cel.expr / conditions array). Compare
-    // readyReplicas to the Deployment's reflected desired count in `status.replicas` — a `.status` field, so
-    // it resolves in BOTH kro CEL and direct-mode status hydration. (Not the JS `replicas` const: `?? 1`
-    // evaluates eagerly and bakes the literal `1`, making kro ignore replicaCount. Not `spec.replicas`:
-    // that resolves in kro CEL but not in direct hydration, which only reads `.status`. No `phase`: the
-    // `ready ? … : …` ternary mangles a resource ref in CEL — see the status type.)
+    // readyReplicas to the Deployment's OWN desired replicas (`spec.replicas`, a graph ref) — the true
+    // desired count, so readiness respects replicaCount in BOTH kro CEL and direct-mode hydration. (Not
+    // the JS `replicas` const: `?? 1` evaluates eagerly and bakes the literal `1`, making kro ignore
+    // replicaCount. spec refs resolve in direct hydration as of the LIVE_SPEC_KEY change in core. No
+    // `phase`: the `ready ? … : …` ternary mangles a resource ref in CEL — see the status type.)
     return {
-      ready: caddyDeployment.status.readyReplicas >= caddyDeployment.status.replicas,
+      ready: caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas,
       version,
     };
   }

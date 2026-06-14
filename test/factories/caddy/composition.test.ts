@@ -47,12 +47,11 @@ describe('Caddy ingress composition', () => {
     expect(yaml).not.toContain('kind: HelmRelease');
   });
 
-  it('readiness respects replicaCount (compares to the Deployment reflected desired count, not a baked literal)', () => {
+  it('readiness respects replicaCount (compares to the Deployment desired replicas, not a baked literal)', () => {
     const yaml = caddyIngress.toYaml();
-    // status.replicas (a .status field) resolves in BOTH kro CEL and direct hydration; NOT the literal `1`.
-    expect(yaml).toContain(
-      'caddyDeployment.status.readyReplicas >= caddyDeployment.status.replicas'
-    );
+    // spec.replicas is the Deployment's desired count — NOT the literal `1` from `replicaCount ?? 1`.
+    // (Resolves in both kro CEL and, since the LIVE_SPEC_KEY core change, direct-mode hydration.)
+    expect(yaml).toContain('caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas');
   });
 
   it('applies the image default in KRO without dereferencing an optional version tag', () => {

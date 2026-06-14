@@ -65,13 +65,13 @@ export type CaddyIngressConfig = typeof CaddyIngressConfigSchema.infer;
 
 /**
  * Caddy ingress status. `ready` is a direct Deployment-proxy comparison (multi-resource non-Helm
- * composition → no `Cel.expr`/conditions array): `status.readyReplicas >= status.replicas` (the reflected
- * desired count). Both operands are `.status` fields so it resolves in BOTH kro CEL and direct-mode status
- * hydration — `spec.replicas` would resolve only in kro, and the JS `replicaCount ?? 1` const bakes the
- * literal `1` into kro. `version` is the deploy-time version label (static). No `phase` field: a
- * `ready ? 'Ready' : 'Installing'` ternary referencing a resource ref currently serializes to a malformed
- * CEL (`caddyDeployment.schema.spec.replicas`) — a typekro analyzer bug to fix separately; `ready` carries
- * the signal anyway.
+ * composition → no `Cel.expr`/conditions array): `status.readyReplicas >= spec.replicas` (the Deployment's
+ * own desired count). It resolves in BOTH kro CEL and direct-mode hydration (spec refs hydrate via the
+ * LIVE_SPEC_KEY core change) — unlike the JS `replicaCount ?? 1` const, which bakes the literal `1` into
+ * kro and makes it ignore replicaCount. `version` is the deploy-time version label (static). No `phase`
+ * field: a `ready ? 'Ready' : 'Installing'` ternary referencing a resource ref currently serializes to a
+ * malformed CEL (`caddyDeployment.schema.spec.replicas`) — a typekro analyzer bug to fix separately;
+ * `ready` carries the signal anyway.
  */
 export const CaddyIngressStatusSchema = type({
   ready: 'boolean',
