@@ -43,7 +43,6 @@ export const caddyIngress = kubernetesComposition(
     const ns = spec.namespace ?? DEFAULT_CADDY_NAMESPACE;
     const image = spec.image ?? DEFAULT_CADDY_IMAGE;
     const version = spec.version ?? DEFAULT_CADDY_VERSION;
-    const replicas = spec.replicaCount ?? 1;
     const httpPort = spec.httpPort ?? DEFAULT_CADDY_HTTP_PORT;
     const httpsPort = spec.httpsPort ?? DEFAULT_CADDY_HTTPS_PORT;
     const serviceType = spec.serviceType ?? 'ClusterIP';
@@ -90,7 +89,15 @@ export const caddyIngress = kubernetesComposition(
     const caddyDeployment = deployment({
       metadata: { name, namespace: ns, labels },
       spec: {
-        replicas,
+        // Pinned to a single replica BY DESIGN: `tls internal` keeps its CA in the RWO `/data` PVC,
+        // which exactly one pod can own. Multiple pods would (a) fail to co-mount the RWO volume and
+        // (b) each mint a different CA → clients see mismatched certs. HA needs RWX storage or an
+        // externalized CA — deliberately out of scope, so `replicaCount` is not a config knob.
+        replicas: 1,
+        // RWO + single replica REQUIRES Recreate: the default RollingUpdate surges a second pod that
+        // can't mount the PVC held by the outgoing one → the rollout wedges. Recreate tears the old
+        // pod down (releasing the volume) before starting the new one.
+        strategy: { type: 'Recreate' },
         selector: { matchLabels: selector },
         template: {
           metadata: { labels },
@@ -146,11 +153,12 @@ export const caddyIngress = kubernetesComposition(
     });
 
     // Multi-resource non-Helm status: direct proxy comparison (no Cel.expr / conditions array). Compare
-    // readyReplicas to the Deployment's OWN desired replicas (`spec.replicas`, a graph ref) — the true
-    // desired count, so readiness respects replicaCount in BOTH kro CEL and direct-mode hydration. (Not
-    // the JS `replicas` const: `?? 1` evaluates eagerly and bakes the literal `1`, making kro ignore
-    // replicaCount. spec refs resolve in direct hydration as of the LIVE_SPEC_KEY change in core. No
-    // `phase`: the `ready ? … : …` ternary mangles a resource ref in CEL — see the status type.)
+    // readyReplicas to the Deployment's OWN desired replicas (`spec.replicas`, a graph ref = 1). Because
+    // the desired count is a concrete ≥1, this is only ready once the one pod is ready — it can't go
+    // ready before the desired pod exists (the t=0 trap of comparing to `status.replicas`, which is 0
+    // until the controller observes the spec). spec refs resolve in BOTH kro CEL and direct-mode
+    // hydration (via the LIVE_SPEC_KEY core change). No `phase`: the `ready ? … : …` ternary mangles a
+    // resource ref in CEL — see the status type.
     return {
       ready: caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas,
       version,

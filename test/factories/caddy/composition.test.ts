@@ -26,6 +26,17 @@ describe('Caddy ingress composition', () => {
     expect(result instanceof type.errors).toBe(true);
   });
 
+  it('rejects unsupported keys like replicaCount (single-replica by design)', () => {
+    // The tls-internal CA lives in a RWO PVC one pod owns — multi-replica is unsupported, so the
+    // schema rejects `replicaCount` loudly instead of silently dropping it into a broken setup.
+    const result = CaddyIngressConfigSchema({
+      name: 'caddy',
+      caddyfile: SAMPLE_CADDYFILE,
+      replicaCount: 3,
+    } as never);
+    expect(result instanceof type.errors).toBe(true);
+  });
+
   it('accepts a valid status through the schema', () => {
     const result = CaddyIngressStatusSchema({ ready: true, version: '2.11.2' });
     expect(result instanceof type.errors).toBe(false);
@@ -47,11 +58,19 @@ describe('Caddy ingress composition', () => {
     expect(yaml).not.toContain('kind: HelmRelease');
   });
 
-  it('readiness respects replicaCount (compares to the Deployment desired replicas, not a baked literal)', () => {
+  it('readiness compares readyReplicas to the Deployment desired count (cannot go ready before the pod exists)', () => {
     const yaml = caddyIngress.toYaml();
-    // spec.replicas is the Deployment's desired count — NOT the literal `1` from `replicaCount ?? 1`.
-    // (Resolves in both kro CEL and, since the LIVE_SPEC_KEY core change, direct-mode hydration.)
+    // Compares to spec.replicas (a concrete ≥1), NOT status.replicas (0 at t=0 → false-positive ready).
+    // Resolves in both kro CEL and, since the LIVE_SPEC_KEY core change, direct-mode hydration.
     expect(yaml).toContain('caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas');
+  });
+
+  it('pins a single replica with the Recreate strategy (RWO PVC holds the tls-internal CA)', () => {
+    const yaml = caddyIngress.toYaml();
+    // Single replica by design: the tls-internal CA lives in a RWO /data PVC one pod owns.
+    expect(yaml).toContain('replicas: 1');
+    // Recreate (not RollingUpdate): a surged second pod can't co-mount the RWO PVC → rollout wedges.
+    expect(yaml).toContain('Recreate');
   });
 
   it('applies the image default in KRO without dereferencing an optional version tag', () => {

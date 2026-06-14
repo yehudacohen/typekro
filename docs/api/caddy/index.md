@@ -19,9 +19,15 @@ import { caddyIngress, renderCaddyfile } from 'typekro/caddy';
 | --- | --- |
 | `ConfigMap` | holds the Caddyfile (`spec.caddyfile`) |
 | `PersistentVolumeClaim` | persists `/data` — the `tls internal` CA root + issued certs |
-| `Deployment` | runs `caddy:<version>` mounting the Caddyfile + the PVC |
+| `Deployment` | runs `caddy:<version>` mounting the Caddyfile + the PVC — **single replica**, `Recreate` strategy |
 | `Service` | exposes the proxy (ClusterIP by default) |
 | `Namespace` | the Caddy workload namespace |
+
+> **Single replica by design.** The `tls internal` CA lives in a `ReadWriteOnce` `/data` PVC that exactly
+> one pod can own, and a shared CA across pods would need `ReadWriteMany` storage or an externalized CA.
+> So there is **no `replicaCount` knob** (the schema rejects it), the Deployment is pinned to one replica,
+> and it uses the `Recreate` update strategy (a `RollingUpdate` would surge a second pod that can't
+> co-mount the RWO PVC and wedge the rollout). HA is deliberately out of scope.
 
 ## Quick example
 
@@ -61,7 +67,6 @@ so the composition stays a string passthrough (KRO-safe — see below).
 | `namespace` | `caddy-system` | Caddy workload namespace |
 | `image` | `caddy:2.11.2` | full container image ref **including the tag** (one field — not `image:version` — so the KRO default applies cleanly) |
 | `version` | `2.11.2` | version label/status hint (`app.kubernetes.io/version` + `status.version`); cosmetic — set it to match your `image` tag |
-| `replicaCount` | `1` | stays 1 by default — `tls internal` keeps its CA in a RWO PVC one pod owns |
 | `httpPort` / `httpsPort` | `80` / `443` | Service + container ports |
 | `serviceType` | `ClusterIP` | reach it via a tunnel; no public LB by default |
 | `persistence.size` | `1Gi` | size of the always-created `/data` PVC |
@@ -80,7 +85,7 @@ services), then pass it as `caddyfile`.
 
 | Field | Meaning |
 | --- | --- |
-| `ready` | the Deployment has `readyReplicas >=` its desired replicas (respects `replicaCount` in both modes) |
+| `ready` | the Deployment's one pod is ready (`readyReplicas >= spec.replicas`); cannot report ready before that pod exists |
 | `version` | the deploy-time version label (static, not runtime) |
 
 ## Factory modes

@@ -33,8 +33,13 @@ const persistenceSchemaShape = {
 /**
  * Caddy ingress config. `caddyfile` is the raw Caddyfile content (the routing + TLS config), supplied as
  * a string so it passes through unchanged in both direct and KRO modes.
+ *
+ * Undeclared keys are REJECTED (`'+': 'reject'`) so misconfig fails loudly rather than being silently
+ * dropped — notably `replicaCount`: this composition is single-replica by design (the `tls internal` CA
+ * lives in a RWO PVC one pod owns), so a replica knob would invite a broken multi-pod-shares-RWO setup.
  */
 export const CaddyIngressConfigSchema = type({
+  '+': 'reject',
   name: 'string',
   'namespace?': 'string',
   /** Full Caddyfile content. Build it from routes via `renderCaddyfile()` when you have concrete routes. */
@@ -46,11 +51,6 @@ export const CaddyIngressConfigSchema = type({
    * `2.11.2`). Cosmetic only; the running tag comes from `image`. Set it to match your `image` tag.
    */
   'version?': 'string',
-  /**
-   * Replica count (default 1). Stays 1 by default because `tls internal` keeps its CA in the PVC `/data`
-   * (a RWO volume one pod owns); HA needs RWX storage or externalized certs.
-   */
-  'replicaCount?': 'number',
   /** HTTP listener port on the Service + container (default 80). */
   'httpPort?': 'number',
   /** HTTPS listener port on the Service + container (default 443). */
@@ -65,13 +65,13 @@ export type CaddyIngressConfig = typeof CaddyIngressConfigSchema.infer;
 
 /**
  * Caddy ingress status. `ready` is a direct Deployment-proxy comparison (multi-resource non-Helm
- * composition → no `Cel.expr`/conditions array): `status.readyReplicas >= spec.replicas` (the Deployment's
- * own desired count). It resolves in BOTH kro CEL and direct-mode hydration (spec refs hydrate via the
- * LIVE_SPEC_KEY core change) — unlike the JS `replicaCount ?? 1` const, which bakes the literal `1` into
- * kro and makes it ignore replicaCount. `version` is the deploy-time version label (static). No `phase`
- * field: a `ready ? 'Ready' : 'Installing'` ternary referencing a resource ref currently serializes to a
- * malformed CEL (`caddyDeployment.schema.spec.replicas`) — a typekro analyzer bug to fix separately;
- * `ready` carries the signal anyway.
+ * composition → no `Cel.expr`/conditions array): `status.readyReplicas >= spec.replicas`. The Deployment
+ * is pinned to a single replica (see the composition), so this reads as "the one desired pod is ready" —
+ * it cannot report ready before that pod exists. It resolves in BOTH kro CEL and direct-mode hydration
+ * (spec refs hydrate via the LIVE_SPEC_KEY core change). `version` is the deploy-time version label
+ * (static). No `phase` field: a `ready ? 'Ready' : 'Installing'` ternary referencing a resource ref
+ * currently serializes to a malformed CEL (`caddyDeployment.schema.spec.replicas`) — a typekro analyzer
+ * bug to fix separately; `ready` carries the signal anyway.
  */
 export const CaddyIngressStatusSchema = type({
   ready: 'boolean',
