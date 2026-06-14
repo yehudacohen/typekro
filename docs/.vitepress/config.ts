@@ -84,6 +84,7 @@ export default withMermaid(
             text: 'Ecosystems',
             items: [
               { text: 'Kubernetes', link: '/api/kubernetes/' },
+              { text: 'Caddy', link: '/api/caddy/' },
               { text: 'Cilium', link: '/api/cilium/' },
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },
