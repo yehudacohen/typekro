@@ -205,8 +205,10 @@ const buildCaddyResources = (spec: CaddyIngressConfig, ephemeral: boolean) => {
 // Literal-narrowing overloads: `{ ephemeral: true }` and the default each get their exact composition
 // type. The third (general) overload accepts the exported `CaddyIngressOptions` itself — without it, a
 // value typed `CaddyIngressOptions` (`ephemeral?: boolean`) matches NEITHER literal overload and the
-// function that exports the type couldn't be called with it. The general case returns the default
-// (PVC) composition type (the wider schema — its `persistence` is optional, so it's the safe default).
+// function that exports the type couldn't be called with it. When the mode is unknown statically it
+// returns the EPHEMERAL (persistence-free) config type — the common subset of both modes. Returning the
+// PVC config would expose `persistence` on a composition that may actually be ephemeral (which rejects
+// it at runtime); the persistence-free type never exposes a field that could be invalid for the mode.
 export function makeCaddyIngress(
   options: { readonly ephemeral: true },
 ): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
@@ -215,7 +217,7 @@ export function makeCaddyIngress(
 ): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(
   options: CaddyIngressOptions,
-): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
+): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(options: CaddyIngressOptions = {}) {
   if (options.ephemeral) {
     return kubernetesComposition(
