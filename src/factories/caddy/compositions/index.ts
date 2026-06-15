@@ -1,5 +1,7 @@
 export {
   caddyIngress,
+  makeCaddyIngress,
+  type CaddyIngressOptions,
   DEFAULT_CADDY_HTTP_PORT,
   DEFAULT_CADDY_HTTPS_PORT,
   DEFAULT_CADDY_IMAGE,

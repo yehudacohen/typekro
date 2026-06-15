@@ -240,6 +240,15 @@ for (const condition of deployment.status.conditions) { ... }
 let ready = deployment.status.readyReplicas > 0;
 ```
 
+::: warning Eager array-to-string (`.map().join()`) is silently dropped
+Building a string by eagerly mapping a schema/spec array at composition time —
+`spec.hosts.map(h => \`host=${h}\`).join(';')` — does **not** expand per element. The array is a
+graph proxy with no concrete length at build time, so the map runs once against a placeholder and the
+resulting field is **silently dropped** from the output (no error). Build the string from concrete
+values where you have them (e.g. a `renderX()` helper that takes a real array, then pass the rendered
+string), or express the transform in CEL with `Cel.expr(...)`.
+:::
+
 ### Workarounds
 
 For unsupported patterns, use the explicit CEL escape hatch:

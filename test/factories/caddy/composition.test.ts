@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { caddyIngress, DEFAULT_CADDY_VERSION } from '../../../src/factories/caddy/index.js';
+import {
+  caddyIngress,
+  type CaddyIngressOptions,
+  makeCaddyIngress,
+  DEFAULT_CADDY_VERSION,
+} from '../../../src/factories/caddy/index.js';
 import {
   CaddyIngressConfigSchema,
+  CaddyIngressEphemeralConfigSchema,
   CaddyIngressStatusSchema,
 } from '../../../src/factories/caddy/types.js';
 
@@ -29,11 +35,10 @@ describe('Caddy ingress composition', () => {
   it('rejects unsupported keys like replicaCount (single-replica by design)', () => {
     // The tls-internal CA lives in a RWO PVC one pod owns — multi-replica is unsupported, so the
     // schema rejects `replicaCount` loudly instead of silently dropping it into a broken setup.
-    const result = CaddyIngressConfigSchema({
-      name: 'caddy',
-      caddyfile: SAMPLE_CADDYFILE,
-      replicaCount: 3,
-    } as never);
+    // Typed as `unknown` (not `as never`) to feed the intentionally-invalid shape past the compiler
+    // while still exercising the RUNTIME rejection.
+    const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, replicaCount: 3 };
+    const result = CaddyIngressConfigSchema(invalid);
     expect(result instanceof type.errors).toBe(true);
   });
 
@@ -90,5 +95,49 @@ describe('Caddy ingress composition', () => {
 
   it('defaults the image tag to the verified current Caddy version', () => {
     expect(DEFAULT_CADDY_VERSION).toBe('2.11.2');
+  });
+
+  describe('ephemeral storage (makeCaddyIngress({ ephemeral: true }))', () => {
+    it('emits an emptyDir for /data and NO PersistentVolumeClaim', () => {
+      const yaml = makeCaddyIngress({ ephemeral: true }).toYaml();
+      expect(yaml).toContain('kind: Deployment');
+      expect(yaml).toContain('emptyDir');
+      expect(yaml).not.toContain('kind: PersistentVolumeClaim');
+    });
+
+    it('still mounts /data and keeps the single-replica Recreate design', () => {
+      const yaml = makeCaddyIngress({ ephemeral: true }).toYaml();
+      expect(yaml).toContain('/data');
+      expect(yaml).toContain('replicas: 1');
+      expect(yaml).toContain('Recreate');
+    });
+
+    it('the default composition is unchanged (still PVC-backed, no emptyDir)', () => {
+      const yaml = makeCaddyIngress().toYaml();
+      expect(yaml).toContain('kind: PersistentVolumeClaim');
+      expect(yaml).not.toContain('emptyDir');
+    });
+
+    it('rejects persistence config in ephemeral mode (no PVC to size — fail loudly, not silently ignore)', () => {
+      // `persistence` is intentionally not a field of the ephemeral schema; type it as `unknown` so the
+      // compiler lets us feed the invalid shape through and assert the RUNTIME rejection.
+      const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, persistence: { size: '2Gi' } };
+      const rejected = CaddyIngressEphemeralConfigSchema(invalid);
+      expect(rejected instanceof type.errors).toBe(true);
+    });
+
+    it('accepts a valid ephemeral config (no persistence)', () => {
+      const ok = CaddyIngressEphemeralConfigSchema({ name: 'caddy', caddyfile: SAMPLE_CADDYFILE });
+      expect(ok instanceof type.errors).toBe(false);
+    });
+
+    it('can be called with a dynamically-typed CaddyIngressOptions value (ergonomics)', () => {
+      // Primarily a COMPILE-TIME regression: a value typed as the exported `CaddyIngressOptions`
+      // (`ephemeral?: boolean`, not a literal) must be a valid argument — otherwise the function that
+      // exports the type can't be called with it. The general overload makes this resolve.
+      const opts: CaddyIngressOptions = { ephemeral: false };
+      const comp = makeCaddyIngress(opts);
+      expect(typeof comp.toYaml).toBe('function');
+    });
   });
 });
