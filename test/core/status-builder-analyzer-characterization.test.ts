@@ -214,6 +214,17 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
     });
+
+    it('flags a non-inline-literal return (helper call) as the object-literal degradation', () => {
+      // The silent-degradation footgun: returning a HELPER CALL (not an inline `{ ... }`) means no field
+      // can be analyzed and the whole status silently falls back to static. The analyzer must surface this
+      // as invalid with the object-literal reason (which the runtime warns loudly about).
+      const buildStatus = (_r: unknown) => ({ ready: true });
+      const fn = (_s: unknown, r: unknown) => buildStatus(r);
+      const result = analyzer.analyzeStatusBuilder(fn as any, {});
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => /object literal/i.test(e.message))).toBe(true);
+    });
   });
 
   describe('field analysis details', () => {

@@ -233,20 +233,38 @@ export class StatusBuilderAnalyzer {
         returnStatement,
       };
     } catch (error: unknown) {
+      const errMessage = ensureError(error).message;
       const analysisError = new ConversionError(
-        `Failed to analyze status builder: ${ensureError(error).message}`,
+        `Failed to analyze status builder: ${errMessage}`,
         statusBuilder.toString(),
         'function-call'
       );
 
-      this.logger.info(
-        'Status builder analysis using fallback - this is normal for certain patterns',
-        {
-          reason: 'Status builder contains patterns that cannot be converted to CEL expressions',
-          fallbackBehavior: 'Static evaluation will be used instead',
-          error: ensureError(error).message,
-        }
-      );
+      // A non-object-literal return is the silent-degradation footgun: the builder returned a helper call
+      // or variable instead of an inline `{ ... }`, so NO status field can be analyzed and the ENTIRE
+      // status silently falls back to static values (dynamic CEL — readiness, refs — is lost). That is
+      // almost never intended, so warn loudly with the fix. Other failures (genuinely unconvertible
+      // patterns) stay at info — those legitimately fall back to static and are usually expected.
+      if (errMessage.includes('must return an object literal')) {
+        this.logger.warn(
+          'Status builder did not return an inline object literal — its status will fall back to STATIC ' +
+            'values, dropping any dynamic CEL (readiness, resource/schema references). Return an inline ' +
+            '`{ ... }` directly from the status builder; a helper call or variable return cannot be analyzed.',
+          {
+            fallbackBehavior: 'Static evaluation will be used instead',
+            error: errMessage,
+          }
+        );
+      } else {
+        this.logger.info(
+          'Status builder analysis using fallback - this is normal for certain patterns',
+          {
+            reason: 'Status builder contains patterns that cannot be converted to CEL expressions',
+            fallbackBehavior: 'Static evaluation will be used instead',
+            error: errMessage,
+          }
+        );
+      }
 
       return {
         fieldAnalysis: new Map(),
