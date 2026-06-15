@@ -2035,3 +2035,33 @@ describe('Review feedback: computeMergedId is a shared utility', () => {
     expect(computeMergedId('myComp', 'helmRelease', 3)).toBe('myCompHelmRelease');
   });
 });
+
+describe('Regression: a resource own-`.spec` ref inside a status ternary', () => {
+  it('keeps `<resource>.spec.X` (no stray `.schema.`) in the compiled CEL', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({ name: 'string' });
+    const Status = type({ phase: 'string' });
+
+    const comp = kubernetesComposition(
+      { name: 'spec-ref-ternary', kind: 'SpecRefTernary', spec: Spec, status: Status },
+      (spec) => {
+        const d = simple.Deployment({ name: spec.name, image: 'x', id: 'd' });
+        // The readiness condition references the Deployment's OWN spec.replicas. The non-ternary
+        // form (`d.status.readyReplicas >= d.spec.replicas`) compiles correctly; wrapping it in a
+        // ternary must NOT mangle the resource spec ref into `d.schema.spec.replicas`.
+        return { phase: d.status.readyReplicas >= d.spec.replicas ? 'Ready' : 'Installing' };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    // The Deployment's own spec ref must stay a RESOURCE ref, not be rewritten as a schema ref.
+    expect(yaml).not.toContain('d.schema.spec.replicas');
+    expect(yaml).toContain('d.spec.replicas');
+    // ...and the ternary itself must still compile.
+    expect(yaml).toMatch(/phase:.*\? 'Ready' : 'Installing'/);
+  });
+});
