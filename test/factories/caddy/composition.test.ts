@@ -30,11 +30,10 @@ describe('Caddy ingress composition', () => {
   it('rejects unsupported keys like replicaCount (single-replica by design)', () => {
     // The tls-internal CA lives in a RWO PVC one pod owns — multi-replica is unsupported, so the
     // schema rejects `replicaCount` loudly instead of silently dropping it into a broken setup.
-    const result = CaddyIngressConfigSchema({
-      name: 'caddy',
-      caddyfile: SAMPLE_CADDYFILE,
-      replicaCount: 3,
-    } as never);
+    // Typed as `unknown` (not `as never`) to feed the intentionally-invalid shape past the compiler
+    // while still exercising the RUNTIME rejection.
+    const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, replicaCount: 3 };
+    const result = CaddyIngressConfigSchema(invalid);
     expect(result instanceof type.errors).toBe(true);
   });
 
