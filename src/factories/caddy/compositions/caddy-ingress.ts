@@ -202,11 +202,19 @@ const buildCaddyResources = (spec: CaddyIngressConfig, ephemeral: boolean) => {
  * {@link CaddyIngressOptions.ephemeral}). Ephemeral mode validates against a schema WITHOUT `persistence`,
  * so passing persistence config there is rejected loudly rather than silently ignored.
  */
+// Literal-narrowing overloads: `{ ephemeral: true }` and the default each get their exact composition
+// type. The third (general) overload accepts the exported `CaddyIngressOptions` itself — without it, a
+// value typed `CaddyIngressOptions` (`ephemeral?: boolean`) matches NEITHER literal overload and the
+// function that exports the type couldn't be called with it. The general case returns the default
+// (PVC) composition type (the wider schema — its `persistence` is optional, so it's the safe default).
 export function makeCaddyIngress(
   options: { readonly ephemeral: true },
 ): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(
   options?: { readonly ephemeral?: false },
+): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
+export function makeCaddyIngress(
+  options: CaddyIngressOptions,
 ): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(options: CaddyIngressOptions = {}) {
   if (options.ephemeral) {
