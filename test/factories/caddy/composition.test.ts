@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { caddyIngress, makeCaddyIngress, DEFAULT_CADDY_VERSION } from '../../../src/factories/caddy/index.js';
+import {
+  caddyIngress,
+  type CaddyIngressOptions,
+  makeCaddyIngress,
+  DEFAULT_CADDY_VERSION,
+} from '../../../src/factories/caddy/index.js';
 import {
   CaddyIngressConfigSchema,
   CaddyIngressEphemeralConfigSchema,
@@ -30,11 +35,10 @@ describe('Caddy ingress composition', () => {
   it('rejects unsupported keys like replicaCount (single-replica by design)', () => {
     // The tls-internal CA lives in a RWO PVC one pod owns — multi-replica is unsupported, so the
     // schema rejects `replicaCount` loudly instead of silently dropping it into a broken setup.
-    const result = CaddyIngressConfigSchema({
-      name: 'caddy',
-      caddyfile: SAMPLE_CADDYFILE,
-      replicaCount: 3,
-    } as never);
+    // Typed as `unknown` (not `as never`) to feed the intentionally-invalid shape past the compiler
+    // while still exercising the RUNTIME rejection.
+    const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, replicaCount: 3 };
+    const result = CaddyIngressConfigSchema(invalid);
     expect(result instanceof type.errors).toBe(true);
   });
 
@@ -125,6 +129,15 @@ describe('Caddy ingress composition', () => {
     it('accepts a valid ephemeral config (no persistence)', () => {
       const ok = CaddyIngressEphemeralConfigSchema({ name: 'caddy', caddyfile: SAMPLE_CADDYFILE });
       expect(ok instanceof type.errors).toBe(false);
+    });
+
+    it('can be called with a dynamically-typed CaddyIngressOptions value (ergonomics)', () => {
+      // Primarily a COMPILE-TIME regression: a value typed as the exported `CaddyIngressOptions`
+      // (`ephemeral?: boolean`, not a literal) must be a valid argument — otherwise the function that
+      // exports the type can't be called with it. The general overload makes this resolve.
+      const opts: CaddyIngressOptions = { ephemeral: false };
+      const comp = makeCaddyIngress(opts);
+      expect(typeof comp.toYaml).toBe('function');
     });
   });
 });

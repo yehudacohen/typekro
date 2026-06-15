@@ -2,15 +2,16 @@
 
 A **config-driven Caddy reverse proxy** for TypeKro. Unlike the Caddy ingress-controller (which watches
 `Ingress` resources) or a Helm bootstrap, this runs the official `caddy` image with a **Caddyfile you
-supply** and emits a ConfigMap (the Caddyfile) + Deployment + Service + PVC.
+supply** and emits a ConfigMap (the Caddyfile) + Deployment + Service + a `/data` volume — a PVC by
+default, or an `emptyDir` in [ephemeral mode](#storage-persistent-vs-ephemeral).
 
 Its headline feature is **`tls internal`**: Caddy's built-in local CA issues valid certificates for any
-name — including private TLDs like `*.acme.internal` — with **no cert-manager, no ACME, and no etcd**. The
-PVC persists `/data` so the CA root is stable across restarts; trust that root once and every site is
-green-locked.
+name — including private TLDs like `*.acme.internal` — with **no cert-manager, no ACME, and no etcd**. By
+default a PVC persists `/data` so the CA root is stable across restarts (trust that root once and every
+site is green-locked); in **ephemeral** mode `/data` is an `emptyDir` and the CA regenerates per pod.
 
 ```ts
-import { caddyIngress, renderCaddyfile } from 'typekro/caddy';
+import { caddyIngress, makeCaddyIngress, renderCaddyfile } from 'typekro/caddy';
 ```
 
 ## What gets created
@@ -18,16 +19,42 @@ import { caddyIngress, renderCaddyfile } from 'typekro/caddy';
 | Resource | Purpose |
 | --- | --- |
 | `ConfigMap` | holds the Caddyfile (`spec.caddyfile`) |
-| `PersistentVolumeClaim` | persists `/data` — the `tls internal` CA root + issued certs |
-| `Deployment` | runs `caddy:<version>` mounting the Caddyfile + the PVC — **single replica**, `Recreate` strategy |
+| `PersistentVolumeClaim` | persists `/data` — the `tls internal` CA root + issued certs. **Default mode only** (omitted when ephemeral) |
+| `Deployment` | runs `caddy:<version>` mounting the Caddyfile + the `/data` volume — **single replica**, `Recreate` strategy |
 | `Service` | exposes the proxy (ClusterIP by default) |
 | `Namespace` | the Caddy workload namespace |
 
-> **Single replica by design.** The `tls internal` CA lives in a `ReadWriteOnce` `/data` PVC that exactly
-> one pod can own, and a shared CA across pods would need `ReadWriteMany` storage or an externalized CA.
-> So there is **no `replicaCount` knob** (the schema rejects it), the Deployment is pinned to one replica,
-> and it uses the `Recreate` update strategy (a `RollingUpdate` would surge a second pod that can't
-> co-mount the RWO PVC and wedge the rollout). HA is deliberately out of scope.
+> **Single replica by design.** Caddy keeps its `tls internal` CA in `/data`, and exactly one pod should
+> own it — in the default mode that is a `ReadWriteOnce` PVC (multiple pods would need `ReadWriteMany` or
+> an externalized CA); in ephemeral mode each pod would otherwise mint a *different* CA. So there is **no
+> `replicaCount` knob** (the schema rejects it), the Deployment is pinned to one replica, and it uses the
+> `Recreate` update strategy (a `RollingUpdate` would surge a second pod that can't co-mount the RWO PVC
+> and wedge the rollout). HA is deliberately out of scope.
+
+## Storage: persistent vs ephemeral
+
+`caddyIngress` is the default, PVC-backed composition. For a plane that tolerates node/AZ changes, build an
+**ephemeral** variant with `makeCaddyIngress({ ephemeral: true })`:
+
+```ts
+import { makeCaddyIngress } from 'typekro/caddy';
+
+// emptyDir-backed /data — no PVC; the tls-internal CA regenerates per pod.
+const factory = makeCaddyIngress({ ephemeral: true }).factory('kro', { namespace: 'caddy-system' });
+```
+
+| | Default (`caddyIngress`) | Ephemeral (`makeCaddyIngress({ ephemeral: true })`) |
+| --- | --- | --- |
+| `/data` volume | `PersistentVolumeClaim` (RWO) | `emptyDir` |
+| CA root | persists across restarts | **regenerates per pod** (clients re-trust) |
+| `persistence` config | `size` / `storageClass` honored | **rejected** (no PVC to size) |
+| Survives a node/AZ change | ❌ pod can strand on the AZ-locked volume | ✅ reschedules anywhere |
+
+Choose **ephemeral** when the CA's stability matters less than resilience — e.g. an internal access plane
+where a stranded `Pending` pod (PV node-affinity mismatch after a node recycle) would take the ingress
+down. The storage choice is **build-time** (a constructor option, not a spec field), so it selects the
+resource set statically and never needs a runtime conditional. `makeCaddyIngress()` with no options is
+identical to `caddyIngress`.
 
 ## Quick example
 
@@ -69,8 +96,8 @@ so the composition stays a string passthrough (KRO-safe — see below).
 | `version` | `2.11.2` | version label/status hint (`app.kubernetes.io/version` + `status.version`); cosmetic — set it to match your `image` tag |
 | `httpPort` / `httpsPort` | `80` / `443` | Service + container ports |
 | `serviceType` | `ClusterIP` | reach it via a tunnel; no public LB by default |
-| `persistence.size` | `1Gi` | size of the always-created `/data` PVC |
-| `persistence.storageClass` | cluster default | storage class for the PVC |
+| `persistence.size` | `1Gi` | size of the `/data` PVC. **Default mode only** — rejected in ephemeral mode |
+| `persistence.storageClass` | cluster default | storage class for the PVC. **Default mode only** — rejected in ephemeral mode |
 | `resources` | — | container requests/limits |
 
 ## Why the Caddyfile is a string (KRO safety)
@@ -95,9 +122,11 @@ applies the resources directly. `toYaml()` renders the RGD for GitOps.
 
 ## Prerequisites
 
-- A **default StorageClass** (or set `persistence.storageClass`) so the `/data` PVC binds.
+- In the default (PVC) mode, a **default StorageClass** (or set `persistence.storageClass`) so the `/data`
+  PVC binds. Ephemeral mode needs no StorageClass.
 - To get a green lock in a browser/client, **trust Caddy's internal CA root** once (Caddy serves it; it's
-  also in the PVC under `/data/caddy/pki/authorities/local/root.crt`).
+  also under `/data/caddy/pki/authorities/local/root.crt`). In ephemeral mode the CA changes whenever the
+  pod restarts, so expect to re-trust then.
 
 ## Next steps
 

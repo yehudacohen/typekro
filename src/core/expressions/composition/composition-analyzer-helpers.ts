@@ -298,10 +298,14 @@ export function conditionToCel(
     return `(${present} && ${refPath} ${operator} ${rightValue})`;
   };
 
-  // Replace the spec parameter name with schema.spec
-  // Must use word boundary to avoid replacing substrings
-  // escapeRegExp prevents regex injection if specParamName contains metacharacters
-  source = source.replace(new RegExp(`\\b${escapeRegExp(specParamName)}\\.`, 'g'), 'schema.spec.');
+  // Replace the spec parameter name with schema.spec. The negative lookbehind excludes a preceding
+  // `.`/word/`$`, so a RESOURCE's own member access (e.g. `dep.spec.replicas`) is NOT rewritten — only a
+  // standalone spec-param reference is. A bare `\b` boundary is insufficient: it still matches inside
+  // `dep.spec.`, mangling it to `dep.schema.spec.`. escapeRegExp prevents regex injection.
+  source = source.replace(
+    new RegExp(`(?<![\\w$.])${escapeRegExp(specParamName)}\\.`, 'g'),
+    'schema.spec.'
+  );
 
   // JS → CEL operator conversions
   source = source.replace(/===/g, '==');
@@ -446,9 +450,13 @@ export function conditionToCel(
 export function iterableToCel(node: ASTNode, fullSource: string, specParamName: string): string {
   let source = getSource(node, fullSource);
 
-  // Replace the spec parameter name with schema.spec
-  // escapeRegExp prevents regex injection if specParamName contains metacharacters
-  source = source.replace(new RegExp(`\\b${escapeRegExp(specParamName)}\\.`, 'g'), 'schema.spec.');
+  // Replace the spec parameter name with schema.spec. Negative lookbehind so a resource's own `.spec`
+  // member access isn't mangled (see replaceSpecParamWithSchema above for why `\b` is insufficient).
+  // escapeRegExp prevents regex injection if specParamName contains metacharacters.
+  source = source.replace(
+    new RegExp(`(?<![\\w$.])${escapeRegExp(specParamName)}\\.`, 'g'),
+    'schema.spec.'
+  );
 
   // Convert arrow function callbacks to CEL lambda syntax
   // Pattern: .filter((w) => w.enabled) → .filter(w, w.enabled)
