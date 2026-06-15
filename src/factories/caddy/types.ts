@@ -3,8 +3,10 @@
  *
  * Caddy here is a CONFIG-DRIVEN reverse proxy (not the Caddy ingress-controller, and not a Helm
  * bootstrap): the composition runs the official `caddy` image with a Caddyfile we supply, and emits a
- * ConfigMap (Caddyfile) + Deployment + Service + PVC. Caddy's built-in `tls internal` issues certs from a
- * local CA (no cert-manager), so the PVC persists `/data` (the CA root) across restarts.
+ * ConfigMap (Caddyfile) + Deployment + Service + a `/data` volume. Caddy's built-in `tls internal` issues
+ * certs from a local CA (no cert-manager). By default `/data` is a PVC so the CA root persists across
+ * restarts; `makeCaddyIngress({ ephemeral: true })` uses an `emptyDir` instead (CA regenerates per pod),
+ * and that variant takes no `persistence` config (see `CaddyIngressEphemeralConfigSchema`).
  *
  * KRO-safety note: the Caddyfile is supplied as a STRING (`caddyfile`), not derived from a structured
  * `routes` array inside the composition. A `routes` array would be a graph proxy in KRO mode and cannot be
@@ -40,7 +42,7 @@ const persistenceSchemaShape = {
  * dropped — notably `replicaCount`: this composition is single-replica by design (the `tls internal` CA
  * lives in a RWO PVC one pod owns), so a replica knob would invite a broken multi-pod-shares-RWO setup.
  */
-export const CaddyIngressConfigSchema = type({
+const baseCaddyIngressShape = {
   '+': 'reject',
   name: 'string',
   'namespace?': 'string',
@@ -59,11 +61,24 @@ export const CaddyIngressConfigSchema = type({
   'httpsPort?': 'number',
   /** Service type (default ClusterIP — reached via the access tunnel; no public LB). */
   'serviceType?': '"ClusterIP" | "NodePort" | "LoadBalancer"',
-  /** Sizing for the always-created `/data` PVC that holds the `tls internal` CA root (default 1Gi). */
-  'persistence?': persistenceSchemaShape,
   'resources?': resourceRequirementsSchemaShape,
+} as const;
+
+/** The default (PVC-backed) Caddy-ingress config. `persistence` sizes the `/data` PVC. */
+export const CaddyIngressConfigSchema = type({
+  ...baseCaddyIngressShape,
+  /** Sizing for the `/data` PVC that holds the `tls internal` CA root (default 1Gi). PVC mode only. */
+  'persistence?': persistenceSchemaShape,
 });
 export type CaddyIngressConfig = typeof CaddyIngressConfigSchema.infer;
+
+/**
+ * The ephemeral (emptyDir) Caddy-ingress config — used by `makeCaddyIngress({ ephemeral: true })`. It has
+ * NO `persistence` field: there is no PVC to size, so a `persistence` value would be silently ignored.
+ * The inherited `'+': 'reject'` makes passing `persistence` (or any unknown key) fail loudly instead.
+ */
+export const CaddyIngressEphemeralConfigSchema = type({ ...baseCaddyIngressShape });
+export type CaddyIngressEphemeralConfig = typeof CaddyIngressEphemeralConfigSchema.infer;
 
 /**
  * Caddy ingress status. `ready` is a direct Deployment-proxy comparison (multi-resource non-Helm

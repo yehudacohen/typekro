@@ -3,6 +3,7 @@ import { type } from 'arktype';
 import { caddyIngress, makeCaddyIngress, DEFAULT_CADDY_VERSION } from '../../../src/factories/caddy/index.js';
 import {
   CaddyIngressConfigSchema,
+  CaddyIngressEphemeralConfigSchema,
   CaddyIngressStatusSchema,
 } from '../../../src/factories/caddy/types.js';
 
@@ -111,6 +112,19 @@ describe('Caddy ingress composition', () => {
       const yaml = makeCaddyIngress().toYaml();
       expect(yaml).toContain('kind: PersistentVolumeClaim');
       expect(yaml).not.toContain('emptyDir');
+    });
+
+    it('rejects persistence config in ephemeral mode (no PVC to size — fail loudly, not silently ignore)', () => {
+      // `persistence` is intentionally not a field of the ephemeral schema; type it as `unknown` so the
+      // compiler lets us feed the invalid shape through and assert the RUNTIME rejection.
+      const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, persistence: { size: '2Gi' } };
+      const rejected = CaddyIngressEphemeralConfigSchema(invalid);
+      expect(rejected instanceof type.errors).toBe(true);
+    });
+
+    it('accepts a valid ephemeral config (no persistence)', () => {
+      const ok = CaddyIngressEphemeralConfigSchema({ name: 'caddy', caddyfile: SAMPLE_CADDYFILE });
+      expect(ok instanceof type.errors).toBe(false);
     });
   });
 });

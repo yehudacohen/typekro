@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Pending`, PV node-affinity mismatch) when a node/AZ changes under it. The choice is resolved when the
   composition is constructed (a real value, not a KRO spec field), so it selects the resource set
   statically and never needs an unsafe runtime conditional. The default `caddyIngress` is unchanged
-  (PVC-backed).
+  (PVC-backed). Ephemeral mode validates against a dedicated schema (`CaddyIngressEphemeralConfigSchema`)
+  with no `persistence` field, so passing `persistence` config in ephemeral mode is rejected loudly
+  rather than silently ignored.
 
 ## [0.16.0] - 2026-06-14
 
