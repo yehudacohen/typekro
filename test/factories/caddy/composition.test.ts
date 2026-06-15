@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { caddyIngress, DEFAULT_CADDY_VERSION } from '../../../src/factories/caddy/index.js';
+import { caddyIngress, makeCaddyIngress, DEFAULT_CADDY_VERSION } from '../../../src/factories/caddy/index.js';
 import {
   CaddyIngressConfigSchema,
   CaddyIngressStatusSchema,
@@ -90,5 +90,27 @@ describe('Caddy ingress composition', () => {
 
   it('defaults the image tag to the verified current Caddy version', () => {
     expect(DEFAULT_CADDY_VERSION).toBe('2.11.2');
+  });
+
+  describe('ephemeral storage (makeCaddyIngress({ ephemeral: true }))', () => {
+    it('emits an emptyDir for /data and NO PersistentVolumeClaim', () => {
+      const yaml = makeCaddyIngress({ ephemeral: true }).toYaml();
+      expect(yaml).toContain('kind: Deployment');
+      expect(yaml).toContain('emptyDir');
+      expect(yaml).not.toContain('kind: PersistentVolumeClaim');
+    });
+
+    it('still mounts /data and keeps the single-replica Recreate design', () => {
+      const yaml = makeCaddyIngress({ ephemeral: true }).toYaml();
+      expect(yaml).toContain('/data');
+      expect(yaml).toContain('replicas: 1');
+      expect(yaml).toContain('Recreate');
+    });
+
+    it('the default composition is unchanged (still PVC-backed, no emptyDir)', () => {
+      const yaml = makeCaddyIngress().toYaml();
+      expect(yaml).toContain('kind: PersistentVolumeClaim');
+      expect(yaml).not.toContain('emptyDir');
+    });
   });
 });

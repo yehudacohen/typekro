@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-15
+
+### Added
+
+- Caddy ingress: a build-time `makeCaddyIngress({ ephemeral?: boolean })` option. With `ephemeral: true`
+  the `/data` volume is an `emptyDir` instead of the default PVC — Caddy's `tls internal` CA regenerates
+  per pod, but the plane no longer depends on a single-AZ ReadWriteOnce volume that strands the pod
+  (`Pending`, PV node-affinity mismatch) when a node/AZ changes under it. The choice is resolved when the
+  composition is constructed (a real value, not a KRO spec field), so it selects the resource set
+  statically and never needs an unsafe runtime conditional. The default `caddyIngress` is unchanged
+  (PVC-backed).
+
 ## [0.16.0] - 2026-06-14
 
 ### Added

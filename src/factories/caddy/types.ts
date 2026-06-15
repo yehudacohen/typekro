@@ -21,9 +21,11 @@ const resourceRequirementsSchemaShape = {
 } as const;
 
 /**
- * Sizing for the PVC backing Caddy's `/data` (the `tls internal` CA root + issued certs). The PVC is
- * always created — persisting the CA root is required so it's stable across restarts; an ephemeral/emptyDir
- * mode isn't offered because a conditional volume can't be expressed safely in KRO (compound includeWhen).
+ * Sizing for the PVC backing Caddy's `/data` (the `tls internal` CA root + issued certs), persisting the
+ * CA across restarts. An `emptyDir` alternative IS available, but as a BUILD-TIME option on the
+ * composition (`makeCaddyIngress({ ephemeral: true })`), not a spec field — the storage choice is made
+ * when the composition is constructed, so it selects the resource set statically and never needs a KRO
+ * runtime conditional. (A spec-field toggle would require an unsafe compound `includeWhen`.)
  */
 const persistenceSchemaShape = {
   'size?': 'string',

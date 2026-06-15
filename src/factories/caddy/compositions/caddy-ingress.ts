@@ -31,7 +31,28 @@ export const DEFAULT_CADDY_HTTP_PORT = 80;
 export const DEFAULT_CADDY_HTTPS_PORT = 443;
 export const DEFAULT_CADDY_PVC_SIZE = '1Gi';
 
-export const caddyIngress = kubernetesComposition(
+/**
+ * Build-time options for {@link makeCaddyIngress}. These are resolved when the composition is
+ * CONSTRUCTED (real JS values), NOT KRO spec fields — so they select the resource set statically and
+ * never require a runtime `includeWhen` conditional (which KRO cannot express safely here).
+ */
+export interface CaddyIngressOptions {
+  /**
+   * Use an `emptyDir` for `/data` instead of the persistent EBS-backed PVC. Caddy's `tls internal` CA
+   * root then lives only for the pod's lifetime — it REGENERATES on restart (clients re-trust). Trades
+   * CA stability for resilience: the default PVC is a single-AZ RWO volume, so a node/AZ change strands
+   * the pod (`Pending`, PV node-affinity mismatch). `ephemeral` removes that failure mode. Default false.
+   */
+  readonly ephemeral?: boolean;
+}
+
+/**
+ * Construct a Caddy-ingress composition. The default ({@link caddyIngress}) persists `/data` on a PVC;
+ * pass `{ ephemeral: true }` for an `emptyDir`-backed plane that tolerates node/AZ changes (see
+ * {@link CaddyIngressOptions.ephemeral}).
+ */
+export const makeCaddyIngress = (options: CaddyIngressOptions = {}) =>
+  kubernetesComposition(
   {
     name: 'caddy-ingress',
     kind: 'CaddyIngress',
@@ -68,22 +89,31 @@ export const caddyIngress = kubernetesComposition(
       id: 'caddyConfig',
     });
 
-    // Always create the PVC: Caddy's `tls internal` CA root lives in /data and must survive restarts.
-    persistentVolumeClaim({
-      metadata: { name: pvcName, namespace: ns, labels },
-      spec: {
-        accessModes: ['ReadWriteOnce'],
-        resources: { requests: { storage: pvcSize } },
-        ...(spec.persistence?.storageClass
-          ? { storageClassName: spec.persistence.storageClass }
-          : {}),
-      },
-      id: 'caddyData',
-    });
+    // `/data` holds Caddy's `tls internal` CA root. Default: a PVC so the CA survives restarts. Ephemeral
+    // (build-time option): an emptyDir — the CA regenerates per pod, but the plane no longer depends on a
+    // single-AZ RWO volume that strands the pod on a node/AZ change. The choice is made HERE (real JS
+    // boolean), so only one resource set is registered — no KRO runtime conditional.
+    let dataVolume: V1Volume;
+    if (options.ephemeral) {
+      dataVolume = { name: 'data', emptyDir: {} };
+    } else {
+      persistentVolumeClaim({
+        metadata: { name: pvcName, namespace: ns, labels },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          resources: { requests: { storage: pvcSize } },
+          ...(spec.persistence?.storageClass
+            ? { storageClassName: spec.persistence.storageClass }
+            : {}),
+        },
+        id: 'caddyData',
+      });
+      dataVolume = { name: 'data', persistentVolumeClaim: { claimName: pvcName } };
+    }
 
     const volumes: V1Volume[] = [
       { name: 'caddyfile', configMap: { name: configMapName } },
-      { name: 'data', persistentVolumeClaim: { claimName: pvcName } },
+      dataVolume,
     ];
 
     const caddyDeployment = deployment({
@@ -164,4 +194,7 @@ export const caddyIngress = kubernetesComposition(
       version,
     };
   }
-);
+  );
+
+/** The default Caddy-ingress composition (PVC-backed `/data`). See {@link makeCaddyIngress} for options. */
+export const caddyIngress = makeCaddyIngress();
