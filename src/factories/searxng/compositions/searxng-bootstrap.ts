@@ -22,6 +22,7 @@
  */
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -111,6 +112,7 @@ function withKroInstanceValidation(
   });
 }
 
+function buildSearxngBootstrap() {
 const searxngBootstrapComposition = kubernetesComposition(
   {
     name: 'searxng-bootstrap',
@@ -467,4 +469,9 @@ Object.defineProperty(searxngBootstrapComposition, 'factory', {
   configurable: true,
 });
 
-export const searxngBootstrap = searxngBootstrapComposition;
+  return searxngBootstrapComposition;
+}
+
+// Wrapped lazily so importing this module does not eagerly serialize the
+// SearxNG resource graph (and so reading `.factory` above runs only on use).
+export const searxngBootstrap = lazyComposition(buildSearxngBootstrap);

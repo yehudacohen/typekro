@@ -1,5 +1,6 @@
 import type { V1EnvFromSource } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
@@ -97,7 +98,7 @@ import {
  * });
  * ```
  */
-export const webAppWithProcessing = kubernetesComposition(
+export const webAppWithProcessing = lazyComposition(() => kubernetesComposition(
   {
     name: 'web-app-with-processing',
     kind: 'WebAppWithProcessing',
@@ -407,4 +408,4 @@ export const webAppWithProcessing = kubernetesComposition(
       },
     };
   }
-);
+));

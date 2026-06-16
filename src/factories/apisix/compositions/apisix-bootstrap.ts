@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -338,51 +339,66 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
   );
 }
 
-const apisixBootstrapBase = createApisixBootstrap(false);
+/**
+ * Build the configured APISIX bootstrap composition, installing the custom
+ * `.factory`/`.toYaml` wrappers that require concrete admin credentials when a
+ * KRO definition is generated without a spec.
+ *
+ * This runs lazily (see {@link lazyComposition} below) so importing this module
+ * does NOT eagerly serialize the APISIX resource graph — the whole point of the
+ * lazy-factory fix. Everything that previously ran at module scope (including
+ * reading `.factory`, which would itself force serialization) now runs only on
+ * first use of the factory.
+ */
+function buildApisixBootstrap() {
+  const apisixBootstrapBase = createApisixBootstrap(false);
 
-const originalFactory = apisixBootstrapBase.factory.bind(apisixBootstrapBase);
-function apisixBootstrapFactory(
-  mode: 'kro',
-  options?: PublicFactoryOptions
-): KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
-function apisixBootstrapFactory(
-  mode: 'direct',
-  options?: PublicFactoryOptions
-): DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
-function apisixBootstrapFactory(
-  mode: 'kro' | 'direct',
-  options?: PublicFactoryOptions
-):
-  | KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>
-  | DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus> {
-  if (mode === 'kro') {
-    const factory = createApisixBootstrap(false).factory('kro', options);
-    const originalToYaml = factory.toYaml.bind(factory);
-    (factory as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
-      spec?: APISixBootstrapConfig
-    ) => {
-      if (spec !== undefined) {
-        return originalToYaml(spec);
-      }
-      return createApisixBootstrap(true).factory('kro', options).toYaml();
-    };
-    return factory;
+  const originalFactory = apisixBootstrapBase.factory.bind(apisixBootstrapBase);
+  function apisixBootstrapFactory(
+    mode: 'kro',
+    options?: PublicFactoryOptions
+  ): KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
+  function apisixBootstrapFactory(
+    mode: 'direct',
+    options?: PublicFactoryOptions
+  ): DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>;
+  function apisixBootstrapFactory(
+    mode: 'kro' | 'direct',
+    options?: PublicFactoryOptions
+  ):
+    | KroResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus>
+    | DirectResourceFactory<APISixBootstrapConfig, APISixBootstrapStatus> {
+    if (mode === 'kro') {
+      const factory = createApisixBootstrap(false).factory('kro', options);
+      const originalToYaml = factory.toYaml.bind(factory);
+      (factory as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
+        spec?: APISixBootstrapConfig
+      ) => {
+        if (spec !== undefined) {
+          return originalToYaml(spec);
+        }
+        return createApisixBootstrap(true).factory('kro', options).toYaml();
+      };
+      return factory;
+    }
+    return originalFactory(mode, options);
   }
-  return originalFactory(mode, options);
+
+  (apisixBootstrapBase as { factory: typeof apisixBootstrapBase.factory }).factory =
+    apisixBootstrapFactory;
+
+  // Require concrete credentials when generating a KRO definition so omitted
+  // CR fields do not become chart defaults.
+  (apisixBootstrapBase as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
+    spec?: APISixBootstrapConfig
+  ) => {
+    if (spec !== undefined) {
+      return createApisixBootstrap(false).factory('kro').toYaml(spec);
+    }
+    return createApisixBootstrap(true).toYaml();
+  };
+
+  return apisixBootstrapBase;
 }
 
-(apisixBootstrapBase as { factory: typeof apisixBootstrapBase.factory }).factory =
-  apisixBootstrapFactory;
-
-// Keep module imports side-effect safe, but require concrete credentials when
-// generating a KRO definition so omitted CR fields do not become chart defaults.
-(apisixBootstrapBase as { toYaml: (spec?: APISixBootstrapConfig) => string }).toYaml = (
-  spec?: APISixBootstrapConfig
-) => {
-  if (spec !== undefined) {
-    return createApisixBootstrap(false).factory('kro').toYaml(spec);
-  }
-  return createApisixBootstrap(true).toYaml();
-};
-
-export const apisixBootstrap = apisixBootstrapBase;
+export const apisixBootstrap = lazyComposition(buildApisixBootstrap);
