@@ -6,7 +6,11 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { DEFAULT_DEPLOYMENT_TIMEOUT, DEFAULT_POLL_INTERVAL } from '../config/defaults.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_READINESS_PROBE_TIMEOUT,
+} from '../config/defaults.js';
 import { DeploymentTimeoutError, ensureError, ResourceGraphFactoryError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
 import { getMetadataField, getReadinessEvaluator } from '../metadata/index.js';
@@ -165,17 +169,26 @@ export class ReadinessWaiter {
       try {
         // Use custom readiness evaluator
         // In the new API, methods return objects directly (no .body wrapper)
-        // Wrap with abort signal handling to stop waiting if aborted
+        // Bound this single probe with a HARD per-attempt deadline (clamped to the
+        // remaining overall budget) AND the external abort signal. Without the
+        // deadline a probe that hangs *before* the HTTP layer arms its own timeout —
+        // e.g. an exec credential plugin (`aws eks get-token`) blocking on expired
+        // AWS/SSO credentials — would never return, so the `while` condition below
+        // (only re-checked between iterations) would never re-evaluate and the
+        // configured `timeout` would never fire. The deadline guarantees the loop
+        // makes progress and ultimately throws DeploymentTimeoutError.
         const clusterScoped = getMetadataField(deployedResource.manifest, 'scope') === 'cluster';
-        const liveResource = await this.withAbortSignal(
-          this.k8sApi.read({
+        const remaining = timeout - (Date.now() - startTime);
+        const liveResource = await this.readWithDeadline(
+          {
             apiVersion: deployedResource.manifest.apiVersion || '',
             kind: deployedResource.kind,
             metadata: {
               name: deployedResource.name,
               ...(clusterScoped ? {} : { namespace: deployedResource.namespace }),
             },
-          }),
+          },
+          remaining,
           abortSignal
         );
 
@@ -297,6 +310,68 @@ export class ReadinessWaiter {
       timeout,
       'readiness'
     );
+  }
+
+  /**
+   * Read a resource from the cluster bounded by a HARD deadline.
+   *
+   * Races the (abort-aware) read against a wall-clock timer so that an attempt
+   * which never settles — because the underlying client or its auth (e.g. an
+   * exec credential plugin spawning `aws eks get-token`) is stuck and ignores
+   * the abort — is force-rejected. The deadline is the smaller of the remaining
+   * overall readiness budget and a per-attempt probe cap, so the configured
+   * `timeout` is always honored as the wall-clock ceiling.
+   *
+   * Two distinct abort sources:
+   *  - `externalSignal` (an outer deployment-level abort) is threaded straight
+   *    into `withAbortSignal`, so an external abort surfaces as an AbortError the
+   *    poll loop re-throws — cancelling the wait, as intended.
+   *  - the internal per-attempt deadline rejects with a dedicated
+   *    `ReadinessProbeTimeoutError` (NOT AbortError) so the loop treats a single
+   *    stalled probe as a transient failure and keeps polling until the OVERALL
+   *    budget is exhausted, then throws the resource-named DeploymentTimeoutError.
+   */
+  private async readWithDeadline(
+    resourceRef: Parameters<k8s.KubernetesObjectApi['read']>[0],
+    remainingBudgetMs: number,
+    externalSignal?: AbortSignal
+  ): Promise<k8s.KubernetesObject> {
+    // Per-attempt cap, never longer than what's left of the overall budget.
+    // A non-positive budget means we're already past the deadline.
+    const deadlineMs = Math.max(1, Math.min(DEFAULT_READINESS_PROBE_TIMEOUT, remainingBudgetMs));
+
+    // Internal controller used ONLY to tear down the in-flight request when the
+    // deadline fires (best-effort — a stuck exec-auth call may not honor it).
+    const teardown = new AbortController();
+
+    // The read is raced against both the external signal (genuine cancellation)
+    // and the internal teardown signal (deadline cleanup). Swallow the wrapper's
+    // rejection on the non-winning branch so a dangling read promise does not
+    // surface as an unhandled rejection after the race settles.
+    const linked = externalSignal
+      ? AbortSignal.any([externalSignal, teardown.signal])
+      : teardown.signal;
+    const readPromise = this.withAbortSignal(this.k8sApi.read(resourceRef), linked);
+    readPromise.catch(() => {
+      // intentionally ignored — see above
+    });
+
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        teardown.abort();
+        const err = new Error(`Readiness probe timed out after ${deadlineMs}ms`);
+        err.name = 'ReadinessProbeTimeoutError';
+        reject(err);
+      }, deadlineMs);
+      deadlineTimer.unref?.();
+    });
+
+    try {
+      return (await Promise.race([readPromise, deadline])) as k8s.KubernetesObject;
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
   }
 
   /**
