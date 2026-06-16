@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { Cel } from '../../../core/references/cel.js';
 import { dagsterHelmRepository } from '../resources/helm.js';
 import {
@@ -19,7 +20,7 @@ import {
  * shared HelmRepository is owned outside any single instance's ApplySet and
  * every instance's HelmRelease references it by the same `sourceRef`.
  */
-export const dagsterHelmRepositoryBootstrap = kubernetesComposition(
+export const dagsterHelmRepositoryBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'dagster-helm-repository',
     kind: 'DagsterHelmRepository',
@@ -41,4 +42,4 @@ export const dagsterHelmRepositoryBootstrap = kubernetesComposition(
       ),
     };
   }
-);
+));

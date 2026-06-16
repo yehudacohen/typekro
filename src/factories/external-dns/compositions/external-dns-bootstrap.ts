@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { getInnerCelPath } from '../../../core/serialization/cel-references.js';
@@ -172,7 +173,7 @@ function buildHelmValues(config: ExternalDnsHelmValues): ExternalDnsHelmValueInp
  * });
  * ```
  */
-export const externalDnsBootstrap = kubernetesComposition(
+export const externalDnsBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'external-dns-bootstrap',
     // apiVersion defaults to 'v1alpha1' and Kro adds kro.run group automatically
@@ -297,4 +298,4 @@ export const externalDnsBootstrap = kubernetesComposition(
       },
     };
   }
-);
+));
