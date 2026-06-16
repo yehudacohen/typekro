@@ -13,6 +13,7 @@ import { ResourceReadinessChecker } from '../../src/core/deployment/readiness.js
 import type { ReadinessWaiterDeps } from '../../src/core/deployment/readiness-waiter.js';
 import { ReadinessWaiter } from '../../src/core/deployment/readiness-waiter.js';
 import { DeploymentTimeoutError, ResourceGraphFactoryError } from '../../src/core/errors.js';
+import { ResourceReadinessTimeoutError } from '../../src/core/deployment/errors.js';
 import type { TypeKroLogger } from '../../src/core/logging/types.js';
 import {
   clearResourceMetadata,
@@ -399,6 +400,45 @@ describe('ReadinessWaiter', () => {
       ).rejects.toBeInstanceOf(DeploymentTimeoutError);
     });
 
+    it('rejects with DeploymentTimeoutError when the k8s read never settles (hung exec-auth)', async () => {
+      // Reproduces the production hang: when the kube client's exec credential
+      // plugin (`aws eks get-token`) blocks on expired AWS/SSO credentials, the
+      // underlying read promise never resolves. Without a per-attempt deadline
+      // the poll loop's `while (Date.now() - startTime < timeout)` condition is
+      // never re-evaluated (the await never returns), so the configured timeout
+      // is never honored — the wait hangs indefinitely (observed ~6 hours).
+      const deployed = makeDeployedResource({ kind: 'Deployment', name: 'hung-read' });
+      setReadinessEvaluator(deployed.manifest, () => ({ ready: false }));
+
+      // A read that NEVER settles — models the stuck exec-auth call.
+      (mockK8sApi.read as ReturnType<typeof mock>).mockImplementation(
+        () => new Promise(() => {})
+      );
+
+      const deps = createMockDeps();
+      const waiter = new ReadinessWaiter(
+        mockK8sApi,
+        readyResources,
+        readinessChecker,
+        logger,
+        undefined,
+        deps
+      );
+
+      // Short overall timeout: the wait must REJECT promptly (within ~timeout),
+      // not hang. The per-attempt deadline is clamped to the remaining budget,
+      // so the loop exits and throws DeploymentTimeoutError.
+      const start = Date.now();
+      await expect(
+        waiter.waitForResourceReady(deployed, { mode: 'direct', timeout: 200 })
+      ).rejects.toBeInstanceOf(DeploymentTimeoutError);
+      const elapsed = Date.now() - start;
+
+      // Should fail close to the configured window, never run away. Generous
+      // upper bound to stay non-flaky while still proving it does not hang.
+      expect(elapsed).toBeLessThan(5_000);
+    });
+
     it('emits resource-ready event when resource becomes ready', async () => {
       const deployed = makeDeployedResource({ kind: 'Deployment', name: 'event-deploy' });
       setReadinessEvaluator(deployed.manifest, () => ({ ready: true }));
@@ -647,6 +687,33 @@ describe('ReadinessWaiter', () => {
 
       await waiter.isDeployedResourceReady(deployed);
       expect(logSpy).toHaveBeenCalled();
+    });
+  });
+
+  // ===========================================================================
+  // ResourceReadinessChecker.waitForResourceReady (the no-abort-signal path)
+  // ===========================================================================
+
+  describe('ResourceReadinessChecker.waitForResourceReady', () => {
+    it('rejects with ResourceReadinessTimeoutError when the k8s read never settles', async () => {
+      // The generic polling path has NO abort-signal plumbing, so a per-attempt
+      // deadline is the only escape hatch from a hung exec-auth read. Without it,
+      // a never-settling read stalls the loop indefinitely.
+      const deployed = makeDeployedResource({ kind: 'Deployment', name: 'hung-generic' });
+
+      (mockK8sApi.read as ReturnType<typeof mock>).mockImplementation(
+        () => new Promise(() => {})
+      );
+
+      const checker = new ResourceReadinessChecker(mockK8sApi);
+
+      const start = Date.now();
+      await expect(
+        checker.waitForResourceReady(deployed, { mode: 'direct', timeout: 200 }, () => {})
+      ).rejects.toBeInstanceOf(ResourceReadinessTimeoutError);
+      const elapsed = Date.now() - start;
+
+      expect(elapsed).toBeLessThan(5_000);
     });
   });
 });
