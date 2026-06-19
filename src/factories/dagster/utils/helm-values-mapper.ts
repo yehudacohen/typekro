@@ -17,9 +17,9 @@ import type { TypeKroValueTree, TypeKroValueTreeObject } from '../../../core/typ
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   DagsterBootstrapConfig,
-  DagsterConfigValidationResult,
   DagsterConfigurationErrorCode,
   DagsterConfigurationIssue,
+  DagsterConfigValidationResult,
   DagsterHelmValues,
   DagsterImageConfig,
   DagsterMappedHelmValues,
@@ -59,7 +59,9 @@ export class DagsterConfigurationValidationError extends TypeKroError {
 }
 
 /** Validate cross-field Dagster config rules that ArkType cannot express alone. */
-export function validateDagsterConfig(config: DagsterBootstrapConfig): DagsterConfigValidationResult {
+export function validateDagsterConfig(
+  config: DagsterBootstrapConfig
+): DagsterConfigValidationResult {
   const issues: DagsterConfigurationIssue[] = [];
 
   validateUserDeployments(config, issues);
@@ -128,8 +130,7 @@ function validateUserDeployments(
         code: 'DAGSTER_REQUIRED_CONFIG_MISSING',
         path: `userDeployments.deployments[${index}]`,
         component: 'userDeployments',
-        message:
-          'Each typed Dagster user deployment must set exactly one server argument field.',
+        message: 'Each typed Dagster user deployment must set exactly one server argument field.',
       });
     }
   });
@@ -149,7 +150,8 @@ function validateRunLauncher(
     !!config.redis?.brokerUrl ||
     !!config.redis?.backendUrl;
   const hasSecret = !!config.global?.celeryConfigSecretName;
-  const hasRawCeleryConfig = hasRawPath(config.values, 'runLauncher') || hasRawPath(config.values, 'redis');
+  const hasRawCeleryConfig =
+    hasRawPath(config.values, 'runLauncher') || hasRawPath(config.values, 'redis');
 
   if (!hasRabbitmq && !hasRedis && !hasSecret && !hasRawCeleryConfig) {
     issues.push({
@@ -277,12 +279,21 @@ function mapDaemonConfig(
   setIfDefined(mapped, 'runRetries', copyDefinedObject(daemon.runRetries));
   setIfDefined(mapped, 'sensors', copyDefinedObject(daemon.sensors));
   setIfDefined(mapped, 'schedules', copyDefinedObject(daemon.schedules));
+  // Forward probe overrides to the chart. The webserver path forwards these too;
+  // omitting them here silently dropped any user-supplied daemon probe so a hung
+  // daemon (e.g. "too many retries for DB connection") would never be restarted.
+  setIfDefined(mapped, 'readinessProbe', copyDefinedObject(daemon.readinessProbe));
+  setIfDefined(mapped, 'livenessProbe', copyDefinedObject(daemon.livenessProbe));
+  setIfDefined(mapped, 'startupProbe', copyDefinedObject(daemon.startupProbe));
   mapPodConfig(mapped, daemon);
 
   return mapped;
 }
 
-function mapPodConfig(target: TypeKroValueTreeObject, podConfig: NonNullable<DagsterBootstrapConfig['webserver']>): void {
+function mapPodConfig(
+  target: TypeKroValueTreeObject,
+  podConfig: NonNullable<DagsterBootstrapConfig['webserver']>
+): void {
   setIfDefined(target, 'labels', podConfig.labels);
   setIfDefined(target, 'nodeSelector', podConfig.nodeSelector);
   setIfDefined(target, 'affinity', copyDefinedObject(podConfig.affinity));
@@ -303,7 +314,11 @@ function mapUserDeployments(config: DagsterBootstrapConfig): TypeKroValueTreeObj
 
   const mapped: TypeKroValueTreeObject = {};
   setIfDefined(mapped, 'enabled', userDeployments.enabled);
-  setIfDefined(mapped, 'enableSubchart', userDeployments.enableSubchart ?? userDeployments.enabled ?? false);
+  setIfDefined(
+    mapped,
+    'enableSubchart',
+    userDeployments.enableSubchart ?? userDeployments.enabled ?? false
+  );
   setIfDefined(mapped, 'imagePullSecrets', copyDefinedArray(userDeployments.imagePullSecrets));
 
   const deployments = userDeployments.deployments;
@@ -374,7 +389,11 @@ function mapRunLauncher(config: DagsterBootstrapConfig): TypeKroValueTreeObject 
     'celeryK8sRunLauncher',
     copyDefinedObject(runLauncher.celeryK8sRunLauncher)
   );
-  setIfDefined(launcherConfig, 'customRunLauncher', copyDefinedObject(runLauncher.customRunLauncher));
+  setIfDefined(
+    launcherConfig,
+    'customRunLauncher',
+    copyDefinedObject(runLauncher.customRunLauncher)
+  );
 
   if (Object.keys(launcherConfig).length > 0) {
     mapped.config = launcherConfig;
@@ -425,10 +444,7 @@ function mapRedis(config: DagsterBootstrapConfig): DagsterRuntimeValueTree | und
   return mergeSubValues(mapped, redis.values);
 }
 
-function mergeSubValues(
-  mapped: TypeKroValueTreeObject,
-  values: unknown
-): DagsterRuntimeValueTree {
+function mergeSubValues(mapped: TypeKroValueTreeObject, values: unknown): DagsterRuntimeValueTree {
   if (values === undefined) return mapped;
   if (isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)) {
     return mergeValuesExpression(mapped, values);
@@ -443,7 +459,8 @@ function mergeSubValues(
 }
 
 function isEmittableValue(value: DagsterRuntimeValueTree): boolean {
-  if (isValuesMergeExpression(value) || isKubernetesRef(value) || isCelExpression(value)) return true;
+  if (isValuesMergeExpression(value) || isKubernetesRef(value) || isCelExpression(value))
+    return true;
   return !isMergeObject(value) || Object.keys(value).length > 0;
 }
 
@@ -513,7 +530,11 @@ function deepMerge(target: TypeKroValueTreeObject, source: TypeKroValueTreeObjec
   }
 }
 
-function mergeValue(key: string, baseValue: unknown, overlayValue: unknown): DagsterRuntimeValueTree {
+function mergeValue(
+  key: string,
+  baseValue: unknown,
+  overlayValue: unknown
+): DagsterRuntimeValueTree {
   if (baseValue === undefined) return overlayValue as DagsterRuntimeValueTree;
   if (overlayValue === undefined) return baseValue as DagsterRuntimeValueTree;
 
@@ -545,7 +566,11 @@ function mergeRawValuesLast(
   rawValues: unknown
 ): DagsterMappedHelmValues {
   if (rawValues === undefined) return baseValues;
-  if (isKubernetesRef(rawValues) || isCelExpression(rawValues) || isValuesMergeExpression(rawValues)) {
+  if (
+    isKubernetesRef(rawValues) ||
+    isCelExpression(rawValues) ||
+    isValuesMergeExpression(rawValues)
+  ) {
     return createDagsterValuesMerge(baseValues, rawValues);
   }
 
@@ -561,7 +586,11 @@ function createDagsterValuesMerge(
   baseValues: DagsterHelmValues,
   rawValues: unknown
 ): ValuesMergeExpression {
-  if (!isKubernetesRef(rawValues) && !isCelExpression(rawValues) && !isValuesMergeExpression(rawValues)) {
+  if (
+    !isKubernetesRef(rawValues) &&
+    !isCelExpression(rawValues) &&
+    !isValuesMergeExpression(rawValues)
+  ) {
     throw new DagsterConfigurationValidationError(
       'DAGSTER_INVALID_CONFIG',
       'DagsterConfigurationError DAGSTER_INVALID_CONFIG: values',
@@ -570,7 +599,8 @@ function createDagsterValuesMerge(
           {
             code: 'DAGSTER_INVALID_CONFIG',
             path: 'values',
-            message: 'Graph-aware raw values merge requires a KubernetesRef, CEL expression, or values merge expression.',
+            message:
+              'Graph-aware raw values merge requires a KubernetesRef, CEL expression, or values merge expression.',
           },
         ],
       }
