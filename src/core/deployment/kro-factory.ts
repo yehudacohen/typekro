@@ -8,6 +8,15 @@
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
+// Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
+// declarations the caller feeds to `KroResource`. Imported from focused modules (NOT the
+// alchemy barrel) so the factory never statically pulls the `alchemy/Provider` runtime.
+import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
+import type {
+  AlchemyResourceDeclaration,
+  SerializableKubeConfigOptions,
+} from '../../alchemy/types.js';
+import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
@@ -29,12 +38,6 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-// Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
-// declarations the caller feeds to `KroResource`. Imported from focused modules (NOT the
-// alchemy barrel) so the factory never statically pulls the `alchemy/Provider` runtime.
-import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
-import type { AlchemyResourceDeclaration, SerializableKubeConfigOptions } from '../../alchemy/types.js';
-import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -48,12 +51,14 @@ import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AppliedResource,
+  DeployedResource,
   DeploymentClosure,
   DeploymentContext,
   FactoryOptions,
   FactoryStatus,
   InternalResourceFactoryDeployOptions,
   KroCustomResourceProvider,
+  KroPrerequisiteContext,
   KroResourceFactory,
   ResourceGraphDefinitionProvider,
   RGDStatus,
@@ -561,7 +566,9 @@ export class KroResourceFactoryImpl<
     return definition.composition.factory('kro', {
       namespace: definition.registryNamespace,
       waitForReady: true,
-      ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+      ...(this.factoryOptions.timeout !== undefined
+        ? { timeout: this.factoryOptions.timeout }
+        : {}),
       ...(this.factoryOptions.kubeConfig !== undefined
         ? { kubeConfig: this.factoryOptions.kubeConfig }
         : {}),
@@ -1226,10 +1233,15 @@ export class KroResourceFactoryImpl<
     for (const definition of this.discoverSingletonDefinitions(spec)) {
       const singletonFactory = this.singletonFactoryFor(definition);
       try {
-        const decls = await singletonFactory.toAlchemyResources(definition.spec as KroCompatibleType, {
-          instanceNameOverride: getSingletonInstanceName(definition.id),
-          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
-        });
+        const decls = await singletonFactory.toAlchemyResources(
+          definition.spec as KroCompatibleType,
+          {
+            instanceNameOverride: getSingletonInstanceName(definition.id),
+            singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(
+              definition.specFingerprint
+            ),
+          }
+        );
         singletonDeclarations.push(...decls);
         // `toAlchemyResources` returns the owner's OWN CR instance LAST (after any of ITS nested
         // singletons + its RGD), so the consumer must wait on `decls[last]` — using "first decl
@@ -1657,6 +1669,8 @@ export class KroResourceFactoryImpl<
     });
 
     try {
+      await this.applyKroPrerequisites(deploymentEngine);
+
       // Deploy RGD using DirectDeploymentEngine with readiness checking
       this.logger.info('Deploying RGD via engine', { rgdName: this.rgdName });
       await deploymentEngine.deployResource(deployableRGD, {
@@ -1707,6 +1721,76 @@ export class KroResourceFactoryImpl<
     } finally {
       await deploymentEngine.dispose();
     }
+  }
+
+  private async applyKroPrerequisites(deploymentEngine: DirectDeploymentEngine): Promise<void> {
+    const prerequisites = this.factoryOptions.kroPrerequisites;
+    if (!prerequisites?.resources?.length && !prerequisites?.beforeResourceGraphDefinition) {
+      return;
+    }
+
+    const timeout = this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT;
+    const deployResource = async (
+      resource: KubernetesResource,
+      options: { waitForReady?: boolean } = {}
+    ): Promise<DeployedResource> => {
+      const deployed = await deploymentEngine.deployResource(
+        this.toPrerequisiteDeployable(resource),
+        {
+          mode: 'direct',
+          namespace: this.namespace,
+          waitForReady: options.waitForReady ?? false,
+          timeout,
+        }
+      );
+
+      const crdName = this.prerequisiteCRDName(resource);
+      if (crdName) {
+        await deploymentEngine.waitForCRDReady(crdName, timeout);
+      }
+
+      return deployed;
+    };
+
+    for (const resource of prerequisites.resources ?? []) {
+      await deployResource(resource);
+    }
+
+    if (prerequisites.beforeResourceGraphDefinition) {
+      const context: KroPrerequisiteContext = {
+        kubernetesApi: deploymentEngine.getKubernetesApi(),
+        kubeConfig: this.getKubeConfig(),
+        namespace: this.namespace,
+        timeout,
+        deployResource,
+        waitForCRDReady: (crdName, waitTimeout = timeout) =>
+          deploymentEngine.waitForCRDReady(crdName, waitTimeout),
+      };
+      await prerequisites.beforeResourceGraphDefinition(context);
+    }
+  }
+
+  private toPrerequisiteDeployable(
+    resource: KubernetesResource
+  ): DeployableK8sResource<Enhanced<unknown, unknown>> {
+    const name = resource.metadata?.name ?? 'unnamed';
+    return {
+      ...resource,
+      id: resource.id ?? `${resource.kind}-${name}`,
+      metadata: {
+        ...resource.metadata,
+      },
+    } as DeployableK8sResource<Enhanced<unknown, unknown>>;
+  }
+
+  private prerequisiteCRDName(resource: KubernetesResource): string | undefined {
+    if (
+      resource.apiVersion !== 'apiextensions.k8s.io/v1' ||
+      resource.kind !== 'CustomResourceDefinition'
+    ) {
+      return undefined;
+    }
+    return resource.metadata?.name;
   }
 
   /**

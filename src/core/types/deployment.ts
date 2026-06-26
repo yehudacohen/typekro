@@ -3,6 +3,7 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
+import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
   NESTED_COMPOSITION_BRAND,
@@ -14,7 +15,6 @@ import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import type { InferType, KroCompatibleType, SchemaProxy } from './schema.js';
 
 /**
@@ -554,6 +554,35 @@ export interface SingletonDefinitionRecord<
   readonly spec: TSpec;
 }
 
+/** Context passed to KRO prerequisite hooks before the ResourceGraphDefinition is deployed. */
+export interface KroPrerequisiteContext {
+  /** Configured Kubernetes Object API used by this factory deployment. */
+  readonly kubernetesApi: KubernetesObjectApi;
+  /** Configured KubeConfig used by this factory deployment. */
+  readonly kubeConfig: KubeConfig;
+  /** Factory namespace. */
+  readonly namespace: string;
+  /** Timeout budget in milliseconds for prerequisite deployment operations. */
+  readonly timeout: number;
+  /** Apply a prerequisite resource through TypeKro's deployment engine. */
+  deployResource(
+    resource: KubernetesResource,
+    options?: { waitForReady?: boolean }
+  ): Promise<DeployedResource>;
+  /** Wait for a CRD to become Established. */
+  waitForCRDReady(crdName: string, timeout?: number): Promise<void>;
+}
+
+/** Public KRO prerequisite deployment options. */
+export interface KroPrerequisiteOptions {
+  /** Resources to apply before the KRO ResourceGraphDefinition is deployed. */
+  readonly resources?: readonly KubernetesResource[];
+  /** Advanced hook for custom prerequisite work before the RGD is deployed. */
+  readonly beforeResourceGraphDefinition?: (
+    context: KroPrerequisiteContext
+  ) => Promise<void> | void;
+}
+
 /**
  * Options passed to `deploy()` on a `TypedResourceGraph`.
  *
@@ -577,6 +606,9 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
 
   /** Deployment closures for direct-mode factories */
   closures?: Record<string, DeploymentClosure>;
+
+  /** KRO-only resources or hook to run before the ResourceGraphDefinition is deployed. */
+  kroPrerequisites?: KroPrerequisiteOptions;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.

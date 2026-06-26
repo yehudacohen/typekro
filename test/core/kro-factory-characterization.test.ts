@@ -11,19 +11,22 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
+import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import { createKroResourceFactory } from '../../src/core/deployment/kro-factory.js';
 import { waitForKroInstanceReady } from '../../src/core/deployment/kro-readiness.js';
 import { singletonSpecFingerprintAnnotationValue } from '../../src/core/deployment/singleton-owner-drift.js';
-import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import { ValidationError } from '../../src/core/errors.js';
-import type { KroResourceFactory } from '../../src/core/types/deployment.js';
-import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
+import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
+import type {
+  KroPrerequisiteContext,
+  KroResourceFactory,
+  SingletonDefinitionRecord,
+} from '../../src/core/types/deployment.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
-import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
-import { kubernetesComposition, singleton } from '../../src/index.js';
 import { Deployment } from '../../src/factories/simple/index.js';
+import { kubernetesComposition, singleton } from '../../src/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +63,127 @@ describe('Kro readiness polling', () => {
         rgdName: 'example',
       })
     ).rejects.toThrow('Timeout waiting for Kro instance stale-ready');
+  });
+});
+
+describe('KroResourceFactory: prerequisite deployment', () => {
+  it('applies configured prerequisite resources before RGD deployment and waits for CRDs', async () => {
+    const crd: KubernetesResource = {
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: { name: 'widgets.example.com' },
+      spec: {
+        group: 'example.com',
+        names: { kind: 'Widget', plural: 'widgets' },
+        scope: 'Namespaced',
+        versions: [
+          {
+            name: 'v1',
+            served: true,
+            storage: true,
+            schema: { openAPIV3Schema: { type: 'object' } },
+          },
+        ],
+      },
+    };
+    const configMap: KubernetesResource = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: 'bootstrap', namespace: 'apps' },
+      data: { ready: 'true' },
+    };
+    const factory = makeFactory('prereqApp', {
+      namespace: 'apps',
+      kroPrerequisites: { resources: [crd, configMap] },
+    });
+    const deployedResources: KubernetesResource[] = [];
+    const waitedCRDs: string[] = [];
+    const engine = {
+      deployResource: async (
+        resource: KubernetesResource & { id?: string },
+        options: Record<string, unknown>
+      ) => {
+        deployedResources.push(resource);
+        expect(options).toMatchObject({ mode: 'direct', namespace: 'apps', waitForReady: false });
+        return {
+          id: resource.id ?? 'unknown',
+          kind: resource.kind,
+          name: resource.metadata.name ?? 'unknown',
+          namespace: resource.metadata.namespace ?? 'default',
+          manifest: resource,
+          status: 'deployed' as const,
+          deployedAt: new Date(0),
+        };
+      },
+      waitForCRDReady: async (name: string) => {
+        waitedCRDs.push(name);
+      },
+      getKubernetesApi: () => ({}),
+    };
+
+    const applyKroPrerequisites = getPrivateMethod(factory, 'applyKroPrerequisites') as (
+      deploymentEngine: DirectDeploymentEngine
+    ) => Promise<void>;
+
+    await applyKroPrerequisites(engine as unknown as DirectDeploymentEngine);
+
+    expect(deployedResources.map((resource) => resource.kind)).toEqual([
+      'CustomResourceDefinition',
+      'ConfigMap',
+    ]);
+    expect(deployedResources[0]?.id).toBe('CustomResourceDefinition-widgets.example.com');
+    expect(waitedCRDs).toEqual(['widgets.example.com']);
+  });
+
+  it('passes deployment helpers to beforeResourceGraphDefinition hooks', async () => {
+    const hookResource: KubernetesResource = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: 'hook-bootstrap', namespace: 'apps' },
+      data: { ready: 'true' },
+    };
+    const calls: string[] = [];
+    const factory = makeFactory('hookPrereqApp', {
+      namespace: 'apps',
+      timeout: 1234,
+      kroPrerequisites: {
+        beforeResourceGraphDefinition: async (context: KroPrerequisiteContext) => {
+          expect(context.namespace).toBe('apps');
+          expect(context.timeout).toBe(1234);
+          await context.deployResource(hookResource, { waitForReady: true });
+          await context.waitForCRDReady('widgets.example.com');
+        },
+      },
+    });
+    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
+      currentContext: 'test',
+    });
+    const engine = {
+      deployResource: async (resource: KubernetesResource, options: Record<string, unknown>) => {
+        calls.push(`deploy:${resource.kind}:${String(options.waitForReady)}`);
+        return {
+          id: resource.id ?? 'hook-resource',
+          kind: resource.kind,
+          name: resource.metadata.name ?? 'unknown',
+          namespace: resource.metadata.namespace ?? 'default',
+          manifest: resource,
+          status: 'deployed' as const,
+          deployedAt: new Date(0),
+        };
+      },
+      waitForCRDReady: async (name: string, timeout?: number) => {
+        calls.push(`wait:${name}:${String(timeout)}`);
+      },
+      getKubernetesApi: () => ({ marker: 'api' }),
+    };
+
+    const applyKroPrerequisites = getPrivateMethod(factory, 'applyKroPrerequisites') as (
+      deploymentEngine: DirectDeploymentEngine
+    ) => Promise<void>;
+
+    await applyKroPrerequisites(engine as unknown as DirectDeploymentEngine);
+
+    expect(calls).toEqual(['deploy:ConfigMap:true', 'wait:widgets.example.com:1234']);
   });
 });
 
@@ -732,9 +856,9 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
       { name: 'web', replicas: 1 },
       { instanceNameOverride: 'custom-instance' }
     );
-    expect(
-      (decls[1]!.props.resource as { metadata?: { name?: string } }).metadata?.name
-    ).toBe('custom-instance');
+    expect((decls[1]!.props.resource as { metadata?: { name?: string } }).metadata?.name).toBe(
+      'custom-instance'
+    );
   });
 
   it('emits singleton owner declarations (RGD + instance) before the consumer, not skipped', async () => {
@@ -825,7 +949,8 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
     );
     const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
 
-    const byKind = (k: string) => decls.find((d) => (d.props.resource as { kind?: string }).kind === k)!;
+    const byKind = (k: string) =>
+      decls.find((d) => (d.props.resource as { kind?: string }).kind === k)!;
     const deeperInstance = byKind('DeeperOp');
     const midInstance = byKind('MidOp');
     const consumerInstance = decls[decls.length - 1]!;
