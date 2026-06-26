@@ -8,6 +8,15 @@
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
+// Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
+// declarations the caller feeds to `KroResource`. Imported from focused modules (NOT the
+// alchemy barrel) so the factory never statically pulls the `alchemy/Provider` runtime.
+import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
+import type {
+  AlchemyResourceDeclaration,
+  SerializableKubeConfigOptions,
+} from '../../alchemy/types.js';
+import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
@@ -29,16 +38,17 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-// Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
-// declarations the caller feeds to `KroResource`. Imported from focused modules (NOT the
-// alchemy barrel) so the factory never statically pulls the `alchemy/Provider` runtime.
-import type { KroDeletionOptions } from '../../alchemy/kro-delete.js';
-import type { AlchemyResourceDeclaration, SerializableKubeConfigOptions } from '../../alchemy/types.js';
-import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
-import { getMetadataField, setMetadataField } from '../metadata/index.js';
+import {
+  copyResourceMetadata,
+  getMetadataField,
+  getReadinessEvaluator,
+  setMetadataField,
+  setReadinessEvaluator,
+} from '../metadata/index.js';
+import { createAlwaysReadyEvaluator, ensureReadinessEvaluator } from '../readiness/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { isStaticExpression } from '../serialization/cel-references.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
@@ -48,13 +58,16 @@ import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AppliedResource,
+  DeployedResource,
   DeploymentClosure,
   DeploymentContext,
   FactoryOptions,
   FactoryStatus,
   InternalResourceFactoryDeployOptions,
   KroCustomResourceProvider,
+  KroPrerequisiteContext,
   KroResourceFactory,
+  PrerequisiteResource,
   ResourceGraphDefinitionProvider,
   RGDStatus,
   SingletonDefinitionRecord,
@@ -88,6 +101,28 @@ import {
   assertNoDeployedSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
+
+const CLUSTER_SCOPED_PREREQUISITE_KINDS = new Set([
+  'admissionregistration.k8s.io/v1/MutatingWebhookConfiguration',
+  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy',
+  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicyBinding',
+  'admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration',
+  'apiextensions.k8s.io/v1/CustomResourceDefinition',
+  'apiregistration.k8s.io/v1/APIService',
+  'flowcontrol.apiserver.k8s.io/v1/FlowSchema',
+  'flowcontrol.apiserver.k8s.io/v1/PriorityLevelConfiguration',
+  'rbac.authorization.k8s.io/v1/ClusterRole',
+  'rbac.authorization.k8s.io/v1/ClusterRoleBinding',
+  'scheduling.k8s.io/v1/PriorityClass',
+  'node.k8s.io/v1/RuntimeClass',
+  'storage.k8s.io/v1/CSIDriver',
+  'storage.k8s.io/v1/CSINode',
+  'storage.k8s.io/v1/StorageClass',
+  'storage.k8s.io/v1/VolumeAttachment',
+  'v1/Namespace',
+  'v1/Node',
+  'v1/PersistentVolume',
+]);
 
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
@@ -561,7 +596,9 @@ export class KroResourceFactoryImpl<
     return definition.composition.factory('kro', {
       namespace: definition.registryNamespace,
       waitForReady: true,
-      ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+      ...(this.factoryOptions.timeout !== undefined
+        ? { timeout: this.factoryOptions.timeout }
+        : {}),
       ...(this.factoryOptions.kubeConfig !== undefined
         ? { kubeConfig: this.factoryOptions.kubeConfig }
         : {}),
@@ -1212,8 +1249,12 @@ export class KroResourceFactoryImpl<
     spec: TSpec,
     opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
+    this.assertNoKroPrerequisiteHookForDeclarative('toAlchemyResources()');
+
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
     const kroDeletion = this.createAlchemyKroDeletionOptions();
+    const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
+    const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
 
     // 0. Singleton owners. The imperative `deploy()` ensures shared singleton owners (each its own
     // RGD + instance, in its registry namespace) via `ensureSingletonOwners` BEFORE the main
@@ -1226,10 +1267,15 @@ export class KroResourceFactoryImpl<
     for (const definition of this.discoverSingletonDefinitions(spec)) {
       const singletonFactory = this.singletonFactoryFor(definition);
       try {
-        const decls = await singletonFactory.toAlchemyResources(definition.spec as KroCompatibleType, {
-          instanceNameOverride: getSingletonInstanceName(definition.id),
-          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
-        });
+        const decls = await singletonFactory.toAlchemyResources(
+          definition.spec as KroCompatibleType,
+          {
+            instanceNameOverride: getSingletonInstanceName(definition.id),
+            singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(
+              definition.specFingerprint
+            ),
+          }
+        );
         singletonDeclarations.push(...decls);
         // `toAlchemyResources` returns the owner's OWN CR instance LAST (after any of ITS nested
         // singletons + its RGD), so the consumer must wait on `decls[last]` — using "first decl
@@ -1252,7 +1298,7 @@ export class KroResourceFactoryImpl<
     const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
     const rgdDeclaration: AlchemyResourceDeclaration = {
       id: rgdId,
-      dependsOn: [],
+      dependsOn: prerequisiteIds,
       props: {
         resource: rgdEnhanced as Enhanced<unknown, unknown>,
         namespace: this.namespace,
@@ -1295,7 +1341,12 @@ export class KroResourceFactoryImpl<
       },
     };
 
-    return [...singletonDeclarations, rgdDeclaration, instanceDeclaration];
+    return [
+      ...prerequisiteDeclarations,
+      ...singletonDeclarations,
+      rgdDeclaration,
+      instanceDeclaration,
+    ];
   }
 
   /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */
@@ -1424,6 +1475,8 @@ export class KroResourceFactoryImpl<
    * Implementation of overloaded toYaml method
    */
   toYaml(spec?: TSpec): string {
+    this.assertNoKroPrerequisiteHookForDeclarative('toYaml()');
+
     if (spec) {
       validateSpec(spec, this.schemaDefinition, {
         kind: this.schemaDefinition.kind,
@@ -1445,9 +1498,9 @@ export class KroResourceFactoryImpl<
     }
 
     const rgdYaml = this.buildRgdYaml();
-    return this.singletonDefinitions.length === 0
-      ? rgdYaml
-      : joinYamlDocuments(singletonRgdYamls(this.singletonDefinitions), rgdYaml);
+    const prerequisiteYamls = this.prerequisiteResourceYamls();
+    const leadingYamls = [...prerequisiteYamls, ...singletonRgdYamls(this.singletonDefinitions)];
+    return leadingYamls.length === 0 ? rgdYaml : joinYamlDocuments(leadingYamls, rgdYaml);
   }
 
   /**
@@ -1657,6 +1710,8 @@ export class KroResourceFactoryImpl<
     });
 
     try {
+      await this.applyKroPrerequisites(deploymentEngine);
+
       // Deploy RGD using DirectDeploymentEngine with readiness checking
       this.logger.info('Deploying RGD via engine', { rgdName: this.rgdName });
       await deploymentEngine.deployResource(deployableRGD, {
@@ -1707,6 +1762,202 @@ export class KroResourceFactoryImpl<
     } finally {
       await deploymentEngine.dispose();
     }
+  }
+
+  private async applyKroPrerequisites(deploymentEngine: DirectDeploymentEngine): Promise<void> {
+    const prerequisites = this.factoryOptions.kroPrerequisites;
+    if (!prerequisites?.resources?.length && !prerequisites?.beforeResourceGraphDefinition) {
+      return;
+    }
+
+    const timeout = this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT;
+    const deployResource = async (
+      resource: PrerequisiteResource,
+      options: { waitForReady?: boolean } = {}
+    ): Promise<DeployedResource> => {
+      const deployable = this.normalizePrerequisiteResource(resource, {
+        ensureReadiness: options.waitForReady ?? false,
+      });
+      const resourceToDeploy = options.waitForReady
+        ? ensureReadinessEvaluator(deployable)
+        : deployable;
+      const deployed = await deploymentEngine.deployResource(resourceToDeploy, {
+        mode: 'direct',
+        namespace: this.namespace,
+        waitForReady: options.waitForReady ?? false,
+        timeout,
+      });
+
+      const crdName = this.prerequisiteCRDName(resource);
+      if (crdName) {
+        await deploymentEngine.waitForCRDReady(crdName, timeout);
+      }
+
+      return deployed;
+    };
+
+    for (const resource of prerequisites.resources ?? []) {
+      await deployResource(resource);
+    }
+
+    if (prerequisites.beforeResourceGraphDefinition) {
+      const context: KroPrerequisiteContext = {
+        kubernetesApi: deploymentEngine.getKubernetesApi(),
+        kubeConfig: this.getKubeConfig(),
+        namespace: this.namespace,
+        timeout,
+        deployResource,
+        waitForCRDReady: (crdName, waitTimeout = timeout) =>
+          deploymentEngine.waitForCRDReady(crdName, waitTimeout),
+      };
+      await prerequisites.beforeResourceGraphDefinition(context);
+    }
+  }
+
+  private normalizePrerequisiteResource(
+    resource: PrerequisiteResource,
+    options: { ensureReadiness?: boolean; attachFallbackReadiness?: boolean } = {}
+  ): DeployableK8sResource<Enhanced<unknown, unknown>> {
+    const name = resource.metadata?.name ?? 'unnamed';
+    const deployable = {
+      ...resource,
+      id: resource.id ?? `${resource.kind}-${name}`,
+      metadata: {
+        ...resource.metadata,
+      },
+    } as DeployableK8sResource<Enhanced<unknown, unknown>>;
+
+    copyResourceMetadata(resource as object, deployable);
+    delete (deployable as unknown as Record<string, unknown>).scope;
+
+    const scope = this.prerequisiteScope(resource);
+    if (scope === 'cluster') {
+      setMetadataField(deployable, 'scope', 'cluster');
+      delete (deployable.metadata as Record<string, unknown>).namespace;
+    } else if (!deployable.metadata.namespace) {
+      deployable.metadata.namespace = this.namespace;
+    }
+
+    if (this.prerequisiteCRDName(resource) && !getReadinessEvaluator(deployable)) {
+      setReadinessEvaluator(deployable, (liveResource: unknown) => {
+        const conditions =
+          (liveResource as { status?: { conditions?: Array<{ type?: string; status?: string }> } })
+            .status?.conditions ?? [];
+        const established = conditions.find((condition) => condition.type === 'Established');
+        const namesAccepted = conditions.find((condition) => condition.type === 'NamesAccepted');
+        const ready = established?.status === 'True' && namesAccepted?.status === 'True';
+        return ready
+          ? {
+              ready: true,
+              message: 'CustomResourceDefinition is established and names are accepted',
+            }
+          : {
+              ready: false,
+              reason: 'ConditionsNotMet',
+              message: 'CustomResourceDefinition is not established and names accepted yet',
+              details: { conditions },
+            };
+      });
+    } else if (options.attachFallbackReadiness && !getReadinessEvaluator(deployable)) {
+      setReadinessEvaluator(deployable, createAlwaysReadyEvaluator(resource.kind));
+    }
+
+    if (options.ensureReadiness) {
+      return ensureReadinessEvaluator(deployable);
+    }
+
+    return deployable;
+  }
+
+  private prerequisiteResourceYamls(): string[] {
+    return (this.factoryOptions.kroPrerequisites?.resources ?? []).map((resource) =>
+      yaml
+        .dump(this.toSerializablePrerequisiteResource(resource), {
+          lineWidth: -1,
+          noRefs: true,
+          sortKeys: false,
+        })
+        .trimEnd()
+    );
+  }
+
+  private toSerializablePrerequisiteResource(
+    resource: PrerequisiteResource
+  ): Record<string, unknown> {
+    const normalized = this.normalizePrerequisiteResource(resource);
+    const toJSON = normalized.toJSON;
+    const jsonResource = typeof toJSON === 'function' ? toJSON.call(normalized) : normalized;
+    const serialized = JSON.parse(JSON.stringify(jsonResource)) as Record<string, unknown>;
+    delete serialized.id;
+    delete serialized.scope;
+    return serialized;
+  }
+
+  private prerequisiteAlchemyDeclarations(
+    kubeConfigOptions: SerializableKubeConfigOptions
+  ): AlchemyResourceDeclaration[] {
+    const timeout = this.factoryOptions.timeout;
+    const declarations: AlchemyResourceDeclaration[] = [];
+    for (const resource of this.factoryOptions.kroPrerequisites?.resources ?? []) {
+      const normalized = this.normalizePrerequisiteResource(resource, {
+        attachFallbackReadiness: true,
+      });
+      const namespaceForId =
+        getMetadataField(normalized, 'scope') === 'cluster' ? undefined : this.namespace;
+      const previousDeclaration = declarations.at(-1);
+      declarations.push({
+        id: createAlchemyResourceId(normalized, namespaceForId),
+        dependsOn: previousDeclaration ? [previousDeclaration.id] : [],
+        props: {
+          resource: normalized,
+          resourceId: normalized.id,
+          namespace: this.namespace,
+          deploymentStrategy: 'direct' as const,
+          kubeConfigOptions,
+          options: {
+            waitForReady: this.prerequisiteCRDName(resource) !== undefined,
+            ...(timeout !== undefined && { timeout }),
+          },
+        },
+      });
+    }
+    return declarations;
+  }
+
+  private assertNoKroPrerequisiteHookForDeclarative(apiName: string): void {
+    const prerequisites = this.factoryOptions.kroPrerequisites;
+    if (!prerequisites?.beforeResourceGraphDefinition) {
+      return;
+    }
+
+    throw new TypeKroError(
+      `${apiName} does not support kroPrerequisites.beforeResourceGraphDefinition. ` +
+        'Prerequisite hooks are deploy-only because they require a live cluster; use kroPrerequisites.resources for declarative prerequisite resources.',
+      'KRO_PREREQUISITES_DEPLOY_ONLY',
+      { factoryName: this.name, apiName }
+    );
+  }
+
+  private prerequisiteCRDName(resource: KubernetesResource): string | undefined {
+    if (
+      resource.apiVersion !== 'apiextensions.k8s.io/v1' ||
+      resource.kind !== 'CustomResourceDefinition'
+    ) {
+      return undefined;
+    }
+    return resource.metadata?.name;
+  }
+
+  private isClusterScopedPrerequisite(resource: KubernetesResource): boolean {
+    return CLUSTER_SCOPED_PREREQUISITE_KINDS.has(`${resource.apiVersion}/${resource.kind}`);
+  }
+
+  private prerequisiteScope(resource: PrerequisiteResource): 'cluster' | 'namespaced' | undefined {
+    return (
+      getMetadataField(resource as object, 'scope') ??
+      (resource as { scope?: 'cluster' | 'namespaced' }).scope ??
+      (this.isClusterScopedPrerequisite(resource) ? 'cluster' : undefined)
+    );
   }
 
   /**
