@@ -95,6 +95,27 @@ import {
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
 
+const CLUSTER_SCOPED_PREREQUISITE_KINDS = new Set([
+  'admissionregistration.k8s.io/v1/MutatingWebhookConfiguration',
+  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy',
+  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicyBinding',
+  'admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration',
+  'apiextensions.k8s.io/v1/CustomResourceDefinition',
+  'apiregistration.k8s.io/v1/APIService',
+  'flowcontrol.apiserver.k8s.io/v1/FlowSchema',
+  'flowcontrol.apiserver.k8s.io/v1/PriorityLevelConfiguration',
+  'rbac.authorization.k8s.io/v1/ClusterRole',
+  'rbac.authorization.k8s.io/v1/ClusterRoleBinding',
+  'scheduling.k8s.io/v1/PriorityClass',
+  'storage.k8s.io/v1/CSIDriver',
+  'storage.k8s.io/v1/CSINode',
+  'storage.k8s.io/v1/StorageClass',
+  'storage.k8s.io/v1/VolumeAttachment',
+  'v1/Namespace',
+  'v1/Node',
+  'v1/PersistentVolume',
+]);
+
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
  * call, i.e., whether other instances still depend on it.
@@ -1790,7 +1811,7 @@ export class KroResourceFactoryImpl<
 
     copyResourceMetadata(resource as object, deployable);
 
-    if (this.prerequisiteCRDName(resource)) {
+    if (this.isClusterScopedPrerequisite(resource)) {
       setMetadataField(deployable, 'scope', 'cluster');
       delete (deployable.metadata as Record<string, unknown>).namespace;
     }
@@ -1820,6 +1841,10 @@ export class KroResourceFactoryImpl<
       return undefined;
     }
     return resource.metadata?.name;
+  }
+
+  private isClusterScopedPrerequisite(resource: KubernetesResource): boolean {
+    return CLUSTER_SCOPED_PREREQUISITE_KINDS.has(`${resource.apiVersion}/${resource.kind}`);
   }
 
   /**

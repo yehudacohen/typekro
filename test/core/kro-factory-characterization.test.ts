@@ -189,6 +189,65 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(calls).toEqual(['deploy:ConfigMap:true', 'wait:widgets.example.com:1234']);
   });
 
+  it('treats common raw cluster-scoped prerequisite manifests as cluster-scoped', async () => {
+    const namespace: KubernetesResource = {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name: 'apps', namespace: 'should-be-stripped' },
+    };
+    const clusterRole: KubernetesResource = {
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind: 'ClusterRole',
+      metadata: { name: 'bootstrap-reader', namespace: 'should-be-stripped' },
+      rules: [],
+    };
+    const storageClass: KubernetesResource = {
+      apiVersion: 'storage.k8s.io/v1',
+      kind: 'StorageClass',
+      metadata: { name: 'fast', namespace: 'should-be-stripped' },
+      provisioner: 'example.com/provisioner',
+    };
+    const serviceAccount: KubernetesResource = {
+      apiVersion: 'v1',
+      kind: 'ServiceAccount',
+      metadata: { name: 'bootstrap', namespace: 'apps' },
+    };
+    const factory = makeFactory('rawClusterPrereqApp', {
+      namespace: 'apps',
+      kroPrerequisites: { resources: [namespace, clusterRole, storageClass, serviceAccount] },
+    });
+    const deployedResources: KubernetesResource[] = [];
+    const engine = {
+      deployResource: async (resource: KubernetesResource & { id?: string }) => {
+        deployedResources.push(resource);
+        return {
+          id: resource.id ?? 'unknown',
+          kind: resource.kind,
+          name: resource.metadata.name ?? 'unknown',
+          namespace: resource.metadata.namespace ?? 'default',
+          manifest: resource,
+          status: 'deployed' as const,
+          deployedAt: new Date(0),
+        };
+      },
+      waitForCRDReady: async () => {},
+      getKubernetesApi: () => ({}),
+    };
+
+    const applyKroPrerequisites = getPrivateMethod(factory, 'applyKroPrerequisites') as (
+      deploymentEngine: DirectDeploymentEngine
+    ) => Promise<void>;
+
+    await applyKroPrerequisites(engine as unknown as DirectDeploymentEngine);
+
+    for (const resource of deployedResources.slice(0, 3)) {
+      expect(getMetadataField(resource, 'scope')).toBe('cluster');
+      expect(resource.metadata.namespace).toBeUndefined();
+    }
+    expect(getMetadataField(deployedResources[3]!, 'scope')).toBeUndefined();
+    expect(deployedResources[3]?.metadata.namespace).toBe('apps');
+  });
+
   it('rejects declarative output when kroPrerequisites are configured', async () => {
     const factory = makeFactory('declarativePrereqApp', {
       kroPrerequisites: {
