@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-26
+
+### Added
+
+- Added `kroPrerequisites` for KRO factories so prerequisite resources can be applied or emitted before
+  the ResourceGraphDefinition. Resource prerequisites work across imperative deploys, GitOps YAML, and
+  declarative Alchemy resources; live `beforeResourceGraphDefinition` hooks remain deploy-only.
+- Added prerequisite handling for cluster-scoped resources, CRD readiness, and ordered Alchemy
+  declarations so dependent prerequisites reconcile predictably before the RGD.
+
 ## [0.17.0] - 2026-06-15
 
 ### Added
@@ -332,7 +342,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/yehudacohen/typekro/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/yehudacohen/typekro/compare/v0.16.1...v0.17.0
+[0.16.0]: https://github.com/yehudacohen/typekro/compare/v0.15.4...v0.16.0
+[0.15.3]: https://github.com/yehudacohen/typekro/compare/v0.15.2...v0.15.3
+[0.15.2]: https://github.com/yehudacohen/typekro/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/yehudacohen/typekro/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/yehudacohen/typekro/compare/v0.14.0...v0.15.0
 [0.12.0]: https://github.com/yehudacohen/typekro/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yehudacohen/typekro/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/yehudacohen/typekro/compare/v0.10.0...v0.10.1
