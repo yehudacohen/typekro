@@ -566,18 +566,23 @@ export interface KroPrerequisiteContext {
   readonly timeout: number;
   /** Apply a prerequisite resource through TypeKro's deployment engine. */
   deployResource(
-    resource: KubernetesResource,
+    resource: PrerequisiteResource,
     options?: { waitForReady?: boolean }
   ): Promise<DeployedResource>;
   /** Wait for a CRD to become Established. */
   waitForCRDReady(crdName: string, timeout?: number): Promise<void>;
 }
 
+/** Resource applied before a KRO ResourceGraphDefinition. */
+export type PrerequisiteResource =
+  | Enhanced<unknown, unknown>
+  | (KubernetesResource & { scope?: 'cluster' | 'namespaced' });
+
 /** Public KRO prerequisite deployment options. */
 export interface KroPrerequisiteOptions {
-  /** Resources to apply before the KRO ResourceGraphDefinition is deployed. */
-  readonly resources?: readonly KubernetesResource[];
-  /** Advanced hook for custom prerequisite work before the RGD is deployed. */
+  /** Resources to apply or emit before the KRO ResourceGraphDefinition is deployed. */
+  readonly resources?: readonly PrerequisiteResource[];
+  /** Advanced deploy-only hook for custom prerequisite work before the RGD is deployed. */
   readonly beforeResourceGraphDefinition?: (
     context: KroPrerequisiteContext
   ) => Promise<void> | void;

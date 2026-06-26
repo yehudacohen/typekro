@@ -248,7 +248,7 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(deployedResources[3]?.metadata.namespace).toBe('apps');
   });
 
-  it('rejects declarative output when kroPrerequisites are configured', async () => {
+  it('emits resource prerequisites before the RGD in YAML output', () => {
     const factory = makeFactory('declarativePrereqApp', {
       kroPrerequisites: {
         resources: [
@@ -257,16 +257,86 @@ describe('KroResourceFactory: prerequisite deployment', () => {
             kind: 'CustomResourceDefinition',
             metadata: { name: 'widgets.example.com' },
           },
+          {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: 'bootstrap' },
+            data: { ready: 'true' },
+          },
         ],
       },
     });
 
-    expect(() => factory.toYaml()).toThrow('toYaml() does not support kroPrerequisites');
-    expect(() => factory.toYaml({ name: 'web', replicas: 1 })).toThrow(
-      'toYaml() does not support kroPrerequisites'
+    const docs = yaml.loadAll(factory.toYaml()) as Array<{
+      kind?: string;
+      metadata?: { name?: string; namespace?: string };
+    }>;
+    expect(docs.map((doc) => doc.kind)).toEqual([
+      'CustomResourceDefinition',
+      'ConfigMap',
+      'ResourceGraphDefinition',
+    ]);
+    expect(docs[0]?.metadata?.namespace).toBeUndefined();
+    expect(docs[1]?.metadata?.namespace).toBe('default');
+  });
+
+  it('emits resource prerequisites as Alchemy declarations that the RGD depends on', async () => {
+    const factory = makeFactory('alchemyPrereqApp', {
+      namespace: 'apps',
+      kroPrerequisites: {
+        resources: [
+          {
+            apiVersion: 'apiextensions.k8s.io/v1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: 'widgets.example.com' },
+          },
+          {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: 'bootstrap' },
+            data: { ready: 'true' },
+          },
+        ],
+      },
+    });
+    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
+      getCurrentCluster: () => ({
+        name: 'test-cluster',
+        server: 'https://example.invalid',
+        skipTLSVerify: false,
+      }),
+      getCurrentUser: () => ({ name: 'admin', token: 'tok' }),
+      getCurrentContext: () => 'ctx',
+    });
+
+    const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
+    expect(decls.map((decl) => (decl.props.resource as { kind?: string }).kind)).toEqual([
+      'CustomResourceDefinition',
+      'ConfigMap',
+      'ResourceGraphDefinition',
+      'TestApp',
+    ]);
+    expect(decls[0]?.props.deploymentStrategy).toBe('direct');
+    expect(decls[0]?.props.options?.waitForReady).toBe(true);
+    expect(getMetadataField(decls[0]!.props.resource, 'scope')).toBe('cluster');
+    expect((decls[0]?.props.resource as KubernetesResource).metadata.namespace).toBeUndefined();
+    expect((decls[1]?.props.resource as KubernetesResource).metadata.namespace).toBe('apps');
+    expect(decls[2]?.dependsOn).toEqual([decls[0]!.id, decls[1]!.id]);
+    expect(decls[3]?.dependsOn).toContain(decls[2]!.id);
+  });
+
+  it('rejects declarative output only when the live prerequisite hook is configured', async () => {
+    const factory = makeFactory('hookDeclarativePrereqApp', {
+      kroPrerequisites: {
+        beforeResourceGraphDefinition: () => {},
+      },
+    });
+
+    expect(() => factory.toYaml()).toThrow(
+      'toYaml() does not support kroPrerequisites.beforeResourceGraphDefinition'
     );
     await expect(factory.toAlchemyResources({ name: 'web', replicas: 1 })).rejects.toThrow(
-      'toAlchemyResources() does not support kroPrerequisites'
+      'toAlchemyResources() does not support kroPrerequisites.beforeResourceGraphDefinition'
     );
   });
 });
