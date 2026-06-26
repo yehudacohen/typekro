@@ -41,7 +41,8 @@ import { getComponentLogger } from '../logging/index.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
-import { getMetadataField, setMetadataField } from '../metadata/index.js';
+import { copyResourceMetadata, getMetadataField, setMetadataField } from '../metadata/index.js';
+import { ensureReadinessEvaluator } from '../readiness/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { isStaticExpression } from '../serialization/cel-references.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
@@ -1219,6 +1220,8 @@ export class KroResourceFactoryImpl<
     spec: TSpec,
     opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
+    this.assertNoKroPrerequisitesForDeclarative('toAlchemyResources()');
+
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
     const kroDeletion = this.createAlchemyKroDeletionOptions();
 
@@ -1436,6 +1439,8 @@ export class KroResourceFactoryImpl<
    * Implementation of overloaded toYaml method
    */
   toYaml(spec?: TSpec): string {
+    this.assertNoKroPrerequisitesForDeclarative('toYaml()');
+
     if (spec) {
       validateSpec(spec, this.schemaDefinition, {
         kind: this.schemaDefinition.kind,
@@ -1734,15 +1739,16 @@ export class KroResourceFactoryImpl<
       resource: KubernetesResource,
       options: { waitForReady?: boolean } = {}
     ): Promise<DeployedResource> => {
-      const deployed = await deploymentEngine.deployResource(
-        this.toPrerequisiteDeployable(resource),
-        {
-          mode: 'direct',
-          namespace: this.namespace,
-          waitForReady: options.waitForReady ?? false,
-          timeout,
-        }
-      );
+      const deployable = this.toPrerequisiteDeployable(resource);
+      const resourceToDeploy = options.waitForReady
+        ? ensureReadinessEvaluator(deployable)
+        : deployable;
+      const deployed = await deploymentEngine.deployResource(resourceToDeploy, {
+        mode: 'direct',
+        namespace: this.namespace,
+        waitForReady: options.waitForReady ?? false,
+        timeout,
+      });
 
       const crdName = this.prerequisiteCRDName(resource);
       if (crdName) {
@@ -1774,13 +1780,36 @@ export class KroResourceFactoryImpl<
     resource: KubernetesResource
   ): DeployableK8sResource<Enhanced<unknown, unknown>> {
     const name = resource.metadata?.name ?? 'unnamed';
-    return {
+    const deployable = {
       ...resource,
       id: resource.id ?? `${resource.kind}-${name}`,
       metadata: {
         ...resource.metadata,
       },
     } as DeployableK8sResource<Enhanced<unknown, unknown>>;
+
+    copyResourceMetadata(resource as object, deployable);
+
+    if (this.prerequisiteCRDName(resource)) {
+      setMetadataField(deployable, 'scope', 'cluster');
+      delete (deployable.metadata as Record<string, unknown>).namespace;
+    }
+
+    return deployable;
+  }
+
+  private assertNoKroPrerequisitesForDeclarative(apiName: string): void {
+    const prerequisites = this.factoryOptions.kroPrerequisites;
+    if (!prerequisites?.resources?.length && !prerequisites?.beforeResourceGraphDefinition) {
+      return;
+    }
+
+    throw new TypeKroError(
+      `${apiName} does not support kroPrerequisites. ` +
+        'kroPrerequisites are deploy-only because prerequisite hooks require a live cluster and prerequisite resources must be applied before the ResourceGraphDefinition.',
+      'KRO_PREREQUISITES_DEPLOY_ONLY',
+      { factoryName: this.name, apiName }
+    );
   }
 
   private prerequisiteCRDName(resource: KubernetesResource): string | undefined {

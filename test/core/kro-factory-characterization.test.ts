@@ -17,6 +17,7 @@ import { createKroResourceFactory } from '../../src/core/deployment/kro-factory.
 import { waitForKroInstanceReady } from '../../src/core/deployment/kro-readiness.js';
 import { singletonSpecFingerprintAnnotationValue } from '../../src/core/deployment/singleton-owner-drift.js';
 import { ValidationError } from '../../src/core/errors.js';
+import { getMetadataField, getReadinessEvaluator } from '../../src/core/metadata/index.js';
 import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
 import type {
   KroPrerequisiteContext,
@@ -25,7 +26,7 @@ import type {
 } from '../../src/core/types/deployment.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
-import { Deployment } from '../../src/factories/simple/index.js';
+import { ConfigMap, Deployment } from '../../src/factories/simple/index.js';
 import { kubernetesComposition, singleton } from '../../src/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
@@ -132,16 +133,17 @@ describe('KroResourceFactory: prerequisite deployment', () => {
       'ConfigMap',
     ]);
     expect(deployedResources[0]?.id).toBe('CustomResourceDefinition-widgets.example.com');
+    expect(getMetadataField(deployedResources[0]!, 'scope')).toBe('cluster');
+    expect(deployedResources[0]?.metadata.namespace).toBeUndefined();
     expect(waitedCRDs).toEqual(['widgets.example.com']);
   });
 
   it('passes deployment helpers to beforeResourceGraphDefinition hooks', async () => {
-    const hookResource: KubernetesResource = {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: { name: 'hook-bootstrap', namespace: 'apps' },
+    const hookResource = ConfigMap({
+      name: 'hook-bootstrap',
+      namespace: 'apps',
       data: { ready: 'true' },
-    };
+    });
     const calls: string[] = [];
     const factory = makeFactory('hookPrereqApp', {
       namespace: 'apps',
@@ -160,6 +162,7 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     });
     const engine = {
       deployResource: async (resource: KubernetesResource, options: Record<string, unknown>) => {
+        expect(typeof getReadinessEvaluator(resource)).toBe('function');
         calls.push(`deploy:${resource.kind}:${String(options.waitForReady)}`);
         return {
           id: resource.id ?? 'hook-resource',
@@ -184,6 +187,28 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     await applyKroPrerequisites(engine as unknown as DirectDeploymentEngine);
 
     expect(calls).toEqual(['deploy:ConfigMap:true', 'wait:widgets.example.com:1234']);
+  });
+
+  it('rejects declarative output when kroPrerequisites are configured', async () => {
+    const factory = makeFactory('declarativePrereqApp', {
+      kroPrerequisites: {
+        resources: [
+          {
+            apiVersion: 'apiextensions.k8s.io/v1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: 'widgets.example.com' },
+          },
+        ],
+      },
+    });
+
+    expect(() => factory.toYaml()).toThrow('toYaml() does not support kroPrerequisites');
+    expect(() => factory.toYaml({ name: 'web', replicas: 1 })).toThrow(
+      'toYaml() does not support kroPrerequisites'
+    );
+    await expect(factory.toAlchemyResources({ name: 'web', replicas: 1 })).rejects.toThrow(
+      'toAlchemyResources() does not support kroPrerequisites'
+    );
   });
 });
 
