@@ -280,7 +280,7 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(docs[1]?.metadata?.namespace).toBe('default');
   });
 
-  it('emits resource prerequisites as Alchemy declarations that the RGD depends on', async () => {
+  it('emits resource prerequisites as ordered Alchemy declarations that the RGD depends on', async () => {
     const factory = makeFactory('alchemyPrereqApp', {
       namespace: 'apps',
       kroPrerequisites: {
@@ -321,6 +321,8 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(getMetadataField(decls[0]!.props.resource, 'scope')).toBe('cluster');
     expect((decls[0]?.props.resource as KubernetesResource).metadata.namespace).toBeUndefined();
     expect((decls[1]?.props.resource as KubernetesResource).metadata.namespace).toBe('apps');
+    expect(decls[0]?.dependsOn).toEqual([]);
+    expect(decls[1]?.dependsOn).toEqual([decls[0]!.id]);
     expect(decls[2]?.dependsOn).toEqual([decls[0]!.id, decls[1]!.id]);
     expect(decls[3]?.dependsOn).toContain(decls[2]!.id);
   });

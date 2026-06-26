@@ -1897,15 +1897,17 @@ export class KroResourceFactoryImpl<
     kubeConfigOptions: SerializableKubeConfigOptions
   ): AlchemyResourceDeclaration[] {
     const timeout = this.factoryOptions.timeout;
-    return (this.factoryOptions.kroPrerequisites?.resources ?? []).map((resource) => {
+    const declarations: AlchemyResourceDeclaration[] = [];
+    for (const resource of this.factoryOptions.kroPrerequisites?.resources ?? []) {
       const normalized = this.normalizePrerequisiteResource(resource, {
         attachFallbackReadiness: true,
       });
       const namespaceForId =
         getMetadataField(normalized, 'scope') === 'cluster' ? undefined : this.namespace;
-      return {
+      const previousDeclaration = declarations.at(-1);
+      declarations.push({
         id: createAlchemyResourceId(normalized, namespaceForId),
-        dependsOn: [],
+        dependsOn: previousDeclaration ? [previousDeclaration.id] : [],
         props: {
           resource: normalized,
           resourceId: normalized.id,
@@ -1917,8 +1919,9 @@ export class KroResourceFactoryImpl<
             ...(timeout !== undefined && { timeout }),
           },
         },
-      };
-    });
+      });
+    }
+    return declarations;
   }
 
   private assertNoKroPrerequisiteHookForDeclarative(apiName: string): void {
