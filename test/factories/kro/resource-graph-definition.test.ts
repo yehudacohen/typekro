@@ -13,7 +13,6 @@ describe('ResourceGraphDefinition Factory', () => {
   const createTestRGD = (name: string = 'testRgd') => ({
     metadata: {
       name,
-      namespace: 'default',
     },
     spec: {
       schema: {
@@ -51,7 +50,7 @@ describe('ResourceGraphDefinition Factory', () => {
       expect(enhanced.kind).toBe('ResourceGraphDefinition');
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.metadata.name).toBe('testRgd');
-      expect(enhanced.metadata.namespace).toBe('default');
+      expect(Object.hasOwn(enhanced.metadata, 'namespace')).toBe(false);
       expect(enhanced.spec.schema.kind).toBe('Example');
     });
 
@@ -64,9 +63,26 @@ describe('ResourceGraphDefinition Factory', () => {
       expect(enhanced.spec.resources.service.template.kind).toBe('Service');
     });
 
+    it('should ignore metadata.namespace because ResourceGraphDefinitions are cluster-scoped', () => {
+      const rgdConfig = {
+        ...createTestRGD('namespacedRgd'),
+        metadata: {
+          name: 'namespacedRgd',
+          namespace: 'default',
+          labels: { app: 'typekro' },
+        },
+      };
+
+      const enhanced = resourceGraphDefinition(rgdConfig);
+
+      expect(enhanced.metadata.name).toBe('namespacedRgd');
+      expect(Object.hasOwn(enhanced.metadata, 'namespace')).toBe(false);
+      expect(enhanced.metadata.labels).toEqual({ app: 'typekro' });
+    });
+
     it('should handle RGD with complex resource templates', () => {
       const complexRGD = {
-        metadata: { name: 'complexRgd', namespace: 'kroSystem' },
+        metadata: { name: 'complexRgd' },
         spec: {
           schema: {
             apiVersion: 'webapp.example.com/v1',

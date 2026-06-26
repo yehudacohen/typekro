@@ -139,7 +139,7 @@ import { valkeyBootstrap } from 'typekro/valkey';
 // 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
 // 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
-  namespace: 'valkey-operator-system',  // Namespace for the ResourceGraphDefinition
+  namespace: 'valkey-operator-system',  // Namespace for the KRO instance and workloads
   waitForReady: true,
 });
 

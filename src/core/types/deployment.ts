@@ -573,7 +573,14 @@ export interface KroPrerequisiteContext {
   waitForCRDReady(crdName: string, timeout?: number): Promise<void>;
 }
 
-/** Resource applied before a KRO ResourceGraphDefinition. */
+/**
+ * Resource applied before a KRO ResourceGraphDefinition.
+ *
+ * Cluster-scoped factory resources carry TypeKro scope metadata automatically. Any prerequisite
+ * without an explicit namespace must be unambiguous: set `scope: 'cluster'` for cluster-scoped raw
+ * prerequisites, or provide `metadata.namespace` / `scope: 'namespaced'` for namespaced
+ * prerequisites that should use the factory namespace.
+ */
 export type PrerequisiteResource =
   | Enhanced<unknown, unknown>
   | (KubernetesResource & { scope?: 'cluster' | 'namespaced' });

@@ -6,10 +6,13 @@ import { createResource } from '../../shared.js';
 export type V1CSINodeSpec = NonNullable<V1CSINode['spec']>;
 
 export function csiNode(resource: V1CSINode & { id?: string }): Enhanced<V1CSINodeSpec, unknown> {
-  return createResource({
-    ...resource,
-    apiVersion: 'storage.k8s.io/v1',
-    kind: 'CSINode',
-    metadata: resource.metadata ?? { name: 'unnamed-csinode' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('CSINode'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'storage.k8s.io/v1',
+      kind: 'CSINode',
+      metadata: resource.metadata ?? { name: 'unnamed-csinode' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('CSINode'));
 }

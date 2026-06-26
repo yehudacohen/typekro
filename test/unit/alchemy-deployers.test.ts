@@ -15,10 +15,15 @@ import {
   deleteKroInstanceFinalizerSafeForTest,
   listKroInstancesForTest,
 } from '../../src/alchemy/kro-delete.js';
-import { inferKroDeletionOptionsForTest } from '../../src/alchemy/resource-registration.js';
+import {
+  cloneResourceForAlchemyStateForTest,
+  inferKroDeletionOptionsForTest,
+} from '../../src/alchemy/resource-registration.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { getMetadataField } from '../../src/core/metadata/index.js';
+import { resourceGraphDefinition } from '../../src/factories/kro/resource-graph-definition.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { ingressClass } from '../../src/factories/kubernetes/networking/ingress-class.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
@@ -267,6 +272,72 @@ describe('DirectTypeKroDeployer', () => {
       // Verify options
       expect(options.namespace).toBe('test-ns');
     });
+
+    it('rehydrates serialized factory scope before direct deploy', async () => {
+      const ns = namespace({ metadata: { name: 'alchemy-direct-ns' } });
+      const restored = cloneResourceForAlchemyStateForTest(ns);
+
+      await deployer.deploy(restored, {
+        mode: 'alchemy',
+        namespace: 'default',
+        waitForReady: false,
+      });
+
+      const resourceGraph = mockEngine.deploy.mock.calls[0]?.[0];
+      const manifest = resourceGraph.resources[0]?.manifest;
+      expect(manifest.kind).toBe('Namespace');
+      expect(manifest.metadata.namespace).toBeUndefined();
+      expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+    });
+
+    it('rehydrates legacy cluster scope before direct redeploy', async () => {
+      const ns = namespace({ metadata: { name: 'alchemy-legacy-ns' } });
+      const restored = JSON.parse(JSON.stringify(ns));
+
+      await deployer.deploy(restored, {
+        mode: 'alchemy',
+        namespace: 'default',
+        waitForReady: false,
+      });
+
+      const resourceGraph = mockEngine.deploy.mock.calls[0]?.[0];
+      const manifest = resourceGraph.resources[0]?.manifest;
+      expect(manifest.kind).toBe('Namespace');
+      expect(manifest.metadata.namespace).toBeUndefined();
+      expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+    });
+
+    it('scrubs stale namespace from legacy cluster-scoped state before direct redeploy', async () => {
+      const restored = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'alchemy-stale-ns', namespace: 'default' },
+      } as any;
+
+      await deployer.deploy(restored, {
+        mode: 'alchemy',
+        namespace: 'default',
+        waitForReady: false,
+      });
+
+      const resourceGraph = mockEngine.deploy.mock.calls[0]?.[0];
+      const manifest = resourceGraph.resources[0]?.manifest;
+      expect(manifest.kind).toBe('Namespace');
+      expect(manifest.metadata.namespace).toBeUndefined();
+      expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+    });
+
+    it('scrubs stale namespace when serializing cluster-scoped resources', () => {
+      const restored = cloneResourceForAlchemyStateForTest({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'alchemy-direct-ns', namespace: 'default' },
+        scope: 'cluster',
+      } as any);
+
+      expect(restored.scope).toBe('cluster');
+      expect(restored.metadata?.namespace).toBeUndefined();
+    });
   });
 
   describe('Error Handling', () => {
@@ -366,7 +437,20 @@ describe('DirectTypeKroDeployer', () => {
       expect(deployedResource.namespace).toBe('default');
     });
 
-    it('restores cluster-scope metadata for JSON-restored cluster resources', async () => {
+    it('honors serialized factory scope for JSON-restored cluster resources', async () => {
+      const ns = namespace({ metadata: { name: 'alchemy-direct-ns' } });
+      const restored = cloneResourceForAlchemyStateForTest(ns);
+
+      await deployer.delete(restored, { mode: 'direct', namespace: 'default' });
+
+      const callArgs = mockEngine.deleteResource.mock.calls[0];
+      const deployedResource = callArgs[0];
+      expect(deployedResource.kind).toBe('Namespace');
+      expect(deployedResource.namespace).toBe('');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+    });
+
+    it('preserves cluster scope for legacy Alchemy state without serialized scope', async () => {
       const ns = namespace({ metadata: { name: 'alchemy-direct-ns' } });
       const restored = JSON.parse(JSON.stringify(ns));
 
@@ -375,6 +459,39 @@ describe('DirectTypeKroDeployer', () => {
       const callArgs = mockEngine.deleteResource.mock.calls[0];
       const deployedResource = callArgs[0];
       expect(deployedResource.kind).toBe('Namespace');
+      expect(deployedResource.namespace).toBe('');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+    });
+
+    it('scrubs stale namespace from legacy cluster-scoped state before delete', async () => {
+      const restored = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'alchemy-stale-ns', namespace: 'default' },
+      } as any;
+
+      await deployer.delete(restored, { mode: 'direct', namespace: 'default' });
+
+      const callArgs = mockEngine.deleteResource.mock.calls[0];
+      const deployedResource = callArgs[0];
+      expect(deployedResource.kind).toBe('Namespace');
+      expect(deployedResource.namespace).toBe('');
+      expect(deployedResource.manifest.metadata.namespace).toBeUndefined();
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+    });
+
+    it('preserves legacy cluster scope for newer cluster-scoped factory kinds', async () => {
+      const ic = ingressClass({
+        metadata: { name: 'alchemy-ingress-class' },
+        spec: { controller: 'example.com/controller' },
+      });
+      const restored = JSON.parse(JSON.stringify(ic));
+
+      await deployer.delete(restored, { mode: 'direct', namespace: 'default' });
+
+      const callArgs = mockEngine.deleteResource.mock.calls[0];
+      const deployedResource = callArgs[0];
+      expect(deployedResource.kind).toBe('IngressClass');
       expect(deployedResource.namespace).toBe('');
       expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
     });
@@ -481,6 +598,70 @@ describe('KroTypeKroDeployer', () => {
     expect(graph.resources).toHaveLength(1);
     expect(graph.dependencyGraph.getNodes().size).toBe(1);
     expect(graph.dependencyGraph.hasNode(graph.resources[0].id)).toBe(true);
+  });
+
+  it('rehydrates serialized factory scope before KRO deploy', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const rgd = resourceGraphDefinition({
+      metadata: { name: 'alchemy-rgd' },
+      spec: {},
+    });
+    const restored = cloneResourceForAlchemyStateForTest(rgd);
+
+    await deployer.deploy(restored, {
+      mode: 'alchemy',
+      namespace: 'default',
+    });
+
+    const graph = mockEngine.deploy.mock.calls[0]?.[0];
+    const manifest = graph.resources[0]?.manifest;
+    expect(manifest.kind).toBe('ResourceGraphDefinition');
+    expect(manifest.metadata.namespace).toBeUndefined();
+    expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+  });
+
+  it('rehydrates legacy ResourceGraphDefinition scope before KRO redeploy', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const rgd = resourceGraphDefinition({
+      metadata: { name: 'alchemy-legacy-rgd' },
+      spec: {},
+    });
+    const restored = JSON.parse(JSON.stringify(rgd));
+
+    await deployer.deploy(restored, {
+      mode: 'alchemy',
+      namespace: 'default',
+    });
+
+    const graph = mockEngine.deploy.mock.calls[0]?.[0];
+    const manifest = graph.resources[0]?.manifest;
+    expect(manifest.kind).toBe('ResourceGraphDefinition');
+    expect(manifest.metadata.namespace).toBeUndefined();
+    expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+  });
+
+  it('scrubs stale namespace from legacy ResourceGraphDefinition state before KRO redeploy', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const restored = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'alchemy-stale-rgd', namespace: 'default' },
+      spec: {},
+    } as any;
+
+    await deployer.deploy(restored, {
+      mode: 'alchemy',
+      namespace: 'default',
+    });
+
+    const graph = mockEngine.deploy.mock.calls[0]?.[0];
+    const manifest = graph.resources[0]?.manifest;
+    expect(manifest.kind).toBe('ResourceGraphDefinition');
+    expect(manifest.metadata.namespace).toBeUndefined();
+    expect(getMetadataField(manifest, 'scope')).toBe('cluster');
   });
 
   it('uses the factory deleteInstance hook for KRO custom resource deletion', async () => {

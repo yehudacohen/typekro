@@ -6,12 +6,15 @@ export type V1NodeSpec = NonNullable<V1Node['spec']>;
 export type V1NodeStatus = NonNullable<V1Node['status']>;
 
 export function node(resource: V1Node & { id?: string }): Enhanced<V1NodeSpec, V1NodeStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'v1',
-    kind: 'Node',
-    metadata: resource.metadata ?? { name: 'unnamed-node' },
-  }).withReadinessEvaluator((liveResource: V1Node) => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'v1',
+      kind: 'Node',
+      metadata: resource.metadata ?? { name: 'unnamed-node' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1Node) => {
     const status = liveResource.status;
 
     if (!status) {

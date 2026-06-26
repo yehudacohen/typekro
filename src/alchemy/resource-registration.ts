@@ -26,6 +26,7 @@ import { createKubernetesClientProvider } from '../core/kubernetes/client-provid
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
+import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
@@ -610,8 +611,11 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   //    structuredClone to throw "Cannot serialize unique symbol" errors.
   // 2. JSON round-trip strips symbols, functions, and undefined values — which is
   //    exactly the behavior we want for creating clean Alchemy state entries.
-  const cleanResource = JSON.parse(JSON.stringify(props.resource)) as T;
-  const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource)) as T;
+  const cleanResource = cloneResourceForAlchemyState(props.resource);
+  const cleanDeployedResource = cloneResourceForAlchemyState(
+    deployedResource as T,
+    getResourceScope(cleanResource)
+  );
 
   // Create the resource properties for Alchemy
   const resourceProperties: DeployedResourceProperties<T> = {
@@ -628,6 +632,27 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
 
   return { resourceProperties };
 }
+
+function cloneResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(
+  resource: T,
+  fallbackScope?: ResourceScope
+): T {
+  const cleanResource = JSON.parse(JSON.stringify(resource)) as T & { scope?: ResourceScope };
+  const scope =
+    getResourceScope(resource as T & { scope?: ResourceScope }) ??
+    fallbackScope ??
+    cleanResource.scope;
+  if (scope) {
+    cleanResource.scope = scope;
+    if (scope === 'cluster') {
+      delete (cleanResource.metadata as Record<string, unknown> | undefined)?.namespace;
+    }
+  }
+  return cleanResource as T;
+}
+
+/** Internal test hook for Alchemy state serialization semantics. */
+export const cloneResourceForAlchemyStateForTest = cloneResourceForAlchemyState;
 
 export function buildAlchemyDeploymentOptions<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>

@@ -8,10 +8,13 @@ export type V1IngressClassSpec = NonNullable<V1IngressClass['spec']>;
 export function ingressClass(
   resource: V1IngressClass & { id?: string }
 ): Enhanced<V1IngressClassSpec, unknown> {
-  return createResource({
-    ...resource,
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'IngressClass',
-    metadata: resource.metadata ?? { name: 'unnamed-ingressclass' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'IngressClass',
+      metadata: resource.metadata ?? { name: 'unnamed-ingressclass' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
 }

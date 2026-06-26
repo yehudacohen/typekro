@@ -10,8 +10,8 @@ import { DependencyGraph } from '../core/dependencies/index.js';
 import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import {
+  applyResourceScopeMetadata,
   copyResourceMetadata,
-  getMetadataField,
   getReadinessEvaluator,
   setMetadataField,
 } from '../core/metadata/index.js';
@@ -23,23 +23,33 @@ import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');
 
-const CLUSTER_SCOPED_KINDS = new Set([
-  'Namespace',
-  'Node',
-  'PersistentVolume',
-  'StorageClass',
-  'CustomResourceDefinition',
-  'ResourceGraphDefinition',
-  'ClusterRole',
-  'ClusterRoleBinding',
-  'MutatingWebhookConfiguration',
-  'ValidatingWebhookConfiguration',
-  'APIService',
+const LEGACY_ALCHEMY_CLUSTER_SCOPED_RESOURCES = new Set([
+  'admissionregistration.k8s.io/v1/MutatingWebhookConfiguration',
+  'admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration',
+  'apiregistration.k8s.io/v1/APIService',
+  'apiextensions.k8s.io/v1/CustomResourceDefinition',
+  'certificates.k8s.io/v1/CertificateSigningRequest',
+  'kro.run/v1alpha1/ResourceGraphDefinition',
+  'networking.k8s.io/v1/IngressClass',
+  'node.k8s.io/v1/RuntimeClass',
+  'rbac.authorization.k8s.io/v1/ClusterRole',
+  'rbac.authorization.k8s.io/v1/ClusterRoleBinding',
+  'scheduling.k8s.io/v1/PriorityClass',
+  'storage.k8s.io/v1/CSIDriver',
+  'storage.k8s.io/v1/CSINode',
+  'storage.k8s.io/v1/StorageClass',
+  'storage.k8s.io/v1/VolumeAttachment',
+  'v1/ComponentStatus',
+  'v1/Namespace',
+  'v1/Node',
+  'v1/PersistentVolume',
 ]);
 
 export class ResourceGraphDefinitionDeletionDeferredError extends Error {
   constructor(rgdName: string) {
-    super(`ResourceGraphDefinition deletion deferred because KRO instances still exist for ${rgdName}`);
+    super(
+      `ResourceGraphDefinition deletion deferred because KRO instances still exist for ${rgdName}`
+    );
     this.name = 'ResourceGraphDefinitionDeletionDeferredError';
   }
 }
@@ -62,15 +72,31 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isKroManagedDeletionMode(resource: Enhanced<any, any>, options: DeploymentOptions): boolean {
+function isKroManagedDeletionMode(
+  resource: Enhanced<any, any>,
+  options: DeploymentOptions
+): boolean {
   return (
     resource.kind !== 'ResourceGraphDefinition' &&
-    (options.mode === 'kro' || options.mode === 'alchemy' || /(?:^|\.)kro\.run\//.test(resource.apiVersion ?? ''))
+    (options.mode === 'kro' ||
+      options.mode === 'alchemy' ||
+      /(?:^|\.)kro\.run\//.test(resource.apiVersion ?? ''))
   );
 }
 
-function isKnownClusterScopedResource(resource: Enhanced<any, any>): boolean {
-  return CLUSTER_SCOPED_KINDS.has(resource.kind || '');
+function legacyAlchemyClusterScopeForDelete(resource: Enhanced<any, any>): 'cluster' | undefined {
+  return LEGACY_ALCHEMY_CLUSTER_SCOPED_RESOURCES.has(`${resource.apiVersion}/${resource.kind}`)
+    ? 'cluster'
+    : undefined;
+}
+
+function applyAlchemyResourceScopeMetadata(resource: Enhanced<any, any>): 'cluster' | 'namespaced' | undefined {
+  const scope = applyResourceScopeMetadata(resource) ?? legacyAlchemyClusterScopeForDelete(resource);
+  if (scope === 'cluster') {
+    setMetadataField(resource, 'scope', 'cluster');
+    delete (resource.metadata as Record<string, unknown> | undefined)?.namespace;
+  }
+  return scope;
 }
 
 /**
@@ -126,6 +152,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     // 2. Looks up the evaluator in the global ReadinessEvaluatorRegistry by kind
     // 3. Throws an error if no evaluator is found
     const resourceWithEvaluator = ensureReadinessEvaluator(resource);
+    applyAlchemyResourceScopeMetadata(resourceWithEvaluator);
 
     logger.debug('Ensured readiness evaluator for resource', {
       kind: resource.kind,
@@ -173,17 +200,17 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     resource: T,
     options: DeploymentOptions
   ): Promise<void> {
-    if (getMetadataField(resource, 'scope') !== 'cluster' && isKnownClusterScopedResource(resource)) {
-      setMetadataField(resource, 'scope', 'cluster');
-    }
+    const scope = applyAlchemyResourceScopeMetadata(resource);
 
     // Create a DeployedResource for the deleteResource method
-    const isClusterScoped = getMetadataField(resource, 'scope') === 'cluster';
+    const isClusterScoped = scope === 'cluster';
     const deployedResource = {
       id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
-      namespace: isClusterScoped ? '' : resource.metadata?.namespace || options.namespace || 'default',
+      namespace: isClusterScoped
+        ? ''
+        : resource.metadata?.namespace || options.namespace || 'default',
       manifest: resource,
       status: 'deployed' as const,
       deployedAt: new Date(),
@@ -213,6 +240,8 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     options: DeploymentOptions,
     _seedResources?: import('../core/types/deployment.js').DeployedResource[] // KRO resolves refs via its controller; seed is direct-mode only.
   ): Promise<T> {
+    applyAlchemyResourceScopeMetadata(resource);
+
     const resourceId =
       resource.id ||
       generateDeterministicResourceId(
@@ -261,19 +290,26 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     if (resource.kind === 'ResourceGraphDefinition') {
       if (this.deployerOptions.deleteInstance) {
-        const shouldSkip = await this.deployerOptions.shouldSkipRgdDelete?.(resource.metadata?.name || 'unnamed') ?? true;
+        const shouldSkip =
+          (await this.deployerOptions.shouldSkipRgdDelete?.(
+            resource.metadata?.name || 'unnamed'
+          )) ?? true;
         if (shouldSkip) {
           logger.debug('Deferring Alchemy RGD delete while KRO instances still exist', {
             name: resource.metadata?.name,
           });
-          throw new ResourceGraphDefinitionDeletionDeferredError(resource.metadata?.name || 'unnamed');
+          throw new ResourceGraphDefinitionDeletionDeferredError(
+            resource.metadata?.name || 'unnamed'
+          );
         }
 
         logger.debug('Deleting Alchemy RGD because no KRO instances exist', {
           name: resource.metadata?.name,
         });
         if (this.deployerOptions.deleteResourceGraphDefinition) {
-          await this.deployerOptions.deleteResourceGraphDefinition(resource.metadata?.name || 'unnamed');
+          await this.deployerOptions.deleteResourceGraphDefinition(
+            resource.metadata?.name || 'unnamed'
+          );
           return;
         }
       }
@@ -329,12 +365,15 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       await delay(2000);
     }
 
-    logger.warn('KRO resource deletion still in progress; preserving RGD/CRD for finalizer processing', {
-      kind: resource.kind,
-      name,
-      namespace,
-      timeout,
-    });
+    logger.warn(
+      'KRO resource deletion still in progress; preserving RGD/CRD for finalizer processing',
+      {
+        kind: resource.kind,
+        name,
+        namespace,
+        timeout,
+      }
+    );
     throw new ResourceDeploymentError(
       name,
       resource.kind || 'Unknown',

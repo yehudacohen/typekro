@@ -138,6 +138,20 @@ describe('ResourceApplier', () => {
       expect((serialized.metadata as { name: string }).name).toBe('test-deployment');
     });
 
+    it('should strip persisted scope metadata before sending to Kubernetes', () => {
+      const resource = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'test-namespace' },
+        scope: 'cluster',
+      };
+
+      const serialized = applier.serializeResourceForK8s(resource);
+
+      expect(serialized.scope).toBeUndefined();
+      expect(serialized.kind).toBe('Namespace');
+    });
+
     it('should call toJSON if available', () => {
       const customJSON: KubernetesResource = {
         apiVersion: 'v1',

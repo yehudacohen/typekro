@@ -52,17 +52,19 @@ interface ResourceGraphDefinitionInput {
 export function resourceGraphDefinition(
   rgd: ResourceGraphDefinitionInput
 ): Enhanced<Record<string, unknown>, Record<string, unknown>> {
+  const { namespace: _namespace, ...metadata } = rgd.metadata ?? { name: 'unnamed-rgd' };
+
   // For RGDs, we need to preserve the original structure since they don't need magic proxy functionality
   const rgdResource = {
     ...rgd,
     apiVersion: 'kro.run/v1alpha1' as const,
     kind: 'ResourceGraphDefinition' as const,
-    metadata: rgd.metadata ?? { name: 'unnamed-rgd' },
+    metadata,
   };
 
-  return createResource<Record<string, unknown>, Record<string, unknown>>(
-    rgdResource
-  ).withReadinessEvaluator((liveRGD: RGDManifest): ResourceStatus => {
+  return createResource<Record<string, unknown>, Record<string, unknown>>(rgdResource, {
+    scope: 'cluster',
+  }).withReadinessEvaluator((liveRGD: RGDManifest): ResourceStatus => {
     // This robust readiness check ensures the Kro controller has fully processed the RGD.
     try {
       // Defensive checks for the live resource

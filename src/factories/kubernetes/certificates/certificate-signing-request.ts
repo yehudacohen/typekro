@@ -8,12 +8,15 @@ export type V1CertificateSigningRequestStatus = NonNullable<V1CertificateSigning
 export function certificateSigningRequest(
   resource: V1CertificateSigningRequest & { id?: string }
 ): Enhanced<V1CertificateSigningRequestSpec, V1CertificateSigningRequestStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'certificates.k8s.io/v1',
-    kind: 'CertificateSigningRequest',
-    metadata: resource.metadata ?? { name: 'unnamed-csr' },
-  }).withReadinessEvaluator((liveResource: V1CertificateSigningRequest) => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'certificates.k8s.io/v1',
+      kind: 'CertificateSigningRequest',
+      metadata: resource.metadata ?? { name: 'unnamed-csr' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1CertificateSigningRequest) => {
     const status = liveResource.status;
 
     if (!status) {
