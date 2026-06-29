@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-06-29
+
+### Fixed
+
+- Fixed KRO-invalid CEL emitted for **optional scalar** spec fields in the runtime
+  values-merge path. When a `values` block contained a CEL/ref (forcing the runtime
+  map-merge), each optional overlay field was emitted as
+  `.merge({ "X": has(spec.X) ? spec.X : omit() })`. KRO types `omit()` as
+  `map(string, dyn)`, so for a scalar field the ternary `bool ? <scalar> : map(string, dyn)`
+  failed to type-check in cel-go with `GraphAccepted=False` /
+  `found no matching overload for '_?_:_' applied to '(bool, string, map(string, dyn))'`.
+  Optional refs in a runtime merge now emit a type-safe conditional single-key merge
+  `.merge(has(spec.X) ? {"X": spec.X} : {})` (both branches maps) — correct for fields
+  of any type, and a no-op when the field is absent. Static values maps and the
+  field-level `has(x) ? x : omit()` form are unchanged.
+
 ## [0.18.0] - 2026-06-26
 
 ### Added
