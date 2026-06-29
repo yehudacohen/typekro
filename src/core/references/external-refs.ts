@@ -18,6 +18,7 @@ import { getResourceId } from '../metadata/index.js';
 import { createResource } from '../proxy/create-resource.js';
 import { registerFactory } from '../resources/factory-registry.js';
 import type { Enhanced, KubernetesResource } from '../types.js';
+import type { RefOrValue } from '../types/references.js';
 
 // Self-register so the composition analyzer recognizes `externalRef(...)` calls
 // in the AST. The kind/apiVersion are placeholders — externalRef creates resources
@@ -42,8 +43,14 @@ export interface ExternalRefConfig {
   apiVersion: string;
   kind: string;
   metadata: {
-    name: string;
-    namespace?: string;
+    /**
+     * The referenced resource's name. Accepts a plain string OR a CEL expression / schema ref
+     * (`RefOrValue<string>`) — a DYNAMIC, per-instance name (e.g. `Cel.expr('schema.spec.name + "-x"')`
+     * or `Cel.template('%s-x', spec.name)`) is the common case when observing a resource whose name is
+     * derived from the spec. Pass `id` when the name is dynamic (KRO needs a stable resource id).
+     */
+    name: RefOrValue<string>;
+    namespace?: RefOrValue<string>;
   };
   /** Explicit resource ID for composition tracking. Required when name is dynamic. */
   id?: string;
@@ -87,8 +94,8 @@ export function externalRef<TSpec extends object, TStatus extends object>(
 ): Enhanced<TSpec, TStatus> {
   let apiVersion: string;
   let resolvedKind: string;
-  let resolvedName: string;
-  let resolvedNamespace: string | undefined;
+  let resolvedName: RefOrValue<string>;
+  let resolvedNamespace: RefOrValue<string> | undefined;
 
   if (typeof configOrApiVersion === 'object') {
     // Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace } })
@@ -115,8 +122,10 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     apiVersion,
     kind: resolvedKind,
     metadata: {
-      name: resolvedName,
-      ...(resolvedNamespace && { namespace: resolvedNamespace }),
+      // ObjectMeta types name/namespace as `string`, but a dynamic ref/CEL expression is valid here —
+      // serialization resolves it per-instance. Bridge the public RefOrValue<string> to the meta type.
+      name: resolvedName as string,
+      ...(resolvedNamespace && { namespace: resolvedNamespace as string }),
     },
     spec: {} as TSpec,
     status: {} as TStatus,

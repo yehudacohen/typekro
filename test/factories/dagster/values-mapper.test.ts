@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  CEL_EXPRESSION_BRAND,
-  KUBERNETES_REF_BRAND,
-} from '../../../src/core/constants/brands.js';
 import { isValuesMergeExpression } from '../../../src/core/aspects/values-merge.js';
-import {
-  mapDagsterConfigToHelmValues,
-  validateDagsterConfig,
-} from '../../../src/factories/dagster/utils/helm-values-mapper.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type {
   CelExpression,
   KubernetesRef,
@@ -18,6 +11,10 @@ import type {
   DagsterHelmValues,
   DagsterMappedHelmValues,
 } from '../../../src/factories/dagster/types.js';
+import {
+  mapDagsterConfigToHelmValues,
+  validateDagsterConfig,
+} from '../../../src/factories/dagster/utils/helm-values-mapper.js';
 
 const minimalConfig: DagsterBootstrapConfig = {
   name: 'analytics',
@@ -73,24 +70,26 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Preserve explicit user deployment port and image pull policy overrides', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      userDeployments: {
-        enabled: true,
-        deployments: [
-          {
-            name: 'analytics-repo',
-            image: {
-              repository: 'ghcr.io/acme/dagster-analytics',
-              tag: '2026.06.01',
-              pullPolicy: 'Always',
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        userDeployments: {
+          enabled: true,
+          deployments: [
+            {
+              name: 'analytics-repo',
+              image: {
+                repository: 'ghcr.io/acme/dagster-analytics',
+                tag: '2026.06.01',
+                pullPolicy: 'Always',
+              },
+              codeServerArgs: ['-m', 'analytics.definitions'],
+              port: 4040,
             },
-            codeServerArgs: ['-m', 'analytics.definitions'],
-            port: 4040,
-          },
-        ],
-      },
-    }));
+          ],
+        },
+      })
+    );
     const userDeployments = values['dagster-user-deployments'] as {
       deployments?: Array<{ image?: { pullPolicy?: string }; port?: number }>;
     };
@@ -100,53 +99,55 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Map common Dagster chart convenience fields', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      webserver: {
-        replicaCount: 2,
-        pathPrefix: '/dagster',
-        service: { type: 'ClusterIP', port: 8080 },
-        logFormat: 'json',
-      },
-      daemon: {
-        enabled: true,
-        heartbeatTolerance: 120,
-        runRetries: { enabled: true, maxRetries: 2 },
-      },
-      postgresql: {
-        enabled: false,
-        host: 'dagster-postgres.postgres.svc.cluster.local',
-        username: 'dagster',
-        database: 'dagster',
-        passwordSecretName: 'dagster-postgres',
-        servicePort: 5432,
-      },
-      runLauncher: {
-        type: 'K8sRunLauncher',
-        k8sRunLauncher: {
-          jobNamespace: 'dagster-runs',
-          envSecrets: [{ name: 'dagster-run-env' }],
-          resources: { requests: { cpu: '250m', memory: '512Mi' } },
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        webserver: {
+          replicaCount: 2,
+          pathPrefix: '/dagster',
+          service: { type: 'ClusterIP', port: 8080 },
+          logFormat: 'json',
         },
-      },
-      ingress: {
-        enabled: true,
-        ingressClassName: 'nginx',
-        dagsterWebserver: {
-          host: 'dagster.example.com',
-          path: '/',
-          tls: { enabled: true, secretName: 'dagster-tls' },
+        daemon: {
+          enabled: true,
+          heartbeatTolerance: 120,
+          runRetries: { enabled: true, maxRetries: 2 },
         },
-      },
-      computeLogManager: {
-        type: 'S3ComputeLogManager',
-        config: { bucket: 'dagster-compute-logs', prefix: 'runs' },
-      },
-      nameOverride: 'dagster-short',
-      fullnameOverride: 'dagster-analytics',
-      rbacEnabled: true,
-      imagePullSecrets: [{ name: 'dagster-registry' }],
-    }));
+        postgresql: {
+          enabled: false,
+          host: 'dagster-postgres.postgres.svc.cluster.local',
+          username: 'dagster',
+          database: 'dagster',
+          passwordSecretName: 'dagster-postgres',
+          servicePort: 5432,
+        },
+        runLauncher: {
+          type: 'K8sRunLauncher',
+          k8sRunLauncher: {
+            jobNamespace: 'dagster-runs',
+            envSecrets: [{ name: 'dagster-run-env' }],
+            resources: { requests: { cpu: '250m', memory: '512Mi' } },
+          },
+        },
+        ingress: {
+          enabled: true,
+          ingressClassName: 'nginx',
+          dagsterWebserver: {
+            host: 'dagster.example.com',
+            path: '/',
+            tls: { enabled: true, secretName: 'dagster-tls' },
+          },
+        },
+        computeLogManager: {
+          type: 'S3ComputeLogManager',
+          config: { bucket: 'dagster-compute-logs', prefix: 'runs' },
+        },
+        nameOverride: 'dagster-short',
+        fullnameOverride: 'dagster-analytics',
+        rbacEnabled: true,
+        imagePullSecrets: [{ name: 'dagster-registry' }],
+      })
+    );
 
     expect(values.nameOverride).toBe('dagster-short');
     expect(values.fullnameOverride).toBe('dagster-analytics');
@@ -197,11 +198,13 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Exclude bootstrap-only fields from Helm values', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      version: '1.13.8',
-      serviceAccountName: 'dagster-runtime',
-    }));
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        version: '1.13.8',
+        serviceAccountName: 'dagster-runtime',
+      })
+    );
 
     expect('name' in values).toBe(false);
     expect('namespace' in values).toBe(false);
@@ -210,17 +213,19 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Pass serviceAccount (annotations/create/name) through the raw values surface (IRSA)', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      serviceAccountName: 'dbt',
-      values: {
-        serviceAccount: {
-          create: true,
-          name: 'dbt',
-          annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123:role/dbt-data' },
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        serviceAccountName: 'dbt',
+        values: {
+          serviceAccount: {
+            create: true,
+            name: 'dbt',
+            annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123:role/dbt-data' },
+          },
         },
-      },
-    }));
+      })
+    );
 
     expect(values.serviceAccount).toEqual({
       create: true,
@@ -230,14 +235,16 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Merge raw values last while preserving typed values at unrelated paths', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      webserver: { replicaCount: 1, pathPrefix: '/typed' },
-      values: {
-        dagsterWebserver: { replicaCount: 3 },
-        busybox: { image: { repository: 'busybox', tag: '1.36' } },
-      },
-    }));
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        webserver: { replicaCount: 1, pathPrefix: '/typed' },
+        values: {
+          dagsterWebserver: { replicaCount: 3 },
+          busybox: { image: { repository: 'busybox', tag: '1.36' } },
+        },
+      })
+    );
 
     expect(values.dagsterWebserver).toMatchObject({
       replicaCount: 3,
@@ -249,31 +256,33 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Replace arrays and override primitive raw values during deep merge', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      userDeployments: {
-        enabled: true,
-        deployments: [
-          {
-            name: 'typed-repo',
-            image: { repository: 'ghcr.io/acme/typed', tag: '1' },
-            dagsterApiGrpcArgs: ['-m', 'typed.repo'],
-          },
-        ],
-      },
-      values: {
-        rbacEnabled: false,
-        'dagster-user-deployments': {
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        userDeployments: {
+          enabled: true,
           deployments: [
             {
-              name: 'raw-repo',
-              image: { repository: 'ghcr.io/acme/raw', tag: '2' },
-              codeServerArgs: ['-m', 'raw.repo'],
+              name: 'typed-repo',
+              image: { repository: 'ghcr.io/acme/typed', tag: '1' },
+              dagsterApiGrpcArgs: ['-m', 'typed.repo'],
             },
           ],
         },
-      },
-    }));
+        values: {
+          rbacEnabled: false,
+          'dagster-user-deployments': {
+            deployments: [
+              {
+                name: 'raw-repo',
+                image: { repository: 'ghcr.io/acme/raw', tag: '2' },
+                codeServerArgs: ['-m', 'raw.repo'],
+              },
+            ],
+          },
+        },
+      })
+    );
     const userDeployments = values['dagster-user-deployments'] as {
       deployments?: Array<{ name?: string; image?: { repository?: string } }>;
     };
@@ -285,22 +294,24 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Merge RabbitMQ and Redis raw sub-values into official chart blocks', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      global: { celeryConfigSecretName: 'dagster-celery-config' },
-      runLauncher: { type: 'CeleryK8sRunLauncher' },
-      rabbitmq: {
-        enabled: true,
-        username: 'dagster',
-        servicePort: 5672,
-        values: { persistence: { enabled: true } },
-      },
-      redis: {
-        enabled: true,
-        brokerDbNumber: 0,
-        values: { master: { persistence: { enabled: true } } },
-      },
-    }));
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        global: { celeryConfigSecretName: 'dagster-celery-config' },
+        runLauncher: { type: 'CeleryK8sRunLauncher' },
+        rabbitmq: {
+          enabled: true,
+          username: 'dagster',
+          servicePort: 5672,
+          values: { persistence: { enabled: true } },
+        },
+        redis: {
+          enabled: true,
+          brokerDbNumber: 0,
+          values: { master: { persistence: { enabled: true } } },
+        },
+      })
+    );
 
     expect(values.generateCeleryConfigSecret).toBe(false);
     expect(values.global).toMatchObject({ celeryConfigSecretName: 'dagster-celery-config' });
@@ -320,26 +331,30 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Preserve global chart fields unless top-level conveniences override them', () => {
-    const globalOnly = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      global: {
-        serviceAccountName: 'global-service-account',
-        postgresqlSecretName: 'global-postgresql-secret',
-      },
-    }));
-    const topLevelOverride = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      serviceAccountName: 'top-level-service-account',
-      global: {
-        serviceAccountName: 'global-service-account',
-        postgresqlSecretName: 'global-postgresql-secret',
-      },
-      postgresql: {
-        enabled: false,
-        host: 'dagster-postgres.postgres.svc.cluster.local',
-        passwordSecretName: 'top-level-postgresql-secret',
-      },
-    }));
+    const globalOnly = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        global: {
+          serviceAccountName: 'global-service-account',
+          postgresqlSecretName: 'global-postgresql-secret',
+        },
+      })
+    );
+    const topLevelOverride = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        serviceAccountName: 'top-level-service-account',
+        global: {
+          serviceAccountName: 'global-service-account',
+          postgresqlSecretName: 'global-postgresql-secret',
+        },
+        postgresql: {
+          enabled: false,
+          host: 'dagster-postgres.postgres.svc.cluster.local',
+          passwordSecretName: 'top-level-postgresql-secret',
+        },
+      })
+    );
 
     expect(globalOnly.global).toMatchObject({
       serviceAccountName: 'global-service-account',
@@ -352,16 +367,18 @@ describe('Dagster Helm values mapper', () => {
   });
 
   it('Map RabbitMQ credentials to the official nested chart path', () => {
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      global: { celeryConfigSecretName: 'dagster-celery-config' },
-      runLauncher: { type: 'CeleryK8sRunLauncher' },
-      rabbitmq: {
-        enabled: true,
-        username: 'dagster-user',
-        password: 'dagster-password',
-      },
-    }));
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        global: { celeryConfigSecretName: 'dagster-celery-config' },
+        runLauncher: { type: 'CeleryK8sRunLauncher' },
+        rabbitmq: {
+          enabled: true,
+          username: 'dagster-user',
+          password: 'dagster-password',
+        },
+      })
+    );
 
     expect(values.rabbitmq).toMatchObject({
       enabled: true,
@@ -391,14 +408,16 @@ describe('Dagster Helm values mapper', () => {
       fieldPath: 'status.values',
     } satisfies KubernetesRef<TypeKroValueTreeObject>;
 
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      global: { celeryConfigSecretName: 'dagster-celery-config' },
-      runLauncher: { type: 'CeleryK8sRunLauncher' },
-      postgresql: { enabled: true, values: postgresqlValues },
-      rabbitmq: { enabled: true, values: rabbitmqValues },
-      redis: { enabled: true, values: redisValues },
-    }));
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        global: { celeryConfigSecretName: 'dagster-celery-config' },
+        runLauncher: { type: 'CeleryK8sRunLauncher' },
+        postgresql: { enabled: true, values: postgresqlValues },
+        rabbitmq: { enabled: true, values: rabbitmqValues },
+        redis: { enabled: true, values: redisValues },
+      })
+    );
 
     expect(isValuesMergeExpression(values.postgresql)).toBe(true);
     expect(isValuesMergeExpression(values.rabbitmq)).toBe(true);
@@ -419,16 +438,16 @@ describe('Dagster Helm values mapper', () => {
       expression: 'schema.spec.ingress.host',
     } satisfies CelExpression<string>;
 
-    const values = concreteValues(mapDagsterConfigToHelmValues({
-      ...minimalConfig,
-      values: {
-        global: { postgresqlSecretName: secretName },
-        ingress: { dagsterWebserver: { host: hostname } },
-      },
-    }));
-    const ingress = values.ingress as
-      | { dagsterWebserver?: { host?: unknown } }
-      | undefined;
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        values: {
+          global: { postgresqlSecretName: secretName },
+          ingress: { dagsterWebserver: { host: hostname } },
+        },
+      })
+    );
+    const ingress = values.ingress as { dagsterWebserver?: { host?: unknown } } | undefined;
 
     expect(values.global?.postgresqlSecretName).toBe(secretName);
     expect(ingress?.dagsterWebserver?.host).toBe(hostname);
@@ -439,9 +458,7 @@ describe('Dagster Helm values mapper', () => {
       ...minimalConfig,
       userDeployments: {
         enabled: true,
-        deployments: [
-          { name: 'broken', image: { repository: 'ghcr.io/acme/broken', tag: '1' } },
-        ],
+        deployments: [{ name: 'broken', image: { repository: 'ghcr.io/acme/broken', tag: '1' } }],
       },
     });
     const conflictingArgs = validateDagsterConfig({
@@ -518,5 +535,32 @@ describe('Dagster Helm values mapper', () => {
         },
       })
     ).toThrow(/DAGSTER_REQUIRED_CONFIG_MISSING|DagsterConfigurationError/);
+  });
+
+  // Regression: mapDaemonConfig previously dropped probe fields, so a hung daemon
+  // (e.g. "too many retries for DB connection") was never restarted by k8s.
+  it('Forward daemon readiness/liveness/startup probes to chart values', () => {
+    const livenessProbe = {
+      exec: { command: ['dagster-daemon', 'liveness-check'] },
+      periodSeconds: 60,
+    };
+    const readinessProbe = { exec: { command: ['true'] }, periodSeconds: 30 };
+    const startupProbe = { exec: { command: ['true'] }, failureThreshold: 10 };
+
+    const values = concreteValues(
+      mapDagsterConfigToHelmValues({
+        ...minimalConfig,
+        daemon: { enabled: true, livenessProbe, readinessProbe, startupProbe },
+      })
+    );
+    const daemon = values.dagsterDaemon as {
+      livenessProbe?: unknown;
+      readinessProbe?: unknown;
+      startupProbe?: unknown;
+    };
+
+    expect(daemon.livenessProbe).toEqual(livenessProbe);
+    expect(daemon.readinessProbe).toEqual(readinessProbe);
+    expect(daemon.startupProbe).toEqual(startupProbe);
   });
 });

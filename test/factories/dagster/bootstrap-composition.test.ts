@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { load } from 'js-yaml';
 import {
   dagsterBootstrap,
   dagsterHelmRepositoryBootstrap,
@@ -89,10 +90,14 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('chart: dagster');
     expect(yaml).toContain('1.13.8');
+    // Readiness is the wait-gated HelmRelease Ready condition (helm-controller waits for the chart's
+    // workloads before reporting Ready). We do NOT observe individual workloads — no fragile,
+    // name-reconstructed Deployment externalRef, and therefore no owned/observed Deployment template.
     expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
     expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
     expect(yaml).not.toContain('kind: Deployment');
     expect(yaml).not.toContain('kind: Pod');
+    expect(yaml).not.toContain('dagsterWebserverDeployment');
   });
 
   it('Own the shared HelmRepository in the singleton composition', () => {
@@ -237,5 +242,124 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('busybox');
     expect(yaml).not.toContain('undefined');
     expect(yaml).not.toContain('[object Object]');
+  });
+});
+
+describe('Dagster bootstrap readiness', () => {
+  // Readiness is the wait-gated HelmRelease Ready condition: the HelmRelease does not disable wait,
+  // so helm-controller waits for the chart's workloads before it reports Ready. Individual workloads
+  // are deliberately NOT observed via externalRef — KRO externalRef is name-keyed and the chart's
+  // per-workload names depend fragilely on the release name + per-component nameOverrides, so
+  // reconstructing them risks pinning `ready` false forever for no signal beyond the HelmRelease.
+  it('Gates `ready` on the HelmRelease Ready condition, with no per-workload observation', () => {
+    const yaml = dagsterBootstrap.toYaml();
+
+    expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
+    // No fragile workload observation: no Deployment/StatefulSet externalRef, no reconstructed names.
+    expect(yaml).not.toContain('dagsterWebserverDeployment');
+    expect(yaml).not.toContain('kind: Deployment');
+    expect(yaml).not.toContain('kind: StatefulSet');
+    expect(yaml).not.toContain('__KUBERNETES_REF__');
+  });
+
+  // Hang-safety: a workload that an instance does NOT deploy must never appear in
+  // `ready`. The daemon (conditionally deployed) and the postgres StatefulSet
+  // (only when bundled) are deliberately NOT observed in the shared KRO RGD — KRO
+  // status CEL cannot reference schema.spec to re-gate them per instance, so
+  // requiring them would hang any instance that disables the daemon or uses an
+  // external DB. They stay on the HelmRelease signal.
+  it('Do NOT observe or require the daemon or postgres (no-hang for disabled/external)', () => {
+    const yaml = dagsterBootstrap.toYaml();
+
+    // No externalRef observation for daemon or postgres.
+    expect(yaml).not.toContain('dagsterDaemonDeployment');
+    expect(yaml).not.toContain('dagsterPostgresStatefulSet');
+    // ...so `ready` cannot reference them and cannot hang on an absent workload.
+    expect(yaml).not.toContain('Daemon.status');
+    expect(yaml).not.toContain('Postgres.status');
+    expect(yaml).not.toContain('kind: StatefulSet');
+
+    // No conditional externalRef placeholder leaked into the RGD.
+    expect(yaml).not.toContain('kind: ExternalRef');
+
+    // daemon/userDeployments components fall back to the HelmRelease signal.
+    expect(yaml).toContain('daemon: ${dagsterHelmRelease.status.conditions');
+    expect(yaml).toContain('userDeployments: ${dagsterHelmRelease.status.conditions');
+  });
+
+  it('Keep phase/failed/version unchanged', () => {
+    const yaml = dagsterBootstrap.toYaml();
+    expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
+    expect(yaml).toContain('failed: ${dagsterHelmRelease.status.conditions');
+    // `version` is a static/client-hydrated status field, so the RGD schema types
+    // it (not the literal value); the default value still flows through templates.
+    expect(yaml).toContain('version: string');
+    expect(yaml).toContain('1.13.8');
+  });
+});
+
+describe('Dagster bootstrap default daemon liveness probe', () => {
+  async function daemonValues(spec: object): Promise<Record<string, unknown> | undefined> {
+    const factory = dagsterBootstrap.factory('direct', { namespace: 'd' });
+    const yaml = await factory.toYaml(spec as never);
+    const docs = yaml
+      .split(/^---$/m)
+      .map((doc) => doc.trim())
+      .filter(Boolean)
+      .map((doc) => load(doc) as Record<string, unknown>);
+    const helmRelease = docs.find((doc) => doc?.kind === 'HelmRelease');
+    const values = (helmRelease?.spec as { values?: Record<string, unknown> } | undefined)?.values;
+    return values?.dagsterDaemon as Record<string, unknown> | undefined;
+  }
+
+  // When the daemon loses its DB connection it can hang without exiting; the chart
+  // ships no daemon liveness probe, so we add a conservative dagster-canonical one
+  // so k8s restarts it.
+  it('Apply a conservative default liveness probe when the daemon is enabled and none is supplied', async () => {
+    const daemon = await daemonValues({
+      name: 'analytics',
+      namespace: 'd',
+      postgresql: { enabled: true },
+    });
+    expect(daemon?.livenessProbe).toEqual({
+      exec: { command: ['dagster-daemon', 'liveness-check'] },
+      initialDelaySeconds: 120,
+      periodSeconds: 60,
+      timeoutSeconds: 10,
+      failureThreshold: 5,
+    });
+  });
+
+  it('Let a user-supplied daemon livenessProbe override the default', async () => {
+    const userProbe = { httpGet: { path: '/healthz', port: 3070 }, periodSeconds: 15 };
+    const daemon = await daemonValues({
+      name: 'analytics',
+      namespace: 'd',
+      postgresql: { enabled: true },
+      daemon: { livenessProbe: userProbe },
+    });
+    expect(daemon?.livenessProbe).toEqual(userProbe);
+  });
+
+  it('Never inject the default liveness probe when the daemon is disabled', async () => {
+    const daemon = await daemonValues({
+      name: 'analytics',
+      namespace: 'd',
+      postgresql: { enabled: true },
+      daemon: { enabled: false },
+    });
+    expect(daemon?.livenessProbe).toBeUndefined();
+  });
+
+  // In KRO mode the spec is a proxy, so the default is emitted as a CEL fallback
+  // into the chart values: a user-supplied livenessProbe wins per instance, else
+  // the default exec probe applies. This keeps the production fix working on the
+  // primary (KRO) deploy path, not just direct mode.
+  it('Emit the default daemon liveness probe as a CEL fallback in the KRO RGD', () => {
+    const yaml = dagsterBootstrap.toYaml();
+    expect(yaml).toContain('has(schema.spec.daemon.livenessProbe)');
+    expect(yaml).toContain('schema.spec.daemon.livenessProbe :');
+    expect(yaml).toContain('dagster-daemon');
+    expect(yaml).toContain('liveness-check');
   });
 });

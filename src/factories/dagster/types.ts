@@ -28,17 +28,17 @@ import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
 import type { TypeKroError } from '../../core/errors.js';
 import type {
+  TypeKroChartValue,
+  TypeKroValueTree,
+  TypeKroValueTreeObject,
+} from '../../core/types/common.js';
+import type {
   Composable,
   DirectResourceFactory,
   Enhanced,
   KroResourceFactory,
   PublicFactoryOptions,
 } from '../../core/types/index.js';
-import type {
-  TypeKroChartValue,
-  TypeKroValueTree,
-  TypeKroValueTreeObject,
-} from '../../core/types/common.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../helm/helm-repository.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../helm/types.js';
 
@@ -227,6 +227,9 @@ const daemonSchemaShape = {
   'runRetries?': objectMapSchema,
   'sensors?': objectMapSchema,
   'schedules?': objectMapSchema,
+  'readinessProbe?': objectMapSchema,
+  'livenessProbe?': objectMapSchema,
+  'startupProbe?': objectMapSchema,
 } as const;
 
 const userDeploymentSchema = type({
@@ -258,8 +261,10 @@ const userDeploymentSchema = type({
   'deploymentStrategy?': objectMapSchema,
   'service?': { 'annotations?': 'Record<string, string>' },
 }).narrow((deployment, ctx) => {
-  const hasGrpcArgs = Array.isArray(deployment.dagsterApiGrpcArgs) && deployment.dagsterApiGrpcArgs.length > 0;
-  const hasCodeServerArgs = Array.isArray(deployment.codeServerArgs) && deployment.codeServerArgs.length > 0;
+  const hasGrpcArgs =
+    Array.isArray(deployment.dagsterApiGrpcArgs) && deployment.dagsterApiGrpcArgs.length > 0;
+  const hasCodeServerArgs =
+    Array.isArray(deployment.codeServerArgs) && deployment.codeServerArgs.length > 0;
 
   if (hasGrpcArgs !== hasCodeServerArgs) return true;
 
@@ -618,6 +623,10 @@ export interface DagsterDaemonConfig extends DagsterPodConfig {
   sensors?: TypeKroValueTreeObject;
   /** Schedule evaluation convenience config. */
   schedules?: TypeKroValueTreeObject;
+  /** Startup/readiness/liveness probe overrides for the daemon container. */
+  readinessProbe?: TypeKroValueTreeObject;
+  livenessProbe?: TypeKroValueTreeObject;
+  startupProbe?: TypeKroValueTreeObject;
 }
 
 /** One Dagster user-code deployment served through gRPC or code-server. */
@@ -1096,16 +1105,20 @@ export type DagsterUtilitySignature<
 };
 
 /** Direct resource factory with explicit Dagster operation error shape. */
-export type DagsterDirectFactoryWithErrors<TSpec extends object, TStatus extends object> =
-  DirectResourceFactory<TSpec, TStatus> & {
-    readonly errorType?: DagsterOperationError;
-  };
+export type DagsterDirectFactoryWithErrors<
+  TSpec extends object,
+  TStatus extends object,
+> = DirectResourceFactory<TSpec, TStatus> & {
+  readonly errorType?: DagsterOperationError;
+};
 
 /** KRO resource factory with explicit Dagster operation error shape. */
-export type DagsterKroFactoryWithErrors<TSpec extends object, TStatus extends object> =
-  KroResourceFactory<TSpec, TStatus> & {
-    readonly errorType?: DagsterOperationError;
-  };
+export type DagsterKroFactoryWithErrors<
+  TSpec extends object,
+  TStatus extends object,
+> = KroResourceFactory<TSpec, TStatus> & {
+  readonly errorType?: DagsterOperationError;
+};
 
 /** Public Dagster factory and composition error boundary map. */
 export interface DagsterFactoryErrorBoundary {
