@@ -100,6 +100,16 @@ describe('Dagster bootstrap composition', () => {
     // template (the chart owns the real workloads).
     expect(yaml).toContain('kind: Deployment');
     expect(yaml).not.toContain('kind: Pod');
+    // The observed webserver Deployment is named from the chart's `.Release.Name` (= spec.name)
+    // + the chart-default `-dagster-webserver` suffix. Pin that derivation so a regression to the
+    // WRONG base — `dagster.fullname` (the global-override-aware helper, which appends `-dagster`
+    // for a release name not containing "dagster" and would observe a nonexistent Deployment,
+    // hanging `ready` forever) — fails loudly.
+    expect(yaml).toContain('schema.spec.name + "-dagster-webserver"');
+    // The buggy derivation used `dagster.fullname`'s `contains(...)` logic in the name. That doesn't
+    // belong in the webserver name; its presence is the regression. (We can't assert on `fullnameOverride`
+    // here — it legitimately appears in the HelmRelease values passthrough, unrelated to the name.)
+    expect(yaml).not.toContain('.contains(');
   });
 
   it('Own the shared HelmRepository in the singleton composition', () => {
@@ -259,10 +269,14 @@ describe('Dagster bootstrap honest readiness', () => {
     expect(yaml).toContain('apiVersion: apps/v1');
     expect(yaml).toContain('kind: Deployment');
 
-    // The webserver name mirrors the chart's `dagster.fullname` template as a CEL
-    // expression (resolves at instance time), with no leaked ref markers.
-    expect(yaml).toContain('-dagster-webserver');
-    expect(yaml).toContain('schema.spec.name.contains(');
+    // The webserver name is `<Release.Name>-dagster-webserver`, and the chart's Release.Name is the
+    // composition's `spec.name` — so the externalRef name resolves (at instance time) to a clean CEL
+    // expression over `spec.name`, with NO leaked ref markers and NO spurious has()-guard wrapper.
+    // It must NOT use the chart's `dagster.fullname`/`contains` logic (that helper is for the daemon/
+    // postgres names; using it for the webserver would observe a nonexistent Deployment — see the
+    // composition comment).
+    expect(yaml).toContain('${schema.spec.name + "-dagster-webserver"}');
+    expect(yaml).not.toContain('schema.spec.name.contains(');
     expect(yaml).not.toContain('__KUBERNETES_REF__');
 
     // `ready` is the HelmRelease Ready condition AND the (null-safe) webserver

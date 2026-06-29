@@ -89,21 +89,29 @@ export const dagsterBootstrap = kubernetesComposition(
     // Daemon/postgres therefore stay on the HelmRelease signal (see components).
     const WEBSERVER_ID = 'dagsterWebserverDeployment';
 
-    // Webserver Deployment name. We build this as ONE CEL expression that mirrors
-    // the chart's `dagster.fullname` template exactly (incl. the `contains` rule)
-    // rather than computing it from `spec.*` in JS: in KRO mode `spec.name` is a
-    // proxy, so a JS template-literal (`${spec.name}-...`) leaks raw ref markers
-    // and a JS-side trunc mangles the embedded template. CEL evaluates it at
-    // instance time against the real release name. Verified live: release
-    // `dagster` → `dagster-dagster-webserver`.
-    //   fullname = fullnameOverride
-    //            ? fullnameOverride
-    //            : name.contains(chartName) ? name : name + "-" + chartName
-    //   chartName = nameOverride ?? "dagster"
-    //   webserver = fullname + "-dagster-webserver"
-    // (No trunc(63): foundry release names are short; the fullname-derived name
-    // stays well under the 63-char object-name cap.)
-    const webserverName = webserverNameCel();
+    // Webserver Deployment name. The chart's `dagster.webserver.fullname` is
+    //   {{ .Release.Name }}-{{ default "webserver" .Values.dagsterWebserver.nameOverride }}
+    // and the chart DEFAULTS `dagsterWebserver.nameOverride` to "dagster-webserver"
+    // (values.yaml), so the Deployment is `<Release.Name>-dagster-webserver`. The Flux
+    // release name is this composition's `spec.name` (the HelmRelease is created with
+    // `name: spec.name`, no releaseName/targetNamespace prefix — confirmed live: postgres
+    // is `<spec.name>-postgresql`, not namespace-prefixed). So the name is simply
+    // `${spec.name}-dagster-webserver`.
+    //
+    // IMPORTANT: the webserver helper uses `.Release.Name` DIRECTLY — NOT `dagster.fullname`
+    // (the global-override-aware helper the daemon/postgres helpers use). Folding in
+    // fullname/`contains`/nameOverride logic here is WRONG: for a release name that doesn't
+    // contain "dagster", `dagster.fullname` becomes `<name>-dagster`, yielding
+    // `<name>-dagster-dagster-webserver` — a Deployment that doesn't exist, so `ready` would
+    // hang forever. typekro's webserver spec exposes no per-webserver nameOverride, so the
+    // chart default ("dagster-webserver") always applies.
+    //
+    // NB: written as a Cel.expr string, not Cel.template, because of a serializer quirk — the
+    // externalRef `name` gets swept into the hybrid `has(spec.X) ? _ : _` conditional emitted for a
+    // nearby `||` binding (e.g. `spec.version || DEFAULT`). With Cel.expr both branches are an
+    // identical valid sub-expression (a harmless no-op guard); with Cel.template the branches carry
+    // `${...}` and nest illegally. (Tracked separately as a JS→CEL serialization bug to fix upstream.)
+    const webserverName = Cel.expr<string>('schema.spec.name + "-dagster-webserver"');
 
     const _dagsterNamespace = namespace({
       metadata: {
@@ -146,7 +154,7 @@ export const dagsterBootstrap = kubernetesComposition(
     externalRef({
       apiVersion: 'apps/v1',
       kind: 'Deployment',
-      metadata: { name: webserverName as unknown as string, namespace: resolvedNamespace },
+      metadata: { name: webserverName, namespace: resolvedNamespace },
       id: WEBSERVER_ID,
     });
 
@@ -207,14 +215,6 @@ function deploymentReadyCel(id: string): string {
  * `dagster.fullname` template. Built as a CEL string (not JS interpolation of
  * the schema proxy) so it resolves correctly at KRO instance time.
  */
-function webserverNameCel() {
-  const chartName = 'has(schema.spec.nameOverride) ? schema.spec.nameOverride : "dagster"';
-  const fullname =
-    'has(schema.spec.fullnameOverride) ? schema.spec.fullnameOverride : ' +
-    `(schema.spec.name.contains(${chartName}) ? schema.spec.name : ` +
-    `schema.spec.name + "-" + (${chartName}))`;
-  return Cel.expr<string>(`(${fullname}) + "-dagster-webserver"`);
-}
 
 function buildHelmValues(spec: DagsterBootstrapSchemaConfig) {
   return mapDagsterConfigToHelmValues(buildMapperConfig(spec));

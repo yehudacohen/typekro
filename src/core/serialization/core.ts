@@ -1580,10 +1580,21 @@ function buildCelConditional(
   resourceIds?: ReadonlySet<string>,
   omitFields?: ReadonlySet<string>
 ): string {
-  const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
   const proxyRepr = celValueRepr(proxyValue, nestedStatusCel, resourceIds, omitFields);
   const hybridRepr = celValueRepr(hybridValue, nestedStatusCel, resourceIds, omitFields);
 
+  // No-op conditional collapse: `has(X) ? V : V` ≡ V. The proxy and hybrid passes can diverge
+  // structurally (so walkAndConditionalize routes a leaf here) yet render to an IDENTICAL CEL
+  // expression — e.g. a resource field built from a CEL expression (`schema.spec.name + "-suffix"`)
+  // that sits alongside an unrelated `spec.x || default` binding. There is no real branch to guard,
+  // and pickConditionField() would otherwise attach the wrong field's has() guard via its
+  // first-overridden-field fallback — producing misleading output, and structurally INVALID output
+  // when the repr carries `${...}` (nested template). Emit the expression directly, with no guard.
+  if (proxyRepr === hybridRepr) {
+    return `\${${proxyRepr}}`;
+  }
+
+  const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
   const explicitCondition = overrideConditions.get(field);
   if (explicitCondition) {
     return `\${${explicitCondition} ? ${celBranchRepr(proxyRepr)} : ${celBranchRepr(hybridRepr)}}`;
