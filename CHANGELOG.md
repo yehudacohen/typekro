@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.merge(has(spec.X) ? {"X": spec.X} : {})` (both branches maps) — correct for fields
   of any type, and a no-op when the field is absent. Static values maps and the
   field-level `has(x) ? x : omit()` form are unchanged.
+- Fixed the alchemy KRO RGD deploy ignoring the factory's configured `timeout`: it
+  hardcoded `DEFAULT_RGD_TIMEOUT` (60s) instead of honoring `factoryOptions.timeout`
+  (the non-alchemy paths already did). A converge whose RGD legitimately takes >60s to
+  reach ready (e.g. a Helm workload rollout) false-failed with `AbortError: Delay aborted`.
 
 ## [0.18.0] - 2026-06-26
 
