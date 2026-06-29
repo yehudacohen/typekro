@@ -1,7 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
-import { externalRef } from '../../../core/references/external-refs.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type { TypeKroValueTreeObject } from '../../../core/types/common.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
@@ -21,10 +20,6 @@ import { mapDagsterConfigToHelmValues } from '../utils/helm-values-mapper.js';
 import { dagsterHelmRepositoryBootstrap } from './dagster-helm-repository.js';
 
 type DagsterBootstrapSchemaConfig = typeof DagsterBootstrapConfigSchema.infer;
-
-/** HelmRelease Ready-condition CEL, by the release resource id. */
-const HELM_RELEASE_READY_CEL =
-  'dagsterHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")';
 
 /**
  * Conservative default liveness probe for the Dagster daemon.
@@ -69,50 +64,17 @@ export const dagsterBootstrap = kubernetesComposition(
     const resolvedVersion = spec.version || DEFAULT_DAGSTER_VERSION;
     const helmValues = buildHelmValues(spec);
 
-    // Readiness must reflect a REAL workload, not just Flux's HelmRelease Ready
-    // condition. We observe the chart's webserver Deployment via externalRef and
-    // fold its readiness into `ready`.
+    // Readiness is the Flux HelmRelease Ready condition. The HelmRelease does not set
+    // `disableWait`, so helm-controller waits for the release's workloads (webserver, daemon,
+    // bundled postgres) to become ready before it reports Ready — i.e. `helmReleaseReady` is
+    // already workload-aware, and the consuming layer gates its converge on this status.
     //
-    // SCOPE NOTE — webserver only, on purpose. The daemon and bundled postgres
-    // are deployed only conditionally (daemon.enabled, external-vs-bundled pg),
-    // and that condition is PER-INSTANCE. But:
-    //   1. KRO status CEL cannot reference schema.spec (probed live, kro 0.9.2),
-    //      so a daemon/postgres readiness term cannot be re-gated per instance.
-    //   2. The KRO RGD is built once from a schema proxy and shared by every
-    //      instance, so the build-time spec can't decide per-instance presence.
-    //   3. A conditional `externalRef(...)` call is hoisted by the composition
-    //      analyzer into a broken placeholder resource (kind: ExternalRef), so it
-    //      can't be cleanly omitted either.
-    // Requiring a daemon/postgres that a given instance disabled would make
-    // `ready` hang forever. The webserver is the one workload the chart ALWAYS
-    // creates for every instance, so observing it is both honest and hang-safe.
-    // Daemon/postgres therefore stay on the HelmRelease signal (see components).
-    const WEBSERVER_ID = 'dagsterWebserverDeployment';
-
-    // Webserver Deployment name. The chart's `dagster.webserver.fullname` is
-    //   {{ .Release.Name }}-{{ default "webserver" .Values.dagsterWebserver.nameOverride }}
-    // and the chart DEFAULTS `dagsterWebserver.nameOverride` to "dagster-webserver"
-    // (values.yaml), so the Deployment is `<Release.Name>-dagster-webserver`. The Flux
-    // release name is this composition's `spec.name` (the HelmRelease is created with
-    // `name: spec.name`, no releaseName/targetNamespace prefix — confirmed live: postgres
-    // is `<spec.name>-postgresql`, not namespace-prefixed). So the name is simply
-    // `${spec.name}-dagster-webserver`.
-    //
-    // IMPORTANT: the webserver helper uses `.Release.Name` DIRECTLY — NOT `dagster.fullname`
-    // (the global-override-aware helper the daemon/postgres helpers use). Folding in
-    // fullname/`contains`/nameOverride logic here is WRONG: for a release name that doesn't
-    // contain "dagster", `dagster.fullname` becomes `<name>-dagster`, yielding
-    // `<name>-dagster-dagster-webserver` — a Deployment that doesn't exist, so `ready` would
-    // hang forever. typekro's webserver spec exposes no per-webserver nameOverride, so the
-    // chart default ("dagster-webserver") always applies.
-    //
-    // NB: written as a Cel.expr string, not Cel.template, because of a serializer quirk — the
-    // externalRef `name` gets swept into the hybrid `has(spec.X) ? _ : _` conditional emitted for a
-    // nearby `||` binding (e.g. `spec.version || DEFAULT`). With Cel.expr both branches are an
-    // identical valid sub-expression (a harmless no-op guard); with Cel.template the branches carry
-    // `${...}` and nest illegally. (Tracked separately as a JS→CEL serialization bug to fix upstream.)
-    const webserverName = Cel.expr<string>('schema.spec.name + "-dagster-webserver"');
-
+    // We deliberately do NOT observe the individual Deployments via externalRef. KRO's externalRef
+    // is name-keyed (no label selector), and the chart's per-workload names are a fragile function
+    // of `.Release.Name` + per-component `nameOverride`s (settable via raw `values`); reconstructing
+    // them in CEL risks pinning `ready` to false forever on a name mismatch — for no signal beyond
+    // the wait-gated HelmRelease. Per-instance daemon/postgres health (which a shared, schema-proxy
+    // RGD can't conditionalize anyway) is covered post-deploy by the deploying layer's readiness gate.
     const _dagsterNamespace = namespace({
       metadata: {
         name: resolvedNamespace,
@@ -149,34 +111,14 @@ export const dagsterBootstrap = kubernetesComposition(
       id: 'dagsterHelmRelease',
     });
 
-    // Unconditional externalRef (no `if` guard) so the analyzer emits a real
-    // externalRef entry, not a placeholder stub. The webserver is always present.
-    externalRef({
-      apiVersion: 'apps/v1',
-      kind: 'Deployment',
-      metadata: { name: webserverName, namespace: resolvedNamespace },
-      id: WEBSERVER_ID,
-    });
-
     const helmRepositoryReady = _dagsterHelmRepository.status.ready;
     const helmReleaseReady = Cel.expr<boolean>(
       _dagsterHelmRelease.status.conditions,
       '.exists(c, c.type == "Ready" && c.status == "True")'
     );
 
-    // Null-safe webserver readiness. KRO CEL supports has(); guarding the status
-    // path makes the term evaluate to `false` (never an eval error) before the
-    // observed Deployment exists during install.
-    const webserverReady = Cel.expr<boolean>(deploymentReadyCel(WEBSERVER_ID));
-
-    // `ready` = HelmRelease Ready AND the webserver Deployment is up. Both terms
-    // reference resources always present for every instance, so this never hangs.
-    const ready = Cel.expr<boolean>(
-      `(${HELM_RELEASE_READY_CEL}) && (${deploymentReadyCel(WEBSERVER_ID)})`
-    );
-
     return {
-      ready,
+      ready: helmReleaseReady,
       phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
         'dagsterHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") ' +
           '? "Failed" : dagsterHelmRelease.status.conditions.exists(c, c.type == "Ready" && ' +
@@ -187,34 +129,18 @@ export const dagsterBootstrap = kubernetesComposition(
         '.exists(c, c.type == "Ready" && c.status == "False")'
       ),
       version: resolvedVersion,
+      // Component readiness reflects the wait-gated HelmRelease (a Ready release means its
+      // workloads are ready). Per-workload observation was removed — see the readiness note above.
       components: {
         helmRepository: helmRepositoryReady,
         helmRelease: helmReleaseReady,
-        // Honest: reflects the actual webserver Deployment.
-        webserver: webserverReady,
-        // daemon/postgres/userDeployments stay on the HelmRelease signal — see
-        // the SCOPE NOTE above for why per-instance-conditional workloads can't
-        // be observed hang-safely in a shared KRO RGD.
-        // TODO: per-code-location user deployments could be observed too (one
-        // Deployment per `userDeployments.deployments[*].name`); their names are
-        // user-driven, so left as the HelmRelease signal for now.
+        webserver: helmReleaseReady,
         daemon: helmReleaseReady,
         userDeployments: helmReleaseReady,
       },
     };
   }
 );
-
-/** Null-safe Deployment readiness CEL referencing an observed resource by id. */
-function deploymentReadyCel(id: string): string {
-  return `has(${id}.status) && has(${id}.status.availableReplicas) && ${id}.status.availableReplicas >= 1`;
-}
-
-/**
- * Webserver Deployment name as a CEL expression mirroring the chart's
- * `dagster.fullname` template. Built as a CEL string (not JS interpolation of
- * the schema proxy) so it resolves correctly at KRO instance time.
- */
 
 function buildHelmValues(spec: DagsterBootstrapSchemaConfig) {
   return mapDagsterConfigToHelmValues(buildMapperConfig(spec));

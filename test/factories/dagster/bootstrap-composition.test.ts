@@ -90,26 +90,14 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('chart: dagster');
     expect(yaml).toContain('1.13.8');
-    // Honest readiness: `ready` now combines the HelmRelease Ready condition AND
-    // the observed webserver Deployment status (null-safe via has()).
-    expect(yaml).toContain('ready: ${(dagsterHelmRelease.status.conditions');
-    expect(yaml).toContain('dagsterWebserverDeployment.status.availableReplicas');
+    // Readiness is the wait-gated HelmRelease Ready condition (helm-controller waits for the chart's
+    // workloads before reporting Ready). We do NOT observe individual workloads — no fragile,
+    // name-reconstructed Deployment externalRef, and therefore no owned/observed Deployment template.
+    expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
     expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
-    // The webserver is OBSERVED via externalRef (apps/v1 Deployment), not owned —
-    // so a `kind: Deployment` externalRef is expected, but no owned Deployment
-    // template (the chart owns the real workloads).
-    expect(yaml).toContain('kind: Deployment');
+    expect(yaml).not.toContain('kind: Deployment');
     expect(yaml).not.toContain('kind: Pod');
-    // The observed webserver Deployment is named from the chart's `.Release.Name` (= spec.name)
-    // + the chart-default `-dagster-webserver` suffix. Pin that derivation so a regression to the
-    // WRONG base — `dagster.fullname` (the global-override-aware helper, which appends `-dagster`
-    // for a release name not containing "dagster" and would observe a nonexistent Deployment,
-    // hanging `ready` forever) — fails loudly.
-    expect(yaml).toContain('schema.spec.name + "-dagster-webserver"');
-    // The buggy derivation used `dagster.fullname`'s `contains(...)` logic in the name. That doesn't
-    // belong in the webserver name; its presence is the regression. (We can't assert on `fullnameOverride`
-    // here — it legitimately appears in the HelmRelease values passthrough, unrelated to the name.)
-    expect(yaml).not.toContain('.contains(');
+    expect(yaml).not.toContain('dagsterWebserverDeployment');
   });
 
   it('Own the shared HelmRepository in the singleton composition', () => {
@@ -257,35 +245,21 @@ describe('Dagster bootstrap composition', () => {
   });
 });
 
-describe('Dagster bootstrap honest readiness', () => {
-  // The webserver is the one workload the chart ALWAYS deploys for every
-  // instance, so it is observed via externalRef and folded into `ready`.
-  it('Observe the webserver Deployment via externalRef and reference its status in ready', () => {
+describe('Dagster bootstrap readiness', () => {
+  // Readiness is the wait-gated HelmRelease Ready condition: the HelmRelease does not disable wait,
+  // so helm-controller waits for the chart's workloads before it reports Ready. Individual workloads
+  // are deliberately NOT observed via externalRef — KRO externalRef is name-keyed and the chart's
+  // per-workload names depend fragilely on the release name + per-component nameOverrides, so
+  // reconstructing them risks pinning `ready` false forever for no signal beyond the HelmRelease.
+  it('Gates `ready` on the HelmRelease Ready condition, with no per-workload observation', () => {
     const yaml = dagsterBootstrap.toYaml();
 
-    // The webserver is referenced as an apps/v1 Deployment externalRef (observed,
-    // not owned — there is no Deployment *template* in the RGD).
-    expect(yaml).toContain('id: dagsterWebserverDeployment');
-    expect(yaml).toContain('apiVersion: apps/v1');
-    expect(yaml).toContain('kind: Deployment');
-
-    // The webserver name is `<Release.Name>-dagster-webserver`, and the chart's Release.Name is the
-    // composition's `spec.name` — so the externalRef name resolves (at instance time) to a clean CEL
-    // expression over `spec.name`, with NO leaked ref markers and NO spurious has()-guard wrapper.
-    // It must NOT use the chart's `dagster.fullname`/`contains` logic (that helper is for the daemon/
-    // postgres names; using it for the webserver would observe a nonexistent Deployment — see the
-    // composition comment).
-    expect(yaml).toContain('${schema.spec.name + "-dagster-webserver"}');
-    expect(yaml).not.toContain('schema.spec.name.contains(');
+    expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
+    // No fragile workload observation: no Deployment/StatefulSet externalRef, no reconstructed names.
+    expect(yaml).not.toContain('dagsterWebserverDeployment');
+    expect(yaml).not.toContain('kind: Deployment');
+    expect(yaml).not.toContain('kind: StatefulSet');
     expect(yaml).not.toContain('__KUBERNETES_REF__');
-
-    // `ready` is the HelmRelease Ready condition AND the (null-safe) webserver
-    // Deployment status. has() guards mean it is `false`, never an eval error,
-    // before the Deployment exists during install.
-    expect(yaml).toContain('ready: ${(dagsterHelmRelease.status.conditions');
-    expect(yaml).toContain('has(dagsterWebserverDeployment.status)');
-    expect(yaml).toContain('has(dagsterWebserverDeployment.status.availableReplicas)');
-    expect(yaml).toContain('dagsterWebserverDeployment.status.availableReplicas >= 1');
   });
 
   // Hang-safety: a workload that an instance does NOT deploy must never appear in
@@ -311,26 +285,6 @@ describe('Dagster bootstrap honest readiness', () => {
     // daemon/userDeployments components fall back to the HelmRelease signal.
     expect(yaml).toContain('daemon: ${dagsterHelmRelease.status.conditions');
     expect(yaml).toContain('userDeployments: ${dagsterHelmRelease.status.conditions');
-  });
-
-  it('Resolve the webserver name CEL to the live-verified value for release "dagster"', () => {
-    // Mirror of the emitted CEL fullname rule, validated against the live cluster
-    // observation: release `dagster` (chart `dagster`) → `dagster-dagster-webserver`.
-    const webserverName = (
-      name: string,
-      nameOverride?: string,
-      fullnameOverride?: string
-    ): string => {
-      const chartName = nameOverride ?? 'dagster';
-      const fullname =
-        fullnameOverride ?? (name.includes(chartName) ? name : `${name}-${chartName}`);
-      return `${fullname}-dagster-webserver`;
-    };
-
-    expect(webserverName('dagster')).toBe('dagster-dagster-webserver');
-    expect(webserverName('analytics')).toBe('analytics-dagster-dagster-webserver');
-    expect(webserverName('x', undefined, 'foo')).toBe('foo-dagster-webserver');
-    expect(webserverName('ds-prod', 'ds')).toBe('ds-prod-dagster-webserver');
   });
 
   it('Keep phase/failed/version unchanged', () => {
