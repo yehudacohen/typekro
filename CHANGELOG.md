@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-06-30
+
+### Fixed
+
+- Fixed KRO-invalid CEL emitted for **optional scalar** spec fields in the runtime values-merge.
+  When a `values` block contained a CEL/ref (forcing the runtime map-merge), each optional overlay
+  field was emitted as `.merge({ "X": has(spec.X) ? spec.X : omit() })`. KRO types `omit()` as
+  `map(string, dyn)`, so for a scalar field the ternary `bool ? <scalar> : map(string, dyn)` failed
+  to compile (`GraphAccepted=False` / `no matching overload for '_?_:_'`). Optional refs now emit a
+  type-safe conditional single-key merge `.merge(has(spec.X) ? {"X": spec.X} : {})` (both branches
+  maps), and the emitted value preserves the field's full expression (e.g. a `string(...)` conversion
+  is not dropped to the bare path). Static maps and the field-level `has(x) ? x : omit()` form are
+  unchanged.
+- Fixed the alchemy KRO RGD deploy ignoring the factory's configured `timeout`: it hardcoded
+  `DEFAULT_RGD_TIMEOUT` (60s) instead of honoring `factoryOptions.timeout` (the non-alchemy paths
+  already did). A converge whose RGD legitimately takes >60s to reach ready (e.g. a Helm workload
+  rollout) false-failed with `AbortError: Delay aborted`.
+
 ## [0.20.0] - 2026-06-30
 
 ### Changed

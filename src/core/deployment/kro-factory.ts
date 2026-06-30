@@ -1285,7 +1285,10 @@ export class KroResourceFactoryImpl<
         deploymentStrategy: 'kro',
         kubeConfigOptions,
         kroDeletion,
-        options: { waitForReady: true, timeout: DEFAULT_RGD_TIMEOUT },
+        // Honor the factory's configured timeout (matches the non-alchemy paths, e.g. line ~1700);
+        // hardcoding DEFAULT_RGD_TIMEOUT (60s) ignored a caller's longer timeout and false-failed a
+        // converge whose RGD legitimately takes >60s to reach ready (e.g. a Helm workload rollout).
+        options: { waitForReady: true, timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT },
       },
     };
 
