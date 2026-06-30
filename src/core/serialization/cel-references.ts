@@ -1204,13 +1204,19 @@ function celRuntimeMapMergeExpression(
 function optionalRefMergeGuard(
   value: unknown,
   context: SerializationContext | undefined
-): { guard: string; celPath: string } | undefined {
+): { guard: string; valueExpr: string } | undefined {
   const omitFields = context?.omitFields;
   if (!omitFields || omitFields.size === 0) return undefined;
 
+  // `celPath` is the bare `schema.spec.X` path used to build the has() guard; `valueExpr` is the
+  // FULL expression emitted as the field's value. They differ when the value is a CEL conversion of
+  // the ref (e.g. `string(schema.spec.X)`): we guard on `has(schema.spec.X)` but must emit
+  // `string(schema.spec.X)` — emitting the bare path would silently drop the user's conversion.
   let celPath: string | undefined;
+  let valueExpr: string | undefined;
   if (isKubernetesRef(value)) {
     celPath = getInnerCelPath(value);
+    valueExpr = celPath;
   } else if (isCelExpression(value) && !value.__isTemplate) {
     const expr = resolveNestedCompositionRefs(
       value.expression,
@@ -1220,11 +1226,12 @@ function optionalRefMergeGuard(
     celPath =
       /^schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.exec(expr)?.[0] ??
       /^string\((schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(expr)?.[1];
+    valueExpr = expr;
   }
-  if (!celPath) return undefined;
+  if (!celPath || valueExpr === undefined) return undefined;
 
   const guard = optionalSchemaSpecGuard(celPath, omitFields);
-  return guard ? { guard, celPath } : undefined;
+  return guard ? { guard, valueExpr } : undefined;
 }
 
 /**
@@ -1236,13 +1243,13 @@ function optionalRefMergeGuard(
 function appendOverlayMerges(
   merges: string[],
   inlineEntries: string[],
-  optionalEntries: Array<{ key: string; guard: string; celPath: string }>
+  optionalEntries: Array<{ key: string; guard: string; valueExpr: string }>
 ): void {
   if (inlineEntries.length > 0) {
     merges.push(`.merge({${inlineEntries.join(', ')}})`);
   }
-  for (const { key, guard, celPath } of optionalEntries) {
-    merges.push(`.merge(${guard} ? {${JSON.stringify(key)}: ${celPath}} : {})`);
+  for (const { key, guard, valueExpr } of optionalEntries) {
+    merges.push(`.merge(${guard} ? {${JSON.stringify(key)}: ${valueExpr}} : {})`);
   }
 }
 
@@ -1253,7 +1260,7 @@ function celDeepMergeRuntimeOverlay(
   path: string
 ): string {
   const inlineEntries: string[] = [];
-  const optionalEntries: Array<{ key: string; guard: string; celPath: string }> = [];
+  const optionalEntries: Array<{ key: string; guard: string; valueExpr: string }> = [];
 
   for (const [key, baseValue] of Object.entries(base)) {
     if (baseValue === undefined) continue;
@@ -1273,7 +1280,7 @@ function celDeepMergeRuntimeOverlay(
       optionalEntries.push({
         key,
         guard: `${overlayHas} || (${optionalGuard.guard})`,
-        celPath: `${overlayHas} ? ${overlayValue} : ${optionalGuard.celPath}`,
+        valueExpr: `${overlayHas} ? ${overlayValue} : ${optionalGuard.valueExpr}`,
       });
       continue;
     }
@@ -1299,7 +1306,7 @@ function celDeepMergeKnownOverlay(
   path: string
 ): string {
   const inlineEntries: string[] = [];
-  const optionalEntries: Array<{ key: string; guard: string; celPath: string }> = [];
+  const optionalEntries: Array<{ key: string; guard: string; valueExpr: string }> = [];
 
   for (const [key, overlayValue] of Object.entries(overlay)) {
     if (overlayValue === undefined) continue;
@@ -1311,7 +1318,7 @@ function celDeepMergeKnownOverlay(
       ? undefined
       : optionalRefMergeGuard(overlayValue, context);
     if (optionalGuard) {
-      optionalEntries.push({ key, guard: optionalGuard.guard, celPath: optionalGuard.celPath });
+      optionalEntries.push({ key, guard: optionalGuard.guard, valueExpr: optionalGuard.valueExpr });
       continue;
     }
 

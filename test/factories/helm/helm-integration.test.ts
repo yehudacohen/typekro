@@ -576,4 +576,42 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     const simpleRes0 = graph.resources[0] as unknown as Record<string, Record<string, unknown>>;
     expect(simpleRes0.spec!.values).toBeDefined();
   });
+
+  // Regression: the conditional single-key merge must emit the overlay's FULL value expression,
+  // not the bare schema path used for the has() guard. For an optional ref wrapped in a CEL
+  // conversion (e.g. `string(schema.spec.port)` — coercing a number to a string-typed chart value),
+  // the guard is `has(schema.spec.port)` but the VALUE must stay `string(schema.spec.port)`. An
+  // earlier iteration stored only the inner path and emitted it as the value, silently dropping string().
+  it('preserves a string() conversion on an optional ref in the runtime values-merge', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-optional-string-cast-merge',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({ 'port?': 'number', 'values?': 'object' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'dagster',
+          chart: { repository: 'https://charts.example.com', name: 'dagster' },
+          values: mergeValuesExpression(schema.spec.values, {
+            portString: Cel.expr<string>('string(schema.spec.port)'),
+          }),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+
+    // Guard on the bare path; the VALUE preserves the string() conversion. (Quotes YAML-escaped as \".)
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.port) ? {\\"portString\\": string(schema.spec.port)} : {})'
+    );
+    // Must NOT drop string() and emit the bare ref as the value.
+    expect(valuesLine).not.toContain('{\\"portString\\": schema.spec.port}');
+    expect(valuesLine).not.toContain('omit()');
+  });
 });
