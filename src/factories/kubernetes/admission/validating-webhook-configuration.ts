@@ -9,10 +9,13 @@ export type V1ValidatingWebhookConfigurationWebhooks = NonNullable<
 export function validatingWebhookConfiguration(
   resource: V1ValidatingWebhookConfiguration & { id?: string }
 ) {
-  return createResource({
-    ...resource,
-    apiVersion: 'admissionregistration.k8s.io/v1',
-    kind: 'ValidatingWebhookConfiguration',
-    metadata: resource.metadata ?? { name: 'unnamed-validatingwebhook' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('ValidatingWebhookConfiguration'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'admissionregistration.k8s.io/v1',
+      kind: 'ValidatingWebhookConfiguration',
+      metadata: resource.metadata ?? { name: 'unnamed-validatingwebhook' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('ValidatingWebhookConfiguration'));
 }

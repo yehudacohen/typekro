@@ -6,6 +6,7 @@
  * @module
  */
 export {
+  applyResourceScopeMetadata,
   clearResourceMetadata,
   copyResourceMetadata,
   getForEach,
@@ -15,10 +16,12 @@ export {
   getReadyWhen,
   getResourceId,
   getResourceMetadata,
+  getResourceScope,
   getTemplateOverrides,
   hasResourceMetadata,
   type ResourceMetadata,
   type ResourceMetadataKey,
+  type ResourceScope,
   setForEach,
   setIncludeWhen,
   setMetadataField,

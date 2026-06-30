@@ -9,12 +9,15 @@ export type V1PvStatus = NonNullable<V1PersistentVolume['status']>;
 export function persistentVolume(
   resource: V1PersistentVolume & { id?: string }
 ): Enhanced<V1PvSpec, V1PvStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'v1',
-    kind: 'PersistentVolume',
-    metadata: resource.metadata ?? { name: 'unnamed-pv' },
-  }).withReadinessEvaluator((liveResource: V1PersistentVolume) => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'v1',
+      kind: 'PersistentVolume',
+      metadata: resource.metadata ?? { name: 'unnamed-pv' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1PersistentVolume) => {
     try {
       const status = liveResource.status;
 

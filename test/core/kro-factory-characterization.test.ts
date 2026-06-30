@@ -27,7 +27,15 @@ import type {
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
 import { ConfigMap, Deployment } from '../../src/factories/simple/index.js';
-import { kubernetesComposition, singleton } from '../../src/index.js';
+import {
+  clusterRole,
+  createResource,
+  customResourceDefinition,
+  kubernetesComposition,
+  namespace,
+  singleton,
+  storageClass,
+} from '../../src/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 // ---------------------------------------------------------------------------
@@ -69,9 +77,7 @@ describe('Kro readiness polling', () => {
 
 describe('KroResourceFactory: prerequisite deployment', () => {
   it('applies configured prerequisite resources before RGD deployment and waits for CRDs', async () => {
-    const crd: KubernetesResource = {
-      apiVersion: 'apiextensions.k8s.io/v1',
-      kind: 'CustomResourceDefinition',
+    const crd = customResourceDefinition({
       metadata: { name: 'widgets.example.com' },
       spec: {
         group: 'example.com',
@@ -86,7 +92,7 @@ describe('KroResourceFactory: prerequisite deployment', () => {
           },
         ],
       },
-    };
+    });
     const configMap: KubernetesResource = {
       apiVersion: 'v1',
       kind: 'ConfigMap',
@@ -132,7 +138,7 @@ describe('KroResourceFactory: prerequisite deployment', () => {
       'CustomResourceDefinition',
       'ConfigMap',
     ]);
-    expect(deployedResources[0]?.id).toBe('CustomResourceDefinition-widgets.example.com');
+    expect(deployedResources[0]?.id).toBe('customresourcedefinitionWidgets.example.com');
     expect(getMetadataField(deployedResources[0]!, 'scope')).toBe('cluster');
     expect(deployedResources[0]?.metadata.namespace).toBeUndefined();
     expect(waitedCRDs).toEqual(['widgets.example.com']);
@@ -189,24 +195,16 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(calls).toEqual(['deploy:ConfigMap:true', 'wait:widgets.example.com:1234']);
   });
 
-  it('treats common raw cluster-scoped prerequisite manifests as cluster-scoped', async () => {
-    const namespace: KubernetesResource = {
-      apiVersion: 'v1',
-      kind: 'Namespace',
-      metadata: { name: 'apps', namespace: 'should-be-stripped' },
-    };
-    const clusterRole: KubernetesResource = {
-      apiVersion: 'rbac.authorization.k8s.io/v1',
-      kind: 'ClusterRole',
-      metadata: { name: 'bootstrap-reader', namespace: 'should-be-stripped' },
+  it('uses factory scope metadata for cluster-scoped prerequisite resources', async () => {
+    const appNamespace = namespace({ metadata: { name: 'apps' } });
+    const bootstrapReader = clusterRole({
+      metadata: { name: 'bootstrap-reader' },
       rules: [],
-    };
-    const storageClass: KubernetesResource = {
-      apiVersion: 'storage.k8s.io/v1',
-      kind: 'StorageClass',
-      metadata: { name: 'fast', namespace: 'should-be-stripped' },
+    });
+    const fastStorage = storageClass({
+      metadata: { name: 'fast' },
       provisioner: 'example.com/provisioner',
-    };
+    });
     const serviceAccount: KubernetesResource = {
       apiVersion: 'v1',
       kind: 'ServiceAccount',
@@ -214,7 +212,9 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     };
     const factory = makeFactory('rawClusterPrereqApp', {
       namespace: 'apps',
-      kroPrerequisites: { resources: [namespace, clusterRole, storageClass, serviceAccount] },
+      kroPrerequisites: {
+        resources: [appNamespace, bootstrapReader, fastStorage, serviceAccount],
+      },
     });
     const deployedResources: KubernetesResource[] = [];
     const engine = {
@@ -252,15 +252,22 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     const factory = makeFactory('declarativePrereqApp', {
       kroPrerequisites: {
         resources: [
-          {
-            apiVersion: 'apiextensions.k8s.io/v1',
-            kind: 'CustomResourceDefinition',
+          customResourceDefinition({
             metadata: { name: 'widgets.example.com' },
-          },
+            spec: {
+              group: 'example.com',
+              names: { kind: 'Widget', plural: 'widgets' },
+              scope: 'Namespaced',
+              versions: [
+                { name: 'v1', served: true, storage: true, schema: { openAPIV3Schema: {} } },
+              ],
+            },
+          }),
           {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: 'bootstrap' },
+            scope: 'namespaced',
             data: { ready: 'true' },
           },
         ],
@@ -280,20 +287,64 @@ describe('KroResourceFactory: prerequisite deployment', () => {
     expect(docs[1]?.metadata?.namespace).toBe('default');
   });
 
+  it('rejects raw prerequisite resources without scope or namespace', () => {
+    const factory = makeFactory('ambiguousRawPrereqApp', {
+      kroPrerequisites: {
+        resources: [
+          {
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: { name: 'apps' },
+          },
+        ],
+      },
+    });
+
+    expect(() => factory.toYaml()).toThrow(ValidationError);
+    expect(() => factory.toYaml()).toThrow(
+      'KRO prerequisite Namespace/apps must declare its scope or namespace'
+    );
+  });
+
+  it('rejects enhanced prerequisites without explicit scope or namespace', () => {
+    const bareClusterRole = createResource({
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind: 'ClusterRole',
+      metadata: { name: 'bare-reader' },
+      rules: [],
+    });
+    const factory = makeFactory('ambiguousEnhancedPrereqApp', {
+      namespace: 'apps',
+      kroPrerequisites: { resources: [bareClusterRole] },
+    });
+
+    expect(() => factory.toYaml()).toThrow(ValidationError);
+    expect(() => factory.toYaml()).toThrow(
+      'KRO prerequisite ClusterRole/bare-reader must declare its scope or namespace'
+    );
+  });
+
   it('emits resource prerequisites as ordered Alchemy declarations that the RGD depends on', async () => {
     const factory = makeFactory('alchemyPrereqApp', {
       namespace: 'apps',
       kroPrerequisites: {
         resources: [
-          {
-            apiVersion: 'apiextensions.k8s.io/v1',
-            kind: 'CustomResourceDefinition',
+          customResourceDefinition({
             metadata: { name: 'widgets.example.com' },
-          },
+            spec: {
+              group: 'example.com',
+              names: { kind: 'Widget', plural: 'widgets' },
+              scope: 'Namespaced',
+              versions: [
+                { name: 'v1', served: true, storage: true, schema: { openAPIV3Schema: {} } },
+              ],
+            },
+          }),
           {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: 'bootstrap' },
+            scope: 'namespaced',
             data: { ready: 'true' },
           },
         ],

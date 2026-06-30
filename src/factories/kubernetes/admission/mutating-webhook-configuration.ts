@@ -9,10 +9,13 @@ export type V1MutatingWebhookConfigurationWebhooks = NonNullable<
 export function mutatingWebhookConfiguration(
   resource: V1MutatingWebhookConfiguration & { id?: string }
 ) {
-  return createResource({
-    ...resource,
-    apiVersion: 'admissionregistration.k8s.io/v1',
-    kind: 'MutatingWebhookConfiguration',
-    metadata: resource.metadata ?? { name: 'unnamed-mutatingwebhook' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('MutatingWebhookConfiguration'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'admissionregistration.k8s.io/v1',
+      kind: 'MutatingWebhookConfiguration',
+      metadata: resource.metadata ?? { name: 'unnamed-mutatingwebhook' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('MutatingWebhookConfiguration'));
 }

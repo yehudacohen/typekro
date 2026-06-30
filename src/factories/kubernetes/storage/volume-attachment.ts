@@ -8,12 +8,15 @@ export type V1VolumeAttachmentStatus = NonNullable<V1VolumeAttachment['status']>
 export function volumeAttachment(
   resource: V1VolumeAttachment & { id?: string }
 ): Enhanced<V1VolumeAttachmentSpec, V1VolumeAttachmentStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'storage.k8s.io/v1',
-    kind: 'VolumeAttachment',
-    metadata: resource.metadata ?? { name: 'unnamed-volumeattachment' },
-  }).withReadinessEvaluator((liveResource: V1VolumeAttachment): ResourceStatus => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'storage.k8s.io/v1',
+      kind: 'VolumeAttachment',
+      metadata: resource.metadata ?? { name: 'unnamed-volumeattachment' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1VolumeAttachment): ResourceStatus => {
     const attached = liveResource.status?.attached;
     if (attached === true) {
       return { ready: true, message: 'VolumeAttachment is attached' };

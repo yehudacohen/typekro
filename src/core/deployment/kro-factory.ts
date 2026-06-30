@@ -33,6 +33,7 @@ import {
   ensureError,
   ResourceGraphFactoryError,
   TypeKroError,
+  ValidationError,
 } from '../errors.js';
 import { applyAnalysisToResources } from '../expressions/composition/composition-analyzer.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
@@ -45,6 +46,7 @@ import {
   copyResourceMetadata,
   getMetadataField,
   getReadinessEvaluator,
+  getResourceScope,
   setMetadataField,
   setReadinessEvaluator,
 } from '../metadata/index.js';
@@ -101,28 +103,6 @@ import {
   assertNoDeployedSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
-
-const CLUSTER_SCOPED_PREREQUISITE_KINDS = new Set([
-  'admissionregistration.k8s.io/v1/MutatingWebhookConfiguration',
-  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy',
-  'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicyBinding',
-  'admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration',
-  'apiextensions.k8s.io/v1/CustomResourceDefinition',
-  'apiregistration.k8s.io/v1/APIService',
-  'flowcontrol.apiserver.k8s.io/v1/FlowSchema',
-  'flowcontrol.apiserver.k8s.io/v1/PriorityLevelConfiguration',
-  'rbac.authorization.k8s.io/v1/ClusterRole',
-  'rbac.authorization.k8s.io/v1/ClusterRoleBinding',
-  'scheduling.k8s.io/v1/PriorityClass',
-  'node.k8s.io/v1/RuntimeClass',
-  'storage.k8s.io/v1/CSIDriver',
-  'storage.k8s.io/v1/CSINode',
-  'storage.k8s.io/v1/StorageClass',
-  'storage.k8s.io/v1/VolumeAttachment',
-  'v1/Namespace',
-  'v1/Node',
-  'v1/PersistentVolume',
-]);
 
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
@@ -1835,6 +1815,21 @@ export class KroResourceFactoryImpl<
       setMetadataField(deployable, 'scope', 'cluster');
       delete (deployable.metadata as Record<string, unknown>).namespace;
     } else if (!deployable.metadata.namespace) {
+      if (!this.canDefaultPrerequisiteNamespace(resource)) {
+        throw new ValidationError(
+          `KRO prerequisite ${resource.kind}/${name} must declare its scope or namespace. ` +
+            "Set scope: 'cluster' for cluster-scoped prerequisites, " +
+            "or set metadata.namespace / scope: 'namespaced' for namespaced raw prerequisites.",
+          resource.kind,
+          name,
+          'metadata.namespace',
+          [
+            "Use a TypeKro factory resource that carries scope metadata.",
+            "Set scope: 'cluster' on raw cluster-scoped prerequisites.",
+            "Set metadata.namespace or scope: 'namespaced' on raw namespaced prerequisites.",
+          ]
+        );
+      }
       deployable.metadata.namespace = this.namespace;
     }
 
@@ -1948,16 +1943,12 @@ export class KroResourceFactoryImpl<
     return resource.metadata?.name;
   }
 
-  private isClusterScopedPrerequisite(resource: KubernetesResource): boolean {
-    return CLUSTER_SCOPED_PREREQUISITE_KINDS.has(`${resource.apiVersion}/${resource.kind}`);
+  private prerequisiteScope(resource: PrerequisiteResource): 'cluster' | 'namespaced' | undefined {
+    return getResourceScope(resource as object & PrerequisiteResource);
   }
 
-  private prerequisiteScope(resource: PrerequisiteResource): 'cluster' | 'namespaced' | undefined {
-    return (
-      getMetadataField(resource as object, 'scope') ??
-      (resource as { scope?: 'cluster' | 'namespaced' }).scope ??
-      (this.isClusterScopedPrerequisite(resource) ? 'cluster' : undefined)
-    );
+  private canDefaultPrerequisiteNamespace(resource: PrerequisiteResource): boolean {
+    return this.prerequisiteScope(resource) === 'namespaced';
   }
 
   /**

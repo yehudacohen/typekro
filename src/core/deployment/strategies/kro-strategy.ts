@@ -138,7 +138,6 @@ export class KroDeploymentStrategy<
       kind: 'ResourceGraphDefinition',
       metadata: {
         name: rgdName,
-        namespace: this.namespace,
       },
       spec: {
         schema: kroSchema,

@@ -98,6 +98,28 @@ export interface ResourceMetadata {
 /** Keys of ResourceMetadata that are valid metadata field names */
 export type ResourceMetadataKey = keyof ResourceMetadata;
 
+export type ResourceScope = NonNullable<ResourceMetadata['scope']>;
+
+type ResourceScopeCandidate = {
+  scope?: ResourceScope;
+};
+
+export function getResourceScope<T extends WeakKey>(
+  resource: T & Partial<ResourceScopeCandidate>
+): ResourceScope | undefined {
+  return getMetadataField(resource, 'scope') ?? resource.scope;
+}
+
+export function applyResourceScopeMetadata<T extends WeakKey>(
+  resource: T
+): ResourceScope | undefined {
+  const scope = getResourceScope(resource as T & Partial<ResourceScopeCandidate>);
+  if (scope) {
+    setMetadataField(resource, 'scope', scope);
+  }
+  return scope;
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------

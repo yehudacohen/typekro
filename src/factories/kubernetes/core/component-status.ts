@@ -5,12 +5,15 @@ import { createResource } from '../../shared.js';
 export function componentStatus(
   resource: V1ComponentStatus & { id?: string }
 ): Enhanced<object, unknown> {
-  return createResource({
-    ...resource,
-    apiVersion: 'v1',
-    kind: 'ComponentStatus',
-    metadata: resource.metadata ?? { name: 'unnamed-componentstatus' },
-  }).withReadinessEvaluator((liveResource: V1ComponentStatus) => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'v1',
+      kind: 'ComponentStatus',
+      metadata: resource.metadata ?? { name: 'unnamed-componentstatus' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1ComponentStatus) => {
     const conditions = liveResource.conditions || [];
     const healthyCondition = conditions.find((c) => c.type === 'Healthy');
 

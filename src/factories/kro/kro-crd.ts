@@ -20,12 +20,15 @@ import { createResource } from '../shared.js';
 export function kroCustomResourceDefinition(
   crd: V1CustomResourceDefinition
 ): Enhanced<V1CustomResourceDefinitionSpec, V1CustomResourceDefinitionStatus> {
-  return createResource({
-    ...crd,
-    apiVersion: 'apiextensions.k8s.io/v1',
-    kind: 'CustomResourceDefinition',
-    metadata: crd.metadata ?? { name: 'unnamed-crd' },
-  }).withReadinessEvaluator((liveCRD: V1CustomResourceDefinition): ResourceStatus => {
+  return createResource(
+    {
+      ...crd,
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: crd.metadata ?? { name: 'unnamed-crd' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveCRD: V1CustomResourceDefinition): ResourceStatus => {
     try {
       const status = liveCRD.status;
       const conditions = status?.conditions || [];

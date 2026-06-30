@@ -77,9 +77,11 @@ export class ResourceApplier {
     // Deep clone to remove any proxy wrappers that might cause serialization issues
     const cleanResource: Record<string, unknown> = JSON.parse(JSON.stringify(jsonResource));
 
-    // Strip internal TypeKro fields that should not be sent to Kubernetes
-    // The 'id' field is used internally for resource mapping but is not a valid K8s field
+    // Strip internal TypeKro fields that should not be sent to Kubernetes.
+    // These fields are used for local resource mapping/scope rehydration but
+    // are not valid top-level Kubernetes manifest fields.
     delete cleanResource.id;
+    delete cleanResource.scope;
 
     return cleanResource;
   }

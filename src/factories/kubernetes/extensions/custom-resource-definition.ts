@@ -8,12 +8,15 @@ export type V1CustomResourceDefinitionStatus = NonNullable<V1CustomResourceDefin
 export function customResourceDefinition(
   resource: V1CustomResourceDefinition & { id?: string }
 ): Enhanced<V1CustomResourceDefinitionSpec, V1CustomResourceDefinitionStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'apiextensions.k8s.io/v1',
-    kind: 'CustomResourceDefinition',
-    metadata: resource.metadata ?? { name: 'unnamed-crd' },
-  }).withReadinessEvaluator((liveResource: V1CustomResourceDefinition) => {
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: resource.metadata ?? { name: 'unnamed-crd' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1CustomResourceDefinition) => {
     const status = liveResource.status;
 
     if (!status) {

@@ -8,10 +8,13 @@ export type V1CSIDriverSpec = NonNullable<V1CSIDriver['spec']>;
 export function csiDriver(
   resource: V1CSIDriver & { id?: string }
 ): Enhanced<V1CSIDriverSpec, unknown> {
-  return createResource({
-    ...resource,
-    apiVersion: 'storage.k8s.io/v1',
-    kind: 'CSIDriver',
-    metadata: resource.metadata ?? { name: 'unnamed-csidriver' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('CSIDriver'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'storage.k8s.io/v1',
+      kind: 'CSIDriver',
+      metadata: resource.metadata ?? { name: 'unnamed-csidriver' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('CSIDriver'));
 }

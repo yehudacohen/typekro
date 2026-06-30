@@ -5,10 +5,13 @@ import { createResource } from '../../shared.js';
 export type V1RuntimeClassHandler = V1RuntimeClass;
 
 export function runtimeClass(resource: V1RuntimeClass & { id?: string }) {
-  return createResource({
-    ...resource,
-    apiVersion: 'node.k8s.io/v1',
-    kind: 'RuntimeClass',
-    metadata: resource.metadata ?? { name: 'unnamed-runtimeclass' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator('RuntimeClass'));
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'node.k8s.io/v1',
+      kind: 'RuntimeClass',
+      metadata: resource.metadata ?? { name: 'unnamed-runtimeclass' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('RuntimeClass'));
 }
