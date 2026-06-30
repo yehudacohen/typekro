@@ -614,4 +614,44 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(valuesLine).not.toContain('{\\"portString\\": schema.spec.port}');
     expect(valuesLine).not.toContain('omit()');
   });
+
+  // Regression: an optional scalar nested inside an OBJECT overlay must also be type-safe. The
+  // top-level fix only pulled out top-level optional refs; a nested object's fallback (base-absent)
+  // branch was still emitted via celLiteralForValueTree, re-introducing the invalid inline
+  // `{"X": has(spec.X) ? spec.X : omit()}` for its optional scalars at depth.
+  it('emits type-safe CEL for an OPTIONAL SCALAR nested inside an object overlay (no omit() at depth)', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-nested-optional-scalar',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({ 'secretName?': 'string', 'values?': 'object' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'dagster',
+          chart: { repository: 'https://charts.example.com', name: 'dagster' },
+          // `global.celeryConfigSecretName` is an optional scalar ref NESTED in the `global` object.
+          values: mergeValuesExpression(schema.spec.values, {
+            global: { celeryConfigSecretName: schema.spec.secretName },
+          }),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+
+    // No omit() anywhere — at any nesting depth.
+    expect(valuesLine).not.toContain('omit()');
+    expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
+    // The nested optional scalar uses the type-safe single-key merge in BOTH the base-present and
+    // base-absent branches (the base-absent fallback is `({}).merge(...)`, not an inline omit ternary).
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.secretName) ? {\\"celeryConfigSecretName\\": schema.spec.secretName} : {})'
+    );
+    expect(valuesLine).toContain('({}).merge(has(schema.spec.secretName)');
+  });
 });

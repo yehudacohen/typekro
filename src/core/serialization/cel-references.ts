@@ -1116,7 +1116,12 @@ function celMapMergeOperand(
     return guard ? `${guard} ? ${operand} : {}` : operand;
   }
 
-  const expression = celLiteralForValueTree(value, context, path);
+  // A known object operand may itself carry optional scalar refs; emit it type-safely so they're
+  // pulled into single-key merges rather than inline `omit()` ternaries (the json round-trip below
+  // normalizes either form). Non-objects serialize directly.
+  const expression = isKnownMergeObject(value)
+    ? celTypeSafeObjectLiteral(value, context, path)
+    : celLiteralForValueTree(value, context, path);
   return `json.unmarshal(json.marshal(${expression}))`;
 }
 
@@ -1285,7 +1290,12 @@ function celDeepMergeRuntimeOverlay(
       continue;
     }
 
-    const baseExpression = celLiteralForValueTree(baseValue, context, childPath(path, key));
+    // Fallback (overlay lacks the key) is the base value. For a nested object base, emit it as a
+    // type-safe literal so its OWN optional scalars are pulled out (celLiteralForValueTree would
+    // re-introduce the invalid inline omit() ternary for them).
+    const baseExpression = isKnownMergeObject(baseValue)
+      ? celTypeSafeObjectLiteral(baseValue, context, childPath(path, key))
+      : celLiteralForValueTree(baseValue, context, childPath(path, key));
     const mergedValue = isKnownMergeObject(baseValue)
       ? celDeepMergeRuntimeOverlay(baseValue, overlayValue, context, childPath(path, key))
       : overlayValue;
@@ -1297,6 +1307,41 @@ function celDeepMergeRuntimeOverlay(
   const merges: string[] = [];
   appendOverlayMerges(merges, inlineEntries, optionalEntries);
   return `(${overlayExpression})${merges.join('')}`;
+}
+
+/**
+ * Emit an object value-tree as a CEL map that is SAFE to sit as a VALUE inside a `.merge({...})` map
+ * literal. Optional scalar/leaf schema refs — at ANY depth — are pulled OUT into conditional
+ * single-key merges `(...).merge(has(spec.X) ? {"X": spec.X} : {})` instead of being emitted inline as
+ * `{"X": has(spec.X) ? spec.X : omit()}`: KRO types `omit()` as `map(string,dyn)`, so for a scalar the
+ * `bool ? scalar : map` ternary fails to compile. Nested objects recurse through this same builder, so
+ * the fix holds at every level. Used for the FALLBACK (base-absent) literal branch of the deep-merge
+ * builders — `celLiteralForValueTree` would re-introduce the invalid inline `omit()` ternary there.
+ * For an object with no optional refs this is byte-equivalent to `celLiteralForValueTree`.
+ */
+function celTypeSafeObjectLiteral(
+  value: Record<string, unknown>,
+  context: SerializationContext | undefined,
+  path: string
+): string {
+  const inlineEntries: string[] = [];
+  const optionalEntries: Array<{ key: string; guard: string; valueExpr: string }> = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (child === undefined) continue;
+    const optionalGuard = isKnownMergeObject(child) ? undefined : optionalRefMergeGuard(child, context);
+    if (optionalGuard) {
+      optionalEntries.push({ key, guard: optionalGuard.guard, valueExpr: optionalGuard.valueExpr });
+      continue;
+    }
+    const childExpr = isKnownMergeObject(child)
+      ? celTypeSafeObjectLiteral(child, context, childPath(path, key))
+      : celLiteralForValueTree(child, context, childPath(path, key));
+    inlineEntries.push(`${JSON.stringify(key)}: ${childExpr}`);
+  }
+  const base = `{${inlineEntries.join(', ')}}`;
+  const merges: string[] = [];
+  appendOverlayMerges(merges, [], optionalEntries);
+  return merges.length > 0 ? `(${base})${merges.join('')}` : base;
 }
 
 function celDeepMergeKnownOverlay(
@@ -1322,16 +1367,19 @@ function celDeepMergeKnownOverlay(
       continue;
     }
 
-    const overlayExpression = celLiteralForValueTree(overlayValue, context, childPath(path, key));
     const baseValue = mapKeyAccess(baseExpression, key);
+    // Nested object: merge onto the present base when the base has the key, else emit the overlay
+    // object as a type-safe literal (its OWN optional scalars pulled out too — celLiteralForValueTree
+    // would re-introduce the invalid inline omit() ternary for them). Non-objects (static / required
+    // refs) serialize directly; optional scalar refs were already handled above.
     const mergedValue = isKnownMergeObject(overlayValue)
       ? `${mapHasKey(baseExpression, key)} ? ${celDeepMergeKnownOverlay(
           baseValue,
           overlayValue,
           context,
           childPath(path, key)
-        )} : ${overlayExpression}`
-      : overlayExpression;
+        )} : ${celTypeSafeObjectLiteral(overlayValue, context, childPath(path, key))}`
+      : celLiteralForValueTree(overlayValue, context, childPath(path, key));
     inlineEntries.push(`${JSON.stringify(key)}: ${mergedValue}`);
   }
 
