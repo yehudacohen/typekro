@@ -13,7 +13,6 @@ import {
   applyResourceScopeMetadata,
   copyResourceMetadata,
   getReadinessEvaluator,
-  setMetadataField,
 } from '../core/metadata/index.js';
 import { ensureReadinessEvaluator } from '../core/readiness/index.js';
 import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
@@ -22,28 +21,6 @@ import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.j
 import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');
-
-const LEGACY_ALCHEMY_CLUSTER_SCOPED_RESOURCES = new Set([
-  'admissionregistration.k8s.io/v1/MutatingWebhookConfiguration',
-  'admissionregistration.k8s.io/v1/ValidatingWebhookConfiguration',
-  'apiregistration.k8s.io/v1/APIService',
-  'apiextensions.k8s.io/v1/CustomResourceDefinition',
-  'certificates.k8s.io/v1/CertificateSigningRequest',
-  'kro.run/v1alpha1/ResourceGraphDefinition',
-  'networking.k8s.io/v1/IngressClass',
-  'node.k8s.io/v1/RuntimeClass',
-  'rbac.authorization.k8s.io/v1/ClusterRole',
-  'rbac.authorization.k8s.io/v1/ClusterRoleBinding',
-  'scheduling.k8s.io/v1/PriorityClass',
-  'storage.k8s.io/v1/CSIDriver',
-  'storage.k8s.io/v1/CSINode',
-  'storage.k8s.io/v1/StorageClass',
-  'storage.k8s.io/v1/VolumeAttachment',
-  'v1/ComponentStatus',
-  'v1/Namespace',
-  'v1/Node',
-  'v1/PersistentVolume',
-]);
 
 export class ResourceGraphDefinitionDeletionDeferredError extends Error {
   constructor(rgdName: string) {
@@ -84,16 +61,9 @@ function isKroManagedDeletionMode(
   );
 }
 
-function legacyAlchemyClusterScopeForDelete(resource: Enhanced<any, any>): 'cluster' | undefined {
-  return LEGACY_ALCHEMY_CLUSTER_SCOPED_RESOURCES.has(`${resource.apiVersion}/${resource.kind}`)
-    ? 'cluster'
-    : undefined;
-}
-
 function applyAlchemyResourceScopeMetadata(resource: Enhanced<any, any>): 'cluster' | 'namespaced' | undefined {
-  const scope = applyResourceScopeMetadata(resource) ?? legacyAlchemyClusterScopeForDelete(resource);
+  const scope = applyResourceScopeMetadata(resource);
   if (scope === 'cluster') {
-    setMetadataField(resource, 'scope', 'cluster');
     delete (resource.metadata as Record<string, unknown> | undefined)?.namespace;
   }
   return scope;

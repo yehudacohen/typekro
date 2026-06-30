@@ -290,7 +290,7 @@ describe('DirectTypeKroDeployer', () => {
       expect(getMetadataField(manifest, 'scope')).toBe('cluster');
     });
 
-    it('rehydrates legacy cluster scope before direct redeploy', async () => {
+    it('does not infer cluster scope from legacy JSON-only state before direct redeploy', async () => {
       const ns = namespace({ metadata: { name: 'alchemy-legacy-ns' } });
       const restored = JSON.parse(JSON.stringify(ns));
 
@@ -301,13 +301,15 @@ describe('DirectTypeKroDeployer', () => {
       });
 
       const resourceGraph = mockEngine.deploy.mock.calls[0]?.[0];
+      const options = mockEngine.deploy.mock.calls[0]?.[1];
       const manifest = resourceGraph.resources[0]?.manifest;
       expect(manifest.kind).toBe('Namespace');
       expect(manifest.metadata.namespace).toBeUndefined();
-      expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+      expect(getMetadataField(manifest, 'scope')).toBeUndefined();
+      expect(options.namespace).toBe('default');
     });
 
-    it('scrubs stale namespace from legacy cluster-scoped state before direct redeploy', async () => {
+    it('keeps stale namespace on JSON-only state without explicit cluster scope before direct redeploy', async () => {
       const restored = {
         apiVersion: 'v1',
         kind: 'Namespace',
@@ -323,8 +325,8 @@ describe('DirectTypeKroDeployer', () => {
       const resourceGraph = mockEngine.deploy.mock.calls[0]?.[0];
       const manifest = resourceGraph.resources[0]?.manifest;
       expect(manifest.kind).toBe('Namespace');
-      expect(manifest.metadata.namespace).toBeUndefined();
-      expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+      expect(manifest.metadata.namespace).toBe('default');
+      expect(getMetadataField(manifest, 'scope')).toBeUndefined();
     });
 
     it('scrubs stale namespace when serializing cluster-scoped resources', () => {
@@ -450,7 +452,7 @@ describe('DirectTypeKroDeployer', () => {
       expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
     });
 
-    it('preserves cluster scope for legacy Alchemy state without serialized scope', async () => {
+    it('does not infer cluster scope for legacy Alchemy state without serialized scope', async () => {
       const ns = namespace({ metadata: { name: 'alchemy-direct-ns' } });
       const restored = JSON.parse(JSON.stringify(ns));
 
@@ -459,11 +461,11 @@ describe('DirectTypeKroDeployer', () => {
       const callArgs = mockEngine.deleteResource.mock.calls[0];
       const deployedResource = callArgs[0];
       expect(deployedResource.kind).toBe('Namespace');
-      expect(deployedResource.namespace).toBe('');
-      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+      expect(deployedResource.namespace).toBe('default');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBeUndefined();
     });
 
-    it('scrubs stale namespace from legacy cluster-scoped state before delete', async () => {
+    it('keeps stale namespace on JSON-only state without explicit cluster scope before delete', async () => {
       const restored = {
         apiVersion: 'v1',
         kind: 'Namespace',
@@ -475,12 +477,12 @@ describe('DirectTypeKroDeployer', () => {
       const callArgs = mockEngine.deleteResource.mock.calls[0];
       const deployedResource = callArgs[0];
       expect(deployedResource.kind).toBe('Namespace');
-      expect(deployedResource.namespace).toBe('');
-      expect(deployedResource.manifest.metadata.namespace).toBeUndefined();
-      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+      expect(deployedResource.namespace).toBe('default');
+      expect(deployedResource.manifest.metadata.namespace).toBe('default');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBeUndefined();
     });
 
-    it('preserves legacy cluster scope for newer cluster-scoped factory kinds', async () => {
+    it('does not infer cluster scope for JSON-restored factory resources without serialized scope', async () => {
       const ic = ingressClass({
         metadata: { name: 'alchemy-ingress-class' },
         spec: { controller: 'example.com/controller' },
@@ -492,8 +494,8 @@ describe('DirectTypeKroDeployer', () => {
       const callArgs = mockEngine.deleteResource.mock.calls[0];
       const deployedResource = callArgs[0];
       expect(deployedResource.kind).toBe('IngressClass');
-      expect(deployedResource.namespace).toBe('');
-      expect(getMetadataField(deployedResource.manifest, 'scope')).toBe('cluster');
+      expect(deployedResource.namespace).toBe('default');
+      expect(getMetadataField(deployedResource.manifest, 'scope')).toBeUndefined();
     });
   });
 
@@ -621,7 +623,7 @@ describe('KroTypeKroDeployer', () => {
     expect(getMetadataField(manifest, 'scope')).toBe('cluster');
   });
 
-  it('rehydrates legacy ResourceGraphDefinition scope before KRO redeploy', async () => {
+  it('does not infer ResourceGraphDefinition scope from legacy JSON-only state before KRO redeploy', async () => {
     const mockEngine = createMockEngine() as any;
     const deployer = new KroTypeKroDeployer(mockEngine);
     const rgd = resourceGraphDefinition({
@@ -639,10 +641,10 @@ describe('KroTypeKroDeployer', () => {
     const manifest = graph.resources[0]?.manifest;
     expect(manifest.kind).toBe('ResourceGraphDefinition');
     expect(manifest.metadata.namespace).toBeUndefined();
-    expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+    expect(getMetadataField(manifest, 'scope')).toBeUndefined();
   });
 
-  it('scrubs stale namespace from legacy ResourceGraphDefinition state before KRO redeploy', async () => {
+  it('keeps stale namespace on ResourceGraphDefinition state without explicit cluster scope before KRO redeploy', async () => {
     const mockEngine = createMockEngine() as any;
     const deployer = new KroTypeKroDeployer(mockEngine);
     const restored = {
@@ -660,8 +662,8 @@ describe('KroTypeKroDeployer', () => {
     const graph = mockEngine.deploy.mock.calls[0]?.[0];
     const manifest = graph.resources[0]?.manifest;
     expect(manifest.kind).toBe('ResourceGraphDefinition');
-    expect(manifest.metadata.namespace).toBeUndefined();
-    expect(getMetadataField(manifest, 'scope')).toBe('cluster');
+    expect(manifest.metadata.namespace).toBe('default');
+    expect(getMetadataField(manifest, 'scope')).toBeUndefined();
   });
 
   it('uses the factory deleteInstance hook for KRO custom resource deletion', async () => {
