@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-06-30
+
+### Fixed
+
+- Fixed KRO runtime values-merge CEL for optional scalar overlays when multiple chart values with
+  different scalar types are merged together. Optional scalar branches are now `dyn(...)`-wrapped
+  before falling back to `omit()`, keeping the enclosing merge operand typed as `map(string, dyn)`
+  instead of producing incompatible per-field map value types.
+- Applied the same `dyn(...)` wrapping to Dagster graph-mode global value fallbacks such as
+  `serviceAccountName`, `postgresqlSecretName`, and generated celery config secret toggles.
+
 ## [0.20.1] - 2026-06-30
 
 ### Fixed
@@ -378,7 +389,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.20.2...HEAD
+[0.20.2]: https://github.com/yehudacohen/typekro/compare/v0.20.1...v0.20.2
+[0.20.1]: https://github.com/yehudacohen/typekro/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/yehudacohen/typekro/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/yehudacohen/typekro/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/yehudacohen/typekro/compare/v0.17.0...v0.18.0
