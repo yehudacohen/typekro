@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-06-30
+
+### Changed
+
+- **BREAKING (pre-1.0 minor):** Alchemy resource scope is now metadata-driven rather than inferred from a centralized Kubernetes kind list. Factory-created cluster-scoped resources serialize their `scope: 'cluster'` metadata into Alchemy state, and raw manifests must declare `scope: 'cluster'` explicitly when they are cluster-scoped. Legacy JSON-only Alchemy state without serialized scope is no longer reclassified by `apiVersion`/`kind`.
+- KRO prerequisite resources now use the same per-resource scope metadata path across imperative deploys, GitOps YAML, and declarative Alchemy resources.
+
+### Fixed
+
+- ResourceGraphDefinition and other factory-created cluster-scoped resources no longer receive a deployment namespace when their scope metadata is present.
+- Persisted Alchemy `scope` metadata is stripped before manifests are sent to Kubernetes.
+
+## [0.19.0] - 2026-06-29
+
+### Added
+
+- Added Dagster daemon liveness probe support and related Alchemy/serializer hardening for external refs and conditional value rendering.
+
 ## [0.18.0] - 2026-06-26
 
 ### Added
@@ -342,7 +360,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/yehudacohen/typekro/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/yehudacohen/typekro/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/yehudacohen/typekro/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/yehudacohen/typekro/compare/v0.16.1...v0.17.0
 [0.16.0]: https://github.com/yehudacohen/typekro/compare/v0.15.4...v0.16.0
