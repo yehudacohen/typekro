@@ -150,11 +150,13 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('schema.spec.global.serviceAccountName');
     expect(yaml).toContain('schema.spec.global.postgresqlSecretName');
     expect(yaml).toContain('schema.spec.global.dagsterInstanceConfigMap');
+    // Present-value branches are dyn-wrapped so the `... : omit()` fallback type-checks (omit() is
+    // map-typed; a bare `scalar : omit()` has no `_?_:_` overload).
     expect(yaml).toContain(
-      'has(schema.spec.serviceAccountName) ? schema.spec.serviceAccountName : has(schema.spec.global) && has(schema.spec.global.serviceAccountName) ? schema.spec.global.serviceAccountName : omit()'
+      'has(schema.spec.serviceAccountName) ? dyn(schema.spec.serviceAccountName) : has(schema.spec.global) && has(schema.spec.global.serviceAccountName) ? dyn(schema.spec.global.serviceAccountName) : omit()'
     );
     expect(yaml).toContain(
-      'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? schema.spec.postgresql.passwordSecretName : has(schema.spec.global) && has(schema.spec.global.postgresqlSecretName) ? schema.spec.global.postgresqlSecretName : omit()'
+      'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? dyn(schema.spec.postgresql.passwordSecretName) : has(schema.spec.global) && has(schema.spec.global.postgresqlSecretName) ? dyn(schema.spec.global.postgresqlSecretName) : omit()'
     );
     expect(yaml).toContain('schema.spec.postgresql.values');
     expect(yaml).toContain('schema.spec.rabbitmq.values');
@@ -162,8 +164,10 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('postgresqlHost');
     expect(yaml).toContain('k8sRunLauncher');
     expect(yaml).toContain(
-      'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? false : omit()'
+      'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? dyn(false) : omit()'
     );
+    // Invariant: no BARE `<scalar> : omit()` ternary survives anywhere (every omit() fallback is dyn-guarded).
+    expect(yaml).not.toMatch(/\? (?:schema\.spec\.[\w.]+|false|true) : omit\(\)/);
     expect(yaml).not.toContain('\\"deployments\\": [(has(schema.spec.userDeployments');
     expect(yaml).not.toContain('\\"imagePullSecrets\\": [(has(schema.spec.imagePullSecrets');
     expect(yaml).not.toContain('__KUBERNETES_REF_');

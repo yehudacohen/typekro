@@ -924,7 +924,9 @@ function celMarkerStringLiteralForValueTree(
   );
 
   if (!resolved.includes('__KUBERNETES_REF_')) {
-    return resolved.includes('${') ? celStringTemplateExpression(resolved) : JSON.stringify(resolved);
+    return resolved.includes('${')
+      ? celStringTemplateExpression(resolved)
+      : JSON.stringify(resolved);
   }
 
   const parts: string[] = [];
@@ -971,7 +973,8 @@ function celLiteralForValueTree(
   }
 
   if (isKubernetesRef(value) || isCelExpression(value)) {
-    const expression = unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
+    const expression =
+      unwrapKroExpression(processResourceReferences(value, context, path)) ?? 'null';
     return celValueTreeBranch(expression);
   }
 
@@ -1189,16 +1192,13 @@ function celRuntimeMapMergeExpression(
  * `has(schema.spec.X) ? ... : omit()`), return the guard and the bare CEL
  * path. Returns `undefined` for every other value.
  *
- * This drives the type-safe runtime-merge overlay form: an optional field
- * whose fallback is `omit()` must NOT be emitted as a value inside a
- * `.merge({ "X": has(spec.X) ? spec.X : omit() })` map literal. KRO types
- * `omit()` as `map(string, dyn)`, so for a SCALAR field the conditional is
- * `bool ? <scalar> : map(string, dyn)` — both branches must share a type, so
- * CEL fails to compile with `no matching overload for '_?_:_'`. Instead the
- * caller emits a conditional single-key merge `.merge(has(spec.X) ? {"X":
- * spec.X} : {})`, where both branches are maps — type-safe for fields of ANY
- * type, and a `.merge({})` no-op when the field is absent (true omit
- * semantics).
+ * This drives the type-safe runtime-merge overlay form. KRO types `omit()` as
+ * `map(string, dyn)`, so a bare `has(spec.X) ? spec.X : omit()` for a SCALAR is
+ * `(bool, scalar, map)` — no matching `_?_:_` overload. The caller (see
+ * {@link inlineOptionalEntry}) instead emits a dyn-wrapped ternary
+ * `"X": has(spec.X) ? dyn(spec.X) : omit()` INLINE in the surrounding merge map,
+ * which unifies to `dyn` and keeps the enclosing map heterogeneous
+ * (`map(string, dyn)`) so it merges uniformly.
  *
  * Only single bare schema refs are eligible (`KubernetesRef`, or a
  * `CelExpression` whose body is a bare `schema.spec.X` / `string(schema.spec.X)`
@@ -1240,21 +1240,37 @@ function optionalRefMergeGuard(
 }
 
 /**
- * Append the inline-map merge operand and the conditional single-key merge
- * operands for a set of overlay entries to `merges`. Optional-ref entries are
- * pulled out of the inline map (where their `omit()` fallback would be a
- * KRO type error) and emitted as `.merge(has(spec.X) ? {"X": spec.X} : {})`.
+ * Render an optional-ref overlay entry as an INLINE map entry whose value is a dyn-wrapped omit ternary:
+ *   "X": guard ? dyn(valueExpr) : omit()
+ *
+ * The `dyn(...)` is load-bearing twice over:
+ *   1. It keeps the ternary itself well-typed. KRO types `omit()` as `map(string,dyn)`, so a bare
+ *      `bool ? scalar : omit()` is `(bool, scalar, map)` — no matching `_?_:_` overload. Wrapping the
+ *      present-branch as `dyn(...)` makes it `(bool, dyn, map)`, which unifies to `dyn`.
+ *   2. It keeps the ENCLOSING map literal heterogeneous → `map(string,dyn)`, so the single
+ *      `.merge({...})` operand has a uniform value type with any other merge operand. The previous
+ *      approach (one conditional single-key `.merge(has(spec.X) ? {"X": spec.X} : {})` per optional
+ *      field) instead produced operands like `map(string,int)` and `map(string,string)`; KRO's `merge`
+ *      requires a SHARED value type across operands and rejected the mix
+ *      (`map(string,int).merge(map(string,string))`). One heterogeneous dyn map sidesteps that.
+ */
+function inlineOptionalEntry(entry: { key: string; guard: string; valueExpr: string }): string {
+  return `${JSON.stringify(entry.key)}: ${entry.guard} ? dyn(${entry.valueExpr}) : omit()`;
+}
+
+/**
+ * Append a SINGLE heterogeneous `.merge({...})` operand carrying both the required inline entries and the
+ * optional-ref entries (the latter as dyn-wrapped omit ternaries — see {@link inlineOptionalEntry}). They
+ * share one map literal so the operand is `map(string,dyn)` and chains cleanly with the base/other merges.
  */
 function appendOverlayMerges(
   merges: string[],
   inlineEntries: string[],
   optionalEntries: Array<{ key: string; guard: string; valueExpr: string }>
 ): void {
-  if (inlineEntries.length > 0) {
-    merges.push(`.merge({${inlineEntries.join(', ')}})`);
-  }
-  for (const { key, guard, valueExpr } of optionalEntries) {
-    merges.push(`.merge(${guard} ? {${JSON.stringify(key)}: ${valueExpr}} : {})`);
+  const allEntries = [...inlineEntries, ...optionalEntries.map(inlineOptionalEntry)];
+  if (allEntries.length > 0) {
+    merges.push(`.merge({${allEntries.join(', ')}})`);
   }
 }
 
@@ -1271,12 +1287,10 @@ function celDeepMergeRuntimeOverlay(
     if (baseValue === undefined) continue;
     const overlayValue = mapKeyAccess(overlayExpression, key);
 
-    // The fallback (overlay key absent) is the base value. When the base value
-    // is an optional schema ref, its `omit()` fallback can't sit inside the
-    // inline `.merge({...})` map — emit a conditional single-key merge so the
-    // key is contributed only when the overlay OR the optional spec field is
-    // present (both branches maps → type-safe for scalars and maps alike):
-    //   .merge(overlayHas || has(spec.X) ? {"key": overlayHas ? overlay[key] : spec.X} : {})
+    // The fallback (overlay key absent) is the base value. When the base value is an optional schema
+    // ref, its `omit()` fallback can't sit bare in a value position — emit a dyn-wrapped omit ternary
+    // (inline, in the one heterogeneous merge map) keyed on overlay-OR-optional-spec presence:
+    //   "key": (overlayHas || has(spec.X)) ? dyn(overlayHas ? overlay[key] : spec.X) : omit()
     const optionalGuard = isKnownMergeObject(baseValue)
       ? undefined
       : optionalRefMergeGuard(baseValue, context);
@@ -1311,13 +1325,14 @@ function celDeepMergeRuntimeOverlay(
 
 /**
  * Emit an object value-tree as a CEL map that is SAFE to sit as a VALUE inside a `.merge({...})` map
- * literal. Optional scalar/leaf schema refs — at ANY depth — are pulled OUT into conditional
- * single-key merges `(...).merge(has(spec.X) ? {"X": spec.X} : {})` instead of being emitted inline as
- * `{"X": has(spec.X) ? spec.X : omit()}`: KRO types `omit()` as `map(string,dyn)`, so for a scalar the
- * `bool ? scalar : map` ternary fails to compile. Nested objects recurse through this same builder, so
- * the fix holds at every level. Used for the FALLBACK (base-absent) literal branch of the deep-merge
- * builders — `celLiteralForValueTree` would re-introduce the invalid inline `omit()` ternary there.
- * For an object with no optional refs this is byte-equivalent to `celLiteralForValueTree`.
+ * literal. Optional scalar/leaf schema refs — at ANY depth — are emitted inline as dyn-wrapped omit
+ * ternaries `"X": has(spec.X) ? dyn(spec.X) : omit()` (see {@link inlineOptionalEntry}) instead of the
+ * bare `"X": has(spec.X) ? spec.X : omit()`: KRO types `omit()` as `map(string,dyn)`, so for a scalar
+ * the bare `bool ? scalar : map` ternary fails to compile. The dyn wrap also keeps this map
+ * heterogeneous (`map(string,dyn)`) so it merges uniformly. Nested objects recurse through this same
+ * builder, so the fix holds at every level. Used for the FALLBACK (base-absent) literal branch of the
+ * deep-merge builders — `celLiteralForValueTree` would re-introduce the invalid inline `omit()` ternary
+ * there. For an object with no optional refs this is byte-equivalent to `celLiteralForValueTree`.
  */
 function celTypeSafeObjectLiteral(
   value: Record<string, unknown>,
@@ -1328,7 +1343,9 @@ function celTypeSafeObjectLiteral(
   const optionalEntries: Array<{ key: string; guard: string; valueExpr: string }> = [];
   for (const [key, child] of Object.entries(value)) {
     if (child === undefined) continue;
-    const optionalGuard = isKnownMergeObject(child) ? undefined : optionalRefMergeGuard(child, context);
+    const optionalGuard = isKnownMergeObject(child)
+      ? undefined
+      : optionalRefMergeGuard(child, context);
     if (optionalGuard) {
       optionalEntries.push({ key, guard: optionalGuard.guard, valueExpr: optionalGuard.valueExpr });
       continue;
@@ -1338,10 +1355,11 @@ function celTypeSafeObjectLiteral(
       : celLiteralForValueTree(child, context, childPath(path, key));
     inlineEntries.push(`${JSON.stringify(key)}: ${childExpr}`);
   }
-  const base = `{${inlineEntries.join(', ')}}`;
-  const merges: string[] = [];
-  appendOverlayMerges(merges, [], optionalEntries);
-  return merges.length > 0 ? `(${base})${merges.join('')}` : base;
+  // Fold the optional refs into the SAME literal as dyn-wrapped omit ternaries. They must live in this
+  // one map (not a trailing `.merge({...})`) — a separate merge operand would be `map(string,dyn)` while
+  // a homogeneous base (e.g. all-int) would be `map(string,int)`, and KRO rejects the mismatched merge.
+  const allEntries = [...inlineEntries, ...optionalEntries.map(inlineOptionalEntry)];
+  return `{${allEntries.join(', ')}}`;
 }
 
 function celDeepMergeKnownOverlay(
@@ -1356,9 +1374,9 @@ function celDeepMergeKnownOverlay(
   for (const [key, overlayValue] of Object.entries(overlay)) {
     if (overlayValue === undefined) continue;
 
-    // An optional scalar/leaf schema ref overlay value would otherwise emit
-    // `"X": has(spec.X) ? spec.X : omit()` inside the inline map — a KRO type
-    // error for scalars. Emit it as a conditional single-key merge instead.
+    // An optional scalar/leaf schema ref overlay value would otherwise emit the bare
+    // `"X": has(spec.X) ? spec.X : omit()` — a KRO type error for scalars. Emit it dyn-wrapped instead
+    // (`has(spec.X) ? dyn(spec.X) : omit()`), inline in the one heterogeneous merge map.
     const optionalGuard = isKnownMergeObject(overlayValue)
       ? undefined
       : optionalRefMergeGuard(overlayValue, context);

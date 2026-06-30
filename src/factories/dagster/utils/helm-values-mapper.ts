@@ -212,8 +212,12 @@ function overlayGlobalValue(
   if (overlayValue === undefined) return;
 
   if (isGraphAwareValue(overlayValue) || isValuesMergeExpression(overlayValue)) {
+    // dyn-wrap the present-value branches: KRO types `omit()` as `map(string,dyn)`, so a bare
+    // `... ? <scalar> : omit()` is `(bool, scalar, map)` — no `_?_:_` overload. `dyn(...)` unifies the
+    // branches to `dyn`, and keeps this value `dyn`-typed so it sits cleanly in the heterogeneous
+    // values-merge map (`map(string,dyn)`).
     target[key] = Cel.expr<string>(
-      `${hasSchemaPath(overlayPath)} ? ${overlayPath} : ${hasSchemaPath(fallbackPath)} ? ${fallbackPath} : omit()`
+      `${hasSchemaPath(overlayPath)} ? dyn(${overlayPath}) : ${hasSchemaPath(fallbackPath)} ? dyn(${fallbackPath}) : omit()`
     ) as TypeKroValueTree;
     return;
   }
@@ -613,7 +617,9 @@ function createDagsterValuesMerge(
 function falseWhenValuePresent(value: unknown, schemaPath: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (isGraphAwareValue(value) || isValuesMergeExpression(value)) {
-    return Cel.expr<boolean>(`${hasSchemaPath(schemaPath)} ? false : omit()`) as boolean;
+    // dyn-wrap the present branch: `... ? false : omit()` is `(bool, bool, map)` (omit() is map-typed)
+    // — no `_?_:_` overload. `dyn(false)` unifies the branches to `dyn`.
+    return Cel.expr<boolean>(`${hasSchemaPath(schemaPath)} ? dyn(false) : omit()`) as boolean;
   }
 
   return false;
