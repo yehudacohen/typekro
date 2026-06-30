@@ -333,22 +333,24 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     // It must take the runtime map-merge path.
     expect(valuesLine).toContain('json.unmarshal(json.marshal(schema.spec.values))');
 
-    // CORE ASSERTION: no scalar-vs-omit() ternary anywhere — i.e. no
-    // `? <scalar-ref> : omit()` sitting as a value inside a `.merge({...})`.
-    // omit() must not appear at all in this runtime-merge expression.
-    expect(valuesLine).not.toContain('omit()');
+    // CORE ASSERTION: no BARE scalar-vs-omit() ternary — `? <scalar-ref> : omit()` is the KRO type
+    // error (omit() is map-typed). Every omit() fallback must be dyn-guarded: `? dyn(<scalar>) : omit()`.
     expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
+    expect(valuesLine).not.toMatch(/\? string\([^)]*\) : omit\(\)/);
 
-    // The optional scalars must use the type-safe conditional single-key merge:
-    // both branches are maps. (Inner double-quotes are YAML-escaped as \".)
+    // The optional scalars are emitted INLINE as dyn-wrapped omit ternaries, all in ONE heterogeneous
+    // `.merge({...})` (→ map(string,dyn), which merges uniformly). (Inner double-quotes YAML-escaped \".)
     expect(valuesLine).toContain(
-      '.merge(has(schema.spec.nameOverride) ? {\\"nameOverride\\": schema.spec.nameOverride} : {})'
+      '\\"nameOverride\\": has(schema.spec.nameOverride) ? dyn(schema.spec.nameOverride) : omit()'
     );
     expect(valuesLine).toContain(
-      '.merge(has(schema.spec.generateCeleryConfigSecret) ? {\\"generateCeleryConfigSecret\\": schema.spec.generateCeleryConfigSecret} : {})'
+      '\\"generateCeleryConfigSecret\\": has(schema.spec.generateCeleryConfigSecret) ? dyn(schema.spec.generateCeleryConfigSecret) : omit()'
     );
 
-    // The required field stays in the inline merge map (no guard needed).
+    // Exactly one merge operand (no per-field single-key merge split — that broke map-value uniformity).
+    expect(valuesLine.match(/\.merge\(/g)?.length).toBe(1);
+
+    // The required field stays in the same inline merge map (no guard needed).
     expect(valuesLine).toContain('\\"replicaCount\\": schema.spec.replicas');
 
     expect(valuesLine).not.toContain('__KUBERNETES_REF_');
@@ -606,13 +608,14 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     const yaml = graph.toYaml();
     const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
 
-    // Guard on the bare path; the VALUE preserves the string() conversion. (Quotes YAML-escaped as \".)
+    // Guard on the bare path; the dyn-wrapped VALUE preserves the string() conversion. (Quotes \".)
     expect(valuesLine).toContain(
-      '.merge(has(schema.spec.port) ? {\\"portString\\": string(schema.spec.port)} : {})'
+      '\\"portString\\": has(schema.spec.port) ? dyn(string(schema.spec.port)) : omit()'
     );
     // Must NOT drop string() and emit the bare ref as the value.
-    expect(valuesLine).not.toContain('{\\"portString\\": schema.spec.port}');
-    expect(valuesLine).not.toContain('omit()');
+    expect(valuesLine).not.toContain('dyn(schema.spec.port)');
+    // No BARE scalar-omit ternary (the string() value is dyn-wrapped, so it's well-typed).
+    expect(valuesLine).not.toMatch(/\? string\([^)]*\) : omit\(\)/);
   });
 
   // Regression: an optional scalar nested inside an OBJECT overlay must also be type-safe. The
@@ -644,14 +647,17 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     const yaml = graph.toYaml();
     const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
 
-    // No omit() anywhere — at any nesting depth.
-    expect(valuesLine).not.toContain('omit()');
+    // No BARE scalar-omit ternary at any depth — every omit() fallback is dyn-guarded.
     expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
-    // The nested optional scalar uses the type-safe single-key merge in BOTH the base-present and
-    // base-absent branches (the base-absent fallback is `({}).merge(...)`, not an inline omit ternary).
+    // The nested optional scalar is emitted as a dyn-wrapped omit ternary INLINE in BOTH the
+    // base-present (`...["global"]).merge({...})`) and base-absent (literal `{...}`) branches.
     expect(valuesLine).toContain(
-      '.merge(has(schema.spec.secretName) ? {\\"celeryConfigSecretName\\": schema.spec.secretName} : {})'
+      '\\"celeryConfigSecretName\\": has(schema.spec.secretName) ? dyn(schema.spec.secretName) : omit()'
     );
-    expect(valuesLine).toContain('({}).merge(has(schema.spec.secretName)');
+    // Both branches carry the same dyn-wrapped optional entry (present-branch merge + absent literal).
+    expect(
+      valuesLine.match(/\\"celeryConfigSecretName\\": has\(schema\.spec\.secretName\) \? dyn\(schema\.spec\.secretName\) : omit\(\)/g)
+        ?.length
+    ).toBe(2);
   });
 });
