@@ -277,6 +277,83 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).not.toContain('__KUBERNETES_REF_');
   });
 
+  // Regression: KRO rejected a runtime values-merge whose overlay carried an
+  // OPTIONAL SCALAR spec field. The old form emitted the field's omit() fallback
+  // as a VALUE inside the `.merge({...})` map literal:
+  //   .merge({ "nameOverride": has(spec.nameOverride) ? spec.nameOverride : omit() })
+  // KRO types omit() as map(string, dyn); for a scalar field the ternary is
+  // `bool ? <string> : map(string, dyn)` — both branches must share a type, so
+  // cel-go fails to compile with:
+  //   GraphAccepted=False reason=InvalidResourceGraph
+  //   ERROR: found no matching overload for '_?_:_' applied to '(bool, string, map(string, dyn))'
+  // The fix emits the field as a conditional single-key merge (both branches
+  // maps): `.merge(has(spec.X) ? {"X": spec.X} : {})` — type-safe for ANY field
+  // type, and a no-op when the field is absent (true omit semantics).
+  //
+  // NOTE: this asserts the STRUCTURE of the emitted CEL — the repo has no cel-go
+  // (KRO's evaluator) available, so the actual KRO type-check is not unit-verifiable
+  // here. The structural assertion below pins the type-safe form precisely.
+  it('emits type-safe runtime values-merge for OPTIONAL SCALAR overlay fields (no scalar-vs-omit() ternary)', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-optional-scalar-merge',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({
+          'nameOverride?': 'string',
+          'generateCeleryConfigSecret?': 'boolean',
+          replicas: 'number',
+          'values?': 'object',
+        }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'dagster',
+          chart: {
+            repository: 'https://charts.example.com',
+            name: 'dagster',
+          },
+          // Whole-object ref base → forces the RUNTIME map-merge path; overlay
+          // carries optional SCALAR refs (nameOverride, generateCeleryConfigSecret)
+          // plus a required ref (replicaCount).
+          values: mergeValuesExpression(schema.spec.values, {
+            nameOverride: schema.spec.nameOverride,
+            generateCeleryConfigSecret: schema.spec.generateCeleryConfigSecret,
+            replicaCount: schema.spec.replicas,
+          }),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+
+    // It must take the runtime map-merge path.
+    expect(valuesLine).toContain('json.unmarshal(json.marshal(schema.spec.values))');
+
+    // CORE ASSERTION: no scalar-vs-omit() ternary anywhere — i.e. no
+    // `? <scalar-ref> : omit()` sitting as a value inside a `.merge({...})`.
+    // omit() must not appear at all in this runtime-merge expression.
+    expect(valuesLine).not.toContain('omit()');
+    expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
+
+    // The optional scalars must use the type-safe conditional single-key merge:
+    // both branches are maps. (Inner double-quotes are YAML-escaped as \".)
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.nameOverride) ? {\\"nameOverride\\": schema.spec.nameOverride} : {})'
+    );
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.generateCeleryConfigSecret) ? {\\"generateCeleryConfigSecret\\": schema.spec.generateCeleryConfigSecret} : {})'
+    );
+
+    // The required field stays in the inline merge map (no guard needed).
+    expect(valuesLine).toContain('\\"replicaCount\\": schema.spec.replicas');
+
+    expect(valuesLine).not.toContain('__KUBERNETES_REF_');
+  });
+
   it('allows helper-built plain value trees that contain TypeKro references', () => {
     const graph = toResourceGraph(
       {
@@ -498,5 +575,83 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(graph.resources[0]).toBeDefined();
     const simpleRes0 = graph.resources[0] as unknown as Record<string, Record<string, unknown>>;
     expect(simpleRes0.spec!.values).toBeDefined();
+  });
+
+  // Regression: the conditional single-key merge must emit the overlay's FULL value expression,
+  // not the bare schema path used for the has() guard. For an optional ref wrapped in a CEL
+  // conversion (e.g. `string(schema.spec.port)` — coercing a number to a string-typed chart value),
+  // the guard is `has(schema.spec.port)` but the VALUE must stay `string(schema.spec.port)`. An
+  // earlier iteration stored only the inner path and emitted it as the value, silently dropping string().
+  it('preserves a string() conversion on an optional ref in the runtime values-merge', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-optional-string-cast-merge',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({ 'port?': 'number', 'values?': 'object' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'dagster',
+          chart: { repository: 'https://charts.example.com', name: 'dagster' },
+          values: mergeValuesExpression(schema.spec.values, {
+            portString: Cel.expr<string>('string(schema.spec.port)'),
+          }),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+
+    // Guard on the bare path; the VALUE preserves the string() conversion. (Quotes YAML-escaped as \".)
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.port) ? {\\"portString\\": string(schema.spec.port)} : {})'
+    );
+    // Must NOT drop string() and emit the bare ref as the value.
+    expect(valuesLine).not.toContain('{\\"portString\\": schema.spec.port}');
+    expect(valuesLine).not.toContain('omit()');
+  });
+
+  // Regression: an optional scalar nested inside an OBJECT overlay must also be type-safe. The
+  // top-level fix only pulled out top-level optional refs; a nested object's fallback (base-absent)
+  // branch was still emitted via celLiteralForValueTree, re-introducing the invalid inline
+  // `{"X": has(spec.X) ? spec.X : omit()}` for its optional scalars at depth.
+  it('emits type-safe CEL for an OPTIONAL SCALAR nested inside an object overlay (no omit() at depth)', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-nested-optional-scalar',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: type({ 'secretName?': 'string', 'values?': 'object' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'dagster',
+          chart: { repository: 'https://charts.example.com', name: 'dagster' },
+          // `global.celeryConfigSecretName` is an optional scalar ref NESTED in the `global` object.
+          values: mergeValuesExpression(schema.spec.values, {
+            global: { celeryConfigSecretName: schema.spec.secretName },
+          }),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+
+    // No omit() anywhere — at any nesting depth.
+    expect(valuesLine).not.toContain('omit()');
+    expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
+    // The nested optional scalar uses the type-safe single-key merge in BOTH the base-present and
+    // base-absent branches (the base-absent fallback is `({}).merge(...)`, not an inline omit ternary).
+    expect(valuesLine).toContain(
+      '.merge(has(schema.spec.secretName) ? {\\"celeryConfigSecretName\\": schema.spec.secretName} : {})'
+    );
+    expect(valuesLine).toContain('({}).merge(has(schema.spec.secretName)');
   });
 });
