@@ -362,8 +362,12 @@ describe('Dagster bootstrap default daemon liveness probe', () => {
   it('Emit the default daemon liveness probe as a CEL fallback in the KRO RGD', () => {
     const yaml = dagsterBootstrap.toYaml();
     expect(yaml).toContain('has(schema.spec.daemon.livenessProbe)');
-    expect(yaml).toContain('schema.spec.daemon.livenessProbe :');
     expect(yaml).toContain('dagster-daemon');
     expect(yaml).toContain('liveness-check');
+    // Both branches MUST be dyn-wrapped: the field renders as KRO opaque type `string` but the default
+    // is a map literal, so a bare `has(X) ? <string> : <map>` ternary is `(bool, string, map)` — no
+    // `_?_:_` overload, and KRO rejects the graph. dyn() unifies both branches to `dyn`.
+    expect(yaml).toContain('dyn(schema.spec.daemon.livenessProbe)');
+    expect(yaml).not.toMatch(/\? schema\.spec\.daemon\.livenessProbe : \{/);
   });
 });
