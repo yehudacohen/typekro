@@ -199,9 +199,14 @@ function resolveDaemonConfig(
   if (isKubernetesRef(probe) || isKubernetesRef(daemon)) {
     return {
       ...((daemon ?? {}) as object),
+      // dyn-wrap BOTH branches: KRO renders the opaque `objectMapSchema` field as type `string`, while
+      // the default is a map literal — so a bare `has(X) ? <string> : <map>` ternary is
+      // `(bool, string, map)`, which has no `_?_:_` overload (KRO admission fails with exactly that).
+      // dyn() on each branch unifies them to `dyn`; the runtime value (user probe or the default) is
+      // unchanged.
       livenessProbe: Cel.expr<TypeKroValueTreeObject>(
         `has(schema.spec.daemon) && has(schema.spec.daemon.livenessProbe) ? ` +
-          `schema.spec.daemon.livenessProbe : ${DEFAULT_DAEMON_LIVENESS_PROBE_CEL}`
+          `dyn(schema.spec.daemon.livenessProbe) : dyn(${DEFAULT_DAEMON_LIVENESS_PROBE_CEL})`
       ) as unknown as TypeKroValueTreeObject,
     } as DagsterBootstrapConfig['daemon'];
   }
