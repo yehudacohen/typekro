@@ -7,6 +7,8 @@
 
 export type LexicalAliasScope = Record<string, string>;
 
+const UNSUPPORTED_ALIAS_EXPRESSION = '__TYPEKRO_UNSUPPORTED_LEXICAL_ALIAS__';
+
 // biome-ignore lint/suspicious/noExplicitAny: ESTree nodes from acorn/estraverse are intentionally handled dynamically.
 type AnyNode = Record<string, any>;
 
@@ -151,6 +153,8 @@ function collectSingleResourceAliases(
     });
     if (key && expressionSource) {
       aliases[`${aliasName}.${key}`] = expressionSource;
+    } else if (key) {
+      aliases[`${aliasName}.${key}`] = UNSUPPORTED_ALIAS_EXPRESSION;
     }
   }
   return aliases;
@@ -178,6 +182,8 @@ function collectMultiResourceAliases(
     });
     if (key && expressionSource) {
       aliases[`${aliasName}.${key}`] = expressionSource;
+    } else if (key) {
+      aliases[`${aliasName}.${key}`] = UNSUPPORTED_ALIAS_EXPRESSION;
     }
   }
   return aliases;
@@ -302,8 +308,16 @@ function topLevelFunctionStatements(ast: AnyNode): AnyNode[] {
 }
 
 function replaceAliasPath(expression: string, aliasPath: string, aliasExpression: string): string {
+  if (aliasExpression === UNSUPPORTED_ALIAS_EXPRESSION && aliasPathOccurs(expression, aliasPath)) {
+    throw new Error(`Unsupported lexical alias expression: ${aliasPath}`);
+  }
   const pattern = new RegExp(`(?<![\\w$.])${escapeRegExp(aliasPath)}(?![\\w$])`, 'g');
   return expression.replace(pattern, parenthesizeAliasExpression(aliasExpression));
+}
+
+function aliasPathOccurs(expression: string, aliasPath: string): boolean {
+  const pattern = new RegExp(`(?<![\\w$.])${escapeRegExp(aliasPath)}(?![\\w$])`);
+  return pattern.test(expression);
 }
 
 function parenthesizeAliasExpression(expression: string): string {

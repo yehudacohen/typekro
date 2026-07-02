@@ -236,6 +236,19 @@ describe('computed status aliases', () => {
     expect(() => inlineLexicalAliases('ready', aliases)).toThrow(/Could not fully inline/);
   });
 
+  it('fails closed for unsupported explicit alias expressions when referenced', () => {
+    const source = `() => {
+      const web = alias(deployment, { ready: true });
+      return { ready: web.ready };
+    }`;
+    const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
+    const aliases = buildLexicalAliasScope(ast, source);
+
+    expect(() => inlineLexicalAliases('web.ready', aliases)).toThrow(
+      /Unsupported lexical alias expression: web.ready/
+    );
+  });
+
   it('serializes single-resource aliases returned from composition status', () => {
     const composition = kubernetesComposition(
       {
