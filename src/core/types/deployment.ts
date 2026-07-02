@@ -631,6 +631,25 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
    */
   skipTLSVerify?: boolean;
 
+  /**
+   * Strict CEL diagnostics for the JS→CEL analysis boundary.
+   *
+   * When true, serialization fails fast (throws a `ConversionError` naming
+   * the offending expression) if an emitted CEL status expression references
+   * a resource that is not part of the resource graph, instead of emitting
+   * the unverified expression and letting the ResourceGraphDefinition go
+   * Inactive on the live cluster.
+   *
+   * Note: cross-composition status references (`otherComposition.status.x`)
+   * are indistinguishable from unknown resources at serialization time and
+   * are also rejected in strict mode — leave this unset (or false) for
+   * factories that intentionally use them.
+   *
+   * @default the `TYPEKRO_STRICT_CEL` environment variable (`1`/`true`);
+   *          lenient (warn and emit) when unset.
+   */
+  strictCelDiagnostics?: boolean;
+
   /** Event monitoring configuration */
   eventMonitoring?: EventMonitoringConfig;
 

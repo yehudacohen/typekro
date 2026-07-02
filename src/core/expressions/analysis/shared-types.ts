@@ -59,6 +59,23 @@ export interface AnalysisContext {
   /** Whether to perform strict type checking */
   strictTypeChecking?: boolean;
 
+  /**
+   * Strict CEL diagnostics: when true, CEL emissions the analyzer cannot
+   * prove type-check (unknown resource references, resource-validation
+   * errors) fail the conversion with a thrown/propagated error instead of
+   * being demoted to warnings. When unset, defaults to the
+   * `TYPEKRO_STRICT_CEL` environment variable (see
+   * `isStrictCelDiagnosticsEnabled` in `strict-cel.ts`).
+   */
+  strictCelDiagnostics?: boolean;
+
+  /**
+   * Identifiers introduced by converted lambda scopes (CEL macro variables
+   * from `.filter(x, ...)` / `.map(x, ...)` etc.). These are never resource
+   * references, so the unknown-resource diagnostics skip them.
+   */
+  localScopeIdentifiers?: readonly string[];
+
   /** Whether to validate resource references */
   validateResourceReferences?: boolean;
 

@@ -20,6 +20,10 @@ export interface CelValidationError {
   expression: string;
   error: string;
   suggestion?: string;
+  /** Machine-readable finding category (used by strict CEL diagnostics). */
+  code?: 'unknown-resource';
+  /** The unresolved resource id, when code is 'unknown-resource'. */
+  referencedResource?: string;
 }
 
 export interface CelValidationResult {
@@ -407,6 +411,8 @@ export function validateStatusCelExpressions(
               expression,
               error: `Reference '${referencedId}' is not a registered resource — treating as cross-composition reference`,
               suggestion: `If this is not a cross-composition reference, check that resource '${referencedId}' is created in the composition`,
+              code: 'unknown-resource',
+              referencedResource: referencedId,
             });
           } else {
             errors.push({
@@ -414,6 +420,8 @@ export function validateStatusCelExpressions(
               expression,
               error: `Referenced resource '${referencedId}' does not exist`,
               suggestion: `Available resources: ${Array.from(resourceIds).join(', ')}`,
+              code: 'unknown-resource',
+              referencedResource: referencedId,
             });
           }
         }

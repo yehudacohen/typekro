@@ -157,6 +157,13 @@ export function analyzeImperativeComposition(
                 availableReferences: resources,
                 factoryType: options.factoryType,
                 dependencies: [],
+                // This pass parses fn.toString() source, so identifiers are
+                // local variable names and nested-composition ids that later
+                // stages resolve or remap — an incomplete reference set by
+                // design. Strict CEL diagnostics would false-positive here;
+                // unknown references are enforced at RGD serialization time
+                // instead (see kro-factory assertStatusCelReferencesKnownResources).
+                strictCelDiagnostics: false,
               });
 
               // Convert resource references to proper format for CEL as a fallback for legacy patterns.

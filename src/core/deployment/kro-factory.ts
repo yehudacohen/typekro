@@ -29,12 +29,14 @@ import {
 } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import {
+  ConversionError,
   CRDInstanceError,
   ensureError,
   ResourceGraphFactoryError,
   TypeKroError,
   ValidationError,
 } from '../errors.js';
+import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { applyAnalysisToResources } from '../expressions/composition/composition-analyzer.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
@@ -81,6 +83,7 @@ import type {
   SchemaDefinition,
   SchemaProxy,
 } from '../types/serialization.js';
+import { validateStatusCelExpressions } from '../validation/cel-validator.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
@@ -1288,7 +1291,10 @@ export class KroResourceFactoryImpl<
         // Honor the factory's configured timeout (matches the non-alchemy paths, e.g. line ~1700);
         // hardcoding DEFAULT_RGD_TIMEOUT (60s) ignored a caller's longer timeout and false-failed a
         // converge whose RGD legitimately takes >60s to reach ready (e.g. a Helm workload rollout).
-        options: { waitForReady: true, timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT },
+        options: {
+          waitForReady: true,
+          timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
+        },
       },
     };
 
@@ -1512,6 +1518,13 @@ export class KroResourceFactoryImpl<
       aspects: this.factoryOptions.aspects ?? [],
     });
 
+    // Strict CEL diagnostics gate: fail fast if the status CEL that is about
+    // to be emitted references resources that are not part of this graph,
+    // instead of shipping an RGD that KRO will mark Inactive on the cluster.
+    if (isStrictCelDiagnosticsEnabled(this.factoryOptions)) {
+      this.assertStatusCelReferencesKnownResources(aspectResources);
+    }
+
     const kroSchema = generateKroSchemaFromArktype(
       this.name,
       this.schemaDefinition,
@@ -1569,6 +1582,50 @@ export class KroResourceFactoryImpl<
       aspectResources,
       { namespace: this.namespace },
       kroSchema
+    );
+  }
+
+  /**
+   * Strict CEL diagnostics: verify that every dynamic status CEL expression
+   * references only resources that exist in this graph.
+   *
+   * The lenient default demotes unknown `<id>.status.*` references to
+   * cross-composition warnings at graph creation time, so an unresolvable
+   * expression survives all the way into the emitted RGD and only fails on
+   * the cluster. In strict mode (`strictCelDiagnostics` factory option or
+   * `TYPEKRO_STRICT_CEL=1`), those findings abort serialization here with
+   * the offending expressions.
+   */
+  private assertStatusCelReferencesKnownResources(
+    resources: Record<string, KubernetesResource>
+  ): void {
+    if (!this.statusMappings) return;
+
+    const validation = validateStatusCelExpressions(this.statusMappings, resources);
+    const unknownResourceFindings = [...validation.errors, ...validation.warnings].filter(
+      (finding) => finding.code === 'unknown-resource'
+    );
+    if (unknownResourceFindings.length === 0) return;
+
+    const details = unknownResourceFindings
+      .map(
+        (finding) =>
+          `  status.${finding.field}: resource '${finding.referencedResource}' is not part of the resource graph\n    expression: ${finding.expression}`
+      )
+      .join('\n');
+    const known = Object.keys(resources);
+    const first = unknownResourceFindings[0];
+
+    throw new ConversionError(
+      `Strict CEL diagnostics: status CEL in ResourceGraphDefinition '${this.name}' references unknown resources.\n${details}\n  Known resources: ${known.length > 0 ? known.join(', ') : '(none)'}`,
+      first?.expression ?? '',
+      'member-access',
+      undefined,
+      { analysisContext: 'status', availableReferences: known },
+      [
+        'Check that the referenced resources are created in this composition (resource ids are set via the "id" field on factory configs)',
+        'If these are intentional cross-composition references, disable strict CEL diagnostics for this factory (strictCelDiagnostics: false)',
+      ]
     );
   }
 
@@ -1827,7 +1884,7 @@ export class KroResourceFactoryImpl<
           name,
           'metadata.namespace',
           [
-            "Use a TypeKro factory resource that carries scope metadata.",
+            'Use a TypeKro factory resource that carries scope metadata.',
             "Set scope: 'cluster' on raw cluster-scoped prerequisites.",
             "Set metadata.namespace or scope: 'namespaced' on raw namespaced prerequisites.",
           ]

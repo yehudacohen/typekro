@@ -15,7 +15,7 @@
 
 import type { Node as ESTreeNode } from 'estree';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
-import { ConversionError, ensureError } from '../../errors.js';
+import { ConversionError, ensureError, UnknownResourceError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -59,6 +59,7 @@ import {
 } from './expression-classifier.js';
 import { ParserError, parseExpression } from './parser.js';
 import { convertKubernetesRefToCel as convertKubernetesRefToCelFn } from './scope-resolver.js';
+import { isStrictCelDiagnosticsEnabled } from './strict-cel.js';
 // Shared types — extracted from this file to break circular deps with cache.ts / factory-pattern-handler.ts
 import type {
   AnalysisContext,
@@ -235,7 +236,17 @@ export class JavaScriptToCelAnalyzer {
       // Aggregate warnings from all validation results
       const aggregatedWarnings: ValidationWarning[] = [];
 
-      // Add resource validation warnings and errors (treat errors as warnings)
+      // Add resource validation warnings and errors.
+      // Lenient (default) mode demotes resource-validation ERRORS to warnings
+      // so they don't fail the entire expression. In strict CEL diagnostics
+      // mode, PROVABLE failures (RESOURCE_NOT_FOUND — the referenced resource
+      // is simply absent from the graph) become hard failures, exactly like
+      // compile-time and type-validation errors above. Heuristic findings
+      // (e.g. INVALID_FIELD_PATH, which guesses field shapes against magic
+      // proxies whose status is not populated at analysis time) stay demoted
+      // even in strict mode — they cannot be proven wrong here.
+      const strictCelDiagnostics = isStrictCelDiagnosticsEnabled(context);
+      let hasStrictResourceValidationErrors = false;
       if (resourceValidation) {
         for (const rv of resourceValidation) {
           // Add warnings
@@ -249,9 +260,25 @@ export class JavaScriptToCelAnalyzer {
             }
             aggregatedWarnings.push(warningObj);
           }
-          // Add errors as warnings (resource validation errors shouldn't fail the entire expression)
           if (rv.errors) {
             for (const error of rv.errors) {
+              // Bare `spec.*` roots are schema-context identifiers remapped
+              // downstream, never resource references — same exemption as the
+              // unknown-resource diagnostic in cel-emitter.ts.
+              const isSchemaRootRef = error.resourceRef?.startsWith('spec.') === true;
+              if (
+                strictCelDiagnostics &&
+                error.errorType === 'RESOURCE_NOT_FOUND' &&
+                !isSchemaRootRef
+              ) {
+                // Strict mode: provably-missing resources fail the conversion
+                hasStrictResourceValidationErrors = true;
+                criticalErrors.push(
+                  new ConversionError(ensureError(error).message, expression, 'member-access')
+                );
+                continue;
+              }
+              // Lenient mode (and heuristic findings in strict mode): demote to warning
               const warningObj: ValidationWarning = {
                 message: ensureError(error).message,
                 type: 'resource_validation',
@@ -286,7 +313,11 @@ export class JavaScriptToCelAnalyzer {
       }
 
       const result: CelConversionResult = {
-        valid: celExpression !== null && !hasCompileTimeErrors && !hasTypeValidationErrors,
+        valid:
+          celExpression !== null &&
+          !hasCompileTimeErrors &&
+          !hasTypeValidationErrors &&
+          !hasStrictResourceValidationErrors,
         celExpression,
         dependencies: context.dependencies || [],
         sourceMap: sourceMapEntries,
@@ -303,6 +334,13 @@ export class JavaScriptToCelAnalyzer {
       this.cache.set(expression, context, result);
       return result;
     } catch (error: unknown) {
+      // Strict CEL diagnostics are loud by design: rethrow with the offending
+      // expression instead of degrading to a special-case/error result.
+      // (UnknownResourceError is only thrown when strict mode is enabled.)
+      if (error instanceof UnknownResourceError) {
+        throw error;
+      }
+
       // If parsing fails, try to handle it as a special case
       const specialCaseResult = handleSpecialCasesFn(
         expression,
