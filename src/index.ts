@@ -92,6 +92,15 @@
 // 1. ESSENTIAL — Core APIs every user needs
 // =============================================================================
 
+export type {
+  AnnotationMap,
+  EnvVarMap,
+  HotReloadAspectOptions,
+  HotReloadContainer,
+  HotReloadVolume,
+  LabelMap,
+  LocalWorkspaceAspectOptions,
+} from './core/aspects/index.js';
 // Aspect helpers for typed resource customization
 export {
   AspectApplicationError,
@@ -118,15 +127,6 @@ export {
   withResourceDefaults,
   withServiceAccount,
   workloads,
-} from './core/aspects/index.js';
-export type {
-  AnnotationMap,
-  EnvVarMap,
-  HotReloadAspectOptions,
-  HotReloadContainer,
-  HotReloadVolume,
-  LabelMap,
-  LocalWorkspaceAspectOptions,
 } from './core/aspects/index.js';
 export type {
   AppendOperation,
@@ -164,8 +164,8 @@ export type {
   CompatibleAspectTargets,
   FactoryAspectTargetDescriptor,
   ImagePullPolicy,
-  MergeOperation,
   MergeByNameOperation,
+  MergeOperation,
   MetadataAspectSurface,
   OverrideAspectSurface,
   PatchEachOperation,
@@ -174,15 +174,15 @@ export type {
   ResourceAspectMetadata,
   ResourceSpecOverrideSchema,
   ToYamlOptions,
-  WorkloadPodTemplateAspectSchema,
   WorkloadAspectFactoryTarget,
+  WorkloadPodTemplateAspectSchema,
 } from './core/aspects/types.js';
 // Imperative composition (define compositions with native TypeScript)
 export { kubernetesComposition } from './core/composition/imperative.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)
-export { Cel, cel, externalRef, observedResource } from './core/references/index.js';
+export { Cel, cel, computed, externalRef, observedResource } from './core/references/index.js';
 export type {
   ResourceBuilder,
   ResourceDependency,
