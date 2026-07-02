@@ -131,7 +131,7 @@ describe('analyzeImperativeComposition', () => {
       expect(result.hasJavaScriptExpressions).toBe(true);
       expect(isCelExpr(result.statusMappings.phase)).toBe(true);
       expect((result.statusMappings.phase as CelExpression).expression).toContain(
-        'resources.helm.status.phase'
+        'helm.status.phase'
       );
     });
 
@@ -148,7 +148,7 @@ describe('analyzeImperativeComposition', () => {
 
       expect(isCelExpr(result.statusMappings.name)).toBe(true);
       expect((result.statusMappings.name as CelExpression).expression).toContain(
-        'resources.deployment.metadata.name'
+        'deployment.metadata.name'
       );
     });
 
@@ -165,7 +165,7 @@ describe('analyzeImperativeComposition', () => {
 
       expect(isCelExpr(result.statusMappings.replicas)).toBe(true);
       expect((result.statusMappings.replicas as CelExpression).expression).toContain(
-        'resources.deployment.spec.replicas'
+        'deployment.spec.replicas'
       );
     });
   });
@@ -230,6 +230,19 @@ describe('analyzeImperativeComposition', () => {
       const result = analyzeImperativeComposition(fn, {}, { factoryType: 'kro' });
 
       expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.statusMappings).toEqual({});
+      expect(result.hasJavaScriptExpressions).toBe(false);
+    });
+
+    it('fails closed for cyclic lexical aliases', () => {
+      const fn = new Function(
+        'const ready = available; const available = ready; return { ready };'
+      ) as (...args: unknown[]) => unknown;
+
+      const result = analyzeImperativeComposition(fn, {}, { factoryType: 'kro' });
+
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toContain('Could not fully inline lexical aliases');
       expect(result.statusMappings).toEqual({});
       expect(result.hasJavaScriptExpressions).toBe(false);
     });

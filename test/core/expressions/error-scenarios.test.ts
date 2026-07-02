@@ -433,8 +433,8 @@ describe('Error Scenarios and Source Mapping', () => {
       expect(result.celExpression).toBeDefined();
       expect(sourceEntry?.celExpression).toBeDefined();
 
-      // Should be able to compare both
-      expect(sourceEntry?.originalExpression).not.toBe(sourceEntry?.celExpression);
+      // Direct CEL-compatible expressions may serialize identically.
+      expect(sourceEntry?.celExpression).toBe(expression);
     });
 
     it('should provide performance debugging information', () => {

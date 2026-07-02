@@ -16,6 +16,59 @@ import type { Enhanced } from '../types/kubernetes.js';
 export type ComputedExpression<T = unknown> = CelExpression<T> & T;
 
 type ComputedResourceMap = Record<string, Enhanced<unknown, unknown>>;
+type AliasDefinitionMap<TInput> = Record<string, (input: TInput) => unknown>;
+type AliasResult<TAliases extends Record<string, (...args: never[]) => unknown>> = {
+  readonly [K in keyof TAliases]: ComputedExpression<ReturnType<TAliases[K]>>;
+};
+
+/**
+ * Define reusable status aliases for a single TypeKro resource.
+ *
+ * @example
+ * ```ts
+ * const web = alias(deployment, {
+ *   ready: (d) => d.status.readyReplicas >= d.spec.replicas,
+ *   available: (d) => d.status.availableReplicas,
+ * });
+ * return { ready: web.ready };
+ * ```
+ */
+export function alias<
+  TResource extends Enhanced<unknown, unknown>,
+  TAliases extends AliasDefinitionMap<TResource>,
+>(resource: TResource, aliasDefinitions: TAliases): AliasResult<TAliases> {
+  return Object.fromEntries(
+    Object.entries(aliasDefinitions).map(([name, expression]) => [
+      name,
+      computedFromSource({ resource }, expression.toString(), 'resources.resource'),
+    ])
+  ) as AliasResult<TAliases>;
+}
+
+/**
+ * Define reusable status aliases over multiple TypeKro resources.
+ *
+ * @example
+ * ```ts
+ * const app = aliases({ deployment, service }, {
+ *   ready: ({ deployment, service }) =>
+ *     deployment.status.readyReplicas >= deployment.spec.replicas &&
+ *     service.status.loadBalancer.ingress.length > 0,
+ * });
+ * return { ready: app.ready };
+ * ```
+ */
+export function aliases<
+  TResources extends ComputedResourceMap,
+  TAliases extends AliasDefinitionMap<TResources>,
+>(resources: TResources, aliasDefinitions: TAliases): AliasResult<TAliases> {
+  return Object.fromEntries(
+    Object.entries(aliasDefinitions).map(([name, expression]) => [
+      name,
+      computed(resources, expression),
+    ])
+  ) as AliasResult<TAliases>;
+}
 
 /**
  * Define a reusable TypeKro status value from a native JavaScript expression.
@@ -39,11 +92,21 @@ export function computed<T, TResources extends ComputedResourceMap>(
   resources: TResources,
   expression: (resources: TResources) => T
 ): ComputedExpression<T> {
-  const source = expression.toString();
-  const { expressionSource, resourceParameterName } = extractComputedExpressionSource(source);
+  return computedFromSource(resources, expression.toString(), 'resources');
+}
+
+function computedFromSource<T, TResources extends ComputedResourceMap>(
+  resources: TResources,
+  source: string,
+  parameterPath: string
+): ComputedExpression<T> {
+  const { expressionSource, resourceParameterBindings } = extractComputedExpressionSource(
+    source,
+    parameterPath
+  );
   const normalizedExpression = normalizeComputedResourceParameter(
     expressionSource,
-    resourceParameterName
+    resourceParameterBindings
   );
   const analyzer = new JavaScriptToCelAnalyzer();
   const result = analyzer.analyzeExpression(normalizedExpression, {
@@ -63,13 +126,16 @@ export function computed<T, TResources extends ComputedResourceMap>(
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
-    expression: result.celExpression.expression,
+    expression: normalizeCelResourceAliases(result.celExpression.expression, resources),
   } as ComputedExpression<T>;
 }
 
-function extractComputedExpressionSource(source: string): {
+function extractComputedExpressionSource(
+  source: string,
+  parameterPath: string
+): {
   readonly expressionSource: string;
-  readonly resourceParameterName?: string;
+  readonly resourceParameterBindings?: Record<string, string>;
 } {
   const wrappedSource = `(${source})`;
   let ast: Program;
@@ -106,11 +172,11 @@ function extractComputedExpressionSource(source: string): {
     );
   }
 
-  const resourceParameterName = computedResourceParameterName(functionNode);
-  return resourceParameterName
+  const resourceParameterBindings = computedResourceParameterBindings(functionNode, parameterPath);
+  return resourceParameterBindings
     ? {
         expressionSource: getNodeSource(bodyExpression, wrappedSource),
-        resourceParameterName,
+        resourceParameterBindings,
       }
     : { expressionSource: getNodeSource(bodyExpression, wrappedSource) };
 }
@@ -146,26 +212,80 @@ function topLevelReturnExpression(body: BlockStatement): Expression | undefined 
   return statement?.type === 'ReturnStatement' ? (statement.argument ?? undefined) : undefined;
 }
 
-function computedResourceParameterName(
-  functionNode: ArrowFunctionExpression | FunctionExpression
-): string | undefined {
+function computedResourceParameterBindings(
+  functionNode: ArrowFunctionExpression | FunctionExpression,
+  parameterPath: string
+): Record<string, string> | undefined {
   const [parameter] = functionNode.params;
-  return parameter?.type === 'Identifier' ? parameter.name : undefined;
+  if (!parameter) {
+    return undefined;
+  }
+  if (parameter.type === 'Identifier') {
+    return { [parameter.name]: parameterPath };
+  }
+  if (parameter.type !== 'ObjectPattern') {
+    return undefined;
+  }
+
+  const bindings: Record<string, string> = {};
+  for (const property of parameter.properties) {
+    if (property.type !== 'Property' || property.key.type !== 'Identifier') {
+      continue;
+    }
+    const resourceName = property.key.name;
+    if (property.value.type === 'Identifier') {
+      bindings[property.value.name] = `${parameterPath}.${resourceName}`;
+    } else if (
+      property.value.type === 'AssignmentPattern' &&
+      property.value.left.type === 'Identifier'
+    ) {
+      bindings[property.value.left.name] = `${parameterPath}.${resourceName}`;
+    }
+  }
+
+  return Object.keys(bindings).length > 0 ? bindings : undefined;
 }
 
 function normalizeComputedResourceParameter(
   expressionSource: string,
-  resourceParameterName?: string
+  resourceParameterBindings?: Record<string, string>
 ): string {
-  if (!resourceParameterName || resourceParameterName === 'resources') {
+  if (!resourceParameterBindings) {
     return expressionSource;
   }
-  return expressionSource.replace(
-    new RegExp(`\\b${escapeRegExp(resourceParameterName)}\\.`, 'g'),
-    'resources.'
-  );
+  let normalizedExpression = expressionSource;
+  for (const [localName, replacementPath] of Object.entries(resourceParameterBindings)) {
+    if (localName === replacementPath) {
+      continue;
+    }
+    normalizedExpression = normalizedExpression.replace(
+      new RegExp(`\\b${escapeRegExp(localName)}\\.`, 'g'),
+      `${replacementPath}.`
+    );
+  }
+  return normalizedExpression;
 }
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeCelResourceAliases(expression: string, resources: ComputedResourceMap): string {
+  let normalizedExpression = expression.replace(/\bresources\./g, '');
+  for (const [localName, resource] of Object.entries(resources)) {
+    const resourceId = resourceIdOf(resource);
+    if (!resourceId || resourceId === localName) {
+      continue;
+    }
+    normalizedExpression = normalizedExpression.replace(
+      new RegExp(`\\b${escapeRegExp(localName)}\\.`, 'g'),
+      `${resourceId}.`
+    );
+  }
+  return normalizedExpression;
+}
+
+function resourceIdOf(resource: Enhanced<unknown, unknown>): string | undefined {
+  const candidate = (resource as { readonly id?: unknown }).id;
+  return typeof candidate === 'string' ? candidate : undefined;
 }

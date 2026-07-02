@@ -18,6 +18,7 @@ import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
+import { buildLexicalAliasScope } from '../analysis/alias-inliner.js';
 import { JavaScriptToCelAnalyzer } from '../analysis/analyzer.js';
 import type { SourceMapEntry } from '../analysis/source-map.js';
 import {
@@ -118,6 +119,7 @@ export class StatusBuilderAnalyzer {
 
       // Analyze the return statement (delegates to status-ast-utils)
       const returnStatement = analyzeReturnStatementFn(ast, originalSource);
+      const aliasScope = buildLexicalAliasScope(ast, originalSource);
 
       if (!returnStatement || !returnStatement.returnsObject) {
         throw new ConversionError(
@@ -146,7 +148,8 @@ export class StatusBuilderAnalyzer {
             this.expressionAnalyzer,
             this.optionalityHandler,
             this.options,
-            schemaProxy
+            schemaProxy,
+            aliasScope
           );
 
           fieldAnalysis.set(property.name, fieldResult);

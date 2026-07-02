@@ -447,13 +447,9 @@ describe('Analyzer Converter Methods — Safety Net', () => {
       expect(result).toContain('db.status.replicas');
     });
 
-    it('should handle && converted to null-check pattern', () => {
-      // The analyzer converts && to a null-check ternary pattern:
-      // a && b → a != null ? b : a
+    it('should handle && as direct CEL conjunction', () => {
       const result = cel('deployment.status.replicas > 0 && service.status.ready');
-      expect(result).toContain('deployment.status.replicas > 0');
-      expect(result).toContain('!= null');
-      expect(result).toContain('service.status.ready');
+      expect(result).toBe('deployment.status.replicas > 0 && service.status.ready');
     });
 
     it('should handle nested ternary with correct grouping', () => {

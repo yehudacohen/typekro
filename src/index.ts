@@ -182,7 +182,15 @@ export { kubernetesComposition } from './core/composition/imperative.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)
-export { Cel, cel, computed, externalRef, observedResource } from './core/references/index.js';
+export {
+  alias,
+  aliases,
+  Cel,
+  cel,
+  computed,
+  externalRef,
+  observedResource,
+} from './core/references/index.js';
 export type {
   ResourceBuilder,
   ResourceDependency,

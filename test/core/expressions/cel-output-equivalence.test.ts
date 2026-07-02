@@ -13,14 +13,13 @@
  * output before migration.
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import fc from 'fast-check';
-
-import {
-  JavaScriptToCelAnalyzer,
-  type AnalysisContext,
-} from '../../../src/core/expressions/analysis/analyzer.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import {
+  type AnalysisContext,
+  JavaScriptToCelAnalyzer,
+} from '../../../src/core/expressions/analysis/analyzer.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 
 describe('Property-Based Tests: CEL Output Equivalence', () => {
@@ -51,12 +50,51 @@ describe('Property-Based Tests: CEL Output Equivalence', () => {
    */
   const identifierArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/).filter((s) => {
     const reserved = [
-      'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete',
-      'do', 'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof',
-      'new', 'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
-      'void', 'while', 'with', 'class', 'const', 'enum', 'export', 'extends',
-      'import', 'super', 'implements', 'interface', 'let', 'package', 'private',
-      'protected', 'public', 'static', 'yield', 'null', 'true', 'false',
+      'break',
+      'case',
+      'catch',
+      'continue',
+      'debugger',
+      'default',
+      'delete',
+      'do',
+      'else',
+      'finally',
+      'for',
+      'function',
+      'if',
+      'in',
+      'instanceof',
+      'new',
+      'return',
+      'switch',
+      'this',
+      'throw',
+      'try',
+      'typeof',
+      'var',
+      'void',
+      'while',
+      'with',
+      'class',
+      'const',
+      'enum',
+      'export',
+      'extends',
+      'import',
+      'super',
+      'implements',
+      'interface',
+      'let',
+      'package',
+      'private',
+      'protected',
+      'public',
+      'static',
+      'yield',
+      'null',
+      'true',
+      'false',
     ];
     return s.length > 0 && s.length <= 15 && !reserved.includes(s);
   });
@@ -339,9 +377,7 @@ describe('Deterministic Tests: CEL Output Equivalence', () => {
   it('should convert logical AND to CEL', () => {
     const result = analyzer.analyzeStringExpression('ready && available', mockContext);
     expect(result.valid).toBe(true);
-    // Logical AND is converted to a truthy check in CEL for Kro compatibility
-    expect(result.celExpression?.expression).toContain('?');
-    expect(result.celExpression?.expression).toContain('available');
+    expect(result.celExpression?.expression).toBe('ready && available');
   });
 
   it('should convert logical OR to CEL', () => {

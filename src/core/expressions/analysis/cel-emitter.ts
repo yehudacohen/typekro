@@ -384,26 +384,13 @@ export function convertLogicalOrFallback(left: CelExpression, right: CelExpressi
 }
 
 /**
- * Convert logical AND (value && other) to CEL conditional
+ * Convert logical AND to direct CEL boolean conjunction.
  */
 export function convertLogicalAnd(left: CelExpression, right: CelExpression): CelExpression {
   // Add parentheses to operands if they contain lower precedence operators
   const leftExpr = addParenthesesIfNeededFn(left.expression, '&&', true);
   const rightExpr = addParenthesesIfNeededFn(right.expression, '&&', false);
-
-  // For resource references, primarily check for null/undefined
-  if (isResourceReference(left.expression) || left.expression.includes('?')) {
-    const expression = `${leftExpr} != null ? ${rightExpr} : ${leftExpr}`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  // For general expressions, check for all truthy values
-  const expression = `${leftExpr} != null && ${leftExpr} != "" && ${leftExpr} != false && ${leftExpr} != 0 ? ${rightExpr} : ${leftExpr}`;
+  const expression = `${leftExpr} && ${rightExpr}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
