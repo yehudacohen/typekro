@@ -9,6 +9,7 @@ import {
   DEFAULT_CACHE_TTL_MS,
 } from '../../config/defaults.js';
 import type { AnalysisContext, CelConversionResult } from './shared-types.js';
+import { isStrictCelDiagnosticsEnabled } from './strict-cel.js';
 
 /**
  * Cache entry with metadata for performance monitoring and TTL
@@ -307,11 +308,14 @@ export class ExpressionCache {
    * Create hash of analysis context for cache key
    */
   private hashContext(context: AnalysisContext): string {
-    // Create a deterministic hash of the context
+    // Create a deterministic hash of the context.
+    // Strictness is resolved (flag or TYPEKRO_STRICT_CEL) so a lenient result
+    // cached for an expression can never mask a strict-mode failure.
     const contextData = {
       type: context.type,
       availableReferences: Object.keys(context.availableReferences || {}).sort(),
       factoryType: context.factoryType || 'direct',
+      strictCelDiagnostics: isStrictCelDiagnosticsEnabled(context),
     };
 
     return this.simpleHash(JSON.stringify(contextData));

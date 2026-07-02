@@ -17,6 +17,18 @@ import type { AnalysisContext, ConvertNodeFn } from './shared-types.js';
 
 type Args = readonly (ESTreeExpression | ESTreeSpreadElement)[];
 
+/**
+ * Derive a child context for converting a lambda body, registering the lambda
+ * parameter as a local-scope identifier so the unknown-resource diagnostics
+ * (see cel-emitter.ts) don't mistake it for a resource reference.
+ */
+function withLocalScopeIdentifier(context: AnalysisContext, param: string): AnalysisContext {
+  return {
+    ...context,
+    localScopeIdentifiers: [...(context.localScopeIdentifiers ?? []), param],
+  };
+}
+
 // ── find → filter()[0] ─────────────────────────────────────────────
 
 export function convertArrayFind(
@@ -37,6 +49,7 @@ export function convertArrayFind(
   if (arg.type === 'ArrowFunctionExpression' && arg.body.type === 'BinaryExpression') {
     const { param } = extractArrowPredicate(arg);
     const binaryExpr = arg.body;
+    const lambdaContext = withLocalScopeIdentifier(context, param);
 
     let leftExpr: string;
     if (
@@ -47,7 +60,7 @@ export function convertArrayFind(
       leftExpr = `${param}.${getPropertyName(binaryExpr.left.property)}`;
     } else {
       try {
-        const leftResult = convertNode(binaryExpr.left, context);
+        const leftResult = convertNode(binaryExpr.left, lambdaContext);
         leftExpr = leftResult.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
       } catch (error: unknown) {
         const logger = getComponentLogger('expression-analyzer');
@@ -58,7 +71,7 @@ export function convertArrayFind(
 
     let rightExpr: string;
     try {
-      const rightResult = convertNode(binaryExpr.right, context);
+      const rightResult = convertNode(binaryExpr.right, lambdaContext);
       rightExpr = rightResult.expression;
     } catch (error: unknown) {
       const logger = getComponentLogger('expression-analyzer');
@@ -120,9 +133,10 @@ export function convertArrayFilter(
       } as CelExpression;
     }
     if (arrow.body.type === 'BinaryExpression') {
-      const left = convertNode(arrow.body.left, context);
+      const lambdaContext = withLocalScopeIdentifier(context, param);
+      const left = convertNode(arrow.body.left, lambdaContext);
       const operator = convertBinaryOperator(arrow.body.operator);
-      const right = convertNode(arrow.body.right, context);
+      const right = convertNode(arrow.body.right, lambdaContext);
       const leftExpr = left.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
       const expression = `${object.expression}.filter(${param}, ${leftExpr} ${operator} ${right.expression})`;
       return {

@@ -17,7 +17,8 @@ import type {
   SimpleLiteral as ESTreeSimpleLiteral,
 } from 'estree';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError, UnknownResourceError } from '../../errors.js';
+import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import {
@@ -41,6 +42,9 @@ import {
 } from './operator-utils.js';
 import type { AnalysisContext } from './shared-types.js';
 import { SourceMapUtils } from './source-map.js';
+import { isStrictCelDiagnosticsEnabled } from './strict-cel.js';
+
+const logger = getComponentLogger('cel-emitter');
 
 /**
  * Callback type for recursive AST node conversion.
@@ -192,7 +196,24 @@ export function convertMemberExpression(
   let path: string;
   try {
     path = extractMemberPathFn(node);
-  } catch (_error: unknown) {
+  } catch (extractionError: unknown) {
+    // Path extraction failed — the emitted CEL is assembled from separately
+    // converted object/property parts and cannot be verified as a whole. In
+    // strict CEL diagnostics mode this unprovable emission fails the
+    // conversion; by default we log at debug level and fall back.
+    if (isStrictCelDiagnosticsEnabled(context)) {
+      throw new ConversionError(
+        `Cannot statically extract member path from '${node.object.type}' object (strict CEL diagnostics): ${ensureError(extractionError).message}`,
+        context.sourceText ?? node.object.type,
+        'member-access'
+      );
+    }
+    logger.debug('Member path extraction failed — converting object and property separately', {
+      objectType: node.object.type,
+      sourceText: context.sourceText,
+      error: ensureError(extractionError).message,
+    });
+
     // If path extraction fails, fall back to converting the object and property separately
     const objectExpr = converter(node.object, context);
     const propertyName =
@@ -236,14 +257,18 @@ export function convertMemberExpression(
     return getSchemaFieldReference(path, context);
   }
 
-  // Handle unknown resources - this should be an error in strict mode
+  // Handle unknown resources — an unprovable emission. The resource is not in
+  // availableReferences, so the emitted CEL cannot be type-checked here. In
+  // strict CEL diagnostics mode this is a hard error; by default we log and
+  // emit the placeholder reference (lenient).
   const parts = path.split('.');
   if (parts.length >= 2) {
     let resourceName: string;
     let fieldPath: string;
+    const hasResourcesPrefix = parts[0] === 'resources' && parts.length >= 3;
 
     // Check if this is a resources.* prefixed expression
-    if (parts[0] === 'resources' && parts.length >= 3) {
+    if (hasResourcesPrefix) {
       resourceName = parts[1] || ''; // The actual resource name after "resources."
       fieldPath = parts.slice(2).join('.'); // The field path after the resource name
     } else {
@@ -251,8 +276,45 @@ export function convertMemberExpression(
       fieldPath = parts.slice(1).join('.');
     }
 
-    // For strict validation contexts, check if resource should be available
-    // For now, we'll be lenient and allow unknown resources with warnings
+    // Bare `spec.*` roots are schema-context identifiers (the destructured
+    // schema parameter in composition functions), not resource references —
+    // they are remapped to `schema.spec.*` downstream. Never diagnose them
+    // as unknown resources. The same goes for lambda parameters registered
+    // by converted array-method scopes (CEL macro variables).
+    const isSchemaRootIdentifier = !hasResourcesPrefix && resourceName === 'spec';
+    const isLocalScopeIdentifier =
+      !hasResourcesPrefix && (context.localScopeIdentifiers?.includes(resourceName) ?? false);
+
+    if (!isSchemaRootIdentifier && !isLocalScopeIdentifier) {
+      const knownResources = Object.keys(context.availableReferences ?? {});
+      if (isStrictCelDiagnosticsEnabled(context)) {
+        throw ConversionError.forUnknownResource(path, resourceName, knownResources);
+      }
+
+      // Signal-tiered logging: an explicit `resources.<name>` reference that
+      // does not resolve is almost certainly a bug, so it warrants a warning.
+      // A bare identifier is ambiguous — imperative analysis passes routinely
+      // see local variables and nested-composition ids here that are resolved
+      // or remapped by later stages — so it only gets a debug entry.
+      const logPayload = {
+        expression: path,
+        resourceName,
+        fieldPath,
+        knownResources,
+        hint: 'Enable strict CEL diagnostics (factory option strictCelDiagnostics or TYPEKRO_STRICT_CEL=1) to fail fast at serialization time',
+      };
+      if (hasResourcesPrefix) {
+        logger.warn(
+          'Unknown resource referenced in CEL expression — emitting unverified CEL',
+          logPayload
+        );
+      } else {
+        logger.debug(
+          'Unresolved identifier in CEL expression — emitting unverified resource reference',
+          logPayload
+        );
+      }
+    }
 
     // Create a placeholder KubernetesRef for the unknown resource
     const unknownRef: KubernetesRef<unknown> = {
@@ -262,8 +324,10 @@ export function convertMemberExpression(
       _type: inferTypeFromFieldPathFn(fieldPath),
     };
 
-    // Add to dependencies
-    if (context.dependencies) {
+    // Add to dependencies. Lambda parameters are macro-local variables, not
+    // resources — recording them would create phantom dependencies (and
+    // spurious RESOURCE_NOT_FOUND validation findings).
+    if (context.dependencies && !isLocalScopeIdentifier) {
       context.dependencies.push(unknownRef);
     }
 
@@ -672,7 +736,14 @@ export function convertASTNodeWithSourceTracking(
     }
 
     return celExpression;
-  } catch (_error: unknown) {
+  } catch (error: unknown) {
+    // Strict CEL diagnostics carry the offending expression and the list of
+    // known resources — rethrow as-is instead of re-wrapping as a generic
+    // "unsupported syntax" error, which would hide the actual cause.
+    if (error instanceof UnknownResourceError) {
+      throw error;
+    }
+
     // Create detailed conversion error with source location
     const conversionError = ConversionError.forUnsupportedSyntax(
       originalExpression,

@@ -151,6 +151,58 @@ console.log(result.resourceValidation); // Resource validation results
 console.log(result.compileTimeValidation); // Compile-time validation results
 ```
 
+### Strict CEL Diagnostics
+
+By default the analysis boundary is lenient: when it cannot prove an emitted
+CEL expression type-checks (e.g. a member expression references a resource
+that is not part of the resource graph), it emits the expression anyway and
+surfaces the problem as a warning. The failure then only shows up when KRO
+marks the ResourceGraphDefinition `Inactive` on a live cluster.
+
+Strict mode makes these failures loud at analysis/serialization time:
+
+```typescript
+// 1. Per analysis context
+const result = analyzer.analyzeExpression('unknownresource.status.ready', {
+  ...context,
+  strictCelDiagnostics: true, // throws UnknownResourceError
+});
+
+// 2. Per factory — the kro factory validates the final status CEL against
+//    the graph's resource ids before serializing the RGD
+const factory = graph.factory('kro', { strictCelDiagnostics: true });
+factory.toYaml(); // throws ConversionError naming the offending expression
+
+// 3. Globally via environment variable (an explicit `strictCelDiagnostics:
+//    false` on a context or factory still opts out)
+// TYPEKRO_STRICT_CEL=1
+```
+
+What strict mode escalates:
+- Member expressions whose root resolves to no known resource
+  (`UnknownResourceError`, listing the known resource ids).
+- `RESOURCE_NOT_FOUND` resource-validation findings (provably missing
+  resources fail the conversion instead of being demoted to warnings).
+- Member-path extraction fallbacks (CEL assembled from separately converted
+  parts that cannot be verified as a whole).
+- At kro-factory serialization time: status CEL referencing ids that are not
+  in the resource graph — including cross-composition references, which are
+  indistinguishable from typos at serialization time. Factories that
+  intentionally use cross-composition references should not enable strict
+  mode (or should pass `strictCelDiagnostics: false` to override the
+  environment variable).
+
+What strict mode does NOT escalate (unprovable heuristics stay warnings):
+- `INVALID_FIELD_PATH` findings — field shapes are guessed against magic
+  proxies whose status is not populated at analysis time.
+- Bare `spec.*` roots — the destructured schema parameter in composition
+  functions, remapped to `schema.spec.*` downstream.
+- Lambda parameters from converted array methods (CEL macro variables).
+- The imperative fn.toString() analysis pass opts out entirely: it parses
+  source where identifiers are local variable names and nested-composition
+  ids that later stages resolve or remap. Its enforcement point is the
+  kro-factory serialization gate.
+
 ## Integration with TypeKro
 
 This type safety integration is designed to work seamlessly with TypeKro's existing systems:

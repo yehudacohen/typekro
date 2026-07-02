@@ -921,6 +921,40 @@ export class ConversionError extends TypeKroError {
   }
 
   /**
+   * Create a conversion error for expressions that reference a resource
+   * that is not part of the resource graph.
+   *
+   * Thrown in strict CEL diagnostics mode (see `strictCelDiagnostics` /
+   * `TYPEKRO_STRICT_CEL`) when the analyzer cannot prove an emitted CEL
+   * expression type-checks because the referenced resource is unknown.
+   */
+  static forUnknownResource(
+    originalExpression: string,
+    resourceName: string,
+    availableResources: string[],
+    sourceLocation?: { line: number; column: number; length: number }
+  ): UnknownResourceError {
+    const known =
+      availableResources.length > 0 ? availableResources.join(', ') : '(no resources registered)';
+    const message = `Unknown resource referenced in expression: ${originalExpression}\n  Resource '${resourceName}' is not part of the resource graph.\n  Known resources: ${known}`;
+
+    const suggestions = [
+      `Check that a resource with id '${resourceName}' is created in this composition (resource ids are set via the 'id' field on factory configs)`,
+      'Verify the expression spelling matches the resource id exactly',
+      'If this is an intentional cross-composition reference, disable strict CEL diagnostics for this factory (strictCelDiagnostics: false)',
+    ];
+
+    return new UnknownResourceError(
+      message,
+      originalExpression,
+      resourceName,
+      availableResources,
+      sourceLocation,
+      suggestions
+    );
+  }
+
+  /**
    * Get a formatted error message with source location and suggestions
    */
   getFormattedMessage(): string {
@@ -945,6 +979,34 @@ export class ConversionError extends TypeKroError {
     }
 
     return formatted;
+  }
+}
+
+/**
+ * Conversion error for expressions that reference a resource that is not
+ * part of the resource graph.
+ *
+ * Emitted by the JS→CEL analysis boundary in strict CEL diagnostics mode
+ * (`strictCelDiagnostics` analysis-context / factory option, or the
+ * `TYPEKRO_STRICT_CEL=1` environment variable). In lenient (default) mode the
+ * analyzer emits the unverified CEL expression with a warning instead.
+ *
+ * A dedicated subclass (rather than a bare `ConversionError`) lets the
+ * analysis pipeline rethrow this diagnostic without it being re-wrapped as a
+ * generic "unsupported syntax" error, preserving the offending expression and
+ * the list of known resources.
+ */
+export class UnknownResourceError extends ConversionError {
+  constructor(
+    message: string,
+    originalExpression: string,
+    public readonly resourceName: string,
+    public readonly availableResources: string[],
+    sourceLocation?: { line: number; column: number; length: number },
+    suggestions?: string[]
+  ) {
+    super(message, originalExpression, 'member-access', sourceLocation, undefined, suggestions);
+    this.name = 'UnknownResourceError';
   }
 }
 
