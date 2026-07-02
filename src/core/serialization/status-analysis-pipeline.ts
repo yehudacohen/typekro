@@ -21,6 +21,7 @@
  * @see ROADMAP.md Phase 2.9
  */
 
+import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import {
   containsCelExpressions,
   containsKubernetesRefs,
@@ -724,7 +725,8 @@ export function runStatusAnalysisPipeline<
       logger
     );
 
-    let { analyzedStatusMappings, imperativeAnalysisSucceeded, phaseBStatusMappings } = analysisResult.value;
+    let { analyzedStatusMappings, imperativeAnalysisSucceeded, phaseBStatusMappings } =
+      analysisResult.value;
 
     if (analysisResult.outcome === 'degraded') {
       logger.warn('Status analysis degraded', { reason: analysisResult.reason });
@@ -795,6 +797,26 @@ function isComparisonArtifact(value: unknown): boolean {
   return false;
 }
 
+function isCleanPhaseBCel(value: unknown): value is { expression: string } {
+  if (!value || !isCelExpression(value)) return false;
+
+  const expr = (value as { expression: string }).expression;
+  return !expr.includes('({') && !expr.includes('=>') && !expr.includes('new ');
+}
+
+function hasKubernetesRefMarker(value: string): boolean {
+  return new RegExp(KUBERNETES_REF_MARKER_SOURCE).test(value);
+}
+
+function isPrimitiveExecutionArtifact(value: unknown): boolean {
+  if (isComparisonArtifact(value)) return true;
+  if (value === null) return true;
+  if (typeof value === 'boolean') return true;
+  if (typeof value === 'number') return true;
+  if (typeof value === 'string') return !hasKubernetesRefMarker(value);
+  return false;
+}
+
 /**
  * Merge Phase A raw status mappings with Phase B fn.toString analysis results.
  *
@@ -847,22 +869,18 @@ function mergePhaseAAndPhaseB(
       continue;
     }
 
-    // Phase A has a comparison artifact → use Phase B's CEL expression,
+    // Phase A has a primitive execution artifact → use Phase B's CEL expression,
     // but only if Phase B produced clean CEL (not garbled fn.toString with
     // factory calls like `simple.Deployment({...}).status.readyReplicas`).
-    if (isComparisonArtifact(phaseAValue) && phaseBValue && isCelExpression(phaseBValue)) {
-      const expr = (phaseBValue as { expression: string }).expression;
-      const isGarbled = expr.includes('({') || expr.includes('=>') || expr.includes('new ');
-      if (!isGarbled) {
-        logger.debug('Replacing Phase A artifact with Phase B CEL', {
-          field: key,
-          phaseAValue,
-          phaseBExpression: expr.substring(0, 80),
-        });
-        merged[key] = phaseBValue;
-        continue;
-      }
-      // Garbled Phase B → keep Phase A's artifact (will be classified as static)
+    if (isPrimitiveExecutionArtifact(phaseAValue) && isCleanPhaseBCel(phaseBValue)) {
+      const expr = phaseBValue.expression;
+      logger.debug('Replacing Phase A artifact with Phase B CEL', {
+        field: key,
+        phaseAValue,
+        phaseBExpression: expr.substring(0, 80),
+      });
+      merged[key] = phaseBValue;
+      continue;
     }
 
     // Phase A value is already correct
