@@ -383,14 +383,74 @@ export function convertLogicalOrFallback(left: CelExpression, right: CelExpressi
   } as CelExpression;
 }
 
+function isClearlyBooleanExpression(expression: string, type: unknown): boolean {
+  if (type === 'boolean') {
+    return true;
+  }
+
+  const trimmed = expression.trim();
+  if (trimmed === 'true' || trimmed === 'false') {
+    return true;
+  }
+
+  if (trimmed.startsWith('!')) {
+    return true;
+  }
+
+  if (/\s(?:==|!=|>=|<=|>|<)\s/.test(trimmed)) {
+    return !trimmed.includes('?');
+  }
+
+  if (/^(has|startsWith|endsWith|contains)\(/.test(trimmed)) {
+    return true;
+  }
+
+  if (/\.(startsWith|endsWith|contains)\(/.test(trimmed)) {
+    return true;
+  }
+
+  const lastField = trimmed.match(/(?:^|\.)([A-Za-z_$][\w$]*)$/)?.[1]?.toLowerCase();
+  return (
+    !!lastField &&
+    ['ready', 'available', 'enabled', 'healthy', 'succeeded', 'success'].includes(lastField)
+  );
+}
+
 /**
- * Convert logical AND to direct CEL boolean conjunction.
+ * Convert logical AND to direct CEL boolean conjunction when operands are boolean-shaped.
+ * Otherwise preserve JavaScript guard/value semantics for expressions like `value && value.field`.
  */
 export function convertLogicalAnd(left: CelExpression, right: CelExpression): CelExpression {
   // Add parentheses to operands if they contain lower precedence operators
   const leftExpr = addParenthesesIfNeededFn(left.expression, '&&', true);
   const rightExpr = addParenthesesIfNeededFn(right.expression, '&&', false);
-  const expression = `${leftExpr} && ${rightExpr}`;
+
+  if (
+    isClearlyBooleanExpression(left.expression, left._type) &&
+    isClearlyBooleanExpression(right.expression, right._type)
+  ) {
+    const expression = `${leftExpr} && ${rightExpr}`;
+
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression,
+      _type: undefined,
+    } as CelExpression;
+  }
+
+  // For resource references, primarily check for null/undefined.
+  if (isResourceReference(left.expression) || left.expression.includes('?')) {
+    const expression = `${leftExpr} != null ? ${rightExpr} : ${leftExpr}`;
+
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression,
+      _type: undefined,
+    } as CelExpression;
+  }
+
+  // For general expressions, check for all truthy values.
+  const expression = `${leftExpr} != null && ${leftExpr} != "" && ${leftExpr} != false && ${leftExpr} != 0 ? ${rightExpr} : ${leftExpr}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
