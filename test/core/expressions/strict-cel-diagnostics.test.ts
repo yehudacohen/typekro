@@ -172,6 +172,41 @@ describe('Strict CEL diagnostics', () => {
     });
   });
 
+  describe('analyzer cache vs lambda-local scopes (review finding 2)', () => {
+    it('does not reuse a result cached under a different localScopeIdentifiers set', () => {
+      // Same expression, same strictness, same known resources — differing ONLY in whether `item`
+      // is a registered lambda-local. With the local registered, strict mode converts cleanly; without
+      // it, strict mode must throw. A cache key that omits localScopeIdentifiers would return the
+      // first (clean) result for the second call and swallow the throw.
+      const withLocal = makeContext({
+        strictCelDiagnostics: true,
+        localScopeIdentifiers: ['item'],
+      });
+      const first = analyzer.analyzeExpression('item.status.ready', withLocal);
+      expect(first.valid).toBe(true);
+
+      const withoutLocal = makeContext({ strictCelDiagnostics: true });
+      expect(() => analyzer.analyzeExpression('item.status.ready', withoutLocal)).toThrow(
+        UnknownResourceError
+      );
+    });
+
+    it('does not reuse a no-local result for a later local-scoped conversion', () => {
+      // The reverse order: the throwing (no-local) attempt must not poison the local-scoped one.
+      const withoutLocal = makeContext({ strictCelDiagnostics: true });
+      expect(() => analyzer.analyzeExpression('elem.status.ready', withoutLocal)).toThrow(
+        UnknownResourceError
+      );
+
+      const withLocal = makeContext({
+        strictCelDiagnostics: true,
+        localScopeIdentifiers: ['elem'],
+      });
+      const result = analyzer.analyzeExpression('elem.status.ready', withLocal);
+      expect(result.valid).toBe(true);
+    });
+  });
+
   describe('factory-level strictCelDiagnostics option', () => {
     const AppSpec = type({ name: 'string' });
     const AppStatus = type({ ready: 'boolean' });
@@ -234,6 +269,55 @@ describe('Strict CEL diagnostics', () => {
 
       const yamlOutput = factory.toYaml();
       expect(yamlOutput).toContain('nosuchresource.status.ready');
+    });
+
+    // ── review finding 1: SINGLE-resource graphs ──
+    // The serializer's variable remapping has a single-resource fallback that binds ANY unknown
+    // name to the sole resource. The validator must NOT inherit that guesswork — in a one-resource
+    // graph, `nosuchresource.status.ready` under strict mode has to throw, not silently validate
+    // as `deployment.status.ready`.
+    function buildSingleResourceGraphWithUnknownStatusRef() {
+      return toResourceGraph(
+        {
+          name: 'strict-cel-single-resource-test',
+          apiVersion: 'example.com/v1',
+          kind: 'StrictCelSingleResourceTest',
+          spec: AppSpec,
+          status: AppStatus,
+        },
+        (schema) => ({
+          deployment: simple.Deployment({
+            name: schema.spec.name,
+            image: 'nginx:latest',
+            id: 'deployment',
+          }),
+        }),
+        () => ({
+          ready: Cel.expr<boolean>('nosuchresource.status.ready'),
+        })
+      );
+    }
+
+    it('toYaml() throws for an unknown named reference even in a SINGLE-resource graph (strict)', () => {
+      const graph = buildSingleResourceGraphWithUnknownStatusRef();
+      const factory = graph.factory('kro', { strictCelDiagnostics: true });
+
+      try {
+        factory.toYaml();
+        throw new Error('expected toYaml to throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConversionError);
+        const conversionError = error as ConversionError;
+        expect(conversionError.message).toContain('nosuchresource');
+      }
+    });
+
+    it('toYaml() still serializes a single-resource graph leniently (fallback remap preserved)', () => {
+      const graph = buildSingleResourceGraphWithUnknownStatusRef();
+      const factory = graph.factory('kro');
+      // The SERIALIZER keeps its historical single-resource remap (lenient mode is unchanged);
+      // only the VALIDATOR refuses to let that guesswork mask the unknown reference.
+      expect(() => factory.toYaml()).not.toThrow();
     });
 
     it('toYaml() throws under TYPEKRO_STRICT_CEL=1 without the factory option', () => {
