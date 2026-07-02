@@ -122,6 +122,97 @@ describe('computed status aliases', () => {
     expect(yaml).toContain('ready: ${web.status.availableReplicas >= web.spec.replicas}');
   });
 
+  it('serializes direct conditional status fields as CEL', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'direct-conditional-status-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'DirectConditionalStatusApp',
+        spec: type({ image: 'string' }),
+        status: type({ phase: 'string' }),
+      },
+      (spec) => {
+        const web = simple.Deployment({
+          id: 'web',
+          name: 'web',
+          image: spec.image,
+          replicas: 2,
+        });
+
+        return {
+          phase: web.status.availableReplicas >= web.spec.replicas ? 'Ready' : 'Installing',
+        };
+      }
+    );
+
+    const yaml = composition.toYaml();
+    expect(yaml).toContain(
+      "phase: \"${web.status.availableReplicas >= web.spec.replicas ? 'Ready' : 'Installing'}\""
+    );
+    expect(yaml).not.toContain('phase: Installing');
+  });
+
+  it('inlines aliases inside conditional status fields', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'aliased-conditional-status-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'AliasedConditionalStatusApp',
+        spec: type({ image: 'string' }),
+        status: type({ ready: 'boolean', phase: 'string' }),
+      },
+      (spec) => {
+        const deployment = simple.Deployment({
+          id: 'web',
+          name: 'web',
+          image: spec.image,
+          replicas: 2,
+        });
+        const ready = deployment.status.availableReplicas >= deployment.spec.replicas;
+
+        return { ready, phase: ready ? 'Ready' : 'Installing' };
+      }
+    );
+
+    const yaml = composition.toYaml();
+    expect(yaml).toContain('ready: ${web.status.availableReplicas >= web.spec.replicas}');
+    expect(yaml).toContain(
+      'phase: "${web.status.availableReplicas >= web.spec.replicas ? \\"Ready\\" : \\"Installing\\"}"'
+    );
+    expect(yaml).not.toContain('phase: Installing');
+  });
+
+  it('does not emit unsupported helper calls as status CEL', () => {
+    function phaseFor(available: number) {
+      return available >= 1 ? 'Ready' : 'Installing';
+    }
+
+    const composition = kubernetesComposition(
+      {
+        name: 'unsupported-helper-status-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'UnsupportedHelperStatusApp',
+        spec: type({ image: 'string' }),
+        status: type({ phase: 'string' }),
+      },
+      (spec) => {
+        const web = simple.Deployment({
+          id: 'web',
+          name: 'web',
+          image: spec.image,
+          replicas: 2,
+        });
+
+        return { phase: phaseFor(web.status.availableReplicas) };
+      }
+    );
+
+    const yaml = composition.toYaml();
+    expect(yaml).not.toContain('phaseFor(');
+    expect(yaml).not.toContain('phase: ${');
+    expect(yaml).not.toContain('phase: "${');
+  });
+
   it('inlines explicit alias objects through the same status path', () => {
     const composition = kubernetesComposition(
       {
