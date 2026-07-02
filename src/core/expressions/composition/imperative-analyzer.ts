@@ -6,12 +6,17 @@
  */
 
 import { Parser } from 'acorn';
-import * as estraverse from 'estraverse';
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../../shared/brands.js';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { Cel } from '../../references/cel.js';
 import type { Enhanced } from '../../types/index.js';
+import {
+  buildLexicalAliasScope,
+  inlineLexicalAliases,
+  topLevelReturnStatement,
+} from '../analysis/alias-inliner.js';
+import { JavaScriptToCelAnalyzer } from '../analysis/analyzer.js';
 import type { ASTNode } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('imperative-analyzer');
@@ -58,7 +63,7 @@ export function analyzeImperativeComposition(
     });
 
     // Find the return statement in the composition function
-    const returnStatement = findReturnStatement(ast);
+    const returnStatement = topLevelReturnStatement(ast);
 
     if (!returnStatement || !returnStatement.argument) {
       logger.debug('No return statement found in composition function');
@@ -79,10 +84,9 @@ export function analyzeImperativeComposition(
       };
     }
 
-    // Build a variable scope map from all VariableDeclarations in the function body.
-    // This maps local variable names to their initializer source code so that
-    // expressions like `appReplicas` can be expanded to `spec.app.replicas || 1`.
-    const variableScope = buildVariableScope(ast, functionSource);
+    // Build a lexical alias map from top-level const declarations in the composition body.
+    // This lets status fields reference local aliases like `web.ready` and still serialize to CEL.
+    const variableScope = buildLexicalAliasScope(ast, functionSource);
 
     logger.debug('Built variable scope for imperative composition', {
       variableCount: Object.keys(variableScope).length,
@@ -93,6 +97,7 @@ export function analyzeImperativeComposition(
     const statusMappings: Record<string, unknown> = {};
     const errors: string[] = [];
     let hasJavaScriptExpressions = false;
+    const expressionAnalyzer = new JavaScriptToCelAnalyzer();
 
     // Process properties recursively to handle nested objects
     function processProperties(properties: ASTNode[], parentPath = ''): void {
@@ -102,6 +107,11 @@ export function analyzeImperativeComposition(
         if (propertyNode.type === 'Property' && propertyNode.key.type === 'Identifier') {
           const fieldName = propertyNode.key.name;
           const fullFieldName = parentPath ? `${parentPath}.${fieldName}` : fieldName;
+
+          // Convert the property value to source code, then inline supported local aliases.
+          // Alias-inlining errors must fail closed rather than falling back to static values.
+          const rawSource = getNodeSource(propertyNode.value, functionSource);
+          const propertySource = inlineLexicalAliases(rawSource, variableScope);
 
           try {
             // Check if this is a nested object
@@ -127,11 +137,6 @@ export function analyzeImperativeComposition(
               continue;
             }
 
-            // Convert the property value to source code, then inline local
-            // variables so KRO CEL can resolve them (e.g., `appReplicas` → `spec.app.replicas || 1`)
-            const rawSource = getNodeSource(propertyNode.value, functionSource);
-            const propertySource = inlineVariables(rawSource, variableScope);
-
             logger.debug('Analyzing property', {
               fieldName,
               fullFieldName,
@@ -147,18 +152,27 @@ export function analyzeImperativeComposition(
                 propertySource,
               });
 
-              // Convert resource references to proper format for CEL
-              const convertedSource = convertResourceReferencesToCel(propertySource, resources);
+              const analysisResult = expressionAnalyzer.analyzeExpression(propertySource, {
+                type: 'status',
+                availableReferences: resources,
+                factoryType: options.factoryType,
+                dependencies: [],
+              });
+
+              // Convert resource references to proper format for CEL as a fallback for legacy patterns.
+              const celExpression =
+                analysisResult.valid && analysisResult.celExpression
+                  ? Cel.expr(
+                      normalizeKroResourceExpression(analysisResult.celExpression.expression)
+                    )
+                  : Cel.expr(convertResourceReferencesToCel(propertySource, resources));
 
               logger.debug('Converted resource references', {
                 fieldName,
                 fullFieldName,
                 originalSource: propertySource.substring(0, 100),
-                convertedSource: convertedSource.substring(0, 100),
+                convertedSource: celExpression.expression.substring(0, 100),
               });
-
-              // For imperative compositions, create CEL expressions directly from the converted source
-              const celExpression = Cel.expr(convertedSource);
 
               // Set the CEL expression at the correct nested path
               if (parentPath) {
@@ -271,28 +285,6 @@ export function analyzeImperativeComposition(
 }
 
 /**
- * Find the return statement in an AST
- */
-// biome-ignore lint/suspicious/noExplicitAny: AST traversal over parser-produced ESTree nodes is intentionally dynamic.
-function findReturnStatement(ast: any): any {
-  // biome-ignore lint/suspicious/noExplicitAny: parser-produced traversal state is intentionally dynamic.
-  let returnStatement: any = null;
-
-  estraverse.traverse(ast, {
-    enter: (node) => {
-      if (node.type === 'ReturnStatement') {
-        returnStatement = node;
-        return estraverse.VisitorOption.Break;
-      }
-      // Continue normal traversal
-      return undefined;
-    },
-  });
-
-  return returnStatement;
-}
-
-/**
  * Extract source code for a specific AST node
  */
 // biome-ignore lint/suspicious/noExplicitAny: AST node shape varies widely across ESTree variants used in tests/examples.
@@ -389,6 +381,12 @@ function convertResourceReferencesToCel(
   // This is targeted conversion for the specific patterns produced by imperative compositions,
   // not a full JS→CEL transpiler (which is handled by the analysis engine for other code paths).
   return applyJsToCelConversions(source);
+}
+
+function normalizeKroResourceExpression(expression: string): string {
+  return applyJsToCelConversions(
+    expression.replace(/\bresources\./g, '').replace(/(?<![.\w])spec\./g, 'schema.spec.')
+  );
 }
 
 /**
@@ -657,81 +655,5 @@ function applyJsToCelConversions(source: string): string {
     '$1.orValue($2)'
   );
 
-  return result;
-}
-
-// ── Variable scope resolution ────────────────────────────────────────────
-
-/**
- * Build a scope map from VariableDeclaration nodes in the function body.
- *
- * Scans the function's AST for `const` declarations and maps each variable
- * name to its initializer source code. This enables inlining local variables
- * into status expressions so that KRO CEL can resolve them.
- *
- * Only captures simple initializers that reference `spec.*` (schema proxy
- * accesses) or literal values — not complex expressions or factory calls.
- */
-// biome-ignore lint/suspicious/noExplicitAny: Scope builder intentionally uses dynamic AST shapes.
-function buildVariableScope(ast: any, source: string): Record<string, string> {
-  const scope: Record<string, string> = {};
-
-  // biome-ignore lint/suspicious/noExplicitAny: variable-scope traversal operates on arbitrary AST nodes.
-  function visit(node: any): void {
-    if (!node || typeof node !== 'object') return;
-
-    if (node.type === 'VariableDeclaration') {
-      for (const decl of node.declarations || []) {
-        if (
-          decl.type === 'VariableDeclarator' &&
-          decl.id?.type === 'Identifier' &&
-          decl.init
-        ) {
-          const name = decl.id.name;
-          const initSource = getNodeSource(decl.init, source);
-
-          // Only track variables initialized from spec access, literals, or
-          // simple expressions (not factory calls like cluster(...))
-          if (
-            initSource.startsWith('spec.') ||
-            initSource.match(/^['"\d]/)
-          ) {
-            scope[name] = initSource;
-          }
-        }
-      }
-    }
-
-    // Recurse into child nodes
-    for (const key of Object.keys(node)) {
-      if (key === 'type' || key === 'range' || key === 'loc' || key === 'start' || key === 'end') continue;
-      const child = node[key];
-      if (Array.isArray(child)) {
-        for (const item of child) visit(item);
-      } else if (child && typeof child === 'object' && child.type) {
-        visit(child);
-      }
-    }
-  }
-
-  visit(ast);
-  return scope;
-}
-
-/**
- * Replace local variable names in an expression string with their
- * initializer expressions from the variable scope.
- *
- * Only replaces standalone identifiers (word boundaries), not property
- * accesses like `appDeployment.status.*` (which are resource references).
- */
-export function inlineVariables(expression: string, scope: Record<string, string>): string {
-  let result = expression;
-  for (const [name, value] of Object.entries(scope)) {
-    // Replace standalone identifier (not followed by `.` which indicates property access)
-    // and not preceded by `.` (which would be a property of another object)
-    const pattern = new RegExp(`(?<!\\.)\\b${name}\\b(?!\\s*\\.)`, 'g');
-    result = result.replace(pattern, value);
-  }
   return result;
 }

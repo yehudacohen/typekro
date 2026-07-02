@@ -13,6 +13,7 @@ import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
+import { inlineLexicalAliases, type LexicalAliasScope } from '../analysis/alias-inliner.js';
 import type {
   AnalysisContext,
   CelConversionResult,
@@ -130,10 +131,11 @@ export function analyzeStatusField(
   expressionAnalyzer: JavaScriptToCelAnalyzer,
   optionalityHandler: EnhancedTypeOptionalityHandler,
   options: Required<StatusBuilderAnalysisOptions>,
-  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
+  aliasScope: LexicalAliasScope = {}
 ): StatusFieldAnalysisResult {
   const fieldName = property.name;
-  const originalExpression = property.valueSource;
+  const originalExpression = inlineLexicalAliases(property.valueSource, aliasScope);
 
   try {
     // Detect ||/&& operators that may produce unexpected results with KubernetesRef proxies

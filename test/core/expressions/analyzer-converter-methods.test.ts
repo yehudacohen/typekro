@@ -447,13 +447,16 @@ describe('Analyzer Converter Methods — Safety Net', () => {
       expect(result).toContain('db.status.replicas');
     });
 
-    it('should handle && converted to null-check pattern', () => {
-      // The analyzer converts && to a null-check ternary pattern:
-      // a && b → a != null ? b : a
+    it('should handle && as direct CEL conjunction', () => {
       const result = cel('deployment.status.replicas > 0 && service.status.ready');
-      expect(result).toContain('deployment.status.replicas > 0');
-      expect(result).toContain('!= null');
-      expect(result).toContain('service.status.ready');
+      expect(result).toBe('deployment.status.replicas > 0 && service.status.ready');
+    });
+
+    it('should preserve && guard/value semantics for non-boolean resource fields', () => {
+      const result = cel('svc.status.loadBalancer && svc.status.loadBalancer.ingress[0].ip');
+      expect(result).toBe(
+        'resources.svc.status.loadBalancer != null ? resources.svc.status.loadBalancer.ingress[0].ip : resources.svc.status.loadBalancer'
+      );
     });
 
     it('should handle nested ternary with correct grouping', () => {
@@ -463,9 +466,8 @@ describe('Analyzer Converter Methods — Safety Net', () => {
       expect(result).toContain('"pending"');
     });
 
-    it('should handle || and && converted to nested null-check patterns', () => {
+    it('should handle || fallback around boolean && expressions', () => {
       // || is converted to: a != null ? a : b
-      // && is converted to: a != null ? b : a
       const result = cel('deployment.status.ready || service.status.ready && db.status.ready');
       expect(result).toContain('!= null');
       expect(result).toContain('deployment.status.ready');
@@ -480,8 +482,7 @@ describe('Analyzer Converter Methods — Safety Net', () => {
       expect(result).toContain('"pending"');
     });
 
-    it('should handle chained || and && as nested null-checks', () => {
-      // Both || and && become null-check ternary patterns
+    it('should handle chained || and boolean && expressions', () => {
       const result = cel('deployment.status.ready || service.status.ready && db.status.ready');
       expect(result).toContain('!= null');
       expect(result).toContain('deployment.status.ready');
