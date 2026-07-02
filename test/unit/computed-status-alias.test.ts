@@ -92,4 +92,55 @@ describe('computed status aliases', () => {
     const yaml = composition.toYaml();
     expect(yaml).toContain('ready: ${web.status.availableReplicas >= web.spec.replicas}');
   });
+
+  it('uses only the direct top-level return in block-body computed expressions', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'computed-top-level-return-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'ComputedTopLevelReturnApp',
+        spec: type({ image: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const deployment = simple.Deployment({
+          id: 'web',
+          name: 'web',
+          image: spec.image,
+          replicas: 2,
+        });
+        const ready = computed({ deployment }, ({ deployment }) => {
+          function helper() {
+            return deployment.status.availableReplicas >= deployment.spec.replicas;
+          }
+          void helper;
+          return deployment.status.readyReplicas > 0;
+        });
+
+        return { ready };
+      }
+    );
+
+    const yaml = composition.toYaml();
+    expect(yaml).toContain('ready: ${web.status.readyReplicas > 0}');
+    expect(yaml).not.toContain('ready: ${web.status.availableReplicas >= web.spec.replicas}');
+  });
+
+  it('rejects block-body computed expressions without a direct top-level return', () => {
+    const deployment = simple.Deployment({
+      id: 'web',
+      name: 'web',
+      image: 'nginx:latest',
+      replicas: 2,
+    });
+
+    const branchOnlyReturn = new Function(
+      'resources',
+      'const { deployment } = resources; if (deployment.status.readyReplicas > 0) { return true; }'
+    ) as (resources: { readonly deployment: typeof deployment }) => boolean;
+
+    expect(() => computed({ deployment }, branchOnlyReturn)).toThrow(
+      /direct top-level return expression/
+    );
+  });
 });

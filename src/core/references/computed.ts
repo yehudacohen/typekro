@@ -1,13 +1,10 @@
 import * as acorn from 'acorn';
-import * as estraverse from 'estraverse';
 import type {
   ArrowFunctionExpression,
   BlockStatement,
-  Node as ESTreeNode,
   Expression,
   FunctionExpression,
   Program,
-  ReturnStatement,
 } from 'estree';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ensureError, TypeKroError } from '../errors.js';
@@ -103,7 +100,7 @@ function extractComputedExpressionSource(source: string): {
   const bodyExpression = computedFunctionBodyExpression(functionNode);
   if (!bodyExpression) {
     throw new TypeKroError(
-      'computed() requires an expression body or a block body with a return expression.',
+      'computed() requires an expression body or a block body with a direct top-level return expression.',
       'COMPUTED_EXPRESSION_MISSING_RETURN',
       { source }
     );
@@ -141,21 +138,12 @@ function computedFunctionBodyExpression(
   if (functionNode.body.type !== 'BlockStatement') {
     return undefined;
   }
-  return firstReturnExpression(functionNode.body);
+  return topLevelReturnExpression(functionNode.body);
 }
 
-function firstReturnExpression(body: BlockStatement): Expression | undefined {
-  let found: Expression | undefined;
-  estraverse.traverse(body as unknown as ESTreeNode, {
-    enter: (node) => {
-      if (node.type === 'ReturnStatement') {
-        found = (node as ReturnStatement).argument ?? undefined;
-        return estraverse.VisitorOption.Break;
-      }
-      return undefined;
-    },
-  });
-  return found;
+function topLevelReturnExpression(body: BlockStatement): Expression | undefined {
+  const statement = body.body.find((node) => node.type === 'ReturnStatement');
+  return statement?.type === 'ReturnStatement' ? (statement.argument ?? undefined) : undefined;
 }
 
 function computedResourceParameterName(
