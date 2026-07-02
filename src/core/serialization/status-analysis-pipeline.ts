@@ -801,7 +801,36 @@ function isCleanPhaseBCel(value: unknown): value is { expression: string } {
   if (!value || !isCelExpression(value)) return false;
 
   const expr = (value as { expression: string }).expression;
-  return !expr.includes('({') && !expr.includes('=>') && !expr.includes('new ');
+  return (
+    !expr.includes('({') &&
+    !expr.includes('=>') &&
+    !expr.includes('new ') &&
+    !containsUnsupportedBareCall(expr)
+  );
+}
+
+const KNOWN_CEL_FUNCTIONS = new Set([
+  'bool',
+  'double',
+  'duration',
+  'dyn',
+  'has',
+  'int',
+  'omit',
+  'size',
+  'string',
+  'timestamp',
+]);
+
+function containsUnsupportedBareCall(expression: string): boolean {
+  const callPattern = /(?<![.\w])([A-Za-z_$][\w$]*)\s*\(/g;
+  for (const match of expression.matchAll(callPattern)) {
+    const [, functionName] = match;
+    if (!functionName || !KNOWN_CEL_FUNCTIONS.has(functionName)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasKubernetesRefMarker(value: string): boolean {

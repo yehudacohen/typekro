@@ -182,6 +182,37 @@ describe('computed status aliases', () => {
     expect(yaml).not.toContain('phase: Installing');
   });
 
+  it('does not emit unsupported helper calls as status CEL', () => {
+    function phaseFor(available: number) {
+      return available >= 1 ? 'Ready' : 'Installing';
+    }
+
+    const composition = kubernetesComposition(
+      {
+        name: 'unsupported-helper-status-app',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'UnsupportedHelperStatusApp',
+        spec: type({ image: 'string' }),
+        status: type({ phase: 'string' }),
+      },
+      (spec) => {
+        const web = simple.Deployment({
+          id: 'web',
+          name: 'web',
+          image: spec.image,
+          replicas: 2,
+        });
+
+        return { phase: phaseFor(web.status.availableReplicas) };
+      }
+    );
+
+    const yaml = composition.toYaml();
+    expect(yaml).not.toContain('phaseFor(');
+    expect(yaml).not.toContain('phase: ${');
+    expect(yaml).not.toContain('phase: "${');
+  });
+
   it('inlines explicit alias objects through the same status path', () => {
     const composition = kubernetesComposition(
       {
