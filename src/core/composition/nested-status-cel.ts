@@ -251,11 +251,32 @@ function phaseBHasExpression(phaseBFallback: unknown): phaseBFallback is { expre
  * Uses scored matching: exact-lowercase → single-resource → unambiguous-prefix.
  * Logs a warning when no match or ambiguous match is found.
  */
+/**
+ * Is `id` a minified/local SHORTHAND identifier (`d`, `d1`, `_a`) rather than a meaningful name?
+ * Shorthands come from fn.toString() locals and are safe to bind to the sole resource of a
+ * single-resource graph; a NAMED variable that matched nothing is meaningful information — binding it
+ * by "there's only one thing here" guesswork silently rewrites what the author wrote (the strict-CEL
+ * review finding: `nosuchresource.status.ready` must not validate as `deployment.status.ready`).
+ */
+const isShorthandIdentifier = (id: string): boolean => /^_*[a-zA-Z][0-9]{0,2}$/.test(id);
+
+export interface RemapVariableNamesOptions {
+  /**
+   * Allow the single-resource fallback (rule 2) for NAMED variables, not just shorthands. Default
+   * true — the serializer keeps its historical behavior. The status-CEL VALIDATOR passes false so an
+   * unknown named reference stays visible to the unknown-resource scan instead of being silently
+   * bound to the only resource (see `validateStatusCelExpressions`).
+   */
+  namedVariableSingleResourceFallback?: boolean;
+}
+
 export function remapVariableNames(
   exprStr: string,
   innerResourceIds: string[],
-  preserveVariables?: ReadonlySet<string>
+  preserveVariables?: ReadonlySet<string>,
+  options?: RemapVariableNamesOptions
 ): string {
+  const namedFallback = options?.namedVariableSingleResourceFallback !== false;
   const lambdaVariables = extractCelLambdaVariables(exprStr);
   const shouldPreserveVariable = (id: string): boolean =>
     preserveVariables?.has(id) === true || lambdaVariables.has(id);
@@ -278,7 +299,9 @@ export function remapVariableNames(
     // 2. Single resource — only treat minified/local shorthand names as
     // unambiguous. Named variables like `inner` or `inngest` may refer to
     // nested composition handles rather than the sole concrete resource.
-    if (innerResourceIds.length === 1) {
+    // Callers that need unknown NAMED references to stay visible (the
+    // status-CEL validator) disable the named-variable fallback.
+    if (innerResourceIds.length === 1 && (namedFallback || isShorthandIdentifier(id))) {
       return innerResourceIds[0];
     }
 

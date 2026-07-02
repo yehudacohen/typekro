@@ -316,6 +316,10 @@ export class ExpressionCache {
       availableReferences: Object.keys(context.availableReferences || {}).sort(),
       factoryType: context.factoryType || 'direct',
       strictCelDiagnostics: isStrictCelDiagnosticsEnabled(context),
+      // Lambda-local scopes change what an identifier MEANS (a registered local converts cleanly; the
+      // same name without it is an unknown resource — a strict-mode throw). Omitting them let a result
+      // cached under one scope answer for the other (the strict-CEL review finding #2).
+      localScopeIdentifiers: [...(context.localScopeIdentifiers ?? [])].sort(),
     };
 
     return this.simpleHash(JSON.stringify(contextData));

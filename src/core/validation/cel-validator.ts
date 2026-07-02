@@ -362,70 +362,109 @@ export function validateStatusCelExpressions(
   // Separate static and dynamic fields
   const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
 
+  /**
+   * Scan a (remapped) expression for direct resource references (`id.status.` / `id.spec.` /
+   * `id.metadata.`) whose root is not a known resource, schema, CEL lambda variable, or preserved
+   * nested-composition handle. Shared by the two validation passes below.
+   */
+  function scanUnknownReferences(
+    expression: string
+  ): Array<{ referencedId: string; matchedRef: string }> {
+    // Extract CEL lambda variable names to exclude them from resource ID checks.
+    // CEL macros like .all(v, body), .exists(v, body), .map(v, body), .filter(v, body)
+    // introduce lambda variables that should not be treated as resource IDs.
+    const lambdaVarPattern = /\.(?:all|exists|map|filter)\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*,/g;
+    const lambdaVars = new Set<string>();
+    let lambdaMatch: RegExpExecArray | null = lambdaVarPattern.exec(expression);
+    while (lambdaMatch !== null) {
+      if (lambdaMatch[1]) lambdaVars.add(lambdaMatch[1]);
+      lambdaMatch = lambdaVarPattern.exec(expression);
+    }
+    // Also add 'each' as it's a Kro readyWhen keyword for forEach collections
+    lambdaVars.add('each');
+
+    const findings: Array<{ referencedId: string; matchedRef: string }> = [];
+    const directResourceRefPattern = /\b([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./g;
+    let directMatch: RegExpExecArray | null = directResourceRefPattern.exec(expression);
+    while (directMatch !== null) {
+      const referencedId = directMatch[1] ?? '';
+      if (
+        referencedId !== 'schema' &&
+        !resourceIds.has(referencedId) &&
+        !lambdaVars.has(referencedId) &&
+        !preserveVariables.has(referencedId)
+      ) {
+        findings.push({ referencedId, matchedRef: directMatch[0] ?? '' });
+      }
+      directMatch = directResourceRefPattern.exec(expression);
+    }
+    return findings;
+  }
+
   // Only validate dynamic fields that will be sent to Kro
   function validateExpression(fieldName: string, value: unknown): void {
     if (isCelExpression(value)) {
-      const expression = remapVariableNames(
-        value.expression,
-        Array.from(resourceIds).filter((id): id is string => typeof id === 'string'),
-        preserveVariables
-      );
+      const idList = Array.from(resourceIds).filter((id): id is string => typeof id === 'string');
 
-      // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)
-      // This is the most important validation - ensuring referenced resources actually exist
-      //
-      // Extract CEL lambda variable names to exclude them from resource ID checks.
-      // CEL macros like .all(v, body), .exists(v, body), .map(v, body), .filter(v, body)
-      // introduce lambda variables that should not be treated as resource IDs.
-      const lambdaVarPattern = /\.(?:all|exists|map|filter)\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*,/g;
-      const lambdaVars = new Set<string>();
-      let lambdaMatch: RegExpExecArray | null = lambdaVarPattern.exec(expression);
-      while (lambdaMatch !== null) {
-        if (lambdaMatch[1]) lambdaVars.add(lambdaMatch[1]);
-        lambdaMatch = lambdaVarPattern.exec(expression);
-      }
-      // Also add 'each' as it's a Kro readyWhen keyword for forEach collections
-      lambdaVars.add('each');
-
-      const directResourceRefPattern = /\b([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./g;
-      let directMatch: RegExpExecArray | null = directResourceRefPattern.exec(expression);
-      while (directMatch !== null) {
-        const referencedId = directMatch[1] ?? '';
-        if (
-          referencedId !== 'schema' &&
-          !resourceIds.has(referencedId) &&
-          !lambdaVars.has(referencedId) &&
-          !preserveVariables.has(referencedId)
-        ) {
-          // Check if this specific reference is a cross-composition status access.
-          // Cross-composition references (e.g., `otherComposition.status.ready`) are valid
-          // even if the referenced composition is not a registered resource in THIS graph.
-          // We only suppress the error when the SPECIFIC unresolved reference accesses .status.,
-          // not when .status. appears anywhere in the expression.
-          const matchedRef = directMatch[0] ?? '';
-          const isCrossCompositionRef =
-            matchedRef.includes('.status.') && !matchedRef.includes('.spec.');
-          if (isCrossCompositionRef) {
-            warnings.push({
-              field: fieldName,
-              expression,
-              error: `Reference '${referencedId}' is not a registered resource — treating as cross-composition reference`,
-              suggestion: `If this is not a cross-composition reference, check that resource '${referencedId}' is created in the composition`,
-              code: 'unknown-resource',
-              referencedResource: referencedId,
-            });
-          } else {
-            errors.push({
-              field: fieldName,
-              expression,
-              error: `Referenced resource '${referencedId}' does not exist`,
-              suggestion: `Available resources: ${Array.from(resourceIds).join(', ')}`,
-              code: 'unknown-resource',
-              referencedResource: referencedId,
-            });
-          }
+      // PASS 1 — mirror the serializer's variable remapping EXACTLY (single-resource fallback
+      // included) so anything the serializer will successfully resolve doesn't false-positive.
+      // These findings gate LENIENT composition validation, so this pass must stay byte-identical
+      // to the historical behavior.
+      const expression = remapVariableNames(value.expression, idList, preserveVariables);
+      const lenientFindings = scanUnknownReferences(expression);
+      for (const { referencedId, matchedRef } of lenientFindings) {
+        // Check if this specific reference is a cross-composition status access.
+        // Cross-composition references (e.g., `otherComposition.status.ready`) are valid
+        // even if the referenced composition is not a registered resource in THIS graph.
+        // We only suppress the error when the SPECIFIC unresolved reference accesses .status.,
+        // not when .status. appears anywhere in the expression.
+        const isCrossCompositionRef =
+          matchedRef.includes('.status.') && !matchedRef.includes('.spec.');
+        if (isCrossCompositionRef) {
+          warnings.push({
+            field: fieldName,
+            expression,
+            error: `Reference '${referencedId}' is not a registered resource — treating as cross-composition reference`,
+            suggestion: `If this is not a cross-composition reference, check that resource '${referencedId}' is created in the composition`,
+            code: 'unknown-resource',
+            referencedResource: referencedId,
+          });
+        } else {
+          errors.push({
+            field: fieldName,
+            expression,
+            error: `Referenced resource '${referencedId}' does not exist`,
+            suggestion: `Available resources: ${Array.from(resourceIds).join(', ')}`,
+            code: 'unknown-resource',
+            referencedResource: referencedId,
+          });
         }
-        directMatch = directResourceRefPattern.exec(expression);
+      }
+
+      // PASS 2 — the same scan WITHOUT the named-variable single-resource fallback. A name that is
+      // unknown here but resolved in pass 1 was bound purely by "there's only one resource here"
+      // guesswork — in a one-resource graph that guesswork would otherwise blind validation to a
+      // genuinely nonexistent reference (`nosuchresource.status.ready` silently validating as
+      // `deployment.status.ready`). Reported as WARNINGS (never errors — lenient serialization still
+      // resolves them via the fallback) carrying code 'unknown-resource', which the strict factory
+      // gate (`strictCelDiagnostics` / TYPEKRO_STRICT_CEL) escalates to a serialization failure.
+      const strictExpression = remapVariableNames(value.expression, idList, preserveVariables, {
+        namedVariableSingleResourceFallback: false,
+      });
+      if (strictExpression !== expression) {
+        const alreadyReported = new Set(lenientFindings.map((f) => f.referencedId));
+        for (const { referencedId } of scanUnknownReferences(strictExpression)) {
+          if (alreadyReported.has(referencedId)) continue;
+          alreadyReported.add(referencedId);
+          warnings.push({
+            field: fieldName,
+            expression: strictExpression,
+            error: `Reference '${referencedId}' resolves only via the single-resource fallback (bound to '${idList[0]}') — not a provable resource reference`,
+            suggestion: `Reference the resource by its id ('${idList[0]}'), or check that '${referencedId}' names a resource created in this composition`,
+            code: 'unknown-resource',
+            referencedResource: referencedId,
+          });
+        }
       }
     } else if (typeof value === 'object' && value !== null) {
       // Recursively validate nested objects
