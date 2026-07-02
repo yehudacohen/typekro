@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-02
+
+### Added
+
+- Added computed status aliases so status builders can name and reuse JavaScript
+  expressions while preserving KRO CEL generation.
+- Added `computed`, `alias`, and `aliases` helpers for explicit status expression
+  aliasing, plus lexical alias inlining for common local variable patterns.
+
 ## [0.20.3] - 2026-07-01
 
 ### Fixed
@@ -398,7 +407,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.20.3...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/yehudacohen/typekro/compare/v0.20.3...v0.21.0
 [0.20.3]: https://github.com/yehudacohen/typekro/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/yehudacohen/typekro/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/yehudacohen/typekro/compare/v0.20.0...v0.20.1
