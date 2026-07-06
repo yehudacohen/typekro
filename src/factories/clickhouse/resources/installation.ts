@@ -18,6 +18,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
   ChiPodTemplate,
@@ -120,17 +121,65 @@ const DATA_VOLUME_TEMPLATE = 'data-volume';
 /** Base name for generated pod templates. */
 const POD_TEMPLATE_BASE = 'clickhouse';
 
-/** Flatten the typed users map to the operator's path-keyed format. */
+/** True when the value is a graph reference (KubernetesRef or CEL expression). */
+function isGraphRef(value: unknown): boolean {
+  return isKubernetesRef(value) || isCelExpression(value);
+}
+
+/**
+ * LOUD build-time validation: the CHI compiler BRANCHES on these fields
+ * (zone round-robin, template enumeration, path-keyed user settings), so a
+ * KubernetesRef/CEL expression here can never work — it would either crash
+ * graph construction or serialize garbage paths. Fail fast with a pointer to
+ * the build-time constructor instead of leaking `__KUBERNETES_REF__` markers.
+ */
+function assertConcreteTopology(config: Composable<ClickHouseInstallationConfig>): void {
+  const reject = (field: string): never => {
+    throw new Error(
+      `clickHouseInstallation: '${field}' is a BUILD-TIME topology field and received a ` +
+        `schema reference or CEL expression. The compiler enumerates pod templates and ` +
+        `per-replica layout entries from it, so it must be a concrete JS value. ` +
+        `For schema-driven compositions, fix the topology at construction time with ` +
+        `makeClickHouseCluster({ zones, replicas, shards, users }) and pass only runtime ` +
+        `fields (name, version, storage, credentials, keeper host) through the spec.`
+    );
+  };
+
+  if (isGraphRef(config.shards)) reject('shards');
+  if (isGraphRef(config.replicas)) reject('replicas');
+  if (isGraphRef(config.zones)) reject('zones');
+  if (Array.isArray(config.zones)) {
+    for (const zone of config.zones) {
+      if (isGraphRef(zone)) reject('zones[]');
+    }
+  }
+  if (isGraphRef(config.users)) reject('users');
+  if (Array.isArray(config.users)) {
+    config.users.forEach((user, index) => {
+      if (isGraphRef(user)) reject(`users[${index}]`);
+      if (isGraphRef(user.name)) reject(`users[${index}].name`);
+    });
+  }
+}
+
+/**
+ * Flatten the typed users ARRAY to the operator's path-keyed format.
+ *
+ * User names become path fragments (`<user>/password_sha256_hex`) — they are
+ * validated concrete by `assertConcreteTopology`. The password hash and
+ * networks are plain VALUES and may be schema references (they serialize to
+ * CEL cleanly).
+ */
 function compileUsers(
   users: NonNullable<Composable<ClickHouseInstallationConfig>['users']>
 ): Record<string, unknown> {
   const compiled: Record<string, unknown> = {};
-  for (const [userName, user] of Object.entries(users)) {
+  for (const user of users) {
     if (user.passwordSha256Hex !== undefined) {
-      compiled[`${userName}/password_sha256_hex`] = user.passwordSha256Hex;
+      compiled[`${user.name}/password_sha256_hex`] = user.passwordSha256Hex;
     }
     if (user.networksIp !== undefined) {
-      compiled[`${userName}/networks/ip`] = user.networksIp;
+      compiled[`${user.name}/networks/ip`] = user.networksIp;
     }
   }
   return compiled;
@@ -140,6 +189,8 @@ function compileUsers(
 function compileInstallationSpec(
   config: Composable<ClickHouseInstallationConfig>
 ): ClickHouseInstallationSpec {
+  assertConcreteTopology(config);
+
   const shards = config.shards ?? 1;
   const replicas = config.replicas ?? 1;
   const clusterName = config.clusterName ?? DEFAULT_CHI_CLUSTER_NAME;
@@ -247,9 +298,15 @@ function compileInstallationSpec(
 }
 
 /**
- * ClickHouseInstallation Factory
+ * ClickHouseInstallation Factory (LOW-LEVEL, concrete topology)
  *
  * Creates a ClickHouse cluster managed by the Altinity clickhouse-operator.
+ *
+ * BUILD-TIME topology fields (`shards`, `replicas`, `zones`, user names) must
+ * be concrete JS values — the factory throws loudly if any receives a schema
+ * reference (the compiler enumerates templates/replica entries from them).
+ * Prefer `makeClickHouseCluster()` in compositions: it fixes the topology at
+ * construction time and exposes only proxy-safe runtime spec.
  *
  * @param config - High-level installation configuration
  * @returns Enhanced ClickHouseInstallation resource with readiness evaluation
@@ -264,6 +321,7 @@ function compileInstallationSpec(
  *   replicas: 2,
  *   zones: ['us-east-2a', 'us-east-2b'],    // zone-pinned replicas (EBS is zonal)
  *   storage: { size: '100Gi', storageClassName: 'gp3-expandable' },
+ *   users: [{ name: 'signoz', passwordSha256Hex: '...', networksIp: ['::/0'] }],
  *   keeper: { host: 'keeper-signoz.observability.svc.cluster.local' },
  *   id: 'signozClickhouse',
  * });

@@ -223,23 +223,38 @@ describe('ClickHouseInstallation Factory', () => {
       expect(chi.spec.configuration?.zookeeper).toBeUndefined();
     });
 
-    it('should compile users to the operator path-keyed format', () => {
+    it('should compile the users ARRAY to the operator path-keyed format', () => {
+      // Array shape (not a name-keyed map): user names become CHI config path
+      // fragments, so they live in a plain value position the factory can
+      // validate — a proxy-keyed map would serialize `__typekroSchemaKey/...`.
       const chi = clickHouseInstallation({
         name: 'test-ch',
         version: '25.12.5',
         storage: { size: '10Gi' },
-        users: {
-          signoz: {
+        users: [
+          {
+            name: 'signoz',
             passwordSha256Hex: 'abc123',
             networksIp: ['::/0'],
           },
-        },
+        ],
       });
 
       expect(chi.spec.configuration?.users).toEqual({
         'signoz/password_sha256_hex': 'abc123',
         'signoz/networks/ip': ['::/0'],
       });
+    });
+
+    it('should omit user fields that are not provided', () => {
+      const chi = clickHouseInstallation({
+        name: 'test-ch',
+        version: '25.12.5',
+        storage: { size: '10Gi' },
+        users: [{ name: 'readonly' }],
+      });
+
+      expect(chi.spec.configuration?.users).toEqual({});
     });
 
     it('should apply podResources to the clickhouse container', () => {

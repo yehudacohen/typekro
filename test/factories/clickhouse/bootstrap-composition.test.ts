@@ -63,6 +63,30 @@ describe('ClickHouse operator bootstrap composition', () => {
     expect(yaml).toContain('mode: enabled');
   });
 
+  it('Merge schema customValues into the KRO-serialized HelmRelease values at runtime', () => {
+    // The graph-mode leak the review flagged: `customValues` used to be
+    // accepted by the schema but silently dropped from the serialized
+    // HelmRelease values. It now routes through the graph-aware runtime
+    // values merge, so an instance's customValues map (e.g. a nodeSelector
+    // override) lands in the rendered values at reconcile time.
+    const yaml = clickhouseOperatorBootstrap.toYaml();
+    const helmReleaseDoc = yaml.slice(yaml.indexOf('id: clickhouseOperatorHelmRelease'));
+    const valuesLine = helmReleaseDoc
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('values:'));
+
+    expect(valuesLine).toBeDefined();
+    // customValues participates in the runtime merge...
+    expect(valuesLine).toContain('schema.spec.customValues');
+    expect(valuesLine).toContain('.merge(');
+    // ...alongside the typed mapped fields (still present, overridable).
+    expect(valuesLine).toContain('schema.spec.metrics');
+    expect(valuesLine).toContain('schema.spec.crdHook');
+    expect(valuesLine).toContain('schema.spec.resources');
+    // No internal marker garbage in the rendered values.
+    expect(helmReleaseDoc).not.toContain('__typekroSchemaKey');
+  });
+
   it('Derive ready/phase status from the HelmRelease Ready condition', () => {
     const yaml = clickhouseOperatorBootstrap.toYaml();
 

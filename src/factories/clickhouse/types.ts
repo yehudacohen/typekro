@@ -15,6 +15,7 @@
  */
 
 import { type } from 'arktype';
+import type { TypeKroChartValue } from '../../core/types/common.js';
 
 // ============================================================================
 // Bootstrap Config (Helm Operator Install)
@@ -57,7 +58,13 @@ export const ClickHouseOperatorBootstrapConfigSchema = type({
     'requests?': { 'cpu?': 'string', 'memory?': 'string' },
     'limits?': { 'cpu?': 'string', 'memory?': 'string' },
   },
-  /** Additional Helm values for user overrides. */
+  /**
+   * Additional Helm values for user overrides. Works in BOTH modes:
+   * a concrete object is deep-merged into the mapped values at build time,
+   * and a schema reference (`customValues: schema.spec.customValues` in an
+   * outer composition) is carried through the graph-aware runtime values
+   * merge, so the override lands in the KRO-serialized HelmRelease values.
+   */
   'customValues?': 'Record<string, unknown>',
   /**
    * Whether the operator install should be treated as shared cluster
@@ -148,21 +155,55 @@ export const ClickHouseOperatorHelmReleaseConfigSchema = type({
   'namespace?': 'string',
   /** Chart version (default: '0.27.1'). */
   'version?': 'string',
-  /** Helm values. */
-  'values?': 'Record<string, unknown>',
+  /** Helm values (plain object, or a graph-aware runtime values merge). */
+  'values?': 'object',
   /** HelmRepository name to reference (default: 'altinity'). */
   'repositoryName?': 'string',
   /** Resource ID for composition references. */
   'id?': 'string',
 });
 
-/** Configuration for the altinity-clickhouse-operator Helm release. */
-export type ClickHouseOperatorHelmReleaseConfig =
-  typeof ClickHouseOperatorHelmReleaseConfigSchema.infer;
+/**
+ * Configuration for the altinity-clickhouse-operator Helm release.
+ *
+ * `values` is widened beyond the ArkType inference so a graph-aware
+ * {@link TypeKroChartValue} (including a runtime values-merge expression
+ * produced when `customValues` is a schema ref) flows through to the
+ * underlying `helmRelease` factory.
+ */
+export type ClickHouseOperatorHelmReleaseConfig = Omit<
+  typeof ClickHouseOperatorHelmReleaseConfigSchema.infer,
+  'values'
+> & {
+  values?: TypeKroChartValue<Record<string, unknown>>;
+};
 
 // ============================================================================
 // ClickHouseInstallation (CHI) Resource
 // ============================================================================
+
+/**
+ * ArkType schema for a single ClickHouse user entry.
+ *
+ * ARRAY shape (not a name-keyed map): user NAMES become CHI configuration
+ * PATH FRAGMENTS (`<user>/password_sha256_hex`), so they must be concrete
+ * strings at build time — a map keyed by schema proxies would serialize its
+ * keys as `__typekroSchemaKey/...` garbage. The array shape keeps names in a
+ * plain value position where the factory can validate them loudly, while
+ * `passwordSha256Hex`/`networksIp` are ordinary VALUES and may be schema
+ * references or CEL expressions.
+ */
+export const ClickHouseUserSchema = type({
+  /** User name — becomes a CHI config path fragment; MUST be concrete. */
+  name: 'string',
+  /** SHA256 hex digest of the user password (value position — refs OK). */
+  'passwordSha256Hex?': 'string',
+  /** Allowed source networks, e.g. ['::/0'] (value position — refs OK). */
+  'networksIp?': 'string[]',
+});
+
+/** A single ClickHouse user entry (see {@link ClickHouseUserSchema}). */
+export type ClickHouseUser = typeof ClickHouseUserSchema.infer;
 
 /**
  * ArkType schema for ClickHouseInstallationConfig.
@@ -172,6 +213,15 @@ export type ClickHouseOperatorHelmReleaseConfig =
  * deliberately not a 1:1 CRD mirror: the typed factory exists to compile the
  * zone-pinning layout the operator cannot express natively (see
  * `utils/zone-layout.ts`).
+ *
+ * BUILD-TIME vs RUNTIME: `shards`, `replicas`, `zones`, and user NAMES are
+ * BUILD-TIME fields — the compiler enumerates pod templates and per-replica
+ * layout entries from them, so they must be concrete JS values (the factory
+ * throws loudly if any receives a KubernetesRef/CEL expression). Everything
+ * else (name, namespace, version, storage sizes, credentials, keeper host,
+ * ...) sits in plain VALUE positions and may be schema references. For
+ * schema-driven topology use `makeClickHouseCluster()`, which fixes the
+ * topology at construction time and exposes only ref-safe runtime spec.
  */
 export const ClickHouseInstallationConfigSchema = type({
   /** Installation name. */
@@ -222,18 +272,14 @@ export const ClickHouseInstallationConfigSchema = type({
     'storageClassName?': 'string',
   },
   /**
-   * ClickHouse users, compiled to the operator's path-keyed
+   * ClickHouse users (ARRAY shape), compiled to the operator's path-keyed
    * `spec.configuration.users` format
    * (`<user>/password_sha256_hex`, `<user>/networks/ip`).
+   *
+   * User NAMES become path fragments and must be concrete strings (the
+   * factory throws on refs); password/networks values may be refs.
    */
-  'users?': type({
-    '[string]': {
-      /** SHA256 hex digest of the user password. */
-      'passwordSha256Hex?': 'string',
-      /** Allowed source networks (e.g. ['::/0']). */
-      'networksIp?': 'string[]',
-    },
-  }),
+  'users?': ClickHouseUserSchema.array(),
   /**
    * (ClickHouse) Keeper coordination endpoint, wired into
    * `spec.configuration.zookeeper.nodes` (the operator uses the zookeeper
@@ -351,6 +397,185 @@ export interface ClickHouseInstallationStatus {
   endpoint?: string;
   fqdns?: string[];
 }
+
+// ============================================================================
+// ClickHouse Cluster Composition (build-time topology + runtime spec)
+// ============================================================================
+
+/**
+ * BUILD-TIME user declaration for {@link ClickHouseClusterTopology}.
+ *
+ * The user NAME becomes a CHI configuration path fragment
+ * (`<name>/password_sha256_hex`) and the allowed networks are part of the
+ * cluster's access topology — both are fixed at construction time. The
+ * password hash is env-specific and flows through the RUNTIME spec
+ * (`spec.users.<name>.passwordSha256Hex`), so it may be a schema reference.
+ */
+export interface ClickHouseClusterUserTopology {
+  /** User name — becomes a CHI config path fragment AND a runtime spec key. */
+  readonly name: string;
+  /** Allowed source networks (default: ['::/0']). */
+  readonly networksIp?: readonly string[];
+}
+
+/**
+ * BUILD-TIME topology for {@link makeClickHouseCluster}.
+ *
+ * These are resolved when the composition is CONSTRUCTED (real JS values),
+ * NOT KRO spec fields: the zone-pinned layout enumerates pod templates and
+ * per-replica entries, so zones/replicas/shards cannot be instance-dynamic.
+ * (Same pattern as `makeCaddyIngress` — build-time choices select the
+ * resource set statically.)
+ */
+export interface ClickHouseClusterTopology {
+  /**
+   * Availability zones to pin replicas to (round-robin when
+   * replicas > zones.length). WHY build-time AND why at all: EBS volumes are
+   * zonal, and the operator's own `podDistribution` supports only the
+   * `kubernetes.io/hostname` topologyKey (Altinity/clickhouse-operator#772),
+   * so per-zone spreading must be compiled as an explicit per-replica layout.
+   */
+  readonly zones?: readonly string[];
+  /** Replicas per shard (default: 1). */
+  readonly replicas?: number;
+  /** Shard count (default: 1). */
+  readonly shards?: number;
+  /**
+   * Whether the cluster coordinates through (ClickHouse) Keeper. Structural:
+   * it decides whether the CHI has a `zookeeper` section and whether the
+   * runtime spec requires `keeper: { host }`. Default: `true` when
+   * `replicas > 1` (replicated tables need coordination), else `false`.
+   */
+  readonly keeper?: boolean;
+  /** Declared ClickHouse users (names/networks build-time, passwords runtime). */
+  readonly users?: readonly ClickHouseClusterUserTopology[];
+}
+
+/** Runtime keeper connection spec (present iff the topology enables keeper). */
+export interface ClickHouseClusterKeeperSpec {
+  /** Keeper client host, e.g. `keeper-<chk>.<ns>.svc.cluster.local`. */
+  host: string;
+  /** Keeper client port (default: 2181 — the operator's KpDefaultZKPortNumber). */
+  port?: number;
+}
+
+/** Runtime (proxy-safe) spec fields shared by every cluster topology. */
+export interface ClickHouseClusterSpecBase {
+  /** Installation name (CHI metadata.name). */
+  name: string;
+  /** Target namespace — explicit, it anchors the derived service hostnames. */
+  namespace: string;
+  /** ClickHouse server image tag, e.g. '25.12.5'. */
+  version: string;
+  /**
+   * Logical cluster name inside the CHI (default: 'cluster').
+   * SIGNOZ COMPATIBILITY: SigNoz's migrations hardcode `cluster`.
+   */
+  clusterName?: string;
+  /** Persistent storage for ClickHouse data. */
+  storage: {
+    /** Volume size (e.g. '100Gi'). */
+    size: string;
+    /** StorageClass name (EKS: WaitForFirstConsumer + expandable gp3). */
+    storageClassName?: string;
+  };
+  /** ClickHouse server container resources. */
+  podResources?: {
+    requests?: { cpu?: string; memory?: string };
+    limits?: { cpu?: string; memory?: string };
+  };
+}
+
+/**
+ * Runtime spec for a cluster built by {@link makeClickHouseCluster}.
+ *
+ * `keeper` and `users` requiredness is enforced by the generated ArkType
+ * schema (keeper required iff the topology enables it; one `users.<name>`
+ * entry required per declared user) — the TS type keeps them optional-shaped
+ * because the effective keeper default (`replicas > 1`) is a runtime value.
+ */
+export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
+  /** Keeper connection (required iff the topology enables keeper). */
+  keeper?: ClickHouseClusterKeeperSpec;
+  /** Per-declared-user runtime credentials, keyed by build-time user name. */
+  users?: Record<string, { passwordSha256Hex: string }>;
+};
+
+/**
+ * Typed service contract exposed by {@link makeClickHouseCluster}.
+ *
+ * Connection details are DERIVED from the Altinity operator's actual naming
+ * conventions so downstream compositions never reconstruct hostnames by hand
+ * (verified against operator release-0.27.1 sources):
+ * - CR-level Service: `clickhouse-{chi-name}`, type ClusterIP
+ *   (`pkg/model/chi/namer/patterns.go` patternCRServiceName +
+ *   `pkg/model/chi/creator/service.go`)
+ * - per-host Services: `chi-{chi}-{cluster}-{shard}-{replica}`
+ * - ports: native TCP 9000 / HTTP 8123
+ *   (`pkg/apis/clickhouse.altinity.com/v1/type_host.go`
+ *   ChDefaultTCPPortNumber / ChDefaultHTTPPortNumber)
+ *
+ * NOTE: operator health is NOT surfaced here — the operator is separate
+ * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
+ * whose own status carries `ready`/`phase`/`version` for it.
+ */
+export interface ClickHouseClusterStatus {
+  /** True once the operator reports the CHI fully reconciled ('Completed'). */
+  ready: boolean;
+  /** Reconcile phase mapped from the operator status state machine. */
+  phase: 'Installing' | 'Ready' | 'Failed';
+  /** ClickHouse connection contract for downstream compositions. */
+  clickhouse: {
+    /** CR-level service DNS name: `clickhouse-{name}.{namespace}.svc.cluster.local`. */
+    host: string;
+    /** Native protocol port (9000). */
+    port: number;
+    /** Native protocol URL: `clickhouse://{host}:9000`. */
+    nativeUrl: string;
+    /** HTTP interface URL: `http://{host}:8123`. */
+    httpUrl: string;
+    /** Logical cluster name (SigNoz needs `cluster`). */
+    clusterName: string;
+    /** Default database. */
+    database: string;
+    /** First declared user name, when the topology declares users. */
+    user?: string;
+  };
+  /** Keeper connection echo (present iff the topology enables keeper). */
+  keeper?: { host: string; port: number };
+  /** Raw installation identity + operator progress counters. */
+  installation: {
+    name: string;
+    namespace: string;
+    /** Operator-reported endpoint (present once reconciled). */
+    endpoint?: string;
+    hostsCount?: number;
+    hostsCompletedCount?: number;
+  };
+}
+
+/** ArkType schema for {@link ClickHouseClusterStatus}. */
+export const ClickHouseClusterStatusSchema = type({
+  ready: 'boolean',
+  phase: '"Installing" | "Ready" | "Failed"',
+  clickhouse: {
+    host: 'string',
+    port: 'number',
+    nativeUrl: 'string',
+    httpUrl: 'string',
+    clusterName: 'string',
+    database: 'string',
+    'user?': 'string',
+  },
+  'keeper?': { host: 'string', port: 'number' },
+  installation: {
+    name: 'string',
+    namespace: 'string',
+    'endpoint?': 'string',
+    'hostsCount?': 'number',
+    'hostsCompletedCount?': 'number',
+  },
+});
 
 // ============================================================================
 // ClickHouseKeeperInstallation (CHK) Resource

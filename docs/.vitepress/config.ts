@@ -87,6 +87,7 @@ export default withMermaid(
               { text: 'Caddy', link: '/api/caddy/' },
               { text: 'Cilium', link: '/api/cilium/' },
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
+              { text: 'ClickHouse', link: '/api/clickhouse/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },
               { text: 'Flux', link: '/api/flux/' },
               { text: 'Kro', link: '/api/kro/' },

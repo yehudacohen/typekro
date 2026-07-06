@@ -75,11 +75,17 @@ export const clickhouseOperatorBootstrap = kubernetesComposition(
     const isShared = spec.shared !== false;
 
     // Map config to Helm values (metrics.enabled / crdHook.enabled /
-    // operator resources + customValues passthrough).
+    // operator resources + customValues merged LAST). Fields are passed
+    // EXPLICITLY — spreading the schema proxy (`...spec`) enumerates proxy
+    // keys and leaks `__typekroSchemaKey` markers into the rendered values.
+    // In kro mode `spec.customValues` is a schema ref, so the mapper routes
+    // it through the graph-aware runtime values merge and the override map
+    // lands in the serialized HelmRelease values.
     const helmValues = mapClickHouseOperatorConfigToHelmValues({
-      ...spec,
-      namespace: resolvedNamespace,
-      version: resolvedVersion,
+      metrics: spec.metrics,
+      crdHook: spec.crdHook,
+      resources: spec.resources,
+      customValues: spec.customValues,
     });
 
     // Resources are _-prefixed because they're registered via side effects in

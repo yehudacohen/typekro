@@ -10,23 +10,32 @@
  * ClickHouse CRDs; install exactly one `clickhouseOperatorBootstrap` per
  * cluster and point every CHI/CHK at it.
  *
- * ## Resources
- * - `clickHouseInstallation()` — typed CHI (zone-pinned replica layout,
- *   SigNoz-compatible `cluster` name default)
- * - `clickHouseKeeperInstallation()` — typed CHK (coordination service)
- * - `clickhouseHelmRepository()` — Altinity Helm chart repository
- * - `clickhouseOperatorHelmRelease()` — operator installation via Helm
+ * BUILD-TIME vs RUNTIME: topology (`zones`/`replicas`/`shards`/keeper
+ * presence/user names) is fixed at CONSTRUCTION time via
+ * `makeClickHouseCluster(topology)`; everything else (name, namespace,
+ * version, storage, credentials, keeper host) is proxy-safe RUNTIME spec.
  *
  * ## Compositions
+ * - `makeClickHouseCluster(topology)` — build-time topology constructor;
+ *   returns a composition whose runtime spec is fully schema-ref safe and
+ *   whose status exposes the typed connection contract
+ * - `clickHouseCluster` — the default single-node topology
  * - `clickhouseOperatorBootstrap` — complete operator deployment
  *   (namespace + shared Helm repo singleton + release)
  * - `clickhouseHelmRepositoryBootstrap` — shared HelmRepository singleton owner
+ *
+ * ## Resources
+ * - `clickHouseInstallation()` — LOW-LEVEL typed CHI (concrete topology only;
+ *   zone-pinned replica layout, SigNoz-compatible `cluster` name default)
+ * - `clickHouseKeeperInstallation()` — typed CHK (coordination service)
+ * - `clickhouseHelmRepository()` — Altinity Helm chart repository
+ * - `clickhouseOperatorHelmRelease()` — operator installation via Helm
  *
  * @example
  * ```typescript
  * import {
  *   clickhouseOperatorBootstrap,
- *   clickHouseInstallation,
+ *   makeClickHouseCluster,
  * } from 'typekro/clickhouse';
  *
  * // Install the operator (once per cluster)
@@ -35,15 +44,19 @@
  * });
  * await operatorFactory.deploy({ name: 'clickhouse-operator' });
  *
- * // Create a zone-pinned ClickHouse cluster
- * const chi = clickHouseInstallation({
+ * // Fix the topology at construction, deploy with runtime spec
+ * const clickhouse = makeClickHouseCluster({
+ *   zones: ['us-east-2a', 'us-east-2b'],
+ *   replicas: 2,
+ *   users: [{ name: 'signoz' }],
+ * });
+ * await clickhouse.factory('kro', { namespace: 'observability' }).deploy({
  *   name: 'signoz-clickhouse',
  *   namespace: 'observability',
  *   version: '25.12.5',
- *   replicas: 2,
- *   zones: ['us-east-2a', 'us-east-2b'],
  *   storage: { size: '100Gi', storageClassName: 'gp3-expandable' },
- *   id: 'signozClickhouse',
+ *   keeper: { host: 'keeper-signoz.observability.svc.cluster.local' },
+ *   users: { signoz: { passwordSha256Hex: '<sha256-hex>' } },
  * });
  * ```
  *

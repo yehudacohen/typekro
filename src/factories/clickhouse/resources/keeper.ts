@@ -8,6 +8,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
   ClickHouseKeeperInstallationConfig,
@@ -34,6 +35,20 @@ export function chkReadinessEvaluator(liveResource: unknown): ResourceStatus {
 function compileKeeperSpec(
   config: Composable<ClickHouseKeeperInstallationConfig>
 ): ClickHouseKeeperInstallationSpec {
+  // LOUD build-time validation: the compiler BRANCHES on these (storage
+  // presence selects the volume-claim template block; replicas defaults via
+  // `?? 1`), so schema refs here would silently mis-compile. Storage SIZE and
+  // class are plain values and may be refs.
+  for (const field of ['storage', 'replicas'] as const) {
+    if (isKubernetesRef(config[field]) || isCelExpression(config[field])) {
+      throw new Error(
+        `clickHouseKeeperInstallation: '${field}' is a BUILD-TIME field and received a ` +
+          `schema reference or CEL expression — pass a concrete value (the compiler ` +
+          `branches on it at graph-construction time).`
+      );
+    }
+  }
+
   const replicas = config.replicas ?? 1;
 
   return {

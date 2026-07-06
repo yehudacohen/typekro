@@ -7,7 +7,12 @@ import {
   DEFAULT_CLICKHOUSE_REPO_NAME,
   DEFAULT_CLICKHOUSE_REPO_URL,
 } from '../../../src/factories/clickhouse/resources/helm.js';
-import { mapClickHouseOperatorConfigToHelmValues } from '../../../src/factories/clickhouse/utils/helm-values-mapper.js';
+import { isValuesMergeExpression } from '../../../src/core/aspects/values-merge.js';
+import {
+  type ClickHouseOperatorHelmValues,
+  mapClickHouseOperatorConfigToHelmValues,
+} from '../../../src/factories/clickhouse/utils/helm-values-mapper.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
 describe('ClickHouse Helm Resources', () => {
   describe('clickhouseHelmRepository', () => {
@@ -84,36 +89,64 @@ describe('ClickHouse Helm Resources', () => {
 });
 
 describe('ClickHouse Operator Helm Values Mapper', () => {
+  /** Narrow the mapper result to plain values (concrete customValues path). */
+  function plainValues(
+    result: ReturnType<typeof mapClickHouseOperatorConfigToHelmValues>
+  ): ClickHouseOperatorHelmValues {
+    expect(isValuesMergeExpression(result)).toBe(false);
+    return result as ClickHouseOperatorHelmValues;
+  }
+
   it('should return empty values for minimal config (chart defaults win)', () => {
-    const values = mapClickHouseOperatorConfigToHelmValues({ name: 'op' });
+    const values = plainValues(mapClickHouseOperatorConfigToHelmValues({}));
     expect(values).toEqual({});
   });
 
   it('should map metrics and crdHook toggles', () => {
-    const values = mapClickHouseOperatorConfigToHelmValues({
-      name: 'op',
-      metrics: { enabled: false },
-      crdHook: { enabled: true },
-    });
+    const values = plainValues(
+      mapClickHouseOperatorConfigToHelmValues({
+        metrics: { enabled: false },
+        crdHook: { enabled: true },
+      })
+    );
     expect(values.metrics).toEqual({ enabled: false });
     expect(values.crdHook).toEqual({ enabled: true });
   });
 
   it('should map operator resources', () => {
-    const values = mapClickHouseOperatorConfigToHelmValues({
-      name: 'op',
-      resources: { requests: { cpu: '100m', memory: '128Mi' } },
-    });
+    const values = plainValues(
+      mapClickHouseOperatorConfigToHelmValues({
+        resources: { requests: { cpu: '100m', memory: '128Mi' } },
+      })
+    );
     expect(values.operator?.resources?.requests?.cpu).toBe('100m');
   });
 
-  it('should spread custom values last', () => {
-    const values = mapClickHouseOperatorConfigToHelmValues({
-      name: 'op',
-      metrics: { enabled: true },
-      customValues: { metrics: { enabled: false }, nodeSelector: { os: 'linux' } },
-    });
+  it('should deep-merge concrete custom values last (overrides win)', () => {
+    const values = plainValues(
+      mapClickHouseOperatorConfigToHelmValues({
+        metrics: { enabled: true },
+        customValues: { metrics: { enabled: false }, nodeSelector: { os: 'linux' } },
+      })
+    );
     expect(values.metrics).toEqual({ enabled: false });
     expect(values.nodeSelector).toEqual({ os: 'linux' });
+  });
+
+  it('should wrap ref-shaped custom values in a graph-aware runtime merge', () => {
+    // In graph mode the bootstrap receives `customValues` as a schema proxy
+    // ref. The mapper must route it through mergeValuesExpression (the core
+    // runtime values-merge) instead of dropping it — that is what makes the
+    // override land in the KRO-serialized HelmRelease values.
+    const schemaRef = {
+      [KUBERNETES_REF_BRAND]: true,
+      resourceId: '__schema__',
+      fieldPath: 'spec.customValues',
+    };
+    const result = mapClickHouseOperatorConfigToHelmValues({
+      metrics: { enabled: true },
+      customValues: schemaRef as never,
+    });
+    expect(isValuesMergeExpression(result)).toBe(true);
   });
 });
