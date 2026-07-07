@@ -23,7 +23,7 @@ import {
 ```typescript
 // 1. The stack (internal dev-first Mongo, external ClickHouse):
 const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
-await factory.deploy({
+const stack = await factory.deploy({
   name: 'clickstack',
   clickhouse: {
     host: 'clickhouse-observability.clickhouse.svc.cluster.local',

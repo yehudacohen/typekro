@@ -48,6 +48,16 @@ describe('clickstackK8sTelemetry', () => {
     expect(yaml).toContain('HYPERDX_API_KEY');
   });
 
+  it('renders the api-key secretKeyRef as REQUIRED — a missing Secret fails the pod, not the auth', () => {
+    const values = mapK8sTelemetryConfigToHelmValues({
+      name: 'telemetry',
+      apiKeySecret: { name: 'clickstack-api-key' },
+    });
+    const text = JSON.stringify(values);
+    expect(text).toContain('"optional":false');
+    expect(text).not.toContain('"optional":true');
+  });
+
   it('defaults the exporter endpoint to the canonical in-cluster gateway; spec overrides it', () => {
     const concrete = mapK8sTelemetryConfigToHelmValues({
       name: 'telemetry',

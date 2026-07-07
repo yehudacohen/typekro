@@ -512,7 +512,9 @@ export function mapK8sTelemetryConfigToHelmValues(
         secretKeyRef: {
           name: config.apiKeySecret?.name,
           key: secretKey,
-          optional: true,
+          // REQUIRED (matches the schema): a missing Secret/key must fail the pod loudly at start,
+          // not launch a collector whose exporter silently ships unauthenticated requests.
+          optional: false,
         },
       },
     },
