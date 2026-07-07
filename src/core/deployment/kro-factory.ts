@@ -2749,6 +2749,7 @@ export function fillStatusGapsFromLiveReExecution(current: unknown, live: unknow
     const liveObj = live as Record<string, unknown>;
     const merged: Record<string, unknown> = { ...currentObj };
     for (const key of Object.keys(liveObj)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       merged[key] = fillStatusGapsFromLiveReExecution(currentObj[key], liveObj[key]);
     }
     return merged;

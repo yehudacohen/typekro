@@ -80,4 +80,22 @@ describe('fillStatusGapsFromLiveReExecution', () => {
     const merged = fillStatusGapsFromLiveReExecution(current, live) as Record<string, unknown>;
     expect(merged.list).toEqual([1, 2]);
   });
+
+  it('ignores __proto__/constructor/prototype keys during the recursive merge (prototype-pollution hardening)', () => {
+    const current = { app: {} };
+    // `live` mirrors what re-executing the composition against attacker-influenced
+    // live cluster status could produce if a resource's status field happened to
+    // contain one of these key names.
+    const live = JSON.parse(
+      '{"app": {"__proto__": {"polluted": true}, "constructor": {"polluted": true}, "prototype": {"polluted": true}, "safe": "ok"}}'
+    );
+
+    const merged = fillStatusGapsFromLiveReExecution(current, live) as Record<string, unknown>;
+    const app = merged.app as Record<string, unknown>;
+
+    expect(app.safe).toBe('ok');
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(app.constructor).toBe(Object);
+    expect(Object.hasOwn(app, '__proto__')).toBe(false);
+  });
 });
