@@ -135,8 +135,11 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       // The three-state phase ternary (quotes YAML-escaped inside the CEL string).
       expect(yaml).toContain('\\"Ready\\" : clickhouse.status.status == \\"Aborted\\" ? \\"Failed\\" : \\"Installing\\"');
       expect(yaml).toContain('endpoint: ${clickhouse.status.endpoint}');
-      expect(yaml).toContain('hostsCount: ${clickhouse.status.hostsCount}');
-      expect(yaml).toContain('hostsCompletedCount: ${clickhouse.status.hostsCompletedCount}');
+      // The operator's REAL CHI status fields are `hosts`/`hostsCompleted` (verified
+      // live against the installed CRD's OpenAPI schema — see clickhouse-cluster.ts).
+      // The public contract keeps the more explicit names; only the CEL source differs.
+      expect(yaml).toContain('hostsCount: ${clickhouse.status.hosts}');
+      expect(yaml).toContain('hostsCompletedCount: ${clickhouse.status.hostsCompleted}');
 
       // The CONNECTION CONTRACT is anchored on the OWNED CHI RESOURCE, so it
       // reaches the KRO CR's status (GitOps/KRO consumers see it live) —
