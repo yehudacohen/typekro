@@ -99,8 +99,21 @@ status: {
 }
 ```
 
-The connection fields are spec-derived and **client-hydrated** (KRO status CEL cannot reference the
-instance spec); the mapper pins `fullnameOverride` to the release name so the naming is deterministic.
+**Where each field lives on the KRO CR.** The connection contract is anchored on the **owned
+HelmRelease resource**, so it serializes as KRO status CEL and is visible on the live KRO CR's
+status (GitOps/KRO consumers can read it):
+
+- `ready`, `phase` — CEL over `clickstackHelmRelease.status.conditions`.
+- `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`, `app.host` — CEL string concat
+  over `clickstackHelmRelease.metadata.name` / `.namespace` (the mapper pins `fullnameOverride` to
+  the release name, so the HyperDX Service is `<name>` and the gateway Service is
+  `<name>-otel-collector`), with the chart-default ports embedded in the URL strings.
+
+Only the **bare build-time constants** `app.appPort` (3000) and `app.apiPort` (8000), plus the
+spec-derived `version`, are **client-hydrated** and absent from the KRO CR status — KRO status CEL
+cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest
+HelmRelease field to anchor them on. Both ports are still KRO-visible inside `ui.url` and the
+gateway endpoints.
 
 ## Kubernetes Telemetry
 

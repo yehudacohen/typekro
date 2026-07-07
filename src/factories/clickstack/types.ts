@@ -315,9 +315,18 @@ export type ClickStackBootstrapRuntimeConfig = ClickStackBootstrapConfig & {
  * name, so the HyperDX app Service is named exactly `<name>` (the chart's
  * `clickstack.hyperdx.fullname` helper skips its `-app` suffix when
  * `fullnameOverride` is set) and the gateway Service is
- * `<name>-otel-collector` (subchart naming off `.Release.Name`). All endpoint
- * fields are derived from the owned HelmRelease resource's metadata — never
- * from `schema.spec.*` (KRO status CEL cannot reference the instance spec).
+ * `<name>-otel-collector` (subchart naming off `.Release.Name`).
+ *
+ * KRO STATUS vs CLIENT-HYDRATED SPLIT: fields anchored on the owned
+ * HelmRelease resource serialize as KRO status CEL and appear on the live
+ * KRO CR's status (GitOps/KRO consumers can read them): `ready`, `phase`,
+ * `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`,
+ * `app.host` — raw CEL over `clickstackHelmRelease.metadata.name`/
+ * `.namespace`, never `schema.spec.*` (KRO status CEL cannot reference the
+ * instance spec). The BARE build-time constants `app.appPort` (3000) and
+ * `app.apiPort` (8000), plus the spec-derived `version`, have no resource
+ * anchor and are hydrated CLIENT-SIDE by TypeKro (absent from the KRO CR
+ * status); the ports remain KRO-visible inside the URL fields.
  * Ports are the chart defaults (`hyperdx.ports`, `otel-collector.ports`);
  * port overrides via build-time raw values are NOT reflected here.
  */

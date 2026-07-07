@@ -206,13 +206,24 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       '.exists(c, c.type == "Ready" && c.status == "True")'
     );
 
-    // Status endpoints derive from the owned HelmRelease's metadata (resource
-    // refs — valid in KRO status CEL, unlike schema.spec refs). Naming is
+    // Status endpoints derive from the owned HelmRelease resource so they
+    // serialize as KRO status CEL and land on the live KRO CR's status
+    // (same reachability class as the PR #93 review finding). Naming is
     // deterministic because the mapper pins `fullnameOverride` to the release
     // name: HyperDX Service = `<name>`, gateway Service =
-    // `<name>-otel-collector`. Ports are chart defaults (see resources/helm.ts).
-    const releaseName = _clickstackHelmRelease.metadata.name;
-    const releaseNamespace = _clickstackHelmRelease.metadata.namespace;
+    // `<name>-otel-collector`. Ports are chart defaults (see resources/helm.ts)
+    // and ride INSIDE the resource-derived URL strings.
+    //
+    // RAW Cel.expr over the resource id is required: the status-builder proxy
+    // passes `metadata` values through VERBATIM, and the HelmRelease's
+    // metadata.name in the template is itself a schema ref — a Cel.template
+    // over `_clickstackHelmRelease.metadata.name` therefore resolves back to
+    // `schema.spec.name`, gets classified static (client-hydrated), and is
+    // DROPPED from the KRO status. A raw resource-path expression survives
+    // serialization as genuine KRO CEL.
+    const releaseMeta = 'clickstackHelmRelease.metadata';
+    const appHostCel = `${releaseMeta}.name + "." + ${releaseMeta}.namespace + ".svc.cluster.local"`;
+    const gatewayHostCel = `${releaseMeta}.name + "${CLICKSTACK_GATEWAY_NAME_SUFFIX}." + ${releaseMeta}.namespace + ".svc.cluster.local"`;
 
     return {
       ready: helmReleaseReady,
@@ -223,26 +234,20 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       ),
       version: resolvedVersion,
       ui: {
-        url: Cel.template(
-          `http://%s.%s.svc.cluster.local:${CLICKSTACK_APP_PORT}`,
-          releaseName,
-          releaseNamespace
-        ),
+        url: Cel.expr<string>(`"http://" + ${appHostCel} + ":${CLICKSTACK_APP_PORT}"`),
       },
       gateway: {
-        otlpHttpEndpoint: Cel.template(
-          `http://%s${CLICKSTACK_GATEWAY_NAME_SUFFIX}.%s.svc.cluster.local:${CLICKSTACK_OTLP_HTTP_PORT}`,
-          releaseName,
-          releaseNamespace
+        otlpHttpEndpoint: Cel.expr<string>(
+          `"http://" + ${gatewayHostCel} + ":${CLICKSTACK_OTLP_HTTP_PORT}"`
         ),
-        otlpGrpcEndpoint: Cel.template(
-          `http://%s${CLICKSTACK_GATEWAY_NAME_SUFFIX}.%s.svc.cluster.local:${CLICKSTACK_OTLP_GRPC_PORT}`,
-          releaseName,
-          releaseNamespace
+        otlpGrpcEndpoint: Cel.expr<string>(
+          `"http://" + ${gatewayHostCel} + ":${CLICKSTACK_OTLP_GRPC_PORT}"`
         ),
       },
       app: {
-        host: Cel.template('%s.%s.svc.cluster.local', releaseName, releaseNamespace),
+        host: Cel.expr<string>(appHostCel),
+        // Bare numeric constants — no resource anchor, so client-hydrated
+        // only; both ports are KRO-visible inside the URL fields above.
         appPort: CLICKSTACK_APP_PORT,
         apiPort: CLICKSTACK_API_PORT,
       },
