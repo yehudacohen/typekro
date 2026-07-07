@@ -198,8 +198,10 @@ interface ClickStackBuildOptionsBase {
    * naming anchor) — which are re-applied after the merge. Build-time by
    * design: a free-form values tree cannot be represented per-instance in a
    * KRO schema without silently dropping it (the accepted-but-ignored config
-   * class this family refuses to ship). Per-instance overrides go through the
-   * runtime spec's `customValues` instead.
+   * class this family refuses to ship). Per-instance, DIRECT-MODE-ONLY
+   * overrides can go through the runtime type's `customValues` instead (an
+   * internal escape hatch, not part of the KRO-mode schema — see
+   * `ClickStackBootstrapRuntimeConfig`'s doc comment below).
    */
   values?: TypeKroChartValues<ClickStackHelmValues>;
   /** RGD name override (needed when registering both variants in one cluster). */
@@ -234,6 +236,17 @@ const bootstrapBaseShape = {
   'namespace?': 'string',
   /** Chart version (default: '3.0.1'). */
   'version?': 'string',
+  // SECRETS CAVEAT: `password`/`appPassword` below (and `apiKey` further
+  // down) travel as PLAINTEXT runtime spec values all the way into the
+  // generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
+  // object stored in etcd, readable by anyone with read access to the
+  // HelmRelease/RGD instance (`kubectl get helmrelease -o yaml`), unlike
+  // `k8s-telemetry.ts`'s `apiKeySecret` (a `secretKeyRef` env var — the
+  // value never appears in any CR spec). There is currently NO
+  // existing-Secret / secretKeyRef alternative for these three fields.
+  // Treat them as no more protected than any other spec field; do not
+  // consider this family production-ready for credentials that need
+  // stronger-than-etcd-RBAC protection until that gap is closed.
   /** External ClickHouse connection (REQUIRED — external-only build-around). */
   clickhouse: {
     /** DNS host of the external ClickHouse service (no scheme, no port). */
@@ -246,14 +259,14 @@ const bootstrapBaseShape = {
     'database?': 'string',
     /** Ingest/collector user (default: 'default') → `hyperdx.config.CLICKHOUSE_USER`. Needs SELECT,INSERT,CREATE,SHOW on the database. */
     'username?': 'string',
-    /** Ingest/collector password → `hyperdx.secrets.CLICKHOUSE_PASSWORD` (default: ''). */
+    /** Ingest/collector password → `hyperdx.secrets.CLICKHOUSE_PASSWORD` (default: ''). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
     'password?': 'string',
     /** Read-mostly UI user for HyperDX connections (default: `username`). Needs SHOW + SELECT. */
     'appUsername?': 'string',
-    /** UI user password → `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (default: `password`). */
+    /** UI user password → `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (default: `password`). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
     'appPassword?': 'string',
   },
-  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. */
+  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. PLAINTEXT in the HelmRelease spec — see the secrets caveat above `clickhouse`. */
   'apiKey?': 'string',
   /** HyperDX app (UI/API) conveniences. */
   'hyperdx?': {
@@ -263,13 +276,18 @@ const bootstrapBaseShape = {
     /** Public URL of the HyperDX UI → `hyperdx.config.FRONTEND_URL`. */
     'frontendUrl?': 'string',
   },
-  // NOTE (deliberate non-feature): there is NO per-instance `customValues`
-  // runtime field. The mapped values tree carries CEL templates
-  // (CLICKHOUSE_ENDPOINT, defaultConnections, ...), and the runtime values
-  // merge cannot embed template leaves inside a KRO map-merge expression —
-  // the serialized CEL comes out invalid (verified empirically). Raw chart
-  // overrides are BUILD-TIME (`makeClickstackBootstrap({ values })`), where
-  // the merge happens on concrete objects before serialization.
+  // NOTE: `customValues` is NOT part of this schema, so KRO-mode callers
+  // (validated against this shape) can't use it — the mapped values tree
+  // carries CEL templates (CLICKHOUSE_ENDPOINT, defaultConnections, ...),
+  // and the runtime values merge cannot embed template leaves inside a KRO
+  // map-merge expression (the serialized CEL comes out invalid, verified
+  // empirically). `ClickStackBootstrapRuntimeConfig` below re-adds
+  // `customValues` as an internal, DIRECT-MODE-ONLY escape hatch (only a
+  // concrete object merges — see helm-values-mapper.ts) with no test
+  // coverage backing it as a supported feature. For anything beyond ad hoc
+  // direct-mode tweaks, use build-time raw chart overrides instead
+  // (`makeClickstackBootstrap({ values })`), where the merge happens on
+  // concrete objects before serialization.
 } as const;
 
 /**
@@ -298,6 +316,14 @@ export type ClickStackExternalMongoBootstrapConfig =
 /** Widest runtime config the values mapper accepts (either variant). */
 export type ClickStackBootstrapRuntimeConfig = ClickStackBootstrapConfig & {
   mongoUri?: string;
+  /**
+   * INTERNAL, DIRECT-MODE-ONLY escape hatch — not part of the runtime
+   * schema (`bootstrapBaseShape`), so KRO-mode callers can never populate
+   * this field and it's absent from the generated CRD. Only a CONCRETE
+   * object merges (see helm-values-mapper.ts); no test coverage backs this
+   * as a supported feature. Prefer build-time `values` for anything beyond
+   * ad hoc direct-mode tweaks.
+   */
   customValues?: Record<string, unknown>;
 };
 

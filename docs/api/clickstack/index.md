@@ -7,6 +7,16 @@ OFFICIAL `clickstack` Helm chart (3.0.x, MIT) from
 **external ClickHouse** you already run (e.g. an Altinity-operator-managed
 [`ClickHouseInstallation`](../clickhouse/)).
 
+## Secrets Caveat
+
+`clickhouse.password`, `clickhouse.appPassword`, and `apiKey` travel as **plaintext** runtime spec
+values all the way into the generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
+object stored in etcd, readable by anyone with read access to the HelmRelease/RGD instance
+(`kubectl get helmrelease -o yaml`). This is unlike `clickstackK8sTelemetry`'s `apiKeySecret` (a
+`secretKeyRef` env var — the value never appears in any CR spec). There is currently **no
+existing-Secret alternative** for these three fields. Do not treat this family as production-ready
+for credentials that need stronger-than-etcd-RBAC protection until that gap is closed.
+
 ## Import
 
 ```typescript
@@ -70,10 +80,13 @@ Build-time (constructor — must be concrete; schema refs are rejected loudly): 
 static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name, namespace, chart
 version, the ClickHouse connection, API key, HyperDX conveniences.
 
-Note there is deliberately **no runtime `customValues` field**: the mapped values tree carries CEL
-template leaves, which cannot live inside a KRO runtime map-merge (the serialized CEL is invalid) —
-chart tweaks go through the build-time `values` instead. A concrete `customValues` object still merges
-in direct-mode deploys.
+Note `customValues` is **not part of the runtime schema** — it's absent from `bootstrapBaseShape`, so
+KRO-mode callers (whose spec is validated against that schema, and whose values come out as CEL) cannot
+use it at all: the mapped values tree carries CEL template leaves, which cannot live inside a KRO
+runtime map-merge (the serialized CEL is invalid). It IS accepted as an internal, **direct-mode-only**
+escape hatch by the wider runtime-config type the values mapper consumes — only a CONCRETE object
+merges, and there's no test coverage backing it as a supported feature. For anything beyond ad hoc
+direct-mode tweaks, go through the build-time `values` instead.
 
 ## Schema / Replication Caveat
 
