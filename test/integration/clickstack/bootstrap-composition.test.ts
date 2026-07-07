@@ -364,19 +364,11 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     expect(instance.status.phase).toBe('Ready');
 
     // `app` is a MIXED status object: `host` is dynamic (owned by the live
-    // KRO instance, sent as CEL over the HelmRelease), `appPort`/`apiPort`
-    // are static build-time constants that never reach KRO at all.
-    // Live-verified: the post-deploy live-re-execution merge here only
-    // checked whether the TOP-LEVEL `app` key was present in dynamicFields
-    // (true, since `host` is dynamic) and, if so, kept the KRO-hydrated
-    // value outright — silently discarding the static siblings live
-    // re-execution had correctly computed alongside it. Root-caused and
-    // fixed in typekro#98 (recurse into mixed objects instead of only
-    // checking the top-level key); not yet in this factory's typekro pin.
-    // Assert the documented reality rather than a value the framework
-    // cannot yet produce here.
-    expect(instance.status.app.appPort).toBeUndefined();
-    expect(instance.status.app.apiPort).toBeUndefined();
+    // KRO instance, sent as CEL over the HelmRelease), while `appPort`/
+    // `apiPort` are static build-time constants that never reach the KRO CR
+    // status. TypeKro hydrates those static siblings client-side after #98.
+    expect(instance.status.app.appPort).toBe(3000);
+    expect(instance.status.app.apiPort).toBe(8000);
 
     // 1. The RGD reached Active on the live cluster.
     const rgdRaw: any = await customApi.getClusterCustomObject({
