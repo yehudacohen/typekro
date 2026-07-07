@@ -70,6 +70,10 @@
       "import": "./dist/factories/dagster/index.js",
       "types": "./dist/factories/dagster/index.d.ts"
     },
+    "./clickstack": {
+      "import": "./dist/factories/clickstack/index.js",
+      "types": "./dist/factories/clickstack/index.d.ts"
+    },
     "./caddy": {
       "import": "./dist/factories/caddy/index.js",
       "types": "./dist/factories/caddy/index.d.ts"
