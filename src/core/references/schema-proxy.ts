@@ -428,17 +428,33 @@ export function createResourcesProxy<TResources extends Record<string, unknown>>
     // but converts field access to resource references instead of schema references
     proxiedResources[resourceKey] = new Proxy(resourceRecord, {
       get(target, prop: string) {
-        if (prop === 'metadata') {
-          return resourceRecord.metadata;
-        }
         if (prop === 'kind') {
           return resourceRecord.kind;
         }
         if (prop === 'apiVersion') {
           return resourceRecord.apiVersion;
         }
-        if (prop === 'spec' || prop === 'status') {
-          // Return a proxy that converts the MagicProxy field access to resource references
+        if (prop === 'spec' || prop === 'status' || prop === 'metadata') {
+          // Return a proxy that converts the MagicProxy field access to resource references.
+          //
+          // `metadata` used to be special-cased to a verbatim pass-through of the ENHANCED
+          // resource's own `.metadata` value (`return resourceRecord.metadata`). That value is
+          // whatever the resource's own template stored — e.g. `clickHouseInstallation({ name:
+          // schema.spec.name })` stores the SCHEMA ref itself in `metadata.name` — so
+          // `someResource.metadata.name` read inside a status builder silently returned the
+          // ORIGINAL schema reference (`schema.spec.name`) instead of a resource-anchored one
+          // (`resourceId: 'someResource', fieldPath: 'metadata.name'`).
+          //
+          // That is observably wrong two ways: (1) KRO-mode serialization: a status field built
+          // from `resource.metadata.name` classified as schema-derived and was silently dropped
+          // from the live KRO CR's status (the field genuinely IS resource-derived — the API
+          // server echoes `metadata.name`, no different from `.status.*` fields, which ARE
+          // proxied correctly here); (2) direct-mode hydration: a status field built via a raw
+          // CEL-string workaround for (1) had no live JS binding to the resource at all, so
+          // direct mode's live-status re-execution (`deepMergeLiveStatus`) could never resolve
+          // it either — the underlying resource id/fieldPath info that hydration keys off never
+          // existed. `metadata` (like `spec`/`status`) is live, resource-anchored data once the
+          // resource is deployed — it gets the SAME resource-ref treatment.
           return createResourceMagicProxy(resourceKey, prop);
         }
         // For all other properties, return the original value

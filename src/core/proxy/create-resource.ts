@@ -257,6 +257,45 @@ function createPropertyProxy<T extends object>(
         }
       }
 
+      // `metadata` needs DIFFERENT treatment than `spec`/`status`: status is NEVER concrete
+      // before deploy (a ref is always correct there), but metadata is OFTEN already concrete
+      // at construction time — e.g. a resource built with a literal `name`, whose value other
+      // resources legitimately read synchronously while being built (Ory's Helm values
+      // reference a sibling Secret's `metadata.name` this way). Force-ref UNCONDITIONALLY
+      // (like spec/status) would break that: it returns a resource-anchored ref instead of the
+      // already-known literal, which downstream direct-mode construction can't resolve.
+      //
+      // So for metadata we redirect to a resource-anchored ref ONLY when the underlying stored
+      // value is ITSELF still unresolved (a KubernetesRef or CelExpression — e.g.
+      // `clickHouseInstallation({ name: schema.spec.name })` stores the SCHEMA ref verbatim in
+      // `metadata.name`). A concrete metadata value passes straight through, unchanged from
+      // today. This fixes a real, narrow bug: reading `someResource.metadata.name` inside a
+      // status builder used to silently return the underlying `schema.spec.name` ref — wrong
+      // two ways: (1) KRO-mode serialization classifies the resulting status field as
+      // schema-derived and drops it from the live KRO CR's status entirely (schema.spec.* is
+      // not valid in KRO status CEL, even though metadata.name genuinely IS live,
+      // resource-anchored data once the resource is deployed — the API server echoes it back,
+      // no different from `.status.*`); (2) direct-mode's live-status re-execution has no
+      // live-data source keyed by schema paths, so the field could never resolve to a concrete
+      // value post-deploy either. Redirecting to `resourceId.metadata.name` fixes both: KRO
+      // mode gets valid, reachable status CEL, and direct-mode's existing re-execution/
+      // deepMergeLiveStatus machinery — which already hydrates `.status.*` refs the same way —
+      // hydrates it too, with no framework changes needed beyond this proxy.
+      if (isInStatusBuilderContext() && basePath === 'metadata' && !getCurrentCompositionContext()?.liveStatusMap) {
+        const rawValue = (obj as Record<string, unknown>)[prop as string];
+        // Ref/CelExpression markers are Proxies wrapping an empty FUNCTION target
+        // (`createResourceRefFactory`/`createSchemaRefFactory`), so `typeof rawValue` reports
+        // `'function'`, not `'object'` — both must be checked or this branch silently never
+        // triggers (a Proxy's typeof reflects its target, per the JS spec).
+        const isUnresolved =
+          rawValue !== null &&
+          (typeof rawValue === 'object' || typeof rawValue === 'function') &&
+          (KUBERNETES_REF_BRAND in rawValue || CEL_EXPRESSION_BRAND in rawValue);
+        if (isUnresolved) {
+          return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
+        }
+      }
+
       if (prop in obj) {
         return obj[prop as keyof T];
       } else {

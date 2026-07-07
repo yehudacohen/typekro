@@ -2444,18 +2444,31 @@ export class KroResourceFactoryImpl<
         if (liveStatus) {
           for (const [key, value] of Object.entries(liveStatus)) {
             if (key.startsWith('__')) continue;
-            // Live re-execution uses the actual deploy spec plus cluster state, so it is the
-            // most accurate source for non-dynamic fields. Dynamic fields remain owned by the
-            // live Kro instance status and should not be replaced here.
+            // A key ENTIRELY absent from dynamicFields never touched KRO at
+            // all — live re-execution (the actual deployed spec plus real
+            // cluster reads) is strictly more authoritative than the
+            // pre-deploy static evaluation, so it unconditionally overrides,
+            // even when the live value is falsy/empty.
             if (!(key in dynamicFields)) {
               (enhancedProxy.status as Record<string, unknown>)[key] = value;
               continue;
             }
 
+            // `dynamicFields`/`evaluatedStaticFields` are classified per LEAF
+            // (see `separateNestedObject`), so a key CAN be in dynamicFields
+            // while still holding a MIXED object — e.g.
+            // `app: { host: <CEL>, appPort: 3000 }` has one dynamic leaf
+            // (`host`, KRO-owned) and one static leaf (`appPort`, never sent
+            // to KRO). Only checking the top-level key here treated the
+            // whole object as "belongs to KRO, don't touch" and discarded
+            // the static leaves the live re-execution correctly computed.
+            // Recurse so each leaf is filled from the most accurate source:
+            // the already-merged current value if present (dynamic leaves
+            // must never be overwritten by a client-side re-execution),
+            // live re-execution only to fill a genuine gap.
             const current = (enhancedProxy.status as Record<string, unknown>)[key];
-            if (current === undefined || current === null || current === '') {
-              (enhancedProxy.status as Record<string, unknown>)[key] = value;
-            }
+            (enhancedProxy.status as Record<string, unknown>)[key] =
+              fillStatusGapsFromLiveReExecution(current, value);
           }
         }
       } catch (error: unknown) {
@@ -2698,6 +2711,50 @@ export class KroResourceFactoryImpl<
     }
     return hydratedFields;
   }
+}
+
+// ── Module-level helpers ─────────────────────────────────────────────────
+
+/**
+ * Recursively fill gaps in the already-merged (static + KRO-hydrated)
+ * status with values from re-executing the composition against live
+ * cluster data.
+ *
+ * `current` (the already-merged static/dynamic status) wins for any leaf
+ * that already has a value — dynamic leaves are owned by the live KRO
+ * instance and must not be overwritten by a client-side re-execution.
+ * `live` only fills a leaf that is genuinely empty (undefined/null/''),
+ * which happens for static leaves that live inside an otherwise-dynamic
+ * object (KRO never sees them, so nothing upstream ever populated them).
+ *
+ * Recursing into plain objects — instead of only checking the top-level
+ * status key — matters because a single top-level key can be a MIXED
+ * object with both dynamic and static leaves (e.g.
+ * `app: { host: <CEL, KRO-owned>, appPort: 3000 }`); treating the whole
+ * key as "belongs to KRO" would discard the static leaves entirely.
+ */
+export function fillStatusGapsFromLiveReExecution(current: unknown, live: unknown): unknown {
+  if (current === undefined || current === null || current === '') {
+    return live;
+  }
+  if (
+    current !== null &&
+    live !== null &&
+    typeof current === 'object' &&
+    typeof live === 'object' &&
+    !Array.isArray(current) &&
+    !Array.isArray(live)
+  ) {
+    const currentObj = current as Record<string, unknown>;
+    const liveObj = live as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...currentObj };
+    for (const key of Object.keys(liveObj)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      merged[key] = fillStatusGapsFromLiveReExecution(currentObj[key], liveObj[key]);
+    }
+    return merged;
+  }
+  return current;
 }
 
 /**

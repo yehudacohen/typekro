@@ -288,8 +288,15 @@ export function makeClickHouseCluster(
           name: Cel.expr<string>(`${chiMeta}.name`),
           namespace: Cel.expr<string>(`${chiMeta}.namespace`),
           endpoint: clickhouse.status.endpoint,
-          hostsCount: clickhouse.status.hostsCount,
-          hostsCompletedCount: clickhouse.status.hostsCompletedCount,
+          // The operator's REAL CHI status fields are `hosts`/`hostsCompleted` — verified against
+          // the installed CRD's OpenAPI schema on a live cluster. `hostsCount`/`hostsCompletedCount`
+          // do not exist on the resource and made KRO reject the RGD outright ("undefined field
+          // 'hostsCompletedCount'", GraphAccepted=False, state Inactive) — caught only by a LIVE
+          // admission run; the CEL type-checker has no notion of the operator's real CRD schema.
+          // The PUBLIC contract keeps the more explicit field names the review asked for; only the
+          // CEL source reference changes.
+          hostsCount: clickhouse.status.hosts,
+          hostsCompletedCount: clickhouse.status.hostsCompleted,
         },
       };
     }
