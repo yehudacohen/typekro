@@ -239,7 +239,13 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     // (not a regression we can fix inside this factory; tracked as a
     // typekro#94 follow-up: "status derivations via the resources proxy
     // silently degrade to schema refs" is the sibling failure mode of the
-    // same underlying gap). `factory('kro')` callers get the fully live
+    // same underlying gap). UPDATE: the root cause is fixed in typekro#97
+    // (resource `.metadata.*` reads inside status builders no longer
+    // silently degrade to schema refs); once that lands and this factory
+    // bumps its typekro dependency, the raw `Cel.expr` workaround can be
+    // dropped for natural proxy syntax, and this whole block collapses to
+    // the same plain-property assertions as the resource-status fields
+    // above. `factory('kro')` callers get the fully live
     // contract; `factory('direct')` callers needing these strings can
     // build them from `spec.name`/`spec.namespace`, which they already have
     // synchronously (the same naming rule, documented on the status type).
