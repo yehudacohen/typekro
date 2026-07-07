@@ -531,6 +531,26 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  * NOTE: operator health is NOT surfaced here — the operator is separate
  * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
  * whose own status carries `ready`/`phase`/`version` for it.
+ *
+ * `factory('direct')` LIMITATION (live-verified): the resource-anchored fields above are built via
+ * a raw `Cel.expr("...")` string over the CHI's `metadata`/`spec` (required — plain proxy access on
+ * `.metadata.*` is misclassified as schema-derived and dropped from KRO status entirely). That
+ * technique fixes `factory('kro')` reachability but is opaque to direct mode's live-status
+ * re-execution, which has no CEL interpreter and can only hydrate fields it evaluates as plain JS
+ * against the live resource. So in DIRECT MODE ONLY, `clickhouse.host`/`nativeUrl`/`httpUrl`/
+ * `clusterName`, `keeper.host`/`port`, and `installation.name`/`namespace` remain unresolved
+ * `CelExpression` markers (`isCelExpression(value)` is `true`) — a narrow typekro gap, not something
+ * this factory can paper over (tracked: typekro#94, "status derivations via the resources proxy
+ * silently degrade to schema refs"). **UPDATE:** the root cause is fixed in
+ * [typekro#97](https://github.com/yehudacohen/typekro/pull/97) (resource `.metadata.*` reads
+ * inside status builders no longer silently degrade to schema refs); once that lands and this
+ * factory bumps its typekro dependency, the raw `Cel.expr` workaround above can be dropped in
+ * favor of natural proxy syntax, and these fields will hydrate correctly in BOTH modes.
+ * `ready`/`phase`/`installation.endpoint`/`hostsCount`/
+ * `hostsCompletedCount` DO hydrate in direct mode (plain `clickhouse.status.*` property access).
+ * `factory('kro')` callers always get the full live contract on the CR status. Direct-mode callers
+ * needing the connection string can build it themselves — same naming rule, from `spec.name`/
+ * `spec.namespace`, which they already have synchronously.
  */
 export interface ClickHouseClusterStatus {
   /** True once the operator reports the CHI fully reconciled ('Completed'). */
