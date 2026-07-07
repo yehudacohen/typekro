@@ -184,7 +184,15 @@ The connection details are derived from the operator's **verified naming convent
 - Default ports: native TCP `9000`, HTTP `8123`, Keeper client `2181` (`pkg/apis/clickhouse.altinity.com/v1/type_host.go` `ChDefaultTCPPortNumber` / `ChDefaultHTTPPortNumber` / `KpDefaultZKPortNumber`).
 - Reconcile state machine: `status.status` ∈ `InProgress | Completed | Aborted | Terminating` (`pkg/apis/clickhouse.altinity.com/v1/type_status.go`), shared by CHI and CHK.
 
-Resource-derived status fields (`ready`, `phase`, `installation.endpoint`, host counters) serialize as KRO CEL over the CHI resource; spec-derived connection fields (host, URLs, ports, `clusterName`, `user`) are hydrated client-side — KRO status CEL cannot reference `schema.spec.*`, and TypeKro's static-hydration path handles them.
+**Where each field lives on the KRO CR.** The contract is anchored on the **owned CHI resource** so it serializes as KRO status CEL and is visible on the live KRO CR's status (GitOps/KRO consumers can read it):
+
+- `ready`, `phase`, `installation.endpoint`, host counters — CEL over `clickhouse.status.*`.
+- `clickhouse.host`, `clickhouse.nativeUrl`, `clickhouse.httpUrl` — CEL string concat over `clickhouse.metadata.name` / `clickhouse.metadata.namespace` (the operator's `clickhouse-{chi-name}` CR-service naming), with the port constants embedded in the URL strings.
+- `clickhouse.clusterName` — `clickhouse.spec.configuration.clusters[0].name` (the resolved name in the CHI itself).
+- `keeper.host` / `keeper.port` — `clickhouse.spec.configuration.zookeeper.nodes[0].*`.
+- `installation.name` / `installation.namespace` — `clickhouse.metadata.*`.
+
+Only the **bare build-time constants** — `clickhouse.port` (9000), `clickhouse.database` (`'default'`), and `clickhouse.user` (first declared user) — are hydrated client-side and absent from the KRO CR status: KRO status CEL cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest resource field to anchor them on. The native port is still KRO-visible inside `nativeUrl`/`httpUrl`.
 
 Operator health is deliberately **not** part of this contract: the operator is separate one-per-cluster infrastructure whose own bootstrap status carries `ready` / `phase` / `version`.
 

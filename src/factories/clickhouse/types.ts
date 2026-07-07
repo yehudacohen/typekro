@@ -515,6 +515,19 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  *   (`pkg/apis/clickhouse.altinity.com/v1/type_host.go`
  *   ChDefaultTCPPortNumber / ChDefaultHTTPPortNumber)
  *
+ * KRO STATUS vs CLIENT-HYDRATED SPLIT: fields derived from the owned CHI
+ * resource serialize as KRO status CEL and appear on the live KRO CR's
+ * status (GitOps/KRO consumers can read them):
+ * `ready`, `phase`, `clickhouse.host`, `clickhouse.nativeUrl`,
+ * `clickhouse.httpUrl`, `clickhouse.clusterName`, `keeper.host`,
+ * `keeper.port`, `installation.*`.
+ * The remaining fields are BARE build-time constants with no resource
+ * anchor (KRO status CEL cannot reference schema.spec.* or literals-only
+ * expressions), so they are hydrated CLIENT-SIDE by TypeKro and are NOT on
+ * the KRO CR status: `clickhouse.port` (9000 — also visible inside the
+ * KRO-serialized `nativeUrl`), `clickhouse.database` ('default'), and
+ * `clickhouse.user` (first declared user name).
+ *
  * NOTE: operator health is NOT surfaced here — the operator is separate
  * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
  * whose own status carries `ready`/`phase`/`version` for it.

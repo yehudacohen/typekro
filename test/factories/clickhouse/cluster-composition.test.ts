@@ -122,8 +122,8 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
     });
   });
 
-  describe('status contract (static-hydration vs CEL split)', () => {
-    it('keeps only resource-derived fields in the KRO status CEL', () => {
+  describe('status contract (KRO status CEL vs client-hydrated split)', () => {
+    it('serializes the connection contract into KRO status as CEL over the CHI resource', () => {
       const yaml = makeClickHouseCluster({
         zones: ['us-east-2a', 'us-east-2b'],
         replicas: 2,
@@ -138,13 +138,42 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       expect(yaml).toContain('hostsCount: ${clickhouse.status.hostsCount}');
       expect(yaml).toContain('hostsCompletedCount: ${clickhouse.status.hostsCompletedCount}');
 
-      // Spec-derived connection fields (host/urls/ports/clusterName/user)
-      // must NOT be in the KRO status schema: KRO status CEL cannot reference
-      // schema.spec.*, so TypeKro hydrates them client-side (static fields).
+      // The CONNECTION CONTRACT is anchored on the OWNED CHI RESOURCE, so it
+      // reaches the KRO CR's status (GitOps/KRO consumers see it live) —
+      // derived from the operator's verified naming, never schema.spec.*.
       const statusSection = yaml.slice(yaml.indexOf('status:'), yaml.indexOf('resources:'));
-      expect(statusSection).not.toContain('nativeUrl');
-      expect(statusSection).not.toContain('httpUrl');
+      expect(statusSection).toContain(
+        'host: ${"clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local"}'
+      );
+      expect(statusSection).toContain(
+        'nativeUrl: ${"clickhouse://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":9000"}'
+      );
+      expect(statusSection).toContain(
+        'httpUrl: ${"http://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":8123"}'
+      );
+      expect(statusSection).toContain(
+        'clusterName: ${clickhouse.spec.configuration.clusters[0].name}'
+      );
+      // Keeper echo comes from the CHI's own zookeeper section.
+      expect(statusSection).toContain(
+        'host: ${clickhouse.spec.configuration.zookeeper.nodes[0].host}'
+      );
+      expect(statusSection).toContain(
+        'port: ${clickhouse.spec.configuration.zookeeper.nodes[0].port}'
+      );
+      // Installation identity from the owned resource too.
+      expect(statusSection).toContain('name: ${clickhouse.metadata.name}');
+      expect(statusSection).toContain('namespace: ${clickhouse.metadata.namespace}');
+
+      // KRO status CEL can never reference schema.spec.*.
       expect(statusSection).not.toContain('schema.spec');
+
+      // BARE constants (clickhouse.port/database/user) have no resource
+      // anchor, so they stay CLIENT-HYDRATED — absent from KRO status. The
+      // native port is still KRO-visible inside nativeUrl above.
+      expect(statusSection).not.toContain('database:');
+      expect(statusSection).not.toContain('user:');
+      expect(statusSection).not.toMatch(/^\s+port: 9000$/m);
     });
 
     it('derives the connection contract from verified operator naming and ports', () => {
@@ -179,6 +208,26 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       expect(yaml).toContain('signoz/password_sha256_hex: abc123');
       expect(yaml).not.toContain('undefined');
       expect(yaml).not.toContain('[object Object]');
+    });
+  });
+
+  describe('topology count validation (at construction time)', () => {
+    it.each([0, -1, 1.5])('rejects invalid replicas %p when the composition is constructed', (replicas) => {
+      expect(() => makeClickHouseCluster({ replicas })).toThrow(
+        /makeClickHouseCluster: 'replicas' must be a positive integer/
+      );
+    });
+
+    it.each([0, -2, 0.5])('rejects invalid shards %p when the composition is constructed', (shards) => {
+      expect(() => makeClickHouseCluster({ shards })).toThrow(
+        /makeClickHouseCluster: 'shards' must be a positive integer/
+      );
+    });
+
+    it('rejects zero counts together (the reviewer repro) without needing toYaml()', () => {
+      expect(() => makeClickHouseCluster({ replicas: 0, shards: 0 })).toThrow(
+        /must be a positive integer \(got 0\)/
+      );
     });
   });
 

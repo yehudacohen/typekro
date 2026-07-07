@@ -129,6 +129,34 @@ describe('ClickHouseInstallation Factory', () => {
     });
   });
 
+  describe('count validation (shared across layout paths)', () => {
+    const base = { name: 'test-ch', version: '25.12.5', storage: { size: '10Gi' } };
+
+    it.each([0, -1, 1.5])('rejects invalid replicas %p on the plain-layout path', (replicas) => {
+      expect(() => clickHouseInstallation({ ...base, replicas })).toThrow(
+        /'replicas' must be a positive integer/
+      );
+    });
+
+    it.each([0, -2, 2.5])('rejects invalid shards %p on the plain-layout path', (shards) => {
+      expect(() => clickHouseInstallation({ ...base, shards })).toThrow(
+        /'shards' must be a positive integer/
+      );
+    });
+
+    it('rejects invalid shards on the zone-pinned path too', () => {
+      expect(() =>
+        clickHouseInstallation({ ...base, shards: 0, replicas: 2, zones: ['us-east-2a'] })
+      ).toThrow(/'shards' must be a positive integer/);
+    });
+
+    it('names the entry point and received value in the error', () => {
+      expect(() => clickHouseInstallation({ ...base, replicas: 0 })).toThrow(
+        /clickHouseInstallation: 'replicas' must be a positive integer \(got 0\)/
+      );
+    });
+  });
+
   describe('zone-pinned layout', () => {
     it('should emit a per-replica layout with zone-pinned pod templates and NO replicasCount', () => {
       const chi = clickHouseInstallation({

@@ -26,6 +26,7 @@ import type {
   ClickHouseInstallationSpec,
   ClickHouseInstallationStatus,
 } from '../types.js';
+import { assertPositiveIntegerCount } from '../utils/validation.js';
 import { compileZonePinnedLayout } from '../utils/zone-layout.js';
 
 /**
@@ -193,6 +194,11 @@ function compileInstallationSpec(
 
   const shards = config.shards ?? 1;
   const replicas = config.replicas ?? 1;
+  // SHARED count validation for BOTH layout paths: the plain homogeneous
+  // layout would otherwise emit `shardsCount: 0` / `replicasCount: 0` —
+  // invalid operator input the zone-pinned path already rejected.
+  assertPositiveIntegerCount('clickHouseInstallation', 'shards', shards);
+  assertPositiveIntegerCount('clickHouseInstallation', 'replicas', replicas);
   const clusterName = config.clusterName ?? DEFAULT_CHI_CLUSTER_NAME;
   const image =
     config.image ?? `${DEFAULT_CLICKHOUSE_IMAGE_REPOSITORY}:${config.version}`;

@@ -28,6 +28,12 @@ describe('ClickHouseKeeperInstallation Factory', () => {
       expect(chk.spec.configuration?.clusters?.[0]?.layout?.replicasCount).toBe(3);
     });
 
+    it.each([0, -3, 1.5])('rejects invalid keeper replicas %p', (replicas) => {
+      expect(() => clickHouseKeeperInstallation({ name: 'keeper', replicas })).toThrow(
+        /clickHouseKeeperInstallation: 'replicas' must be a positive integer/
+      );
+    });
+
     it('should omit storage templates when no storage is configured', () => {
       const chk = clickHouseKeeperInstallation({ name: 'keeper' });
 

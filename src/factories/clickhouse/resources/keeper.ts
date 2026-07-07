@@ -15,6 +15,7 @@ import type {
   ClickHouseKeeperInstallationSpec,
   ClickHouseKeeperInstallationStatus,
 } from '../types.js';
+import { assertPositiveIntegerCount } from '../utils/validation.js';
 import { chiReadinessEvaluator } from './installation.js';
 
 /** Name of the generated keeper data volume claim template. */
@@ -50,6 +51,9 @@ function compileKeeperSpec(
   }
 
   const replicas = config.replicas ?? 1;
+  // A CHK layout with `replicasCount: 0` (or a fractional/negative count) is
+  // invalid operator input — same shared validation as the CHI paths.
+  assertPositiveIntegerCount('clickHouseKeeperInstallation', 'replicas', replicas);
 
   return {
     configuration: {

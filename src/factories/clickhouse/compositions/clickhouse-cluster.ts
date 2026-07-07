@@ -22,6 +22,7 @@
 
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import {
   type ClickHouseClusterSpec,
@@ -34,6 +35,7 @@ import {
   clickHouseInstallation,
   DEFAULT_CHI_CLUSTER_NAME,
 } from '../resources/installation.js';
+import { assertPositiveIntegerCount } from '../utils/validation.js';
 
 /** Native (TCP) ClickHouse port — operator default ChDefaultTCPPortNumber. */
 export const CLICKHOUSE_NATIVE_PORT = 9000;
@@ -62,10 +64,16 @@ interface ResolvedTopology {
 
 function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology {
   const replicas = topology.replicas ?? 1;
+  const shards = topology.shards ?? 1;
+  // Fail at CONSTRUCTION time (not first serialization): counts are
+  // build-time topology, and zero/fractional/negative counts compile to
+  // invalid operator input (`replicasCount: 0` / `shardsCount: 0`).
+  assertPositiveIntegerCount('makeClickHouseCluster', 'replicas', replicas);
+  assertPositiveIntegerCount('makeClickHouseCluster', 'shards', shards);
   return {
     zones: topology.zones ?? [],
     replicas,
-    shards: topology.shards ?? 1,
+    shards,
     // Replicated tables need coordination — default keeper on for
     // multi-replica clusters unless the caller opts out explicitly.
     keeper: topology.keeper ?? replicas > 1,
@@ -210,7 +218,26 @@ export function makeClickHouseCluster(
       // HTTP 8123 (type_host.go defaults). Per-host services
       // (`chi-{chi}-{cluster}-{shard}-{replica}`) exist too but the CR
       // service is the stable entrypoint.
-      const host = `clickhouse-${spec.name}.${spec.namespace}.svc.cluster.local`;
+      //
+      // DERIVED FROM THE OWNED CHI RESOURCE (not schema.spec): KRO status
+      // CEL cannot reference schema.spec.*, so a spec-derived field is
+      // classified static (client-hydrated) and DROPPED from the KRO CR's
+      // status. Anchoring the derivation on the CHI resource
+      // (`clickhouse.metadata.*` / `clickhouse.spec.*`) makes these
+      // serialize as KRO status CEL, so GitOps/KRO consumers see the
+      // connection contract on the live CR.
+      //
+      // The string concats are RAW Cel.expr over the resource id: the
+      // status-builder proxy passes `metadata` values through verbatim
+      // (which would resolve back to schema.spec.name → static), and the
+      // serializer inlines CelExpression-valued template fields (like the
+      // defaulted clusterName / keeper port) back to their schema
+      // expressions — a raw resource-path expression survives both. Port
+      // constants ride INSIDE the resource-derived URL strings; the BARE
+      // constant fields (port/database/user) have no resource anchor and
+      // stay client-hydrated — see ClickHouseClusterStatus for the split.
+      const chiMeta = `${CHI_RESOURCE_ID}.metadata`;
+      const chiHostCel = `"clickhouse-" + ${chiMeta}.name + "." + ${chiMeta}.namespace + ".svc.cluster.local"`;
 
       return {
         ready: clickhouse.status.status === 'Completed',
@@ -221,26 +248,45 @@ export function makeClickHouseCluster(
               ? 'Failed'
               : 'Installing',
         clickhouse: {
-          host,
+          host: Cel.expr<string>(chiHostCel),
+          // Bare numeric constant — client-hydrated only (no resource
+          // anchor); the port also appears in the KRO-visible URLs below.
           port: CLICKHOUSE_NATIVE_PORT,
-          nativeUrl: `clickhouse://clickhouse-${spec.name}.${spec.namespace}.svc.cluster.local:${CLICKHOUSE_NATIVE_PORT}`,
-          httpUrl: `http://clickhouse-${spec.name}.${spec.namespace}.svc.cluster.local:${CLICKHOUSE_HTTP_PORT}`,
-          clusterName,
+          nativeUrl: Cel.expr<string>(
+            `"clickhouse://" + ${chiHostCel} + ":${CLICKHOUSE_NATIVE_PORT}"`
+          ),
+          httpUrl: Cel.expr<string>(
+            `"http://" + ${chiHostCel} + ":${CLICKHOUSE_HTTP_PORT}"`
+          ),
+          // The resolved logical cluster name is IN the owned CHI
+          // (configuration.clusters[0].name), so read it from there — the
+          // `spec.clusterName ?? default` expression itself is schema-only
+          // and would be dropped.
+          clusterName: Cel.expr<string>(
+            `${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`
+          ),
           database: CLICKHOUSE_DEFAULT_DATABASE,
           ...(firstUserName ? { user: firstUserName } : {}),
         },
         ...(resolved.keeper
           ? {
               keeper: {
-                // biome-ignore lint/style/noNonNullAssertion: schema-required when the topology enables keeper
-                host: spec.keeper!.host,
-                port: spec.keeper?.port ?? CLICKHOUSE_KEEPER_PORT,
+                // Echo the keeper endpoint from the CHI's own zookeeper
+                // section (resource-derived → lands in KRO status) rather
+                // than from schema.spec.keeper (static → dropped).
+                host: Cel.expr<string>(
+                  `${CHI_RESOURCE_ID}.spec.configuration.zookeeper.nodes[0].host`
+                ),
+                port: Cel.expr<number>(
+                  `${CHI_RESOURCE_ID}.spec.configuration.zookeeper.nodes[0].port`
+                ),
               },
             }
           : {}),
         installation: {
-          name: spec.name,
-          namespace: spec.namespace,
+          // CHI identity from the owned resource (same reachability rule).
+          name: Cel.expr<string>(`${chiMeta}.name`),
+          namespace: Cel.expr<string>(`${chiMeta}.namespace`),
           endpoint: clickhouse.status.endpoint,
           hostsCount: clickhouse.status.hostsCount,
           hostsCompletedCount: clickhouse.status.hostsCompletedCount,
