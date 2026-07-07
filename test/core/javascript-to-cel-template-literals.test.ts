@@ -93,10 +93,14 @@ describe('JavaScript to CEL Template Literals', () => {
 
       const yaml = testComposition.toYaml();
 
-      // Should include the message field as a CEL expression
-      // Note: deployment.metadata.name remains schema.spec.name in KRO status CEL.
+      // Should include the message field as a CEL expression, resource-anchored on the OWNED
+      // deployment's live metadata — not `schema.spec.name`. `metadata.name` is live,
+      // resource-anchored data once the resource is deployed (the API server echoes it back),
+      // no different from `.status.*`; a status field built from it must reach the live KRO CR
+      // status, which schema.spec.* references cannot (KRO status CEL cannot reference the
+      // instance spec — see docs/design and the fix in src/core/proxy/create-resource.ts).
       expect(yaml).toContain(
-        'message: ${"Deployment " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
+        'message: ${"Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"}'
       );
 
       // Verify CEL template behavior separately
