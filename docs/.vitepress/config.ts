@@ -95,6 +95,7 @@ export default withMermaid(
               { text: 'APISix', link: '/api/apisix/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
+              { text: 'ClickStack (HyperDX)', link: '/api/clickstack/' },
               { text: 'Dagster OSS', link: '/api/dagster/' },
               { text: 'Ory', link: '/api/ory/' },
               { text: 'Pebble', link: '/api/pebble/' },
