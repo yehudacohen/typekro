@@ -163,6 +163,57 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       .catch(() => {});
   }, 900000);
 
+  it('should deploy a cluster via the CURRENT public API (makeClickHouseCluster) and hydrate the connection contract', async () => {
+    // The raw clickHouseInstallation() test above predates the
+    // makeClickHouseCluster composition; this exercises the CURRENT public
+    // surface end-to-end: direct factory deploy + the #93 typed connection
+    // contract (host/nativeUrl/httpUrl/clusterName) hydrated from the live CHI.
+    const { makeClickHouseCluster } = await import('../../../src/factories/clickhouse/index.js');
+
+    await ensureNamespaceExists(chiNs, kubeConfig);
+
+    const clusterFactory = makeClickHouseCluster().factory('direct', {
+      namespace: chiNs,
+      waitForReady: true,
+      timeout: 600000,
+      kubeConfig,
+    });
+
+    try {
+      const instance = await clusterFactory.deploy({
+        name: 'e2e-cluster',
+        namespace: chiNs,
+        version: '25.7',
+        storage: { size: '1Gi' },
+        podResources: {
+          requests: { cpu: '100m', memory: '512Mi' },
+          limits: { memory: '1Gi' },
+        },
+      });
+
+      expect(instance.status.ready).toBe(true);
+      expect(instance.status.phase).toBe('Ready');
+
+      // The typed service contract downstream compositions (e.g. clickstack)
+      // consume instead of reconstructing operator naming rules.
+      expect(instance.status.clickhouse.host).toBe(
+        `clickhouse-e2e-cluster.${chiNs}.svc.cluster.local`
+      );
+      expect(instance.status.clickhouse.nativeUrl).toBe(
+        `clickhouse://clickhouse-e2e-cluster.${chiNs}.svc.cluster.local:9000`
+      );
+      expect(instance.status.clickhouse.httpUrl).toBe(
+        `http://clickhouse-e2e-cluster.${chiNs}.svc.cluster.local:8123`
+      );
+      expect(instance.status.clickhouse.clusterName).toBe('cluster');
+      expect(instance.status.installation.name).toBe('e2e-cluster');
+      expect(instance.status.installation.namespace).toBe(chiNs);
+    } finally {
+      // Cleanup the cluster instance (operator stays for other tests).
+      await clusterFactory.deleteInstance('e2e-cluster').catch(() => {});
+    }
+  }, 900000);
+
   it('should generate ResourceGraphDefinition YAML with CEL status expressions', async () => {
     const { clickhouseOperatorBootstrap } = await import(
       '../../../src/factories/clickhouse/compositions/clickhouse-operator-bootstrap.js'
