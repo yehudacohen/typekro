@@ -215,42 +215,21 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     // surface end-to-end: direct factory deploy + the #93 typed connection
     // contract (host/nativeUrl/httpUrl/clusterName) hydrated from the live CHI.
     //
-    // LIVE-VERIFIED SPLIT (found running this suite against a real cluster —
-    // see the companion factory('kro') test below for the fully-hydrated
-    // live CR proof): `ready`/`phase` and `installation.endpoint`/
-    // `hostsCount`/`hostsCompletedCount` are built from PLAIN property
-    // access on the CHI resource proxy (`clickhouse.status.*`) and DO
-    // hydrate here, because direct mode's live-status re-execution re-runs
-    // the composition function with the real resource substituted in and
-    // these fields touch it as an ordinary JS value.
-    //
-    // `clickhouse.host`/`nativeUrl`/`httpUrl`/`clusterName` and
-    // `installation.name`/`namespace` are different: they are built via a
-    // RAW `Cel.expr("...literal CEL text...")` string that never touches
-    // the real `clickhouse` resource object in JS (it's a hand-authored CEL
-    // expression, required because plain proxy access on `.metadata.*`
-    // gets misclassified as static/schema-derived and is dropped from KRO
-    // status entirely — see the composition's doc comment). That technique
-    // fixes KRO-mode reachability but is OPAQUE to direct mode's
-    // re-execution, which has no CEL interpreter and can only hydrate
-    // fields it can evaluate as plain JS against the live object. So in
-    // `factory('direct')` mode ONLY, these five fields remain unresolved
-    // `CelExpression` markers today — a genuine, narrow typekro limitation
-    // (not a regression we can fix inside this factory; tracked as a
-    // typekro#94 follow-up: "status derivations via the resources proxy
-    // silently degrade to schema refs" is the sibling failure mode of the
-    // same underlying gap). UPDATE: the root cause is fixed in typekro#97
-    // (resource `.metadata.*` reads inside status builders no longer
-    // silently degrade to schema refs); once that lands and this factory
-    // bumps its typekro dependency, the raw `Cel.expr` workaround can be
-    // dropped for natural proxy syntax, and this whole block collapses to
-    // the same plain-property assertions as the resource-status fields
-    // above. `factory('kro')` callers get the fully live
-    // contract; `factory('direct')` callers needing these strings can
-    // build them from `spec.name`/`spec.namespace`, which they already have
-    // synchronously (the same naming rule, documented on the status type).
+    // BIMODAL HYDRATION (live-verified on typekro 0.24.0). The whole
+    // connection contract hydrates to concrete strings in direct mode:
+    //   - metadata-anchored fields (`host`/`nativeUrl`/`httpUrl`,
+    //     `installation.name`/`namespace`) are NATURAL JS template literals
+    //     over the CHI proxy — direct mode's live-status re-execution
+    //     evaluates them against the real resource;
+    //   - the deep resource-path fields kept as raw `Cel.expr`
+    //     (`clusterName`, `keeper.host`) resolve too — direct mode's
+    //     reference resolver (cel-js) evaluates a resource-path CEL
+    //     expression against the live resource read;
+    //   - `ready`/`phase`/`installation.endpoint`/`hostsCount`/
+    //     `hostsCompletedCount` hydrate via plain `clickhouse.status.*` reads.
+    // This is the improvement over the pre-0.24.0 raw-`Cel.expr` gap
+    // (typekro#94), where these came back as unresolved CelExpression markers.
     const { makeClickHouseCluster } = await import('../../../src/factories/clickhouse/index.js');
-    const { isCelExpression } = await import('../../../src/utils/type-guards.js');
 
     await ensureNamespaceExists(chiNs, kubeConfig);
 
@@ -273,7 +252,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         },
       });
 
-      // Resource-status-derived fields DO hydrate in direct mode.
+      // Resource-status-derived fields hydrate in direct mode.
       expect(instance.status.ready).toBe(true);
       expect(instance.status.phase).toBe('Ready');
       expect(instance.status.installation.endpoint).toBe(
@@ -281,25 +260,19 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       );
       expect(instance.status.installation.hostsCount).toBe(1);
 
-      // Metadata/spec-derived CEL-string fields do NOT hydrate in direct
-      // mode today (see the block comment above) — assert the documented
-      // reality rather than a value the framework cannot yet produce here.
-      for (const value of [
-        instance.status.clickhouse.host,
-        instance.status.clickhouse.nativeUrl,
-        instance.status.clickhouse.httpUrl,
-        instance.status.clickhouse.clusterName,
-        instance.status.installation.name,
-        instance.status.installation.namespace,
-      ]) {
-        expect(isCelExpression(value)).toBe(true);
-      }
-      // The unresolved marker still carries the RIGHT expression text — the
-      // KRO-mode serialization for the SAME field is exactly this string
-      // (confirmed against the live KRO CR status in the companion test).
-      expect((instance.status.clickhouse.host as unknown as { expression: string }).expression).toBe(
-        '"clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local"'
+      // The full connection contract hydrates to concrete strings.
+      expect(instance.status.clickhouse.host).toBe(
+        `clickhouse-e2e-cluster.${chiNs}.svc.cluster.local`
       );
+      expect(instance.status.clickhouse.nativeUrl).toBe(
+        `clickhouse://clickhouse-e2e-cluster.${chiNs}.svc.cluster.local:9000`
+      );
+      expect(instance.status.clickhouse.httpUrl).toBe(
+        `http://clickhouse-e2e-cluster.${chiNs}.svc.cluster.local:8123`
+      );
+      expect(instance.status.clickhouse.clusterName).toBe('cluster');
+      expect(instance.status.installation.name).toBe('e2e-cluster');
+      expect(instance.status.installation.namespace).toBe(chiNs);
     } finally {
       // Cleanup the cluster instance (operator stays for other tests).
       await clusterFactory.deleteInstance('e2e-cluster').catch(() => {});
@@ -425,44 +398,59 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     }
 
     // Teardown assertions: instance CR, RGD, and generated CRD are gone.
-    await expect(
-      customApi.getNamespacedCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        namespace: kroCrNs,
-        plural: 'clickhouseclusters',
-        name: instanceName,
-      })
-    ).rejects.toThrow();
+    // Each of these deletions is processed asynchronously by KRO/the operator
+    // via finalizers and can lag a beat after `deleteInstance` returns — poll
+    // each to a short deadline rather than asserting immediate absence.
+    const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
+      const deadline = Date.now() + 120000;
+      while (Date.now() < deadline) {
+        try {
+          await read();
+          await new Promise((r) => setTimeout(r, 5000));
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    };
 
-    await expect(
-      customApi.getClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
-        name: 'clickhouse-cluster',
-      })
-    ).rejects.toThrow();
+    // Instance CR gone.
+    expect(
+      await pollGone(() =>
+        customApi.getNamespacedCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          namespace: kroCrNs,
+          plural: 'clickhouseclusters',
+          name: instanceName,
+        })
+      )
+    ).toBe(true);
 
-    // The CHI child is deleted by KRO's graph deletion (the operator's
-    // finalizer may lag a beat — poll to a short deadline).
-    const chiGoneDeadline = Date.now() + 120000;
-    let chiGone = false;
-    while (!chiGone && Date.now() < chiGoneDeadline) {
-      try {
-        await customApi.getNamespacedCustomObject({
+    // RGD gone (sole instance → the RGD is removed with it).
+    expect(
+      await pollGone(() =>
+        customApi.getClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name: 'clickhouse-cluster',
+        })
+      )
+    ).toBe(true);
+
+    // The CHI child is deleted by KRO's graph deletion.
+    expect(
+      await pollGone(() =>
+        customApi.getNamespacedCustomObject({
           group: 'clickhouse.altinity.com',
           version: 'v1',
           namespace: kroNs,
           plural: 'clickhouseinstallations',
           name: instanceName,
-        });
-        await new Promise((r) => setTimeout(r, 5000));
-      } catch {
-        chiGone = true;
-      }
-    }
-    expect(chiGone).toBe(true);
+        })
+      )
+    ).toBe(true);
   }, 1200000);
 
   it('should generate ResourceGraphDefinition YAML with CEL status expressions', async () => {

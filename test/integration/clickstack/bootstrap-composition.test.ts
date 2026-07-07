@@ -253,20 +253,13 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // The typed service contract from #93 is the wiring seam for clickstack.
     expect(instance.status.ready).toBe(true);
 
-    // `instance.status.clickhouse.host` is built via a raw `Cel.expr(...)`
-    // string over the CHI's `metadata` (required today for KRO-mode
-    // reachability — see clickhouse-cluster.ts's doc comment). That survives
-    // KRO's CEL runtime but is OPAQUE to `factory('direct')`'s live-status
-    // re-execution, which has no CEL interpreter — the field stays an
-    // unresolved `CelExpression` marker in direct mode (a live-verified,
-    // narrow typekro limitation, tracked as typekro#94/#97, NOT something
-    // clickstack or clickhouse can paper over). Assert that reality rather
-    // than a value the framework cannot yet produce here, then build the
-    // connection host ourselves from the same naming rule the field
-    // documents — we already have `chiName`/`chiNs` synchronously.
-    const { isCelExpression } = await import('../../../src/utils/type-guards.js');
-    expect(isCelExpression(instance.status.clickhouse.host)).toBe(true);
-    clickhouseHost = `clickhouse-${chiName}.${chiNs}.svc.cluster.local`;
+    // `instance.status.clickhouse.host` is built with a NATURAL template
+    // literal over the CHI proxy (typekro >= 0.24.0 / #97), so it hydrates to
+    // a concrete string in direct mode — wire clickstack straight from it.
+    expect(instance.status.clickhouse.host).toBe(
+      `clickhouse-${chiName}.${chiNs}.svc.cluster.local`
+    );
+    clickhouseHost = instance.status.clickhouse.host;
   }, 900000);
 
   it('deploys clickstack wired at the external ClickHouse and hydrates the status contract', async () => {
@@ -281,8 +274,6 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       kubeConfig,
     });
 
-    const { isCelExpression } = await import('../../../src/utils/type-guards.js');
-
     // Internal-Mongo default variant. Authenticates as the NAMED ClickHouse
     // user created above (not `default` — see the ClickHouse deploy test's
     // comment on why) so the collector's goose migrations can create the
@@ -295,36 +286,33 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     });
     clickstackDeployed = true;
 
-    // `ready`/`phase`/`ui.url`/`gateway.*`/`app.host` are ALL built via raw
-    // `Cel.expr(...)` over the owned HelmRelease (`status.conditions` for
-    // ready/phase, `metadata` for the endpoint fields — same technique and
-    // same KRO-mode-reachability reason as clickhouse-cluster.ts's
-    // `host`/`nativeUrl`/etc). None of these hydrate in `factory('direct')`
-    // today — live-verified even well after the underlying HelmRelease is
-    // confirmed genuinely `Ready`, so this is NOT the metadata-vs-status
-    // "does live re-execution see it" split documented in
-    // clickhouse-cluster.ts/typekro#94 (a `.exists()` macro over
-    // `status.conditions` IS resource-status-derived, yet still doesn't
-    // resolve here — unlike the analogous, and apparently-working,
-    // `Cel.expr(helmRelease.status.conditions, '.exists(...)')` pattern in
-    // clickhouseOperatorBootstrap's OWN `ready` field). The exact reason
-    // for that discrepancy is unresolved as of this session — worth a
-    // dedicated follow-up typekro investigation rather than a guess here.
-    // Assert the documented, live-verified reality.
-    for (const value of [
-      instance.status.ready,
-      instance.status.phase,
-      instance.status.ui.url,
-      instance.status.gateway.otlpHttpEndpoint,
-      instance.status.gateway.otlpGrpcEndpoint,
-      instance.status.app.host,
-    ]) {
-      expect(isCelExpression(value)).toBe(true);
-    }
-    // `app.appPort`/`apiPort` are bare build-time constants with no
-    // resource anchor at all — nothing prevents these from hydrating in
-    // direct mode (unlike `app.host`, a sibling leaf inside the SAME status
-    // object, which is HelmRelease-anchored CEL).
+    // BIMODAL (typekro >= 0.24.0 / #97): `ui.url`/`gateway.*`/`app.host` are
+    // built with NATURAL JS template literals over the owned HelmRelease's
+    // `metadata`, so direct mode's live-status re-execution evaluates them to
+    // concrete strings (the migration's bimodal win, replacing the old raw
+    // `Cel.expr(...)` that was opaque to direct mode).
+    expect(instance.status.ui.url).toBe(
+      `http://${stackName}.${stackNs}.svc.cluster.local:3000`
+    );
+    expect(instance.status.gateway.otlpHttpEndpoint).toBe(
+      `http://${stackName}-otel-collector.${stackNs}.svc.cluster.local:4318`
+    );
+    expect(instance.status.gateway.otlpGrpcEndpoint).toBe(
+      `http://${stackName}-otel-collector.${stackNs}.svc.cluster.local:4317`
+    );
+    expect(instance.status.app.host).toBe(`${stackName}.${stackNs}.svc.cluster.local`);
+
+    // `ready`/`phase` are unchanged by this migration (they were raw `Cel.expr`
+    // over the HelmRelease conditions `.exists()` macro before and after). Their
+    // direct-mode form is backend-dependent — the cel-js resolver may or may not
+    // evaluate the macro against the live conditions — so don't over-constrain to
+    // concrete-vs-marker here; the KRO-mode test below asserts them on the live
+    // CR status. (They're excluded from the bimodal set above precisely because
+    // the migration didn't touch them.)
+    expect(instance.status.ready).toBeDefined();
+    expect(instance.status.phase).toBeDefined();
+
+    // `app.appPort`/`apiPort` are bare build-time constants — hydrate directly.
     expect(instance.status.app.appPort).toBe(3000);
     expect(instance.status.app.apiPort).toBe(8000);
   }, 1200000);

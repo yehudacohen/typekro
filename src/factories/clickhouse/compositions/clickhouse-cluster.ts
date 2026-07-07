@@ -219,26 +219,23 @@ export function makeClickHouseCluster(
       // (`chi-{chi}-{cluster}-{shard}-{replica}`) exist too but the CR
       // service is the stable entrypoint.
       //
-      // DERIVED FROM THE OWNED CHI RESOURCE (not schema.spec): KRO status
-      // CEL cannot reference schema.spec.*, so a spec-derived field is
-      // classified static (client-hydrated) and DROPPED from the KRO CR's
-      // status. Anchoring the derivation on the CHI resource
-      // (`clickhouse.metadata.*` / `clickhouse.spec.*`) makes these
-      // serialize as KRO status CEL, so GitOps/KRO consumers see the
-      // connection contract on the live CR.
-      //
-      // The string concats are RAW Cel.expr over the resource id: the
-      // status-builder proxy passes `metadata` values through verbatim
-      // (which would resolve back to schema.spec.name → static), and the
-      // serializer inlines CelExpression-valued template fields (like the
-      // defaulted clusterName / keeper port) back to their schema
-      // expressions — a raw resource-path expression survives both. Port
-      // constants ride INSIDE the resource-derived URL strings; the BARE
-      // constant fields (port/database/user) have no resource anchor and
-      // stay client-hydrated — see ClickHouseClusterStatus for the split.
-      const chiMeta = `${CHI_RESOURCE_ID}.metadata`;
-      const chiHostCel = `"clickhouse-" + ${chiMeta}.name + "." + ${chiMeta}.namespace + ".svc.cluster.local"`;
-
+      // DERIVED FROM THE OWNED CHI RESOURCE (`clickhouse.metadata.*` /
+      // `clickhouse.spec.*`) via NATURAL proxy access inside JS template
+      // literals — NOT schema.spec.*. Two things make this the right form
+      // in BOTH factory modes (typekro >= 0.24.0, which ships the #97
+      // resource-metadata-proxy fix):
+      //   - KRO mode: the imperative analyzer converts these template
+      //     literals to KRO status CEL, and (post-#97) `clickhouse.metadata.*`
+      //     resolves resource-anchored (`clickhouse.metadata.name`) instead
+      //     of degrading to `schema.spec.name`, so they land on the live CR
+      //     status for GitOps/KRO consumers.
+      //   - direct mode: a template literal is plain JS, so direct mode's
+      //     live-status re-execution evaluates it against the real resource
+      //     values and hydrates a concrete string — where the old raw
+      //     `Cel.expr("...literal CEL...")` strings stayed opaque markers.
+      // The port constants inline as literals; the BARE constant fields
+      // (port/database/user) have no resource anchor — see
+      // ClickHouseClusterStatus for the split.
       return {
         ready: clickhouse.status.status === 'Completed',
         phase:
@@ -248,20 +245,20 @@ export function makeClickHouseCluster(
               ? 'Failed'
               : 'Installing',
         clickhouse: {
-          host: Cel.expr<string>(chiHostCel),
+          host: `clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local`,
           // Bare numeric constant — client-hydrated only (no resource
           // anchor); the port also appears in the KRO-visible URLs below.
           port: CLICKHOUSE_NATIVE_PORT,
-          nativeUrl: Cel.expr<string>(
-            `"clickhouse://" + ${chiHostCel} + ":${CLICKHOUSE_NATIVE_PORT}"`
-          ),
-          httpUrl: Cel.expr<string>(
-            `"http://" + ${chiHostCel} + ":${CLICKHOUSE_HTTP_PORT}"`
-          ),
+          nativeUrl: `clickhouse://clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local:${CLICKHOUSE_NATIVE_PORT}`,
+          httpUrl: `http://clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local:${CLICKHOUSE_HTTP_PORT}`,
           // The resolved logical cluster name is IN the owned CHI
           // (configuration.clusters[0].name), so read it from there — the
           // `spec.clusterName ?? default` expression itself is schema-only
-          // and would be dropped.
+          // and would be dropped. Kept as a raw Cel.expr: this is a deep read
+          // through an optional nested array (`configuration.clusters[0]`),
+          // where natural proxy access needs non-null assertions that add
+          // noise without changing the KRO output. It therefore stays
+          // KRO-mode-only (like keeper.* below).
           clusterName: Cel.expr<string>(
             `${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`
           ),
@@ -273,7 +270,10 @@ export function makeClickHouseCluster(
               keeper: {
                 // Echo the keeper endpoint from the CHI's own zookeeper
                 // section (resource-derived → lands in KRO status) rather
-                // than from schema.spec.keeper (static → dropped).
+                // than from schema.spec.keeper (static → dropped). Kept as raw
+                // Cel.expr for the same reasons as clusterName (deep optional
+                // array read) — plus `port` must stay a number, which a
+                // template literal would coerce to a string. KRO-mode-only.
                 host: Cel.expr<string>(
                   `${CHI_RESOURCE_ID}.spec.configuration.zookeeper.nodes[0].host`
                 ),
@@ -285,8 +285,8 @@ export function makeClickHouseCluster(
           : {}),
         installation: {
           // CHI identity from the owned resource (same reachability rule).
-          name: Cel.expr<string>(`${chiMeta}.name`),
-          namespace: Cel.expr<string>(`${chiMeta}.namespace`),
+          name: `${clickhouse.metadata.name}`,
+          namespace: `${clickhouse.metadata.namespace}`,
           endpoint: clickhouse.status.endpoint,
           // The operator's REAL CHI status fields are `hosts`/`hostsCompleted` — verified against
           // the installed CRD's OpenAPI schema on a live cluster. `hostsCount`/`hostsCompletedCount`

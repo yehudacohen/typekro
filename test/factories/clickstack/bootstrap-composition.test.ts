@@ -87,16 +87,16 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
       bootstrapDoc.indexOf('\n  resources:', statusStart)
     );
     expect(statusSection).toContain(
-      'url: ${"http://" + clickstackHelmRelease.metadata.name + "." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":3000"}'
+      'url: http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
     );
     expect(statusSection).toContain(
-      'otlpHttpEndpoint: ${"http://" + clickstackHelmRelease.metadata.name + "-otel-collector." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":4318"}'
+      'otlpHttpEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4318'
     );
     expect(statusSection).toContain(
-      'otlpGrpcEndpoint: ${"http://" + clickstackHelmRelease.metadata.name + "-otel-collector." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":4317"}'
+      'otlpGrpcEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4317'
     );
     expect(statusSection).toContain(
-      'host: ${clickstackHelmRelease.metadata.name + "." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local"}'
+      'host: ${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local'
     );
     // KRO status CEL can never reference schema.spec.*.
     expect(statusSection).not.toContain('schema.spec');
