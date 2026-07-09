@@ -7,6 +7,10 @@ description: Factory functions for Hyperspike Valkey clusters on Kubernetes
 
 Factory functions for the [Hyperspike Valkey operator](https://github.com/hyperspike/valkey-operator) with built-in readiness evaluation. Manage Valkey clusters as Kubernetes-native resources.
 
+The integration provisions Valkey infrastructure. Application data-plane behavior—commands,
+Streams consumer groups, acknowledgements, retries, and dead-letter policy—belongs in the
+application or framework using a Valkey client, not in TypeKro.
+
 ## Import
 
 ```typescript
@@ -30,8 +34,10 @@ const cache = valkey({
     replicas: 1,
     volumePermissions: true,
     storage: {
-      storageClassName: 'gp3',
-      resources: { requests: { storage: '10Gi' } },
+      spec: {
+        storageClassName: 'gp3',
+        resources: { requests: { storage: '10Gi' } },
+      },
     },
     resources: {
       requests: { cpu: '250m', memory: '512Mi' },
@@ -50,6 +56,7 @@ const cache = valkey({
 | `valkey` | Valkey | Namespace | Valkey cluster (sharded with optional replicas) |
 | `valkeyHelmRepository` | HelmRepository | Namespace | OCI Helm registry for the operator |
 | `valkeyHelmRelease` | HelmRelease | Namespace | Operator installation via Helm |
+| `valkeyHelmRepositoryBootstrap` | Composition | Cluster singleton | Shared OCI repository owner |
 
 ## valkey()
 
@@ -112,6 +119,13 @@ const cache = valkey({
 });
 ```
 
+::: warning Hyperspike replica behavior
+Hyperspike v0.0.61 documents that `replicas` currently creates additional primary nodes rather
+than replicas. Track [upstream issue #186](https://github.com/hyperspike/valkey-operator/issues/186)
+before relying on this field for high availability. This is especially important for durable
+Valkey Streams queues.
+:::
+
 ### Valkey Readiness
 
 The readiness evaluator checks the Hyperspike status model:
@@ -146,8 +160,17 @@ const factory = valkeyBootstrap.factory('kro', {
 await factory.deploy({
   name: 'valkey-operator',
   namespace: 'valkey-operator-system',  // Namespace where the operator pods run
+  values: {
+    nodeSelector: { 'kubernetes.io/os': 'linux' },
+  },
 });
 ```
+
+`values` is the raw Helm passthrough and merges last. The older `customValues` field remains as a
+deprecated compatibility alias; when both are present, `values` wins. The Flux OCI
+`HelmRepository` is modeled as a shared singleton in `flux-system`, preventing multiple operator
+instances from competing for ownership of the same source. The official chart remains the sole
+owner of its cluster-wide RBAC; TypeKro does not duplicate those resources.
 
 ### Bootstrap Status
 
@@ -155,7 +178,7 @@ await factory.deploy({
 instance.status.ready    // boolean — operator is running
 instance.status.phase    // 'Ready' | 'Installing'
 instance.status.failed   // boolean — true if Ready condition is explicitly False
-instance.status.version  // deployed operator version (app version, not chart version)
+instance.status.version  // deployment-time version; default is normalized to v0.0.61
 ```
 
 > **Note:** `phase` cannot distinguish `'Failed'` from `'Installing'` due to a
@@ -214,6 +237,18 @@ helm install valkey-operator \
 ```
 
 For TLS support, [cert-manager](https://cert-manager.io/) must be installed with an appropriate certificate issuer.
+
+## Valkey Streams queues
+
+This factory is suitable for provisioning the Valkey service behind an application queue, including
+persistent storage, authentication, TLS, resource limits, and scheduling. TypeKro intentionally does
+not expose `XADD`, consumer-group, acknowledgement, retry, or dead-letter APIs. Those semantics should
+be implemented by the application layer using a Valkey-compatible client.
+
+For a durable queue deployment, configure persistent storage and authentication explicitly, avoid
+memory eviction policies that can discard stream entries, and treat delivery as at-least-once. The
+operator-generated password Secret uses the Valkey resource name and the `password` key when
+`anonymousAuth` is false and `servicePassword` is omitted, per the v0.0.61 CRD contract.
 
 ## Next Steps
 

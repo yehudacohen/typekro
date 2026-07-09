@@ -8,6 +8,7 @@
  * - `valkey()` — Valkey cluster (sharded with optional replicas)
  * - `valkeyHelmRepository()` — Helm chart repository (OCI)
  * - `valkeyHelmRelease()` — Operator installation via Helm
+ * - `valkeyHelmRepositoryBootstrap` — Shared OCI repository singleton owner
  *
  * ## Compositions
  * - `valkeyBootstrap` — Complete operator deployment (namespace + Helm repo + release)

@@ -70,10 +70,10 @@ describe('Valkey Bootstrap Composition Tests', () => {
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
     expect(yaml).toContain('Ready');
     expect(yaml).toContain('Installing');
-    expect(yaml).toContain('kind: ClusterRole');
-    expect(yaml).toContain('name: valkey-operator-manager-role');
-    expect(yaml).toContain('kind: ClusterRoleBinding');
-    expect(yaml).toContain('name: valkey-operator-controller-manager');
+    // Cluster-wide RBAC is owned by the official Helm chart. Duplicating it
+    // in the RGD causes Flux drift correction to fight TypeKro ownership tags.
+    expect(yaml).not.toContain('kind: ClusterRole');
+    expect(yaml).not.toContain('kind: ClusterRoleBinding');
     expect(yaml).toContain('namespace: "${has(schema.spec.namespace) ? schema.spec.namespace');
   });
 

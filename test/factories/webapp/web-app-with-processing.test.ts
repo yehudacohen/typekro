@@ -89,12 +89,17 @@ describe('WebAppWithProcessing Composition', () => {
     const yaml = webAppWithProcessing.toYaml();
     const docs = yaml.split(/^---$/m).map((doc) => doc.trim());
 
-    // Three documents: both operator owner RGDs plus the consuming app RGD.
-    expect(docs).toHaveLength(3);
+    // Four documents: the Valkey repository owner, both operator owner RGDs,
+    // and the consuming app RGD.
+    expect(docs).toHaveLength(4);
+    expect(yaml).toContain('name: valkey-helm-repository');
     expect(yaml).toContain('name: cnpg-bootstrap');
     expect(yaml).toContain('name: valkey-bootstrap');
     expect(yaml).toContain('name: web-app-with-processing');
     // Owner RGDs are emitted before the consumer (deps-first apply order).
+    expect(yaml.indexOf('name: valkey-helm-repository')).toBeLessThan(
+      yaml.indexOf('name: valkey-bootstrap')
+    );
     expect(yaml.indexOf('name: cnpg-bootstrap')).toBeLessThan(
       yaml.indexOf('name: web-app-with-processing')
     );

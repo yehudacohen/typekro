@@ -50,7 +50,7 @@ describe('Valkey Helm Resources', () => {
       expect(release.metadata.namespace).toBe('valkey-operator-system');
     });
 
-    it('should sanitize proxy objects from values', () => {
+    it('should preserve values passed to the shared Helm wrapper', () => {
       const release = valkeyHelmRelease({
         name: 'valkey-operator',
         values: { replicaCount: 2 },
@@ -88,7 +88,35 @@ describe('Valkey Helm Values Mapper', () => {
         name: 'valkey-operator',
         customValues: { nodeSelector: { 'kubernetes.io/os': 'linux' } },
       });
-      expect(values.nodeSelector).toEqual({ 'kubernetes.io/os': 'linux' });
+      expect(values).toEqual({ nodeSelector: { 'kubernetes.io/os': 'linux' } });
+    });
+
+    it('should prefer values while deeply preserving legacy customValues siblings', () => {
+      const values = mapValkeyConfigToHelmValues({
+        customValues: {
+          controller: {
+            resources: {
+              requests: { cpu: '100m' },
+              limits: { memory: '256Mi' },
+            },
+          },
+          replicaCount: 1,
+        },
+        values: {
+          controller: { resources: { requests: { memory: '128Mi' } } },
+          replicaCount: 2,
+        },
+      });
+
+      expect(values).toEqual({
+        controller: {
+          resources: {
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: { memory: '256Mi' },
+          },
+        },
+        replicaCount: 2,
+      });
     });
 
     it('should remove undefined values', () => {

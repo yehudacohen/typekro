@@ -10,6 +10,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -49,16 +50,19 @@ export const DEFAULT_VALKEY_REPO_NAME = 'valkey-operator-repo';
 export function valkeyHelmRepository(
   config: Composable<ValkeyHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
-  return helmRepository({
-    name: config.name || DEFAULT_VALKEY_REPO_NAME,
-    namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
-    url: config.url || DEFAULT_VALKEY_REPO_URL,
+  const repo = helmRepository({
+    name: config.name ?? DEFAULT_VALKEY_REPO_NAME,
+    namespace: config.namespace ?? DEFAULT_FLUX_NAMESPACE,
+    url: config.url ?? DEFAULT_VALKEY_REPO_URL,
     type: 'oci',
-    interval: config.interval || '5m',
+    interval: config.interval ?? '5m',
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createHelmRepositoryReadinessEvaluator('Valkey')
   ) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
+
+  setMetadataField(repo, 'scopes', ['cluster']);
+  return repo;
 }
 
 /**
@@ -85,18 +89,19 @@ export function valkeyHelmRelease(
   // actually uses to resolve the chart. Both are required by the helmRelease factory.
   return helmRelease({
     name: config.name,
-    namespace: config.namespace || 'valkey-operator-system',
+    namespace: config.namespace ?? 'valkey-operator-system',
     chart: {
       repository: DEFAULT_VALKEY_REPO_URL,
       name: 'valkey-operator',
-      version: config.version || DEFAULT_VALKEY_VERSION,
+      version: config.version ?? DEFAULT_VALKEY_VERSION,
     },
     sourceRef: {
-      name: config.repositoryName || DEFAULT_VALKEY_REPO_NAME,
+      name: config.repositoryName ?? DEFAULT_VALKEY_REPO_NAME,
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    values: config.values || {},
+    driftDetection: { mode: 'enabled' },
+    values: config.values ?? {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('Valkey')

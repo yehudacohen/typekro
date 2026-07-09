@@ -11,7 +11,7 @@
  */
 
 import { type } from 'arktype';
-import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { TypeKroChartValue } from '../../core/types/common.js';
 
 // ============================================================================
 // Shared Schema Shapes
@@ -49,7 +49,9 @@ export const ValkeyBootstrapConfigSchema = type({
   'namespace?': 'string',
   /** Chart version. */
   'version?': 'string',
-  /** Additional Helm values for user overrides. */
+  /** Raw Helm values merged last (preferred passthrough API). */
+  'values?': 'Record<string, unknown>',
+  /** @deprecated Use `values` instead. */
   'customValues?': 'Record<string, unknown>',
   /**
    * Whether the operator install should be treated as shared cluster
@@ -96,7 +98,10 @@ export const ValkeyConfigSchema = type({
     'exporterImage?': 'string',
     /** Number of primary nodes/shards (default: 3). */
     'shards?': 'number',
-    /** Additional replicas per shard (default: 0). */
+    /**
+     * Requested replicas per shard (default: 0). Hyperspike v0.0.61 currently
+     * creates additional primaries; see upstream issue #186.
+     */
     'replicas?': 'number',
     /** Cluster domain (default: 'cluster.local'). */
     'clusterDomain?': 'string',
@@ -105,7 +110,7 @@ export const ValkeyConfigSchema = type({
     /** Allow connections without authentication (default: false). */
     'anonymousAuth?': 'boolean',
     /** Reference to an existing password secret (*corev1.SecretKeySelector). */
-    'servicePassword?': { name: 'string', key: 'string' },
+    'servicePassword?': { name: 'string', key: 'string', 'optional?': 'boolean' },
 
     // TLS
     /** Enable TLS encryption (default: false). */
@@ -113,7 +118,7 @@ export const ValkeyConfigSchema = type({
     /** Certificate issuer name (requires cert-manager). */
     'certIssuer?': 'string',
     /** Certificate issuer type: 'ClusterIssuer' or 'Issuer' (default: 'ClusterIssuer'). */
-    'certIssuerType?': 'string',
+    'certIssuerType?': '"ClusterIssuer" | "Issuer"',
 
     // Storage & Resources
     /** Persistent storage configuration (*corev1.PersistentVolumeClaim). */
@@ -133,9 +138,6 @@ export const ValkeyConfigSchema = type({
     'volumePermissions?': 'boolean',
     /** Pod resource requirements (*corev1.ResourceRequirements). */
     'resources?': resourceRequirementsSchemaShape,
-    /** Platform-managed security context (default: false). */
-    'platformManagedSecurityContext?': 'boolean',
-
     // Networking
     /** Preferred endpoint type for cluster communication. */
     'clusterPreferredEndpointType?': '"ip" | "hostname" | "unknown-endpoint"',
@@ -205,6 +207,7 @@ export interface ValkeyCondition {
   reason: string;
   message: string;
   lastTransitionTime: string;
+  observedGeneration?: number;
 }
 
 /**
@@ -213,8 +216,6 @@ export interface ValkeyCondition {
 export interface ValkeyStatus {
   /** Whether the cluster is operational. */
   ready?: boolean;
-  /** Cluster service hostname (derived from resource name). */
-  hostname?: string;
   /** Status conditions. */
   conditions?: ValkeyCondition[];
 }
@@ -233,7 +234,7 @@ export interface ValkeyBootstrapStatus {
   ready: boolean;
   /** Whether the HelmRelease Ready condition is explicitly False. */
   failed: boolean;
-  /** Deployed operator version (app version, not chart version). */
+  /** Deployment-time version (the built-in default is normalized to the app version). */
   version?: string;
 }
 
@@ -243,6 +244,22 @@ export const ValkeyBootstrapStatusSchema = type({
   ready: 'boolean',
   failed: 'boolean',
   'version?': 'string',
+});
+
+// ============================================================================
+// Shared HelmRepository Singleton
+// ============================================================================
+
+/** Spec accepted by the shared Valkey HelmRepository singleton. */
+export const ValkeyHelmRepositorySingletonSpecSchema = type({
+  name: 'string',
+  namespace: 'string',
+  url: 'string',
+});
+
+/** Status surfaced by the shared Valkey HelmRepository singleton. */
+export const ValkeyHelmRepositorySingletonStatusSchema = type({
+  ready: 'boolean',
 });
 
 // ============================================================================
@@ -257,8 +274,6 @@ export const ValkeyHelmRepositoryConfigSchema = type({
   'namespace?': 'string',
   /** OCI registry URL (default: 'oci://ghcr.io/hyperspike'). */
   'url?': 'string',
-  /** Repository type (default: 'oci' — Hyperspike uses OCI registry). */
-  'type?': '"default" | "oci"',
   /** Sync interval (default: '5m'). */
   'interval?': 'string',
   /** Resource ID for composition references. */
@@ -287,5 +302,5 @@ export const ValkeyHelmReleaseConfigSchema = type({
 /** Configuration for the Valkey operator Helm release. */
 export type ValkeyHelmReleaseConfig = Omit<typeof ValkeyHelmReleaseConfigSchema.infer, 'values'> & {
   /** Graph-aware Helm values serialized recursively by TypeKro. */
-  values?: TypeKroChartValues<Record<string, unknown>>;
+  values?: TypeKroChartValue<Record<string, unknown>>;
 };
