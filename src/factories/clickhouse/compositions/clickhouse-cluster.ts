@@ -254,11 +254,16 @@ export function makeClickHouseCluster(
           // The resolved logical cluster name is IN the owned CHI
           // (configuration.clusters[0].name), so read it from there — the
           // `spec.clusterName ?? default` expression itself is schema-only
-          // and would be dropped. Kept as a raw Cel.expr: this is a deep read
-          // through an optional nested array (`configuration.clusters[0]`),
-          // where natural proxy access needs non-null assertions that add
-          // noise without changing the KRO output. It therefore stays
-          // KRO-mode-only (like keeper.* below).
+          // and would be dropped. Kept as a raw Cel.expr (not a natural
+          // template literal) because this is a deep read through an optional
+          // nested array (`configuration.clusters[0]`), where natural proxy
+          // access needs non-null assertions that add noise without changing
+          // the output. That is an ERGONOMIC choice, NOT a hydration limit:
+          // being a resource-path CEL it resolves in BOTH modes on typekro
+          // >= 0.24.0 — status CEL in `factory('kro')`, and the cel-js
+          // reference resolver evaluates it against the live CHI in
+          // `factory('direct')` (proven concrete — `'cluster'` — in the
+          // integration suite). Same for keeper.* below.
           clusterName: Cel.expr<string>(
             `${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`
           ),
@@ -273,7 +278,9 @@ export function makeClickHouseCluster(
                 // than from schema.spec.keeper (static → dropped). Kept as raw
                 // Cel.expr for the same reasons as clusterName (deep optional
                 // array read) — plus `port` must stay a number, which a
-                // template literal would coerce to a string. KRO-mode-only.
+                // template literal would coerce to a string. Like clusterName,
+                // these are resource-path CELs that resolve in BOTH modes
+                // (cel-js evaluates them in direct mode) — not KRO-only.
                 host: Cel.expr<string>(
                   `${CHI_RESOURCE_ID}.spec.configuration.zookeeper.nodes[0].host`
                 ),

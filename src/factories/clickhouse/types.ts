@@ -532,7 +532,7 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
  * whose own status carries `ready`/`phase`/`version` for it.
  *
- * HYDRATION (bimodal vs KRO-only): the metadata-anchored fields
+ * HYDRATION (bimodal — every field resolves in both factory modes): the metadata-anchored fields
  * `clickhouse.host`/`nativeUrl`/`httpUrl` and `installation.name`/`namespace`
  * are built with NATURAL JS template literals over the CHI resource proxy
  * (e.g. `` `clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local` ``),
@@ -552,12 +552,16 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  * likewise hydrate in both modes (natural `clickhouse.status.*` reads / JS
  * comparisons).
  * The remaining resource-anchored fields — `clickhouse.clusterName`,
- * `keeper.host`, `keeper.port` — stay raw `Cel.expr` and are therefore
- * KRO-mode-only: they are deep reads through optional nested arrays
- * (`configuration.clusters[0]` / `zookeeper.nodes[0]`) where natural proxy
- * access requires non-null assertions that add noise without changing the KRO
- * output, and `keeper.port` additionally must stay a number (a template
- * literal would coerce it to a string).
+ * `keeper.host`, `keeper.port` — stay raw `Cel.expr` rather than natural
+ * template literals for ERGONOMIC reasons: they are deep reads through
+ * optional nested arrays (`configuration.clusters[0]` / `zookeeper.nodes[0]`)
+ * where natural proxy access requires non-null assertions that add noise
+ * without changing the output, and `keeper.port` additionally must stay a
+ * number (a template literal would coerce it to a string). This is NOT a
+ * hydration limitation: being resource-path CELs they resolve in BOTH modes —
+ * status CEL in `factory('kro')`, and the cel-js reference resolver evaluates
+ * them against the live CHI in `factory('direct')` (`clusterName` hydrates to
+ * the concrete `'cluster'` in the direct-mode integration test).
  */
 export interface ClickHouseClusterStatus {
   /** True once the operator reports the CHI fully reconciled ('Completed'). */

@@ -302,15 +302,18 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     );
     expect(instance.status.app.host).toBe(`${stackName}.${stackNs}.svc.cluster.local`);
 
-    // `ready`/`phase` are unchanged by this migration (they were raw `Cel.expr`
-    // over the HelmRelease conditions `.exists()` macro before and after). Their
-    // direct-mode form is backend-dependent — the cel-js resolver may or may not
-    // evaluate the macro against the live conditions — so don't over-constrain to
-    // concrete-vs-marker here; the KRO-mode test below asserts them on the live
-    // CR status. (They're excluded from the bimodal set above precisely because
-    // the migration didn't touch them.)
-    expect(instance.status.ready).toBeDefined();
-    expect(instance.status.phase).toBeDefined();
+    // `ready`/`phase` are raw `Cel.expr` over the HelmRelease conditions
+    // `.exists()` macro (unchanged by this migration). Assert the TYPED CONTRACT,
+    // not mere presence: a `.toBeDefined()` check passes even for an UNRESOLVED
+    // `CelExpression` object, so it would not catch a regression that left them as
+    // markers. Direct mode must resolve them to concrete primitives (the cel-js
+    // resolver evaluates the macro against the live HelmRelease conditions — the
+    // graph deployed with waitForReady, so a Ready condition exists).
+    expect(typeof instance.status.ready).toBe('boolean');
+    expect(['Ready', 'Installing', 'Failed']).toContain(instance.status.phase);
+    // Post-`waitForReady`, the HelmRelease reconciled → concrete Ready.
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.phase).toBe('Ready');
 
     // `app.appPort`/`apiPort` are bare build-time constants — hydrate directly.
     expect(instance.status.app.appPort).toBe(3000);
