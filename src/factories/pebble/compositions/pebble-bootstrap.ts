@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { pebbleHelmRelease, pebbleHelmRepository } from '../resources/helm.js';
 import { PebbleBootstrapConfigSchema, PebbleBootstrapStatusSchema } from '../types.js';
@@ -44,7 +45,7 @@ import { createDefaultPebbleTestingValues } from '../utils/helm-values-mapper.js
  * });
  * ```
  */
-export const pebbleBootstrap = kubernetesComposition(
+export const pebbleBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'pebble-bootstrap',
     apiVersion: 'pebble.typekro.dev/v1alpha1',
@@ -112,4 +113,4 @@ export const pebbleBootstrap = kubernetesComposition(
       dnsServer: `${spec.name}-coredns.${spec.namespace || 'default'}.svc.cluster.local`,
     };
   }
-);
+));

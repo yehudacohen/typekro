@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -56,7 +57,7 @@ function stripChartSuffix(version: string): string {
  * });
  * ```
  */
-export const valkeyBootstrap = kubernetesComposition(
+export const valkeyBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'valkey-bootstrap',
     kind: 'ValkeyBootstrap',
@@ -248,4 +249,4 @@ export const valkeyBootstrap = kubernetesComposition(
       version: appVersion,
     };
   }
-);
+));

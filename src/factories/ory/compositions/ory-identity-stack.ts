@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import {
   isValuesMergeExpression,
   mergeValuesExpression,
@@ -343,7 +344,7 @@ function isSchemaSpec(value: unknown): boolean {
  * Creates the target namespace, official Ory Helm repository, Hydra/Kratos/Keto/Oathkeeper
  * HelmReleases, optional starter Maester resources, and status fields used by direct and KRO modes.
  */
-export const oryIdentityStack = kubernetesComposition(
+export const oryIdentityStack = lazyComposition(() => kubernetesComposition(
   {
     name: 'ory-identity-stack',
     kind: 'OryIdentityStack',
@@ -523,4 +524,4 @@ export const oryIdentityStack = kubernetesComposition(
       version: Cel.template('%s', resolvedVersion),
     };
   }
-);
+));

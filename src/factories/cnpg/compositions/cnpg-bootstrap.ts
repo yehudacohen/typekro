@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -41,7 +42,7 @@ import { mapCnpgConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * });
  * ```
  */
-export const cnpgBootstrap = kubernetesComposition(
+export const cnpgBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'cnpg-bootstrap',
     kind: 'CnpgBootstrap',
@@ -157,4 +158,4 @@ export const cnpgBootstrap = kubernetesComposition(
       version: resolvedVersion,
     };
   }
-);
+));

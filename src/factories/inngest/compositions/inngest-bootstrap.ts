@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -48,7 +49,7 @@ import { mapInngestConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * });
  * ```
  */
-export const inngestBootstrap = kubernetesComposition(
+export const inngestBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'inngest-bootstrap',
     kind: 'InngestBootstrap',
@@ -124,4 +125,4 @@ export const inngestBootstrap = kubernetesComposition(
       version: resolvedVersion,
     };
   }
-);
+));

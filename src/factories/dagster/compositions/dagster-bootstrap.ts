@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
@@ -52,7 +53,7 @@ const DEFAULT_DAEMON_LIVENESS_PROBE_CEL =
  * Creates the target Namespace, official Dagster HelmRepository, and Dagster
  * HelmRelease. Status is derived only from owned Flux Helm resources.
  */
-export const dagsterBootstrap = kubernetesComposition(
+export const dagsterBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'dagster-bootstrap',
     kind: 'DagsterBootstrap',
@@ -140,7 +141,7 @@ export const dagsterBootstrap = kubernetesComposition(
       },
     };
   }
-);
+));
 
 function buildHelmValues(spec: DagsterBootstrapSchemaConfig) {
   return mapDagsterConfigToHelmValues(buildMapperConfig(spec));

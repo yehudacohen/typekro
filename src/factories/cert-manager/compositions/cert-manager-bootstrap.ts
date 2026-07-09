@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { ensureVersionPrefix } from '../../../utils/string.js';
@@ -53,7 +54,7 @@ import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js
  * });
  * ```
  */
-export const certManagerBootstrap = kubernetesComposition(
+export const certManagerBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'cert-manager-bootstrap',
     // apiVersion defaults to 'v1alpha1' and Kro adds kro.run group automatically
@@ -349,4 +350,4 @@ export const certManagerBootstrap = kubernetesComposition(
       },
     };
   }
-);
+));

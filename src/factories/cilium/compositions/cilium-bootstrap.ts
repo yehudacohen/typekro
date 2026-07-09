@@ -7,6 +7,7 @@
 
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { lazyComposition } from '../../../core/composition/lazy-composition.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import {
@@ -163,7 +164,7 @@ export const CiliumBootstrapStatusSchema = type({
  * Creates a complete Cilium deployment using Helm with comprehensive configuration
  * options and status outputs for integration with other systems.
  */
-export const ciliumBootstrap = kubernetesComposition(
+export const ciliumBootstrap = lazyComposition(() => kubernetesComposition(
   {
     name: 'cilium-bootstrap',
     apiVersion: 'cilium.io/v1alpha1',
@@ -357,4 +358,4 @@ export const ciliumBootstrap = kubernetesComposition(
       },
     };
   }
-);
+));
