@@ -129,7 +129,7 @@ describe('Dagster bootstrap composition', () => {
     );
 
     const instanceBundle = dagsterBootstrap
-      .factory('kro', { namespace: 'dagster' })
+      .factory('kro', { namespace: 'typekro-system' })
       .toYaml({ name: 'analytics', namespace: 'dagster', postgresql: { enabled: true } } as never);
     expect(instanceBundle).toContain('kind: DagsterHelmRepository');
     expect(instanceBundle).toContain('namespace: typekro-singletons');

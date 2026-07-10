@@ -32,7 +32,7 @@
  * @example
  * ```typescript
  * const factory = clickstackK8sTelemetry.factory('kro', {
- *   namespace: 'clickstack-telemetry',
+ *   namespace: 'typekro-system',
  * });
  *
  * await factory.deploy({

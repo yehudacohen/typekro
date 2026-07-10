@@ -184,7 +184,7 @@ describe('clickhouseOperatorBootstrap factory modes', () => {
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
     it('toYaml(instance) bundles the singleton owner instance BEFORE the operator CR', () => {
       const factory = clickhouseOperatorBootstrap.factory('kro', {
-        namespace: 'clickhouse-system',
+        namespace: 'typekro-system',
       });
       const yaml = factory.toYaml({
         name: 'clickhouse-operator',
@@ -208,12 +208,12 @@ describe('clickhouseOperatorBootstrap factory modes', () => {
 
       const cr = docs.find((doc) => docKind(doc) === 'ClickHouseOperatorBootstrap');
       expect(cr).toContain('name: clickhouse-operator');
-      expect(cr).toContain('namespace: clickhouse-system');
+      expect(cr).toContain('namespace: typekro-system');
     });
 
     it('toYaml() emits the owner RGD + bootstrap RGD preserving the HelmRelease-derived status', () => {
       const factory = clickhouseOperatorBootstrap.factory('kro', {
-        namespace: 'clickhouse-system',
+        namespace: 'typekro-system',
       });
       const yaml = factory.toYaml();
       const docs = splitDocs(yaml);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { DEFAULT_SINGLETON_NAMESPACE, singleton } from '../../../src/core/singleton/singleton.js';
 import {
   DEFAULT_ROOK_CEPH_REPO_NAME,
   DEFAULT_ROOK_CEPH_VERSION,
@@ -103,7 +104,9 @@ describe('Rook operator bootstrap factory modes', () => {
   });
 
   it('renders a KRO operator-owner instance with an explicit lifecycle', () => {
-    const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
+    const factory = rookCephOperatorBootstrap.factory('kro', {
+      namespace: 'platform-control',
+    });
     const documents = splitDocs(factory.toYaml({ name: 'rook-ceph' } as never));
     const kinds = documents.map(documentKind);
 
@@ -112,7 +115,9 @@ describe('Rook operator bootstrap factory modes', () => {
   });
 
   it('generates an RGD with graph-aware chart values and readiness status', () => {
-    const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
+    const factory = rookCephOperatorBootstrap.factory('kro', {
+      namespace: 'platform-control',
+    });
     const yaml = factory.toYaml();
 
     expect(yaml).toContain('kind: ResourceGraphDefinition');
@@ -121,6 +126,71 @@ describe('Rook operator bootstrap factory modes', () => {
     expect(yaml).toContain('c.type == "Ready"');
     expect(yaml).toContain('failed:');
     expectNoInternalMarkers(yaml);
+  });
+
+  it('rejects an instance inside its owned namespace across YAML, deploy, and Alchemy', async () => {
+    const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
+    const unsafeSpec = { name: 'rook-ceph', namespace: 'rook-ceph' } as never;
+
+    expect(() => factory.toYaml(unsafeSpec)).toThrow('cannot also be an owned Namespace');
+    await expect(factory.deploy(unsafeSpec)).rejects.toThrow('cannot also be an owned Namespace');
+    await expect(factory.toAlchemyResources(unsafeSpec)).rejects.toThrow(
+      'cannot also be an owned Namespace'
+    );
+  });
+
+  it('rejects the same namespace invariant through composition nesting', () => {
+    const parent = kubernetesComposition(
+      {
+        name: 'rook-nested-owner',
+        kind: 'RookNestedOwner',
+        spec: type({ name: 'string', operatorNamespace: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (parentSpec) => {
+        const operator = rookCephOperatorBootstrap({
+          name: 'rook-ceph',
+          namespace: parentSpec.operatorNamespace,
+        });
+        return { ready: operator.status.ready };
+      }
+    );
+
+    expect(() =>
+      parent.factory('kro', { namespace: 'rook-ceph' }).toYaml({
+        name: 'platform',
+        operatorNamespace: 'rook-ceph',
+      })
+    ).toThrow('cannot also be an owned Namespace');
+  });
+
+  it('rejects unsafe singleton owners before GitOps or live-cluster side effects', async () => {
+    const consumer = kubernetesComposition(
+      {
+        name: 'rook-singleton-consumer',
+        kind: 'RookSingletonConsumer',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      () => {
+        const operator = singleton(rookCephOperatorBootstrap, {
+          id: 'unsafe-rook-owner',
+          spec: {
+            name: 'rook-ceph',
+            namespace: DEFAULT_SINGLETON_NAMESPACE,
+          },
+        });
+        return { ready: operator.status.ready };
+      }
+    );
+    const factory = consumer.factory('kro', { namespace: 'apps' });
+    const consumerSpec = { name: 'consumer' };
+
+    expect(() => factory.toYaml(consumerSpec)).toThrow('cannot also be an owned Namespace');
+    await expect(factory.deploy(consumerSpec)).rejects.toThrow('cannot also be an owned Namespace');
+    await expect(factory.toAlchemyResources(consumerSpec)).rejects.toThrow(
+      'cannot also be an owned Namespace'
+    );
   });
 });
 

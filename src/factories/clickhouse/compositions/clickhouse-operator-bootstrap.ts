@@ -47,7 +47,7 @@ import { clickhouseHelmRepositoryBootstrap } from './clickhouse-helm-repository.
  * @example
  * ```typescript
  * const operatorFactory = clickhouseOperatorBootstrap.factory('kro', {
- *   namespace: 'clickhouse-system',
+ *   namespace: 'typekro-system',
  *   waitForReady: true,
  * });
  *
