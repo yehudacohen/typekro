@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { webAppWithProcessing } from '../../../src/factories/webapp/compositions/web-app-with-processing.js';
+import {
+  makeWebAppWithProcessing,
+  webAppWithProcessing,
+} from '../../../src/factories/webapp/compositions/web-app-with-processing.js';
 
 describe('WebAppWithProcessing Composition', () => {
   it('should generate valid KRO YAML with all resources', () => {
@@ -10,11 +13,11 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('name: web-app-with-processing');
 
     // Should contain all resource types
-    expect(yaml).toContain('kind: Cluster');       // CNPG
-    expect(yaml).toContain('kind: Pooler');         // PgBouncer
-    expect(yaml).toContain('kind: Valkey');          // Cache
-    expect(yaml).toContain('kind: Deployment');      // App
-    expect(yaml).toContain('kind: Service');          // App service
+    expect(yaml).toContain('kind: Cluster'); // CNPG
+    expect(yaml).toContain('kind: Pooler'); // PgBouncer
+    expect(yaml).toContain('kind: Valkey'); // Cache
+    expect(yaml).toContain('kind: Deployment'); // App
+    expect(yaml).toContain('kind: Service'); // App service
 
     // Status section with component readiness references
     expect(yaml).toContain('status:');
@@ -89,14 +92,59 @@ describe('WebAppWithProcessing Composition', () => {
     const yaml = webAppWithProcessing.toYaml();
     const docs = yaml.split(/^---$/m).map((doc) => doc.trim());
 
-    // Three documents: both operator owner RGDs plus the consuming app RGD.
+    // Three documents: both complete operator-owner RGDs and the consuming
+    // app RGD. The Valkey HelmRepository is a child of the Valkey owner now,
+    // not a second singleton lifecycle boundary.
     expect(docs).toHaveLength(3);
     expect(yaml).toContain('name: cnpg-bootstrap');
     expect(yaml).toContain('name: valkey-bootstrap');
     expect(yaml).toContain('name: web-app-with-processing');
     // Owner RGDs are emitted before the consumer (deps-first apply order).
+    expect(yaml.indexOf('name: valkey-bootstrap')).toBeLessThan(
+      yaml.indexOf('name: web-app-with-processing')
+    );
     expect(yaml.indexOf('name: cnpg-bootstrap')).toBeLessThan(
       yaml.indexOf('name: web-app-with-processing')
+    );
+  });
+
+  it('supports concrete build-time Valkey operator customization', () => {
+    const customized = makeWebAppWithProcessing({
+      valkeyOperator: {
+        name: 'platform-valkey',
+        namespace: 'platform-valkey-system',
+        version: 'v9.9.9',
+        repositoryName: 'platform-valkey-repo',
+        shared: true,
+      },
+    });
+
+    const singletonDefinitions = (
+      customized as typeof customized & {
+        _singletonDefinitions: Array<{ id: string; spec: Record<string, unknown> }>;
+      }
+    )._singletonDefinitions;
+    const valkeyDefinition = singletonDefinitions.find(({ id }) => id === 'valkey-operator');
+
+    expect(valkeyDefinition?.spec).toEqual({
+      name: 'platform-valkey',
+      namespace: 'platform-valkey-system',
+      version: 'v9.9.9',
+      repositoryName: 'platform-valkey-repo',
+    });
+  });
+
+  it('rejects schema/resource references in build-time Valkey settings', () => {
+    expect(() =>
+      makeWebAppWithProcessing({
+        valkeyOperator: webAppWithProcessing.schema?.spec.cnpgOperator as never,
+      })
+    ).toThrow(/build-time option.*concrete/);
+  });
+
+  it('rejects the removed dedicated-operator lifecycle with migration guidance', () => {
+    expect(() => makeWebAppWithProcessing({ valkeyOperator: { shared: false } })).toThrow(
+      /shared=false.*Install a dedicated valkeyBootstrap separately/
     );
   });
 });

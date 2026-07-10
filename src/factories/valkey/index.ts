@@ -8,9 +8,10 @@
  * - `valkey()` — Valkey cluster (sharded with optional replicas)
  * - `valkeyHelmRepository()` — Helm chart repository (OCI)
  * - `valkeyHelmRelease()` — Operator installation via Helm
+ * - `valkeyHelmRepositoryBootstrap` — Low-level shared OCI repository owner
  *
  * ## Compositions
- * - `valkeyBootstrap` — Complete operator deployment (namespace + Helm repo + release)
+ * - `valkeyBootstrap` / `valkeyOperatorInstallation` — Complete, explicitly owned operator deployment
  *
  * @example
  * ```typescript
@@ -18,7 +19,7 @@
  *
  * // Install the operator
  * const operatorFactory = valkeyBootstrap.factory('kro', {
- *   namespace: 'typekro-system',
+ *   namespace: 'typekro-system', // KRO instance/control-plane namespace
  * });
  * await operatorFactory.deploy({
  *   name: 'valkey-operator',
@@ -33,7 +34,9 @@
  *     shards: 3,
  *     replicas: 1,
  *     storage: {
- *       resources: { requests: { storage: '10Gi' } },
+ *       spec: {
+ *         resources: { requests: { storage: '10Gi' } },
+ *       },
  *     },
  *   },
  *   id: 'appCache',

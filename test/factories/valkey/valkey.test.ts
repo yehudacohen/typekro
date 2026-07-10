@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
 import { valkey } from '../../../src/factories/valkey/resources/valkey.js';
+import { ValkeyConfigSchema } from '../../../src/factories/valkey/types.js';
 
 describe('Valkey Factory', () => {
   describe('resource creation', () => {
@@ -156,9 +158,7 @@ describe('Valkey Factory', () => {
 
       const status = cache.readinessEvaluator?.({
         status: {
-          conditions: [
-            { type: 'Ready', status: 'True', reason: 'OK', message: 'Ready' },
-          ],
+          conditions: [{ type: 'Ready', status: 'True', reason: 'OK', message: 'Ready' }],
         },
       });
 
@@ -173,6 +173,26 @@ describe('Valkey Factory', () => {
 
       expect(cache.readinessEvaluator?.({})?.ready).toBe(false);
       expect(cache.readinessEvaluator?.({})?.reason).toBe('StatusMissing');
+    });
+  });
+
+  describe('admission-safe schema', () => {
+    it('rejects an incomplete explicit PVC that can panic the upstream controller', () => {
+      expect(ValkeyConfigSchema({ name: 'unsafe', spec: { storage: {} } })).toBeInstanceOf(
+        type.errors
+      );
+      expect(
+        ValkeyConfigSchema({ name: 'unsafe', spec: { storage: { spec: {} } } })
+      ).toBeInstanceOf(type.errors);
+    });
+
+    it('restricts nested external access issuer kinds to the upstream enum', () => {
+      expect(
+        ValkeyConfigSchema({
+          name: 'unsafe',
+          spec: { externalAccess: { certIssuerType: 'Anything' } },
+        })
+      ).toBeInstanceOf(type.errors);
     });
   });
 });

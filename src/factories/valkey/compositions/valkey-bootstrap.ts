@@ -1,12 +1,9 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
-import { clusterRole } from '../../kubernetes/rbac/cluster-role.js';
-import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
+  DEFAULT_VALKEY_REPO_URL,
   DEFAULT_VALKEY_VERSION,
   valkeyHelmRelease,
   valkeyHelmRepository,
@@ -19,13 +16,15 @@ import {
 import { mapValkeyConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
 /**
- * Strips the '-chart' suffix from a Hyperspike version tag for labeling.
- * The Helm chart version (e.g. 'v0.0.61-chart') differs from the app version
- * ('v0.0.61'). Labels should use the app version per k8s well-known labels spec.
+ * Strips the '-chart' suffix from the verified built-in Hyperspike version.
+ * Runtime schema references cannot be normalized synchronously, so explicit
+ * version overrides are preserved as supplied.
  */
 function stripChartSuffix(version: string): string {
   return version.replace(/-chart$/, '');
 }
+
+const DEFAULT_VALKEY_OPERATOR_NAMESPACE = 'valkey-operator-system';
 
 /**
  * Hyperspike Valkey Operator Bootstrap Composition
@@ -46,7 +45,7 @@ function stripChartSuffix(version: string): string {
  * // 'kro' = KRO mode (continuous reconciliation via ResourceGraphDefinition)
  * // 'direct' = Direct mode (immediate apply, no KRO controller needed)
  * const factory = valkeyBootstrap.factory('kro', {
- *   namespace: 'typekro-system',
+ *   namespace: 'typekro-system', // KRO instance/control-plane namespace
  *   waitForReady: true,
  * });
  *
@@ -64,18 +63,18 @@ export const valkeyBootstrap = kubernetesComposition(
     status: ValkeyBootstrapStatusSchema,
   },
   (spec: ValkeyBootstrapConfig) => {
-    const resolvedNamespace = spec.namespace || 'valkey-operator-system';
-    const resolvedVersion = spec.version || DEFAULT_VALKEY_VERSION;
-    const appVersion = stripChartSuffix(resolvedVersion);
-    // Default to shared-lifecycle so multiple consumers (e.g., many
-    // `webAppWithProcessing` deployments) converge on a single operator
-    // install. Users can opt out by passing `shared: false`.
-    const isShared = spec.shared !== false;
+    const resolvedNamespace = spec.namespace ?? DEFAULT_VALKEY_OPERATOR_NAMESPACE;
+    const resolvedVersion = spec.version ?? DEFAULT_VALKEY_VERSION;
+    // A schema-proxy string cannot be normalized synchronously. Keep the
+    // upstream chart tag for overrides; normalize the verified built-in default.
+    const reportedVersion = spec.version ? spec.version : stripChartSuffix(DEFAULT_VALKEY_VERSION);
+    const repositoryName = spec.repositoryName ?? DEFAULT_VALKEY_REPO_NAME;
+    const repositoryNamespace = spec.repositoryNamespace ?? resolvedNamespace;
+    const repositoryUrl = spec.repositoryUrl ?? DEFAULT_VALKEY_REPO_URL;
 
     const helmValues = mapValkeyConfigToHelmValues({
-      ...spec,
-      namespace: resolvedNamespace,
-      version: resolvedVersion,
+      ...(spec.customValues !== undefined && { customValues: spec.customValues }),
+      ...(spec.values !== undefined && { values: spec.values }),
     });
 
     // Resources are _-prefixed because they're registered via side effects in the
@@ -87,19 +86,17 @@ export const valkeyBootstrap = kubernetesComposition(
         labels: {
           'app.kubernetes.io/name': 'valkey-operator',
           'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': appVersion,
+          'app.kubernetes.io/version': reportedVersion,
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
       id: 'valkeyNamespace',
     });
 
-    // OCI HelmRepositories don't have status in Flux, which can cause the deploy
-    // engine to block waiting for readiness. Create both resources but don't depend
-    // on the repository readiness — Flux handles the OCI → chart resolution internally.
     const _helmRepository = valkeyHelmRepository({
-      name: DEFAULT_VALKEY_REPO_NAME,
-      namespace: DEFAULT_FLUX_NAMESPACE,
+      name: repositoryName,
+      namespace: repositoryNamespace,
+      url: repositoryUrl,
       id: 'valkeyHelmRepository',
     });
 
@@ -108,121 +105,11 @@ export const valkeyBootstrap = kubernetesComposition(
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
-      repositoryName: DEFAULT_VALKEY_REPO_NAME,
+      repositoryName,
+      repositoryNamespace,
+      repositoryUrl,
       id: 'valkeyHelmRelease',
     });
-
-    const _managerRole = clusterRole({
-      metadata: {
-        name: 'valkey-operator-manager-role',
-        labels: {
-          'app.kubernetes.io/name': 'valkey-operator',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': appVersion,
-          'app.kubernetes.io/managed-by': 'typekro',
-        },
-      },
-      rules: [
-        {
-          apiGroups: [''],
-          resources: ['configmaps', 'secrets', 'serviceaccounts', 'services'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-        {
-          apiGroups: [''],
-          resources: ['pods'],
-          verbs: ['get', 'list', 'watch'],
-        },
-        {
-          apiGroups: [''],
-          resources: ['events'],
-          verbs: ['create', 'patch'],
-        },
-        {
-          apiGroups: ['apps'],
-          resources: ['deployments', 'statefulsets'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-        {
-          apiGroups: ['policy'],
-          resources: ['poddisruptionbudgets'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-        {
-          apiGroups: ['hyperspike.io'],
-          resources: ['valkeys'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-        {
-          apiGroups: ['hyperspike.io'],
-          resources: ['valkeys/status'],
-          verbs: ['get', 'patch', 'update'],
-        },
-        {
-          apiGroups: ['hyperspike.io'],
-          resources: ['valkeys/finalizers'],
-          verbs: ['update'],
-        },
-        {
-          apiGroups: ['storage.k8s.io'],
-          resources: ['storageclasses'],
-          verbs: ['get', 'list', 'watch'],
-        },
-        {
-          apiGroups: ['cert-manager.io'],
-          resources: ['certificates'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-        {
-          apiGroups: ['cert-manager.io'],
-          resources: ['clusterissuers', 'issuers'],
-          verbs: ['get', 'list', 'watch'],
-        },
-        {
-          apiGroups: ['monitoring.coreos.com'],
-          resources: ['servicemonitors'],
-          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-        },
-      ],
-      id: 'valkeyManagerRole',
-    });
-
-    const _managerRoleBinding = clusterRoleBinding({
-      metadata: {
-        name: `${spec.name}-${resolvedNamespace}-manager-rolebinding`,
-        labels: {
-          'app.kubernetes.io/name': 'valkey-operator',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': appVersion,
-          'app.kubernetes.io/managed-by': 'typekro',
-        },
-      },
-      roleRef: {
-        apiGroup: 'rbac.authorization.k8s.io',
-        kind: 'ClusterRole',
-        name: 'valkey-operator-manager-role',
-      },
-      subjects: [
-        {
-          kind: 'ServiceAccount',
-          name: 'valkey-operator-controller-manager',
-          namespace: resolvedNamespace,
-        },
-      ],
-      id: 'valkeyManagerRoleBinding',
-    });
-
-    // Tag all resources with 'cluster' scope so factory-level
-    // deleteInstance leaves the operator install intact. Callers can
-    // opt in to tearing down shared infra with
-    // `deleteInstance(name, { scopes: ['cluster'] })`.
-    if (isShared) {
-      setMetadataField(_valkeyNamespace, 'scopes', ['cluster']);
-      setMetadataField(_helmRepository, 'scopes', ['cluster']);
-      setMetadataField(_helmRelease, 'scopes', ['cluster']);
-      setMetadataField(_managerRole, 'scopes', ['cluster']);
-      setMetadataField(_managerRoleBinding, 'scopes', ['cluster']);
-    }
 
     // Status derived from HelmRelease conditions.
     return {
@@ -245,7 +132,10 @@ export const valkeyBootstrap = kubernetesComposition(
       // Static version from deploy-time config, not derived from live HelmRelease
       // status. If the operator is upgraded out-of-band (e.g. Flux automation),
       // this value will not reflect the running version.
-      version: appVersion,
+      version: reportedVersion,
     };
   }
 );
+
+/** Explicit lifecycle name for code that wants to emphasize ownership. */
+export const valkeyOperatorInstallation = valkeyBootstrap;

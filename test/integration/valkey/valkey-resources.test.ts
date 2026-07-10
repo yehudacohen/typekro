@@ -1,156 +1,219 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+/**
+ * Opt-in live Valkey proof against a real cluster.
+ *
+ * RUN_VALKEY_INTEGRATION=true bun test test/integration/valkey/valkey-resources.test.ts
+ *
+ * Requires the Hyperspike v0.0.61 operator, KRO, Flux, and a default
+ * ReadWriteOnce StorageClass. Every run uses a unique namespace and deletes
+ * only resources it created.
+ */
+
+import { afterAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import { type } from 'arktype';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists, deleteNamespaceAndWait } from '../shared-kubeconfig.js';
+import { Cel } from '../../../src/core/references/cel.js';
+import { isKubernetesRef } from '../../../src/utils/type-guards.js';
 import { valkey } from '../../../src/factories/valkey/resources/valkey.js';
+import {
+  deleteNamespaceAndWait,
+  ensureNamespaceExists,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
 
-describe('Valkey Resource Integration Tests', () => {
-  let kubeConfig: any;
-  const testNs = 'valkey-resource-test';
+const runRequested = process.env.RUN_VALKEY_INTEGRATION === 'true';
+const describeOrSkip = runRequested && isClusterAvailable() ? describe : describe.skip;
+const runId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+const namespace = `tk-valkey-${runId}`.slice(0, 63);
 
-  beforeAll(async () => {
-    try {
-      kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      await ensureNamespaceExists(testNs, kubeConfig);
-    } catch (error) {
-      console.error('❌ Failed to connect to cluster:', error);
-      throw error;
+setDefaultTimeout(900_000);
+
+const liveValkey = kubernetesComposition(
+  {
+    name: 'live-valkey-cluster',
+    kind: 'LiveValkeyCluster',
+    spec: type({
+      name: 'string',
+      namespace: 'string',
+      storageClassName: 'string',
+    }),
+    status: type({ ready: 'boolean', serviceName: 'string' }),
+  },
+  (spec) => {
+    const cache = valkey({
+      name: spec.name,
+      namespace: spec.namespace,
+      spec: {
+        shards: 1,
+        replicas: 0,
+        anonymousAuth: true,
+        volumePermissions: true,
+        storage: {
+          spec: {
+            accessModes: ['ReadWriteOnce'],
+            storageClassName: spec.storageClassName,
+            resources: { requests: { storage: '1Gi' } },
+          },
+        },
+      },
+      id: 'cache',
+    });
+
+    return {
+      ready: cache.status.ready,
+      serviceName: isKubernetesRef(cache.metadata.name)
+        ? Cel.expr<string>(cache.metadata.name)
+        : cache.metadata.name,
+    };
+  }
+);
+
+async function kubectl(args: string[], timeout = 300_000): Promise<string> {
+  const proc = Bun.spawn(['kubectl', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  const timer = setTimeout(() => proc.kill(), timeout);
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`kubectl ${args.join(' ')} failed (${exitCode}): ${stderr || stdout}`);
     }
+    return stdout.trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runClient(name: string, serviceName: string, commands: string): Promise<string> {
+  return kubectl([
+    'run',
+    name,
+    '--namespace',
+    namespace,
+    '--image=valkey/valkey:8.1-alpine',
+    '--restart=Never',
+    '--rm',
+    '-i',
+    '--command',
+    '--',
+    'sh',
+    '-ec',
+    `until valkey-cli -h ${serviceName} PING >/dev/null 2>&1; do sleep 2; done; ${commands}`,
+  ]);
+}
+
+async function proveDataPlane(mode: 'direct' | 'kro', name: string): Promise<void> {
+  const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const factory = liveValkey.factory(mode, {
+    namespace,
+    waitForReady: true,
+    timeout: 600_000,
+    kubeConfig,
   });
+
+  try {
+    const instance = await factory.deploy({
+      name,
+      namespace,
+      storageClassName: 'local-path',
+    });
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.serviceName).toBe(name);
+
+    const beforeRestart = await runClient(
+      `${name}-client-a`,
+      name,
+      [
+        `test "$(valkey-cli -h ${name} SET e2e-key e2e-value)" = OK`,
+        `valkey-cli -h ${name} XGROUP CREATE e2e-stream e2e-group 0 MKSTREAM >/dev/null`,
+        `valkey-cli -h ${name} XADD e2e-stream "*" payload hello >/dev/null`,
+        `valkey-cli -h ${name} XREADGROUP GROUP e2e-group worker COUNT 1 STREAMS e2e-stream ">" | grep -q hello`,
+        `valkey-cli -h ${name} SAVE >/dev/null`,
+        `valkey-cli -h ${name} CONFIG GET appendonly`,
+      ].join('; ')
+    );
+    expect(beforeRestart).toContain('appendonly');
+    expect(beforeRestart).toContain('no');
+
+    const pod = await kubectl([
+      'get',
+      'pods',
+      '-n',
+      namespace,
+      '-l',
+      `app.kubernetes.io/instance=${name}`,
+      '-o',
+      'jsonpath={.items[0].metadata.name}',
+    ]);
+    expect(pod).not.toBe('');
+    await kubectl(['delete', 'pod', pod, '-n', namespace, '--wait=true']);
+    await kubectl([
+      'wait',
+      '--for=condition=Ready',
+      'pod',
+      '-l',
+      `app.kubernetes.io/instance=${name}`,
+      '-n',
+      namespace,
+      '--timeout=300s',
+    ]);
+
+    const recovered = await runClient(
+      `${name}-client-b`,
+      name,
+      `test "$(valkey-cli -h ${name} GET e2e-key)" = e2e-value; valkey-cli -h ${name} XLEN e2e-stream`
+    );
+    const streamLength = recovered.match(/^\d+$/m)?.[0];
+    expect(Number(streamLength)).toBeGreaterThanOrEqual(1);
+  } finally {
+    await factory.deleteInstance(name).catch(() => {});
+    await kubectl([
+      'delete',
+      'valkey',
+      name,
+      '-n',
+      namespace,
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=120s',
+    ]).catch(() => {});
+  }
+}
+
+describeOrSkip('Valkey live direct and KRO integration', () => {
+  const kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
   afterAll(async () => {
-    await deleteNamespaceAndWait(testNs, kubeConfig).catch(() => {});
+    await deleteNamespaceAndWait(namespace, kubeConfig, 180_000).catch((error: unknown) => {
+      console.error('Valkey integration cleanup failed:', error);
+    });
+    await kubectl([
+      'delete',
+      'resourcegraphdefinition',
+      'live-valkey-cluster',
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=120s',
+    ]).catch(() => {});
   });
 
-  describe('Valkey', () => {
-    it('should create typed resource with correct apiVersion and kind', () => {
-      const cache = valkey({
-        name: 'test-valkey',
-        namespace: testNs,
-        spec: {
-          shards: 3,
-          replicas: 1,
-          volumePermissions: true,
-          storage: {
-            spec: {
-              accessModes: ['ReadWriteOnce'],
-              storageClassName: 'standard',
-              resources: { requests: { storage: '10Gi' } },
-            },
-          },
-          resources: {
-            requests: { cpu: '250m', memory: '512Mi' },
-            limits: { cpu: '1', memory: '2Gi' },
-          },
-        },
-        id: 'testCache',
-      });
+  it('executes commands and Streams and recovers an explicit RDB snapshot in direct mode', async () => {
+    await kubectl([
+      'delete',
+      'resourcegraphdefinition',
+      'live-valkey-cluster',
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=120s',
+    ]);
+    await ensureNamespaceExists(namespace, kubeConfig);
+    await proveDataPlane('direct', 'direct-cache');
+  });
 
-      expect(cache.kind).toBe('Valkey');
-      expect(cache.apiVersion).toBe('hyperspike.io/v1');
-      expect(cache.metadata.name).toBe('test-valkey');
-      expect(cache.metadata.namespace).toBe(testNs);
-
-      // Typed spec access
-      expect((cache.spec as Record<string, unknown>).nodes).toBe(3);
-      expect(cache.spec.replicas).toBe(1);
-      expect(cache.spec.volumePermissions).toBe(true);
-      expect(cache.spec.storage?.spec?.storageClassName).toBe('standard');
-      expect(cache.spec.resources?.requests?.cpu).toBe('250m');
-    });
-
-    it('should create minimal Valkey resource', () => {
-      const cache = valkey({
-        name: 'minimal-valkey',
-        namespace: testNs,
-        spec: { volumePermissions: true },
-      });
-
-      expect(cache.kind).toBe('Valkey');
-      expect(cache.metadata.name).toBe('minimal-valkey');
-    });
-
-    it('should create Valkey with TLS and monitoring', () => {
-      const cache = valkey({
-        name: 'secure-valkey',
-        namespace: testNs,
-        spec: {
-          tls: true,
-          certIssuer: 'letsencrypt-prod',
-          certIssuerType: 'ClusterIssuer',
-          prometheus: true,
-          serviceMonitor: true,
-          prometheusLabels: { prometheus: 'kube-prometheus' },
-        },
-      });
-
-      expect(cache.spec.tls).toBe(true);
-      expect(cache.spec.certIssuer).toBe('letsencrypt-prod');
-      expect(cache.spec.prometheus).toBe(true);
-      expect(cache.spec.serviceMonitor).toBe(true);
-    });
-
-    it('should create Valkey with external access', () => {
-      const cache = valkey({
-        name: 'external-valkey',
-        namespace: testNs,
-        spec: {
-          externalAccess: {
-            enabled: true,
-            type: 'Proxy',
-            proxy: {
-              replicas: 2,
-              hostname: 'valkey.example.com',
-              resources: {
-                requests: { cpu: '100m', memory: '128Mi' },
-              },
-            },
-          },
-        },
-      });
-
-      expect(cache.spec.externalAccess?.enabled).toBe(true);
-      expect(cache.spec.externalAccess?.type).toBe('Proxy');
-      expect(cache.spec.externalAccess?.proxy?.replicas).toBe(2);
-      expect(cache.spec.externalAccess?.proxy?.hostname).toBe('valkey.example.com');
-    });
-
-    it('should evaluate readiness for ready cluster', () => {
-      const cache = valkey({ name: 'ready-test', spec: {} });
-
-      const status = cache.readinessEvaluator?.({
-        status: { ready: true },
-      });
-
-      expect(status?.ready).toBe(true);
-      expect(status?.reason).toBe('Ready');
-    });
-
-    it('should evaluate readiness for not-ready cluster', () => {
-      const cache = valkey({ name: 'not-ready-test', spec: {} });
-
-      const status = cache.readinessEvaluator?.({
-        status: {
-          ready: false,
-          conditions: [{
-            type: 'Ready',
-            status: 'False',
-            reason: 'Initializing',
-            message: 'Cluster is starting up',
-            lastTransitionTime: '2024-01-15T10:00:00Z',
-          }],
-        },
-      });
-
-      expect(status?.ready).toBe(false);
-      expect(status?.reason).toBe('Initializing');
-    });
-
-    it('should handle missing status', () => {
-      const cache = valkey({ name: 'no-status-test', spec: {} });
-
-      expect(cache.readinessEvaluator?.(null)?.ready).toBe(false);
-      expect(cache.readinessEvaluator?.(null)?.reason).toBe('StatusMissing');
-      expect(cache.readinessEvaluator?.({})?.ready).toBe(false);
-    });
+  it('projects readiness and executes the same data-plane proof in KRO mode', async () => {
+    await ensureNamespaceExists(namespace, kubeConfig);
+    await proveDataPlane('kro', 'kro-cache');
   });
 });

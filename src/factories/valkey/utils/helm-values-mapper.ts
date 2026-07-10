@@ -7,12 +7,24 @@
  * @see https://github.com/hyperspike/valkey-operator
  */
 
+import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+  type ValuesMergeExpression,
+} from '../../../core/aspects/values-merge.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type { ValkeyBootstrapConfig } from '../types.js';
 
 /** Helm values structure for the valkey-operator chart. */
 export interface ValkeyHelmValues {
   [key: string]: unknown;
 }
+
+/** Plain values or a KRO runtime merge preserving graph-aware passthrough maps. */
+export type ValkeyMappedHelmValues = ValkeyHelmValues | ValuesMergeExpression;
+
+/** Proxy-safe subset consumed by the Helm values mapper. */
+export type ValkeyHelmValuesInput = Partial<ValkeyBootstrapConfig>;
 
 /**
  * Map ValkeyBootstrapConfig to Helm chart values.
@@ -24,34 +36,74 @@ export interface ValkeyHelmValues {
  * @param config - Resolved Valkey bootstrap configuration
  * @returns Helm values object compatible with the valkey-operator chart
  */
-export function mapValkeyConfigToHelmValues(config: ValkeyBootstrapConfig): ValkeyHelmValues {
-  const values: ValkeyHelmValues = {};
+export function mapValkeyConfigToHelmValues(config: ValkeyHelmValuesInput): ValkeyMappedHelmValues {
+  let mapped: ValkeyMappedHelmValues = {};
 
-  if (config.customValues) {
-    Object.assign(values, config.customValues);
-  }
+  // Preserve the legacy alias first, then let the standard `values` API win.
+  mapped = mergeOverride(mapped, config.customValues);
+  mapped = mergeOverride(mapped, config.values);
 
-  return removeUndefinedValues(values);
+  return mapped;
 }
 
-/**
- * Recursively remove undefined values from an object.
- * Helm doesn't handle undefined well — only include explicitly set values.
- */
-function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
-  const result = {} as Record<string, unknown>;
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === undefined) continue;
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      const cleaned = removeUndefinedValues(value as Record<string, unknown>);
-      if (Object.keys(cleaned).length > 0) {
-        result[key] = cleaned;
-      }
-    } else {
-      result[key] = value;
+function mergeOverride(base: ValkeyMappedHelmValues, override: unknown): ValkeyMappedHelmValues {
+  if (override === undefined) return base;
+
+  if (isKubernetesRef(override) || isCelExpression(override) || isValuesMergeExpression(override)) {
+    return mergeValuesExpression(base, override);
+  }
+
+  if (isPlainObject(override)) {
+    const safeOverride = deepClone(override);
+    if (isValuesMergeExpression(base)) {
+      return mergeValuesExpression(base, safeOverride);
+    }
+    if (isPlainObject(base)) {
+      return deepMerge(deepClone(base), safeOverride);
     }
   }
-  return result as T;
+
+  return base;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value) &&
+    !isValuesMergeExpression(value)
+  );
+}
+
+/** Deep merge plain objects; arrays and primitives replace, and dangerous keys are ignored. */
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): Record<string, unknown> {
+  for (const [key, sourceValue] of Object.entries(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    if (sourceValue === undefined) continue;
+
+    const targetValue = target[key];
+    if (isPlainObject(targetValue) && isPlainObject(sourceValue)) {
+      deepMerge(targetValue, sourceValue);
+    } else {
+      target[key] = deepCloneValue(sourceValue);
+    }
+  }
+  return target;
+}
+
+function deepClone(source: Record<string, unknown>): Record<string, unknown> {
+  return deepMerge({}, source);
+}
+
+function deepCloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(deepCloneValue);
+  if (isPlainObject(value)) return deepClone(value);
+  return value;
 }
 
 /**

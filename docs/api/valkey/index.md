@@ -7,6 +7,10 @@ description: Factory functions for Hyperspike Valkey clusters on Kubernetes
 
 Factory functions for the [Hyperspike Valkey operator](https://github.com/hyperspike/valkey-operator) with built-in readiness evaluation. Manage Valkey clusters as Kubernetes-native resources.
 
+The integration provisions Valkey infrastructure. Application data-plane behavior—commands,
+Streams consumer groups, acknowledgements, retries, and dead-letter policy—belongs in the
+application or framework using a Valkey client, not in TypeKro.
+
 ## Import
 
 ```typescript
@@ -30,8 +34,10 @@ const cache = valkey({
     replicas: 1,
     volumePermissions: true,
     storage: {
-      storageClassName: 'gp3',
-      resources: { requests: { storage: '10Gi' } },
+      spec: {
+        storageClassName: 'gp3',
+        resources: { requests: { storage: '10Gi' } },
+      },
     },
     resources: {
       requests: { cpu: '250m', memory: '512Mi' },
@@ -50,6 +56,8 @@ const cache = valkey({
 | `valkey` | Valkey | Namespace | Valkey cluster (sharded with optional replicas) |
 | `valkeyHelmRepository` | HelmRepository | Namespace | OCI Helm registry for the operator |
 | `valkeyHelmRelease` | HelmRelease | Namespace | Operator installation via Helm |
+| `valkeyBootstrap` / `valkeyOperatorInstallation` | Composition | Cluster infrastructure | Complete, explicitly owned operator installation |
+| `valkeyHelmRepositoryBootstrap` | Composition | Cluster singleton | Shared OCI repository owner |
 
 ## valkey()
 
@@ -67,8 +75,10 @@ const cache = valkey({
     // Storage
     volumePermissions: true,
     storage: {
-      storageClassName: 'gp3',
-      resources: { requests: { storage: '50Gi' } },
+      spec: {
+        storageClassName: 'gp3',
+        resources: { requests: { storage: '50Gi' } },
+      },
     },
 
     // Resources
@@ -112,6 +122,13 @@ const cache = valkey({
 });
 ```
 
+::: warning Hyperspike replica behavior
+Hyperspike v0.0.61 documents that `replicas` currently creates additional primary nodes rather
+than replicas. Track [upstream issue #186](https://github.com/hyperspike/valkey-operator/issues/186)
+before relying on this field for high availability. This is especially important for durable
+Valkey Streams queues.
+:::
+
 ### Valkey Readiness
 
 The readiness evaluator checks the Hyperspike status model:
@@ -139,19 +156,37 @@ import { valkeyBootstrap } from 'typekro/valkey';
 // 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
 // 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
-  namespace: 'typekro-system',          // KRO instance namespace; must not be graph-owned
+  namespace: 'typekro-system',          // Control plane: holds the KRO instance
   waitForReady: true,
 });
 
 await factory.deploy({
   name: 'valkey-operator',
-  namespace: 'valkey-operator-system',  // Namespace where the operator pods run
+  namespace: 'valkey-operator-system',  // Owned child: operator pods run here
+  values: {
+    nodeSelector: { 'kubernetes.io/os': 'linux' },
+  },
 });
 ```
 
-The KRO instance namespace must be separate from the operator namespace because
-the bootstrap graph owns the operator Namespace. TypeKro rejects unsafe
-same-namespace instances before YAML emission or cluster access.
+In KRO mode these two namespaces must be different. The bootstrap owns and
+deletes the operator namespace as a graph child, so putting the
+`ValkeyBootstrap` instance in that namespace could delete the instance before
+KRO clears its finalizer and deadlock namespace termination. TypeKro rejects
+that unsafe deployment. Direct mode has no KRO custom-resource finalizer and
+does not require this split.
+
+`values` is the raw Helm passthrough and merges last. The older `customValues` field remains as a
+deprecated compatibility alias; when both are present, `values` wins. The Flux OCI
+`HelmRepository` is owned by the complete bootstrap and defaults to the operator namespace. Custom
+`repositoryName`, `repositoryNamespace`, and `repositoryUrl` values are propagated to the
+HelmRelease source reference. The official chart remains the sole owner of its cluster-wide RBAC;
+TypeKro does not duplicate those resources.
+
+The bootstrap has an explicit owner lifecycle: deleting its KRO instance uninstalls the operator.
+Application compositions that share one cluster operator should wrap `valkeyBootstrap` with
+TypeKro's `singleton()` using concrete, graph-authoring-time settings. Deleting an application then
+removes only the singleton reference, not the operator owner.
 
 ### Bootstrap Status
 
@@ -159,7 +194,7 @@ same-namespace instances before YAML emission or cluster access.
 instance.status.ready    // boolean — operator is running
 instance.status.phase    // 'Ready' | 'Installing'
 instance.status.failed   // boolean — true if Ready condition is explicitly False
-instance.status.version  // deployed operator version (app version, not chart version)
+instance.status.version  // deployment-time version; default is normalized to v0.0.61
 ```
 
 > **Note:** `phase` cannot distinguish `'Failed'` from `'Installing'` due to a
@@ -218,6 +253,24 @@ helm install valkey-operator \
 ```
 
 For TLS support, [cert-manager](https://cert-manager.io/) must be installed with an appropriate certificate issuer.
+
+## Valkey Streams queues
+
+This factory is suitable for provisioning the Valkey service behind an application queue, including
+persistent storage, authentication, TLS, resource limits, and scheduling. TypeKro intentionally does
+not expose `XADD`, consumer-group, acknowledgement, retry, or dead-letter APIs. Those semantics should
+be implemented by the application layer using a Valkey-compatible client.
+
+Hyperspike v0.0.61 is **not a durable queue provider**. Its generated `valkey.conf` enables periodic
+RDB snapshots but sets `appendonly no`, and the CRD does not expose a server-config override. A pod
+failure can therefore lose writes since the latest snapshot. TypeKro's live integration verifies
+ordinary commands and Streams plus explicit-RDB restart recovery, but it does not claim AOF or
+queue-grade durability. Use this provider for caches and workloads that accept that recovery point;
+use a configurable Valkey provider (or an upstream operator release with AOF configuration) before
+backing an authoritative queue.
+
+The operator-generated password Secret uses the Valkey resource name and the `password` key when
+`anonymousAuth` is false and `servicePassword` is omitted, per the v0.0.61 CRD contract.
 
 ## Next Steps
 

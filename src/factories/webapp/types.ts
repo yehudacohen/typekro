@@ -13,7 +13,7 @@
 
 import { type } from 'arktype';
 import { CnpgBootstrapConfigSchema } from '../cnpg/types.js';
-import { ValkeyBootstrapConfigSchema } from '../valkey/types.js';
+import type { ValkeyBootstrapConfig } from '../valkey/types.js';
 
 const resourceRequirementsSchemaShape = {
   'requests?': { 'cpu?': 'string', 'memory?': 'string' },
@@ -141,18 +141,37 @@ export const WebAppWithProcessingConfigSchema = type({
    * is fixed by this composition's `cnpg-operator` singleton id.
    */
   'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
-  /**
-   * Hyperspike Valkey operator install settings. Same singleton-consumption
-   * pattern and fixed composition singleton identity as `cnpgOperator`. Defaults:
-   *   name: 'valkey-operator'
-   *   namespace: 'valkey-operator-system'
-   *   shared: true
-   */
-  'valkeyOperator?': ValkeyBootstrapConfigSchema.partial(),
 });
 
 /** Inferred config type — no separate interface needed. */
 export type WebAppWithProcessingConfig = typeof WebAppWithProcessingConfigSchema.infer;
+
+/** Build-time Valkey settings, including the v0.24 lifecycle compatibility flag. */
+export type WebAppValkeyOperatorBuildOptions = Partial<ValkeyBootstrapConfig> & {
+  /**
+   * @deprecated Webapp operators are always consumed as shared singletons.
+   * `true` is accepted during migration; `false` is rejected explicitly.
+   */
+  readonly shared?: boolean;
+};
+
+/**
+ * Graph-authoring-time choices for {@link makeWebAppWithProcessing}.
+ *
+ * Operator installation settings are deliberately build-time: singleton
+ * identity and ownership must be concrete in a generated KRO graph and may
+ * not vary with each WebAppWithProcessing custom-resource instance.
+ */
+export interface WebAppWithProcessingBuildOptions {
+  /**
+   * Concrete Hyperspike operator installation settings. Omitted fields use
+   * `name: 'valkey-operator'` and `namespace: 'valkey-operator-system'`.
+   *
+   * Migration from v0.24 and earlier: move the former runtime
+   * `spec.valkeyOperator` object here.
+   */
+  readonly valkeyOperator?: WebAppValkeyOperatorBuildOptions;
+}
 
 /**
  * Status schema for the full-stack web application deployment.

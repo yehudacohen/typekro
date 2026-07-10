@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { valkeyHelmRepository, valkeyHelmRelease } from '../../../src/factories/valkey/resources/helm.js';
+import {
+  valkeyHelmRepository,
+  valkeyHelmRelease,
+} from '../../../src/factories/valkey/resources/helm.js';
 import { mapValkeyConfigToHelmValues } from '../../../src/factories/valkey/utils/helm-values-mapper.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
 describe('Valkey Helm Resources', () => {
   describe('valkeyHelmRepository', () => {
@@ -50,7 +54,7 @@ describe('Valkey Helm Resources', () => {
       expect(release.metadata.namespace).toBe('valkey-operator-system');
     });
 
-    it('should sanitize proxy objects from values', () => {
+    it('should preserve values passed to the shared Helm wrapper', () => {
       const release = valkeyHelmRelease({
         name: 'valkey-operator',
         values: { replicaCount: 2 },
@@ -73,6 +77,22 @@ describe('Valkey Helm Resources', () => {
 
       expect(release.metadata.namespace).toBe('custom-ns');
     });
+
+    it('propagates custom repository coordinates to both chart and sourceRef', () => {
+      const release = valkeyHelmRelease({
+        name: 'custom-operator',
+        repositoryName: 'custom-repo',
+        repositoryNamespace: 'custom-sources',
+        repositoryUrl: 'oci://registry.example/valkey',
+      });
+
+      expect(release.spec.chart.spec.sourceRef).toEqual({
+        kind: 'HelmRepository',
+        name: 'custom-repo',
+        namespace: 'custom-sources',
+      });
+      expect(release.spec.chart.spec.chart).toBe('valkey-operator');
+    });
   });
 });
 
@@ -88,7 +108,35 @@ describe('Valkey Helm Values Mapper', () => {
         name: 'valkey-operator',
         customValues: { nodeSelector: { 'kubernetes.io/os': 'linux' } },
       });
-      expect(values.nodeSelector).toEqual({ 'kubernetes.io/os': 'linux' });
+      expect(values).toEqual({ nodeSelector: { 'kubernetes.io/os': 'linux' } });
+    });
+
+    it('should prefer values while deeply preserving legacy customValues siblings', () => {
+      const values = mapValkeyConfigToHelmValues({
+        customValues: {
+          controller: {
+            resources: {
+              requests: { cpu: '100m' },
+              limits: { memory: '256Mi' },
+            },
+          },
+          replicaCount: 1,
+        },
+        values: {
+          controller: { resources: { requests: { memory: '128Mi' } } },
+          replicaCount: 2,
+        },
+      });
+
+      expect(values).toEqual({
+        controller: {
+          resources: {
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: { memory: '256Mi' },
+          },
+        },
+        replicaCount: 2,
+      });
     });
 
     it('should remove undefined values', () => {
@@ -97,6 +145,39 @@ describe('Valkey Helm Values Mapper', () => {
       for (const value of Object.values(values)) {
         expect(value).not.toBe(undefined);
       }
+    });
+
+    it('does not alias or mutate caller-owned override objects', () => {
+      const customValues = {
+        controller: { resources: { requests: { cpu: '100m' } } },
+      };
+      const snapshot = structuredClone(customValues);
+
+      const mapped = mapValkeyConfigToHelmValues({
+        customValues,
+        values: { controller: { resources: { requests: { memory: '128Mi' } } } },
+      });
+
+      expect(customValues).toEqual(snapshot);
+      expect(mapped).not.toBe(customValues);
+    });
+
+    it('keeps later concrete values after a graph-aware override', () => {
+      const graphOverride = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'schema',
+        fieldPath: 'spec.customValues',
+      };
+      const mapped = mapValkeyConfigToHelmValues({
+        customValues: graphOverride as never,
+        values: { controller: { replicas: 2 } },
+      });
+
+      expect(mapped).toEqual({
+        __typekroValuesMerge: true,
+        base: {},
+        overlays: [graphOverride, { controller: { replicas: 2 } }],
+      });
     });
   });
 });

@@ -27,13 +27,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as jsYaml from 'js-yaml';
-import {
-  createSchemaProxy,
-  isSchemaReference,
-} from '../../src/core/references/index.js';
-import {
-  generateKroSchemaFromArktype,
-} from '../../src/core/serialization/schema.js';
+import { createSchemaProxy, isSchemaReference } from '../../src/core/references/index.js';
+import { generateKroSchemaFromArktype } from '../../src/core/serialization/schema.js';
 import { shouldPreserveRgd } from '../../src/core/deployment/kro-factory.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 import type { KubernetesRef } from '../../src/core/types/common.js';
@@ -58,9 +53,7 @@ import { Cel } from '../../src/core/references/cel.js';
 
 describe('#36 literal nested refs in template context', () => {
   it('wraps a bare integer expression with string() in template context', async () => {
-    const { kubernetesComposition } = await import(
-      '../../src/core/composition/imperative.js'
-    );
+    const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
     const { simple } = await import('../../src/factories/simple/index.js');
 
     const InnerSpec = type({ name: 'string' });
@@ -125,9 +118,7 @@ describe('#36 literal nested refs in template context', () => {
 
 describe('#47 applyJsToCelConversions strips optional chaining', () => {
   it('emits valid CEL (no raw `?.` or `??`) for `spec.parent?.count ?? 1`', async () => {
-    const { kubernetesComposition } = await import(
-      '../../src/core/composition/imperative.js'
-    );
+    const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
     const { simple } = await import('../../src/factories/simple/index.js');
 
     const Spec = type({
@@ -284,8 +275,7 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
       '../../src/core/expressions/composition/composition-analyzer-helpers.js'
     );
 
-    const source =
-      '(spec) => spec.secrets && Object.keys(spec.secrets).length > 0';
+    const source = '(spec) => spec.secrets && Object.keys(spec.secrets).length > 0';
     const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
     const body = (ast as any).body[0].expression.body;
 
@@ -384,9 +374,7 @@ describe('#52 nested optional omit() wrapping', () => {
       status: type({ ready: 'boolean' }),
     });
 
-    const omitFields = (
-      schema as unknown as { __omitFields?: string[] }
-    ).__omitFields ?? [];
+    const omitFields = (schema as unknown as { __omitFields?: string[] }).__omitFields ?? [];
     // Nested optionals must be collected with dotted paths.
     expect(omitFields).toContain('database.storageClass');
     expect(omitFields).toContain('database.owner');
@@ -413,9 +401,7 @@ describe('#52 nested optional omit() wrapping', () => {
       status: type({ ready: 'boolean' }),
     });
 
-    const omitFields = (
-      schema as unknown as { __omitFields?: string[] }
-    ).__omitFields ?? [];
+    const omitFields = (schema as unknown as { __omitFields?: string[] }).__omitFields ?? [];
     expect(omitFields).toContain('cache');
     expect(omitFields).toContain('cache.replicas');
   });
@@ -504,9 +490,7 @@ describe('#52 nested optional omit() wrapping', () => {
       resourceIdStrategy: 'deterministic',
       omitFields: new Set(['namespace']),
     });
-    expect(result).toBe(
-      '${has(schema.spec.namespace) ? schema.spec.namespace : omit()}'
-    );
+    expect(result).toBe('${has(schema.spec.namespace) ? schema.spec.namespace : omit()}');
   });
 
   it('chains ALL intermediate has() guards for 3+ level depth', async () => {
@@ -578,10 +562,10 @@ describe('#53 schema-shape-aware proxy', () => {
     });
     const Status = type({ ready: 'boolean' });
 
-    const schema = createSchemaProxy<
-      typeof Spec.infer,
-      typeof Status.infer
-    >(Spec.json, Status.json);
+    const schema = createSchemaProxy<typeof Spec.infer, typeof Status.infer>(
+      Spec.json,
+      Status.json
+    );
 
     // Spread should preserve eventKey, signingKey, and sdkUrl — not
     // silently drop them as the old opaque proxy did.
@@ -602,10 +586,10 @@ describe('#53 schema-shape-aware proxy', () => {
     });
     const Status = type({ ready: 'boolean' });
 
-    const schema = createSchemaProxy<
-      typeof Spec.infer,
-      typeof Status.infer
-    >(Spec.json, Status.json);
+    const schema = createSchemaProxy<typeof Spec.infer, typeof Status.infer>(
+      Spec.json,
+      Status.json
+    );
 
     const forwarded = { ...schema.spec.processing };
     // eventKey's value should be a schema KubernetesRef that serializes
@@ -623,10 +607,10 @@ describe('#53 schema-shape-aware proxy', () => {
     });
     const Status = type({ ready: 'boolean' });
 
-    const schema = createSchemaProxy<
-      typeof Spec.infer,
-      typeof Status.infer
-    >(Spec.json, Status.json);
+    const schema = createSchemaProxy<typeof Spec.infer, typeof Status.infer>(
+      Spec.json,
+      Status.json
+    );
 
     // Map types have no statically knowable keys, so we return a
     // sentinel key. The .length check must be > 0 so the common
@@ -644,15 +628,14 @@ describe('#53 schema-shape-aware proxy', () => {
     });
     const Status = type({ ready: 'boolean' });
 
-    const schema = createSchemaProxy<
-      typeof Spec.infer,
-      typeof Status.infer
-    >(Spec.json, Status.json);
+    const schema = createSchemaProxy<typeof Spec.infer, typeof Status.infer>(
+      Spec.json,
+      Status.json
+    );
 
     // Direct access must still produce a schema ref — the shape awareness
     // MUST NOT interfere with plain property lookup.
-    const ref = schema.spec.processing
-      .eventKey as unknown as KubernetesRef<unknown>;
+    const ref = schema.spec.processing.eventKey as unknown as KubernetesRef<unknown>;
     expect(isKubernetesRef(ref)).toBe(true);
     expect(ref.fieldPath).toBe('spec.processing.eventKey');
   });
@@ -665,17 +648,15 @@ describe('#53 schema-shape-aware proxy', () => {
     });
     const Status = type({ ready: 'boolean' });
 
-    const schema = createSchemaProxy<
-      Record<string, unknown>,
-      typeof Status.infer
-    >(Spec.json, Status.json);
+    const schema = createSchemaProxy<Record<string, unknown>, typeof Status.infer>(
+      Spec.json,
+      Status.json
+    );
 
     // Even though `nonExistent` isn't in the schema, dot-access returns
     // a ref. This matches the long-standing lazy behavior of the proxy
     // — shape-awareness affects enumeration, not strict-property-lookup.
-    const ref = (schema.spec as any).processing.nonExistent as KubernetesRef<
-      unknown
-    >;
+    const ref = (schema.spec as any).processing.nonExistent as KubernetesRef<unknown>;
     expect(isKubernetesRef(ref)).toBe(true);
     expect(ref.fieldPath).toBe('spec.processing.nonExistent');
   });
@@ -714,11 +695,7 @@ describe('#55 shouldPreserveRgd decision', () => {
     // instanceDeleted = true. The only remaining entry is the just-
     // deleted target (visible due to list-cache lag). Filter it out,
     // 0 others remain, return false (no preserve).
-    const result = shouldPreserveRgd(
-      [{ metadata: { name: 'myapp' } }],
-      'myapp',
-      true
-    );
+    const result = shouldPreserveRgd([{ metadata: { name: 'myapp' } }], 'myapp', true);
     expect(result).toBe(false);
   });
 
@@ -726,10 +703,7 @@ describe('#55 shouldPreserveRgd decision', () => {
     // instanceDeleted = true. Another instance is sharing the RGD —
     // preserve so it keeps working.
     const result = shouldPreserveRgd(
-      [
-        { metadata: { name: 'myapp' } },
-        { metadata: { name: 'other' } },
-      ],
+      [{ metadata: { name: 'myapp' } }, { metadata: { name: 'other' } }],
       'myapp',
       true
     );
@@ -742,21 +716,14 @@ describe('#55 shouldPreserveRgd decision', () => {
     // pending. Previously the factory filtered it out and tore down
     // the RGD, orphaning the finalizer. Now we keep it in the
     // remaining set so the RGD is preserved.
-    const result = shouldPreserveRgd(
-      [{ metadata: { name: 'myapp' } }],
-      'myapp',
-      false
-    );
+    const result = shouldPreserveRgd([{ metadata: { name: 'myapp' } }], 'myapp', false);
     expect(result).toBe(true);
   });
 
   it('stuck delete + target plus others → preserve (true)', () => {
     // Multiple instances, one stuck. Preserve unconditionally.
     const result = shouldPreserveRgd(
-      [
-        { metadata: { name: 'myapp' } },
-        { metadata: { name: 'other' } },
-      ],
+      [{ metadata: { name: 'myapp' } }, { metadata: { name: 'other' } }],
       'myapp',
       false
     );
@@ -883,7 +850,9 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     const parsed = parseRgd(yamlStr);
     const app = parsed.spec.resources.find((resource) => resource.id === 'app');
     const template = app?.template as {
-      spec?: { template?: { spec?: { containers?: Array<{ envFrom?: unknown }> } } };
+      spec?: {
+        template?: { spec?: { containers?: Array<{ envFrom?: unknown }> } };
+      };
     };
     const envFrom = template.spec?.template?.spec?.containers?.[0]?.envFrom;
 
@@ -923,7 +892,7 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
 
     const yamlStr = graph.toYaml();
     const parsed = parseRgd(yamlStr);
-    const resource = parsed.spec.resources.find(r => r.id === 'workerCfg');
+    const resource = parsed.spec.resources.find((r) => r.id === 'workerCfg');
 
     // $item must NOT appear — substituteForEachSentinels should have resolved it
     expect(yamlStr).not.toContain('$item');
@@ -932,7 +901,8 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     expect(resource?.forEach).toBeDefined();
 
     // Template should use the forEach variable, not raw schema paths
-    const templateName = (resource?.template as { metadata?: { name?: string } } | undefined)?.metadata?.name;
+    const templateName = (resource?.template as { metadata?: { name?: string } } | undefined)
+      ?.metadata?.name;
     expect(templateName).toContain('worker.label');
   });
 
@@ -984,7 +954,9 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     // The envFrom YAML should avoid Kro-invalid list concatenation between a
     // literal Secret ref and the schema-typed optional envFrom array.
     expect(yamlStr).not.toContain('envFrom.$item');
-    expect(yamlStr).not.toContain('+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])');
+    expect(yamlStr).not.toContain(
+      '+ (has(schema.spec.app.envFrom) ? schema.spec.app.envFrom : [])'
+    );
 
     // The inngest credentials secret should still be wired
     expect(yamlStr).toContain('inngest-credentials');
@@ -1087,7 +1059,12 @@ describe('Fix #35 additional coverage — nullish default propagation', () => {
     const Spec = type({ name: 'string', database: 'string' });
     const Status = type({ ready: 'boolean' });
     const comp = kubernetesComposition(
-      { name: 'existing-default', kind: 'ExistingDefault', spec: Spec, status: Status },
+      {
+        name: 'existing-default',
+        kind: 'ExistingDefault',
+        spec: Spec,
+        status: Status,
+      },
       (spec) => {
         const dbName = spec.database ?? 'app';
         ConfigMap({
