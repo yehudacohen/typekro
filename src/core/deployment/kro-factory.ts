@@ -1723,8 +1723,14 @@ export class KroResourceFactoryImpl<
     // identical post-processed output and share the single-apply guard.
     const rgdYaml = this.buildRgdYaml();
 
-    // Parse the YAML to get the RGD object
-    const rgdManifests = k8s.loadAllYaml(rgdYaml);
+    // Parse the YAML to get the RGD object. Use js-yaml with JSON_SCHEMA to MATCH the dump schema in
+    // `serializeResourceGraphToYaml` (same fix as the alchemy path above — this is the imperative/direct
+    // KRO deploy path). `k8s.loadAllYaml` uses js-yaml's DEFAULT (timestamp-aware) schema, which coerces an
+    // unquoted date-shaped scalar — e.g. an env value `"2026-06-01"` — to a `Date` OBJECT, so the applied
+    // RGD would carry an object where KRO requires a string and rejects the graph (`GraphAccepted=False`).
+    const rgdManifests = yaml.loadAll(rgdYaml, undefined, {
+      schema: yaml.JSON_SCHEMA,
+    }) as k8s.KubernetesObject[];
     const rgdManifest = rgdManifests[0] as k8s.KubernetesObject;
 
     // Ensure the RGD has the required properties for deployment
