@@ -532,25 +532,36 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
  * whose own status carries `ready`/`phase`/`version` for it.
  *
- * `factory('direct')` LIMITATION (live-verified): the resource-anchored fields above are built via
- * a raw `Cel.expr("...")` string over the CHI's `metadata`/`spec` (required — plain proxy access on
- * `.metadata.*` is misclassified as schema-derived and dropped from KRO status entirely). That
- * technique fixes `factory('kro')` reachability but is opaque to direct mode's live-status
- * re-execution, which has no CEL interpreter and can only hydrate fields it evaluates as plain JS
- * against the live resource. So in DIRECT MODE ONLY, `clickhouse.host`/`nativeUrl`/`httpUrl`/
- * `clusterName`, `keeper.host`/`port`, and `installation.name`/`namespace` remain unresolved
- * `CelExpression` markers (`isCelExpression(value)` is `true`) — a narrow typekro gap, not something
- * this factory can paper over (tracked: typekro#94, "status derivations via the resources proxy
- * silently degrade to schema refs"). **UPDATE:** the root cause is fixed in
- * [typekro#97](https://github.com/yehudacohen/typekro/pull/97) (resource `.metadata.*` reads
- * inside status builders no longer silently degrade to schema refs); once that lands and this
- * factory bumps its typekro dependency, the raw `Cel.expr` workaround above can be dropped in
- * favor of natural proxy syntax, and these fields will hydrate correctly in BOTH modes.
- * `ready`/`phase`/`installation.endpoint`/`hostsCount`/
- * `hostsCompletedCount` DO hydrate in direct mode (plain `clickhouse.status.*` property access).
- * `factory('kro')` callers always get the full live contract on the CR status. Direct-mode callers
- * needing the connection string can build it themselves — same naming rule, from `spec.name`/
- * `spec.namespace`, which they already have synchronously.
+ * HYDRATION (bimodal — every field resolves in both factory modes): the metadata-anchored fields
+ * `clickhouse.host`/`nativeUrl`/`httpUrl` and `installation.name`/`namespace`
+ * are built with NATURAL JS template literals over the CHI resource proxy
+ * (e.g. `` `clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local` ``),
+ * which resolve in BOTH factory modes on typekro >= 0.24.0 (the release that
+ * carries the #97 resource-metadata-proxy fix):
+ *   - `factory('kro')`: the imperative analyzer converts the template literals
+ *     to KRO status CEL, and (#97) `clickhouse.metadata.*` resolves
+ *     resource-anchored (`clickhouse.metadata.name`) rather than degrading to
+ *     `schema.spec.name`, so they land on the live CR status for GitOps/KRO
+ *     consumers.
+ *   - `factory('direct')`: a template literal is plain JS, so direct mode's
+ *     live-status re-execution evaluates it against the real resource values
+ *     and hydrates a concrete string. (This replaced an earlier raw
+ *     `Cel.expr("...literal CEL...")` workaround that was opaque to direct
+ *     mode — the typekro#94 gap, root-caused and fixed in typekro#97.)
+ * `ready`/`phase`/`installation.endpoint`/`hostsCount`/`hostsCompletedCount`
+ * likewise hydrate in both modes (natural `clickhouse.status.*` reads / JS
+ * comparisons).
+ * The remaining resource-anchored fields — `clickhouse.clusterName`,
+ * `keeper.host`, `keeper.port` — stay raw `Cel.expr` rather than natural
+ * template literals for ERGONOMIC reasons: they are deep reads through
+ * optional nested arrays (`configuration.clusters[0]` / `zookeeper.nodes[0]`)
+ * where natural proxy access requires non-null assertions that add noise
+ * without changing the output, and `keeper.port` additionally must stay a
+ * number (a template literal would coerce it to a string). This is NOT a
+ * hydration limitation: being resource-path CELs they resolve in BOTH modes —
+ * status CEL in `factory('kro')`, and the cel-js reference resolver evaluates
+ * them against the live CHI in `factory('direct')` (`clusterName` hydrates to
+ * the concrete `'cluster'` in the direct-mode integration test).
  */
 export interface ClickHouseClusterStatus {
   /** True once the operator reports the CHI fully reconciled ('Completed'). */

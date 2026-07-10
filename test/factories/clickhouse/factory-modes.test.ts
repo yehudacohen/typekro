@@ -359,13 +359,13 @@ describe('makeClickHouseCluster factory modes', () => {
       // land on the live KRO CR's status.
       const statusSection = yaml.slice(yaml.indexOf('status:'), yaml.indexOf('\n  resources:'));
       expect(statusSection).toContain(
-        'host: ${"clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local"}'
+        'host: clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
       );
       expect(statusSection).toContain(
-        'nativeUrl: ${"clickhouse://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":9000"}'
+        'nativeUrl: clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
       );
       expect(statusSection).toContain(
-        'httpUrl: ${"http://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":8123"}'
+        'httpUrl: http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
       );
       expect(statusSection).toContain(
         'clusterName: ${clickhouse.spec.configuration.clusters[0].name}'
