@@ -93,6 +93,7 @@ import {
   assertSingletonOwnerNamespaceOwnershipSafe,
 } from './kro-instance-safety.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
+import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
 import {
   convertToKubernetesName,
   extractSerializableKubeConfigOptions,
@@ -1496,7 +1497,7 @@ export class KroResourceFactoryImpl<
       // Shared singleton owner instances are created by `deploy()`; for the
       // GitOps path we emit them alongside the consuming instance, deps-first,
       // so the consuming RGD's externalRef resolves. No-op without singletons.
-      const ownerYamls = singletonOwnerInstanceYamls(this.singletonDefinitions);
+      const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
       return ownerYamls.length === 0 ? instanceYaml : joinYamlDocuments(ownerYamls, instanceYaml);
     }
 
@@ -2175,13 +2176,9 @@ export class KroResourceFactoryImpl<
    */
   private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): unknown {
     const expression = celExpression.expression;
-    const specRecord = this.createStaticEvaluationScope(spec);
-    const scopeExpression = this.prepareStaticExpressionForEvaluation(expression);
 
     try {
-      const evaluator = compileExpression(scopeExpression);
-      const result = evaluator(specRecord) as unknown;
-      return result;
+      return evaluateSchemaCelExpression(celExpression, spec);
     } catch (error: unknown) {
       // If evaluation fails, the expression might be an unquoted string like: http://kro-webapp-service
       // In this case, return it as-is (it's already a string value)
@@ -2193,7 +2190,7 @@ export class KroResourceFactoryImpl<
         return expression;
       }
       this.logger.warn('Failed to evaluate expression safely', {
-        expression: scopeExpression,
+        expression: this.prepareStaticExpressionForEvaluation(expression),
         originalExpression: expression,
         error: ensureError(error).message,
       });
