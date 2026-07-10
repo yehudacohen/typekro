@@ -252,7 +252,7 @@ import { cnpgBootstrap } from 'typekro/cnpg';
 
 // KRO mode — operator reconciled continuously
 const factory = cnpgBootstrap.factory('kro', {
-  namespace: 'cnpg-system',
+  namespace: 'typekro-system', // KRO instance namespace; separate from graph-owned resources
   waitForReady: true,
 });
 
@@ -263,6 +263,10 @@ await factory.deploy({
   installCRDs: true,
 });
 ```
+
+The factory namespace holds the KRO instance and must differ from
+`spec.namespace`, because the bootstrap graph owns the CNPG operator
+Namespace.
 
 ### Bootstrap Status
 

@@ -29,7 +29,7 @@ import { mapInngestConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * // 'kro' = KRO mode (continuous reconciliation)
  * // 'direct' = Direct mode (immediate apply)
  * const factory = inngestBootstrap.factory('kro', {
- *   namespace: 'inngest',
+ *   namespace: 'typekro-system',
  *   waitForReady: true,
  * });
  *
@@ -73,7 +73,7 @@ export const inngestBootstrap = kubernetesComposition(
       spec.keda && { keda: spec.keda },
       spec.nodeSelector && { nodeSelector: spec.nodeSelector },
       spec.tolerations && { tolerations: spec.tolerations },
-      spec.customValues && { customValues: spec.customValues },
+      spec.customValues && { customValues: spec.customValues }
     );
     const helmValues = mapInngestConfigToHelmValues(mapperConfig);
 
