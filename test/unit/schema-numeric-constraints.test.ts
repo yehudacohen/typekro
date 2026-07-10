@@ -4,7 +4,7 @@ import { kubernetesComposition } from '../../src/core/composition/imperative.js'
 import { simple } from '../../src/factories/simple/index.js';
 
 describe('ArkType numeric constraints in KRO SimpleSchema', () => {
-  it('preserves integer min/max admission markers', () => {
+  it('emits KRO integer/float types and minimum/maximum admission markers', () => {
     const constrained = kubernetesComposition(
       {
         name: 'numeric-constraints',
@@ -13,6 +13,7 @@ describe('ArkType numeric constraints in KRO SimpleSchema', () => {
           name: 'string',
           instances: 'number.integer >= 1',
           port: '1 <= number.integer <= 65535',
+          ratio: '0 <= number <= 1',
           values: 'Record<string, unknown>',
         }),
         status: type({ ready: 'boolean' }),
@@ -20,7 +21,11 @@ describe('ArkType numeric constraints in KRO SimpleSchema', () => {
       (spec) => {
         simple.ConfigMap({
           name: spec.name,
-          data: { instances: `${spec.instances}`, port: `${spec.port}` },
+          data: {
+            instances: `${spec.instances}`,
+            port: `${spec.port}`,
+            ratio: `${spec.ratio}`,
+          },
           id: 'config',
         });
         return { ready: true };
@@ -28,8 +33,10 @@ describe('ArkType numeric constraints in KRO SimpleSchema', () => {
     );
 
     const yaml = constrained.toYaml();
-    expect(yaml).toContain('instances: integer | min=1');
-    expect(yaml).toContain('port: integer | min=1 max=65535');
+    expect(yaml).toContain('instances: integer | minimum=1');
+    expect(yaml).toContain('port: integer | minimum=1 maximum=65535');
+    expect(yaml).toContain('ratio: float | minimum=0 maximum=1');
+    expect(yaml).not.toContain('number |');
     expect(yaml).toContain('values: object');
     expect(yaml).not.toContain('values: map[string]string');
   });

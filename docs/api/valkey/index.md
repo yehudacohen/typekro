@@ -156,18 +156,25 @@ import { valkeyBootstrap } from 'typekro/valkey';
 // 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
 // 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
-  namespace: 'valkey-operator-system',  // Namespace for the KRO instance and workloads
+  namespace: 'typekro-system',          // Control plane: holds the KRO instance
   waitForReady: true,
 });
 
 await factory.deploy({
   name: 'valkey-operator',
-  namespace: 'valkey-operator-system',  // Namespace where the operator pods run
+  namespace: 'valkey-operator-system',  // Owned child: operator pods run here
   values: {
     nodeSelector: { 'kubernetes.io/os': 'linux' },
   },
 });
 ```
+
+In KRO mode these two namespaces must be different. The bootstrap owns and
+deletes the operator namespace as a graph child, so putting the
+`ValkeyBootstrap` instance in that namespace could delete the instance before
+KRO clears its finalizer and deadlock namespace termination. TypeKro rejects
+that unsafe deployment. Direct mode has no KRO custom-resource finalizer and
+does not require this split.
 
 `values` is the raw Helm passthrough and merges last. The older `customValues` field remains as a
 deprecated compatibility alias; when both are present, `values` wins. The Flux OCI

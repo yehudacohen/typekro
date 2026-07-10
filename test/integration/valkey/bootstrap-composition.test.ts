@@ -48,4 +48,30 @@ describe('Valkey operator installation contract', () => {
     expect(valkeyBootstrap.factory('direct', { namespace: 'test' }).mode).toBe('direct');
     expect(valkeyBootstrap.factory('kro', { namespace: 'test' }).mode).toBe('kro');
   });
+
+  it('rejects a KRO instance in the namespace its graph owns', () => {
+    const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
+    const unsafeSpec = {
+      name: 'valkey-operator',
+      namespace: 'valkey-system',
+    };
+
+    expect(() => factory.toYaml(unsafeSpec)).toThrow(
+      /control-plane namespace separate from the owned operator namespace/
+    );
+    expect(() => factory.toAlchemyResources(unsafeSpec)).toThrow(
+      /control-plane namespace separate from the owned operator namespace/
+    );
+  });
+
+  it('accepts a separate KRO control-plane and operator namespace', () => {
+    const factory = valkeyBootstrap.factory('kro', { namespace: 'typekro-system' });
+    const yaml = factory.toYaml({
+      name: 'valkey-operator',
+      namespace: 'valkey-system',
+    });
+
+    expect(yaml).toContain('namespace: typekro-system');
+    expect(yaml).toContain('namespace: valkey-system');
+  });
 });

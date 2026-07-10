@@ -10,7 +10,7 @@ Higher-level compositions that wire together [CNPG](/api/cnpg/) PostgreSQL, [Val
 ## Import
 
 ```typescript
-import { webAppWithProcessing } from 'typekro/webapp';
+import { makeWebAppWithProcessing, webAppWithProcessing } from 'typekro/webapp';
 ```
 
 ## webAppWithProcessing
@@ -136,6 +136,37 @@ instance.status.components.inngest   // Inngest ready
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
 | `processing.resources` | No | CPU/memory requests and limits for the Inngest server |
 | `cnpgOperator` | No | CloudNativePG operator singleton settings; accepts the underlying CNPG bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared`. `name`/`namespace` customize the install target; the singleton identity is fixed by the composition. |
+
+### Valkey operator migration and customization
+
+Valkey operator installation is a build-time graph choice. Customize it with
+`makeWebAppWithProcessing` so singleton identity and ownership remain concrete
+when TypeKro generates a KRO graph:
+
+```typescript
+import { makeWebAppWithProcessing } from 'typekro/webapp';
+
+const internalWebApp = makeWebAppWithProcessing({
+  valkeyOperator: {
+    name: 'platform-valkey-operator',
+    namespace: 'platform-valkey-system',
+    version: 'v0.0.61',
+    values: { replicaCount: 2 },
+  },
+});
+
+const factory = internalWebApp.factory('kro', { namespace: 'production' });
+// Deploy the same per-instance webapp spec shown in the quick example.
+```
+
+In v0.24 and earlier, `valkeyOperator` was accepted inside the deployment
+spec. Move its install settings to the constructor as shown above. The old
+`shared: true` value is accepted and ignored for migration because the webapp
+always consumes a shared singleton; `shared: false` is rejected with an
+actionable error. The runtime field was unsafe because separate KRO instances
+could request different configurations for the same cluster singleton, so it
+was removed from the custom-resource schema rather than being silently
+ignored.
 
 ### Prerequisites
 

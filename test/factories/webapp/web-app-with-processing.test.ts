@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { webAppWithProcessing } from '../../../src/factories/webapp/compositions/web-app-with-processing.js';
+import {
+  makeWebAppWithProcessing,
+  webAppWithProcessing,
+} from '../../../src/factories/webapp/compositions/web-app-with-processing.js';
 
 describe('WebAppWithProcessing Composition', () => {
   it('should generate valid KRO YAML with all resources', () => {
@@ -102,6 +105,46 @@ describe('WebAppWithProcessing Composition', () => {
     );
     expect(yaml.indexOf('name: cnpg-bootstrap')).toBeLessThan(
       yaml.indexOf('name: web-app-with-processing')
+    );
+  });
+
+  it('supports concrete build-time Valkey operator customization', () => {
+    const customized = makeWebAppWithProcessing({
+      valkeyOperator: {
+        name: 'platform-valkey',
+        namespace: 'platform-valkey-system',
+        version: 'v9.9.9',
+        repositoryName: 'platform-valkey-repo',
+        shared: true,
+      },
+    });
+
+    const singletonDefinitions = (
+      customized as typeof customized & {
+        _singletonDefinitions: Array<{ id: string; spec: Record<string, unknown> }>;
+      }
+    )._singletonDefinitions;
+    const valkeyDefinition = singletonDefinitions.find(({ id }) => id === 'valkey-operator');
+
+    expect(valkeyDefinition?.spec).toEqual({
+      name: 'platform-valkey',
+      namespace: 'platform-valkey-system',
+      version: 'v9.9.9',
+      repositoryName: 'platform-valkey-repo',
+    });
+  });
+
+  it('rejects schema/resource references in build-time Valkey settings', () => {
+    expect(() =>
+      makeWebAppWithProcessing({
+        valkeyOperator: webAppWithProcessing.schema?.spec.cnpgOperator as never,
+      })
+    ).toThrow(/build-time option.*concrete/);
+  });
+
+  it('rejects the removed dedicated-operator lifecycle with migration guidance', () => {
+    expect(() => makeWebAppWithProcessing({ valkeyOperator: { shared: false } })).toThrow(
+      /shared=false.*Install a dedicated valkeyBootstrap separately/
     );
   });
 });

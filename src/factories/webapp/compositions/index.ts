@@ -1,1 +1,4 @@
-export { webAppWithProcessing } from './web-app-with-processing.js';
+export {
+  makeWebAppWithProcessing,
+  webAppWithProcessing,
+} from './web-app-with-processing.js';

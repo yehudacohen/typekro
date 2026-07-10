@@ -162,7 +162,7 @@ describe('valkeyBootstrap factory modes', () => {
 
   it('KRO mode emits the explicit operator-owner instance', () => {
     const yaml = valkeyBootstrap
-      .factory('kro', { namespace: 'valkey-system' })
+      .factory('kro', { namespace: 'typekro-system' })
       .toYaml(bootstrapSpec as never);
     const docs = splitDocs(yaml);
 
