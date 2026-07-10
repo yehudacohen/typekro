@@ -1,7 +1,8 @@
-import { isKubernetesRef } from '../../utils/type-guards.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
+import { getIncludeWhen } from '../metadata/index.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
@@ -48,6 +49,23 @@ function resolveNamespaceName(value: unknown, spec: KroCompatibleType): string |
     return resolved === undefined || resolved === null ? undefined : String(resolved);
   }
 
+  if (isCelExpression(value)) {
+    const expression = value.expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
+    const schemaPath =
+      /^(?:schema\.)?(spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/.exec(expression)?.[1] ??
+      /^string\((?:schema\.)?(spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(
+        expression
+      )?.[1];
+    if (schemaPath) {
+      const resolved = resolveSpecPath(spec, schemaPath);
+      return resolved === undefined || resolved === null ? undefined : String(resolved);
+    }
+
+    // A concrete re-execution turns Cel.expr(spec.namespace) into an
+    // expression whose body is the actual namespace string.
+    return expression;
+  }
+
   if (typeof value !== 'string') return undefined;
   const marker = new RegExp(KUBERNETES_REF_SCHEMA_MARKER_SOURCE, 'g');
   let unresolved = false;
@@ -73,7 +91,40 @@ function concreteResources<TSpec extends KroCompatibleType>(
   });
   runWithCompositionContext(context, () => input.compositionFn?.(input.spec));
   const executed = Object.entries(context.resources) as [string, KubernetesResource][];
-  return executed.length > 0 ? executed : resourceEntries(input.resources);
+  return executed;
+}
+
+function concreteBoolean(value: unknown, spec: KroCompatibleType): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+
+  if (isKubernetesRef(value)) {
+    if (value.resourceId !== '__schema__') return undefined;
+    const resolved = resolveSpecPath(spec, value.fieldPath);
+    return typeof resolved === 'boolean' ? resolved : undefined;
+  }
+
+  const expression = isCelExpression(value) ? value.expression : value;
+  if (typeof expression !== 'string') return undefined;
+  const normalized = expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+
+  const schemaPath = /^(?:schema\.)?(spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/.exec(
+    normalized
+  )?.[1];
+  if (!schemaPath) return undefined;
+  const resolved = resolveSpecPath(spec, schemaPath);
+  return typeof resolved === 'boolean' ? resolved : undefined;
+}
+
+function isActiveOwnedResource(resource: KubernetesResource, spec: KroCompatibleType): boolean {
+  if (Reflect.get(resource, '__externalRef') === true) return false;
+
+  const metadataConditions = getIncludeWhen(resource);
+  const legacyConditions = Reflect.get(resource, 'includeWhen');
+  const conditions =
+    metadataConditions ?? (Array.isArray(legacyConditions) ? legacyConditions : undefined);
+  return !conditions?.some((condition) => concreteBoolean(condition, spec) === false);
 }
 
 /**
@@ -89,6 +140,7 @@ export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompati
 ): void {
   for (const [resourceId, resource] of concreteResources(input)) {
     if (resource.kind !== 'Namespace') continue;
+    if (!isActiveOwnedResource(resource, input.spec)) continue;
 
     const ownedNamespace = resolveNamespaceName(resource.metadata?.name, input.spec);
     if (ownedNamespace === input.instanceNamespace) {

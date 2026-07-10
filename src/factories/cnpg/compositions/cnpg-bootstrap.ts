@@ -29,7 +29,7 @@ import { mapCnpgConfigToHelmValues } from '../utils/helm-values-mapper.js';
  * @example
  * ```typescript
  * const cnpgFactory = cnpgBootstrap.factory('kro', {
- *   namespace: 'cnpg-system',
+ *   namespace: 'typekro-system',
  *   waitForReady: true,
  * });
  *
