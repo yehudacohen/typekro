@@ -8,10 +8,10 @@
  * - `valkey()` — Valkey cluster (sharded with optional replicas)
  * - `valkeyHelmRepository()` — Helm chart repository (OCI)
  * - `valkeyHelmRelease()` — Operator installation via Helm
- * - `valkeyHelmRepositoryBootstrap` — Shared OCI repository singleton owner
+ * - `valkeyHelmRepositoryBootstrap` — Low-level shared OCI repository owner
  *
  * ## Compositions
- * - `valkeyBootstrap` — Complete operator deployment (namespace + Helm repo + release)
+ * - `valkeyBootstrap` / `valkeyOperatorInstallation` — Complete, explicitly owned operator deployment
  *
  * @example
  * ```typescript
@@ -34,7 +34,9 @@
  *     shards: 3,
  *     replicas: 1,
  *     storage: {
- *       resources: { requests: { storage: '10Gi' } },
+ *       spec: {
+ *         resources: { requests: { storage: '10Gi' } },
+ *       },
  *     },
  *   },
  *   id: 'appCache',

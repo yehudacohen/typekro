@@ -1,7 +1,7 @@
 /**
  * Valkey v0.24 factory-mode contract.
  *
- * The bootstrap must preserve the shared flux-system repository boundary and
+ * The bootstrap must preserve the complete installation owner boundary and
  * raw Helm values in both direct and KRO serialization. The resource factory
  * must also accept a nested schema proxy as its CRD spec so consumers can
  * compose persistent Valkey instances without TypeKro-specific glue.
@@ -17,7 +17,6 @@ import { kubernetesComposition } from '../../../src/core/composition/imperative.
 import { valkeyBootstrap } from '../../../src/factories/valkey/compositions/valkey-bootstrap.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
-  DEFAULT_VALKEY_REPO_URL,
   DEFAULT_VALKEY_VERSION,
 } from '../../../src/factories/valkey/resources/helm.js';
 import { valkey } from '../../../src/factories/valkey/resources/valkey.js';
@@ -113,10 +112,10 @@ const valkeyCluster = kubernetesComposition(
         'anonymousAuth?': 'boolean',
         'servicePassword?': { name: 'string', key: 'string', 'optional?': 'boolean' },
         'storage?': {
-          'spec?': {
+          spec: {
             'accessModes?': 'string[]',
             'storageClassName?': 'string',
-            'resources?': { 'requests?': { 'storage?': 'string' } },
+            resources: { requests: { storage: 'string' } },
           },
         },
       },
@@ -135,7 +134,7 @@ const valkeyCluster = kubernetesComposition(
 );
 
 describe('valkeyBootstrap factory modes', () => {
-  it('direct mode emits concrete operator resources and keeps the shared repository external', () => {
+  it('direct mode emits one concrete, complete operator installation', () => {
     const yaml = valkeyBootstrap
       .factory('direct', { namespace: 'valkey-system' })
       .toYaml(bootstrapSpec as never);
@@ -146,13 +145,13 @@ describe('valkeyBootstrap factory modes', () => {
     expect(kinds).toContain('HelmRelease');
     expect(kinds).not.toContain('ClusterRole');
     expect(kinds).not.toContain('ClusterRoleBinding');
-    expect(kinds).not.toContain('HelmRepository');
+    expect(kinds).toContain('HelmRepository');
 
     const release = docs.find((doc) => docKind(doc) === 'HelmRelease');
     expect(release).toContain(`version: ${DEFAULT_VALKEY_VERSION}`);
     expect(release).toMatch(
       new RegExp(
-        `sourceRef:\\s*\\n\\s+kind: HelmRepository\\s*\\n\\s+name: ${DEFAULT_VALKEY_REPO_NAME}\\s*\\n\\s+namespace: flux-system`
+        `sourceRef:\\s*\\n\\s+kind: HelmRepository\\s*\\n\\s+name: ${DEFAULT_VALKEY_REPO_NAME}\\s*\\n\\s+namespace: valkey-system`
       )
     );
     expect(release).toMatch(/replicaCount: 2/);
@@ -161,30 +160,23 @@ describe('valkeyBootstrap factory modes', () => {
     expectFullyConcrete(yaml);
   });
 
-  it('KRO mode emits the singleton owner before the bootstrap instance', () => {
+  it('KRO mode emits the explicit operator-owner instance', () => {
     const yaml = valkeyBootstrap
       .factory('kro', { namespace: 'valkey-system' })
       .toYaml(bootstrapSpec as never);
     const docs = splitDocs(yaml);
 
-    expect(docs.map(docKind)).toEqual(['ValkeyHelmRepository', 'ValkeyBootstrap']);
-    expect(docs[0]).toContain('namespace: typekro-singletons');
-    expect(docs[0]).toContain('typekro.io/singleton-spec-fingerprint');
-    expect(docs[0]).toContain(`name: ${DEFAULT_VALKEY_REPO_NAME}`);
-    expect(docs[0]).toContain(`url: ${DEFAULT_VALKEY_REPO_URL}`);
+    expect(docs.map(docKind)).toEqual(['ValkeyBootstrap']);
   });
 
   it('KRO mode preserves repository ownership, runtime values, status, and version labels', () => {
     const yaml = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' }).toYaml();
     const docs = splitDocs(yaml);
 
-    expect(docs).toHaveLength(2);
+    expect(docs).toHaveLength(1);
     expect(docs.every((doc) => docKind(doc) === 'ResourceGraphDefinition')).toBe(true);
-    expect(yaml.indexOf('name: valkey-helm-repository')).toBeLessThan(
-      yaml.indexOf('name: valkey-bootstrap')
-    );
-    expect(yaml).toContain('ready: ${repository.metadata.generation > 0}');
-    expect(yaml).toContain('namespace: flux-system');
+    expect(yaml).toContain('kind: HelmRepository');
+    expect(yaml).toContain('schema.spec.repositoryNamespace');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.values))');
     expect(yaml).toContain('ready: ${valkeyHelmRelease.status.conditions.exists');
     expect(yaml).toContain(

@@ -36,9 +36,7 @@ export type ValkeyHelmValuesInput = Partial<ValkeyBootstrapConfig>;
  * @param config - Resolved Valkey bootstrap configuration
  * @returns Helm values object compatible with the valkey-operator chart
  */
-export function mapValkeyConfigToHelmValues(
-  config: ValkeyHelmValuesInput
-): ValkeyMappedHelmValues {
+export function mapValkeyConfigToHelmValues(config: ValkeyHelmValuesInput): ValkeyMappedHelmValues {
   let mapped: ValkeyMappedHelmValues = {};
 
   // Preserve the legacy alias first, then let the standard `values` API win.
@@ -48,22 +46,21 @@ export function mapValkeyConfigToHelmValues(
   return mapped;
 }
 
-function mergeOverride(
-  base: ValkeyMappedHelmValues,
-  override: unknown
-): ValkeyMappedHelmValues {
+function mergeOverride(base: ValkeyMappedHelmValues, override: unknown): ValkeyMappedHelmValues {
   if (override === undefined) return base;
 
-  if (
-    isKubernetesRef(override) ||
-    isCelExpression(override) ||
-    isValuesMergeExpression(override)
-  ) {
+  if (isKubernetesRef(override) || isCelExpression(override) || isValuesMergeExpression(override)) {
     return mergeValuesExpression(base, override);
   }
 
-  if (isPlainObject(base) && isPlainObject(override)) {
-    deepMerge(base, override);
+  if (isPlainObject(override)) {
+    const safeOverride = deepClone(override);
+    if (isValuesMergeExpression(base)) {
+      return mergeValuesExpression(base, safeOverride);
+    }
+    if (isPlainObject(base)) {
+      return deepMerge(deepClone(base), safeOverride);
+    }
   }
 
   return base;
@@ -81,7 +78,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Deep merge plain objects; arrays and primitives replace, and dangerous keys are ignored. */
-function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): Record<string, unknown> {
   for (const [key, sourceValue] of Object.entries(source)) {
     if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     if (sourceValue === undefined) continue;
@@ -90,9 +90,20 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
     if (isPlainObject(targetValue) && isPlainObject(sourceValue)) {
       deepMerge(targetValue, sourceValue);
     } else {
-      target[key] = sourceValue;
+      target[key] = deepCloneValue(sourceValue);
     }
   }
+  return target;
+}
+
+function deepClone(source: Record<string, unknown>): Record<string, unknown> {
+  return deepMerge({}, source);
+}
+
+function deepCloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(deepCloneValue);
+  if (isPlainObject(value)) return deepClone(value);
+  return value;
 }
 
 /**

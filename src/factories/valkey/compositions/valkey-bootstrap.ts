@@ -1,13 +1,11 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
-import { singleton } from '../../../core/singleton/singleton.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
   DEFAULT_VALKEY_REPO_URL,
   DEFAULT_VALKEY_VERSION,
+  valkeyHelmRepository,
   valkeyHelmRelease,
 } from '../resources/helm.js';
 import {
@@ -16,7 +14,6 @@ import {
   ValkeyBootstrapStatusSchema,
 } from '../types.js';
 import { mapValkeyConfigToHelmValues } from '../utils/helm-values-mapper.js';
-import { valkeyHelmRepositoryBootstrap } from './valkey-helm-repository.js';
 
 /**
  * Strips the '-chart' suffix from the verified built-in Hyperspike version.
@@ -69,10 +66,9 @@ export const valkeyBootstrap = kubernetesComposition(
     // A schema-proxy string cannot be normalized synchronously. Keep the
     // upstream chart tag for overrides; normalize the verified built-in default.
     const reportedVersion = spec.version ? spec.version : stripChartSuffix(DEFAULT_VALKEY_VERSION);
-    // Default to shared-lifecycle so multiple consumers (e.g., many
-    // `webAppWithProcessing` deployments) converge on a single operator
-    // install. Users can opt out by passing `shared: false`.
-    const isShared = spec.shared !== false;
+    const repositoryName = spec.repositoryName ?? DEFAULT_VALKEY_REPO_NAME;
+    const repositoryNamespace = spec.repositoryNamespace ?? resolvedNamespace;
+    const repositoryUrl = spec.repositoryUrl ?? DEFAULT_VALKEY_REPO_URL;
 
     const helmValues = mapValkeyConfigToHelmValues({
       ...(spec.customValues !== undefined && { customValues: spec.customValues }),
@@ -95,16 +91,11 @@ export const valkeyBootstrap = kubernetesComposition(
       id: 'valkeyNamespace',
     });
 
-    // The OCI source is cluster-wide and shared by every operator consumer.
-    // Its singleton owner uses metadata.generation for readiness because Flux
-    // OCI HelmRepositories do not consistently publish Ready conditions.
-    const _helmRepository = singleton(valkeyHelmRepositoryBootstrap, {
-      id: 'valkey-helm-repository',
-      spec: {
-        name: DEFAULT_VALKEY_REPO_NAME,
-        namespace: DEFAULT_FLUX_NAMESPACE,
-        url: DEFAULT_VALKEY_REPO_URL,
-      },
+    const _helmRepository = valkeyHelmRepository({
+      name: repositoryName,
+      namespace: repositoryNamespace,
+      url: repositoryUrl,
+      id: 'valkeyHelmRepository',
     });
 
     const _helmRelease = valkeyHelmRelease({
@@ -112,18 +103,11 @@ export const valkeyBootstrap = kubernetesComposition(
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
-      repositoryName: DEFAULT_VALKEY_REPO_NAME,
+      repositoryName,
+      repositoryNamespace,
+      repositoryUrl,
       id: 'valkeyHelmRelease',
     });
-
-    // Tag all resources with 'cluster' scope so factory-level
-    // deleteInstance leaves the operator install intact. Callers can
-    // opt in to tearing down shared infra with
-    // `deleteInstance(name, { scopes: ['cluster'] })`.
-    if (isShared) {
-      setMetadataField(_valkeyNamespace, 'scopes', ['cluster']);
-      setMetadataField(_helmRelease, 'scopes', ['cluster']);
-    }
 
     // Status derived from HelmRelease conditions.
     return {
@@ -150,3 +134,6 @@ export const valkeyBootstrap = kubernetesComposition(
     };
   }
 );
+
+/** Explicit lifecycle name for code that wants to emphasize ownership. */
+export const valkeyOperatorInstallation = valkeyBootstrap;

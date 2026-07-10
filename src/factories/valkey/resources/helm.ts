@@ -10,7 +10,6 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -57,11 +56,11 @@ export function valkeyHelmRepository(
     type: 'oci',
     interval: config.interval ?? '5m',
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator(
-    createHelmRepositoryReadinessEvaluator('Valkey')
-  ) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
+  }).withReadinessEvaluator(createHelmRepositoryReadinessEvaluator('Valkey')) as Enhanced<
+    HelmRepositorySpec,
+    HelmRepositoryStatus
+  >;
 
-  setMetadataField(repo, 'scopes', ['cluster']);
   return repo;
 }
 
@@ -91,19 +90,20 @@ export function valkeyHelmRelease(
     name: config.name,
     namespace: config.namespace ?? 'valkey-operator-system',
     chart: {
-      repository: DEFAULT_VALKEY_REPO_URL,
+      repository: config.repositoryUrl ?? DEFAULT_VALKEY_REPO_URL,
       name: 'valkey-operator',
       version: config.version ?? DEFAULT_VALKEY_VERSION,
     },
     sourceRef: {
       name: config.repositoryName ?? DEFAULT_VALKEY_REPO_NAME,
-      namespace: DEFAULT_FLUX_NAMESPACE,
+      namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
     driftDetection: { mode: 'enabled' },
     values: config.values ?? {},
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator(
-    createLabeledHelmReleaseEvaluator('Valkey')
-  ) as Enhanced<HelmReleaseSpec, HelmReleaseStatus>;
+  }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Valkey')) as Enhanced<
+    HelmReleaseSpec,
+    HelmReleaseStatus
+  >;
 }

@@ -49,20 +49,16 @@ export const ValkeyBootstrapConfigSchema = type({
   'namespace?': 'string',
   /** Chart version. */
   'version?': 'string',
+  /** HelmRepository name (default: 'valkey-operator-repo'). */
+  'repositoryName?': 'string',
+  /** HelmRepository namespace (default: the operator namespace). */
+  'repositoryNamespace?': 'string',
+  /** OCI repository URL. */
+  'repositoryUrl?': 'string',
   /** Raw Helm values merged last (preferred passthrough API). */
   'values?': 'Record<string, unknown>',
   /** @deprecated Use `values` instead. */
   'customValues?': 'Record<string, unknown>',
-  /**
-   * Whether the operator install should be treated as shared cluster
-   * infrastructure (default: `true`). When `true`, the Namespace,
-   * HelmRepository, and HelmRelease are tagged with
-   * `scopes: ['cluster']` so `factory.deleteInstance()` will NOT
-   * remove them — multiple consumers can converge on the same
-   * operator install. Set to `false` for dedicated per-instance
-   * operators.
-   */
-  'shared?': 'boolean',
 });
 
 /** Configuration for installing the Hyperspike Valkey operator via Helm. */
@@ -123,14 +119,14 @@ export const ValkeyConfigSchema = type({
     // Storage & Resources
     /** Persistent storage configuration (*corev1.PersistentVolumeClaim). */
     'storage?': {
-      'spec?': {
+      spec: {
         /** PVC access modes (default: ['ReadWriteOnce']). */
         'accessModes?': 'string[]',
         /** Storage class name. */
         'storageClassName?': 'string',
         /** Storage resource requests. */
-        'resources?': {
-          'requests?': { 'storage?': 'string' },
+        resources: {
+          requests: { storage: 'string' },
         },
       },
     },
@@ -154,7 +150,7 @@ export const ValkeyConfigSchema = type({
       /** TLS certificate issuer name. */
       'certIssuer?': 'string',
       /** Certificate issuer type (default: 'ClusterIssuer'). */
-      'certIssuerType?': 'string',
+      'certIssuerType?': '"ClusterIssuer" | "Issuer"',
       /** Envoy proxy settings (when type is 'Proxy'). */
       'proxy?': {
         /** Envoy proxy image (default: 'envoyproxy/envoy:v1.32.1'). */
@@ -295,6 +291,8 @@ export const ValkeyHelmReleaseConfigSchema = type({
   'values?': 'Record<string, unknown>',
   /** HelmRepository name to reference (default: 'valkey-operator-repo'). */
   'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  'repositoryUrl?': 'string',
   /** Resource ID for composition references. */
   'id?': 'string',
 });

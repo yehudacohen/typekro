@@ -13,7 +13,6 @@
 
 import { type } from 'arktype';
 import { CnpgBootstrapConfigSchema } from '../cnpg/types.js';
-import { ValkeyBootstrapConfigSchema } from '../valkey/types.js';
 
 const resourceRequirementsSchemaShape = {
   'requests?': { 'cpu?': 'string', 'memory?': 'string' },
@@ -141,14 +140,6 @@ export const WebAppWithProcessingConfigSchema = type({
    * is fixed by this composition's `cnpg-operator` singleton id.
    */
   'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
-  /**
-   * Hyperspike Valkey operator install settings. Same singleton-consumption
-   * pattern and fixed composition singleton identity as `cnpgOperator`. Defaults:
-   *   name: 'valkey-operator'
-   *   namespace: 'valkey-operator-system'
-   *   shared: true
-   */
-  'valkeyOperator?': ValkeyBootstrapConfigSchema.partial(),
 });
 
 /** Inferred config type — no separate interface needed. */

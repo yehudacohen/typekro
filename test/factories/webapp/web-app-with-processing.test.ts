@@ -10,11 +10,11 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('name: web-app-with-processing');
 
     // Should contain all resource types
-    expect(yaml).toContain('kind: Cluster');       // CNPG
-    expect(yaml).toContain('kind: Pooler');         // PgBouncer
-    expect(yaml).toContain('kind: Valkey');          // Cache
-    expect(yaml).toContain('kind: Deployment');      // App
-    expect(yaml).toContain('kind: Service');          // App service
+    expect(yaml).toContain('kind: Cluster'); // CNPG
+    expect(yaml).toContain('kind: Pooler'); // PgBouncer
+    expect(yaml).toContain('kind: Valkey'); // Cache
+    expect(yaml).toContain('kind: Deployment'); // App
+    expect(yaml).toContain('kind: Service'); // App service
 
     // Status section with component readiness references
     expect(yaml).toContain('status:');
@@ -89,16 +89,16 @@ describe('WebAppWithProcessing Composition', () => {
     const yaml = webAppWithProcessing.toYaml();
     const docs = yaml.split(/^---$/m).map((doc) => doc.trim());
 
-    // Four documents: the Valkey repository owner, both operator owner RGDs,
-    // and the consuming app RGD.
-    expect(docs).toHaveLength(4);
-    expect(yaml).toContain('name: valkey-helm-repository');
+    // Three documents: both complete operator-owner RGDs and the consuming
+    // app RGD. The Valkey HelmRepository is a child of the Valkey owner now,
+    // not a second singleton lifecycle boundary.
+    expect(docs).toHaveLength(3);
     expect(yaml).toContain('name: cnpg-bootstrap');
     expect(yaml).toContain('name: valkey-bootstrap');
     expect(yaml).toContain('name: web-app-with-processing');
     // Owner RGDs are emitted before the consumer (deps-first apply order).
-    expect(yaml.indexOf('name: valkey-helm-repository')).toBeLessThan(
-      yaml.indexOf('name: valkey-bootstrap')
+    expect(yaml.indexOf('name: valkey-bootstrap')).toBeLessThan(
+      yaml.indexOf('name: web-app-with-processing')
     );
     expect(yaml.indexOf('name: cnpg-bootstrap')).toBeLessThan(
       yaml.indexOf('name: web-app-with-processing')

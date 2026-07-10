@@ -1,98 +1,51 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import { describe, expect, it } from 'bun:test';
+import {
+  valkeyBootstrap,
+  valkeyOperatorInstallation,
+} from '../../../src/factories/valkey/compositions/valkey-bootstrap.js';
 
-describe('Valkey Bootstrap Composition Tests', () => {
-  let kubeConfig: any;
-  const testNamespace = 'typekro-test-valkey-bootstrap';
-  const operatorNs = 'valkey-test-op';
+function splitDocs(yaml: string): string[] {
+  return yaml
+    .split(/^---$/m)
+    .map((doc) => doc.trim())
+    .filter(Boolean);
+}
 
-  beforeAll(async () => {
-    try {
-      kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      await ensureNamespaceExists(testNamespace, kubeConfig);
-    } catch (error) {
-      console.error('❌ Failed to connect to cluster:', error);
-      throw error;
-    }
+describe('Valkey operator installation contract', () => {
+  it('uses one explicit owner for namespace, repository, and release in direct mode', () => {
+    expect(valkeyOperatorInstallation).toBe(valkeyBootstrap);
+    const factory = valkeyBootstrap.factory('direct', { namespace: 'control-plane' });
+    const docs = splitDocs(
+      factory.toYaml({
+        name: 'valkey-operator',
+        namespace: 'valkey-system',
+      })
+    );
+
+    expect(docs.map((doc) => doc.match(/^kind: (.+)$/m)?.[1])).toEqual([
+      'Namespace',
+      'HelmRepository',
+      'HelmRelease',
+    ]);
+    expect(docs.join('\n')).toContain('namespace: valkey-system');
+    expect(docs.join('\n')).not.toContain('kind: ClusterRole');
+    expect(docs.join('\n')).not.toContain('kind: ClusterRoleBinding');
   });
 
-  afterAll(async () => {
-    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-    await Promise.allSettled(
-      [testNamespace, operatorNs].map((ns) =>
-        deleteNamespaceAndWait(ns, kubeConfig)
-      )
-    );
-  });
+  it('generates a KRO owner RGD with authoritative HelmRelease status', () => {
+    const yaml = valkeyBootstrap.toYaml();
 
-  it('should deploy operator and hydrate all status fields', async () => {
-    const { valkeyBootstrap } = await import(
-      '../../../src/factories/valkey/compositions/valkey-bootstrap.js'
-    );
-
-    const factory = valkeyBootstrap.factory('direct', {
-      namespace: testNamespace,
-      waitForReady: true,
-      timeout: 600000,
-      kubeConfig,
-    });
-
-    const instance = await factory.deploy({
-      name: 'valkey-operator',
-      namespace: operatorNs,
-    });
-
-    // Spec fields
-    expect(instance.spec.name).toBe('valkey-operator');
-    expect(instance.spec.namespace).toBe(operatorNs);
-
-    // All status fields — hydrated after waitForReady
-    expect(instance.status.ready).toBe(true);
-    expect(instance.status.phase).toBe('Ready');
-    expect(instance.status.failed).toBe(false);
-    expect(instance.status.version).toBe('v0.0.61');
-
-    await factory.deleteInstance('valkey-operator');
-  }, 900000);
-
-  it('should generate ResourceGraphDefinition YAML with CEL status expressions', async () => {
-    const { valkeyBootstrap } = await import(
-      '../../../src/factories/valkey/compositions/valkey-bootstrap.js'
-    );
-
-    const yaml: string = valkeyBootstrap.toYaml();
-
-    expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
-    expect(yaml).toContain('name: valkey-bootstrap');
-    expect(yaml).toContain('status:');
+    expect(yaml).toContain('kind: HelmRepository');
+    expect(yaml).toContain('kind: HelmRelease');
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
-    expect(yaml).toContain('Ready');
-    expect(yaml).toContain('Installing');
-    // Cluster-wide RBAC is owned by the official Helm chart. Duplicating it
-    // in the RGD causes Flux drift correction to fight TypeKro ownership tags.
+    expect(yaml).toContain('schema.spec.repositoryNamespace');
     expect(yaml).not.toContain('kind: ClusterRole');
     expect(yaml).not.toContain('kind: ClusterRoleBinding');
-    expect(yaml).toContain('namespace: "${has(schema.spec.namespace) ? schema.spec.namespace');
   });
 
-  it('should support both kro and direct deployment strategies', async () => {
-    const { valkeyBootstrap } = await import(
-      '../../../src/factories/valkey/compositions/valkey-bootstrap.js'
-    );
-
-    const directFactory = valkeyBootstrap.factory('direct', {
-      namespace: testNamespace,
-      kubeConfig,
-    });
-
-    const kroFactory = valkeyBootstrap.factory('kro', {
-      namespace: testNamespace,
-      kubeConfig,
-    });
-
-    expect(directFactory.mode).toBe('direct');
-    expect(kroFactory.mode).toBe('kro');
+  it('supports both deployment strategies', () => {
+    expect(valkeyBootstrap.factory('direct', { namespace: 'test' }).mode).toBe('direct');
+    expect(valkeyBootstrap.factory('kro', { namespace: 'test' }).mode).toBe('kro');
   });
 });

@@ -54,10 +54,9 @@ import {
  * - App references service names derived from resource names → deploys after all infra
  *
  * Operator install settings can be overridden per-deployment via
- * `spec.cnpgOperator` and `spec.valkeyOperator` — e.g., to pin chart
- * versions or change the install namespace. Both fields are optional;
- * defaults install the latest pinned version into each operator's
- * system namespace.
+ * `spec.cnpgOperator`. Valkey uses one fixed singleton identity and concrete
+ * installation spec because singleton ownership cannot safely depend on a
+ * per-instance KRO schema value.
  *
  * @example
  * ```typescript
@@ -133,8 +132,7 @@ export const webAppWithProcessing = kubernetesComposition(
     //
     // Users who need a dedicated per-instance operator (multi-tenancy,
     // version testing, isolated failure domains) can override any
-    // combination of fields via `spec.cnpgOperator` / `spec.valkeyOperator` —
-    // e.g., `{ name: 'testapp-cnpg', namespace: 'testapp-cnpg-system', shared: false }`.
+    // combination of CNPG fields via `spec.cnpgOperator`.
     // The spread puts user overrides AFTER the defaults so they win.
     // Operator bootstrap config: merge user overrides AFTER defaults.
     // Use explicit ?? fallbacks for name/namespace instead of relying on
@@ -155,9 +153,8 @@ export const webAppWithProcessing = kubernetesComposition(
     const _valkeyOp = singleton(valkeyBootstrap, {
       id: 'valkey-operator',
       spec: {
-        ...spec.valkeyOperator,
-        name: spec.valkeyOperator?.name ?? 'valkey-operator',
-        namespace: spec.valkeyOperator?.namespace ?? 'valkey-operator-system',
+        name: 'valkey-operator',
+        namespace: 'valkey-operator-system',
       },
     });
 

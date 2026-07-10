@@ -136,7 +136,6 @@ instance.status.components.inngest   // Inngest ready
 | `processing.replicas` | No | Inngest server replicas (default: 1) |
 | `processing.resources` | No | CPU/memory requests and limits for the Inngest server |
 | `cnpgOperator` | No | CloudNativePG operator singleton settings; accepts the underlying CNPG bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared`. `name`/`namespace` customize the install target; the singleton identity is fixed by the composition. |
-| `valkeyOperator` | No | Valkey operator singleton settings; accepts the underlying Valkey bootstrap fields such as `name`, `namespace`, `version`, `resources`, `customValues`, and `shared`. `name`/`namespace` customize the install target; the singleton identity is fixed by the composition. |
 
 ### Prerequisites
 
