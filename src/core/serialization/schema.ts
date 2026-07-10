@@ -54,8 +54,12 @@ function getKroTypeFromJson(node: unknown): string {
     if (nodeObj.proto === 'Array' && nodeObj.sequence) {
       return `[]${getKroTypeFromJson(nodeObj.sequence)}`;
     }
-    if (nodeObj.domain === 'number' && nodeObj.divisor === 1) {
-      return 'integer';
+    if (nodeObj.domain === 'number') {
+      const baseType = nodeObj.divisor === 1 ? 'integer' : 'float';
+      const markers: string[] = [];
+      if (typeof nodeObj.min === 'number') markers.push(`minimum=${nodeObj.min}`);
+      if (typeof nodeObj.max === 'number') markers.push(`maximum=${nodeObj.max}`);
+      return markers.length > 0 ? `${baseType} | ${markers.join(' ')}` : baseType;
     }
     // Map / Record types — arktype represents `Record<string, V>` as
     // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
@@ -63,6 +67,17 @@ function getKroTypeFromJson(node: unknown): string {
     if (nodeObj.domain === 'object' && Array.isArray(nodeObj.index) && nodeObj.index.length === 1) {
       const indexEntry = nodeObj.index[0] as { signature?: unknown; value?: unknown };
       if (indexEntry.signature === 'string') {
+        // `Record<string, unknown>` is an unstructured object, not a string
+        // map. KRO's `object` SimpleSchema type preserves mixed booleans,
+        // numbers, arrays, and nested values (required for Helm passthrough).
+        if (
+          indexEntry.value &&
+          typeof indexEntry.value === 'object' &&
+          !Array.isArray(indexEntry.value) &&
+          Object.keys(indexEntry.value as object).length === 0
+        ) {
+          return 'object';
+        }
         return `map[string]${getKroTypeFromJson(indexEntry.value)}`;
       }
     }
@@ -100,7 +115,7 @@ function getKroTypeFromJson(node: unknown): string {
     }
     switch (node) {
       case 'number':
-        return 'integer';
+        return 'float';
       case 'string':
       case 'boolean':
         return node;
@@ -968,7 +983,7 @@ function kroTypeForLiteral(value: string | number | boolean): string {
     return `string | default="${escapeCelString(value)}"`;
   }
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? `integer | default=${value}` : `number | default=${value}`;
+    return Number.isInteger(value) ? `integer | default=${value}` : `float | default=${value}`;
   }
   if (typeof value === 'boolean') {
     return `boolean | default=${value}`;

@@ -20,7 +20,7 @@
  * import { cnpgBootstrap, cluster, scheduledBackup } from 'typekro/cnpg';
  *
  * // Install the operator
- * const operatorFactory = cnpgBootstrap.factory('kro', { namespace: 'cnpg-system' });
+ * const operatorFactory = cnpgBootstrap.factory('kro', { namespace: 'typekro-system' });
  * await operatorFactory.deploy({ name: 'cnpg', namespace: 'cnpg-system' });
  *
  * // Create a PostgreSQL cluster

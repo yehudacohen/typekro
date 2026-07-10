@@ -86,6 +86,10 @@
       "import": "./dist/factories/ory/index.js",
       "types": "./dist/factories/ory/index.d.ts"
     },
+    "./rook": {
+      "import": "./dist/factories/rook/index.js",
+      "types": "./dist/factories/rook/index.d.ts"
+    },
     "./webapp": {
       "import": "./dist/factories/webapp/index.js",
       "types": "./dist/factories/webapp/index.d.ts"

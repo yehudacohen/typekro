@@ -139,7 +139,7 @@ import { valkeyBootstrap } from 'typekro/valkey';
 // 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
 // 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
-  namespace: 'valkey-operator-system',  // Namespace for the KRO instance and workloads
+  namespace: 'typekro-system',          // KRO instance namespace; must not be graph-owned
   waitForReady: true,
 });
 
@@ -148,6 +148,10 @@ await factory.deploy({
   namespace: 'valkey-operator-system',  // Namespace where the operator pods run
 });
 ```
+
+The KRO instance namespace must be separate from the operator namespace because
+the bootstrap graph owns the operator Namespace. TypeKro rejects unsafe
+same-namespace instances before YAML emission or cluster access.
 
 ### Bootstrap Status
 

@@ -46,7 +46,7 @@ function stripChartSuffix(version: string): string {
  * // 'kro' = KRO mode (continuous reconciliation via ResourceGraphDefinition)
  * // 'direct' = Direct mode (immediate apply, no KRO controller needed)
  * const factory = valkeyBootstrap.factory('kro', {
- *   namespace: 'valkey-operator-system',
+ *   namespace: 'typekro-system',
  *   waitForReady: true,
  * });
  *

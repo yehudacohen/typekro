@@ -50,7 +50,7 @@
  *
  * @example Internal Mongo (default)
  * ```typescript
- * const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+ * const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
  *
  * await factory.deploy({
  *   name: 'clickstack',

@@ -1,0 +1,257 @@
+# Rook/Ceph Object Storage
+
+TypeKro's Rook integration provides a typed, graph-aware path from the official
+Rook Ceph operator to application-scoped S3-compatible bucket claims.
+
+The integration keeps platform and application ownership separate:
+
+| Owner | Resources |
+| --- | --- |
+| Platform | Rook operator, `CephCluster`, `CephObjectStore`, bucket `StorageClass` |
+| Application | Namespaced `ObjectBucketClaim` |
+| Rook provisioner | Bucket, credentials `Secret`, connection `ConfigMap` |
+
+An application claim never installs Rook or owns a `CephCluster`. This prevents
+deleting one application graph from tearing down shared storage infrastructure.
+
+## Installation
+
+```ts
+import {
+  cephObjectStore,
+  rookBucketStorageClass,
+  rookCephOperatorBootstrap,
+  rookObjectStorageClaim,
+} from 'typekro/rook';
+```
+
+The operator bootstrap wraps the official `rook-ceph` chart from
+`https://charts.rook.io/release`. The default version is `v1.20.2`.
+
+```ts
+const operator = rookCephOperatorBootstrap.factory('kro', {
+  namespace: 'platform-control-plane',
+  waitForReady: true,
+});
+
+await operator.deploy({
+  name: 'rook-ceph',
+  namespace: 'rook-ceph',
+  logLevel: 'INFO',
+});
+```
+
+The bootstrap installs the official operator and its CRDs. It intentionally
+does **not** create a `CephCluster`; devices, failure domains, replication, and
+the cluster's destruction policy require explicit platform decisions. See the
+[Rook prerequisites](https://rook.io/docs/rook/latest-release/Getting-Started/Prerequisites/prerequisites/)
+before provisioning a Ceph cluster.
+
+In KRO mode, create the factory's control-plane namespace before deploying and
+keep it different from the child `rook-ceph` namespace. A KRO graph must not
+own the namespace containing its own instance because namespace deletion and
+the instance finalizer can otherwise deadlock.
+
+The bootstrap is the explicit owner of the complete operator installation:
+Namespace, HelmRepository, and HelmRelease. Deleting its KRO instance therefore
+uninstalls that installation. Application compositions that consume a shared
+operator should place `rookCephOperatorBootstrap` behind TypeKro's `singleton()`
+boundary; deleting a consumer then leaves the singleton owner intact.
+
+### Bootstrap options
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | required | Helm release name |
+| `namespace` | `string` | `rook-ceph` | Operator namespace |
+| `version` | `string` | `v1.20.2` | Official chart version, including the `v` prefix |
+| `repositoryName` | `string` | `rook-release` | Flux source name |
+| `repositoryNamespace` | `string` | operator namespace | Flux source namespace |
+| `repositoryUrl` | `string` | official Rook repository | Flux source URL |
+| `logLevel` | enum | chart default | `ERROR`, `WARNING`, `INFO`, or `DEBUG` |
+| `enableOBCWatchOperatorNamespace` | `boolean` | chart default | Controls the operator's OBC watch behavior |
+| `obcProvisionerNamePrefix` | `string` | chart default | Overrides the bucket provisioner prefix |
+| `obcAllowAdditionalConfigFields` | `string` | chart default | Comma-separated OBC fields allowed by the operator |
+| `resources` | object | chart default | Operator pod requests and limits |
+| `values` | object | `{}` | Raw chart values, merged last |
+
+`values` is the passthrough for chart settings not modeled above. It is
+graph-aware in KRO mode and merges after typed fields.
+
+## Platform setup
+
+After creating a `CephCluster`, a platform owner can define an RGW object store.
+The metadata pool must be replicated. The data pool may be replicated or
+erasure-coded.
+
+```ts
+const store = cephObjectStore({
+  name: 'application-objects',
+  namespace: 'rook-ceph',
+  spec: {
+    metadataPool: {
+      failureDomain: 'host',
+      replicated: { size: 3, requireSafeReplicaSize: true },
+    },
+    dataPool: {
+      failureDomain: 'host',
+      erasureCoded: { dataChunks: 2, codingChunks: 1 },
+      parameters: { bulk: 'true' },
+    },
+    preservePoolsOnDelete: true,
+    gateway: { port: 80, instances: 2 },
+    healthCheck: {
+      startupProbe: { disabled: false },
+      readinessProbe: { disabled: false },
+    },
+  },
+});
+```
+
+Create one or more cluster-scoped bucket StorageClasses. Lifecycle policy is a
+platform choice; `Retain` is TypeKro's default because deleting an application
+claim should not silently destroy its object data.
+
+```ts
+const buckets = rookBucketStorageClass({
+  name: 'rook-ceph-buckets-retain',
+  objectStoreName: 'application-objects',
+  objectStoreNamespace: 'rook-ceph',
+  operatorNamespace: 'rook-ceph',
+  reclaimPolicy: 'Retain',
+});
+```
+
+The generated provisioner is
+`<provisionerNamePrefix>.ceph.rook.io/bucket`. By default, the prefix comes from
+the required `operatorNamespace`, matching Rook's provisioner identity even when
+the object store runs in a different namespace. If the operator bootstrap
+configures `obcProvisionerNamePrefix`, pass the same value explicitly as
+`provisionerNamePrefix` here.
+
+For a brownfield bucket, set `existingBucketName` on the StorageClass and omit
+both bucket-name fields on the application claim. Rook's API places the
+existing bucket name on the StorageClass, not the claim.
+
+## Application bucket claim
+
+`rookObjectStorageClaim` owns only the namespaced OBC and references an
+administrator-provided StorageClass.
+
+```ts
+const objectStorage = rookObjectStorageClaim.factory('direct', {
+  namespace: 'my-app',
+  waitForReady: true,
+});
+
+const instance = await objectStorage.deploy({
+  name: 'uploads',
+  namespace: 'my-app',
+  storageClassName: 'rook-ceph-buckets-retain',
+  bucket: { name: 'uploads', mode: 'generated' },
+  maxObjects: '1000000',
+  maxSize: '100G',
+});
+```
+
+Use one structurally valid `bucket` value:
+
+- `{ name, mode: 'generated' }` for a collision-resistant new bucket in direct mode
+- `{ name, mode: 'fixed' }` for a fixed new bucket name in direct mode
+- omit `bucket` when the StorageClass references an existing bucket
+
+This structural shape prevents callers from specifying fixed and generated
+bucket names at the same time.
+
+Application claims are direct-only. The OBC provisioner mutates claim metadata
+and status during binding; KRO's continuous server-side apply can repeatedly
+invalidate those updates and leave an already-provisioned bucket stuck in
+`Pending`. Its composition-level mode contract rejects KRO factories,
+graph-level KRO YAML serialization, and nesting the claim inside another KRO
+composition.
+
+When the claim reaches `Bound`, Rook creates a Secret and ConfigMap with the
+same name and namespace as the claim. The composition returns these stable
+binding names in hydrated status:
+
+```ts
+type RookObjectStorageClaimStatus = {
+  ready: boolean;
+  phase: 'Pending' | 'Bound' | 'Released' | 'Failed';
+  claimName: string;
+  credentialsSecretName: string;
+  connectionConfigMapName: string;
+  storageClassName: string;
+};
+```
+
+The generated Secret contains `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`. The ConfigMap contains `BUCKET_HOST`, `BUCKET_PORT`,
+`BUCKET_NAME`, and related connection metadata. Applications can inject those
+resources into an ordinary S3-compatible client. See the upstream
+[ObjectBucketClaim documentation](https://rook.io/docs/rook/latest/Storage-Configuration/Object-Storage-RGW/ceph-object-bucket-claim/)
+for the full generated contract.
+
+`maxObjects` and `maxSize` map to Rook's default-safe OBC quota fields. More
+powerful fields such as bucket policies and lifecycle documents must first be
+enabled by the platform through `obcAllowAdditionalConfigFields`; they are not
+exposed by the high-level claim composition.
+
+## Low-level resources
+
+The package also exports:
+
+- `objectBucketClaim()` for direct control of `objectbucket.io/v1alpha1`
+- `cephObjectStoreUser()` for an explicit RGW identity
+- `rookCephHelmRepository()` and `rookCephOperatorHelmRelease()` for low-level Flux use
+
+OBCs normally create purpose-scoped bucket credentials automatically. Prefer
+that path over `cephObjectStoreUser()` unless a stable shared RGW identity is
+specifically required.
+
+When `CephObjectStoreUser.spec.keys` is supplied, every entry must contain both
+`accessKeyRef` and `secretKeyRef`; Rook requires the pair during reconciliation.
+
+## Readiness
+
+| Resource | Ready condition |
+| --- | --- |
+| Rook operator bootstrap | Flux HelmRelease has `Ready=True` |
+| `CephObjectStore` | `status.phase == "Ready"` |
+| `CephObjectStoreUser` | `status.phase == "Ready"` |
+| `ObjectBucketClaim` | `status.phase == "Bound"` |
+| Bucket `StorageClass` | Kubernetes accepted the immutable resource |
+
+The bootstrap exposes `failed` separately because the two-state `phase`
+reports only `Ready` or `Installing`.
+
+## Direct and KRO boundaries
+
+Operator ownership and object-store platform graphs support both factory modes.
+The application OBC claim is deliberately direct-only:
+
+```ts
+rookObjectStorageClaim.factory('direct', { namespace: 'my-app' });
+rookCephOperatorBootstrap.factory('kro', { namespace: 'platform-control' });
+```
+
+This is an explicit controller-ownership boundary, not a missing implementation:
+Rook must remain the sole active reconciler for an ObjectBucketClaim while it
+binds. KRO can safely own the operator, `CephObjectStore`, and bucket
+`StorageClass`; direct mode applies and hydrates the application OBC.
+
+## Current scope
+
+This object-storage slice does not create `CephCluster`, Rook multisite
+realms/zones, bucket notifications, or experimental COSI resources. Those are
+platform capabilities with materially different lifecycle and security
+decisions. Raw Rook resources can still be composed alongside these factories,
+and future typed slices can be added without changing the application OBC
+contract.
+
+Upstream references:
+
+- [Rook object storage overview](https://rook.io/docs/rook/latest/Storage-Configuration/Object-Storage-RGW/object-storage/)
+- [CephObjectStore CRD](https://rook.io/docs/rook/latest/CRDs/Object-Storage/ceph-object-store-crd/)
+- [ObjectBucketClaim](https://rook.io/docs/rook/latest/Storage-Configuration/Object-Storage-RGW/ceph-object-bucket-claim/)
+- [Official Rook releases](https://github.com/rook/rook/releases)

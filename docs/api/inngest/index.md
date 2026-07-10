@@ -21,7 +21,7 @@ import { inngestBootstrap } from 'typekro/inngest';
 // 'kro' = KRO mode (continuous reconciliation via ResourceGraphDefinition)
 // 'direct' = Direct mode (immediate apply, no KRO controller needed)
 const factory = inngestBootstrap.factory('kro', {
-  namespace: 'inngest',
+  namespace: 'typekro-system',
   waitForReady: true,
 });
 
@@ -34,6 +34,9 @@ await factory.deploy({
   },
 });
 ```
+
+Keep the KRO instance in a control-plane namespace separate from
+`spec.namespace`; the Inngest bootstrap graph owns its workload Namespace.
 
 ## Available Factories
 

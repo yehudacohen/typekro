@@ -44,7 +44,7 @@ TypeKro inspected chart-generated Deployments or Pods.
 import { dagsterBootstrap } from 'typekro/dagster';
 
 const factory = dagsterBootstrap.factory('kro', {
-  namespace: 'dagster',
+  namespace: 'typekro-system',
 });
 
 await factory.deploy({
@@ -104,7 +104,7 @@ const rgdYaml = dagsterBootstrap.toYaml();
 
 // Instances: the shared singleton owner instance plus this Dagster instance.
 const instanceYaml = dagsterBootstrap
-  .factory('kro', { namespace: 'analytics' })
+  .factory('kro', { namespace: 'typekro-system' })
   .toYaml({ name: 'analytics', namespace: 'analytics' });
 ```
 

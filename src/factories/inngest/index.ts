@@ -17,7 +17,7 @@
  * import { inngestBootstrap } from 'typekro/inngest';
  *
  * const factory = inngestBootstrap.factory('kro', {
- *   namespace: 'inngest',
+ *   namespace: 'typekro-system',
  * });
  *
  * await factory.deploy({

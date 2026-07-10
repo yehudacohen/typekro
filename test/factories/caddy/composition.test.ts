@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import {
-  caddyIngress,
   type CaddyIngressOptions,
-  makeCaddyIngress,
+  caddyIngress,
   DEFAULT_CADDY_VERSION,
+  makeCaddyIngress,
 } from '../../../src/factories/caddy/index.js';
 import {
   CaddyIngressConfigSchema,
@@ -87,7 +87,7 @@ describe('Caddy ingress composition', () => {
   });
 
   it('creates both kro and direct factories', () => {
-    const kro = caddyIngress.factory('kro', { namespace: 'caddy-system' });
+    const kro = caddyIngress.factory('kro', { namespace: 'typekro-system' });
     const direct = caddyIngress.factory('direct', { namespace: 'caddy-system' });
     expect(typeof kro.deploy).toBe('function');
     expect(typeof direct.deploy).toBe('function');
@@ -121,7 +121,11 @@ describe('Caddy ingress composition', () => {
     it('rejects persistence config in ephemeral mode (no PVC to size — fail loudly, not silently ignore)', () => {
       // `persistence` is intentionally not a field of the ephemeral schema; type it as `unknown` so the
       // compiler lets us feed the invalid shape through and assert the RUNTIME rejection.
-      const invalid: unknown = { name: 'caddy', caddyfile: SAMPLE_CADDYFILE, persistence: { size: '2Gi' } };
+      const invalid: unknown = {
+        name: 'caddy',
+        caddyfile: SAMPLE_CADDYFILE,
+        persistence: { size: '2Gi' },
+      };
       const rejected = CaddyIngressEphemeralConfigSchema(invalid);
       expect(rejected instanceof type.errors).toBe(true);
     });

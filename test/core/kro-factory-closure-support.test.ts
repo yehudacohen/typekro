@@ -3,32 +3,19 @@
  * Validates that closures work with static values and fail with dynamic references
  */
 
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import type { KubeConfig, V1Deployment } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/core.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { yamlDirectory, yamlFile } from '../../src/factories/kubernetes/yaml/index.js';
-import {
-  getIntegrationTestKubeConfig,
-  isClusterAvailable,
-} from '../integration/shared-kubeconfig.js';
 
 describe('KroResourceFactory Closure Support', () => {
-  let kubeConfig: KubeConfig | undefined;
-
-  beforeAll(async () => {
-    if (isClusterAvailable()) {
-      kubeConfig = getIntegrationTestKubeConfig();
-    } else {
-      // Create a mock kubeConfig for validation-only tests
-      kubeConfig = {
-        makeApiClient: () => null,
-        getCurrentContext: () => 'mock-context',
-        getCurrentCluster: () => ({ server: 'mock-server' }),
-      } as unknown as KubeConfig;
-    }
-  });
+  const kubeConfig = {
+    makeApiClient: () => null,
+    getCurrentContext: () => 'mock-context',
+    getCurrentCluster: () => ({ server: 'mock-server' }),
+  } as unknown as KubeConfig;
 
   describe('Static Values Support', () => {
     it('should accept closures with static values in Kro mode', async () => {

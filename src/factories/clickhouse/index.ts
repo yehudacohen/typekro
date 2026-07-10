@@ -40,9 +40,12 @@
  *
  * // Install the operator (once per cluster)
  * const operatorFactory = clickhouseOperatorBootstrap.factory('kro', {
+ *   namespace: 'typekro-system',
+ * });
+ * await operatorFactory.deploy({
+ *   name: 'clickhouse-operator',
  *   namespace: 'clickhouse-system',
  * });
- * await operatorFactory.deploy({ name: 'clickhouse-operator' });
  *
  * // Fix the topology at construction, deploy with runtime spec
  * const clickhouse = makeClickHouseCluster({

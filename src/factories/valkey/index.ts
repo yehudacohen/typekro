@@ -18,7 +18,7 @@
  *
  * // Install the operator
  * const operatorFactory = valkeyBootstrap.factory('kro', {
- *   namespace: 'valkey-operator-system',
+ *   namespace: 'typekro-system',
  * });
  * await operatorFactory.deploy({
  *   name: 'valkey-operator',

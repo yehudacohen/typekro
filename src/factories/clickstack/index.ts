@@ -26,7 +26,7 @@
  * ```typescript
  * import { clickstackBootstrap } from 'typekro/clickstack';
  *
- * const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+ * const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
  * ```
  *
  * @see https://github.com/ClickHouse/ClickStack-helm-charts

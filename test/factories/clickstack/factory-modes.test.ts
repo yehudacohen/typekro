@@ -212,7 +212,7 @@ describe('clickstackBootstrap factory modes', () => {
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
     it('toYaml(instance) bundles the singleton owner instance BEFORE the ClickStackBootstrap CR', () => {
-      const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+      const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
       const docs = splitDocs(yaml);
       const kinds = docs.map(docKind);
@@ -233,13 +233,13 @@ describe('clickstackBootstrap factory modes', () => {
       // The CR carries the runtime spec verbatim (incl. the secret wiring).
       const cr = docs.find((doc) => docKind(doc) === 'ClickStackBootstrap');
       expect(cr).toContain('name: clickstack');
-      expect(cr).toContain('namespace: clickstack');
+      expect(cr).toContain('namespace: typekro-system');
       expect(cr).toContain('host: clickhouse-observability.clickhouse.svc.cluster.local');
       expect(cr).toContain('apiKey: test-ingestion-api-key');
     });
 
     it('toYaml() emits the owner RGD + bootstrap RGD preserving the status/endpoint contract', () => {
-      const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+      const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
       const yaml = factory.toYaml();
       const docs = splitDocs(yaml);
 
@@ -365,7 +365,7 @@ describe('clickstackK8sTelemetry factory modes', () => {
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
     it('toYaml(instance) bundles the OTel singleton owner instance BEFORE the telemetry CR', () => {
       const factory = clickstackK8sTelemetry.factory('kro', {
-        namespace: 'clickstack-telemetry',
+        namespace: 'typekro-system',
       });
       const yaml = factory.toYaml(TELEMETRY_SPEC as never);
       const docs = splitDocs(yaml);
@@ -393,7 +393,7 @@ describe('clickstackK8sTelemetry factory modes', () => {
 
     it('toYaml() emits owner RGD + telemetry RGD preserving the required secret wiring and status contract', () => {
       const factory = clickstackK8sTelemetry.factory('kro', {
-        namespace: 'clickstack-telemetry',
+        namespace: 'typekro-system',
       });
       const yaml = factory.toYaml();
       const docs = splitDocs(yaml);

@@ -17,6 +17,7 @@
 import * as yaml from 'js-yaml';
 import { singletonInstanceTypeMeta } from '../singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
+import { assertSingletonOwnerNamespaceOwnershipSafe } from './kro-instance-safety.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import { getSingletonInstanceName } from './shared-utilities.js';
 import { singletonSpecFingerprintAnnotationValue } from './singleton-owner-drift.js';
@@ -35,12 +36,10 @@ function dedupeByKey(
 }
 
 /** RGD YAML for each singleton owner composition (the CRD + resource graph it owns). */
-export function singletonRgdYamls(
-  definitions: readonly SingletonDefinitionRecord[]
-): string[] {
-  return dedupeByKey(definitions).map((definition) =>
-    (definition.composition as unknown as { toYaml: () => string }).toYaml()
-  );
+export function singletonRgdYamls(definitions: readonly SingletonDefinitionRecord[]): string[] {
+  return dedupeByKey(definitions).map((definition) => {
+    return (definition.composition as unknown as { toYaml: () => string }).toYaml();
+  });
 }
 
 /** Owner-instance manifests — one shared CR per singleton, matching `deploy()`. */
@@ -48,6 +47,7 @@ export function singletonOwnerInstanceManifests(
   definitions: readonly SingletonDefinitionRecord[]
 ): unknown[] {
   return dedupeByKey(definitions).map((definition) => {
+    assertSingletonOwnerNamespaceOwnershipSafe(definition);
     const { apiVersion, kind } = singletonInstanceTypeMeta(definition.composition);
     return {
       apiVersion,
@@ -77,7 +77,8 @@ export function singletonOwnerInstanceYamls(
 
 /** Join YAML documents, dropping empties, with the leading docs emitted deps-first. */
 export function joinYamlDocuments(leadingDocs: string[], main: string): string {
-  return [...leadingDocs, main].map((doc) => doc.trim()).filter((doc) => doc.length > 0).join(
-    DOC_SEPARATOR
-  );
+  return [...leadingDocs, main]
+    .map((doc) => doc.trim())
+    .filter((doc) => doc.length > 0)
+    .join(DOC_SEPARATOR);
 }

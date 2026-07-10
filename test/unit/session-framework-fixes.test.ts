@@ -210,7 +210,7 @@ describe('#49 Record<K,V> arktype → KRO map[string]V schema', () => {
     expect(schema.spec.secrets).toBe('map[string]string');
   });
 
-  it('emits map[string]integer for Record<string, number>', () => {
+  it('emits map[string]float for Record<string, number>', () => {
     const schemaDef = type({
       name: 'string',
       counts: 'Record<string, number>',
@@ -223,7 +223,7 @@ describe('#49 Record<K,V> arktype → KRO map[string]V schema', () => {
       status: type({ ready: 'boolean' }),
     });
 
-    expect(schema.spec.counts).toBe('map[string]integer');
+    expect(schema.spec.counts).toBe('map[string]float');
   });
 
   it('leaves regular nested object types alone', () => {
@@ -241,7 +241,7 @@ describe('#49 Record<K,V> arktype → KRO map[string]V schema', () => {
 
     // Nested object should be an object, not a map.
     expect(typeof schema.spec.app).toBe('object');
-    expect((schema.spec.app as Record<string, unknown>).port).toBe('integer');
+    expect((schema.spec.app as Record<string, unknown>).port).toBe('float');
   });
 });
 
