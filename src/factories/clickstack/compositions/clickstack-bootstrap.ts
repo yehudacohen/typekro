@@ -223,8 +223,13 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // bimodal win over the old raw `Cel.expr("...literal CEL...")` strings,
     // which stayed opaque markers in direct mode. `ready`/`phase` below stay
     // raw Cel.expr: they use the CEL `.exists()` macro over the HelmRelease
-    // conditions, which has no analyzer-convertible JS equivalent, so they
-    // remain KRO-mode-only (unchanged from before).
+    // conditions, which has no analyzer-convertible JS equivalent — so they are
+    // NOT natural template literals. They still resolve in BOTH modes, though:
+    // KRO status CEL in kro mode, and the cel-js reference resolver evaluates
+    // the `.exists()` macro against the live HelmRelease conditions in direct
+    // mode (proven concrete — ready===true / phase==="Ready" — in the hermetic
+    // final-pipeline test). Unchanged by this migration: raw Cel.expr before
+    // and after; only the metadata endpoint fields switched to template literals.
     return {
       ready: helmReleaseReady,
       phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
