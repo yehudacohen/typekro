@@ -99,6 +99,7 @@ export default withMermaid(
               { text: 'Dagster OSS', link: '/api/dagster/' },
               { text: 'Ory', link: '/api/ory/' },
               { text: 'Pebble', link: '/api/pebble/' },
+              { text: 'Rook/Ceph Object Storage', link: '/api/rook/' },
               { text: 'SearXNG', link: '/api/searxng/' },
               { text: 'Valkey', link: '/api/valkey/' },
               { text: 'Web App Compositions', link: '/api/webapp/' },

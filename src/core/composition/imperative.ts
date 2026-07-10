@@ -66,6 +66,25 @@ import {
  */
 const logger = getComponentLogger('imperative-composition');
 
+function assertNestedKroModeSupported(
+  options: SerializationOptions | undefined,
+  compositionName: string,
+  parentContext: CompositionContext
+): void {
+  if (parentContext.isReExecution || !options?.supportedModes) return;
+  if (options.supportedModes.includes('kro')) return;
+  // A direct-only parent may safely compose another direct-only graph. Its
+  // definition-time proxy pass exists to build the direct deployment model,
+  // but the parent itself cannot later be serialized or deployed as KRO.
+  if (parentContext.supportedModes && !parentContext.supportedModes.includes('kro')) return;
+
+  throw new TypeKroError(
+    `Composition "${compositionName}" does not support kro mode and cannot be nested in a KRO resource graph. Supported modes: ${options.supportedModes.join(', ')}.`,
+    'UNSUPPORTED_COMPOSITION_MODE',
+    { composition: compositionName, requestedMode: 'kro', supportedModes: options.supportedModes }
+  );
+}
+
 /**
  * Compute the merged resource ID for an inner composition's resource in
  * the parent context. Single-resource compositions use baseId directly;
@@ -235,11 +254,14 @@ function executeNestedComposition<
   parentContext: CompositionContext,
   compositionName: string
 ): TypedResourceGraph<TSpec, TStatus> {
+  assertNestedKroModeSupported(options, compositionName, parentContext);
   CompositionDebugger.log('NESTED_COMPOSITION', `Executing nested composition: ${compositionName}`);
 
   // Create a temporary context for the nested composition with unique identifier
   const uniqueNestedName = `${compositionName}-${++globalCompositionCounter}`;
-  const nestedContext = createCompositionContext(uniqueNestedName);
+  const nestedContext = createCompositionContext(uniqueNestedName, {
+    ...(options?.supportedModes ? { supportedModes: options.supportedModes } : {}),
+  });
 
   // Execute the nested composition in its own context
   const nestedResult = runWithCompositionContext(nestedContext, () => {
@@ -359,6 +381,7 @@ function executeNestedCompositionWithSpec<
   spec: TSpec,
   compositionName: string
 ): NestedCompositionResource<TSpec, TStatus> {
+  assertNestedKroModeSupported(options, compositionName, parentContext);
   CompositionDebugger.log(
     'NESTED_COMPOSITION',
     `Executing nested composition with spec: ${compositionName}`
@@ -380,6 +403,7 @@ function executeNestedCompositionWithSpec<
   const executionContext = createCompositionContext(uniqueExecutionName, {
     ...(parentContext.isReExecution ? { isReExecution: true } : {}),
     isNestedCall: true,
+    ...(options?.supportedModes ? { supportedModes: options.supportedModes } : {}),
   });
 
   // Get the instance number for this composition call before executing the
@@ -1511,7 +1535,9 @@ export function kubernetesComposition<
 
   // Execute the composition immediately and return a CallableComposition
   const uniqueCompositionName = `${compositionName}-${++globalCompositionCounter}`;
-  const context = createCompositionContext(uniqueCompositionName);
+  const context = createCompositionContext(uniqueCompositionName, {
+    ...(options?.supportedModes ? { supportedModes: options.supportedModes } : {}),
+  });
   const result = runWithCompositionContext(context, () => {
     return executeCompositionCore(
       definition,
@@ -1543,7 +1569,9 @@ export function kubernetesComposition<
 
     // Top-level call (no parent context) - execute in isolation
     const callCompositionName = `${compositionName}-call-${++globalCompositionCounter}`;
-    const callContext = createCompositionContext(callCompositionName);
+    const callContext = createCompositionContext(callCompositionName, {
+      ...(options?.supportedModes ? { supportedModes: options.supportedModes } : {}),
+    });
     const callResult = runWithCompositionContext(callContext, () => {
       return executeCompositionCore(
         definition,

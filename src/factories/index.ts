@@ -68,6 +68,10 @@ export * as ory from './ory/index.js';
 // PEBBLE ACME TEST SERVER ECOSYSTEM
 // =============================================================================
 export * as pebble from './pebble/index.js';
+// =============================================================================
+// ROOK/CEPH OBJECT STORAGE ECOSYSTEM
+// =============================================================================
+export * as rook from './rook/index.js';
 // NOTE: createResource, getCurrentCompositionContext, and CompositionContext
 // are intentionally NOT re-exported here. They are exported from the canonical
 // locations in src/index.ts to avoid duplicate export paths in IDE autocomplete.

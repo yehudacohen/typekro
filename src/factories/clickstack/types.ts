@@ -347,8 +347,10 @@ export type ClickStackBootstrapRuntimeConfig = ClickStackBootstrapConfig & {
  * HelmRelease resource serialize as KRO status CEL and appear on the live
  * KRO CR's status (GitOps/KRO consumers can read them): `ready`, `phase`,
  * `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`,
- * `app.host` — raw CEL over `clickstackHelmRelease.metadata.name`/
- * `.namespace`, never `schema.spec.*` (KRO status CEL cannot reference the
+ * `app.host` — natural JS template literals over
+ * `clickstackHelmRelease.metadata.name`/`.namespace` (bimodal on typekro
+ * >= 0.24.0: status CEL in `factory('kro')`, concrete strings via direct-mode
+ * re-execution), never `schema.spec.*` (KRO status CEL cannot reference the
  * instance spec). The BARE build-time constants `app.appPort` (3000) and
  * `app.apiPort` (8000), plus the spec-derived `version`, have no resource
  * anchor and are hydrated CLIENT-SIDE by TypeKro (absent from the KRO CR

@@ -214,17 +214,22 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // `<name>-otel-collector`. Ports are chart defaults (see resources/helm.ts)
     // and ride INSIDE the resource-derived URL strings.
     //
-    // RAW Cel.expr over the resource id is required: the status-builder proxy
-    // passes `metadata` values through VERBATIM, and the HelmRelease's
-    // metadata.name in the template is itself a schema ref — a Cel.template
-    // over `_clickstackHelmRelease.metadata.name` therefore resolves back to
-    // `schema.spec.name`, gets classified static (client-hydrated), and is
-    // DROPPED from the KRO status. A raw resource-path expression survives
-    // serialization as genuine KRO CEL.
-    const releaseMeta = 'clickstackHelmRelease.metadata';
-    const appHostCel = `${releaseMeta}.name + "." + ${releaseMeta}.namespace + ".svc.cluster.local"`;
-    const gatewayHostCel = `${releaseMeta}.name + "${CLICKSTACK_GATEWAY_NAME_SUFFIX}." + ${releaseMeta}.namespace + ".svc.cluster.local"`;
-
+    // These use NATURAL proxy access inside JS template literals (typekro
+    // >= 0.24.0, with the #97 resource-metadata-proxy fix). In KRO mode the
+    // imperative analyzer converts them to status CEL and (#97)
+    // `clickstackHelmRelease.metadata.*` resolves resource-anchored instead
+    // of degrading to `schema.spec.name`; in direct mode they are plain JS,
+    // so live-status re-execution evaluates them to concrete strings — the
+    // bimodal win over the old raw `Cel.expr("...literal CEL...")` strings,
+    // which stayed opaque markers in direct mode. `ready`/`phase` below stay
+    // raw Cel.expr: they use the CEL `.exists()` macro over the HelmRelease
+    // conditions, which has no analyzer-convertible JS equivalent — so they are
+    // NOT natural template literals. They still resolve in BOTH modes, though:
+    // KRO status CEL in kro mode, and the cel-js reference resolver evaluates
+    // the `.exists()` macro against the live HelmRelease conditions in direct
+    // mode (proven concrete — ready===true / phase==="Ready" — in the hermetic
+    // final-pipeline test). Unchanged by this migration: raw Cel.expr before
+    // and after; only the metadata endpoint fields switched to template literals.
     return {
       ready: helmReleaseReady,
       phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
@@ -234,18 +239,14 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       ),
       version: resolvedVersion,
       ui: {
-        url: Cel.expr<string>(`"http://" + ${appHostCel} + ":${CLICKSTACK_APP_PORT}"`),
+        url: `http://${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_APP_PORT}`,
       },
       gateway: {
-        otlpHttpEndpoint: Cel.expr<string>(
-          `"http://" + ${gatewayHostCel} + ":${CLICKSTACK_OTLP_HTTP_PORT}"`
-        ),
-        otlpGrpcEndpoint: Cel.expr<string>(
-          `"http://" + ${gatewayHostCel} + ":${CLICKSTACK_OTLP_GRPC_PORT}"`
-        ),
+        otlpHttpEndpoint: `http://${_clickstackHelmRelease.metadata.name}${CLICKSTACK_GATEWAY_NAME_SUFFIX}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_OTLP_HTTP_PORT}`,
+        otlpGrpcEndpoint: `http://${_clickstackHelmRelease.metadata.name}${CLICKSTACK_GATEWAY_NAME_SUFFIX}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_OTLP_GRPC_PORT}`,
       },
       app: {
-        host: Cel.expr<string>(appHostCel),
+        host: `${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local`,
         // Bare numeric constants — no resource anchor, so client-hydrated
         // only; both ports are KRO-visible inside the URL fields above.
         appPort: CLICKSTACK_APP_PORT,

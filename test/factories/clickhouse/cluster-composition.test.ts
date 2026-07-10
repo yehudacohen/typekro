@@ -144,15 +144,19 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       // The CONNECTION CONTRACT is anchored on the OWNED CHI RESOURCE, so it
       // reaches the KRO CR's status (GitOps/KRO consumers see it live) —
       // derived from the operator's verified naming, never schema.spec.*.
+      // Built from NATURAL template literals over the resource proxy (typekro
+      // >= 0.24.0 / #97): the analyzer emits KRO's mixed-template format with
+      // string()-wrapped resource-metadata interpolations and inlined port
+      // literals.
       const statusSection = yaml.slice(yaml.indexOf('status:'), yaml.indexOf('resources:'));
       expect(statusSection).toContain(
-        'host: ${"clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local"}'
+        'host: clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
       );
       expect(statusSection).toContain(
-        'nativeUrl: ${"clickhouse://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":9000"}'
+        'nativeUrl: clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
       );
       expect(statusSection).toContain(
-        'httpUrl: ${"http://" + "clickhouse-" + clickhouse.metadata.name + "." + clickhouse.metadata.namespace + ".svc.cluster.local" + ":8123"}'
+        'httpUrl: http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
       );
       expect(statusSection).toContain(
         'clusterName: ${clickhouse.spec.configuration.clusters[0].name}'

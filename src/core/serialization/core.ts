@@ -17,7 +17,6 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { joinYamlDocuments, singletonRgdYamls } from '../deployment/singleton-gitops.js';
-import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import { ensureError, ValidationError } from '../errors.js';
 import {
   type ASTAnalysisResult,
@@ -35,6 +34,7 @@ import type {
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
+  SingletonDefinitionRecord,
   TypedResourceGraph,
 } from '../types/deployment.js';
 import type {
@@ -72,6 +72,22 @@ function isToYamlOptions(value: unknown): value is ToYamlOptions {
   return aspects.every(
     (entry) =>
       typeof entry === 'object' && entry !== null && (entry as { kind?: unknown }).kind === 'aspect'
+  );
+}
+
+function assertDeploymentModeSupported(
+  options: SerializationOptions | undefined,
+  mode: 'direct' | 'kro',
+  graphName: string
+): void {
+  if (!options?.supportedModes || options.supportedModes.includes(mode)) return;
+
+  throw new ValidationError(
+    `Resource graph "${graphName}" does not support ${mode} mode. Supported modes: ${options.supportedModes.join(', ')}.`,
+    'ResourceGraphDefinition',
+    graphName,
+    'mode',
+    [`Use one of the supported modes: ${options.supportedModes.join(', ')}`]
   );
 }
 
@@ -1428,7 +1444,8 @@ function applyResourceStatusBranchDiff(
       if (!leafEquals(tv, fv)) {
         const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
         const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
-        targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
+        targetRes[key] =
+          `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
       }
       continue;
     }
@@ -1440,11 +1457,11 @@ function applyResourceStatusBranchDiff(
         targetRes[key] as Record<string, unknown>,
         tv,
         fv,
-          conditionCel,
-          nestedStatusCel,
-          resourceIds,
-          omitFields
-        );
+        conditionCel,
+        nestedStatusCel,
+        resourceIds,
+        omitFields
+      );
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length === fv.length) {
       if (!Array.isArray(targetValue)) targetRes[key] = [...tv];
       const targetArray = targetRes[key] as unknown[];
@@ -1463,17 +1480,20 @@ function applyResourceStatusBranchDiff(
         } else if (!leafEquals(tv[i], fv[i])) {
           const trueRepr = celValueRepr(tv[i], nestedStatusCel, resourceIds, omitFields);
           const falseRepr = celValueRepr(fv[i], nestedStatusCel, resourceIds, omitFields);
-          targetArray[i] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
+          targetArray[i] =
+            `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
         }
       }
     } else if (Array.isArray(tv) && Array.isArray(fv) && tv.length !== fv.length) {
       const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
       const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
-      targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
+      targetRes[key] =
+        `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
     } else if (!leafEquals(tv, fv)) {
       const trueRepr = celValueRepr(tv, nestedStatusCel, resourceIds, omitFields);
       const falseRepr = celValueRepr(fv, nestedStatusCel, resourceIds, omitFields);
-      targetRes[key] = `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
+      targetRes[key] =
+        `\${${conditionCel} ? ${celBranchRepr(trueRepr)} : ${celBranchRepr(falseRepr)}}`;
     }
   }
 }
@@ -2167,6 +2187,8 @@ function createTypedResourceGraph<
       mode: 'kro' | 'direct',
       factoryOptions?: PublicFactoryOptions
     ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus> {
+      assertDeploymentModeSupported(options, mode, definition.name);
+
       if (mode === 'direct') {
         const directStatusMappings = reanalyzeStatusForDirectFactory(
           this._analysisResults,
@@ -2241,6 +2263,10 @@ function createTypedResourceGraph<
     },
 
     toYaml(specOrOptions?: TSpec | ToYamlOptions): string {
+      // Graph-level YAML is always KRO declarative output: with no argument
+      // it emits an RGD, and with a spec it emits a custom-resource instance.
+      assertDeploymentModeSupported(options, 'kro', definition.name);
+
       if (specOrOptions !== undefined) {
         if (isToYamlOptions(specOrOptions)) {
           const factory = this.factory('kro', specOrOptions) as KroResourceFactory<TSpec, TStatus>;
@@ -2329,7 +2355,9 @@ function createTypedResourceGraph<
           // the static-field path, like any other static status field — KRO
           // status CEL cannot reference `schema.spec.*`. Only inject the
           // resource-referencing (dynamic) overrides into the KRO schema.
-          if (isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList))
+          if (
+            isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList)
+          )
             continue;
           if (!kroSchema.status) {
             kroSchema.status = {};

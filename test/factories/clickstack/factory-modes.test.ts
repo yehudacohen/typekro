@@ -254,13 +254,13 @@ describe('clickstackBootstrap factory modes', () => {
       // anchored on the owned HelmRelease (never schema.spec.*).
       expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
       expect(yaml).toContain(
-        'url: ${"http://" + clickstackHelmRelease.metadata.name + "." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":3000"}'
+        'url: http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
       );
       expect(yaml).toContain(
-        'otlpHttpEndpoint: ${"http://" + clickstackHelmRelease.metadata.name + "-otel-collector." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":4318"}'
+        'otlpHttpEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4318'
       );
       expect(yaml).toContain(
-        'otlpGrpcEndpoint: ${"http://" + clickstackHelmRelease.metadata.name + "-otel-collector." + clickstackHelmRelease.metadata.namespace + ".svc.cluster.local" + ":4317"}'
+        'otlpGrpcEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4317'
       );
 
       // Secret wiring reaches the RGD values as guarded schema CEL.

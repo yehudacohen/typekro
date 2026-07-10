@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -85,6 +85,10 @@
     "./ory": {
       "import": "./dist/factories/ory/index.js",
       "types": "./dist/factories/ory/index.d.ts"
+    },
+    "./rook": {
+      "import": "./dist/factories/rook/index.js",
+      "types": "./dist/factories/rook/index.d.ts"
     },
     "./webapp": {
       "import": "./dist/factories/webapp/index.js",
