@@ -6,6 +6,7 @@ import { getIncludeWhen } from '../metadata/index.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
+import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
 
 type ResourceCollection = Record<string, KubernetesResource> | readonly KubernetesResource[];
 
@@ -51,19 +52,18 @@ function resolveNamespaceName(value: unknown, spec: KroCompatibleType): string |
 
   if (isCelExpression(value)) {
     const expression = value.expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
-    const schemaPath =
-      /^(?:schema\.)?(spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/.exec(expression)?.[1] ??
-      /^string\((?:schema\.)?(spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(
-        expression
-      )?.[1];
-    if (schemaPath) {
-      const resolved = resolveSpecPath(spec, schemaPath);
-      return resolved === undefined || resolved === null ? undefined : String(resolved);
+    // A concrete re-execution turns Cel.expr(spec.namespace) into a bare
+    // DNS-label expression body. It is already the resolved namespace.
+    if (/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(expression)) {
+      return expression;
     }
 
-    // A concrete re-execution turns Cel.expr(spec.namespace) into an
-    // expression whose body is the actual namespace string.
-    return expression;
+    try {
+      const resolved = evaluateSchemaCelExpression(value, spec);
+      return typeof resolved === 'string' ? resolved : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   if (typeof value !== 'string') return undefined;
@@ -143,6 +143,19 @@ export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompati
     if (!isActiveOwnedResource(resource, input.spec)) continue;
 
     const ownedNamespace = resolveNamespaceName(resource.metadata?.name, input.spec);
+    if (ownedNamespace === undefined) {
+      throw new TypeKroError(
+        `Cannot prove KRO instance namespace '${input.instanceNamespace}' is safe because active owned Namespace '${resourceId}' in composition '${input.compositionName}' has a name that cannot be evaluated from the concrete spec. ` +
+          'Use a concrete or schema-only CEL Namespace name, or move the KRO instance to a control-plane namespace whose safety can be established.',
+        'UNRESOLVED_KRO_NAMESPACE_OWNERSHIP',
+        {
+          composition: input.compositionName,
+          instanceNamespace: input.instanceNamespace,
+          resourceId,
+          mode: 'kro',
+        }
+      );
+    }
     if (ownedNamespace === input.instanceNamespace) {
       throw new TypeKroError(
         `KRO instance namespace '${input.instanceNamespace}' cannot also be an owned Namespace in composition '${input.compositionName}'. ` +

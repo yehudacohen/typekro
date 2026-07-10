@@ -38,7 +38,6 @@ function dedupeByKey(
 /** RGD YAML for each singleton owner composition (the CRD + resource graph it owns). */
 export function singletonRgdYamls(definitions: readonly SingletonDefinitionRecord[]): string[] {
   return dedupeByKey(definitions).map((definition) => {
-    assertSingletonOwnerNamespaceOwnershipSafe(definition);
     return (definition.composition as unknown as { toYaml: () => string }).toYaml();
   });
 }
