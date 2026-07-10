@@ -51,4 +51,25 @@ describe('RGD date-shaped env value round-trips as a string (alchemy deploy path
     expect(value instanceof Date).toBe(false);
     expect(findEnvValue(decls, 'GCP_OTHER')).toBe('prod');
   });
+
+  it('emits the date-shaped env value QUOTED in toYaml (safe for external/timestamp-aware parsers)', async () => {
+    const comp = kubernetesComposition(
+      { name: 'cs', kind: 'CS', spec: type({ name: 'string' }), status: type({ ready: 'boolean' }) },
+      (spec) => {
+        const d = simple.Deployment({ name: spec.name, image: 'nginx', id: 'dep' });
+        return { ready: d.status.readyReplicas >= 1 };
+      }
+    );
+    const f = await comp.factory('kro', {
+      namespace: 'ns',
+      waitForReady: false,
+      aspects: [withEnvVars({ GCP_PARTITIONS_START_DATE: '2026-06-01', GCP_OTHER: 'prod' })],
+    });
+    const yamlOut = await f.toYaml();
+    // Quoted → a downstream timestamp-aware YAML parser (KRO/kubectl/GitOps) keeps it a string.
+    expect(yamlOut).toContain('value: "2026-06-01"');
+    expect(yamlOut).not.toContain('value: 2026-06-01\n');
+    // A plain (non-ambiguous) value is left unquoted — only date-shaped scalars change.
+    expect(yamlOut).toContain('value: prod');
+  });
 });
