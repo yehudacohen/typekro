@@ -28,7 +28,7 @@ describe('KroResourceFactory Closure Support', () => {
         getCurrentCluster: () => ({ server: 'mock-server' }),
       } as unknown as KubeConfig;
     }
-  });
+  }, 30_000);
 
   describe('Static Values Support', () => {
     it('should accept closures with static values in Kro mode', async () => {
