@@ -199,6 +199,16 @@ export class ReadinessWaiter {
           }
         } else if (result && typeof result === 'object' && 'ready' in result) {
           lastStatus = result;
+          // Terminal (non-recoverable) not-ready — e.g. Kro rejected the RGD graph. Fail FAST with the
+          // real reason rather than polling to the deadline (whose abort surfaces as an opaque
+          // "Delay aborted"). Re-thrown by the catch below, which allowlists ResourceGraphFactoryError.
+          if (!result.ready && (result as ResourceStatus).terminal) {
+            throw new ResourceGraphFactoryError(
+              `${deployedResource.kind}/${deployedResource.name} will not become ready: ${result.message ?? result.reason ?? 'terminal failure'}`,
+              deployedResource.id,
+              'deployment'
+            );
+          }
           if (result.ready) {
             this.readyResources.add(resourceKey);
 
@@ -251,6 +261,11 @@ export class ReadinessWaiter {
           error instanceof DOMException &&
           (error.name === 'AbortError' || error.name === 'TimeoutError')
         ) {
+          throw error;
+        }
+        // Re-throw a terminal readiness failure (the fail-fast above) — it is NOT a transient
+        // read error to be swallowed and retried; the spec will not become ready without a change.
+        if (error instanceof ResourceGraphFactoryError) {
           throw error;
         }
 

@@ -37,6 +37,21 @@ import { finalizeCelForKro, getInnerCelPath, normalizeRefMarkersToCelPaths, proc
 import { generateKroSchema } from './schema.js';
 
 /**
+ * The RGD dump schema: JSON_SCHEMA (null/bool/int/float/string only — no !!binary/!!omap/etc. coercions)
+ * PLUS the implicit `timestamp` type. The timestamp type is added NOT to emit dates, but so js-yaml treats
+ * a date-SHAPED string scalar (e.g. an env value `"2026-06-01"`) as ambiguous and QUOTES it. Under bare
+ * JSON_SCHEMA it has no timestamp type, so such a scalar is emitted UNQUOTED — and any downstream
+ * timestamp-aware parser (KRO, kubectl/GitOps, or js-yaml's own default-schema load) coerces it to a `Date`
+ * OBJECT where the manifest requires a string, and KRO rejects the graph (`GraphAccepted=False`). Quoting
+ * on dump keeps it a string for EVERY consumer. Only date-shaped strings change; all other output is
+ * byte-identical to plain JSON_SCHEMA. (Loaders should still pass JSON_SCHEMA — see kro-factory — but with
+ * this the emitted YAML is safe even for external consumers that don't.)
+ */
+// `yaml.types` exists at runtime but is absent from @types/js-yaml — reference it through a typed cast.
+const yamlTimestampType = (yaml as unknown as { types: { timestamp: yaml.Type } }).types.timestamp;
+const RGD_DUMP_SCHEMA = yaml.JSON_SCHEMA.extend({ implicit: [yamlTimestampType] });
+
+/**
  * Read a non-enumerable property from an Enhanced resource.
  *
  * Used only for `__externalRef` which is NOT part of the WeakMap migration
@@ -1019,6 +1034,6 @@ export function serializeResourceGraphToYaml(
     sortKeys: false,
     quotingType: '"',
     forceQuotes: false,
-    schema: yaml.JSON_SCHEMA,
+    schema: RGD_DUMP_SCHEMA,
   });
 }

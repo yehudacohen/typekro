@@ -298,6 +298,15 @@ export interface ResourceStatus {
   reason?: string; // Machine-readable reason code
   message?: string; // Human-readable status message
   details?: Record<string, unknown>; // Additional debugging information
+  /**
+   * When true, this not-ready state is TERMINAL for the current spec — it will not self-resolve by
+   * waiting (e.g. Kro rejected an RGD's graph: `GraphAccepted=False`). The readiness waiter fails FAST
+   * with `message`/`reason` instead of polling to the deadline (which would surface an opaque abort).
+   * A subsequent converge that applies a corrected spec still reconciles normally — so this drives
+   * clear, immediate diagnostics WITHOUT requiring manual resource deletion. Only meaningful with
+   * `ready: false`.
+   */
+  terminal?: boolean;
 }
 
 /**
