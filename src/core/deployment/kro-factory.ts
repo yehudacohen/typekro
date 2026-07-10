@@ -1273,7 +1273,18 @@ export class KroResourceFactoryImpl<
     // 1. RGD declaration (deployed once per factory; shared by all instances). Reuse the normal
     // serializer so externalRef/forEach/includeWhen/readyWhen + singleton boundaries match
     // non-alchemy KRO deploys.
-    const rgdManifest = yaml.load(this.buildRgdYaml()) as Record<string, unknown>;
+    //
+    // Load with JSON_SCHEMA to MATCH `serializeResourceGraphToYaml`'s dump schema. The dump uses
+    // JSON_SCHEMA (no YAML timestamp/`!!timestamp` type), so a string value that merely LOOKS like a
+    // date — e.g. an env var `"2026-06-01"` — is emitted UNQUOTED. Loading it back with js-yaml's
+    // DEFAULT schema (timestamp-aware) would coerce that scalar to a `Date` OBJECT, and the applied
+    // RGD would then carry an object where a string belongs — KRO rejects the whole graph
+    // (`GraphAccepted=False: expected string type ..., got object`) and it never reconciles. Matching
+    // the load schema to the dump makes the round-trip lossless (the scalar stays the string it was).
+    const rgdManifest = yaml.load(this.buildRgdYaml(), { schema: yaml.JSON_SCHEMA }) as Record<
+      string,
+      unknown
+    >;
     const rgdFactory =
       this.rgdProvider ??
       (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;

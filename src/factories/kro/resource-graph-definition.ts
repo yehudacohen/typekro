@@ -124,10 +124,28 @@ export function resourceGraphDefinition(
         (c: KubernetesCondition) => c && c.status === 'False'
       );
       if (status.state === 'failed' || failedCondition) {
+        // A graph-ACCEPTANCE failure (Kro rejected the RGD spec for THIS generation — e.g. an invalid
+        // resource template like a non-string env value) is TERMINAL: it never flips to accepted without
+        // a spec change. Signal `terminal` so the waiter fails fast with the reason instead of polling to
+        // the deadline (which surfaced an opaque "Delay aborted" that read like a cluster-access outage).
+        // Other transient `status: False` conditions stay retryable (ready:false, no terminal).
+        const rejected = currentConditions.find(
+          (c: KubernetesCondition) => c?.status === 'False' && /accepted/i.test(c?.type ?? '')
+        );
+        const cause = rejected ?? failedCondition;
+        if (rejected) {
+          rgdLogger.warn('ResourceGraphDefinition was rejected by Kro (terminal)', {
+            name: liveRGD?.metadata?.name,
+            type: rejected.type,
+            reason: rejected.reason,
+            message: rejected.message,
+          });
+        }
         return {
           ready: false,
           reason: 'RGDProcessingFailed',
-          message: `RGD processing failed: ${failedCondition?.message || 'Unknown error'}`,
+          message: `RGD processing failed: ${cause?.message || 'Unknown error'}`,
+          ...(rejected ? { terminal: true } : {}),
           details: { state: status.state, generation, conditions },
         };
       }
