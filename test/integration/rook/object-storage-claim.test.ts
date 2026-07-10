@@ -96,6 +96,7 @@ const objectStorePlatform = kubernetesComposition(
       name: storageClassName,
       objectStoreName,
       objectStoreNamespace: cephNamespace,
+      operatorNamespace,
       reclaimPolicy: 'Delete',
       id: 'bucketStorageClass',
     });

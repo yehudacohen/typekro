@@ -498,10 +498,12 @@ describe('Schema Nullish Defaults', () => {
       const yaml = composition.toYaml();
       // The replicas default should appear exactly once, and should be
       // the value from the ?? fallback (3). Double-annotation would look
-      // like `integer | default=3 | default=3` which is invalid CEL.
-      const replicasMatches = yaml.match(/replicas: integer \| default=\d+/g) ?? [];
+      // like `float | default=3 | default=3` which is invalid SimpleSchema.
+      // ArkType `number` admits fractional values, so KRO's matching type is
+      // `float`; callers that require integers must use `number.integer`.
+      const replicasMatches = yaml.match(/replicas: float \| default=\d+/g) ?? [];
       expect(replicasMatches.length).toBe(1);
-      expect(yaml).toContain('replicas: integer | default=3');
+      expect(yaml).toContain('replicas: float | default=3');
     });
 
     it('an enum field WITH a ?? default emits a single-pipe, space-separated marker block (KRO-valid)', async () => {

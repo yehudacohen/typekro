@@ -117,15 +117,17 @@ const buckets = rookBucketStorageClass({
   name: 'rook-ceph-buckets-retain',
   objectStoreName: 'application-objects',
   objectStoreNamespace: 'rook-ceph',
-  provisionerNamePrefix: 'rook-ceph',
+  operatorNamespace: 'rook-ceph',
   reclaimPolicy: 'Retain',
 });
 ```
 
 The generated provisioner is
-`<provisionerNamePrefix>.ceph.rook.io/bucket`. The prefix defaults to
-`objectStoreNamespace`, matching Rook's default provisioner identity. If the operator bootstrap configures
-`obcProvisionerNamePrefix`, pass the same value as `provisionerNamePrefix` here.
+`<provisionerNamePrefix>.ceph.rook.io/bucket`. By default, the prefix comes from
+the required `operatorNamespace`, matching Rook's provisioner identity even when
+the object store runs in a different namespace. If the operator bootstrap
+configures `obcProvisionerNamePrefix`, pass the same value explicitly as
+`provisionerNamePrefix` here.
 
 For a brownfield bucket, set `existingBucketName` on the StorageClass and omit
 both bucket-name fields on the application claim. Rook's API places the
@@ -164,7 +166,9 @@ bucket names at the same time.
 Application claims are direct-only. The OBC provisioner mutates claim metadata
 and status during binding; KRO's continuous server-side apply can repeatedly
 invalidate those updates and leave an already-provisioned bucket stuck in
-`Pending`. The public factory rejects KRO mode before creating an unsafe graph.
+`Pending`. Its composition-level mode contract rejects KRO factories,
+graph-level KRO YAML serialization, and nesting the claim inside another KRO
+composition.
 
 When the claim reaches `Bound`, Rook creates a Secret and ConfigMap with the
 same name and namespace as the claim. The composition returns these stable

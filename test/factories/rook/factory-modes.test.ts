@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type } from 'arktype';
 
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import {
   DEFAULT_ROOK_CEPH_REPO_NAME,
   DEFAULT_ROOK_CEPH_VERSION,
@@ -161,7 +163,72 @@ describe('Rook object storage claim factory modes', () => {
 
   it('rejects KRO-managed OBCs before they can enter the controller apply race', () => {
     expect(() => rookObjectStorageClaim.factory('kro', { namespace: 'apps' })).toThrow(
-      'rookObjectStorageClaim is direct-only'
+      'does not support kro mode'
     );
+    expect(() => rookObjectStorageClaim.toYaml()).toThrow('does not support kro mode');
+    expect(() =>
+      rookObjectStorageClaim.toYaml({
+        name: 'uploads',
+        namespace: 'apps',
+        storageClassName: 'rook-ceph-retain',
+      })
+    ).toThrow('does not support kro mode');
+  });
+
+  it('rejects OBC composition nesting during KRO graph construction', () => {
+    expect(() =>
+      kubernetesComposition(
+        {
+          name: 'unsafe-obc-parent',
+          kind: 'UnsafeObcParent',
+          spec: type({
+            name: 'string',
+            namespace: 'string',
+            storageClassName: 'string',
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const claim = rookObjectStorageClaim({
+            name: spec.name,
+            namespace: spec.namespace,
+            storageClassName: spec.storageClassName,
+          });
+          return { ready: claim.status.ready };
+        }
+      )
+    ).toThrow('does not support kro mode and cannot be nested');
+  });
+
+  it('allows OBC nesting when the complete parent graph is explicitly direct-only', () => {
+    const directParent = kubernetesComposition(
+      {
+        name: 'direct-obc-parent',
+        kind: 'DirectObcParent',
+        spec: type({
+          name: 'string',
+          namespace: 'string',
+          storageClassName: 'string',
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const claim = rookObjectStorageClaim({
+          name: spec.name,
+          namespace: spec.namespace,
+          storageClassName: spec.storageClassName,
+        });
+        return { ready: claim.status.ready };
+      },
+      { supportedModes: ['direct'] }
+    );
+
+    const yaml = directParent.factory('direct').toYaml({
+      name: 'uploads',
+      namespace: 'apps',
+      storageClassName: 'rook-ceph-retain',
+    });
+    expect(yaml).toContain('kind: ObjectBucketClaim');
+    expect(() => directParent.factory('kro')).toThrow('does not support kro mode');
   });
 });

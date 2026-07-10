@@ -289,6 +289,15 @@ export interface CompositionFactory<
 // =============================================================================
 
 export interface SerializationOptions {
+  /**
+   * Deployment modes supported by this graph.
+   *
+   * Use this for graphs that cannot safely participate in one execution
+   * model. The restriction is enforced for factories, graph-level YAML
+   * serialization, and composition nesting.
+   * @default ['direct', 'kro']
+   */
+  supportedModes?: readonly ('direct' | 'kro')[];
   /** Kubernetes namespace for the serialized ResourceGraphDefinition. */
   namespace?: string;
   /** Number of spaces for YAML indentation. @default 2 */
@@ -372,7 +381,10 @@ export type StatusBuilderResources<TResources extends Record<string, Enhanced<un
 export type StatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<unknown, unknown>> = Record<string, Enhanced<unknown, unknown>>,
+  TResources extends Record<string, Enhanced<unknown, unknown>> = Record<
+    string,
+    Enhanced<unknown, unknown>
+  >,
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here

@@ -246,6 +246,8 @@ export const RookBucketStorageClassConfigSchema = type({
   name: 'string',
   objectStoreName: 'string',
   objectStoreNamespace: 'string',
+  /** Namespace containing the Rook operator; determines its default OBC provisioner identity. */
+  operatorNamespace: 'string',
   'provisionerNamePrefix?': 'string',
   'reclaimPolicy?': '"Delete" | "Retain"',
   'existingBucketName?': 'string',

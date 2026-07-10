@@ -55,10 +55,10 @@ function getKroTypeFromJson(node: unknown): string {
       return `[]${getKroTypeFromJson(nodeObj.sequence)}`;
     }
     if (nodeObj.domain === 'number') {
-      const baseType = nodeObj.divisor === 1 ? 'integer' : 'number';
+      const baseType = nodeObj.divisor === 1 ? 'integer' : 'float';
       const markers: string[] = [];
-      if (typeof nodeObj.min === 'number') markers.push(`min=${nodeObj.min}`);
-      if (typeof nodeObj.max === 'number') markers.push(`max=${nodeObj.max}`);
+      if (typeof nodeObj.min === 'number') markers.push(`minimum=${nodeObj.min}`);
+      if (typeof nodeObj.max === 'number') markers.push(`maximum=${nodeObj.max}`);
       return markers.length > 0 ? `${baseType} | ${markers.join(' ')}` : baseType;
     }
     // Map / Record types — arktype represents `Record<string, V>` as
@@ -115,7 +115,7 @@ function getKroTypeFromJson(node: unknown): string {
     }
     switch (node) {
       case 'number':
-        return 'integer';
+        return 'float';
       case 'string':
       case 'boolean':
         return node;
@@ -983,7 +983,7 @@ function kroTypeForLiteral(value: string | number | boolean): string {
     return `string | default="${escapeCelString(value)}"`;
   }
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? `integer | default=${value}` : `number | default=${value}`;
+    return Number.isInteger(value) ? `integer | default=${value}` : `float | default=${value}`;
   }
   if (typeof value === 'boolean') {
     return `boolean | default=${value}`;

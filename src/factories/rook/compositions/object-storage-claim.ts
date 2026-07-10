@@ -1,13 +1,7 @@
 /** App-owned ObjectBucketClaim composition and S3 binding contract. */
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
-import type {
-  DirectResourceFactory,
-  KroResourceFactory,
-  PublicFactoryOptions,
-} from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { objectBucketClaim } from '../resources/object-bucket-claim.js';
 import {
@@ -28,7 +22,7 @@ import {
  * KRO's continuous server-side apply races the OBC provisioner's metadata and
  * status updates, even for fixed-name buckets.
  */
-const rookObjectStorageClaimComposition = kubernetesComposition(
+export const rookObjectStorageClaim = kubernetesComposition(
   {
     name: 'rook-object-storage-claim',
     kind: 'RookObjectStorageClaim',
@@ -80,44 +74,6 @@ const rookObjectStorageClaimComposition = kubernetesComposition(
       connectionConfigMapName: claimNameStatus,
       storageClassName: storageClassNameStatus,
     };
-  }
+  },
+  { supportedModes: ['direct'] }
 );
-
-type ClaimStatus = typeof RookObjectStorageClaimStatusSchema.infer;
-
-const baseFactory = rookObjectStorageClaimComposition.factory.bind(
-  rookObjectStorageClaimComposition
-);
-
-function rookObjectStorageClaimFactory(
-  mode: 'kro',
-  options?: PublicFactoryOptions
-): KroResourceFactory<RookObjectStorageClaimConfig, ClaimStatus>;
-function rookObjectStorageClaimFactory(
-  mode: 'direct',
-  options?: PublicFactoryOptions
-): DirectResourceFactory<RookObjectStorageClaimConfig, ClaimStatus>;
-function rookObjectStorageClaimFactory(
-  mode: 'kro' | 'direct',
-  options?: PublicFactoryOptions
-):
-  | KroResourceFactory<RookObjectStorageClaimConfig, ClaimStatus>
-  | DirectResourceFactory<RookObjectStorageClaimConfig, ClaimStatus> {
-  if (mode === 'kro') {
-    throw new TypeKroError(
-      'rookObjectStorageClaim is direct-only because the OBC provisioner mutates claim metadata and status while KRO continuously server-side applies graph resources. Managing an OBC as a KRO child can leave a provisioned bucket stuck in Pending. Use direct mode for claims; KRO mode remains supported for the operator and object-store platform graph.',
-      'UNSUPPORTED_KRO_CONFIG',
-      { resource: 'ObjectBucketClaim', mode: 'kro' }
-    );
-  }
-  return baseFactory('direct', options);
-}
-
-Object.defineProperty(rookObjectStorageClaimComposition, 'factory', {
-  value: rookObjectStorageClaimFactory,
-  writable: true,
-  enumerable: true,
-  configurable: true,
-});
-
-export const rookObjectStorageClaim = rookObjectStorageClaimComposition;

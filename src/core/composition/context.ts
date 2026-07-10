@@ -114,6 +114,8 @@ export interface CompositionContext {
   singletonDefinitions?: Map<string, SingletonDefinitionRecord>;
   /** True when this context is a direct-mode re-execution. */
   isReExecution?: boolean | undefined;
+  /** Deployment modes supported by the composition owning this context. */
+  supportedModes?: readonly ('direct' | 'kro')[];
   /**
    * True when this context was created to execute a composition AS A NESTED
    * CALL with a concrete spec from the caller (as opposed to the composition's
@@ -143,6 +145,8 @@ export interface CompositionContextOptions {
    * pass (which generates CEL) and only run the spec-driven execution.
    */
   isReExecution?: boolean;
+  /** Deployment modes supported by the composition owning this context. */
+  supportedModes?: readonly ('direct' | 'kro')[];
   /**
    * When true, this context was created to execute a composition as a
    * nested call with a concrete spec from the caller. Signals to
@@ -258,6 +262,7 @@ export function createCompositionContext(
     nestedStatusSnapshots: new Map(),
     singletonDefinitions: new Map(),
     isReExecution: contextOptions?.isReExecution,
+    ...(contextOptions?.supportedModes ? { supportedModes: contextOptions.supportedModes } : {}),
     isNestedCall: contextOptions?.isNestedCall,
     addResource(id: string, resource: Enhanced<unknown, unknown>) {
       if (contextOptions?.deduplicateIds && id in this.resources) {
