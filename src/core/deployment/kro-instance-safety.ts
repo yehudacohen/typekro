@@ -103,9 +103,17 @@ function concreteBoolean(value: unknown, spec: KroCompatibleType): boolean | und
     return typeof resolved === 'boolean' ? resolved : undefined;
   }
 
-  const expression = isCelExpression(value) ? value.expression : value;
-  if (typeof expression !== 'string') return undefined;
-  const normalized = expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
+  if (isCelExpression(value)) {
+    try {
+      const resolved = evaluateSchemaCelExpression(value, spec);
+      return typeof resolved === 'boolean' ? resolved : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().replace(/^\$\{\s*|\s*\}$/g, '');
   if (normalized === 'true') return true;
   if (normalized === 'false') return false;
 

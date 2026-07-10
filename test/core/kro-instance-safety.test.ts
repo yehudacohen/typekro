@@ -98,6 +98,23 @@ describe('KRO instance namespace ownership safety', () => {
     ).not.toThrow();
   });
 
+  it('evaluates computed schema-only CEL includeWhen conditions', () => {
+    const composition = kubernetesComposition(schema, () => {
+      namespace({ metadata: { name: 'control-plane' } }).withIncludeWhen(
+        Cel.expr('schema.spec.create == true')
+      );
+      return { ready: true };
+    });
+    const factory = composition.factory('kro', { namespace: 'control-plane' });
+
+    expect(() =>
+      factory.toYaml({ name: 'test', namespace: 'workloads', create: false })
+    ).not.toThrow();
+    expect(() => factory.toYaml({ name: 'test', namespace: 'workloads', create: true })).toThrow(
+      'cannot also be an owned Namespace'
+    );
+  });
+
   it('uses only the concrete branch resources when conditional creation is false', () => {
     const composition = kubernetesComposition(schema, (spec) => {
       if (spec.create) {
