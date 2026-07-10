@@ -1,7 +1,6 @@
 /** Official Rook Ceph operator Helm resource factories. */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { helmRelease } from '../../helm/helm-release.js';
 import {
@@ -41,7 +40,6 @@ export function rookCephHelmRepository(
     HelmRepositoryStatus
   >;
 
-  setMetadataField(repository, 'scopes', ['cluster']);
   return repository;
 }
 
@@ -53,13 +51,13 @@ export function rookCephOperatorHelmRelease(
     name: config.name,
     namespace: config.namespace ?? 'rook-ceph',
     chart: {
-      repository: DEFAULT_ROOK_CEPH_REPO_URL,
+      repository: config.repositoryUrl ?? DEFAULT_ROOK_CEPH_REPO_URL,
       name: ROOK_CEPH_OPERATOR_CHART_NAME,
       version: config.version ?? DEFAULT_ROOK_CEPH_VERSION,
     },
     sourceRef: {
       name: config.repositoryName ?? DEFAULT_ROOK_CEPH_REPO_NAME,
-      namespace: DEFAULT_FLUX_NAMESPACE,
+      namespace: config.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
     driftDetection: { mode: 'enabled' },

@@ -68,7 +68,9 @@ export const RookCephOperatorBootstrapConfigSchema = type({
   name: 'string',
   'namespace?': 'string',
   'version?': 'string',
-  'shared?': 'boolean',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  'repositoryUrl?': 'string',
   'logLevel?': '"ERROR" | "WARNING" | "INFO" | "DEBUG"',
   'enableOBCWatchOperatorNamespace?': 'boolean',
   'obcProvisionerNamePrefix?': 'string',
@@ -98,9 +100,9 @@ export const CephObjectStoreConfigSchema = type({
     metadataPool: metadataPoolSchema,
     dataPool: dataPoolSchema,
     gateway: {
-      'port?': 'number',
-      'securePort?': 'number',
-      'instances?': 'number',
+      port: '1 <= number.integer <= 65535',
+      'securePort?': '1 <= number.integer <= 65535',
+      instances: 'number.integer >= 1',
       'sslCertificateRef?': 'string',
       'caBundleRef?': 'string',
       'placement?': 'Record<string, unknown>',
@@ -185,8 +187,8 @@ export const CephObjectStoreUserConfigSchema = type({
       'maxObjects?': 'number',
     },
     'keys?': type({
-      'accessKeyRef?': secretKeySelectorSchemaShape,
-      'secretKeyRef?': secretKeySelectorSchemaShape,
+      accessKeyRef: secretKeySelectorSchemaShape,
+      secretKeyRef: secretKeySelectorSchemaShape,
     }).array(),
     'clusterNamespace?': 'string',
     'opMask?': type('"read" | "write" | "delete"').array(),
@@ -255,24 +257,18 @@ export const RookBucketStorageClassConfigSchema = type({
 export type RookBucketStorageClassConfig = typeof RookBucketStorageClassConfigSchema.infer;
 
 /** App-owned bucket claim composition configuration. */
-const RookObjectStorageClaimBaseConfigSchema = type({
+export const RookObjectStorageClaimConfigSchema = type({
   name: 'string',
   storageClassName: 'string',
   'namespace?': 'string',
-  'bucketName?': 'string',
-  'generateBucketName?': 'string',
+  /** Omit for a StorageClass bound to an existing bucket. */
+  'bucket?': {
+    name: 'string',
+    mode: '"fixed" | "generated"',
+  },
   'maxObjects?': 'string',
   'maxSize?': 'string',
 });
-
-export const RookObjectStorageClaimConfigSchema = RookObjectStorageClaimBaseConfigSchema.narrow(
-  (config, ctx) => {
-    if (!(config.bucketName && config.generateBucketName)) return true;
-    return ctx.mustBe(
-      'an object storage claim with only bucketName or generateBucketName, not both'
-    );
-  }
-);
 
 export type RookObjectStorageClaimConfig = typeof RookObjectStorageClaimConfigSchema.infer;
 
@@ -305,6 +301,8 @@ export const RookCephHelmReleaseConfigSchema = type({
   'namespace?': 'string',
   'version?': 'string',
   'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  'repositoryUrl?': 'string',
   'values?': 'Record<string, unknown>',
   'id?': 'string',
 });

@@ -86,13 +86,13 @@ describe('Rook operator bootstrap factory modes', () => {
 
     expect(kinds).toContain('Namespace');
     expect(kinds).toContain('HelmRelease');
-    expect(kinds).not.toContain('HelmRepository');
+    expect(kinds).toContain('HelmRepository');
 
     const release = documents.find((document) => documentKind(document) === 'HelmRelease');
     expect(release).toContain('chart: rook-ceph');
     expect(release).toContain(`version: ${DEFAULT_ROOK_CEPH_VERSION}`);
     expect(release).toMatch(
-      new RegExp(`name: ${DEFAULT_ROOK_CEPH_REPO_NAME}\\s*\\n\\s+namespace: flux-system`)
+      new RegExp(`name: ${DEFAULT_ROOK_CEPH_REPO_NAME}\\s*\\n\\s+namespace: rook-ceph`)
     );
     expect(release).toMatch(/logLevel: DEBUG/);
     expect(release).toMatch(/enableOBCWatchOperatorNamespace: true/);
@@ -100,16 +100,13 @@ describe('Rook operator bootstrap factory modes', () => {
     expectNoInternalMarkers(yaml);
   });
 
-  it('renders the singleton owner before the KRO operator instance', () => {
+  it('renders a KRO operator-owner instance with an explicit lifecycle', () => {
     const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
     const documents = splitDocs(factory.toYaml({ name: 'rook-ceph' } as never));
     const kinds = documents.map(documentKind);
 
-    expect(kinds).toContain('RookCephHelmRepository');
     expect(kinds).toContain('RookCephOperatorBootstrap');
-    expect(kinds.indexOf('RookCephHelmRepository')).toBeLessThan(
-      kinds.indexOf('RookCephOperatorBootstrap')
-    );
+    expect(kinds).toEqual(['RookCephOperatorBootstrap']);
   });
 
   it('generates an RGD with graph-aware chart values and readiness status', () => {
@@ -132,7 +129,7 @@ describe('Rook object storage claim factory modes', () => {
       name: 'uploads',
       namespace: 'apps',
       storageClassName: 'rook-ceph-retain',
-      generateBucketName: 'uploads',
+      bucket: { name: 'uploads', mode: 'generated' },
       maxObjects: '1000',
       maxSize: '2G',
     } as never);
@@ -150,20 +147,6 @@ describe('Rook object storage claim factory modes', () => {
     expectNoInternalMarkers(yaml);
   });
 
-  it('generates a KRO RGD with Bound readiness and stable binding names', () => {
-    const factory = rookObjectStorageClaim.factory('kro', { namespace: 'apps' });
-    const yaml = factory.toYaml();
-
-    expect(yaml).toContain('kind: ResourceGraphDefinition');
-    expect(yaml).toContain('kind: ObjectBucketClaim');
-    expect(yaml).toContain('schema.spec.storageClassName');
-    expect(yaml).toContain('objectBucketClaim.status.phase');
-    expect(yaml).toContain('credentialsSecretName: ${objectBucketClaim.metadata.name}');
-    expect(yaml).toContain('connectionConfigMapName: ${objectBucketClaim.metadata.name}');
-    expect(yaml).not.toContain('kind: StorageClass');
-    expectNoInternalMarkers(yaml);
-  });
-
   it('omits both bucket-name fields for a brownfield StorageClass', () => {
     const factory = rookObjectStorageClaim.factory('direct', { namespace: 'apps' });
     const yaml = factory.toYaml({
@@ -176,16 +159,9 @@ describe('Rook object storage claim factory modes', () => {
     expect(yaml).not.toContain('generateBucketName:');
   });
 
-  it('renders the KRO claim instance without platform infrastructure', () => {
-    const factory = rookObjectStorageClaim.factory('kro', { namespace: 'apps' });
-    const yaml = factory.toYaml({
-      name: 'uploads',
-      storageClassName: 'rook-ceph-retain',
-    } as never);
-
-    const documents = splitDocs(yaml);
-    expect(documents).toHaveLength(1);
-    expect(documentKind(documents[0] ?? '')).toBe('RookObjectStorageClaim');
-    expect(yaml).not.toContain('kind: StorageClass');
+  it('rejects KRO-managed OBCs before they can enter the controller apply race', () => {
+    expect(() => rookObjectStorageClaim.factory('kro', { namespace: 'apps' })).toThrow(
+      'rookObjectStorageClaim is direct-only'
+    );
   });
 });

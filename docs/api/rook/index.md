@@ -52,8 +52,11 @@ keep it different from the child `rook-ceph` namespace. A KRO graph must not
 own the namespace containing its own instance because namespace deletion and
 the instance finalizer can otherwise deadlock.
 
-The operator is shared cluster infrastructure by default. Set `shared: false`
-only for disposable or isolated environments.
+The bootstrap is the explicit owner of the complete operator installation:
+Namespace, HelmRepository, and HelmRelease. Deleting its KRO instance therefore
+uninstalls that installation. Application compositions that consume a shared
+operator should place `rookCephOperatorBootstrap` behind TypeKro's `singleton()`
+boundary; deleting a consumer then leaves the singleton owner intact.
 
 ### Bootstrap options
 
@@ -62,7 +65,9 @@ only for disposable or isolated environments.
 | `name` | `string` | required | Helm release name |
 | `namespace` | `string` | `rook-ceph` | Operator namespace |
 | `version` | `string` | `v1.20.2` | Official chart version, including the `v` prefix |
-| `shared` | `boolean` | `true` | Preserve operator resources during consumer deletion |
+| `repositoryName` | `string` | `rook-release` | Flux source name |
+| `repositoryNamespace` | `string` | operator namespace | Flux source namespace |
+| `repositoryUrl` | `string` | official Rook repository | Flux source URL |
 | `logLevel` | enum | chart default | `ERROR`, `WARNING`, `INFO`, or `DEBUG` |
 | `enableOBCWatchOperatorNamespace` | `boolean` | chart default | Controls the operator's OBC watch behavior |
 | `obcProvisionerNamePrefix` | `string` | chart default | Overrides the bucket provisioner prefix |
@@ -118,8 +123,8 @@ const buckets = rookBucketStorageClass({
 ```
 
 The generated provisioner is
-`<provisionerNamePrefix>.ceph.rook.io/bucket`. The prefix defaults to the
-standard `rook-ceph` operator namespace. If the operator bootstrap configures
+`<provisionerNamePrefix>.ceph.rook.io/bucket`. The prefix defaults to
+`objectStoreNamespace`, matching Rook's default provisioner identity. If the operator bootstrap configures
 `obcProvisionerNamePrefix`, pass the same value as `provisionerNamePrefix` here.
 
 For a brownfield bucket, set `existingBucketName` on the StorageClass and omit
@@ -132,7 +137,7 @@ existing bucket name on the StorageClass, not the claim.
 administrator-provided StorageClass.
 
 ```ts
-const objectStorage = rookObjectStorageClaim.factory('kro', {
+const objectStorage = rookObjectStorageClaim.factory('direct', {
   namespace: 'my-app',
   waitForReady: true,
 });
@@ -141,21 +146,29 @@ const instance = await objectStorage.deploy({
   name: 'uploads',
   namespace: 'my-app',
   storageClassName: 'rook-ceph-buckets-retain',
-  generateBucketName: 'uploads',
+  bucket: { name: 'uploads', mode: 'generated' },
   maxObjects: '1000000',
   maxSize: '100G',
 });
 ```
 
-Use exactly one of:
+Use one structurally valid `bucket` value:
 
-- `generateBucketName` for a collision-resistant new bucket (recommended)
-- `bucketName` for a fixed new bucket name
-- neither when the StorageClass references an existing bucket
+- `{ name, mode: 'generated' }` for a collision-resistant new bucket in direct mode
+- `{ name, mode: 'fixed' }` for a fixed new bucket name in direct mode
+- omit `bucket` when the StorageClass references an existing bucket
+
+This structural shape prevents callers from specifying fixed and generated
+bucket names at the same time.
+
+Application claims are direct-only. The OBC provisioner mutates claim metadata
+and status during binding; KRO's continuous server-side apply can repeatedly
+invalidate those updates and leave an already-provisioned bucket stuck in
+`Pending`. The public factory rejects KRO mode before creating an unsafe graph.
 
 When the claim reaches `Bound`, Rook creates a Secret and ConfigMap with the
-same name and namespace as the claim. The composition projects these stable
-binding names into KRO status:
+same name and namespace as the claim. The composition returns these stable
+binding names in hydrated status:
 
 ```ts
 type RookObjectStorageClaimStatus = {
@@ -192,6 +205,9 @@ OBCs normally create purpose-scoped bucket credentials automatically. Prefer
 that path over `cephObjectStoreUser()` unless a stable shared RGW identity is
 specifically required.
 
+When `CephObjectStoreUser.spec.keys` is supplied, every entry must contain both
+`accessKeyRef` and `secretKeyRef`; Rook requires the pair during reconciliation.
+
 ## Readiness
 
 | Resource | Ready condition |
@@ -205,17 +221,20 @@ specifically required.
 The bootstrap exposes `failed` separately because the two-state `phase`
 reports only `Ready` or `Installing`.
 
-## Direct and KRO modes
+## Direct and KRO boundaries
 
-All public compositions support both factory modes:
+Operator ownership and object-store platform graphs support both factory modes.
+The application OBC claim is deliberately direct-only:
 
 ```ts
 rookObjectStorageClaim.factory('direct', { namespace: 'my-app' });
-rookObjectStorageClaim.factory('kro', { namespace: 'my-app' });
+rookCephOperatorBootstrap.factory('kro', { namespace: 'platform-control' });
 ```
 
-Direct mode applies the OBC itself. KRO mode generates an RGD and projects the
-Bound phase plus binding names onto the live custom resource status.
+This is an explicit controller-ownership boundary, not a missing implementation:
+Rook must remain the sole active reconciler for an ObjectBucketClaim while it
+binds. KRO can safely own the operator, `CephObjectStore`, and bucket
+`StorageClass`; direct mode applies and hydrates the application OBC.
 
 ## Current scope
 

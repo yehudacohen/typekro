@@ -14,7 +14,7 @@ import type { RookBucketStorageClassConfig } from '../types.js';
 export function rookBucketStorageClass(
   config: Composable<RookBucketStorageClassConfig>
 ): V1StorageClass & Enhanced<V1StorageClass, object> {
-  const provisionerNamePrefix = config.provisionerNamePrefix ?? 'rook-ceph';
+  const provisionerNamePrefix = config.provisionerNamePrefix ?? config.objectStoreNamespace;
 
   return storageClass({
     apiVersion: 'storage.k8s.io/v1',

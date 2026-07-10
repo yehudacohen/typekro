@@ -5,6 +5,7 @@ import * as rook from '../../../src/factories/rook/index.js';
 describe('Rook public exports', () => {
   it('exports the complete object-storage slice from typekro/rook', () => {
     expect(rook.rookCephOperatorBootstrap).toBeDefined();
+    expect(rook.rookCephOperatorInstallation).toBe(rook.rookCephOperatorBootstrap);
     expect(rook.rookObjectStorageClaim).toBeDefined();
     expect(rook.cephObjectStore).toBeFunction();
     expect(rook.cephObjectStoreUser).toBeFunction();
