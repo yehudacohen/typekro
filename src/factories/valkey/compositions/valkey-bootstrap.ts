@@ -1,18 +1,12 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { TypeKroError } from '../../../core/errors.js';
 import { Cel } from '../../../core/references/cel.js';
-import type {
-  DirectResourceFactory,
-  KroResourceFactory,
-  PublicFactoryOptions,
-} from '../../../core/types/deployment.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
   DEFAULT_VALKEY_REPO_URL,
   DEFAULT_VALKEY_VERSION,
-  valkeyHelmRepository,
   valkeyHelmRelease,
+  valkeyHelmRepository,
 } from '../resources/helm.js';
 import {
   type ValkeyBootstrapConfig,
@@ -31,78 +25,6 @@ function stripChartSuffix(version: string): string {
 }
 
 const DEFAULT_VALKEY_OPERATOR_NAMESPACE = 'valkey-operator-system';
-
-/**
- * A KRO owner must not own the Namespace containing its own custom-resource
- * instance. Deleting the instance asks KRO to delete every graph child; if
- * that includes the instance namespace, Kubernetes can terminate the
- * namespace before the instance finalizer clears and deadlock deletion.
- */
-function validateKroControlPlaneBoundary(
-  spec: ValkeyBootstrapConfig,
-  instanceNamespace: string
-): void {
-  const operatorNamespace = spec.namespace ?? DEFAULT_VALKEY_OPERATOR_NAMESPACE;
-  if (operatorNamespace === instanceNamespace) {
-    throw new TypeKroError(
-      `valkeyBootstrap KRO instances must use a control-plane namespace separate from the owned operator namespace '${operatorNamespace}'. ` +
-        `Create the factory with another namespace (for example, { namespace: 'typekro-system' }) while keeping spec.namespace as '${operatorNamespace}'.`,
-      'UNSAFE_KRO_NAMESPACE_OWNERSHIP',
-      { instanceNamespace, operatorNamespace, mode: 'kro' }
-    );
-  }
-}
-
-function withKroNamespaceValidation(
-  factory: KroResourceFactory<ValkeyBootstrapConfig, typeof ValkeyBootstrapStatusSchema.infer>
-): KroResourceFactory<ValkeyBootstrapConfig, typeof ValkeyBootstrapStatusSchema.infer> {
-  return new Proxy(factory, {
-    get(target, prop, receiver) {
-      if (prop === 'deploy') {
-        return (
-          spec: ValkeyBootstrapConfig,
-          opts?: Parameters<
-            KroResourceFactory<
-              ValkeyBootstrapConfig,
-              typeof ValkeyBootstrapStatusSchema.infer
-            >['deploy']
-          >[1]
-        ) => {
-          validateKroControlPlaneBoundary(spec, target.namespace);
-          return target.deploy(spec, opts);
-        };
-      }
-
-      if (prop === 'toYaml') {
-        return (spec?: ValkeyBootstrapConfig) => {
-          if (spec !== undefined) {
-            validateKroControlPlaneBoundary(spec, target.namespace);
-            return target.toYaml(spec);
-          }
-          return target.toYaml();
-        };
-      }
-
-      if (prop === 'toAlchemyResources') {
-        return (
-          spec: ValkeyBootstrapConfig,
-          opts?: Parameters<
-            KroResourceFactory<
-              ValkeyBootstrapConfig,
-              typeof ValkeyBootstrapStatusSchema.infer
-            >['toAlchemyResources']
-          >[1]
-        ) => {
-          validateKroControlPlaneBoundary(spec, target.namespace);
-          return target.toAlchemyResources(spec, opts);
-        };
-      }
-
-      const value = Reflect.get(target, prop, receiver);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-}
 
 /**
  * Hyperspike Valkey Operator Bootstrap Composition
@@ -214,35 +136,6 @@ export const valkeyBootstrap = kubernetesComposition(
     };
   }
 );
-
-const baseFactory = valkeyBootstrap.factory.bind(valkeyBootstrap);
-
-function valkeyBootstrapFactory(
-  mode: 'kro',
-  options?: PublicFactoryOptions
-): KroResourceFactory<ValkeyBootstrapConfig, typeof ValkeyBootstrapStatusSchema.infer>;
-function valkeyBootstrapFactory(
-  mode: 'direct',
-  options?: PublicFactoryOptions
-): DirectResourceFactory<ValkeyBootstrapConfig, typeof ValkeyBootstrapStatusSchema.infer>;
-function valkeyBootstrapFactory(mode: 'kro' | 'direct', options?: PublicFactoryOptions) {
-  const factory = baseFactory(mode, options);
-  return mode === 'kro'
-    ? withKroNamespaceValidation(
-        factory as KroResourceFactory<
-          ValkeyBootstrapConfig,
-          typeof ValkeyBootstrapStatusSchema.infer
-        >
-      )
-    : factory;
-}
-
-Object.defineProperty(valkeyBootstrap, 'factory', {
-  value: valkeyBootstrapFactory,
-  writable: true,
-  enumerable: true,
-  configurable: true,
-});
 
 /** Explicit lifecycle name for code that wants to emphasize ownership. */
 export const valkeyOperatorInstallation = valkeyBootstrap;

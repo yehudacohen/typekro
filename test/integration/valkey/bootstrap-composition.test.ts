@@ -49,18 +49,16 @@ describe('Valkey operator installation contract', () => {
     expect(valkeyBootstrap.factory('kro', { namespace: 'test' }).mode).toBe('kro');
   });
 
-  it('rejects a KRO instance in the namespace its graph owns', () => {
+  it('rejects a KRO instance in the namespace its graph owns', async () => {
     const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
     const unsafeSpec = {
       name: 'valkey-operator',
       namespace: 'valkey-system',
     };
 
-    expect(() => factory.toYaml(unsafeSpec)).toThrow(
-      /control-plane namespace separate from the owned operator namespace/
-    );
-    expect(() => factory.toAlchemyResources(unsafeSpec)).toThrow(
-      /control-plane namespace separate from the owned operator namespace/
+    expect(() => factory.toYaml(unsafeSpec)).toThrow(/cannot also be an owned Namespace/);
+    await expect(factory.toAlchemyResources(unsafeSpec)).rejects.toThrow(
+      /cannot also be an owned Namespace/
     );
   });
 

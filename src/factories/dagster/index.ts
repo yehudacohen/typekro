@@ -16,7 +16,7 @@
  * import { dagsterBootstrap } from 'typekro/dagster';
  *
  * const factory = dagsterBootstrap.factory('kro', {
- *   namespace: 'dagster',
+ *   namespace: 'typekro-system',
  * });
  * ```
  *

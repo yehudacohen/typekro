@@ -44,7 +44,7 @@ TypeKro inspected chart-generated Deployments or Pods.
 import { dagsterBootstrap } from 'typekro/dagster';
 
 const factory = dagsterBootstrap.factory('kro', {
-  namespace: 'dagster',
+  namespace: 'typekro-system',
 });
 
 await factory.deploy({

@@ -120,7 +120,7 @@ describe('ClickHouse operator bootstrap composition', () => {
     );
 
     const instanceBundle = clickhouseOperatorBootstrap
-      .factory('kro', { namespace: 'clickhouse-system' })
+      .factory('kro', { namespace: 'typekro-system' })
       .toYaml({ name: 'clickhouse-operator' } as never);
     expect(instanceBundle).toContain('kind: ClickHouseHelmRepository');
     expect(instanceBundle).toContain('url: https://helm.altinity.com');

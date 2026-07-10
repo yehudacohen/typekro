@@ -29,9 +29,12 @@ import { clickhouseOperatorBootstrap, makeClickHouseCluster } from 'typekro/clic
 
 // 1. Install the operator — exactly ONCE per cluster.
 const operator = clickhouseOperatorBootstrap.factory('kro', {
+  namespace: 'typekro-system', // KRO instance namespace; separate from owned resources
+});
+await operator.deploy({
+  name: 'clickhouse-operator',
   namespace: 'clickhouse-system',
 });
-await operator.deploy({ name: 'clickhouse-operator' });
 
 // 2. Fix the TOPOLOGY at construction time (build-time)...
 const clickhouse = makeClickHouseCluster({

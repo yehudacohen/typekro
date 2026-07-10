@@ -88,6 +88,10 @@ import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
+import {
+  assertKroInstanceNamespaceOwnershipSafe,
+  assertSingletonOwnerNamespaceOwnershipSafe,
+} from './kro-instance-safety.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import {
   convertToKubernetesName,
@@ -542,6 +546,8 @@ export class KroResourceFactoryImpl<
       kind: this.schemaDefinition.kind,
       name: this.name,
     });
+    this.assertInstanceNamespaceOwnershipSafe(spec);
+    this.assertSingletonOwnersNamespaceOwnershipSafe(spec);
 
     // Execute closures before RGD creation (Kro mode requirement)
     await this.executeClosuresBeforeRGD(spec);
@@ -593,6 +599,7 @@ export class KroResourceFactoryImpl<
 
   private async ensureSingletonOwners(spec: TSpec): Promise<void> {
     for (const definition of this.discoverSingletonDefinitions(spec)) {
+      assertSingletonOwnerNamespaceOwnershipSafe(definition);
       await this.ensureTargetNamespace(definition.registryNamespace);
 
       const singletonInstanceName = getSingletonInstanceName(definition.id);
@@ -1233,6 +1240,11 @@ export class KroResourceFactoryImpl<
     opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
     this.assertNoKroPrerequisiteHookForDeclarative('toAlchemyResources()');
+    validateSpec(spec, this.schemaDefinition, {
+      kind: this.schemaDefinition.kind,
+      name: this.name,
+    });
+    this.assertInstanceNamespaceOwnershipSafe(spec);
 
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
     const kroDeletion = this.createAlchemyKroDeletionOptions();
@@ -1248,6 +1260,7 @@ export class KroResourceFactoryImpl<
     const singletonDeclarations: AlchemyResourceDeclaration[] = [];
     const singletonInstanceIds: string[] = [];
     for (const definition of this.discoverSingletonDefinitions(spec)) {
+      assertSingletonOwnerNamespaceOwnershipSafe(definition);
       const singletonFactory = this.singletonFactoryFor(definition);
       try {
         const decls = await singletonFactory.toAlchemyResources(
@@ -1471,6 +1484,7 @@ export class KroResourceFactoryImpl<
         kind: this.schemaDefinition.kind,
         name: this.name,
       });
+      this.assertInstanceNamespaceOwnershipSafe(spec);
 
       // Generate CRD instance YAML
       const instanceName = generateInstanceName(spec, this.name);
@@ -2361,6 +2375,25 @@ export class KroResourceFactoryImpl<
       },
       spec,
     };
+  }
+
+  private assertInstanceNamespaceOwnershipSafe(spec: TSpec): void {
+    const compositionFn = this.factoryOptions.compositionFn as
+      | ((spec: TSpec) => unknown)
+      | undefined;
+    assertKroInstanceNamespaceOwnershipSafe({
+      compositionName: this.name,
+      instanceNamespace: this.namespace,
+      spec,
+      resources: this.resources,
+      ...(compositionFn ? { compositionFn } : {}),
+    });
+  }
+
+  private assertSingletonOwnersNamespaceOwnershipSafe(spec: TSpec): void {
+    for (const definition of this.discoverSingletonDefinitions(spec)) {
+      assertSingletonOwnerNamespaceOwnershipSafe(definition);
+    }
   }
 
   /**
