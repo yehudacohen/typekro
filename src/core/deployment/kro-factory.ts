@@ -5,7 +5,7 @@
  * using the Kro controller for dependency resolution and resource management.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
 // Alchemy v2 (declarative): `toAlchemyResources(spec)` emits these as the RGD + instance
