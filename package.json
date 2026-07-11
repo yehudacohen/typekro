@@ -98,6 +98,10 @@
       "import": "./dist/factories/valkey/index.js",
       "types": "./dist/factories/valkey/index.d.ts"
     },
+    "./nats": {
+      "import": "./dist/factories/nats/index.js",
+      "types": "./dist/factories/nats/index.d.ts"
+    },
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"
