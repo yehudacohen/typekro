@@ -1429,9 +1429,10 @@ export class DirectDeploymentEngine {
           }
 
           // Graph IDs can differ from deployed-resource IDs after composition
-          // re-execution. Never interpret that mismatch as an empty successful
-          // cleanup: append every still-targeted resource that the graph plan
-          // could not map, preserving safe reverse deployment order.
+          // re-execution. A partial mapping is not safe to splice: a mapped
+          // dependency could otherwise be placed before an unmapped dependent.
+          // If any targeted resource is missing from the plan, discard the
+          // entire graph order and preserve safe reverse deployment order.
           const plannedIds = new Set(orderedResources.map((resource) => resource.id));
           const unplannedResources = deploymentRecord.resources
             .filter((resource) => !skippedIds.has(resource.id) && !plannedIds.has(resource.id))
@@ -1444,7 +1445,9 @@ export class DirectDeploymentEngine {
                 omittedResourceIds: unplannedResources.map((resource) => resource.id),
               }
             );
-            orderedResources.push(...unplannedResources);
+            orderedResources = [...deploymentRecord.resources]
+              .reverse()
+              .filter((resource) => !skippedIds.has(resource.id));
           }
 
           this.logger.debug('Using graph-based deletion order', {

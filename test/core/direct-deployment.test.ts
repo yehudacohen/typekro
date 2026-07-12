@@ -917,6 +917,75 @@ describe('DirectDeploymentEngine', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
     });
 
+    it('falls back entirely to reverse deployment order when graph IDs only partially match', async () => {
+      const namespaceManifest = createMockResource({
+        id: 'namespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'owned-system' },
+      });
+      const serviceManifest = createMockResource({
+        id: 'service',
+        kind: 'Service',
+        apiVersion: 'v1',
+        metadata: { name: 'backend', namespace: 'owned-system' },
+      });
+      const appManifest = createMockResource({
+        id: 'app',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'app', namespace: 'owned-system' },
+      });
+      const dependencyGraph = new DependencyGraph();
+      dependencyGraph.addNode('namespace', namespaceManifest);
+      dependencyGraph.addNode('app', appManifest);
+      dependencyGraph.addEdge('app', 'namespace');
+      const toDeployedResource = (
+        id: string,
+        manifest: DeployableK8sResource<Enhanced<object, object>>
+      ): DeployedResource => ({
+        id,
+        kind: manifest.kind ?? 'Unknown',
+        name: manifest.metadata?.name ?? 'unknown',
+        namespace: manifest.metadata?.namespace ?? 'default',
+        manifest,
+        status: 'deployed',
+        applied: true,
+        deployedAt: new Date(),
+      });
+      const deployedResources: DeployedResource[] = [
+        toDeployedResource('namespace', namespaceManifest),
+        toDeployedResource('runtime-service', serviceManifest),
+        toDeployedResource('app', appManifest),
+      ];
+      const deletedNames: string[] = [];
+      const deleteResource = mock(
+        (request: { metadata?: { name?: string } }): Promise<object> => {
+          const name = request.metadata?.name;
+          if (name) deletedNames.push(name);
+          return Promise.resolve({});
+        }
+      );
+      (
+        mockK8sApi as unknown as {
+          delete: typeof deleteResource;
+        }
+      ).delete = deleteResource;
+      mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+
+      const result = await engine.rollbackRecord({
+        deploymentId: 'partially-mismatched-graph-ids',
+        resources: deployedResources,
+        dependencyGraph,
+        startTime: new Date(),
+        options: defaultOptions,
+        status: 'completed',
+      });
+
+      expect(result.status).toBe('success');
+      expect(deletedNames).toEqual(['app', 'backend', 'owned-system']);
+    });
+
     it('should handle rollback of non-existent deployment', async () => {
       await expect(engine.rollback('non-existent-id')).rejects.toThrow(
         'Deployment non-existent-id not found. Cannot rollback.'

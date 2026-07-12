@@ -288,10 +288,8 @@ export class DirectResourceFactoryImpl<
     name: string,
     opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
   ): Promise<void> {
-    const engine = this.getDeploymentEngine();
-
     try {
-      const rollbackResult = await this.rollbackInstanceResources(name, opts);
+      const rollbackResult = await this.rollbackInstanceWithNamespaceCompletion(name, opts);
 
       if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
         const errorSummary = rollbackResult.errors
@@ -300,52 +298,6 @@ export class DirectResourceFactoryImpl<
         throw new Error(
           `Cleanup incomplete for instance ${name}: rollback ${rollbackResult.status}${errorSummary ? ` (${errorSummary})` : ''}`
         );
-      }
-
-      // Wait for any namespaces to be fully deleted before returning.
-      // Namespace deletion is asynchronous (enters "Terminating" phase) and can
-      // cause race conditions if the caller immediately re-creates resources.
-      const deletedNamespaces = rollbackResult.rolledBackResources
-        .filter((r) => r.startsWith('Namespace/'))
-        .map((r) => r.split('/')[1])
-        .filter((namespace): namespace is string => namespace !== undefined);
-
-      if (deletedNamespaces.length > 0) {
-        // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
-        // finalizers that block namespace termination until volumes are released.
-        const kubeConfig = this.getClientProvider().getKubeConfig();
-        const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
-        for (const ns of deletedNamespaces) {
-          let pvcs: Awaited<ReturnType<typeof coreApi.listNamespacedPersistentVolumeClaim>>;
-          try {
-            pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
-          } catch (error: unknown) {
-            if (isNotFoundError(error)) continue;
-            throw error;
-          }
-          if (pvcs.items.length > 0) {
-            this.logger.info('Deleting PVCs to unblock namespace termination', {
-              namespace: ns,
-              count: pvcs.items.length,
-            });
-          }
-          for (const pvc of pvcs.items) {
-            const pvcName = pvc.metadata?.name;
-            if (!pvcName) continue;
-            try {
-              await coreApi.deleteNamespacedPersistentVolumeClaim({
-                name: pvcName,
-                namespace: ns,
-              });
-            } catch (error: unknown) {
-              if (!isNotFoundError(error)) throw error;
-            }
-          }
-        }
-
-        const k8sApi = engine.getKubernetesApi();
-        const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
-        await this.waitForNamespaceDeletion(k8sApi, deletedNamespaces, deleteTimeout);
       }
 
       // Remove from tracking
@@ -442,6 +394,70 @@ export class DirectResourceFactoryImpl<
       ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
       ...(this.factoryOptions.timeout !== undefined && { timeout: this.factoryOptions.timeout }),
     });
+  }
+
+  /**
+   * Use the same complete teardown contract for deleteInstance() and rollback().
+   * A successful rollback is not complete while an owned Namespace remains
+   * terminating, because an immediate redeploy can otherwise race that deletion.
+   */
+  private async rollbackInstanceWithNamespaceCompletion(
+    name: string,
+    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+  ): Promise<RollbackResult> {
+    const rollbackResult = await this.rollbackInstanceResources(name, opts);
+    if (rollbackResult.status === 'success' && rollbackResult.errors.length === 0) {
+      await this.completeNamespaceDeletion(rollbackResult);
+    }
+    return rollbackResult;
+  }
+
+  private async completeNamespaceDeletion(rollbackResult: RollbackResult): Promise<void> {
+    const deletedNamespaces = rollbackResult.rolledBackResources
+      .filter((resource) => resource.startsWith('Namespace/'))
+      .map((resource) => resource.split('/')[1])
+      .filter((namespace): namespace is string => namespace !== undefined);
+
+    if (deletedNamespaces.length === 0) return;
+
+    // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
+    // finalizers that block namespace termination until volumes are released.
+    const kubeConfig = this.getClientProvider().getKubeConfig();
+    const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
+    for (const namespace of deletedNamespaces) {
+      let pvcs: Awaited<ReturnType<typeof coreApi.listNamespacedPersistentVolumeClaim>>;
+      try {
+        pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
+      } catch (error: unknown) {
+        if (isNotFoundError(error)) continue;
+        throw error;
+      }
+      if (pvcs.items.length > 0) {
+        this.logger.info('Deleting PVCs to unblock namespace termination', {
+          namespace,
+          count: pvcs.items.length,
+        });
+      }
+      for (const pvc of pvcs.items) {
+        const pvcName = pvc.metadata?.name;
+        if (!pvcName) continue;
+        try {
+          await coreApi.deleteNamespacedPersistentVolumeClaim({
+            name: pvcName,
+            namespace,
+          });
+        } catch (error: unknown) {
+          if (!isNotFoundError(error)) throw error;
+        }
+      }
+    }
+
+    const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
+    await this.waitForNamespaceDeletion(
+      this.getDeploymentEngine().getKubernetesApi(),
+      deletedNamespaces,
+      deleteTimeout
+    );
   }
 
   /**
@@ -768,7 +784,7 @@ export class DirectResourceFactoryImpl<
 
     for (const instanceName of instanceNames) {
       try {
-        const result = await this.rollbackInstanceResources(instanceName);
+        const result = await this.rollbackInstanceWithNamespaceCompletion(instanceName);
         rolledBackResources.push(...result.rolledBackResources);
         errors.push(...result.errors);
         if (result.status === 'failed') {
