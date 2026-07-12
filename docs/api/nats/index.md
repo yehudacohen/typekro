@@ -21,15 +21,17 @@ const factory = natsBootstrap.factory('kro', {
 
 await factory.deploy({
   name: 'nats',
-  namespace: 'nats-system',   // owned NATS/NACK namespace
+  namespace: 'nats-system',
+  namespaceOwnership: 'external', // pre-create this Namespace
   replicas: 3,
   storageSize: '100Gi',
   pvcRetentionPolicy: 'retain',
 });
 ```
 
-The control-plane and owned namespaces must differ in KRO mode. TypeKro rejects an instance that
-lives in the Namespace its graph owns, preventing namespace/finalizer deadlock. Shared platform
+The control-plane and target namespaces must differ in KRO mode when TypeKro owns the target
+Namespace. TypeKro rejects an instance that lives in a Namespace its graph owns, preventing a
+namespace/finalizer deadlock. Shared platform
 installations should be singleton-owned. The bootstrap pins the official `nats` and `nack` charts;
 `values` and `nackValues` are graph-aware passthrough maps merged after safe defaults.
 
@@ -38,11 +40,18 @@ production cluster normally uses three NATS replicas, three stream replicas, fas
 resource limits, authentication, TLS, disruption budgets, monitoring, and tested backup/recovery
 procedures.
 
-PVCs are retained when the installation is deleted by default. Set
-`pvcRetentionPolicy: 'delete'` only for explicitly ephemeral installations, such as disposable
-integration environments. TypeKro then configures the official chart's StatefulSet
-`persistentVolumeClaimRetentionPolicy.whenDeleted` field so `factory.deleteInstance()` can remove
-the owned Namespace without test-side PVC deletion. Scaling still retains PVCs in both modes.
+`pvcRetentionPolicy` configures the StatefulSet's
+`persistentVolumeClaimRetentionPolicy`: PVCs are retained across StatefulSet deletion and scaling
+by default. It cannot preserve PVCs when their Namespace is deleted. To retain data across deletion
+of the complete NATS installation, pre-create the target Namespace and set
+`namespaceOwnership: 'external'`; TypeKro then removes the installation but leaves that Namespace
+and its retained PVCs intact. With the default `namespaceOwnership: 'owned'`, deleting the complete
+installation deletes the Namespace and therefore its PVCs regardless of this StatefulSet setting.
+In direct mode, complete owned-Namespace teardown is explicit:
+`factory.deleteInstance('nats', { scopes: ['cluster'] })`.
+
+Set `pvcRetentionPolicy: 'delete'` for explicitly ephemeral installations, such as disposable
+integration environments. Scaling retains PVCs in both modes.
 
 ## Streams and consumers
 

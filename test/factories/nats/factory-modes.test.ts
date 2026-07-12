@@ -99,6 +99,21 @@ describe('NATS and JetStream factories', () => {
       /persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Delete\s*\n\s+whenScaled: Retain/
     );
 
+    const externallyOwnedNamespace = natsBootstrap
+      .factory('direct', { namespace: 'typekro-system' })
+      .toYaml({
+        name: 'durable-nats',
+        namespace: 'durable-nats-system',
+        namespaceOwnership: 'external',
+      });
+    expect(documents(externallyOwnedNamespace).map(kind)).not.toContain('Namespace');
+    expect(externallyOwnedNamespace).toContain('namespace: durable-nats-system');
+    for (const document of documents(externallyOwnedNamespace).filter(
+      (document) => kind(document) === 'HelmRelease'
+    )) {
+      expect(document).toMatch(/metadata:\s*\n\s+name: .+\n\s+namespace: durable-nats-system/);
+    }
+
     const customName = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
       name: 'application-events',
       namespace: 'nats-system',
@@ -116,6 +131,11 @@ describe('NATS and JetStream factories', () => {
     expect(rgd).toContain('(has(schema.spec.replicas) ? schema.spec.replicas : 1) > 1');
     expect(rgd).toContain('replicas: integer | minimum=1');
     expect(rgd).toContain('pvcRetentionPolicy: string | enum="delete,retain"');
+    expect(rgd).toContain('namespaceOwnership: string | enum="external,owned"');
+    expect(rgd).toContain('schema.spec.namespaceOwnership');
+    expect(rgd).toContain(
+      'includeWhen:\n        - ${!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"}'
+    );
     expect(rgd).toContain('schema.spec.pvcRetentionPolicy');
     expect(rgd).toContain('Delete');
 
@@ -134,6 +154,13 @@ describe('NATS and JetStream factories', () => {
         namespace: 'nats-system',
       })
     ).toThrow('cannot also be an owned Namespace');
+    expect(() =>
+      natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
+        name: 'nats',
+        namespace: 'nats-system',
+        namespaceOwnership: 'external',
+      })
+    ).not.toThrow();
   });
 
   it('rejects non-positive and fractional replica counts', () => {

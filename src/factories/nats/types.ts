@@ -4,6 +4,7 @@ import type { TypeKroChartValue } from '../../core/types/common.js';
 export const NatsBootstrapConfigSchema = type({
   name: 'string',
   'namespace?': 'string',
+  'namespaceOwnership?': '"owned" | "external"',
   'version?': 'string',
   'nackVersion?': 'string',
   'repositoryName?': 'string',

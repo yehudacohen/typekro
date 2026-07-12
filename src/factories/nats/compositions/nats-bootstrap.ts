@@ -33,6 +33,11 @@ export const natsBootstrap = kubernetesComposition(
     const targetNamespace = graphMode
       ? Cel.expr<string>('has(schema.spec.namespace) ? schema.spec.namespace : "nats-system"')
       : (spec.namespace ?? DEFAULT_NATS_NAMESPACE);
+    const ownsTargetNamespace = graphMode
+      ? Cel.expr<boolean>(
+          '!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"'
+        )
+      : spec.namespaceOwnership !== 'external';
     const repositoryName = spec.repositoryName ?? DEFAULT_NATS_REPOSITORY_NAME;
     const repositoryNamespace = spec.repositoryNamespace ?? targetNamespace;
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_NATS_REPOSITORY_URL;
@@ -105,7 +110,7 @@ export const natsBootstrap = kubernetesComposition(
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
-    });
+    }).withIncludeWhen(ownsTargetNamespace);
     const _repository = natsHelmRepository({
       id: 'natsHelmRepository',
       name: repositoryName,

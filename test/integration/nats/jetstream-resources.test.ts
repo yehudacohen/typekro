@@ -128,6 +128,8 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     kubeConfig,
   });
   let testFailure: Error | undefined;
+  let platformDeployed = false;
+  let resourcesDeployed = false;
 
   try {
     const platform = await platformFactory.deploy({
@@ -140,8 +142,9 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
         ? { storageClassName: process.env.TYPEKRO_NATS_STORAGE_CLASS }
         : {}),
     });
+    platformDeployed = true;
 
-    expect(platform.status).toEqual({
+    expect(platform.status).toMatchObject({
       ready: true,
       failed: false,
       phase: 'Ready',
@@ -177,8 +180,9 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       endpoint,
       description: 'initial live proof',
     });
+    resourcesDeployed = true;
 
-    expect(resources.status).toEqual({ ready: true });
+    expect(resources.status).toMatchObject({ ready: true });
 
     const ready = await kubectl([
       'get',
@@ -197,7 +201,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       endpoint,
       description: 'updated live proof',
     });
-    expect(updatedResources.status).toEqual({ ready: true });
+    expect(updatedResources.status).toMatchObject({ ready: true });
     const generation = await kubectl([
       'get',
       'streams.jetstream.nats.io/application-events',
@@ -239,14 +243,22 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   // Delete in dependency order and let each factory enforce its own lifecycle.
   // In KRO mode deleteInstance() waits for kro.run/finalizer and deliberately
   // preserves the RGD when finalization times out, so KRO can keep recovering.
-  for (const [label, cleanup] of [
-    ['JetStream resources', () => resourcesFactory.deleteInstance('resources')],
-    ['NATS platform', () => platformFactory.deleteInstance('nats')],
+  for (const [label, wasDeployed, cleanup] of [
+    ['JetStream resources', resourcesDeployed, () => resourcesFactory.deleteInstance('resources')],
+    [
+      'NATS platform',
+      platformDeployed,
+      () =>
+        platformFactory.deleteInstance(
+          'nats',
+          mode === 'direct' ? { scopes: ['cluster'] } : undefined
+        ),
+    ],
   ] as const) {
     try {
       await cleanup();
     } catch (error: unknown) {
-      if (!isAlreadyAbsentInstance(error)) {
+      if (wasDeployed || !isAlreadyAbsentInstance(error)) {
         cleanupFailures.push(
           new Error(
             `${mode} cleanup failed for ${label}: ${error instanceof Error ? error.message : String(error)}`

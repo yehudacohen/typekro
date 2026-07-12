@@ -6,6 +6,8 @@
  */
 
 import * as yaml from 'js-yaml';
+import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
+import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
@@ -24,14 +26,18 @@ import {
   TypeKroError,
   ValidationError,
 } from '../errors.js';
+import { extractResourceReferencesFromExpression } from '../expressions/analysis/scope-resolver.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
+import { createBunCompatibleCoreV1Api } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
   copyResourceMetadata,
+  getIncludeWhen,
   getMetadataField,
   getResourceId,
   setResourceId,
 } from '../metadata/index.js';
+import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
 import { getSingletonResourceId } from '../singleton/singleton.js';
 import type {
   DeploymentClosure,
@@ -46,21 +52,14 @@ import type {
   SingletonDefinitionRecord,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
-import type {
-  KroCompatibleType,
-  SchemaDefinition,
-  StatusBuilder,
-} from '../types/serialization.js';
+import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
+import { isNotFoundError } from './k8s-helpers.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
-import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
-import { extractResourceReferencesFromExpression } from '../expressions/analysis/scope-resolver.js';
-import { createAlchemyResourceId } from '../../alchemy/utilities.js';
-import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import {
   extractSerializableKubeConfigOptions,
   generateInstanceName,
@@ -315,40 +314,33 @@ export class DirectResourceFactoryImpl<
         // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
         // finalizers that block namespace termination until volumes are released.
         const kubeConfig = this.getClientProvider().getKubeConfig();
-        try {
-          const { CoreV1Api } = await import('@kubernetes/client-node');
-          const coreApi = kubeConfig.makeApiClient(CoreV1Api);
-          for (const ns of deletedNamespaces) {
+        const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
+        for (const ns of deletedNamespaces) {
+          let pvcs: Awaited<ReturnType<typeof coreApi.listNamespacedPersistentVolumeClaim>>;
+          try {
+            pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
+          } catch (error: unknown) {
+            if (isNotFoundError(error)) continue;
+            throw error;
+          }
+          if (pvcs.items.length > 0) {
+            this.logger.info('Deleting PVCs to unblock namespace termination', {
+              namespace: ns,
+              count: pvcs.items.length,
+            });
+          }
+          for (const pvc of pvcs.items) {
+            const pvcName = pvc.metadata?.name;
+            if (!pvcName) continue;
             try {
-              const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
-              if (pvcs.items.length > 0) {
-                this.logger.info('Deleting PVCs to unblock namespace termination', {
-                  namespace: ns,
-                  count: pvcs.items.length,
-                });
-              }
-              for (const pvc of pvcs.items) {
-                const pvcName = pvc.metadata?.name;
-                if (!pvcName) continue;
-                await coreApi
-                  .deleteNamespacedPersistentVolumeClaim({
-                    name: pvcName,
-                    namespace: ns,
-                  })
-                  .catch((err: unknown) => {
-                    this.logger.info('PVC delete failed', {
-                      pvc: pvcName,
-                      namespace: ns,
-                      error: String(err),
-                    });
-                  });
-              }
-            } catch {
-              // Namespace may already be gone
+              await coreApi.deleteNamespacedPersistentVolumeClaim({
+                name: pvcName,
+                namespace: ns,
+              });
+            } catch (error: unknown) {
+              if (!isNotFoundError(error)) throw error;
             }
           }
-        } catch {
-          // PVC cleanup is best-effort
         }
 
         const k8sApi = engine.getKubernetesApi();
@@ -413,6 +405,9 @@ export class DirectResourceFactoryImpl<
           return await engine.rollback(deploymentId, {
             ...(opts?.scopes && { scopes: opts.scopes }),
             ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+            ...(this.factoryOptions.timeout !== undefined && {
+              timeout: this.factoryOptions.timeout,
+            }),
           });
         } catch (error: unknown) {
           const isNotFound =
@@ -445,6 +440,7 @@ export class DirectResourceFactoryImpl<
     return engine.rollbackRecord(record, {
       ...(opts?.scopes && { scopes: opts.scopes }),
       ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+      ...(this.factoryOptions.timeout !== undefined && { timeout: this.factoryOptions.timeout }),
     });
   }
 
@@ -893,7 +889,9 @@ export class DirectResourceFactoryImpl<
         kind: cleanResource.kind,
         metadata: {
           name: cleanResource.metadata?.name,
-          namespace: this.namespace,
+          ...(getMetadataField(resource as object, 'scope') === 'cluster'
+            ? {}
+            : { namespace: cleanResource.metadata?.namespace ?? this.namespace }),
           ...(cleanResource.metadata?.labels
             ? { labels: cleanResource.metadata.labels }
             : undefined),
@@ -1219,6 +1217,13 @@ export class DirectResourceFactoryImpl<
       const kubernetesResources: Record<string, KubernetesResource> = {};
       const resourceKeysForHydration: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
+        const includeWhen = getIncludeWhen(enhanced as object);
+        if (includeWhen?.some((condition) => condition === false)) {
+          this.logger.debug('Skipping resource disabled by a concrete includeWhen condition', {
+            id,
+          });
+          continue;
+        }
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
           enhanced as Enhanced<unknown, unknown>
         );

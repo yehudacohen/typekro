@@ -881,6 +881,42 @@ describe('DirectDeploymentEngine', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
     });
 
+    it('falls back to deployed resources when graph IDs do not match runtime IDs', async () => {
+      const manifest = createMockResource({
+        id: 'logical-resource',
+        kind: 'ConfigMap',
+        apiVersion: 'v1',
+        metadata: { name: 'owned-config', namespace: 'test-namespace' },
+      });
+      const dependencyGraph = new DependencyGraph();
+      dependencyGraph.addNode('logical-resource', manifest);
+      const deployedResource: DeployedResource = {
+        id: 'runtime-generated-resource',
+        kind: 'ConfigMap',
+        name: 'owned-config',
+        namespace: 'test-namespace',
+        manifest,
+        status: 'deployed',
+        applied: true,
+        deployedAt: new Date(),
+      };
+      mockK8sApi.delete.mockResolvedValue({});
+      mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+
+      const result = await engine.rollbackRecord({
+        deploymentId: 'mismatched-graph-ids',
+        resources: [deployedResource],
+        dependencyGraph,
+        startTime: new Date(),
+        options: defaultOptions,
+        status: 'completed',
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.rolledBackResources).toEqual(['ConfigMap/owned-config']);
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+    });
+
     it('should handle rollback of non-existent deployment', async () => {
       await expect(engine.rollback('non-existent-id')).rejects.toThrow(
         'Deployment non-existent-id not found. Cannot rollback.'
