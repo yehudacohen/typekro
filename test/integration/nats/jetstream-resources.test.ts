@@ -11,7 +11,6 @@
 import { afterAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { Cel } from '../../../src/core/references/cel.js';
 import { natsBootstrap } from '../../../src/factories/nats/compositions/nats-bootstrap.js';
 import {
@@ -21,11 +20,13 @@ import {
 import {
   deleteNamespaceAndWait,
   ensureNamespaceExists,
+  getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from '../shared-kubeconfig.js';
 
-const runRequested = process.env.RUN_NATS_INTEGRATION === 'true';
-const describeOrSkip = runRequested && isClusterAvailable() ? describe : describe.skip;
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip =
+  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 const runId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
 
 setDefaultTimeout(1_200_000);
@@ -34,7 +35,7 @@ const liveResources = kubernetesComposition(
   {
     name: 'live-jetstream-resources',
     kind: 'LiveJetStreamResources',
-    spec: type({ name: 'string', namespace: 'string', endpoint: 'string' }),
+    spec: type({ name: 'string', namespace: 'string', endpoint: 'string', description: 'string' }),
     status: type({ ready: 'boolean' }),
   },
   (spec) => {
@@ -44,6 +45,7 @@ const liveResources = kubernetesComposition(
       streamName: 'APPLIK8S_EVENTS',
       namespace: spec.namespace,
       subjects: ['applik8s.events.>'],
+      description: spec.description,
       storage: 'file',
       replicas: 1,
       duplicateWindow: '2m',
@@ -65,8 +67,15 @@ const liveResources = kubernetesComposition(
       ready: Cel.expr<boolean>(
         stream.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True") && ',
+        stream.status.observedGeneration,
+        ' == ',
+        stream.metadata.generation,
+        ' && ',
         consumer.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
+        '.exists(c, c.type == "Ready" && c.status == "True") && ',
+        consumer.status.observedGeneration,
+        ' == ',
+        consumer.metadata.generation
       ),
     };
   }
@@ -97,7 +106,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   const controlNamespace = `tk-nats-control-${suffix}`.slice(0, 63);
   const targetNamespace = `tk-nats-${suffix}`.slice(0, 63);
   const appNamespace = `tk-nats-app-${suffix}`.slice(0, 63);
-  const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const kubeConfig = getIntegrationTestKubeConfig();
   namespaces.add(controlNamespace);
   namespaces.add(targetNamespace);
   namespaces.add(appNamespace);
@@ -121,12 +130,33 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     const platform = await platformFactory.deploy({
       name: 'nats',
       namespace: targetNamespace,
+      replicas: mode === 'kro' ? 3 : 1,
       storageSize: '1Gi',
+      ...(process.env.TYPEKRO_NATS_STORAGE_CLASS
+        ? { storageClassName: process.env.TYPEKRO_NATS_STORAGE_CLASS }
+        : {}),
     });
 
     if (mode === 'kro') {
       expect(platform.status.ready).toBe(true);
       expect(platform.status.phase).toBe('Ready');
+      await kubectl([
+        'rollout',
+        'status',
+        'statefulset/nats',
+        '-n',
+        targetNamespace,
+        '--timeout=600s',
+      ]);
+      const readyReplicas = await kubectl([
+        'get',
+        'statefulset/nats',
+        '-n',
+        targetNamespace,
+        '-o',
+        'jsonpath={.status.readyReplicas}',
+      ]);
+      expect(readyReplicas).toBe('3');
     }
 
     const endpoint = `nats://nats.${targetNamespace}.svc:4222`;
@@ -134,6 +164,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       name: 'resources',
       namespace: appNamespace,
       endpoint,
+      description: 'initial live proof',
     });
 
     if (mode === 'kro') expect(resources.status.ready).toBe(true);
@@ -148,6 +179,22 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       'jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\\n"}{end}',
     ]);
     expect(ready.split('\n')).toEqual(['True', 'True']);
+
+    await resourcesFactory.deploy({
+      name: 'resources',
+      namespace: appNamespace,
+      endpoint,
+      description: 'updated live proof',
+    });
+    const generation = await kubectl([
+      'get',
+      'streams.jetstream.nats.io/application-events',
+      '-n',
+      appNamespace,
+      '-o',
+      'jsonpath={.metadata.generation}:{.status.observedGeneration}:{.spec.description}',
+    ]);
+    expect(generation).toMatch(/^(\d+):\1:updated live proof$/);
 
     const dataPlane = await kubectl([
       'run',
@@ -173,7 +220,18 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     };
     expect(streamInfo.state?.messages).toBeGreaterThanOrEqual(1);
   } finally {
-    await resourcesFactory.deleteInstance('resources').catch(() => {});
+    if (mode === 'direct') {
+      await resourcesFactory.deleteInstance('resources').catch(() => {});
+    } else {
+      await kubectl([
+        'delete',
+        'livejetstreamresources/resources',
+        '-n',
+        appNamespace,
+        '--ignore-not-found=true',
+        '--wait=false',
+      ]).catch(() => {});
+    }
     await kubectl([
       'delete',
       'streams.jetstream.nats.io/application-events',
@@ -184,23 +242,52 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       '--wait=true',
       '--timeout=120s',
     ]).catch(() => {});
-    await platformFactory.deleteInstance('nats').catch(() => {});
+    // Remove the controllers before deleting their namespace. Otherwise NACK
+    // finalizers and StatefulSet PVC protection can outlive the controller
+    // responsible for completing teardown.
     await kubectl([
       'delete',
-      'namespace',
+      'helmrelease/nats',
+      'helmrelease/nack',
+      '-n',
       targetNamespace,
       '--ignore-not-found=true',
       '--wait=true',
       '--timeout=300s',
     ]).catch(() => {});
+    await kubectl([
+      'delete',
+      'pvc',
+      '--all',
+      '-n',
+      targetNamespace,
+      '--wait=true',
+      '--timeout=120s',
+    ]).catch(() => {});
+    if (mode === 'direct') {
+      await platformFactory.deleteInstance('nats').catch(() => {});
+    } else {
+      // KRO owner deletion waits for every child, including the owned
+      // Namespace. Issue it asynchronously so a slow namespace controller
+      // cannot deadlock the integration harness itself.
+      await kubectl([
+        'delete',
+        'natsbootstrap/nats',
+        '-n',
+        controlNamespace,
+        '--ignore-not-found=true',
+        '--wait=false',
+      ]).catch(() => {});
+    }
+    await deleteNamespaceAndWait(targetNamespace, kubeConfig, 10_000).catch(() => {});
   }
 }
 
 describeOrSkip('NATS JetStream live direct and KRO integration', () => {
   afterAll(async () => {
-    const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    const kubeConfig = getIntegrationTestKubeConfig();
     for (const namespace of [...namespaces].reverse()) {
-      await deleteNamespaceAndWait(namespace, kubeConfig, 300_000).catch((error: unknown) => {
+      await deleteNamespaceAndWait(namespace, kubeConfig, 5_000).catch((error: unknown) => {
         console.error(`NATS integration cleanup failed for ${namespace}:`, error);
       });
     }

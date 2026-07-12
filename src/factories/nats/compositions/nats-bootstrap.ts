@@ -1,6 +1,7 @@
 import { mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_NACK_VERSION,
@@ -28,19 +29,32 @@ export const natsBootstrap = kubernetesComposition(
     status: NatsBootstrapStatusSchema,
   },
   (spec: NatsBootstrapConfig) => {
-    const targetNamespace = spec.namespace ?? DEFAULT_NATS_NAMESPACE;
+    const graphMode = isKubernetesRef(spec.name);
+    const targetNamespace = graphMode
+      ? Cel.expr<string>('has(schema.spec.namespace) ? schema.spec.namespace : "nats-system"')
+      : (spec.namespace ?? DEFAULT_NATS_NAMESPACE);
     const repositoryName = spec.repositoryName ?? DEFAULT_NATS_REPOSITORY_NAME;
     const repositoryNamespace = spec.repositoryNamespace ?? targetNamespace;
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_NATS_REPOSITORY_URL;
-    const replicas = spec.replicas ?? 1;
-    const endpoint = `nats://${spec.name}.${targetNamespace}.svc:4222`;
+    if (!graphMode) {
+      validateReplicaCount(spec.replicas);
+    }
+    const replicas = graphMode
+      ? Cel.expr<number>('has(schema.spec.replicas) ? schema.spec.replicas : 1')
+      : (spec.replicas ?? 1);
+    const clusteringEnabled = graphMode ? Cel.expr<boolean>(replicas, ' > 1') : replicas > 1;
+    const endpoint = graphMode
+      ? Cel.expr<string>(
+          '"nats://" + string(schema.spec.name) + "." + string(has(schema.spec.namespace) ? schema.spec.namespace : "nats-system") + ".svc:4222"'
+        )
+      : `nats://${spec.name}.${targetNamespace}.svc:4222`;
     const serverDefaults: NatsHelmValues = {
       // Keep the chart Service identity identical to the public endpoint for
       // every release name. Without this, Helm appends "-nats" whenever the
       // release name itself does not contain the chart name.
       fullnameOverride: spec.name,
       config: {
-        cluster: { enabled: replicas > 1, replicas },
+        cluster: { enabled: clusteringEnabled, replicas },
         jetstream: {
           enabled: true,
           fileStore: {
@@ -134,3 +148,9 @@ export const natsBootstrap = kubernetesComposition(
 
 /** Explicit lifecycle alias for shared platform ownership. */
 export const natsInstallation = natsBootstrap;
+
+function validateReplicaCount(value: number | undefined): void {
+  if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+    throw new Error('NATS replicas must be an integer greater than or equal to 1.');
+  }
+}

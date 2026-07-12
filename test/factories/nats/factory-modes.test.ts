@@ -97,14 +97,58 @@ describe('NATS and JetStream factories', () => {
 
   it('serializes bootstrap in KRO mode and rejects an owner instance in its owned namespace', () => {
     const factory = natsBootstrap.factory('kro', { namespace: 'typekro-system' });
-    expect(factory.toYaml()).toContain('kind: ResourceGraphDefinition');
-    expect(factory.toYaml()).toContain('kind: HelmRelease');
+    const rgd = factory.toYaml();
+    expect(rgd).toContain('kind: ResourceGraphDefinition');
+    expect(rgd).toContain('kind: HelmRelease');
+    expect(rgd).toContain('has(schema.spec.namespace) ? schema.spec.namespace');
+    expect(rgd).toContain('(has(schema.spec.replicas) ? schema.spec.replicas : 1) > 1');
+    expect(rgd).toContain('replicas: integer | minimum=1');
+
+    const minimal = factory.toYaml({ name: 'nats' });
+    expect(minimal).toContain('kind: NatsBootstrap');
+    expect(minimal).toContain('name: nats');
+    expect(minimal).not.toContain('spec:\n  name: nats\n  namespace:');
+    expect(rgd).toContain('string(schema.spec.name)');
+    expect(rgd).toContain('.svc:4222');
+
+    const clustered = factory.toYaml({ name: 'nats', replicas: 3 });
+    expect(clustered).toContain('replicas: 3');
     expect(() =>
       natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
         name: 'nats',
         namespace: 'nats-system',
       })
     ).toThrow('cannot also be an owned Namespace');
+  });
+
+  it('rejects non-positive and fractional replica counts', () => {
+    const factory = natsBootstrap.factory('direct', { namespace: 'typekro-system' });
+    expect(() => factory.toYaml({ name: 'nats', replicas: 0 })).toThrow();
+    expect(() => factory.toYaml({ name: 'nats', replicas: -1 })).toThrow();
+    expect(() => factory.toYaml({ name: 'nats', replicas: 1.5 })).toThrow();
+  });
+
+  it('requires current observedGeneration before Stream or Consumer readiness', () => {
+    const stream = jetStreamStream({ name: 'events', subjects: ['events.>'] });
+    const consumer = jetStreamConsumer({ name: 'processor', streamName: 'EVENTS' });
+    const stale = {
+      metadata: { generation: 2 },
+      status: { observedGeneration: 1, conditions: [{ type: 'Ready', status: 'True' as const }] },
+    };
+    const current = {
+      metadata: { generation: 2 },
+      status: { observedGeneration: 2, conditions: [{ type: 'Ready', status: 'True' as const }] },
+    };
+    expect(stream.readinessEvaluator?.(stale)).toMatchObject({
+      ready: false,
+      reason: 'ObservedGenerationStale',
+    });
+    expect(consumer.readinessEvaluator?.(stale)).toMatchObject({
+      ready: false,
+      reason: 'ObservedGenerationStale',
+    });
+    expect(stream.readinessEvaluator?.(current)).toMatchObject({ ready: true });
+    expect(consumer.readinessEvaluator?.(current)).toMatchObject({ ready: true });
   });
 
   it('emits NACK Stream and Consumer resources in direct and KRO modes', () => {

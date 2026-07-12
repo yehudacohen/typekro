@@ -7,12 +7,23 @@ import type {
 } from '../types.js';
 
 function jetStreamReadiness(resource: unknown): ResourceStatus {
-  const status = (resource as { status?: JetStreamResourceStatus } | undefined)?.status;
+  const typed = resource as
+    | { metadata?: { generation?: number }; status?: JetStreamResourceStatus }
+    | undefined;
+  const status = typed?.status;
   const ready = status?.conditions?.find((condition) => condition.type === 'Ready');
+  const generation = typed?.metadata?.generation;
+  const generationCurrent = generation !== undefined && status?.observedGeneration === generation;
   return {
-    ready: ready?.status === 'True',
-    reason: ready?.reason ?? (status ? 'ReadyConditionMissing' : 'StatusMissing'),
-    message: ready?.message ?? 'NACK has not reported the resource ready.',
+    ready: generationCurrent && ready?.status === 'True',
+    reason: !status
+      ? 'StatusMissing'
+      : !generationCurrent
+        ? 'ObservedGenerationStale'
+        : (ready?.reason ?? 'ReadyConditionMissing'),
+    message: !generationCurrent
+      ? `NACK observed generation ${status?.observedGeneration ?? 'none'}; expected ${generation ?? 'none'}.`
+      : (ready?.message ?? 'NACK has not reported the resource ready.'),
   };
 }
 
@@ -20,6 +31,11 @@ function jetStreamReadiness(resource: unknown): ResourceStatus {
 export function jetStreamStream(
   config: Composable<JetStreamStreamConfig>
 ): Enhanced<JetStreamStreamConfig, JetStreamResourceStatus> {
+  validateOptionalInteger('Stream replicas', config.replicas, 1);
+  validateOptionalInteger('Stream maxConsumers', config.maxConsumers, -1);
+  validateOptionalInteger('Stream maxMsgs', config.maxMsgs, -1);
+  validateOptionalInteger('Stream maxBytes', config.maxBytes, -1);
+  validateOptionalInteger('Stream maxMsgSize', config.maxMsgSize, -1);
   return createResource(
     {
       apiVersion: 'jetstream.nats.io/v1beta2',
@@ -59,10 +75,19 @@ export function jetStreamStream(
   >;
 }
 
-/** Create a NACK-managed durable or ephemeral JetStream Consumer. */
+/**
+ * Create a NACK-managed durable JetStream Consumer.
+ *
+ * `durableName` defaults to the Kubernetes resource `name`; this factory does
+ * not expose ephemeral consumers because NACK continuously reconciles the
+ * declared Consumer resource.
+ */
 export function jetStreamConsumer(
   config: Composable<JetStreamConsumerConfig>
 ): Enhanced<JetStreamConsumerConfig, JetStreamResourceStatus> {
+  validateOptionalInteger('Consumer maxDeliver', config.maxDeliver, -1);
+  validateOptionalInteger('Consumer maxAckPending', config.maxAckPending, -1);
+  validateOptionalInteger('Consumer replicas', config.replicas, 1);
   return createResource(
     {
       apiVersion: 'jetstream.nats.io/v1beta2',
@@ -98,4 +123,10 @@ export function jetStreamConsumer(
     JetStreamConsumerConfig,
     JetStreamResourceStatus
   >;
+}
+
+function validateOptionalInteger(label: string, value: unknown, minimum: number): void {
+  if (typeof value === 'number' && (!Number.isInteger(value) || value < minimum)) {
+    throw new Error(`${label} must be an integer greater than or equal to ${minimum}.`);
+  }
 }

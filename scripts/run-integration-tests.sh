@@ -103,6 +103,19 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   # by extracting TLS options from https.Agent and passing them directly to https.request
   NODE_ENV=test NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-setup.ts
 
+  # NATS JetStream file storage requires a real RWO StorageClass. Reuse an
+  # existing class when available; ephemeral kind clusters get the lightweight
+  # local-path provisioner used by the integration suite.
+  TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
+    echo "🔧 Installing local-path StorageClass for JetStream integration..."
+    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
+    kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=180s
+    TYPEKRO_NATS_STORAGE_CLASS=local-path
+  fi
+  export TYPEKRO_NATS_STORAGE_CLASS
+  echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
+
   # Signal tests to skip any per-test cluster setup/teardown
   SKIP_CLUSTER_SETUP=true
   export SKIP_CLUSTER_SETUP
@@ -114,7 +127,7 @@ echo "==============================="
 # NOTE: We still use bun test but with NODE_TLS_REJECT_UNAUTHORIZED=0
 # The client cert auth issue with Bun is being tracked. For now, this allows
 # TLS to work, and we rely on the cluster's default service account for auth.
-NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 300000 # 5 minutes
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 1200000 # 20 minutes
 
 echo ""
 
