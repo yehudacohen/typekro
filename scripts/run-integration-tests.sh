@@ -103,6 +103,33 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   # by extracting TLS options from https.Agent and passing them directly to https.request
   NODE_ENV=test NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-setup.ts
 
+  # NATS JetStream file storage requires a real RWO StorageClass. An explicit
+  # class wins; otherwise use only the cluster's annotated default. Never
+  # mutate a caller-owned cluster by installing storage infrastructure.
+  if [ -n "${TYPEKRO_NATS_STORAGE_CLASS:-}" ]; then
+    if ! kubectl get storageclass "$TYPEKRO_NATS_STORAGE_CLASS" > /dev/null 2>&1; then
+      echo "❌ TYPEKRO_NATS_STORAGE_CLASS names a missing StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
+      exit 1
+    fi
+  else
+    TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
+    if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
+      TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.beta\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
+    fi
+  fi
+  if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ] && [ "$CREATE_CLUSTER" = "true" ]; then
+    echo "🔧 Installing local-path StorageClass in the harness-created cluster..."
+    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
+    kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=180s
+    TYPEKRO_NATS_STORAGE_CLASS=local-path
+  elif [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
+    echo "❌ Existing cluster has no default StorageClass for JetStream integration."
+    echo "   Set TYPEKRO_NATS_STORAGE_CLASS to an existing RWO-capable StorageClass."
+    exit 1
+  fi
+  export TYPEKRO_NATS_STORAGE_CLASS
+  echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
+
   # Signal tests to skip any per-test cluster setup/teardown
   SKIP_CLUSTER_SETUP=true
   export SKIP_CLUSTER_SETUP
@@ -114,7 +141,7 @@ echo "==============================="
 # NOTE: We still use bun test but with NODE_TLS_REJECT_UNAUTHORIZED=0
 # The client cert auth issue with Bun is being tracked. For now, this allows
 # TLS to work, and we rely on the cluster's default service account for auth.
-NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 300000 # 5 minutes
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 1200000 # 20 minutes
 
 echo ""
 

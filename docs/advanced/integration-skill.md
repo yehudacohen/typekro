@@ -38,6 +38,13 @@ Keep these boundaries explicit:
   by the chart.
 - **Graph-aware values are first-class values.** Kubernetes refs, CEL expressions, schema proxy paths,
   and values-merge expressions must be preserved, not cloned into plain JSON, stringified, or coerced.
+- **Schema proxies are not JavaScript primitives during graph construction.** Outside analyzed status
+  expressions, do not use ordinary `??`, `||`, truthiness, comparisons, ternaries, or template literals
+  when an operand may be a schema proxy. Those operations run while TypeScript constructs the graph and
+  can collapse runtime behavior into a static value. Resolve optional proxies with `isKubernetesRef()`
+  plus `Cel.default()`, build runtime predicates with `Cel.expr()`, and build strings containing runtime
+  values with `Cel.template()`. Natural JavaScript status analysis does not make arbitrary composition
+  setup code lazy.
 - **KRO schema visibility is intentional.** If generated YAML field-selects a path, ArkType must expose
   that path structurally. If a field is truly opaque raw passthrough, do not field-select inside it.
 
@@ -150,7 +157,18 @@ export interface MyResourceStatus {
 - Unions: `'"value1" | "value2" | "value3"'`
 - Nested objects: inline `{ field: 'string', 'optional?': 'number' }`
 
-**Defaults rule:** If a field has a default, make it optional in both the interface and schema, and apply the default in the factory. Never have a required type with a `?? default` in the factory — the type and runtime must agree.
+**Defaults rule:** If a field has a default, make it optional in both the interface and schema, and apply
+the default in the factory. Never have a required type with a `?? default` in the factory — the type and
+runtime must agree. When the field can be a graph proxy, plain `??` is not sufficient because the proxy
+object itself is non-nullish. Use a graph-aware default:
+
+```typescript
+const resolvedNamespace = isKubernetesRef(spec.namespace)
+  ? Cel.default(spec.namespace, 'my-system')
+  : (spec.namespace ?? 'my-system');
+```
+
+Test both a concrete direct value and a KRO instance that omits the field entirely.
 
 **Schema invariants:** Encode user-facing invariants in ArkType schemas whenever possible. Use `.narrow()` for conditional rules that cannot be represented as a simple shape, such as "enabled instances require either `server.secret_key` or `secretKeyRef`". Keep the base object schema shape intact so KRO SimpleSchema generation can still discover fields. Use factory-specific runtime guards only for mode-specific constraints the shared schema cannot express, such as a direct-only `enabled: false` option that is unsafe in KRO status.
 
@@ -194,6 +212,11 @@ function createMyResource(config: Composable<MyConfig>): Enhanced<MyConfig['spec
 
 export const myResource = createMyResource;
 ```
+
+**Observed-generation rule:** If the CRD exposes both `metadata.generation` and
+`status.observedGeneration`, a custom readiness evaluator must not accept a ready condition from an older
+generation. Require `status.observedGeneration >= metadata.generation` (normally equality) before
+returning ready, and add an update regression test with a stale `Ready=True` condition.
 
 **Cluster-scoped resources:** Use `{ scope: 'cluster' }` for Namespaces, ClusterRoles, CRDs, etc. This is needed for readiness polling (omits namespace from API calls) and deletion ordering.
 
@@ -365,6 +388,7 @@ helmRepository({
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { DEFAULT_MY_REPO_NAME, DEFAULT_MY_VERSION, myHelmRelease, myHelmRepository } from '../resources/helm.js';
 import { mapMyConfigToHelmValues } from '../utils/helm-values-mapper.js';
@@ -379,8 +403,14 @@ export const myBootstrap = kubernetesComposition(
     status: MyBootstrapStatusSchema,
   },
   (spec: MyBootstrapConfig) => {
-    const resolvedNamespace = spec.namespace ?? 'my-system';
-    const resolvedVersion = spec.version ?? DEFAULT_MY_VERSION;
+    // Optional schema fields are proxy objects in KRO mode. Resolve their
+    // defaults explicitly instead of relying on JavaScript `??`.
+    const resolvedNamespace = isKubernetesRef(spec.namespace)
+      ? Cel.default(spec.namespace, 'my-system')
+      : (spec.namespace ?? 'my-system');
+    const resolvedVersion = isKubernetesRef(spec.version)
+      ? Cel.default(spec.version, DEFAULT_MY_VERSION)
+      : (spec.version ?? DEFAULT_MY_VERSION);
     const helmValues = mapMyConfigToHelmValues({ ...spec, namespace: resolvedNamespace, version: resolvedVersion });
 
     // Resources are _-prefixed — registered via side effects in the composition callback.
@@ -389,6 +419,10 @@ export const myBootstrap = kubernetesComposition(
 // ⚠️ Use ?? (not ||) for all defaults to prevent 0 from being treated as falsy:
 //    const port = spec.port ?? 3000;  // ✓
 //    const port = spec.port || 3000;  // ✗ (0 becomes 3000)
+// This applies to concrete values only. For an optional schema proxy, use
+// isKubernetesRef(spec.port) ? Cel.default(spec.port, 3000) : (spec.port ?? 3000).
+// Likewise, do not evaluate `replicas > 1` or interpolate `${resolvedNamespace}`
+// in graph setup code. Use Cel.expr() and Cel.template() for runtime values.
 //
 // ⚠️ If referencing operator-generated secrets by name convention, document the
 //    operator version: `const secretName = \`${name}-${owner}\`; // CNPG v1.25`
@@ -484,6 +518,24 @@ export type { MyConfig, MyStatus } from './types.js';
 - ⚠️ Run with parallel kubectl monitoring via a background Bash command (not a subagent — subagents can't run Bash). Monitor HelmRepository, HelmRelease, HelmChart, and pods every 15s to catch OCI pull errors, CrashLoopBackOff, or SourceNotReady early.
 - Do not materialize command strings, logs, generated YAML snapshots, or debugging output into repo files unless the user explicitly asks for a committed artifact. Use temp paths outside the workspace for long-running logs.
 
+**Integration harness contract:** A file under `test/integration/` is not considered covered merely
+because it passes when invoked directly. It must participate in the repository harness:
+
+- Obtain cluster configuration through `getIntegrationTestKubeConfig()` from
+  `test/integration/shared-kubeconfig.ts`.
+- Gate only on the shared cluster-availability/`REQUIRE_CLUSTER_TESTS` convention. Do not introduce a
+  private `RUN_MY_INTEGRATION` flag unless `scripts/run-integration-tests.sh` explicitly sets and
+  documents it; otherwise the harness will discover the file and silently skip it.
+- Treat `bun run test:integration:required` as the acceptance command. This provisions or verifies the
+  standard Flux/KRO environment and fails when cluster prerequisites are unavailable.
+- A focused `bun test test/integration/{name}/` invocation is useful while developing, but it does not
+  replace the harness run.
+- Confirm from the Bun summary or a distinctive test log that the new direct and KRO cases actually ran;
+  a green command with the suite counted as skipped is not evidence.
+- If the integration needs an additional baseline prerequisite such as a default StorageClass, add it to
+  the harness setup or fail with a clear prerequisite error. Do not leave the only working setup as an
+  undocumented property of the author's local cluster.
+
 **Deep merge for values:**
 - Test one-level deep merge (existing keys preserved)
 - Test two-level deep merge (nested objects merged recursively)
@@ -517,7 +569,8 @@ Run the full build and lint before reviewing:
 bun run typecheck        # type-check (lib + examples + tests)
 bun run lint             # Biome lint — must have 0 errors
 bun run test             # full unit test suite — 0 failures (uses bun run test, NOT bun test)
-bun test test/integration/{name}/     # integration tests against cluster
+bun test test/integration/{name}/     # focused development run against a cluster
+bun run test:integration:required     # required final harness run; new suite must not skip
 ```
 
 ⚠️ `bun run lint` catches unused imports, which the pre-commit hook and CI will reject. Always run it before pushing.
@@ -549,6 +602,8 @@ Then verify each item:
 - [ ] KRO status references only resources that exist for every schema-valid KRO instance; direct-only disabled/no-op paths are documented or rejected in KRO mode
 - [ ] `version` is documented as deploy-time, not runtime
 - [ ] Labels use app version (stripped of `-chart` suffix if needed)
+- [ ] Optional schema-proxy defaults use `Cel.default`; runtime comparisons/string interpolation use
+      `Cel.expr`/`Cel.template` rather than eager JavaScript operators in graph setup code
 
 **Helm:**
 - [ ] If the integration implements `sanitizeHelmValues` directly, it uses `isKubernetesRef`/`isCelExpression` type guards. If it delegates to `helmRelease()`, no local sanitizer is needed.
@@ -568,6 +623,8 @@ Then verify each item:
 - [ ] Generated in-cluster HelmRelease values reference the expected managed Secrets and concrete chart defaults
 - [ ] KRO RGD reaches `Active True`, KRO instance reaches ready, and cleanup via `deleteInstance` completes
 - [ ] Optional CRD-backed resources do not make the baseline RGD inactive when the optional CRD is absent
+- [ ] `bun run test:integration:required` executes (does not skip) the new integration's direct and KRO tests
+- [ ] Integration tests use `getIntegrationTestKubeConfig()` and do not depend on a private opt-in flag
 
 **Resource metadata:**
 - [ ] Cluster-scoped resources use `{ scope: 'cluster' }` in `createResource`
@@ -589,6 +646,9 @@ Then verify each item:
 - [ ] Integration test includes ground-truth pod health verification via kubectl
 - [ ] afterAll hooks log errors instead of silently swallowing
 - [ ] Tests assert dependency-source contracts, including generated Secret names/keys and graph-safe fallback defaults
+- [ ] KRO regression tests omit optional fields to exercise defaults and use non-default values that drive
+      graph branches (for example `replicas: 3`), then assert the resulting CEL/resource behavior
+- [ ] Readiness evaluators reject stale `Ready=True` conditions when `observedGeneration` trails `generation`
 
 **Docs & exports:**
 - [ ] API reference page exists with readiness table and limitations noted

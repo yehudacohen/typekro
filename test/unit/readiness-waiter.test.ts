@@ -259,9 +259,17 @@ describe('ReadinessWaiter', () => {
       expect(mockK8sApi.read).not.toHaveBeenCalled();
     });
 
-    it('resolves immediately when resource is in readyResources set', async () => {
+    it('rechecks a resource cached as ready because the same identity may have been updated', async () => {
       const deployed = makeDeployedResource({ kind: 'Service', name: 'known-ready' });
       readyResources.add('Service/known-ready/default');
+      setReadinessEvaluator(deployed.manifest, () => ({ ready: true }));
+      (mockK8sApi.read as ReturnType<typeof mock>).mockImplementation(() =>
+        Promise.resolve({
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'known-ready', namespace: 'default' },
+        })
+      );
 
       const deps = createMockDeps();
       const waiter = new ReadinessWaiter(
@@ -274,7 +282,7 @@ describe('ReadinessWaiter', () => {
       );
 
       await waiter.waitForResourceReady(deployed, defaultOptions);
-      expect(mockK8sApi.read).not.toHaveBeenCalled();
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(1);
     });
 
     it('throws ResourceGraphFactoryError when no readiness evaluator is found', async () => {

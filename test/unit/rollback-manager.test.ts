@@ -291,6 +291,35 @@ describe('ResourceRollbackManager', () => {
       });
     });
 
+    it('returns after requesting Namespace deletion so the factory can clear PVCs and wait', async () => {
+      const ownedNamespace = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'owned-system' },
+      } as Enhanced<unknown, unknown>;
+      setMetadataField(ownedNamespace, 'scope', 'cluster');
+      const deployedResource: DeployedResource = {
+        id: 'ownedNamespace',
+        kind: 'Namespace',
+        name: 'owned-system',
+        namespace: 'default',
+        manifest: ownedNamespace,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+
+      await manager.deleteDeployedResource(deployedResource, 5);
+
+      expect(mockK8sApi.delete).toHaveBeenCalledWith({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'owned-system' },
+      });
+      expect(mockK8sApi.read).not.toHaveBeenCalled();
+    });
+
     it('treats deployed rollback records already gone at initial DELETE as deleted', async () => {
       const deployedResource: DeployedResource = {
         id: 'goneConfig',

@@ -1350,7 +1350,7 @@ export class DirectDeploymentEngine {
    */
   async rollback(
     deploymentId: string,
-    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean; timeout?: number } = {}
   ): Promise<RollbackResult> {
     const deploymentRecord = this.deploymentState.get(deploymentId);
     if (!deploymentRecord) {
@@ -1387,7 +1387,7 @@ export class DirectDeploymentEngine {
    */
   async rollbackRecord(
     deploymentRecord: DeploymentStateRecord,
-    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean; timeout?: number } = {}
   ): Promise<RollbackResult> {
     const startTime = Date.now();
     const deploymentId = deploymentRecord.deploymentId;
@@ -1428,6 +1428,28 @@ export class DirectDeploymentEngine {
             }
           }
 
+          // Graph IDs can differ from deployed-resource IDs after composition
+          // re-execution. A partial mapping is not safe to splice: a mapped
+          // dependency could otherwise be placed before an unmapped dependent.
+          // If any targeted resource is missing from the plan, discard the
+          // entire graph order and preserve safe reverse deployment order.
+          const plannedIds = new Set(orderedResources.map((resource) => resource.id));
+          const unplannedResources = deploymentRecord.resources
+            .filter((resource) => !skippedIds.has(resource.id) && !plannedIds.has(resource.id))
+            .reverse();
+          if (unplannedResources.length > 0) {
+            this.logger.warn(
+              'Deletion graph omitted deployed resources; using reverse-order fallback',
+              {
+                deploymentId,
+                omittedResourceIds: unplannedResources.map((resource) => resource.id),
+              }
+            );
+            orderedResources = [...deploymentRecord.resources]
+              .reverse()
+              .filter((resource) => !skippedIds.has(resource.id));
+          }
+
           this.logger.debug('Using graph-based deletion order', {
             deploymentId,
             levels: deletionPlan.levels.length,
@@ -1452,7 +1474,10 @@ export class DirectDeploymentEngine {
 
       const { rolledBackResources, errors } = await this.rollbackOrderedResources(
         orderedResources,
-        deploymentRecord.options
+        {
+          ...deploymentRecord.options,
+          ...(opts.timeout !== undefined && { timeout: opts.timeout }),
+        }
       );
 
       const status =
