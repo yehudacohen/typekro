@@ -86,6 +86,18 @@ describe('NATS and JetStream factories', () => {
     expect(yaml).toContain('size: 20Gi');
     expect(yaml).toContain('url: nats://nats.nats-system.svc:4222');
     expect(yaml).toContain('fullnameOverride: nats');
+    expect(yaml).toMatch(
+      /persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Retain\s*\n\s+whenScaled: Retain/
+    );
+
+    const ephemeral = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      name: 'ephemeral-nats',
+      namespace: 'nats-system',
+      pvcRetentionPolicy: 'delete',
+    });
+    expect(ephemeral).toMatch(
+      /persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Delete\s*\n\s+whenScaled: Retain/
+    );
 
     const customName = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
       name: 'application-events',
@@ -103,6 +115,9 @@ describe('NATS and JetStream factories', () => {
     expect(rgd).toContain('has(schema.spec.namespace) ? schema.spec.namespace');
     expect(rgd).toContain('(has(schema.spec.replicas) ? schema.spec.replicas : 1) > 1');
     expect(rgd).toContain('replicas: integer | minimum=1');
+    expect(rgd).toContain('pvcRetentionPolicy: string | enum="delete,retain"');
+    expect(rgd).toContain('schema.spec.pvcRetentionPolicy');
+    expect(rgd).toContain('Delete');
 
     const minimal = factory.toYaml({ name: 'nats' });
     expect(minimal).toContain('kind: NatsBootstrap');

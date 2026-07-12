@@ -43,6 +43,13 @@ export const natsBootstrap = kubernetesComposition(
       ? Cel.expr<number>('has(schema.spec.replicas) ? schema.spec.replicas : 1')
       : (spec.replicas ?? 1);
     const clusteringEnabled = graphMode ? Cel.expr<boolean>(replicas, ' > 1') : replicas > 1;
+    const pvcWhenDeleted = graphMode
+      ? Cel.expr<'Delete' | 'Retain'>(
+          'has(schema.spec.pvcRetentionPolicy) && schema.spec.pvcRetentionPolicy == "delete" ? "Delete" : "Retain"'
+        )
+      : spec.pvcRetentionPolicy === 'delete'
+        ? 'Delete'
+        : 'Retain';
     const endpoint = graphMode
       ? Cel.expr<string>(
           '"nats://" + string(schema.spec.name) + "." + string(has(schema.spec.namespace) ? schema.spec.namespace : "nats-system") + ".svc:4222"'
@@ -68,6 +75,14 @@ export const natsBootstrap = kubernetesComposition(
         },
       },
       natsBox: { enabled: true },
+      statefulSet: {
+        merge: {
+          persistentVolumeClaimRetentionPolicy: {
+            whenDeleted: pvcWhenDeleted,
+            whenScaled: 'Retain',
+          },
+        },
+      },
     };
     const nackDefaults: NatsHelmValues = {
       jetstream: { enabled: true, nats: { url: endpoint }, controlLoop: true },

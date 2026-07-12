@@ -12,6 +12,7 @@ export const NatsBootstrapConfigSchema = type({
   'replicas?': 'number.integer >= 1',
   'storageSize?': 'string',
   'storageClassName?': 'string',
+  'pvcRetentionPolicy?': '"retain" | "delete"',
   'values?': 'Record<string, unknown>',
   'nackValues?': 'Record<string, unknown>',
 });

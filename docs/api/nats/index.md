@@ -24,6 +24,7 @@ await factory.deploy({
   namespace: 'nats-system',   // owned NATS/NACK namespace
   replicas: 3,
   storageSize: '100Gi',
+  pvcRetentionPolicy: 'retain',
 });
 ```
 
@@ -36,6 +37,12 @@ JetStream is enabled with file-backed PVC storage. One replica is suitable for d
 production cluster normally uses three NATS replicas, three stream replicas, fast local storage,
 resource limits, authentication, TLS, disruption budgets, monitoring, and tested backup/recovery
 procedures.
+
+PVCs are retained when the installation is deleted by default. Set
+`pvcRetentionPolicy: 'delete'` only for explicitly ephemeral installations, such as disposable
+integration environments. TypeKro then configures the official chart's StatefulSet
+`persistentVolumeClaimRetentionPolicy.whenDeleted` field so `factory.deleteInstance()` can remove
+the owned Namespace without test-side PVC deletion. Scaling still retains PVCs in both modes.
 
 ## Streams and consumers
 
