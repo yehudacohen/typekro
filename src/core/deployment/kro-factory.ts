@@ -41,6 +41,8 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { namespace as namespaceResource } from '../../factories/kubernetes/core/namespace.js';
+import { toCamelCase } from '../../utils/string.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -585,6 +587,11 @@ export class KroResourceFactoryImpl<
   ): KroResourceFactory<KroCompatibleType, KroCompatibleType> {
     return definition.composition.factory('kro', {
       namespace: definition.registryNamespace,
+      // Pin the singleton owner CR to its registry namespace (its externalRef
+      // consumers resolve against that namespace). This equals the workload
+      // namespace, so it is NOT decoupled — a singleton composition that owns
+      // the registry namespace is still rejected by the ownership guard.
+      instanceNamespace: definition.registryNamespace,
       waitForReady: true,
       ...(this.factoryOptions.timeout !== undefined
         ? { timeout: this.factoryOptions.timeout }
@@ -1252,6 +1259,19 @@ export class KroResourceFactoryImpl<
     const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
     const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
 
+    // Dedicated control-plane Namespace for the instance CR (when the instance
+    // namespace was decoupled from the owned workload namespace). Applied before
+    // the RGD + instance and outside the KRO graph, so the CR always has a
+    // namespace to land in and KRO never garbage-collects it.
+    const instanceNamespaceDeclarations: AlchemyResourceDeclaration[] = [];
+    const instanceNamespaceIds: string[] = [];
+    if (this.factoryOptions.emitInstanceNamespace) {
+      const decl = this.instanceNamespaceAlchemyDeclaration(kubeConfigOptions, prerequisiteIds);
+      instanceNamespaceDeclarations.push(decl);
+      instanceNamespaceIds.push(decl.id);
+    }
+    const leadingIds = [...prerequisiteIds, ...instanceNamespaceIds];
+
     // 0. Singleton owners. The imperative `deploy()` ensures shared singleton owners (each its own
     // RGD + instance, in its registry namespace) via `ensureSingletonOwners` BEFORE the main
     // instance; emit them as declarations too so the declarative path has the same boundaries.
@@ -1306,7 +1326,7 @@ export class KroResourceFactoryImpl<
     const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
     const rgdDeclaration: AlchemyResourceDeclaration = {
       id: rgdId,
-      dependsOn: prerequisiteIds,
+      dependsOn: leadingIds,
       props: {
         resource: rgdEnhanced as Enhanced<unknown, unknown>,
         namespace: this.namespace,
@@ -1337,7 +1357,7 @@ export class KroResourceFactoryImpl<
       id: createAlchemyResourceId(crdAsEnhanced, this.namespace),
       // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
       // before the main deploy), so the instance applies only once its dependencies exist.
-      dependsOn: [rgdId, ...singletonInstanceIds],
+      dependsOn: [rgdId, ...singletonInstanceIds, ...instanceNamespaceIds],
       props: {
         resource: crdAsEnhanced,
         namespace: this.namespace,
@@ -1357,6 +1377,7 @@ export class KroResourceFactoryImpl<
 
     return [
       ...prerequisiteDeclarations,
+      ...instanceNamespaceDeclarations,
       ...singletonDeclarations,
       rgdDeclaration,
       instanceDeclaration,
@@ -1508,8 +1529,16 @@ export class KroResourceFactoryImpl<
       // Shared singleton owner instances are created by `deploy()`; for the
       // GitOps path we emit them alongside the consuming instance, deps-first,
       // so the consuming RGD's externalRef resolves. No-op without singletons.
+      // The dedicated control-plane instance Namespace (when decoupled) leads,
+      // so the CR always has a namespace to apply into.
       const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
-      return ownerYamls.length === 0 ? instanceYaml : joinYamlDocuments(ownerYamls, instanceYaml);
+      const leadingInstanceYamls = [
+        ...(this.factoryOptions.emitInstanceNamespace ? [this.instanceNamespaceYaml()] : []),
+        ...ownerYamls,
+      ];
+      return leadingInstanceYamls.length === 0
+        ? instanceYaml
+        : joinYamlDocuments(leadingInstanceYamls, instanceYaml);
     }
 
     const rgdYaml = this.buildRgdYaml();
@@ -2389,6 +2418,77 @@ export class KroResourceFactoryImpl<
       },
       spec,
     };
+  }
+
+  /**
+   * The dedicated control-plane Namespace that holds this factory's KRO
+   * instance(s), emitted when the instance namespace was decoupled from the
+   * workload namespace (`emitInstanceNamespace`). It is created OUTSIDE the KRO
+   * graph — deps-first in GitOps/alchemy, and via `ensureTargetNamespace` in the
+   * imperative path — so KRO never garbage-collects it and the instance's
+   * finalizer can never be stranded by its own namespace terminating.
+   */
+  private buildInstanceNamespaceResource(): Enhanced<
+    import('@kubernetes/client-node').V1Namespace['spec'],
+    import('@kubernetes/client-node').V1Namespace['status']
+  > {
+    return namespaceResource({
+      metadata: {
+        name: this.namespace,
+        labels: {
+          'app.kubernetes.io/managed-by': 'typekro',
+          'typekro.io/kro-instance-namespace': 'true',
+        },
+      },
+      id: toCamelCase(`${this.rgdName}-instance-namespace`),
+    }) as Enhanced<
+      import('@kubernetes/client-node').V1Namespace['spec'],
+      import('@kubernetes/client-node').V1Namespace['status']
+    >;
+  }
+
+  private instanceNamespaceAlchemyDeclaration(
+    kubeConfigOptions: SerializableKubeConfigOptions,
+    dependsOn: readonly string[]
+  ): AlchemyResourceDeclaration {
+    const nsEnhanced = this.buildInstanceNamespaceResource();
+    const timeout = this.factoryOptions.timeout;
+    const resourceId = (nsEnhanced as { id?: string }).id;
+    return {
+      // Namespace is cluster-scoped — omit the namespace segment from the id.
+      id: createAlchemyResourceId(nsEnhanced as Enhanced<unknown, unknown>, undefined),
+      dependsOn,
+      props: {
+        resource: nsEnhanced as Enhanced<unknown, unknown>,
+        ...(resourceId !== undefined ? { resourceId } : {}),
+        namespace: this.namespace,
+        deploymentStrategy: 'direct' as const,
+        kubeConfigOptions,
+        options: {
+          waitForReady: false,
+          ...(timeout !== undefined && { timeout }),
+        },
+      },
+    };
+  }
+
+  private instanceNamespaceYaml(): string {
+    return yaml
+      .dump(
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: {
+            name: this.namespace,
+            labels: {
+              'app.kubernetes.io/managed-by': 'typekro',
+              'typekro.io/kro-instance-namespace': 'true',
+            },
+          },
+        },
+        { lineWidth: -1, noRefs: true, sortKeys: false }
+      )
+      .trimEnd();
   }
 
   private assertInstanceNamespaceOwnershipSafe(spec: TSpec): void {

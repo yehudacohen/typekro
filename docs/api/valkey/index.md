@@ -156,7 +156,7 @@ import { valkeyBootstrap } from 'typekro/valkey';
 // 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
 // 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
-  namespace: 'typekro-system',          // Control plane: holds the KRO instance
+  namespace: 'valkey-operator-system',  // Where the operator pods run
   waitForReady: true,
 });
 
@@ -169,12 +169,13 @@ await factory.deploy({
 });
 ```
 
-In KRO mode these two namespaces must be different. The bootstrap owns and
-deletes the operator namespace as a graph child, so putting the
-`ValkeyBootstrap` instance in that namespace could delete the instance before
-KRO clears its finalizer and deadlock namespace termination. TypeKro rejects
-that unsafe deployment. Direct mode has no KRO custom-resource finalizer and
-does not require this split.
+`valkeyBootstrap` creates and owns the operator namespace as a graph child. In
+KRO mode the bootstrap deletes that namespace when the instance is deleted, so
+putting the `ValkeyBootstrap` instance in the same namespace could delete the
+instance before KRO clears its finalizer and deadlock namespace termination.
+TypeKro therefore places the instance CR in a dedicated control-plane namespace
+by default (derived as `<namespace>-kro`); pass `instanceNamespace` to override
+it. Direct mode has no KRO custom-resource finalizer and is unaffected.
 
 `values` is the raw Helm passthrough and merges last. The older `customValues` field remains as a
 deprecated compatibility alias; when both are present, `values` wins. The Flux OCI

@@ -161,6 +161,34 @@ export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
 export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
 
 /**
+ * Suffix for the dedicated control-plane namespace that holds a KRO instance
+ * (custom-resource) whose composition creates and owns its own workload
+ * Namespace as a graph child.
+ *
+ * KRO deletes a resource graph's children (including an owned Namespace) before
+ * it clears the owner CR's finalizer. If the CR lived in that same owned
+ * Namespace, namespace termination would block on the still-present finalizer
+ * while KRO refuses to clear the finalizer until the Namespace is gone — a
+ * permanent deletion deadlock. Placing the CR in a separate control-plane
+ * namespace (derived from the workload namespace via this suffix) keeps the two
+ * decoupled so deleting the instance can never terminate the namespace holding
+ * its own finalizer.
+ */
+export const KRO_INSTANCE_CONTROL_PLANE_SUFFIX = '-kro';
+
+/**
+ * Derive the control-plane namespace that should hold the KRO instance CR for a
+ * composition that owns its workload namespace. Kept deterministic and derived
+ * per workload namespace (rather than a single shared namespace) so instances of
+ * the same composition kind deployed to different workload namespaces — e.g. a
+ * dev/prod pair in one cluster — stay isolated instead of colliding on a shared
+ * (namespace, name) key.
+ */
+export function controlPlaneNamespaceFor(workloadNamespace: string): string {
+  return `${workloadNamespace}${KRO_INSTANCE_CONTROL_PLANE_SUFFIX}`;
+}
+
+/**
  * Well-known Helm repository URL patterns mapped to their canonical sourceRef names.
  *
  * When a HelmRelease config doesn't include an explicit `sourceRef`, the factory

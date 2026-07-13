@@ -64,6 +64,10 @@ export const clickhouseOperatorBootstrap = kubernetesComposition(
     kind: 'ClickHouseOperatorBootstrap',
     spec: ClickHouseOperatorBootstrapConfigSchema,
     status: ClickHouseOperatorBootstrapStatusSchema,
+    // Creates and owns the operator Namespace as a graph child, so the KRO
+    // instance CR must live in a separate control-plane namespace (see
+    // ownsInstanceNamespace docs).
+    ownsInstanceNamespace: true,
   },
   (spec: ClickHouseOperatorBootstrapConfig) => {
     const resolvedNamespace = spec.namespace || 'clickhouse-system';

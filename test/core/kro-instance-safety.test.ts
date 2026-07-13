@@ -132,3 +132,84 @@ describe('KRO instance namespace ownership safety', () => {
     );
   });
 });
+
+describe('KRO instance namespace ownership: safe-by-construction mitigation', () => {
+  // A composition that creates + owns a Namespace equal to the workload namespace
+  // (the create-namespace-and-put-the-instance-in-it pattern, as typekro's own
+  // dagster/clickhouse/clickstack/valkey bootstraps do).
+  const ownedNsComposition = (extra?: { ownsInstanceNamespace?: boolean }) =>
+    kubernetesComposition(
+      {
+        name: 'owns-ns',
+        kind: 'OwnsNs',
+        spec: type({ name: 'string', namespace: 'string' }),
+        status: type({ ready: 'boolean' }),
+        ...(extra ?? {}),
+      },
+      (spec) => {
+        namespace({ id: 'ownedNamespace', metadata: { name: Cel.expr(spec.namespace) as string } });
+        return { ready: true };
+      }
+    );
+
+  it('still THROWS for a self-owned instance namespace with no mitigation', () => {
+    const factory = ownedNsComposition().factory('kro', { namespace: 'app' });
+    expect(() => factory.toYaml({ name: 'x', namespace: 'app' })).toThrow(
+      'cannot also be an owned Namespace'
+    );
+  });
+
+  it('ownsInstanceNamespace places the CR in a derived control-plane namespace (no throw)', () => {
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+      namespace: 'app',
+    });
+    let yaml = '';
+    expect(() => {
+      yaml = factory.toYaml({ name: 'x', namespace: 'app' });
+    }).not.toThrow();
+    // The instance CR lands in the derived control-plane namespace...
+    expect(yaml).toContain('namespace: app-kro');
+    // ...while the workload namespace is still carried on the instance spec.
+    expect(yaml).toMatch(/namespace: app$/m);
+    // ...and the control-plane namespace is emitted (deps-first, outside the graph).
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+
+    // The RGD (namespace-less toYaml) still creates and owns the workload namespace.
+    const rgdYaml = ownedNsComposition({ ownsInstanceNamespace: true }).toYaml();
+    expect(rgdYaml).toContain('${schema.spec.namespace}');
+  });
+
+  it('ownsInstanceNamespace is safe via toAlchemyResources too', async () => {
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+      namespace: 'app',
+    });
+    const decls = await factory.toAlchemyResources({ name: 'x', namespace: 'app' });
+    // First declaration is the dedicated control-plane Namespace.
+    const nsDecl = decls[0];
+    expect(nsDecl?.props.resource.kind).toBe('Namespace');
+    expect(nsDecl?.props.resource.metadata?.name).toBe('app-kro');
+    // The instance CR declaration is namespaced to the control-plane namespace.
+    const instanceDecl = decls.at(-1);
+    expect(instanceDecl?.props.namespace).toBe('app-kro');
+  });
+
+  it('explicit instanceNamespace overrides the derived default', () => {
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+      namespace: 'app',
+      instanceNamespace: 'typekro-system',
+    });
+    const yaml = factory.toYaml({ name: 'x', namespace: 'app' });
+    expect(yaml).toContain('namespace: typekro-system');
+  });
+
+  it('an explicit instanceNamespace equal to an owned namespace STILL throws', () => {
+    // Opting the instance back into the owned namespace is the unsafe case.
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+      namespace: 'app',
+      instanceNamespace: 'app',
+    });
+    expect(() => factory.toYaml({ name: 'x', namespace: 'app' })).toThrow(
+      'cannot also be an owned Namespace'
+    );
+  });
+});

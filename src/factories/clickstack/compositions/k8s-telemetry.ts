@@ -87,6 +87,10 @@ export function makeClickstackK8sTelemetry(options: ClickStackK8sTelemetryBuildO
       kind: options.kind ?? 'ClickStackK8sTelemetry',
       spec: ClickStackK8sTelemetryConfigSchema,
       status: ClickStackK8sTelemetryStatusSchema,
+      // Creates and owns the telemetry Namespace as a graph child, so the KRO
+      // instance CR must live in a separate control-plane namespace (see
+      // ownsInstanceNamespace docs).
+      ownsInstanceNamespace: true,
     },
     (spec: ClickStackK8sTelemetryConfig) => {
       const resolvedNamespace = isKubernetesRef(spec.namespace)

@@ -268,6 +268,10 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
       kind: options.kind ?? 'ClickStackBootstrap',
       spec: ClickStackBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
+      // Creates and owns the ClickStack Namespace as a graph child, so the KRO
+      // instance CR must live in a separate control-plane namespace (see
+      // ownsInstanceNamespace docs).
+      ownsInstanceNamespace: true,
     },
     (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build)
   );
@@ -284,6 +288,10 @@ function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) 
       kind: options.kind ?? 'ClickStackExternalMongoBootstrap',
       spec: ClickStackExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
+      // Creates and owns the ClickStack Namespace as a graph child, so the KRO
+      // instance CR must live in a separate control-plane namespace (see
+      // ownsInstanceNamespace docs).
+      ownsInstanceNamespace: true,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
   );

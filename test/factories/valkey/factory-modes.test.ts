@@ -167,7 +167,9 @@ describe('valkeyBootstrap factory modes', () => {
       .toYaml(bootstrapSpec as never);
     const docs = splitDocs(yaml);
 
-    expect(docs.map(docKind)).toEqual(['ValkeyBootstrap']);
+    // The dedicated control-plane instance Namespace leads (deps-first, outside
+    // the KRO graph), followed by the instance CR itself.
+    expect(docs.map(docKind)).toEqual(['Namespace', 'ValkeyBootstrap']);
   });
 
   it('KRO mode preserves repository ownership, runtime values, status, and version labels', () => {
@@ -186,18 +188,21 @@ describe('valkeyBootstrap factory modes', () => {
     expect(yaml).not.toContain('__typekroSchemaKey');
   });
 
-  it('rejects an instance inside its owned namespace across YAML, deploy, and Alchemy', async () => {
+  it('decouples the instance into a control-plane namespace (ownsInstanceNamespace)', async () => {
+    // valkeyBootstrap creates and owns its operator Namespace, so the natural
+    // same-namespace call is made safe by placing the CR in `<ns>-kro` rather
+    // than being rejected (regression fix for the v0.25.0 ownership guard).
     const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
-    const unsafeSpec = {
-      name: 'valkey-operator',
-      namespace: 'valkey-system',
-    } as never;
+    const spec = { name: 'valkey-operator', namespace: 'valkey-system' } as never;
 
-    expect(() => factory.toYaml(unsafeSpec)).toThrow('cannot also be an owned Namespace');
-    await expect(factory.deploy(unsafeSpec)).rejects.toThrow('cannot also be an owned Namespace');
-    await expect(factory.toAlchemyResources(unsafeSpec)).rejects.toThrow(
-      'cannot also be an owned Namespace'
-    );
+    const yaml = factory.toYaml(spec);
+    expect(yaml).toContain('namespace: valkey-system-kro');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+
+    const decls = await factory.toAlchemyResources(spec);
+    expect(decls[0]?.props.resource.kind).toBe('Namespace');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('valkey-system-kro');
+    expect(decls.at(-1)?.props.namespace).toBe('valkey-system-kro');
   });
 
   it('rejects the same namespace invariant through composition nesting', () => {

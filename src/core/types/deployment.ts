@@ -613,6 +613,24 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
+  /**
+   * Control-plane namespace for the KRO instance (custom resource), decoupled
+   * from the workload `namespace` the composition creates and owns.
+   *
+   * A composition that creates and owns its own workload Namespace as a graph
+   * child must NOT place the KRO instance CR in that same namespace: KRO deletes
+   * graph children (including the Namespace) before clearing the owner CR's
+   * finalizer, so a self-owned instance namespace strands the finalizer on
+   * delete. Set this to a namespace the composition does NOT own to keep the two
+   * decoupled. TypeKro ensures the control-plane namespace exists.
+   *
+   * Compositions that declare `ownsInstanceNamespace` derive a safe default for
+   * this automatically (see {@link controlPlaneNamespaceFor}); set this only to
+   * override that default. Leaving it unset for a non-owning composition keeps
+   * the instance in `namespace`, exactly as before.
+   */
+  instanceNamespace?: string;
+
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 
@@ -740,6 +758,15 @@ export interface InternalFactoryOptions {
   rgdProvider?: ResourceGraphDefinitionProvider;
   /** Collected singleton definitions used by this graph (internal use) */
   singletonDefinitions?: SingletonDefinitionRecord[];
+
+  /**
+   * When true, the KRO factory emits/ensures its instance (`namespace`) as a
+   * dedicated control-plane Namespace, created before the RGD + instance and
+   * outside the KRO graph (so KRO never garbage-collects it). Set internally by
+   * `factory('kro', …)` whenever the instance namespace was decoupled from the
+   * workload namespace (via `instanceNamespace` or `ownsInstanceNamespace`).
+   */
+  emitInstanceNamespace?: boolean;
 }
 
 /**

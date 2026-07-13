@@ -14,6 +14,7 @@ import {
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from '../composition/context.js';
+import { controlPlaneNamespaceFor } from '../config/defaults.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { joinYamlDocuments, singletonRgdYamls } from '../deployment/singleton-gitops.js';
@@ -2022,6 +2023,45 @@ function wrapWithResourceGraphProxy<
  * );
  * ```
  */
+/**
+ * Resolve where a KRO factory places its instance (custom resource).
+ *
+ * The instance namespace is decoupled from the workload `namespace` when either
+ * the caller passes an explicit `instanceNamespace`, or the composition declares
+ * it owns its workload namespace (`ownsInstanceNamespace`) — in which case we
+ * derive a dedicated control-plane namespace from the workload namespace. In
+ * both cases the factory ensures/emits that namespace before the RGD + instance.
+ *
+ * A composition that does NOT own its namespace and no explicit override is left
+ * untouched — the instance stays in `namespace`, and the ownership-safety guard
+ * still rejects an unmitigated self-owned instance namespace.
+ */
+function resolveKroInstanceNamespace<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
+  definition: ResourceGraphDefinition<TSpec, TStatus>,
+  factoryOptions?: PublicFactoryOptions
+): PublicFactoryOptions & { emitInstanceNamespace?: boolean } {
+  const workloadNamespace = factoryOptions?.namespace ?? 'default';
+  const explicit = factoryOptions?.instanceNamespace;
+  let instanceNamespace: string | undefined;
+  if (explicit !== undefined) {
+    instanceNamespace = explicit;
+  } else if (definition.ownsInstanceNamespace) {
+    instanceNamespace = controlPlaneNamespaceFor(workloadNamespace);
+  }
+  if (instanceNamespace === undefined) {
+    return { ...factoryOptions };
+  }
+  // Only emit/ensure a dedicated control-plane namespace when the instance was
+  // actually decoupled from the workload namespace. An instance namespace equal
+  // to the workload namespace is NOT decoupled — leave it to the ownership guard
+  // (this is also how singleton owners keep their CR in the registry namespace).
+  return {
+    ...factoryOptions,
+    namespace: instanceNamespace,
+    emitInstanceNamespace: instanceNamespace !== workloadNamespace,
+  };
+}
+
 export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -2231,7 +2271,7 @@ function createTypedResourceGraph<
           schemaDefinition,
           analyzedStatusMappings,
           {
-            ...factoryOptions,
+            ...resolveKroInstanceNamespace(definition, factoryOptions),
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,

@@ -31,6 +31,10 @@ export const rookCephOperatorBootstrap = kubernetesComposition(
     kind: 'RookCephOperatorBootstrap',
     spec: RookCephOperatorBootstrapConfigSchema,
     status: RookCephOperatorBootstrapStatusSchema,
+    // Creates and owns the operator Namespace as a graph child, so the KRO
+    // instance CR must live in a separate control-plane namespace (see
+    // ownsInstanceNamespace docs).
+    ownsInstanceNamespace: true,
   },
   (spec: RookCephOperatorBootstrapConfig) => {
     const resolvedNamespace = spec.namespace ?? 'rook-ceph';
