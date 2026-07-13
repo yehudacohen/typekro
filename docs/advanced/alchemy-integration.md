@@ -118,6 +118,28 @@ const outputs = yield* materializeAlchemyResources(KroResource, decls);
 
 Alchemy applies singleton owners and the RGD first, then the instance, and the Kro controller reconciles the rest at runtime — each piece tracked as its own state entry. Singleton owners use deterministic ids, so a singleton shared across compositions is deduplicated to one state entry. Singleton **spec-drift protection** is enforced at reconcile time: deploying a singleton identity whose live spec fingerprint differs from the one being applied fails rather than silently clobbering the shared owner.
 
+### Compositions that own their workload namespace (`ownsInstanceNamespace`)
+
+A composition that creates and **owns its workload Namespace** as a graph child (typically a bootstrap that installs an operator/Helm release into a namespace it also creates) declares `ownsInstanceNamespace: true` on its schema. The KRO instance CR must not live inside that self-owned namespace: KRO deletes graph children — including the Namespace — before clearing the owner CR's finalizer, so a self-owned instance namespace would deadlock on delete.
+
+For these compositions `toAlchemyResources` returns an **extra leading declaration**: a dedicated *control-plane* Namespace that holds the instance CR, derived from the **concrete spec's** workload namespace as `<namespace>-kro` (or an explicit `instanceNamespace` factory option). A composition with no singletons therefore yields **three** declarations instead of two:
+
+```typescript
+const factory = await bootstrap.factory('kro'); // ownsInstanceNamespace: true
+
+const decls = await factory.toAlchemyResources({ name: 'demo', namespace: 'workloads' });
+// decls[0]  → the control-plane Namespace `workloads-kro` (retained; see below)
+// decls[-2] → the composition's RGD
+// decls[-1] → its CR instance, namespaced to `workloads-kro` (dependsOn the RGD + namespace)
+```
+
+Two properties matter:
+
+- **Derived from the spec, not factory creation.** The control-plane namespace is resolved from each call's `spec.namespace`, so one reused factory serving two workload namespaces (e.g. a dev/prod pair) places their instances in `dev-kro` and `prod-kro` — never colliding on one shared `(kind, name, namespace)` key.
+- **Retained / shared.** The control-plane namespace is created **outside** the KRO graph and is marked **retained** — its alchemy declaration carries `retain: true` (delete is skipped, dropping only the state entry) and the emitted Namespace carries `kustomize.toolkit.fluxcd.io/prune: disabled` for GitOps. Two independent stacks targeting the same workload namespace resolve the **same** control-plane namespace, so tearing down or pruning one stack never deletes the shared namespace out from under the other stack's KRO instances.
+
+A composition that does **not** own its namespace is unaffected — its instance stays in the factory `namespace`, and the self-owned-namespace safety guard still rejects an unmitigated self-owned instance namespace.
+
 ## Security: kubeconfig in Alchemy state
 
 `toAlchemyResources` captures the factory's kubeconfig into each declaration's `kubeConfigOptions`, and Alchemy persists that to its state store — so that a later state-driven delete can reconnect to the cluster to remove the resource.

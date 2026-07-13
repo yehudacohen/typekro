@@ -30,7 +30,6 @@ The operator bootstrap wraps the official `rook-ceph` chart from
 
 ```ts
 const operator = rookCephOperatorBootstrap.factory('kro', {
-  namespace: 'platform-control-plane',
   waitForReady: true,
 });
 
@@ -47,10 +46,16 @@ the cluster's destruction policy require explicit platform decisions. See the
 [Rook prerequisites](https://rook.io/docs/rook/latest-release/Getting-Started/Prerequisites/prerequisites/)
 before provisioning a Ceph cluster.
 
-In KRO mode, create the factory's control-plane namespace before deploying and
-keep it different from the child `rook-ceph` namespace. A KRO graph must not
-own the namespace containing its own instance because namespace deletion and
-the instance finalizer can otherwise deadlock.
+`rookCephOperatorBootstrap` declares `ownsInstanceNamespace: true`: it creates
+and owns the `rook-ceph` workload Namespace (from `spec.namespace`), so TypeKro
+automatically places the KRO instance CR in a dedicated **control-plane
+namespace** derived from that workload namespace (`rook-ceph-kro`) and creates
+it outside the KRO graph — you do **not** need to create any namespace yourself.
+A KRO graph must not own the namespace containing its own instance (namespace
+deletion and the instance finalizer would otherwise deadlock), and this
+decoupling is what avoids it. Pass an explicit `instanceNamespace` factory
+option to choose the control-plane namespace name instead of the derived
+default.
 
 The bootstrap is the explicit owner of the complete operator installation:
 Namespace, HelmRepository, and HelmRelease. Deleting its KRO instance therefore

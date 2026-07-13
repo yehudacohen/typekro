@@ -59,6 +59,7 @@ interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   deploymentStrategy: 'direct' | 'kro';
   kubeConfigOptions?: SerializableKubeConfigOptions;
   kroDeletion?: KroDeletionOptions;
+  retain?: boolean;
   deployedResource: T;
   ready: boolean;
   deployedAt: number;
@@ -406,6 +407,7 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
     deploymentStrategy: output.deploymentStrategy ?? 'kro',
     ...(output.kubeConfigOptions !== undefined && { kubeConfigOptions: output.kubeConfigOptions }),
     ...(output.kroDeletion !== undefined && { kroDeletion: output.kroDeletion }),
+    ...(output.retain === true && { retain: true }),
   };
 }
 
@@ -565,6 +567,17 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Retained (shared) resources — e.g. the KRO instance control-plane Namespace —
+  // must survive a single stack's teardown/prune: another stack targeting the same
+  // workload namespace may still have KRO instances inside it. Drop only the state
+  // entry (like the deferred shared-RGD delete below), leaving the object on-cluster.
+  if (props.retain === true) {
+    logger.debug('Skipping delete: resource is retained (shared); dropping state entry only', {
+      resourceName: props.resource.metadata?.name,
+      namespace: props.namespace,
+    });
+    return;
+  }
   const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
     await deployer.delete(props.resource, {
@@ -625,6 +638,7 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     deploymentStrategy: props.deploymentStrategy,
     ...(props.kubeConfigOptions !== undefined && { kubeConfigOptions: props.kubeConfigOptions }),
     ...(props.kroDeletion !== undefined && { kroDeletion: props.kroDeletion }),
+    ...(props.retain === true && { retain: true }),
     deployedResource: cleanDeployedResource,
     ready: true,
     deployedAt: Date.now(),

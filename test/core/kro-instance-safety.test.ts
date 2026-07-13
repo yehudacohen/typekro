@@ -193,13 +193,36 @@ describe('KRO instance namespace ownership: safe-by-construction mitigation', ()
     expect(instanceDecl?.props.namespace).toBe('app-kro');
   });
 
-  it('explicit instanceNamespace overrides the derived default', () => {
+  it('derives the control-plane namespace from the CONCRETE spec, not factory creation (P1-a)', () => {
+    // Factory created with NO namespace; the workload namespace comes only from
+    // the spec. The instance must land in `<spec.namespace>-kro`, never the stale
+    // `<factoryNamespace>-kro` (`default-kro`).
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro');
+    const yaml = factory.toYaml({ name: 'x', namespace: 'workloads' });
+    expect(yaml).toContain('namespace: workloads-kro');
+    expect(yaml).not.toContain('namespace: default-kro');
+  });
+
+  it('one factory + two specs → two distinct control-plane namespaces, no collision (P1-a)', () => {
+    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro');
+    const dev = factory.toYaml({ name: 'x', namespace: 'dev' });
+    const prod = factory.toYaml({ name: 'x', namespace: 'prod' });
+    expect(dev).toContain('namespace: dev-kro');
+    expect(dev).not.toContain('namespace: prod-kro');
+    expect(prod).toContain('namespace: prod-kro');
+    expect(prod).not.toContain('namespace: dev-kro');
+  });
+
+  it('explicit instanceNamespace overrides the derived default (and ignores spec)', () => {
     const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
       namespace: 'app',
       instanceNamespace: 'typekro-system',
     });
     const yaml = factory.toYaml({ name: 'x', namespace: 'app' });
     expect(yaml).toContain('namespace: typekro-system');
+    // Even with a different spec namespace, the explicit override still wins.
+    const yaml2 = factory.toYaml({ name: 'x', namespace: 'other' });
+    expect(yaml2).toContain('namespace: typekro-system');
   });
 
   it('an explicit instanceNamespace equal to an owned namespace STILL throws', () => {

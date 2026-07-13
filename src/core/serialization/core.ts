@@ -14,7 +14,6 @@ import {
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from '../composition/context.js';
-import { controlPlaneNamespaceFor } from '../config/defaults.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { joinYamlDocuments, singletonRgdYamls } from '../deployment/singleton-gitops.js';
@@ -2024,41 +2023,32 @@ function wrapWithResourceGraphProxy<
  * ```
  */
 /**
- * Resolve where a KRO factory places its instance (custom resource).
+ * Propagate the composition's instance-namespace policy onto the factory
+ * options WITHOUT resolving a concrete control-plane namespace here.
  *
- * The instance namespace is decoupled from the workload `namespace` when either
- * the caller passes an explicit `instanceNamespace`, or the composition declares
- * it owns its workload namespace (`ownsInstanceNamespace`) — in which case we
- * derive a dedicated control-plane namespace from the workload namespace. In
- * both cases the factory ensures/emits that namespace before the RGD + instance.
+ * The control-plane namespace must be derived from the CONCRETE spec's workload
+ * namespace, but this runs at `factory('kro', …)` creation — before any spec
+ * exists. Baking `<factoryNamespace>-kro` in at this point ignored the per-call
+ * `spec.namespace` (e.g. `factory('kro').toYaml({ namespace: 'workloads' })`
+ * wrongly landed in `default-kro`, colliding across workload namespaces). So we
+ * only carry the `ownsInstanceNamespace` directive forward; the KRO factory
+ * resolves the actual instance namespace per spec at deploy/serialize time.
  *
- * A composition that does NOT own its namespace and no explicit override is left
- * untouched — the instance stays in `namespace`, and the ownership-safety guard
- * still rejects an unmitigated self-owned instance namespace.
+ * A composition that does NOT own its namespace and passes no explicit
+ * `instanceNamespace` override is left untouched — the instance stays in
+ * `namespace`, and the ownership-safety guard still rejects an unmitigated
+ * self-owned instance namespace.
  */
-function resolveKroInstanceNamespace<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
+function withKroInstanceNamespacePolicy<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+>(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   factoryOptions?: PublicFactoryOptions
-): PublicFactoryOptions & { emitInstanceNamespace?: boolean } {
-  const workloadNamespace = factoryOptions?.namespace ?? 'default';
-  const explicit = factoryOptions?.instanceNamespace;
-  let instanceNamespace: string | undefined;
-  if (explicit !== undefined) {
-    instanceNamespace = explicit;
-  } else if (definition.ownsInstanceNamespace) {
-    instanceNamespace = controlPlaneNamespaceFor(workloadNamespace);
-  }
-  if (instanceNamespace === undefined) {
-    return { ...factoryOptions };
-  }
-  // Only emit/ensure a dedicated control-plane namespace when the instance was
-  // actually decoupled from the workload namespace. An instance namespace equal
-  // to the workload namespace is NOT decoupled — leave it to the ownership guard
-  // (this is also how singleton owners keep their CR in the registry namespace).
+): PublicFactoryOptions & { ownsInstanceNamespace?: boolean } {
   return {
     ...factoryOptions,
-    namespace: instanceNamespace,
-    emitInstanceNamespace: instanceNamespace !== workloadNamespace,
+    ...(definition.ownsInstanceNamespace ? { ownsInstanceNamespace: true } : {}),
   };
 }
 
@@ -2271,7 +2261,7 @@ function createTypedResourceGraph<
           schemaDefinition,
           analyzedStatusMappings,
           {
-            ...resolveKroInstanceNamespace(definition, factoryOptions),
+            ...withKroInstanceNamespacePolicy(definition, factoryOptions),
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,

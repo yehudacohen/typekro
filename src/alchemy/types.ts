@@ -85,6 +85,16 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   kroDeletion?: KroDeletionOptions;
 
   /**
+   * When true, this resource is SHARED, retained infrastructure: `delete` skips
+   * tearing it down (it drops only the state entry) so one stack's destroy/prune
+   * never removes an object another stack still depends on. Used for the KRO
+   * instance's control-plane Namespace, which is shared by every stack targeting
+   * the same workload namespace. Persisted to output so a state-driven delete
+   * (no live `news`) still honors it.
+   */
+  retain?: boolean;
+
+  /**
    * Resolved outputs of the resources this one depends on. Two jobs:
    *
    *  1. **Ordering** — because each entry traces back (via an alchemy `Output`) to another
@@ -172,6 +182,8 @@ export interface TypeKroResource<T extends Enhanced<any, any>> {
   deploymentStrategy?: 'direct' | 'kro';
   kubeConfigOptions?: SerializableKubeConfigOptions;
   kroDeletion?: KroDeletionOptions;
+  /** Mirrors {@link TypeKroResourceProps.retain}: a retained resource is never deleted on teardown. */
+  retain?: boolean;
 
   /**
    * The deployed resource with live status from the cluster

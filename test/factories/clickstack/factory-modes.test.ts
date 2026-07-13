@@ -212,7 +212,10 @@ describe('clickstackBootstrap factory modes', () => {
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
     it('toYaml(instance) bundles the singleton owner instance BEFORE the ClickStackBootstrap CR', () => {
-      const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
+      // `clickstackBootstrap` owns its workload namespace, so pin the instance CR
+      // to an explicit control-plane namespace (decoupled from the `clickstack`
+      // workload namespace the graph creates).
+      const factory = clickstackBootstrap.factory('kro', { instanceNamespace: 'typekro-system' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
       const docs = splitDocs(yaml);
       const kinds = docs.map(docKind);

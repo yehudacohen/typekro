@@ -67,6 +67,68 @@ describe('bootstrap factories: self-owned instance namespace is decoupled, not r
     expect(yaml).toContain('namespace: valkey-operator-system-kro');
   });
 
+  it('derives the control-plane namespace from the CONCRETE spec, not factory creation', () => {
+    // Regression for P1-a: the control-plane namespace was resolved at
+    // `.factory('kro')` time (before a spec exists), so a factory created with no
+    // namespace put every instance in `default-kro` regardless of `spec.namespace`.
+    // Now the SPEC's workload namespace wins.
+    const factory = dagsterBootstrap.factory('kro');
+    const yaml = factory.toYaml({ name: 'demo', namespace: 'workloads' } as never);
+    expect(yaml).toContain('namespace: workloads-kro');
+    expect(yaml).not.toContain('namespace: default-kro');
+  });
+
+  it('one factory, two specs with different namespaces → two distinct control-plane namespaces (no collision)', () => {
+    // A single factory reused across specs must NOT collide instances on a single
+    // (kind, name, namespace) key — each workload namespace gets its own `<ns>-kro`.
+    const factory = dagsterBootstrap.factory('kro');
+    const dev = factory.toYaml({ name: 'analytics', namespace: 'dev' } as never);
+    const prod = factory.toYaml({ name: 'analytics', namespace: 'prod' } as never);
+    expect(dev).toContain('namespace: dev-kro');
+    expect(dev).not.toContain('namespace: prod-kro');
+    expect(prod).toContain('namespace: prod-kro');
+    expect(prod).not.toContain('namespace: dev-kro');
+  });
+
+  it('the control-plane namespace is marked retained (prune-disabled) shared infrastructure', () => {
+    // Regression for P1-b (GitOps side): the emitted control-plane Namespace must
+    // carry the Flux prune opt-out so a consumer's Kustomization reconcile never
+    // deletes this shared namespace out from under another stack's instances.
+    const yaml = dagsterBootstrap.factory('kro').toYaml({ name: 'demo', namespace: 'dagster' } as never);
+    expect(yaml).toContain('kustomize.toolkit.fluxcd.io/prune: disabled');
+  });
+
+  it('the control-plane namespace alchemy declaration is retained (never deleted on teardown)', async () => {
+    // Regression for P1-b (alchemy side): the namespace declaration must be marked
+    // `retain` so a single stack's teardown/prune leaves it on-cluster.
+    const decls = await dagsterBootstrap
+      .factory('kro')
+      .toAlchemyResources({ name: 'demo', namespace: 'dagster' } as never);
+    const nsDecl = decls[0];
+    expect(nsDecl?.props.resource.kind).toBe('Namespace');
+    expect(nsDecl?.props.resource.metadata?.name).toBe('dagster-kro');
+    expect(nsDecl?.props.retain).toBe(true);
+    // The instance CR itself is NOT retained (it's per-consumer, torn down normally).
+    expect(decls.at(-1)?.props.retain).toBeUndefined();
+  });
+
+  it('two factories on the same workload namespace produce the same retained control-plane namespace (no conflicting owned copies)', async () => {
+    // P1-b: independent stacks targeting the same workload namespace resolve the
+    // SAME control-plane namespace with the SAME (retained) declaration id, so
+    // they converge on one shared, retained object rather than fighting to own
+    // and delete separate copies.
+    const a = await dagsterBootstrap
+      .factory('kro')
+      .toAlchemyResources({ name: 'a', namespace: 'dagster' } as never);
+    const b = await dagsterBootstrap
+      .factory('kro')
+      .toAlchemyResources({ name: 'b', namespace: 'dagster' } as never);
+    expect(a[0]?.id).toBe(b[0]?.id as string);
+    expect(a[0]?.props.resource.metadata?.name).toBe('dagster-kro');
+    expect(a[0]?.props.retain).toBe(true);
+    expect(b[0]?.props.retain).toBe(true);
+  });
+
   it('clickstackBootstrap serializes without throwing', () => {
     const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
     let yaml = '';

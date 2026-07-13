@@ -760,13 +760,16 @@ export interface InternalFactoryOptions {
   singletonDefinitions?: SingletonDefinitionRecord[];
 
   /**
-   * When true, the KRO factory emits/ensures its instance (`namespace`) as a
-   * dedicated control-plane Namespace, created before the RGD + instance and
-   * outside the KRO graph (so KRO never garbage-collects it). Set internally by
-   * `factory('kro', …)` whenever the instance namespace was decoupled from the
-   * workload namespace (via `instanceNamespace` or `ownsInstanceNamespace`).
+   * Mirrors {@link SchemaDefinition.ownsInstanceNamespace} onto the factory so the
+   * KRO factory can resolve the instance's control-plane namespace from the
+   * CONCRETE spec at deploy/serialize time (rather than baking it in at factory
+   * creation, before a spec exists). When set — or when an explicit
+   * `instanceNamespace` is given — the factory places the KRO instance CR in a
+   * dedicated control-plane namespace derived from the workload namespace and
+   * emits/ensures that Namespace before the RGD + instance, OUTSIDE the KRO graph
+   * (so KRO never garbage-collects it). Set internally by `factory('kro', …)`.
    */
-  emitInstanceNamespace?: boolean;
+  ownsInstanceNamespace?: boolean;
 }
 
 /**

@@ -23,6 +23,7 @@ import { applyAspects } from '../aspects/apply.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
 import {
+  controlPlaneNamespaceFor,
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
   DEFAULT_RGD_TIMEOUT,
@@ -296,6 +297,55 @@ export class KroResourceFactoryImpl<
 
   private getInstanceApiVersion(): string {
     return `${this.getSchemaGroup()}/${this.getSchemaVersion()}`;
+  }
+
+  /**
+   * The concrete workload namespace for a given deploy/serialize call.
+   *
+   * The workload namespace the composition creates/owns is carried on the
+   * instance `spec.namespace`, so a per-call spec wins over the factory's
+   * declared `namespace`. Without a spec (e.g. `getInstances`, `deleteInstance`)
+   * we fall back to the factory namespace.
+   */
+  private workloadNamespaceFor(spec?: TSpec): string {
+    const specNamespace = (spec as { namespace?: unknown } | undefined)?.namespace;
+    return typeof specNamespace === 'string' && specNamespace.length > 0
+      ? specNamespace
+      : this.namespace;
+  }
+
+  /**
+   * Resolve the namespace the KRO instance CR lives in for this call.
+   *
+   * Decoupled from the workload namespace when the caller set an explicit
+   * `instanceNamespace` (wins outright) or the composition declares
+   * `ownsInstanceNamespace` (derive a control-plane namespace from the CONCRETE
+   * workload namespace). Otherwise the instance stays in the factory namespace,
+   * exactly as a non-owning composition expects.
+   *
+   * Resolving per-spec (rather than once at factory creation) is what makes
+   * `factory('kro').toYaml({ namespace: X })` land in `<X>-kro` instead of a
+   * stale `<factoryNamespace>-kro`, so two specs with different workload
+   * namespaces never collide on the same instance (kind, name, namespace).
+   */
+  private resolveInstanceNamespace(spec?: TSpec): string {
+    const explicit = this.factoryOptions.instanceNamespace;
+    if (explicit !== undefined) return explicit;
+    if (this.factoryOptions.ownsInstanceNamespace) {
+      return controlPlaneNamespaceFor(this.workloadNamespaceFor(spec));
+    }
+    return this.namespace;
+  }
+
+  /**
+   * Whether a dedicated control-plane Namespace must be emitted/ensured for this
+   * call. Only when the instance namespace was actually decoupled from the
+   * workload namespace — an instance namespace equal to the workload namespace is
+   * NOT decoupled (e.g. a singleton owner pinned to its registry namespace),
+   * which the ownership guard still governs.
+   */
+  private shouldEmitInstanceNamespace(spec?: TSpec): boolean {
+    return this.resolveInstanceNamespace(spec) !== this.workloadNamespaceFor(spec);
   }
 
   /**
@@ -820,12 +870,15 @@ export class KroResourceFactoryImpl<
     // Ensure RGD is deployed first
     await this.ensureRGDDeployed();
 
-    // Ensure the target namespace exists before posting the CR. KRO
-    // reconciles resources from the RGD into their own namespaces, but
-    // the CR instance itself must live in a namespace the user can
-    // write to. Without this, the first deploy after `kubectl delete ns`
-    // fails with a 404 on the CR POST.
-    await this.ensureTargetNamespace();
+    // Ensure the namespace that will hold the CR exists before posting it. KRO
+    // reconciles resources from the RGD into their own namespaces, but the CR
+    // instance itself must live in a namespace the user can write to. When the
+    // instance namespace is decoupled (control-plane namespace), ensure THAT one
+    // — it's created outside the KRO graph so KRO never garbage-collects it.
+    // Without this, the first deploy after `kubectl delete ns` fails with a 404
+    // on the CR POST.
+    const instanceNamespace = this.resolveInstanceNamespace(spec);
+    await this.ensureTargetNamespace(instanceNamespace);
 
     // Create DirectDeploymentEngine with KRO mode for CEL string conversion
     const deploymentEngine = new DirectDeploymentEngine(
@@ -863,7 +916,7 @@ export class KroResourceFactoryImpl<
       metadata: {
         ...enhancedCustomResource.metadata,
         name: instanceName,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
       },
       spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
     } as DeployableK8sResource<typeof enhancedCustomResource>;
@@ -876,7 +929,7 @@ export class KroResourceFactoryImpl<
     try {
       await deploymentEngine.deployResource(deployableResource, {
         mode: 'kro',
-        namespace: this.namespace,
+        namespace: instanceNamespace,
         waitForReady: false, // We'll handle Kro-specific readiness ourselves
         timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
       });
@@ -889,7 +942,8 @@ export class KroResourceFactoryImpl<
       if (this.factoryOptions.waitForReady ?? true) {
         await this.waitForKroInstanceReady(
           instanceName,
-          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT,
+          instanceNamespace
         ); // 10 minutes
       }
       this.logger.info('Instance ready, creating enhanced proxy', {
@@ -925,11 +979,13 @@ export class KroResourceFactoryImpl<
       }
       const plural = this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
 
-      // In the new API, methods take request objects and return objects directly
+      // In the new API, methods take request objects and return objects directly.
+      // Instances live in the (possibly decoupled) control-plane namespace, not
+      // necessarily the factory namespace.
       const listResponse = await customApi.listNamespacedCustomObject({
         group: this.getSchemaGroup(),
         version,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(),
         plural,
       });
 
@@ -1051,6 +1107,9 @@ export class KroResourceFactoryImpl<
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
     const apiVersion = this.getInstanceApiVersion();
+    // The CR lives in the (possibly decoupled) control-plane namespace. No spec
+    // is available on a delete-by-name, so fall back to the factory namespace.
+    const instanceNamespace = this.resolveInstanceNamespace();
 
     // Tracks whether the CR was confirmed 404 by the poll loop. Used
     // later to decide whether to tear down the RGD/CRD or preserve
@@ -1066,7 +1125,7 @@ export class KroResourceFactoryImpl<
         kind: this.schemaDefinition.kind,
         metadata: {
           name,
-          namespace: this.namespace,
+          namespace: instanceNamespace,
         },
       } as k8s.KubernetesObject);
 
@@ -1080,7 +1139,7 @@ export class KroResourceFactoryImpl<
           await k8sApi.read({
             apiVersion,
             kind: this.schemaDefinition.kind,
-            metadata: { name, namespace: this.namespace },
+            metadata: { name, namespace: instanceNamespace },
           });
           // Still exists — KRO is processing finalizer
           await new Promise((r) => setTimeout(r, 2000));
@@ -1154,7 +1213,7 @@ export class KroResourceFactoryImpl<
     let hasRemainingInstances = false;
     try {
       const instances = await this.listInstancesForCleanup();
-      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, this.namespace);
+      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, instanceNamespace);
     } catch (listError: unknown) {
       // Can't list instances — could be CRD gone (safe) or transient error
       // (unsafe to delete RGD). Default to preserving the RGD to avoid
@@ -1254,19 +1313,26 @@ export class KroResourceFactoryImpl<
     });
     this.assertInstanceNamespaceOwnershipSafe(spec);
 
+    const instanceNamespace = this.resolveInstanceNamespace(spec);
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
-    const kroDeletion = this.createAlchemyKroDeletionOptions();
+    const kroDeletion = this.createAlchemyKroDeletionOptions(instanceNamespace);
     const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
     const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
 
     // Dedicated control-plane Namespace for the instance CR (when the instance
     // namespace was decoupled from the owned workload namespace). Applied before
     // the RGD + instance and outside the KRO graph, so the CR always has a
-    // namespace to land in and KRO never garbage-collects it.
+    // namespace to land in and KRO never garbage-collects it. Marked RETAINED so
+    // a single stack's teardown/prune never deletes this shared namespace (which
+    // may hold another stack's KRO instances targeting the same workload ns).
     const instanceNamespaceDeclarations: AlchemyResourceDeclaration[] = [];
     const instanceNamespaceIds: string[] = [];
-    if (this.factoryOptions.emitInstanceNamespace) {
-      const decl = this.instanceNamespaceAlchemyDeclaration(kubeConfigOptions, prerequisiteIds);
+    if (this.shouldEmitInstanceNamespace(spec)) {
+      const decl = this.instanceNamespaceAlchemyDeclaration(
+        instanceNamespace,
+        kubeConfigOptions,
+        prerequisiteIds
+      );
       instanceNamespaceDeclarations.push(decl);
       instanceNamespaceIds.push(decl.id);
     }
@@ -1354,13 +1420,13 @@ export class KroResourceFactoryImpl<
     // Cast: a plain KubernetesResource is fine — the alchemy path only reads kind/metadata.
     const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
     const instanceDeclaration: AlchemyResourceDeclaration = {
-      id: createAlchemyResourceId(crdAsEnhanced, this.namespace),
+      id: createAlchemyResourceId(crdAsEnhanced, instanceNamespace),
       // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
       // before the main deploy), so the instance applies only once its dependencies exist.
       dependsOn: [rgdId, ...singletonInstanceIds, ...instanceNamespaceIds],
       props: {
         resource: crdAsEnhanced,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
         deploymentStrategy: 'kro',
         kubeConfigOptions,
         kroDeletion,
@@ -1393,12 +1459,12 @@ export class KroResourceFactoryImpl<
   }
 
   /** Build the finalizer-safe, shared-RGD-aware deletion metadata for this factory's instances. */
-  private createAlchemyKroDeletionOptions(): KroDeletionOptions {
+  private createAlchemyKroDeletionOptions(instanceNamespace = this.namespace): KroDeletionOptions {
     return {
       apiVersion: this.schemaDefinition.apiVersion,
       kind: this.schemaDefinition.kind,
       ...(this.schemaDefinition.group && { group: this.schemaDefinition.group }),
-      namespace: this.namespace,
+      namespace: instanceNamespace,
       rgdName: this.rgdName,
       ...(this.discoveredPlural && { plural: this.discoveredPlural }),
       timeout: this.factoryOptions.timeout ?? 300000,
@@ -1533,7 +1599,9 @@ export class KroResourceFactoryImpl<
       // so the CR always has a namespace to apply into.
       const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
       const leadingInstanceYamls = [
-        ...(this.factoryOptions.emitInstanceNamespace ? [this.instanceNamespaceYaml()] : []),
+        ...(this.shouldEmitInstanceNamespace(spec)
+          ? [this.instanceNamespaceYaml(this.resolveInstanceNamespace(spec))]
+          : []),
         ...ownerYamls,
       ];
       return leadingInstanceYamls.length === 0
@@ -2402,7 +2470,7 @@ export class KroResourceFactoryImpl<
       kind: this.schemaDefinition.kind,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(spec),
         labels: {
           'typekro.io/factory': this.name,
           'typekro.io/mode': this.mode,
@@ -2421,24 +2489,49 @@ export class KroResourceFactoryImpl<
   }
 
   /**
+   * Labels/annotations marking the control-plane Namespace as SHARED, RETAINED
+   * infrastructure that must survive any single consumer's teardown/prune. The
+   * Flux `kustomize.toolkit.fluxcd.io/prune: disabled` annotation is the standard
+   * GitOps opt-out from pruning; the alchemy path pairs this with a `retain` prop
+   * (see {@link instanceNamespaceAlchemyDeclaration}) that skips delete.
+   */
+  private static readonly INSTANCE_NAMESPACE_METADATA = {
+    labels: {
+      'app.kubernetes.io/managed-by': 'typekro',
+      'typekro.io/kro-instance-namespace': 'true',
+    },
+    annotations: {
+      // Standard Flux prune opt-out: a GitOps reconcile of one consuming
+      // Kustomization must NOT delete this shared namespace when the consumer's
+      // manifests no longer include it.
+      'kustomize.toolkit.fluxcd.io/prune': 'disabled',
+    },
+  } as const;
+
+  /**
    * The dedicated control-plane Namespace that holds this factory's KRO
    * instance(s), emitted when the instance namespace was decoupled from the
-   * workload namespace (`emitInstanceNamespace`). It is created OUTSIDE the KRO
-   * graph — deps-first in GitOps/alchemy, and via `ensureTargetNamespace` in the
-   * imperative path — so KRO never garbage-collects it and the instance's
-   * finalizer can never be stranded by its own namespace terminating.
+   * workload namespace. It is created OUTSIDE the KRO graph — deps-first in
+   * GitOps/alchemy, and via `ensureTargetNamespace` in the imperative path — so
+   * KRO never garbage-collects it and the instance's finalizer can never be
+   * stranded by its own namespace terminating.
+   *
+   * It is also SHARED: two independent stacks targeting the same workload
+   * namespace resolve the same control-plane namespace, so it is marked retained
+   * (prune-disabled here; delete-skipping in the alchemy props) so one stack's
+   * teardown never deletes the other stack's KRO instances living in it.
    */
-  private buildInstanceNamespaceResource(): Enhanced<
+  private buildInstanceNamespaceResource(
+    instanceNamespace: string
+  ): Enhanced<
     import('@kubernetes/client-node').V1Namespace['spec'],
     import('@kubernetes/client-node').V1Namespace['status']
   > {
     return namespaceResource({
       metadata: {
-        name: this.namespace,
-        labels: {
-          'app.kubernetes.io/managed-by': 'typekro',
-          'typekro.io/kro-instance-namespace': 'true',
-        },
+        name: instanceNamespace,
+        labels: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels },
+        annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
       },
       id: toCamelCase(`${this.rgdName}-instance-namespace`),
     }) as Enhanced<
@@ -2448,10 +2541,11 @@ export class KroResourceFactoryImpl<
   }
 
   private instanceNamespaceAlchemyDeclaration(
+    instanceNamespace: string,
     kubeConfigOptions: SerializableKubeConfigOptions,
     dependsOn: readonly string[]
   ): AlchemyResourceDeclaration {
-    const nsEnhanced = this.buildInstanceNamespaceResource();
+    const nsEnhanced = this.buildInstanceNamespaceResource(instanceNamespace);
     const timeout = this.factoryOptions.timeout;
     const resourceId = (nsEnhanced as { id?: string }).id;
     return {
@@ -2461,8 +2555,12 @@ export class KroResourceFactoryImpl<
       props: {
         resource: nsEnhanced as Enhanced<unknown, unknown>,
         ...(resourceId !== undefined ? { resourceId } : {}),
-        namespace: this.namespace,
+        namespace: instanceNamespace,
         deploymentStrategy: 'direct' as const,
+        // RETAINED: the control-plane namespace is shared infrastructure. Never
+        // delete it on a single stack's teardown/prune — another stack targeting
+        // the same workload namespace may still have KRO instances inside it.
+        retain: true,
         kubeConfigOptions,
         options: {
           waitForReady: false,
@@ -2472,18 +2570,16 @@ export class KroResourceFactoryImpl<
     };
   }
 
-  private instanceNamespaceYaml(): string {
+  private instanceNamespaceYaml(instanceNamespace: string): string {
     return yaml
       .dump(
         {
           apiVersion: 'v1',
           kind: 'Namespace',
           metadata: {
-            name: this.namespace,
-            labels: {
-              'app.kubernetes.io/managed-by': 'typekro',
-              'typekro.io/kro-instance-namespace': 'true',
-            },
+            name: instanceNamespace,
+            labels: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels },
+            annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
           },
         },
         { lineWidth: -1, noRefs: true, sortKeys: false }
@@ -2497,7 +2593,7 @@ export class KroResourceFactoryImpl<
       | undefined;
     assertKroInstanceNamespaceOwnershipSafe({
       compositionName: this.name,
-      instanceNamespace: this.namespace,
+      instanceNamespace: this.resolveInstanceNamespace(spec),
       spec,
       resources: this.resources,
       ...(compositionFn ? { compositionFn } : {}),
@@ -2543,7 +2639,7 @@ export class KroResourceFactoryImpl<
       status,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(spec),
         labels: {
           'typekro.io/factory': this.name,
           'typekro.io/mode': this.mode,
@@ -2565,7 +2661,8 @@ export class KroResourceFactoryImpl<
       try {
         const hydratedDynamicFields = await this.hydrateDynamicStatusFields(
           instanceName,
-          dynamicFields
+          dynamicFields,
+          this.resolveInstanceNamespace(spec)
         );
 
         // Merge evaluated static fields with dynamic fields from KRO.
@@ -2794,7 +2891,11 @@ export class KroResourceFactoryImpl<
    * Wait for Kro instance to be ready with Kro-specific logic.
    * Delegates to the shared `waitForKroInstanceReady` in `kro-readiness.ts`.
    */
-  private async waitForKroInstanceReady(instanceName: string, timeout: number): Promise<void> {
+  private async waitForKroInstanceReady(
+    instanceName: string,
+    timeout: number,
+    instanceNamespace = this.resolveInstanceNamespace()
+  ): Promise<void> {
     const apiVersion = this.getInstanceApiVersion();
 
     const kubeConfig = this.getKubeConfig();
@@ -2805,7 +2906,7 @@ export class KroResourceFactoryImpl<
       timeout,
       k8sApi,
       customObjectsApi: this.getCustomObjectsApi(),
-      namespace: this.namespace,
+      namespace: instanceNamespace,
       apiVersion,
       kind: this.schemaDefinition.kind,
       rgdName: this.rgdName,
@@ -2818,7 +2919,8 @@ export class KroResourceFactoryImpl<
    */
   private async hydrateDynamicStatusFields(
     instanceName: string,
-    dynamicFields: Record<string, unknown>
+    dynamicFields: Record<string, unknown>,
+    instanceNamespace = this.resolveInstanceNamespace()
   ): Promise<Record<string, unknown>> {
     const dynamicLogger = this.logger.child({ instanceName });
 
@@ -2832,7 +2934,7 @@ export class KroResourceFactoryImpl<
       kind: this.schemaDefinition.kind,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
       },
     });
 
