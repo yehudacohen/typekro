@@ -43,9 +43,11 @@ describe('ClickHouse operator bootstrap composition', () => {
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: clickhouse-operator-bootstrap');
-    expect(yaml).toContain('clickhouseNamespace');
     expect(yaml).toContain('clickhouseOperatorHelmRelease');
-    expect(yaml).toContain('kind: Namespace');
+    // The owned workload Namespace is HOISTED out of the RGD graph (emitted as a
+    // retained resource by the factory instead), so it is no longer a graph child.
+    expect(yaml).not.toContain('clickhouseNamespace');
+    expect(yaml).not.toContain('kind: Namespace');
     expect(yaml).toContain('kind: HelmRelease');
     // Official Altinity chart + default version (the default surfaces in the
     // has()-guarded version fallback).

@@ -252,7 +252,7 @@ import { cnpgBootstrap } from 'typekro/cnpg';
 
 // KRO mode — operator reconciled continuously
 const factory = cnpgBootstrap.factory('kro', {
-  namespace: 'typekro-system', // KRO instance namespace; separate from graph-owned resources
+  namespace: 'cnpg-system', // owned Namespace is hoisted out of the graph (retained)
   waitForReady: true,
 });
 

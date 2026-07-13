@@ -614,22 +614,21 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   hydrateStatus?: boolean;
 
   /**
-   * Control-plane namespace override for the KRO instance (custom resource),
-   * decoupled from the workload `namespace` the composition creates and owns.
+   * Explicit namespace override for the KRO instance (custom resource), decoupled
+   * from the workload `namespace` the composition creates and owns.
    *
-   * A composition that creates and owns its own workload Namespace as a graph
-   * child must NOT place the KRO instance CR in that same namespace: KRO deletes
-   * graph children (including the Namespace) before clearing the owner CR's
-   * finalizer, so a self-owned instance namespace strands the finalizer on
-   * delete.
+   * By default the instance CR stays in its NATURAL namespace
+   * (`spec.namespace ?? the factory namespace`), and a composition that creates
+   * and owns that namespace as a graph child is handled AUTOMATICALLY: TypeKro
+   * HOISTS the owned Namespace OUT of the RGD graph and emits it as a retained
+   * resource created deps-first (outside the graph). Because the namespace is no
+   * longer a graph child, deleting the instance can never garbage-collect the
+   * namespace holding its own finalizer — no relocation, no flag required.
    *
-   * TypeKro handles this AUTOMATICALLY: when it detects that a composition owns
-   * the Namespace its instance would land in, it relocates the instance CR to the
-   * shared control-plane namespace ({@link KRO_INSTANCE_CONTROL_PLANE_NAMESPACE},
-   * `typekro-system`) — no flag required. Set this option only to override that
-   * default with a namespace of your choosing. TypeKro ensures the chosen
-   * namespace exists (created outside the KRO graph, retained). Pinning this to a
-   * namespace the composition itself owns re-opens the unsafe pattern and is
+   * Set this option only to pin the instance CR to a namespace of your choosing.
+   * TypeKro ensures the chosen namespace exists. Pinning this to a namespace the
+   * composition itself owns re-opens the unsafe pattern (the instance would live
+   * in a graph-owned Namespace, which is NOT hoisted under an explicit pin) and is
    * rejected by the ownership-safety guard.
    */
   instanceNamespace?: string;

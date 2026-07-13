@@ -47,14 +47,13 @@ the cluster's destruction policy require explicit platform decisions. See the
 before provisioning a Ceph cluster.
 
 `rookCephOperatorBootstrap` creates and owns the `rook-ceph` workload Namespace
-(from `spec.namespace`), so TypeKro **auto-detects** this and places the KRO
-instance CR in the shared **control-plane namespace** `typekro-system`, created
-outside the KRO graph — you do **not** need to create any namespace yourself, and
-no flag is required. A KRO graph must not own the namespace containing its own
+(from `spec.namespace`), so TypeKro **auto-detects** this and **hoists that
+Namespace out of the RGD graph**, emitting it as a retained resource created
+outside the KRO graph (deps-first) — you do **not** need to create any namespace
+yourself, and no flag is required. The instance CR stays in its natural
+`rook-ceph` namespace. A KRO graph must not own the namespace containing its own
 instance (namespace deletion and the instance finalizer would otherwise
-deadlock), and this relocation is what avoids it. Pass an explicit
-`instanceNamespace` factory option to choose the control-plane namespace name
-instead of the default.
+deadlock), and hoisting the namespace out of the graph is what avoids it.
 
 The bootstrap is the explicit owner of the complete operator installation:
 Namespace, HelmRepository, and HelmRelease. Deleting its KRO instance therefore

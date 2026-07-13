@@ -105,8 +105,8 @@ describe('Rook operator bootstrap factory modes', () => {
 
   it('renders a KRO operator-owner instance with an explicit lifecycle', () => {
     // The real bootstrap usage: workload namespace == the namespace the
-    // composition owns, so the instance CR is auto-relocated and a dedicated
-    // control-plane Namespace leads (deps-first, outside the KRO graph).
+    // composition owns, so the owned Namespace is hoisted out of the graph and
+    // leads (deps-first), followed by the instance CR (which stays in that ns).
     const factory = rookCephOperatorBootstrap.factory('kro', {
       namespace: 'rook-ceph',
     });
@@ -131,25 +131,27 @@ describe('Rook operator bootstrap factory modes', () => {
     expectNoInternalMarkers(yaml);
   });
 
-  it('auto-relocates the instance into the single control-plane namespace', async () => {
-    // rookCephOperatorBootstrap creates and owns its operator Namespace, so the
-    // natural same-namespace call is auto-relocated to the shared control-plane
-    // namespace `typekro-system` rather than being rejected (regression fix for
-    // the v0.25.0 ownership guard) — no flag required.
+  it('hoists the owned namespace instead of relocating; instance stays in the workload ns', async () => {
+    // rookCephOperatorBootstrap creates and owns its operator Namespace. The owned
+    // Namespace is HOISTED out of the RGD graph (retained, deps-first) and the
+    // instance stays in its natural workload namespace — the v0.25.0 ownership
+    // guard passes with no flag.
     const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
     const spec = { name: 'rook-ceph', namespace: 'rook-ceph' } as never;
 
     const yaml = factory.toYaml(spec);
-    expect(yaml).toContain('namespace: typekro-system');
+    expect(yaml).toMatch(/namespace: rook-ceph$/m);
+    expect(yaml).not.toContain('typekro-system');
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
 
     const decls = await factory.toAlchemyResources(spec);
     expect(decls[0]?.props.resource.kind).toBe('Namespace');
-    expect(decls[0]?.props.resource.metadata?.name).toBe('typekro-system');
-    expect(decls.at(-1)?.props.namespace).toBe('typekro-system');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('rook-ceph');
+    expect(decls[0]?.props.retain).toBe(true);
+    expect(decls.at(-1)?.props.namespace).toBe('rook-ceph');
   });
 
-  it('auto-relocates through composition nesting; explicit pin to an owned namespace still throws', () => {
+  it('hoists through composition nesting; explicit pin to an owned namespace still throws', () => {
     const parent = kubernetesComposition(
       {
         name: 'rook-nested-owner',
@@ -166,12 +168,15 @@ describe('Rook operator bootstrap factory modes', () => {
       }
     );
 
-    // Detection sees the nested-owned namespace and auto-relocates instead of throwing.
+    // Detection sees the nested-owned namespace and HOISTS it instead of throwing;
+    // the instance stays in its natural namespace (the factory namespace here).
     const yaml = parent.factory('kro', { namespace: 'rook-ceph' }).toYaml({
       name: 'platform',
       operatorNamespace: 'rook-ceph',
     });
-    expect(yaml).toContain('namespace: typekro-system');
+    expect(yaml).toMatch(/namespace: rook-ceph$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
 
     // Guard intact: explicitly pinning the instance back into the owned namespace throws.
     expect(() =>

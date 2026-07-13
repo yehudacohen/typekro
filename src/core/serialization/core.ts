@@ -56,6 +56,7 @@ import {
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
+import { detectStructurallyOwnedNamespaceIds } from '../deployment/kro-instance-safety.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
 function isToYamlOptions(value: unknown): value is ToYamlOptions {
@@ -2312,10 +2313,25 @@ function createTypedResourceGraph<
         statusMappingsHasField: '__nestedStatusCel' in (statusMappings as Record<string, unknown>),
       });
 
+      // HOIST any owned workload Namespace OUT of the shared RGD graph: a Namespace
+      // named after `spec.namespace` is, per instance, the very namespace that
+      // instance lands in, so leaving it a graph CHILD would let deleting the
+      // instance garbage-collect the namespace holding its own finalizer. The
+      // factory emits it instead as a retained resource created deps-first. This
+      // keeps the graph-level RGD (`graph.toYaml()`) consistent with the factory's
+      // RGD (`factory('kro').toYaml()`), both of which drop it.
+      const hoistedNamespaceIds = detectStructurallyOwnedNamespaceIds(resourcesWithKeys);
+      const graphResources =
+        hoistedNamespaceIds.size === 0
+          ? resourcesWithKeys
+          : (Object.fromEntries(
+              Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
+            ) as typeof resourcesWithKeys);
+
       const kroSchema = generateKroSchemaFromArktype(
         definition.name,
         schemaDefinition,
-        resourcesWithKeys,
+        graphResources,
         optimizedStatusMappings,
         Object.keys(nestedStatusCel).length > 0 ? nestedStatusCel : undefined
       );
@@ -2387,7 +2403,7 @@ function createTypedResourceGraph<
 
       const rgdYaml = serializeResourceGraphToYaml(
         definition.name,
-        resourcesWithKeys,
+        graphResources,
         options,
         kroSchema
       );

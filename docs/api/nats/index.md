@@ -16,7 +16,7 @@ import { jetStreamConsumer, jetStreamStream, natsBootstrap } from 'typekro/nats'
 
 ```ts
 const factory = natsBootstrap.factory('kro', {
-  namespace: 'typekro-system', // KRO control-plane namespace
+  namespace: 'nats-system',
 });
 
 await factory.deploy({
@@ -29,9 +29,11 @@ await factory.deploy({
 });
 ```
 
-The control-plane and target namespaces must differ in KRO mode when TypeKro owns the target
-Namespace. TypeKro rejects an instance that lives in a Namespace its graph owns, preventing a
-namespace/finalizer deadlock. Shared platform
+When TypeKro owns the target Namespace (the default `namespaceOwnership: 'owned'`), it **hoists
+that Namespace out of the RGD graph** — emitting it as a retained resource created deps-first —
+so the instance can safely live in it without a namespace/finalizer deadlock on delete. With
+`namespaceOwnership: 'external'` the Namespace is not owned (you pre-create it) and nothing is
+hoisted. Shared platform
 installations should be singleton-owned. The bootstrap pins the official `nats` and `nack` charts;
 `values` and `nackValues` are graph-aware passthrough maps merged after safe defaults.
 

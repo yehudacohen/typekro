@@ -829,8 +829,12 @@ describe('Schema Nullish Defaults', () => {
       );
       const yaml: string = searxngBootstrap.toYaml();
 
+      // `searxngNamespace` is the composition's own workload Namespace, so it is
+      // HOISTED out of the RGD graph (emitted as a retained resource, and gated by
+      // `enabled` per-spec at emit time). The remaining resources keep their
+      // includeWhen gate in the RGD.
+      expect(yaml).not.toContain('searxngNamespace');
       for (const id of [
-        'searxngNamespace',
         'searxngConfig',
         'searxngSecret',
         'searxngDeployment',

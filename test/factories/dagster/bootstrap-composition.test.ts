@@ -77,9 +77,11 @@ describe('Dagster bootstrap composition', () => {
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: dagster-bootstrap');
-    expect(yaml).toContain('dagsterNamespace');
     expect(yaml).toContain('dagsterHelmRelease');
-    expect(yaml).toContain('kind: Namespace');
+    // The owned workload Namespace is HOISTED out of the RGD graph (emitted as a
+    // retained resource by the factory instead), so it is no longer a graph child.
+    expect(yaml).not.toContain('dagsterNamespace');
+    expect(yaml).not.toContain('kind: Namespace');
     expect(yaml).toContain('kind: HelmRelease');
     // The HelmRepository is a shared cluster-level singleton referenced via
     // externalRef (not owned per-instance), so a dev + prod pair of instances

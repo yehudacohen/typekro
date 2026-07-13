@@ -32,8 +32,8 @@ import {
 
 ```typescript
 // 1. The stack (internal dev-first Mongo, external ClickHouse). The bootstrap
-// owns its Namespace, so the instance CR is auto-placed in `typekro-system`
-// (pass `instanceNamespace` to override):
+// owns its Namespace, so TypeKro hoists that namespace out of the RGD graph
+// (retained) and the instance CR stays in the `clickstack` namespace:
 const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
 const stack = await factory.deploy({
   name: 'clickstack',

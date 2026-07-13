@@ -898,10 +898,9 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
     const factory = makeFactory('myApp');
     const factoryRecord = factory as unknown as Record<string, unknown>;
     factoryRecord.discoveredPlural = 'testapps';
-    // getInstances now discovers by RGD label cluster-wide (finds instances
-    // wherever they landed — workload or control-plane namespace).
+    // getInstances lists the factory namespace (the instance is never relocated).
     factoryRecord.createCustomObjectsApi = async () => ({
-      listClusterCustomObject: async () => ({
+      listNamespacedCustomObject: async () => ({
         items: [
           {
             spec: { name: 'demo', replicas: 1 },

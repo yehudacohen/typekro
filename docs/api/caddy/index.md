@@ -41,7 +41,7 @@ import { makeCaddyIngress } from 'typekro/caddy';
 
 // emptyDir-backed /data — no PVC; the tls-internal CA regenerates per pod.
 const factory = makeCaddyIngress({ ephemeral: true }).factory('kro', {
-  namespace: 'typekro-system',
+  namespace: 'caddy-system',
 });
 ```
 

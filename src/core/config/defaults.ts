@@ -161,29 +161,6 @@ export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
 export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
 
 /**
- * The single, stable control-plane namespace that holds every KRO instance
- * (custom-resource) whose composition creates and owns its own workload
- * Namespace as a graph child.
- *
- * KRO deletes a resource graph's children (including an owned Namespace) before
- * it clears the owner CR's finalizer. If the CR lived in that same owned
- * Namespace, namespace termination would block on the still-present finalizer
- * while KRO refuses to clear the finalizer until the Namespace is gone — a
- * permanent deletion deadlock. Relocating the CR into this separate control-plane
- * namespace keeps the two decoupled so deleting the instance can never terminate
- * the namespace holding its own finalizer.
- *
- * It is a fixed constant (not derived per workload namespace) for three reasons:
- * a constant is always a valid DNS-1123 label (no truncation/hashing needed);
- * lifecycle operations that have no spec (`getInstances`/`deleteInstance`) can
- * resolve it unambiguously; and a single shared, retained namespace dedupes to
- * one owner across every consumer instead of a sprawl of `<ns>-kro` namespaces.
- * The name mirrors the existing `typekro-singletons` singleton-owner namespace.
- * Override per factory with the `instanceNamespace` option.
- */
-export const KRO_INSTANCE_CONTROL_PLANE_NAMESPACE = 'typekro-system';
-
-/**
  * Well-known Helm repository URL patterns mapped to their canonical sourceRef names.
  *
  * When a HelmRelease config doesn't include an explicit `sourceRef`, the factory

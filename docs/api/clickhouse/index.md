@@ -28,8 +28,8 @@ import * as clickhouse from 'typekro/clickhouse';
 import { clickhouseOperatorBootstrap, makeClickHouseCluster } from 'typekro/clickhouse';
 
 // 1. Install the operator — exactly ONCE per cluster. The bootstrap owns the
-// operator Namespace, so its instance CR is auto-placed in the shared
-// control-plane namespace (`typekro-system`); pass `instanceNamespace` to override.
+// operator Namespace, so TypeKro hoists that namespace out of the RGD graph
+// (retained) and the instance CR stays in the `clickhouse-system` namespace.
 const operator = clickhouseOperatorBootstrap.factory('kro', {
   namespace: 'clickhouse-system',
 });

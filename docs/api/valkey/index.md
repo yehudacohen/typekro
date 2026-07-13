@@ -169,13 +169,14 @@ await factory.deploy({
 });
 ```
 
-`valkeyBootstrap` creates and owns the operator namespace as a graph child. In
-KRO mode the bootstrap deletes that namespace when the instance is deleted, so
-putting the `ValkeyBootstrap` instance in the same namespace could delete the
-instance before KRO clears its finalizer and deadlock namespace termination.
-TypeKro therefore auto-detects the ownership and relocates the instance CR to the
-shared control-plane namespace `typekro-system`; pass `instanceNamespace` to
-override it. Direct mode has no KRO custom-resource finalizer and is unaffected.
+`valkeyBootstrap` creates and owns the operator namespace as a graph child. If it
+stayed a graph child, KRO would delete that namespace when the instance is deleted
+— potentially deleting the instance before KRO clears its finalizer and
+deadlocking namespace termination. TypeKro therefore auto-detects the ownership
+and **hoists the owned Namespace out of the RGD graph**, emitting it as a retained
+resource created outside the graph (deps-first); the instance CR stays in its
+natural namespace. Direct mode has no KRO custom-resource finalizer and is
+unaffected.
 
 `values` is the raw Helm passthrough and merges last. The older `customValues` field remains as a
 deprecated compatibility alias; when both are present, `values` wins. The Flux OCI

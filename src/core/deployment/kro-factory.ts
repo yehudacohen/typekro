@@ -26,7 +26,6 @@ import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
   DEFAULT_RGD_TIMEOUT,
-  KRO_INSTANCE_CONTROL_PLANE_NAMESPACE,
 } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import {
@@ -94,7 +93,9 @@ import { isNotFoundError } from './k8s-helpers.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
   assertSingletonOwnerNamespaceOwnershipSafe,
-  detectOwnedNamespaces,
+  detectOwnedNamespaceResources,
+  detectStructurallyOwnedNamespaceIds,
+  resolveNamespaceName,
 } from './kro-instance-safety.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
@@ -118,10 +119,8 @@ import {
 
 /**
  * Label stamped on every KRO instance CR this factory creates, keyed to the
- * factory's RGD name. Lifecycle discovery (`getInstances`/`deleteInstance`)
- * lists by this label cluster-wide so it finds instances regardless of which
- * namespace they were placed in (workload namespace vs. auto-relocated
- * control-plane namespace).
+ * factory's RGD name. Used by the cluster-wide cleanup list in `deleteInstance`
+ * to decide whether other instances still share the RGD.
  */
 const INSTANCE_RGD_LABEL = 'typekro.io/rgd';
 
@@ -246,20 +245,6 @@ export class KroResourceFactoryImpl<
    */
   private discoveredPlural: string | undefined;
 
-  /**
-   * Memoized result of "does this composition create and own the Namespace its
-   * instance CR would otherwise live in?" — the trigger for auto-relocating the
-   * CR to the shared control-plane namespace. It is a property of the
-   * COMPOSITION (an owned Namespace named after the workload namespace), not of a
-   * particular spec, so the relationship holds for every spec and is safely
-   * cached after the first spec-carrying resolution. `undefined` = not yet
-   * determined (e.g. only spec-less lifecycle calls have run so far).
-   */
-  private selfOwnsInstanceNamespaceCache: boolean | undefined;
-
-  /** Ensures the one-line relocation diagnostic is logged at most once per factory. */
-  private relocationLogged = false;
-
   // Dependency-inversion providers (Phase 3.5) — injected via FactoryOptions
   // instead of dynamic import() from factories/ and alchemy/ layers.
   private readonly kroCustomResourceProvider: KroCustomResourceProvider | undefined;
@@ -324,12 +309,13 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * The concrete workload namespace for a given deploy/serialize call.
+   * The concrete workload namespace for a given deploy/serialize call — the
+   * NATURAL namespace the instance CR lives in.
    *
    * The workload namespace the composition creates/owns is carried on the
    * instance `spec.namespace`, so a per-call spec wins over the factory's
    * declared `namespace`. Without a spec (e.g. `getInstances`, `deleteInstance`)
-   * we fall back to the factory namespace.
+   * we fall back to the factory namespace, exactly as the pre-guard lifecycle did.
    */
   private workloadNamespaceFor(spec?: TSpec): string {
     const specNamespace = (spec as { namespace?: unknown } | undefined)?.namespace;
@@ -339,93 +325,122 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Whether this composition creates and OWNS the Namespace its instance CR
-   * would otherwise land in — the trigger for auto-relocation. Reuses the
-   * ownership-guard's detection ({@link detectOwnedNamespaces}) so the guard and
-   * the relocation share one source of truth: the instance is self-owning
-   * exactly when an actively-owned Namespace resolves to the workload namespace.
-   *
-   * The result is a composition-level invariant (an owned Namespace named after
-   * `spec.namespace`, the same field that fixes the workload/instance namespace),
-   * so it is cached after the first resolution that had a spec to resolve names
-   * against. A spec-less call (lifecycle ops) can't resolve schema-driven names,
-   * so it never caches a (possibly false) negative — lifecycle correctness comes
-   * instead from label-based discovery in {@link getInstances}/{@link deleteInstance}.
-   */
-  private selfOwnsInstanceNamespace(spec?: TSpec): boolean {
-    if (this.selfOwnsInstanceNamespaceCache !== undefined) {
-      return this.selfOwnsInstanceNamespaceCache;
-    }
-    const compositionFn =
-      spec !== undefined
-        ? (this.factoryOptions.compositionFn as ((s: TSpec) => unknown) | undefined)
-        : undefined;
-    const detection = detectOwnedNamespaces<TSpec>({
-      compositionName: this.name,
-      spec: (spec ?? {}) as TSpec,
-      resources: this.resources,
-      ...(compositionFn ? { compositionFn } : {}),
-    });
-    const result = detection.owned.has(this.workloadNamespaceFor(spec));
-    // Only memoize once we had a spec to concretely resolve owned Namespace
-    // names; a spec-less negative is inconclusive, not authoritative.
-    if (spec !== undefined) {
-      this.selfOwnsInstanceNamespaceCache = result;
-      if (result && !this.relocationLogged) {
-        this.relocationLogged = true;
-        this.logger.info(
-          'Composition owns its workload namespace; relocating the KRO instance CR to the control-plane namespace',
-          {
-            composition: this.name,
-            workloadNamespace: this.workloadNamespaceFor(spec),
-            controlPlaneNamespace: KRO_INSTANCE_CONTROL_PLANE_NAMESPACE,
-          }
-        );
-      }
-    }
-    return result;
-  }
-
-  /**
    * Resolve the namespace the KRO instance CR lives in for this call.
    *
-   * - An explicit `instanceNamespace` factory option wins outright (the override).
-   * - Otherwise, if the composition self-owns the namespace its instance would
-   *   land in, AUTO-RELOCATE the CR to the single, stable control-plane namespace
-   *   so deleting the instance can never terminate the namespace holding its own
-   *   finalizer. This is automatic for every namespace-owning composition — no
-   *   per-composition flag.
-   * - Otherwise the instance stays in the factory/workload namespace, exactly as
-   *   a non-owning composition expects.
+   * The instance ALWAYS stays in its NATURAL namespace — no relocation. An
+   * explicit `instanceNamespace` factory option wins outright (the override);
+   * otherwise the natural namespace is `spec.namespace ?? factory namespace`.
+   * Because the natural namespace is derived from `spec.namespace`, two deploys
+   * with the SAME name in DIFFERENT namespaces (analytics/dev vs analytics/prod)
+   * keep DISTINCT instance identities — they never collapse.
    *
-   * The control-plane target is a constant (not spec-derived), so a spec-less
-   * lifecycle call resolves the SAME namespace a spec-carrying deploy used.
+   * Finalizer-stranding safety comes from HOISTING the composition's own workload
+   * Namespace OUT of the RGD graph (see {@link hoistedNamespaceNames}), not from
+   * moving the instance elsewhere.
    */
   private resolveInstanceNamespace(spec?: TSpec): string {
     const explicit = this.factoryOptions.instanceNamespace;
     if (explicit !== undefined) return explicit;
-    if (this.selfOwnsInstanceNamespace(spec)) {
-      return KRO_INSTANCE_CONTROL_PLANE_NAMESPACE;
-    }
-    // Non-owning composition: the CR lives in the factory namespace, exactly as
-    // before auto-relocation existed.
-    return this.namespace;
+    return this.workloadNamespaceFor(spec);
   }
 
   /**
-   * Whether a dedicated, retained control-plane Namespace must be emitted for
-   * this call. Only when the instance was deliberately relocated OFF the workload
-   * namespace — either auto-relocated for a self-owning composition, or pinned
-   * via an explicit `instanceNamespace` override that differs from the workload
-   * namespace. The plain factory namespace of a non-owning composition is left to
-   * `ensureTargetNamespace` and is NOT emitted as shared/retained infrastructure.
+   * The resource ids in `resources` of the actively-owned Namespaces that must be
+   * HOISTED out of the RGD graph for this call: those whose name equals the
+   * instance's (natural, candidate) namespace, i.e. the namespace the instance CR
+   * lands in. Removing them from the graph is what keeps deleting an instance from
+   * garbage-collecting the namespace that holds its own finalizer.
+   *
+   * Computed PER-SPEC, never cached (finding #5): `includeWhen` and schema-driven
+   * names are resolved against THIS concrete spec, so a conditionally-included
+   * namespace is decided from the actual spec regardless of call order.
+   *
+   * An EXPLICIT `instanceNamespace` pin opts the caller into their chosen
+   * placement, so nothing is auto-hoisted under it — the guard rejects it instead
+   * if it is unsafe (finding: explicit pin to an owned namespace still throws).
+   *
+   * When a namespace's name only differs from the instance's (finding #3), it is
+   * NOT hoisted (KRO still creates it; it never holds the instance's finalizer).
    */
-  private shouldEmitInstanceNamespace(spec?: TSpec): boolean {
-    if (this.resolveInstanceNamespace(spec) === this.workloadNamespaceFor(spec)) return false;
-    return (
-      this.factoryOptions.instanceNamespace !== undefined ||
-      this.selfOwnsInstanceNamespace(spec)
-    );
+  private hoistNamespaceIds(
+    resources: Record<string, KubernetesResource>,
+    spec?: TSpec
+  ): Set<string> {
+    const ids = new Set<string>();
+    if (this.factoryOptions.instanceNamespace !== undefined) return ids;
+
+    // Spec-less RGD (`toYaml()` with no spec): a schema-driven name can't be
+    // resolved to a concrete value (and re-executing the composition with an empty
+    // spec would throw on `spec.*` access), but a Namespace whose name tracks
+    // `spec.namespace` always coincides, per instance, with the namespace that
+    // instance lands in — so hoist it out of the shared RGD structurally.
+    if (spec === undefined) {
+      return detectStructurallyOwnedNamespaceIds(resources);
+    }
+
+    // Concrete detection: re-execute the composition against this spec (the same
+    // machinery the guard uses) so schema-driven names resolve to concrete values,
+    // then keep the owned Namespace whose resolved name equals the instance's
+    // (candidate) namespace. Resource ids are stable, so they select the entry to
+    // remove from `resources`.
+    const candidate = this.workloadNamespaceFor(spec);
+    const compositionFn = this.factoryOptions.compositionFn as
+      | ((s: TSpec) => unknown)
+      | undefined;
+    const { ownedById } = detectOwnedNamespaceResources<TSpec>({
+      compositionName: this.name,
+      spec,
+      resources,
+      ...(compositionFn ? { compositionFn } : {}),
+    });
+    for (const [id, name] of ownedById) {
+      if (name === candidate && id in resources) ids.add(id);
+    }
+    return ids;
+  }
+
+  /**
+   * The concrete NAMES of the workload namespaces hoisted out of the graph for
+   * this spec — used to emit the retained Namespace(s) deps-first and to tell the
+   * ownership guard which owned namespace is now safe (no longer a graph child).
+   * Only names that resolve concretely against the spec (emission needs a real
+   * name, and every emission path carries a spec).
+   */
+  private hoistedNamespaceNames(spec?: TSpec): Set<string> {
+    const names = new Set<string>();
+    const hoistIds = this.hoistNamespaceIds(this.resources, spec);
+    if (hoistIds.size === 0 || spec === undefined) return names;
+    // Resolve the ids to concrete names via the same re-execution detection —
+    // the built `resources` carry unevaluable `${...}` KRO templates, so a direct
+    // `resolveNamespaceName` on them can't produce the concrete namespace.
+    const compositionFn = this.factoryOptions.compositionFn as
+      | ((s: TSpec) => unknown)
+      | undefined;
+    const { ownedById } = detectOwnedNamespaceResources<TSpec>({
+      compositionName: this.name,
+      spec,
+      resources: this.resources,
+      ...(compositionFn ? { compositionFn } : {}),
+    });
+    for (const id of hoistIds) {
+      const name =
+        ownedById.get(id) ??
+        resolveNamespaceName(this.resources[id]?.metadata?.name, spec as KroCompatibleType);
+      if (name !== undefined) names.add(name);
+    }
+    return names;
+  }
+
+  /** The resource map serialized into the RGD: `resources` minus any hoisted owned Namespaces. */
+  private resourcesForRgd(
+    resources: Record<string, KubernetesResource>,
+    spec?: TSpec
+  ): Record<string, KubernetesResource> {
+    const hoistIds = this.hoistNamespaceIds(resources, spec);
+    if (hoistIds.size === 0) return resources;
+    return Object.fromEntries(
+      Object.entries(resources).filter(([id]) => !hoistIds.has(id))
+    ) as Record<string, KubernetesResource>;
   }
 
   /**
@@ -947,16 +962,18 @@ export class KroResourceFactoryImpl<
     instanceNameOverride?: string,
     singletonSpecFingerprint?: string
   ): Promise<Enhanced<TSpec, TStatus>> {
-    // Ensure RGD is deployed first
-    await this.ensureRGDDeployed();
+    // Ensure RGD is deployed first. Pass the spec so any owned workload Namespace
+    // is hoisted OUT of the RGD graph (created deps-first, below) rather than left
+    // as a graph child that would strand the instance's finalizer on delete.
+    await this.ensureRGDDeployed(spec);
 
     // Ensure the namespace that will hold the CR exists before posting it. KRO
     // reconciles resources from the RGD into their own namespaces, but the CR
-    // instance itself must live in a namespace the user can write to. When the
-    // instance namespace is decoupled (control-plane namespace), ensure THAT one
-    // — it's created outside the KRO graph so KRO never garbage-collects it.
-    // Without this, the first deploy after `kubectl delete ns` fails with a 404
-    // on the CR POST.
+    // instance itself must live in a namespace the user can write to. The instance
+    // stays in its NATURAL namespace; if the composition owns that namespace it was
+    // hoisted out of the graph above, so creating it here (outside the graph) means
+    // KRO never garbage-collects it. Without this, the first deploy after
+    // `kubectl delete ns` fails with a 404 on the CR POST.
     const instanceNamespace = this.resolveInstanceNamespace(spec);
     await this.ensureTargetNamespace(instanceNamespace);
 
@@ -1059,18 +1076,15 @@ export class KroResourceFactoryImpl<
       }
       const plural = this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
 
-      // Discover instances by LABEL, cluster-wide, rather than by a derived
-      // namespace. This factory's instances are labeled `typekro.io/rgd=<rgd>`,
-      // so a cluster-wide list finds them wherever they actually live — the
-      // workload namespace for a plain composition, or the control-plane
-      // namespace for an auto-relocated self-owning one. Deriving a single
-      // namespace here (the old behavior) returned nothing whenever the deploy's
-      // instance namespace differed from what a spec-less resolve produced.
-      const listResponse = await customApi.listClusterCustomObject({
+      // The instance CR lives in the factory namespace (its natural namespace when
+      // no per-call spec overrides it), so a namespaced list finds it — the
+      // pre-guard behavior. The instance is never relocated, so no cluster-wide
+      // label discovery is needed.
+      const listResponse = await customApi.listNamespacedCustomObject({
         group: this.getSchemaGroup(),
         version,
+        namespace: this.namespace,
         plural,
-        labelSelector: `${INSTANCE_RGD_LABEL}=${this.rgdName}`,
       });
 
       // Custom object list response structure
@@ -1174,67 +1188,6 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Find the namespace a named instance CR actually lives in, by listing this
-   * factory's instances cluster-wide (by RGD label) and matching the name.
-   *
-   * Returns the discovered namespace, or `undefined` when no instance with that
-   * name exists (so the caller treats a subsequent 404 as a completed deletion
-   * rather than deriving — and orphaning — the wrong namespace). Throws if the
-   * SAME name resolves to more than one namespace: that is genuinely ambiguous
-   * and must not be resolved by guessing.
-   *
-   * If the list itself fails (e.g. the CRD is gone), returns `undefined` so the
-   * delete proceeds against the resolved fallback and its own error handling
-   * takes over — discovery is a targeting aid, not a new failure mode.
-   */
-  private async discoverInstanceNamespaceForDeletion(name: string): Promise<string | undefined> {
-    let items: Array<{ metadata?: { name?: unknown; namespace?: unknown } }>;
-    try {
-      const customApi = await this.createCustomObjectsApi();
-      const version = this.getSchemaVersion();
-      const plural =
-        this.discoveredPlural ??
-        (await this.lookupCRDPlural()) ??
-        pluralizeKind(this.schemaDefinition.kind);
-      const listResponse = await customApi.listClusterCustomObject({
-        group: this.getSchemaGroup(),
-        version,
-        plural,
-        labelSelector: `${INSTANCE_RGD_LABEL}=${this.rgdName}`,
-      });
-      items =
-        (listResponse as { items?: Array<{ metadata?: { name?: unknown; namespace?: unknown } }> })
-          .items ?? [];
-    } catch (error: unknown) {
-      this.logger.debug('Instance-namespace discovery list failed; using resolved fallback', {
-        name,
-        error: ensureError(error).message,
-      });
-      return undefined;
-    }
-
-    const namespaces = new Set<string>();
-    for (const item of items) {
-      if (item.metadata?.name !== name) continue;
-      const ns = item.metadata?.namespace;
-      if (typeof ns === 'string' && ns.length > 0) namespaces.add(ns);
-    }
-
-    if (namespaces.size > 1) {
-      throw new CRDInstanceError(
-        `Ambiguous delete: instance '${name}' of RGD '${this.rgdName}' exists in multiple namespaces (${[...namespaces].sort().join(', ')}). ` +
-          'Refusing to guess which to delete — delete the specific CR directly, or disambiguate the instance names.',
-        this.schemaDefinition.apiVersion,
-        this.schemaDefinition.kind,
-        name,
-        'deletion'
-      );
-    }
-
-    return namespaces.values().next().value;
-  }
-
-  /**
    * Delete a specific instance by name
    */
   async deleteInstance(
@@ -1252,18 +1205,9 @@ export class KroResourceFactoryImpl<
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
     const apiVersion = this.getInstanceApiVersion();
-    // Discover the CR's ACTUAL namespace by label, cluster-wide, rather than
-    // deriving one from a spec we don't have here. This is what prevents the
-    // orphan bug: deleting at a wrongly-derived namespace returned a 404 that was
-    // (correctly) treated as "already gone", silently leaving the real CR — and
-    // its workloads — running. Label discovery targets the real CR, so a 404 now
-    // genuinely means the instance is absent. Ambiguous same-name matches across
-    // namespaces are rejected rather than guessed at.
-    const discoveredNamespace = await this.discoverInstanceNamespaceForDeletion(name);
-    // Fall back to the resolved instance namespace only when discovery found
-    // nothing (the CR is already absent) — the subsequent delete then 404s and is
-    // treated as a completed deletion, which is correct.
-    const instanceNamespace = discoveredNamespace ?? this.resolveInstanceNamespace();
+    // The instance CR lives in the factory namespace (it is never relocated), so
+    // delete it there — the pre-guard behavior. A 404 means it is already gone.
+    const instanceNamespace = this.namespace;
 
     // Tracks whether the CR was confirmed 404 by the poll loop. Used
     // later to decide whether to tear down the RGD/CRD or preserve
@@ -1473,17 +1417,17 @@ export class KroResourceFactoryImpl<
     const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
     const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
 
-    // Dedicated control-plane Namespace for the instance CR (when the instance
-    // namespace was decoupled from the owned workload namespace). Applied before
-    // the RGD + instance and outside the KRO graph, so the CR always has a
-    // namespace to land in and KRO never garbage-collects it. Marked RETAINED so
-    // a single stack's teardown/prune never deletes this shared namespace (which
-    // may hold another stack's KRO instances targeting the same workload ns).
+    // Any workload Namespace the composition owns is HOISTED out of the RGD graph
+    // and emitted here instead — before the RGD + instance and OUTSIDE the graph,
+    // so the CR always has a namespace to land in and KRO never garbage-collects
+    // it (which would strand the instance's finalizer). Marked RETAINED + deduped
+    // by namespace NAME so multiple stacks targeting the same workload namespace
+    // share ONE declaration and a single stack's teardown/prune never deletes it.
     const instanceNamespaceDeclarations: AlchemyResourceDeclaration[] = [];
     const instanceNamespaceIds: string[] = [];
-    if (this.shouldEmitInstanceNamespace(spec)) {
-      const decl = this.instanceNamespaceAlchemyDeclaration(
-        instanceNamespace,
+    for (const hoistedNs of this.hoistedNamespaceNames(spec)) {
+      const decl = this.hoistedNamespaceAlchemyDeclaration(
+        hoistedNs,
         kubeConfigOptions,
         prerequisiteIds
       );
@@ -1535,7 +1479,7 @@ export class KroResourceFactoryImpl<
     // RGD would then carry an object where a string belongs — KRO rejects the whole graph
     // (`GraphAccepted=False: expected string type ..., got object`) and it never reconciles. Matching
     // the load schema to the dump makes the round-trip lossless (the scalar stays the string it was).
-    const rgdManifest = yaml.load(this.buildRgdYaml(), { schema: yaml.JSON_SCHEMA }) as Record<
+    const rgdManifest = yaml.load(this.buildRgdYaml(spec), { schema: yaml.JSON_SCHEMA }) as Record<
       string,
       unknown
     >;
@@ -1574,7 +1518,7 @@ export class KroResourceFactoryImpl<
     // Cast: a plain KubernetesResource is fine — the alchemy path only reads kind/metadata.
     const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
     const instanceDeclaration: AlchemyResourceDeclaration = {
-      id: createAlchemyResourceId(crdAsEnhanced, instanceNamespace),
+      id: this.instanceAlchemyId(crdAsEnhanced, instanceNamespace),
       // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
       // before the main deploy), so the instance applies only once its dependencies exist.
       dependsOn: [rgdId, ...singletonInstanceIds, ...instanceNamespaceIds],
@@ -1602,6 +1546,25 @@ export class KroResourceFactoryImpl<
       rgdDeclaration,
       instanceDeclaration,
     ];
+  }
+
+  /**
+   * The alchemy resource id for a KRO instance CR — kind + name QUALIFIED BY the
+   * namespace the CR lives in.
+   *
+   * A KRO instance is identified by (namespace, name): two deploys with the SAME
+   * name in DIFFERENT namespaces (analytics/dev vs analytics/prod) are distinct
+   * resources and must get distinct alchemy ids so the second never clobbers the
+   * first (the collapse the instance-relocation design caused by forcing both into
+   * one namespace). `generateDeterministicResourceId` intentionally omits the
+   * namespace (in-graph resource ids are kind+name), so the namespace is folded in
+   * HERE, at the top-level alchemy-resource boundary, where it is the identity.
+   */
+  private instanceAlchemyId(
+    resource: Enhanced<unknown, unknown>,
+    instanceNamespace: string
+  ): string {
+    return toCamelCase(`${createAlchemyResourceId(resource, instanceNamespace)}-${instanceNamespace}`);
   }
 
   /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */
@@ -1749,13 +1712,11 @@ export class KroResourceFactoryImpl<
       // Shared singleton owner instances are created by `deploy()`; for the
       // GitOps path we emit them alongside the consuming instance, deps-first,
       // so the consuming RGD's externalRef resolves. No-op without singletons.
-      // The dedicated control-plane instance Namespace (when decoupled) leads,
-      // so the CR always has a namespace to apply into.
+      // Any owned workload Namespace hoisted out of the RGD graph leads, so the CR
+      // always has a namespace to apply into and KRO never garbage-collects it.
       const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
       const leadingInstanceYamls = [
-        ...(this.shouldEmitInstanceNamespace(spec)
-          ? [this.instanceNamespaceYaml(this.resolveInstanceNamespace(spec))]
-          : []),
+        ...[...this.hoistedNamespaceNames(spec)].map((ns) => this.hoistedNamespaceYaml(ns)),
         ...ownerYamls,
       ];
       return leadingInstanceYamls.length === 0
@@ -1780,8 +1741,15 @@ export class KroResourceFactoryImpl<
    * step — it's applied inline during ref-to-CEL conversion via
    * `SerializationContext.omitFields`, which `serializeResourceGraphToYaml`
    * populates from `kroSchema.__omitFields` automatically.
+   *
+   * A `spec` (when available) lets the RGD HOIST the composition's own workload
+   * Namespace out of the graph — resolving schema-driven names concretely. Without
+   * a spec (`toYaml()` for the shared RGD only), a workload Namespace whose name
+   * tracks `spec.namespace` is still hoisted structurally (see
+   * {@link nameReferencesSchemaNamespace}), because per instance it always names
+   * the same namespace that instance lands in.
    */
-  private buildRgdYaml(): string {
+  private buildRgdYaml(spec?: TSpec): string {
     if (this.factoryOptions.compositionAnalysis && !this.compositionAnalysisApplied) {
       this.compositionAnalysisApplied = true;
       applyAnalysisToResources(
@@ -1790,7 +1758,13 @@ export class KroResourceFactoryImpl<
       );
     }
 
-    const aspectResources = applyAspects(this.resources, {
+    // Hoist any owned workload Namespace OUT of the RGD graph: it is created
+    // deps-first as a retained resource (toYaml/toAlchemyResources) or via
+    // `ensureTargetNamespace` (imperative deploy), so deleting the instance can
+    // never garbage-collect the namespace holding its own finalizer.
+    const graphResources = this.resourcesForRgd(this.resources, spec);
+
+    const aspectResources = applyAspects(graphResources, {
       mode: 'kro',
       aspects: this.factoryOptions.aspects ?? [],
     });
@@ -1974,9 +1948,12 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine
+   * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine.
+   *
+   * The `spec` (when the caller has one) lets the RGD hoist the composition's own
+   * workload Namespace out of the graph with its schema-driven name resolved.
    */
-  private async ensureRGDDeployed(): Promise<void> {
+  private async ensureRGDDeployed(spec?: TSpec): Promise<void> {
     // Create DirectDeploymentEngine instance with KRO mode for CEL string generation
     const deploymentEngine = new DirectDeploymentEngine(
       this.getKubeConfig(),
@@ -1987,7 +1964,7 @@ export class KroResourceFactoryImpl<
 
     // Build the RGD YAML — shared with toYaml() so both call sites emit
     // identical post-processed output and share the single-apply guard.
-    const rgdYaml = this.buildRgdYaml();
+    const rgdYaml = this.buildRgdYaml(spec);
 
     // Parse the YAML to get the RGD object. Use js-yaml with JSON_SCHEMA to MATCH the dump schema in
     // `serializeResourceGraphToYaml` (same fix as the alchemy path above — this is the imperative/direct
@@ -2643,17 +2620,20 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Labels/annotations marking the control-plane Namespace as SHARED, RETAINED
+   * Labels/annotations marking a hoisted workload Namespace as SHARED, RETAINED
    * infrastructure that must survive any single consumer's teardown/prune.
    *
    * Retention is declared for BOTH major GitOps reconcilers, not just Flux, so a
-   * prune by whichever tool manages a consuming app can never delete this shared
-   * namespace (and with it every OTHER stack's KRO instances living inside it):
+   * prune (or an Application deletion) by whichever tool manages a consuming app
+   * can never delete this shared namespace (and with it every OTHER stack's
+   * resources living inside it):
    *   - `kustomize.toolkit.fluxcd.io/prune: disabled` — Flux Kustomize.
-   *   - `argocd.argoproj.io/sync-options: Prune=false` — Argo CD.
+   *   - `argocd.argoproj.io/sync-options: Prune=false,Delete=false` — Argo CD.
+   *     `Delete=false` is what survives an Argo Application DELETION, not merely a
+   *     sync-prune (`Prune=false` alone does NOT).
    * The alchemy path pairs these with a `retain` prop (see
-   * {@link instanceNamespaceAlchemyDeclaration}) that skips delete. For any other
-   * GitOps tool, pre-create the control-plane namespace out-of-band.
+   * {@link hoistedNamespaceAlchemyDeclaration}) that skips delete. For any other
+   * GitOps tool, pre-create the workload namespace out-of-band.
    */
   private static readonly INSTANCE_NAMESPACE_METADATA = {
     labels: {
@@ -2662,54 +2642,53 @@ export class KroResourceFactoryImpl<
     },
     annotations: {
       'kustomize.toolkit.fluxcd.io/prune': 'disabled',
-      'argocd.argoproj.io/sync-options': 'Prune=false',
+      'argocd.argoproj.io/sync-options': 'Prune=false,Delete=false',
     },
   } as const;
 
   /**
-   * The single, shared control-plane Namespace that holds this factory's KRO
-   * instance(s), emitted when the instance namespace was decoupled from the
-   * workload namespace. It is created OUTSIDE the KRO graph — deps-first in
-   * GitOps/alchemy, and via `ensureTargetNamespace` in the imperative path — so
-   * KRO never garbage-collects it and the instance's finalizer can never be
-   * stranded by its own namespace terminating.
+   * A workload Namespace this composition owns, HOISTED out of the RGD graph and
+   * emitted as a retained resource instead. It is created OUTSIDE the KRO graph —
+   * deps-first in GitOps/alchemy, and via `ensureTargetNamespace` in the imperative
+   * path — so KRO never garbage-collects it and the instance's finalizer can never
+   * be stranded by its own namespace terminating.
    *
-   * It is a SHARED SINGLETON: its identity (resource id + deterministic alchemy
-   * id) is derived from the namespace NAME, not this factory's RGD, so every
-   * consumer that relocates to the same control-plane namespace emits the SAME
-   * declaration — alchemy dedupes them to one owner/state entry rather than N
-   * fighting copies. Combined with retention (prune-disabled here; delete-skip in
-   * the alchemy props), one stack's teardown never deletes another stack's KRO
-   * instances living inside it.
+   * It is a SHARED SINGLETON deduped by the namespace NAME: its identity (resource
+   * id + deterministic alchemy id) is derived from the namespace name, not this
+   * factory's RGD, so every consumer/stack targeting the SAME workload namespace
+   * emits the SAME declaration — alchemy dedupes them to one owner/state entry
+   * rather than N fighting copies. Combined with retention (prune-disabled here;
+   * delete-skip in the alchemy props), one stack's teardown never deletes another
+   * stack's resources living inside it.
    */
-  private buildInstanceNamespaceResource(
-    instanceNamespace: string
+  private buildHoistedNamespaceResource(
+    workloadNamespace: string
   ): Enhanced<
     import('@kubernetes/client-node').V1Namespace['spec'],
     import('@kubernetes/client-node').V1Namespace['status']
   > {
     return namespaceResource({
       metadata: {
-        name: instanceNamespace,
+        name: workloadNamespace,
         labels: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels },
         annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
       },
       // Keyed to the namespace NAME (a shared singleton), not `this.rgdName`, so
-      // two factories relocating to the same control-plane namespace produce one
+      // two factories/stacks targeting the same workload namespace produce one
       // deduped declaration instead of conflicting owned copies.
-      id: toCamelCase(`kro-instance-namespace-${instanceNamespace}`),
+      id: toCamelCase(`kro-instance-namespace-${workloadNamespace}`),
     }) as Enhanced<
       import('@kubernetes/client-node').V1Namespace['spec'],
       import('@kubernetes/client-node').V1Namespace['status']
     >;
   }
 
-  private instanceNamespaceAlchemyDeclaration(
-    instanceNamespace: string,
+  private hoistedNamespaceAlchemyDeclaration(
+    workloadNamespace: string,
     kubeConfigOptions: SerializableKubeConfigOptions,
     dependsOn: readonly string[]
   ): AlchemyResourceDeclaration {
-    const nsEnhanced = this.buildInstanceNamespaceResource(instanceNamespace);
+    const nsEnhanced = this.buildHoistedNamespaceResource(workloadNamespace);
     const timeout = this.factoryOptions.timeout;
     const resourceId = (nsEnhanced as { id?: string }).id;
     return {
@@ -2719,11 +2698,11 @@ export class KroResourceFactoryImpl<
       props: {
         resource: nsEnhanced as Enhanced<unknown, unknown>,
         ...(resourceId !== undefined ? { resourceId } : {}),
-        namespace: instanceNamespace,
+        namespace: workloadNamespace,
         deploymentStrategy: 'direct' as const,
-        // RETAINED: the control-plane namespace is shared infrastructure. Never
-        // delete it on a single stack's teardown/prune — another stack targeting
-        // the same workload namespace may still have KRO instances inside it.
+        // RETAINED: the workload namespace is shared infrastructure. Never delete
+        // it on a single stack's teardown/prune — another stack targeting the same
+        // workload namespace may still have resources inside it.
         retain: true,
         kubeConfigOptions,
         options: {
@@ -2734,14 +2713,14 @@ export class KroResourceFactoryImpl<
     };
   }
 
-  private instanceNamespaceYaml(instanceNamespace: string): string {
+  private hoistedNamespaceYaml(workloadNamespace: string): string {
     return yaml
       .dump(
         {
           apiVersion: 'v1',
           kind: 'Namespace',
           metadata: {
-            name: instanceNamespace,
+            name: workloadNamespace,
             labels: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels },
             annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
           },
@@ -2760,6 +2739,11 @@ export class KroResourceFactoryImpl<
       instanceNamespace: this.resolveInstanceNamespace(spec),
       spec,
       resources: this.resources,
+      // The owned workload namespace is hoisted out of the graph (created retained,
+      // deps-first), so the guard treats it as safe. Everything not hoisted — an
+      // unprovable owned name, or an EXPLICIT `instanceNamespace` pin back onto an
+      // owned namespace — still throws.
+      hoistedNamespaces: this.hoistedNamespaceNames(spec),
       ...(compositionFn ? { compositionFn } : {}),
     });
   }

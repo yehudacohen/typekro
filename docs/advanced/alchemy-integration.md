@@ -120,25 +120,26 @@ Alchemy applies singleton owners and the RGD first, then the instance, and the K
 
 ### Compositions that own their workload namespace (auto-detected)
 
-A composition that creates and **owns its workload Namespace** as a graph child (typically a bootstrap that installs an operator/Helm release into a namespace it also creates) must not place the KRO instance CR inside that self-owned namespace: KRO deletes graph children — including the Namespace — before clearing the owner CR's finalizer, so a self-owned instance namespace would deadlock on delete.
+A composition that creates and **owns its workload Namespace** as a graph child (typically a bootstrap that installs an operator/Helm release into a namespace it also creates) can't leave that Namespace a graph child while the instance CR lives inside it: KRO deletes graph children — including the Namespace — before clearing the owner CR's finalizer, so a self-owned instance namespace would deadlock on delete.
 
-TypeKro handles this **automatically** — no flag. When it detects that a composition owns the Namespace its instance would land in, it **relocates** the instance CR to a single, stable control-plane namespace, `typekro-system` (overridable with the `instanceNamespace` factory option). So `toAlchemyResources` returns an **extra leading declaration**: the control-plane Namespace that holds the instance CR. A composition with no singletons therefore yields **three** declarations instead of two:
+TypeKro handles this **automatically** — no flag, and **without moving the instance**. When it detects that a composition owns the Namespace its instance would land in, it **hoists that Namespace out of the RGD graph** and emits it as a **retained** resource created deps-first (outside the graph). The instance CR stays in its **natural** namespace (`spec.namespace ?? the factory namespace`). Because the namespace is no longer a graph child, deleting the instance can never garbage-collect it, so the finalizer is never stranded. So `toAlchemyResources` returns an **extra leading declaration**: the retained workload Namespace. A composition with no singletons therefore yields **three** declarations instead of two:
 
 ```typescript
 const factory = await bootstrap.factory('kro'); // owns its workload namespace
 
 const decls = await factory.toAlchemyResources({ name: 'demo', namespace: 'workloads' });
-// decls[0]  → the control-plane Namespace `typekro-system` (retained; see below)
-// decls[-2] → the composition's RGD
-// decls[-1] → its CR instance, namespaced to `typekro-system` (dependsOn the RGD + namespace)
+// decls[0]  → the retained workload Namespace `workloads` (see below)
+// decls[-2] → the composition's RGD (no longer owns the Namespace as a child)
+// decls[-1] → its CR instance, in its natural namespace `workloads` (dependsOn the RGD + namespace)
 ```
 
-Two properties matter:
+Three properties matter:
 
-- **One stable, shared namespace — a deduped singleton.** Every namespace-owning composition relocates to the same `typekro-system`, and its declaration id is keyed to that namespace name (not the RGD), so N factories converge on **one** retained state entry rather than N fighting copies. A constant is always a valid namespace name and — unlike the earlier per-workload `<ns>-kro` scheme — is resolvable without a spec, so `getInstances`/`deleteInstance` target it unambiguously.
-- **Retained across GitOps tools.** The control-plane namespace is created **outside** the KRO graph and is marked **retained** — its alchemy declaration carries `retain: true` (delete is skipped, dropping only the state entry) and the emitted Namespace carries **both** `kustomize.toolkit.fluxcd.io/prune: disabled` (Flux) **and** `argocd.argoproj.io/sync-options: Prune=false` (Argo CD). Tearing down or pruning one stack never deletes the shared namespace out from under another stack's KRO instances. For any other GitOps tool, pre-create `typekro-system` out-of-band.
+- **The instance stays put — distinct identities never collapse.** The instance keeps its natural namespace and its alchemy id is qualified by that namespace, so two deploys with the same name in different namespaces (`analytics/dev` vs `analytics/prod`) remain distinct resources; the second never clobbers the first.
+- **A deduped, name-keyed singleton.** The hoisted Namespace's declaration id is keyed to the namespace **name** (not the RGD), so N factories/stacks targeting the same workload namespace converge on **one** retained state entry rather than N fighting copies.
+- **Retained across GitOps tools — even on Application deletion.** The namespace is created **outside** the KRO graph and marked **retained** — its alchemy declaration carries `retain: true` (delete is skipped, dropping only the state entry) and the emitted Namespace carries **both** `kustomize.toolkit.fluxcd.io/prune: disabled` (Flux) **and** `argocd.argoproj.io/sync-options: Prune=false,Delete=false` (Argo CD; `Delete=false` is what survives an Argo Application **deletion**, not merely a sync-prune). Tearing down or pruning one stack never deletes the shared namespace out from under another stack. For any other GitOps tool, pre-create the workload namespace out-of-band.
 
-A composition that does **not** own its namespace is unaffected — its instance stays in the factory `namespace`. The self-owned-namespace safety guard remains the real protection for the case relocation cannot cover: explicitly pinning `instanceNamespace` to a namespace the composition owns still throws `UNSAFE_KRO_NAMESPACE_OWNERSHIP`.
+A composition that does **not** own the instance's namespace is unaffected — the Namespace stays in the graph. The self-owned-namespace safety guard remains the real protection for the cases hoisting cannot cover: an owned Namespace whose name can't be proven safe (fails closed), and explicitly pinning `instanceNamespace` to a namespace the composition owns — both still throw `UNSAFE_KRO_NAMESPACE_OWNERSHIP`.
 
 ## Security: kubeconfig in Alchemy state
 
