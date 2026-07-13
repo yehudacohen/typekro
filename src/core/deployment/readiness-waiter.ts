@@ -132,8 +132,12 @@ export class ReadinessWaiter {
   ): Promise<void> {
     const resourceKey = `${deployedResource.kind}/${deployedResource.name}/${deployedResource.namespace}`;
 
-    // Check if already marked as ready
-    if (deployedResource.status === 'ready' || this.readyResources.has(resourceKey)) {
+    // A deployed-resource record marked ready is immutable evidence for this
+    // deployment attempt. The process-wide readyResources set is diagnostic
+    // state only: the same Kubernetes identity may have just been updated, so
+    // reusing an earlier readiness result would skip observedGeneration and
+    // other post-update convergence checks.
+    if (deployedResource.status === 'ready') {
       this.logger.debug('Resource already marked as ready', { resourceKey });
       return;
     }

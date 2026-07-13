@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -97,6 +97,10 @@
     "./valkey": {
       "import": "./dist/factories/valkey/index.js",
       "types": "./dist/factories/valkey/index.d.ts"
+    },
+    "./nats": {
+      "import": "./dist/factories/nats/index.js",
+      "types": "./dist/factories/nats/index.d.ts"
     },
     "./containers": {
       "import": "./dist/core/containers/index.js",

@@ -15,7 +15,6 @@ import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js'
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
-import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 import type {
   DeployedResource,
   DeploymentError,
@@ -23,8 +22,13 @@ import type {
   DeploymentOptions,
   RollbackResult,
 } from '../types/deployment.js';
-import type { Enhanced, KubernetesResource, KubernetesResourceHeader } from '../types/kubernetes.js';
+import type {
+  Enhanced,
+  KubernetesResource,
+  KubernetesResourceHeader,
+} from '../types/kubernetes.js';
 import { isNotFoundError } from './k8s-helpers.js';
+import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 
 /**
  * Configuration for rollback operations
@@ -323,24 +327,22 @@ export class ResourceRollbackManager {
     deployedResources: DeployedResource[],
     options: DeploymentOptions
   ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
-    const filtered = [...deployedResources]
-      .reverse()
-      .filter((r) => {
-        const scopes = getEffectiveScopes(r.manifest);
-        if (options.targetScopes !== undefined) {
-          return scopesMatchFilter(scopes, options.targetScopes);
-        }
-        if (scopes.length > 0) {
-          this.logger.debug('Skipping scoped resource during rollback', {
-            resourceId: r.id,
-            kind: r.kind,
-            name: r.name,
-            scopes,
-          });
-          return false;
-        }
-        return true;
-      });
+    const filtered = [...deployedResources].reverse().filter((r) => {
+      const scopes = getEffectiveScopes(r.manifest);
+      if (options.targetScopes !== undefined) {
+        return scopesMatchFilter(scopes, options.targetScopes);
+      }
+      if (scopes.length > 0) {
+        this.logger.debug('Skipping scoped resource during rollback', {
+          resourceId: r.id,
+          kind: r.kind,
+          name: r.name,
+          scopes,
+        });
+        return false;
+      }
+      return true;
+    });
     return this.deleteResourceList(filtered, options);
   }
 
@@ -365,7 +367,7 @@ export class ResourceRollbackManager {
       if (resource.status === 'failed' && resource.applied !== true) continue;
 
       try {
-        await this.deleteDeployedResource(resource);
+        await this.deleteDeployedResource(resource, options.timeout);
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
       } catch (error: unknown) {
@@ -397,7 +399,7 @@ export class ResourceRollbackManager {
    * should be deleted. Filtering at this level would silently drop
    * resources that the caller explicitly targeted for deletion.
    */
-  async deleteDeployedResource(resource: DeployedResource): Promise<void> {
+  async deleteDeployedResource(resource: DeployedResource, timeout?: number): Promise<void> {
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,
@@ -425,11 +427,21 @@ export class ResourceRollbackManager {
         throw error;
       }
 
+      // Namespace deletion is asynchronous and may be blocked by PVCs that
+      // Kubernetes cannot garbage-collect until their volumes are released.
+      // DirectResourceFactory owns that lifecycle: it removes PVCs only for
+      // explicitly targeted Namespaces and waits for the Namespace 404. Do
+      // not consume the generic per-resource timeout here before that cleanup
+      // has had a chance to run.
+      if (resource.kind === 'Namespace') {
+        return;
+      }
+
       // Wait for resource to be deleted
-      const timeout = DEFAULT_DELETE_TIMEOUT;
+      const deleteTimeout = timeout ?? DEFAULT_DELETE_TIMEOUT;
       const startTime = Date.now();
 
-      while (Date.now() - startTime < timeout) {
+      while (Date.now() - startTime < deleteTimeout) {
         try {
           await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
@@ -453,7 +465,7 @@ export class ResourceRollbackManager {
         `Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`,
         resource.kind,
         resource.name,
-        timeout,
+        deleteTimeout,
         'deletion'
       );
     } catch (error: unknown) {

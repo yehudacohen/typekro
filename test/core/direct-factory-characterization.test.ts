@@ -211,6 +211,49 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     expect(deployedInstances.size).toBe(0);
   });
 
+  it('factory rollback completes owned Namespace deletion through the shared teardown path', async () => {
+    const factory = createDirectResourceFactory(
+      'factory-rollback-namespace-completion',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'FactoryRollbackNamespaceCompletion',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    const deployedInstances = (factory as unknown as { deployedInstances: Map<string, unknown> })
+      .deployedInstances;
+    deployedInstances.set('my-app', {
+      metadata: {
+        name: 'my-app',
+        annotations: { 'typekro.io/deployment-id': 'deploy-namespace' },
+      },
+    });
+    const rollbackResult = {
+      deploymentId: 'deploy-namespace',
+      rolledBackResources: ['Deployment/my-app', 'Namespace/owned-system'],
+      duration: 5,
+      status: 'success' as const,
+      errors: [],
+    };
+    const completeNamespaceDeletion = mock(() => Promise.resolve());
+    (factory as unknown as Record<string, unknown>).getDeploymentEngine = () => ({
+      rollback: mock(() => Promise.resolve(rollbackResult)),
+      loadDeploymentByInstance: mock(() => Promise.resolve(undefined)),
+    });
+    (factory as unknown as Record<string, unknown>).completeNamespaceDeletion =
+      completeNamespaceDeletion;
+
+    const result = await factory.rollback();
+
+    expect(result.status).toBe('success');
+    expect(completeNamespaceDeletion).toHaveBeenCalledWith(rollbackResult);
+    expect(deployedInstances.size).toBe(0);
+  });
+
   it('throws when namespace deletion does not complete before timeout', async () => {
     const factory = createDirectResourceFactory(
       'namespace-timeout-test',
