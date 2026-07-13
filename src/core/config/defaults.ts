@@ -6,8 +6,6 @@
  * the codebase with self-documenting named constants.
  */
 
-import { createHash } from 'node:crypto';
-
 // =============================================================================
 // DEPLOYMENT TIMEOUTS
 // =============================================================================
@@ -163,7 +161,7 @@ export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
 export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
 
 /**
- * Suffix for the dedicated control-plane namespace that holds a KRO instance
+ * The single, stable control-plane namespace that holds every KRO instance
  * (custom-resource) whose composition creates and owns its own workload
  * Namespace as a graph child.
  *
@@ -171,67 +169,19 @@ export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
  * it clears the owner CR's finalizer. If the CR lived in that same owned
  * Namespace, namespace termination would block on the still-present finalizer
  * while KRO refuses to clear the finalizer until the Namespace is gone — a
- * permanent deletion deadlock. Placing the CR in a separate control-plane
- * namespace (derived from the workload namespace via this suffix) keeps the two
- * decoupled so deleting the instance can never terminate the namespace holding
- * its own finalizer.
- */
-export const KRO_INSTANCE_CONTROL_PLANE_SUFFIX = '-kro';
-
-/**
- * Maximum length of a Kubernetes namespace name (a DNS-1123 label).
- */
-export const K8S_NAMESPACE_NAME_MAX_LENGTH = 63;
-
-/**
- * Length of the short deterministic hash appended when a derived control-plane
- * namespace must be truncated to fit {@link K8S_NAMESPACE_NAME_MAX_LENGTH}.
- */
-const CONTROL_PLANE_NAMESPACE_HASH_LENGTH = 8;
-
-/**
- * Short, deterministic, collision-resistant hash of a string, rendered as
- * lowercase hex (safe for a DNS-1123 label). Used to disambiguate truncated
- * control-plane namespace names.
- */
-function shortDeterministicHash(input: string): string {
-  return createHash('sha256')
-    .update(input)
-    .digest('hex')
-    .slice(0, CONTROL_PLANE_NAMESPACE_HASH_LENGTH);
-}
-
-/**
- * Derive the control-plane namespace that should hold the KRO instance CR for a
- * composition that owns its workload namespace. Kept deterministic and derived
- * per workload namespace (rather than a single shared namespace) so instances of
- * the same composition kind deployed to different workload namespaces — e.g. a
- * dev/prod pair in one cluster — stay isolated instead of colliding on a shared
- * (namespace, name) key.
+ * permanent deletion deadlock. Relocating the CR into this separate control-plane
+ * namespace keeps the two decoupled so deleting the instance can never terminate
+ * the namespace holding its own finalizer.
  *
- * The naive `<workloadNamespace>-kro` can exceed the 63-char Kubernetes
- * namespace limit for a long workload namespace, which would yield an invalid
- * (and un-applyable) name. When that happens we truncate a prefix of the
- * workload name and append a short, deterministic hash of the FULL workload name
- * before the suffix, so the result is always ≤63 chars, stable for a given
- * input, and distinct for distinct inputs (the hash disambiguates two long names
- * that share a truncated prefix).
+ * It is a fixed constant (not derived per workload namespace) for three reasons:
+ * a constant is always a valid DNS-1123 label (no truncation/hashing needed);
+ * lifecycle operations that have no spec (`getInstances`/`deleteInstance`) can
+ * resolve it unambiguously; and a single shared, retained namespace dedupes to
+ * one owner across every consumer instead of a sprawl of `<ns>-kro` namespaces.
+ * The name mirrors the existing `typekro-singletons` singleton-owner namespace.
+ * Override per factory with the `instanceNamespace` option.
  */
-export function controlPlaneNamespaceFor(workloadNamespace: string): string {
-  const naive = `${workloadNamespace}${KRO_INSTANCE_CONTROL_PLANE_SUFFIX}`;
-  if (naive.length <= K8S_NAMESPACE_NAME_MAX_LENGTH) {
-    return naive;
-  }
-
-  const hash = shortDeterministicHash(workloadNamespace);
-  // Budget: total 63 = prefix + '-' + hash + suffix.
-  const prefixBudget =
-    K8S_NAMESPACE_NAME_MAX_LENGTH - KRO_INSTANCE_CONTROL_PLANE_SUFFIX.length - hash.length - 1;
-  // Trim trailing '-' so the joined name never has a doubled/leading separator
-  // in a spot that would break DNS-1123 (labels can't start/end with '-').
-  const prefix = workloadNamespace.slice(0, prefixBudget).replace(/-+$/, '');
-  return `${prefix}-${hash}${KRO_INSTANCE_CONTROL_PLANE_SUFFIX}`;
-}
+export const KRO_INSTANCE_CONTROL_PLANE_NAMESPACE = 'typekro-system';
 
 /**
  * Well-known Helm repository URL patterns mapped to their canonical sourceRef names.

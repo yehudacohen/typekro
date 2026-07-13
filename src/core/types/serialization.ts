@@ -460,22 +460,4 @@ export interface ResourceGraphDefinition<
   spec: Type<TSpec>;
   /** ArkType schema defining the status fields that the composition populates. */
   status: Type<TStatus>;
-  /**
-   * Declares that this composition creates and OWNS a workload Namespace as a
-   * graph child (e.g. a bootstrap that installs an operator/Helm release into a
-   * namespace it also creates).
-   *
-   * When set, `factory('kro', …)` places the KRO instance CR in a separate
-   * control-plane namespace by default (derived from the workload namespace, or
-   * an explicit `instanceNamespace`) instead of the workload namespace, so the
-   * instance is never inside the Namespace its own graph owns. This avoids the
-   * KRO deletion deadlock (children — including the Namespace — are deleted
-   * before the owner CR's finalizer is cleared) while still creating and owning
-   * the workload namespace. Compositions that do NOT own their namespace should
-   * leave this unset; the ownership-safety guard still rejects an unmitigated
-   * self-owned instance namespace for them.
-   *
-   * @default false
-   */
-  ownsInstanceNamespace?: boolean;
 }

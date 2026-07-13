@@ -614,20 +614,23 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   hydrateStatus?: boolean;
 
   /**
-   * Control-plane namespace for the KRO instance (custom resource), decoupled
-   * from the workload `namespace` the composition creates and owns.
+   * Control-plane namespace override for the KRO instance (custom resource),
+   * decoupled from the workload `namespace` the composition creates and owns.
    *
    * A composition that creates and owns its own workload Namespace as a graph
    * child must NOT place the KRO instance CR in that same namespace: KRO deletes
    * graph children (including the Namespace) before clearing the owner CR's
    * finalizer, so a self-owned instance namespace strands the finalizer on
-   * delete. Set this to a namespace the composition does NOT own to keep the two
-   * decoupled. TypeKro ensures the control-plane namespace exists.
+   * delete.
    *
-   * Compositions that declare `ownsInstanceNamespace` derive a safe default for
-   * this automatically (see {@link controlPlaneNamespaceFor}); set this only to
-   * override that default. Leaving it unset for a non-owning composition keeps
-   * the instance in `namespace`, exactly as before.
+   * TypeKro handles this AUTOMATICALLY: when it detects that a composition owns
+   * the Namespace its instance would land in, it relocates the instance CR to the
+   * shared control-plane namespace ({@link KRO_INSTANCE_CONTROL_PLANE_NAMESPACE},
+   * `typekro-system`) — no flag required. Set this option only to override that
+   * default with a namespace of your choosing. TypeKro ensures the chosen
+   * namespace exists (created outside the KRO graph, retained). Pinning this to a
+   * namespace the composition itself owns re-opens the unsafe pattern and is
+   * rejected by the ownership-safety guard.
    */
   instanceNamespace?: string;
 
@@ -758,18 +761,6 @@ export interface InternalFactoryOptions {
   rgdProvider?: ResourceGraphDefinitionProvider;
   /** Collected singleton definitions used by this graph (internal use) */
   singletonDefinitions?: SingletonDefinitionRecord[];
-
-  /**
-   * Mirrors {@link SchemaDefinition.ownsInstanceNamespace} onto the factory so the
-   * KRO factory can resolve the instance's control-plane namespace from the
-   * CONCRETE spec at deploy/serialize time (rather than baking it in at factory
-   * creation, before a spec exists). When set — or when an explicit
-   * `instanceNamespace` is given — the factory places the KRO instance CR in a
-   * dedicated control-plane namespace derived from the workload namespace and
-   * emits/ensures that Namespace before the RGD + instance, OUTSIDE the KRO graph
-   * (so KRO never garbage-collects it). Set internally by `factory('kro', …)`.
-   */
-  ownsInstanceNamespace?: boolean;
 }
 
 /**

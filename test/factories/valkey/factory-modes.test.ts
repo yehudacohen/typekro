@@ -188,24 +188,25 @@ describe('valkeyBootstrap factory modes', () => {
     expect(yaml).not.toContain('__typekroSchemaKey');
   });
 
-  it('decouples the instance into a control-plane namespace (ownsInstanceNamespace)', async () => {
+  it('auto-relocates the instance into the single control-plane namespace', async () => {
     // valkeyBootstrap creates and owns its operator Namespace, so the natural
-    // same-namespace call is made safe by placing the CR in `<ns>-kro` rather
-    // than being rejected (regression fix for the v0.25.0 ownership guard).
+    // same-namespace call is auto-relocated to the shared control-plane namespace
+    // `typekro-system` rather than being rejected (regression fix for the v0.25.0
+    // ownership guard) — no flag required.
     const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
     const spec = { name: 'valkey-operator', namespace: 'valkey-system' } as never;
 
     const yaml = factory.toYaml(spec);
-    expect(yaml).toContain('namespace: valkey-system-kro');
+    expect(yaml).toContain('namespace: typekro-system');
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
 
     const decls = await factory.toAlchemyResources(spec);
     expect(decls[0]?.props.resource.kind).toBe('Namespace');
-    expect(decls[0]?.props.resource.metadata?.name).toBe('valkey-system-kro');
-    expect(decls.at(-1)?.props.namespace).toBe('valkey-system-kro');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('typekro-system');
+    expect(decls.at(-1)?.props.namespace).toBe('typekro-system');
   });
 
-  it('rejects the same namespace invariant through composition nesting', () => {
+  it('auto-relocates through composition nesting; explicit pin to an owned namespace still throws', () => {
     const parent = kubernetesComposition(
       {
         name: 'valkey-nested-owner',
@@ -222,11 +223,18 @@ describe('valkeyBootstrap factory modes', () => {
       }
     );
 
+    // Detection sees the nested-owned namespace and auto-relocates instead of throwing.
+    const yaml = parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
+      name: 'platform',
+      operatorNamespace: 'valkey-system',
+    });
+    expect(yaml).toContain('namespace: typekro-system');
+
+    // Guard intact: explicitly pinning the instance back into the owned namespace throws.
     expect(() =>
-      parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
-        name: 'platform',
-        operatorNamespace: 'valkey-system',
-      })
+      parent
+        .factory('kro', { namespace: 'valkey-system', instanceNamespace: 'valkey-system' })
+        .toYaml({ name: 'platform', operatorNamespace: 'valkey-system' })
     ).toThrow('cannot also be an owned Namespace');
   });
 

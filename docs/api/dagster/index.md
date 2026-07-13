@@ -40,17 +40,17 @@ TypeKro inspected chart-generated Deployments or Pods.
 
 ## Minimal Bootstrap
 
-`dagsterBootstrap` creates and owns its target Namespace, so the KRO instance
-CR is placed in a dedicated control-plane namespace by default (derived as
-`<namespace>-kro`) rather than in the namespace the graph owns — deleting the
-instance can therefore never terminate the namespace holding its own finalizer.
-Pass `instanceNamespace` to choose that control-plane namespace explicitly.
+`dagsterBootstrap` creates and owns its target Namespace, so TypeKro auto-detects
+this and relocates the KRO instance CR to the shared control-plane namespace
+`typekro-system` rather than the namespace the graph owns — deleting the instance
+can therefore never terminate the namespace holding its own finalizer. Pass
+`instanceNamespace` to choose that control-plane namespace explicitly.
 
 ```ts
 import { dagsterBootstrap } from 'typekro/dagster';
 
 // Deploy Dagster into the `dagster` namespace; the instance CR lands in
-// `dagster-kro` automatically.
+// `typekro-system` automatically.
 const factory = dagsterBootstrap.factory('kro', {
   namespace: 'dagster',
 });

@@ -49,18 +49,19 @@ describe('Valkey operator installation contract', () => {
     expect(valkeyBootstrap.factory('kro', { namespace: 'test' }).mode).toBe('kro');
   });
 
-  it('decouples a KRO instance into a control-plane namespace instead of rejecting it', async () => {
+  it('auto-relocates a KRO instance into the control-plane namespace instead of rejecting it', async () => {
     // valkeyBootstrap owns its operator Namespace, so the same-namespace call is
-    // made safe by relocating the CR to `<ns>-kro` (v0.25.0 guard regression fix).
+    // made safe by auto-relocating the CR to the shared control-plane namespace
+    // `typekro-system` (v0.25.0 guard regression fix) — no flag required.
     const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
     const spec = {
       name: 'valkey-operator',
       namespace: 'valkey-system',
     };
 
-    expect(factory.toYaml(spec)).toContain('namespace: valkey-system-kro');
+    expect(factory.toYaml(spec)).toContain('namespace: typekro-system');
     const decls = await factory.toAlchemyResources(spec);
-    expect(decls[0]?.props.resource.metadata?.name).toBe('valkey-system-kro');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('typekro-system');
   });
 
   it('accepts a separate KRO control-plane and operator namespace', () => {

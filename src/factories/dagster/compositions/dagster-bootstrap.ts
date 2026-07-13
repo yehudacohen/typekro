@@ -58,11 +58,6 @@ export const dagsterBootstrap = kubernetesComposition(
     kind: 'DagsterBootstrap',
     spec: DagsterBootstrapConfigSchema,
     status: DagsterBootstrapStatusSchema,
-    // This composition creates and owns the target Namespace as a graph child, so
-    // the KRO instance CR must live in a separate control-plane namespace — else
-    // deleting the instance would terminate the namespace holding its own
-    // finalizer (KRO deletes children before clearing the owner finalizer).
-    ownsInstanceNamespace: true,
   },
   (spec) => {
     const resolvedNamespace = spec.namespace || 'dagster';

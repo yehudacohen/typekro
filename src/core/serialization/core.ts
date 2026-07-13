@@ -2022,36 +2022,6 @@ function wrapWithResourceGraphProxy<
  * );
  * ```
  */
-/**
- * Propagate the composition's instance-namespace policy onto the factory
- * options WITHOUT resolving a concrete control-plane namespace here.
- *
- * The control-plane namespace must be derived from the CONCRETE spec's workload
- * namespace, but this runs at `factory('kro', …)` creation — before any spec
- * exists. Baking `<factoryNamespace>-kro` in at this point ignored the per-call
- * `spec.namespace` (e.g. `factory('kro').toYaml({ namespace: 'workloads' })`
- * wrongly landed in `default-kro`, colliding across workload namespaces). So we
- * only carry the `ownsInstanceNamespace` directive forward; the KRO factory
- * resolves the actual instance namespace per spec at deploy/serialize time.
- *
- * A composition that does NOT own its namespace and passes no explicit
- * `instanceNamespace` override is left untouched — the instance stays in
- * `namespace`, and the ownership-safety guard still rejects an unmitigated
- * self-owned instance namespace.
- */
-function withKroInstanceNamespacePolicy<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
->(
-  definition: ResourceGraphDefinition<TSpec, TStatus>,
-  factoryOptions?: PublicFactoryOptions
-): PublicFactoryOptions & { ownsInstanceNamespace?: boolean } {
-  return {
-    ...factoryOptions,
-    ...(definition.ownsInstanceNamespace ? { ownsInstanceNamespace: true } : {}),
-  };
-}
-
 export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -2261,7 +2231,7 @@ function createTypedResourceGraph<
           schemaDefinition,
           analyzedStatusMappings,
           {
-            ...withKroInstanceNamespacePolicy(definition, factoryOptions),
+            ...factoryOptions,
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,

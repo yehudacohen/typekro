@@ -61,10 +61,6 @@ export const valkeyBootstrap = kubernetesComposition(
     kind: 'ValkeyBootstrap',
     spec: ValkeyBootstrapConfigSchema,
     status: ValkeyBootstrapStatusSchema,
-    // Creates and owns the operator Namespace as a graph child, so the KRO
-    // instance CR must live in a separate control-plane namespace (see
-    // ownsInstanceNamespace docs).
-    ownsInstanceNamespace: true,
   },
   (spec: ValkeyBootstrapConfig) => {
     const resolvedNamespace = spec.namespace ?? DEFAULT_VALKEY_OPERATOR_NAMESPACE;

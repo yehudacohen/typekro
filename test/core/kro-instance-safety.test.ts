@@ -19,7 +19,11 @@ const schema = {
 };
 
 describe('KRO instance namespace ownership safety', () => {
-  it('rejects a self-owned Namespace whose name is wrapped in Cel.expr', () => {
+  it('auto-relocates a self-owned Namespace (name wrapped in Cel.expr) instead of throwing', () => {
+    // The create-namespace-and-put-the-instance-in-it pattern: the composition
+    // owns the same namespace the instance would land in. Detection (reused by
+    // the guard) recognizes this and relocates the CR to `typekro-system` rather
+    // than rejecting it — no flag needed.
     const composition = kubernetesComposition(schema, (spec) => {
       namespace({
         id: 'ownedNamespace',
@@ -30,9 +34,13 @@ describe('KRO instance namespace ownership safety', () => {
     const factory = composition.factory('kro', { namespace: 'danger' });
 
     expect(composition.toYaml()).toContain('${schema.spec.namespace}');
-    expect(() => factory.toYaml({ name: 'test', namespace: 'danger' })).toThrow(
-      'cannot also be an owned Namespace'
-    );
+    let yaml = '';
+    expect(() => {
+      yaml = factory.toYaml({ name: 'test', namespace: 'danger' });
+    }).not.toThrow();
+    expect(yaml).toContain('namespace: typekro-system');
+    // The workload namespace is still owned/carried on the instance spec.
+    expect(yaml).toMatch(/namespace: danger$/m);
   });
 
   it('evaluates computed schema-only CEL Namespace names before comparing ownership', () => {
@@ -133,18 +141,18 @@ describe('KRO instance namespace ownership safety', () => {
   });
 });
 
-describe('KRO instance namespace ownership: safe-by-construction mitigation', () => {
+describe('KRO instance namespace ownership: auto-relocation (single control-plane namespace)', () => {
   // A composition that creates + owns a Namespace equal to the workload namespace
   // (the create-namespace-and-put-the-instance-in-it pattern, as typekro's own
-  // dagster/clickhouse/clickstack/valkey bootstraps do).
-  const ownedNsComposition = (extra?: { ownsInstanceNamespace?: boolean }) =>
+  // dagster/clickhouse/clickstack/valkey bootstraps do). No flag — the factory
+  // AUTO-DETECTS self-ownership and relocates the instance CR.
+  const ownedNsComposition = () =>
     kubernetesComposition(
       {
         name: 'owns-ns',
         kind: 'OwnsNs',
         spec: type({ name: 'string', namespace: 'string' }),
         status: type({ ready: 'boolean' }),
-        ...(extra ?? {}),
       },
       (spec) => {
         namespace({ id: 'ownedNamespace', metadata: { name: Cel.expr(spec.namespace) as string } });
@@ -152,82 +160,65 @@ describe('KRO instance namespace ownership: safe-by-construction mitigation', ()
       }
     );
 
-  it('still THROWS for a self-owned instance namespace with no mitigation', () => {
+  it('auto-relocates the CR to the single control-plane namespace (no throw, no flag)', () => {
     const factory = ownedNsComposition().factory('kro', { namespace: 'app' });
-    expect(() => factory.toYaml({ name: 'x', namespace: 'app' })).toThrow(
-      'cannot also be an owned Namespace'
-    );
-  });
-
-  it('ownsInstanceNamespace places the CR in a derived control-plane namespace (no throw)', () => {
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
-      namespace: 'app',
-    });
     let yaml = '';
     expect(() => {
       yaml = factory.toYaml({ name: 'x', namespace: 'app' });
     }).not.toThrow();
-    // The instance CR lands in the derived control-plane namespace...
-    expect(yaml).toContain('namespace: app-kro');
+    // The instance CR lands in the single, stable control-plane namespace...
+    expect(yaml).toContain('namespace: typekro-system');
     // ...while the workload namespace is still carried on the instance spec.
     expect(yaml).toMatch(/namespace: app$/m);
     // ...and the control-plane namespace is emitted (deps-first, outside the graph).
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
 
     // The RGD (namespace-less toYaml) still creates and owns the workload namespace.
-    const rgdYaml = ownedNsComposition({ ownsInstanceNamespace: true }).toYaml();
-    expect(rgdYaml).toContain('${schema.spec.namespace}');
+    expect(ownedNsComposition().toYaml()).toContain('${schema.spec.namespace}');
   });
 
-  it('ownsInstanceNamespace is safe via toAlchemyResources too', async () => {
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
-      namespace: 'app',
-    });
+  it('auto-relocation is safe via toAlchemyResources too', async () => {
+    const factory = ownedNsComposition().factory('kro', { namespace: 'app' });
     const decls = await factory.toAlchemyResources({ name: 'x', namespace: 'app' });
     // First declaration is the dedicated control-plane Namespace.
     const nsDecl = decls[0];
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
-    expect(nsDecl?.props.resource.metadata?.name).toBe('app-kro');
+    expect(nsDecl?.props.resource.metadata?.name).toBe('typekro-system');
     // The instance CR declaration is namespaced to the control-plane namespace.
-    const instanceDecl = decls.at(-1);
-    expect(instanceDecl?.props.namespace).toBe('app-kro');
+    expect(decls.at(-1)?.props.namespace).toBe('typekro-system');
   });
 
-  it('derives the control-plane namespace from the CONCRETE spec, not factory creation (P1-a)', () => {
-    // Factory created with NO namespace; the workload namespace comes only from
-    // the spec. The instance must land in `<spec.namespace>-kro`, never the stale
-    // `<factoryNamespace>-kro` (`default-kro`).
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro');
-    const yaml = factory.toYaml({ name: 'x', namespace: 'workloads' });
-    expect(yaml).toContain('namespace: workloads-kro');
-    expect(yaml).not.toContain('namespace: default-kro');
-  });
-
-  it('one factory + two specs → two distinct control-plane namespaces, no collision (P1-a)', () => {
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro');
+  it('every workload namespace relocates to the SAME control-plane namespace (P1-a fixed structurally)', () => {
+    // The old per-workload `<ns>-kro` model made a spec-less lifecycle resolve
+    // diverge from the deploy-time namespace. A single constant removes that gap:
+    // any workload namespace (even from a factory created with none) resolves to
+    // the same `typekro-system`, never a stale `default-kro`.
+    const factory = ownedNsComposition().factory('kro');
     const dev = factory.toYaml({ name: 'x', namespace: 'dev' });
-    const prod = factory.toYaml({ name: 'x', namespace: 'prod' });
-    expect(dev).toContain('namespace: dev-kro');
-    expect(dev).not.toContain('namespace: prod-kro');
-    expect(prod).toContain('namespace: prod-kro');
-    expect(prod).not.toContain('namespace: dev-kro');
+    const prod = ownedNsComposition().factory('kro').toYaml({ name: 'x', namespace: 'prod' });
+    expect(dev).toContain('namespace: typekro-system');
+    expect(prod).toContain('namespace: typekro-system');
+    expect(dev).not.toContain('namespace: dev-kro');
+    expect(prod).not.toContain('namespace: default-kro');
   });
 
-  it('explicit instanceNamespace overrides the derived default (and ignores spec)', () => {
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+  it('explicit instanceNamespace overrides the auto-relocated default (and ignores spec)', () => {
+    const factory = ownedNsComposition().factory('kro', {
       namespace: 'app',
-      instanceNamespace: 'typekro-system',
+      instanceNamespace: 'custom-control-plane',
     });
     const yaml = factory.toYaml({ name: 'x', namespace: 'app' });
-    expect(yaml).toContain('namespace: typekro-system');
+    expect(yaml).toContain('namespace: custom-control-plane');
+    expect(yaml).not.toContain('namespace: typekro-system');
     // Even with a different spec namespace, the explicit override still wins.
     const yaml2 = factory.toYaml({ name: 'x', namespace: 'other' });
-    expect(yaml2).toContain('namespace: typekro-system');
+    expect(yaml2).toContain('namespace: custom-control-plane');
   });
 
-  it('an explicit instanceNamespace equal to an owned namespace STILL throws', () => {
-    // Opting the instance back into the owned namespace is the unsafe case.
-    const factory = ownedNsComposition({ ownsInstanceNamespace: true }).factory('kro', {
+  it('an explicit instanceNamespace pinned to an owned namespace STILL throws (guard intact)', () => {
+    // Opting the instance back into the owned namespace is the unsafe case that
+    // relocation cannot cover — the guard must still reject it.
+    const factory = ownedNsComposition().factory('kro', {
       namespace: 'app',
       instanceNamespace: 'app',
     });

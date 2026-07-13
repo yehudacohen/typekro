@@ -35,8 +35,9 @@ await factory.deploy({
 });
 ```
 
-Keep the KRO instance in a control-plane namespace separate from
-`spec.namespace`; the Inngest bootstrap graph owns its workload Namespace.
+The Inngest bootstrap graph owns its workload Namespace, so TypeKro auto-detects
+this and relocates the KRO instance CR to the shared control-plane namespace
+`typekro-system` (pass `instanceNamespace` to override).
 
 ## Available Factories
 

@@ -81,7 +81,7 @@ function resolveNamespaceName(value: unknown, spec: KroCompatibleType): string |
 }
 
 function concreteResources<TSpec extends KroCompatibleType>(
-  input: KroInstanceNamespaceSafetyInput<TSpec>
+  input: Omit<KroInstanceNamespaceSafetyInput<TSpec>, 'instanceNamespace'>
 ): [string, KubernetesResource][] {
   if (!input.compositionFn) return resourceEntries(input.resources);
 
@@ -136,48 +136,88 @@ function isActiveOwnedResource(resource: KubernetesResource, spec: KroCompatible
 }
 
 /**
- * Reject a KRO instance that would own the Namespace containing its own CR.
+ * The concrete Namespaces a composition actively creates and OWNS as graph
+ * children, resolved against the concrete instance spec.
  *
- * KRO deletes graph children before clearing the owner CR's finalizer. If a
- * child Namespace contains that CR, namespace termination can strand the
- * finalizer permanently. Re-executing with the concrete instance spec makes
- * this check survive nested compositions and schema-driven namespace names.
+ * `owned` holds the resolved names; `unresolved` holds the resource ids of owned
+ * Namespaces whose name cannot be evaluated from the spec (so their safety
+ * cannot be proven). This is the single detection primitive shared by the
+ * ownership GUARD ({@link assertKroInstanceNamespaceOwnershipSafe}) and the
+ * auto-relocation logic in the KRO factory: a composition owns its instance
+ * namespace exactly when the resolved instance namespace is in `owned`.
  */
-export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompatibleType>(
-  input: KroInstanceNamespaceSafetyInput<TSpec>
-): void {
+export interface OwnedNamespaceDetection {
+  readonly owned: ReadonlySet<string>;
+  readonly unresolved: readonly string[];
+}
+
+export function detectOwnedNamespaces<TSpec extends KroCompatibleType>(
+  input: Omit<KroInstanceNamespaceSafetyInput<TSpec>, 'instanceNamespace'>
+): OwnedNamespaceDetection {
+  const owned = new Set<string>();
+  const unresolved: string[] = [];
   for (const [resourceId, resource] of concreteResources(input)) {
     if (resource.kind !== 'Namespace') continue;
     if (!isActiveOwnedResource(resource, input.spec)) continue;
 
     const ownedNamespace = resolveNamespaceName(resource.metadata?.name, input.spec);
     if (ownedNamespace === undefined) {
-      throw new TypeKroError(
-        `Cannot prove KRO instance namespace '${input.instanceNamespace}' is safe because active owned Namespace '${resourceId}' in composition '${input.compositionName}' has a name that cannot be evaluated from the concrete spec. ` +
-          'Use a concrete or schema-only CEL Namespace name, or move the KRO instance to a control-plane namespace whose safety can be established.',
-        'UNRESOLVED_KRO_NAMESPACE_OWNERSHIP',
-        {
-          composition: input.compositionName,
-          instanceNamespace: input.instanceNamespace,
-          resourceId,
-          mode: 'kro',
-        }
-      );
+      unresolved.push(resourceId);
+    } else {
+      owned.add(ownedNamespace);
     }
-    if (ownedNamespace === input.instanceNamespace) {
-      throw new TypeKroError(
-        `KRO instance namespace '${input.instanceNamespace}' cannot also be an owned Namespace in composition '${input.compositionName}'. ` +
-          'Place the KRO instance in a separate control-plane namespace so deleting it cannot terminate the namespace containing its own finalizer.',
-        'UNSAFE_KRO_NAMESPACE_OWNERSHIP',
-        {
-          composition: input.compositionName,
-          instanceNamespace: input.instanceNamespace,
-          ownedNamespace,
-          resourceId,
-          mode: 'kro',
-        }
-      );
-    }
+  }
+  return { owned, unresolved };
+}
+
+/**
+ * Reject a KRO instance that would own the Namespace containing its own CR.
+ *
+ * KRO deletes graph children before clearing the owner CR's finalizer. If a
+ * child Namespace contains that CR, namespace termination can strand the
+ * finalizer permanently. Re-executing with the concrete instance spec makes
+ * this check survive nested compositions and schema-driven namespace names.
+ *
+ * The KRO factory AUTO-RELOCATES a self-owning composition's instance CR to a
+ * safe control-plane namespace before calling this guard, so the common
+ * create-namespace-and-put-the-instance-in-it pattern no longer trips it. The
+ * guard remains the real protection for the cases relocation cannot cover: an
+ * owned Namespace whose name can't be proven safe (fails closed), and a caller
+ * who EXPLICITLY pins `instanceNamespace` back onto a namespace the composition
+ * owns (opts into the unsafe pattern).
+ */
+export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompatibleType>(
+  input: KroInstanceNamespaceSafetyInput<TSpec>
+): void {
+  const { owned, unresolved } = detectOwnedNamespaces(input);
+
+  const unresolvedId = unresolved[0];
+  if (unresolvedId !== undefined) {
+    throw new TypeKroError(
+      `Cannot prove KRO instance namespace '${input.instanceNamespace}' is safe because active owned Namespace '${unresolvedId}' in composition '${input.compositionName}' has a name that cannot be evaluated from the concrete spec. ` +
+        'Use a concrete or schema-only CEL Namespace name, or move the KRO instance to a control-plane namespace whose safety can be established.',
+      'UNRESOLVED_KRO_NAMESPACE_OWNERSHIP',
+      {
+        composition: input.compositionName,
+        instanceNamespace: input.instanceNamespace,
+        resourceId: unresolvedId,
+        mode: 'kro',
+      }
+    );
+  }
+
+  if (owned.has(input.instanceNamespace)) {
+    throw new TypeKroError(
+      `KRO instance namespace '${input.instanceNamespace}' cannot also be an owned Namespace in composition '${input.compositionName}'. ` +
+        'Place the KRO instance in a separate control-plane namespace so deleting it cannot terminate the namespace containing its own finalizer.',
+      'UNSAFE_KRO_NAMESPACE_OWNERSHIP',
+      {
+        composition: input.compositionName,
+        instanceNamespace: input.instanceNamespace,
+        ownedNamespace: input.instanceNamespace,
+        mode: 'kro',
+      }
+    );
   }
 }
 
