@@ -122,7 +122,7 @@ describe('NATS and JetStream factories', () => {
     expect(customName).toContain('url: nats://application-events.nats-system.svc:4222');
   });
 
-  it('serializes bootstrap in KRO mode and rejects an owner instance in its owned namespace', () => {
+  it('serializes bootstrap in KRO mode and auto-relocates an owner instance out of its owned namespace', () => {
     const factory = natsBootstrap.factory('kro', { namespace: 'typekro-system' });
     const rgd = factory.toYaml();
     expect(rgd).toContain('kind: ResourceGraphDefinition');
@@ -148,12 +148,29 @@ describe('NATS and JetStream factories', () => {
 
     const clustered = factory.toYaml({ name: 'nats', replicas: 3 });
     expect(clustered).toContain('replicas: 3');
+
+    // natsBootstrap creates and owns its workload Namespace, so the natural
+    // same-namespace call is auto-relocated to the shared control-plane
+    // namespace `typekro-system` rather than being rejected (regression fix for
+    // the v0.25.0 ownership guard) — no flag required.
+    const relocated = natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
+      name: 'nats',
+      namespace: 'nats-system',
+    });
+    expect(relocated).toContain('kind: NatsBootstrap');
+    expect(relocated).toContain('namespace: typekro-system');
+    expect(relocated).toContain('typekro.io/kro-instance-namespace');
+
+    // Guard intact: explicitly pinning the instance CR back into the owned
+    // namespace still throws.
     expect(() =>
-      natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
-        name: 'nats',
-        namespace: 'nats-system',
-      })
+      natsBootstrap
+        .factory('kro', { namespace: 'nats-system', instanceNamespace: 'nats-system' })
+        .toYaml({ name: 'nats', namespace: 'nats-system' })
     ).toThrow('cannot also be an owned Namespace');
+
+    // An externally-owned namespace is never owned, so it is never relocated
+    // and never throws.
     expect(() =>
       natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
         name: 'nats',
