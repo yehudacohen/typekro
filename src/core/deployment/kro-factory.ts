@@ -90,12 +90,13 @@ import { validateStatusCelExpressions } from '../validation/cel-validator.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
-import { isNotFoundError } from './k8s-helpers.js';
+import { isConflictError, isNotFoundError } from './k8s-helpers.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
   assertSingletonOwnerNamespaceOwnershipSafe,
   concreteOwnedNamespaceResources,
   detectStructurallyOwnedNamespaceIds,
+  findDanglingHoistedReference,
   resolveNamespaceName,
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
@@ -148,6 +149,13 @@ const KRO_LABEL_PREFIX = 'kro.run/';
 const KRO_INSTANCE_ID_LABEL = 'kro.run/instance-id';
 /** typekro's retention marker stamped onto a Namespace once its ownership is transferred out of KRO. */
 const TYPEKRO_INSTANCE_NAMESPACE_LABEL = 'typekro.io/kro-instance-namespace';
+/**
+ * Annotation TypeKro stamps on an instance CR when IT suspends the instance for an
+ * ownership-transfer migration. Distinguishes our suspension from an operator's
+ * deliberate `kro.run/reconcile: suspended` so a migration only ever RESUMES what it
+ * suspended and never clears an operator's intentional suspend (finding #3).
+ */
+const TYPEKRO_MIGRATION_SUSPEND_MARKER = 'typekro.io/kro-migration-suspended';
 
 /**
  * Whether a live Namespace's labels mark it as a current KRO ApplySet member —
@@ -187,24 +195,41 @@ export function computeApplySetId(
 /**
  * Whether a live Namespace's ownership identity MATCHES the given instance — i.e.
  * the Namespace is genuinely a child of THIS instance's ApplySet, not some other
- * KRO owner (finding #5). True when the Namespace's `part-of` equals the instance's
- * computed ApplySet ID OR its `kro.run/instance-id` equals the instance UID.
+ * KRO owner (findings #4 + #5).
  *
- * A Namespace carrying KRO labels but matching NEITHER belongs to a different owner
- * and must never be stripped.
+ * Semantics (finding #4 — every PRESENT identity must AGREE): for each of
+ * {`applyset.kubernetes.io/part-of`, `kro.run/instance-id`} that is PRESENT on the
+ * Namespace, it MUST match this instance; if ANY present identity DISAGREES, this is
+ * NOT a match (a conflict) — even if the other identity matches. Absent identities
+ * are ignored. At least one present identity must match to count as owned-by-this-
+ * instance. This closes the hole where a Namespace carrying ANOTHER ApplySet's
+ * `part-of` but this instance's UID (or vice versa) was wrongly deemed transferable.
+ *
+ * Note: `instance-id` can only be validated when the instance UID is known; if the
+ * label is present but `instanceUid` is undefined we cannot confirm agreement, so we
+ * treat it as a disagreement (fail closed).
  */
 export function namespaceOwnershipMatchesInstance(
   nsLabels: Record<string, string>,
   expectedApplySetId: string,
   instanceUid: string | undefined
 ): boolean {
+  let matchedAny = false;
+
   const partOf = nsLabels[APPLYSET_PART_OF_LABEL];
-  if (partOf !== undefined && partOf === expectedApplySetId) return true;
-  const instanceId = nsLabels[KRO_INSTANCE_ID_LABEL];
-  if (instanceUid !== undefined && instanceId !== undefined && instanceId === instanceUid) {
-    return true;
+  if (partOf !== undefined) {
+    if (partOf !== expectedApplySetId) return false; // present + disagrees → conflict
+    matchedAny = true;
   }
-  return false;
+
+  const instanceId = nsLabels[KRO_INSTANCE_ID_LABEL];
+  if (instanceId !== undefined) {
+    // Present but unverifiable (no known UID) or mismatched → conflict.
+    if (instanceUid === undefined || instanceId !== instanceUid) return false;
+    matchedAny = true;
+  }
+
+  return matchedAny;
 }
 
 /**
@@ -248,6 +273,49 @@ export function classifyNamespaceForMigration(params: {
   }
   if (nsLabels[TYPEKRO_INSTANCE_NAMESPACE_LABEL] === 'true') return 'already-transferred';
   return 'skip';
+}
+
+/**
+ * Decide, from an instance's PRE-EXISTING state, whether the ownership-transfer
+ * migration should suspend it and/or resume it afterwards (finding #3).
+ *
+ * The migration must NEVER clear an operator's deliberate
+ * `kro.run/reconcile: suspended`. So it only resumes instances IT suspended —
+ * identified by TypeKro's distinct migration marker
+ * ({@link TYPEKRO_MIGRATION_SUSPEND_MARKER}). Namespace stripping is decided
+ * SEPARATELY (`toStrip`), so an operator-suspended instance still gets its
+ * Namespace transferred out of the ApplySet; it just stays suspended.
+ *
+ *  - `pendingTransfer` + NOT already suspended → WE suspend now, and resume after.
+ *  - `pendingTransfer` + already suspended BY US (marker) → already suspended, just
+ *    resume after (no re-suspend).
+ *  - `pendingTransfer` + suspended by an OPERATOR (no marker) → leave suspended,
+ *    NEVER resume (its Namespace is still transferred via `toStrip`).
+ *  - no pending transfer, but a PRIOR migration left it suspended-by-us with the
+ *    transfer already done → resume it (idempotent crash recovery, finding #4).
+ *  - anything else (incl. operator-suspended + already transferred) → do nothing.
+ *
+ * **Exported for testing.**
+ */
+export function planInstanceMigrationAction(params: {
+  readonly preexistingSuspended: boolean;
+  readonly suspendedByUs: boolean;
+  readonly pendingTransfer: boolean;
+  readonly completedTransfer: boolean;
+}): { suspend: boolean; resume: boolean } {
+  const { preexistingSuspended, suspendedByUs, pendingTransfer, completedTransfer } = params;
+  if (pendingTransfer) {
+    if (!preexistingSuspended) return { suspend: true, resume: true };
+    // Already suspended: resume afterwards ONLY if WE suspended it. An operator's
+    // deliberate suspend (no marker) is preserved — we never resume it.
+    return { suspend: false, resume: suspendedByUs };
+  }
+  // No pending transfer. Recover a prior partial migration that suspended-by-us and
+  // already stripped; never touch an operator-suspended instance.
+  if (completedTransfer && preexistingSuspended && suspendedByUs) {
+    return { suspend: false, resume: true };
+  }
+  return { suspend: false, resume: false };
 }
 
 /**
@@ -1304,7 +1372,16 @@ export class KroResourceFactoryImpl<
     const liveInstances = await this.listInstancesForMigration();
 
     const toSuspend = new Map<string, InstanceRef>();
-    const toStrip: Array<{ nsName: string; labels: Record<string, string> }> = [];
+    // Each strip target carries the OWNING instance's identity so the strip can
+    // RE-VALIDATE ownership after suspension (blocker #1) rather than trusting the
+    // labels read during classification (before suspend), which an in-flight
+    // reconcile could have changed.
+    const toStrip: Array<{
+      nsName: string;
+      instanceRef: string;
+      expectedApplySetId: string;
+      instanceUid: string | undefined;
+    }> = [];
     // Instances a PRIOR partial migration already stripped but left suspended — a
     // retry must resume them to a consistent state (idempotent recovery, finding #4).
     const recoveryResume: InstanceRef[] = [];
@@ -1316,6 +1393,12 @@ export class KroResourceFactoryImpl<
       if (instName === undefined || instNs === undefined) continue;
       const uid = typeof inst.metadata?.uid === 'string' ? inst.metadata.uid : undefined;
       const suspended = isReconcileSuspended(inst.metadata?.annotations);
+      // Did TYPEKRO suspend this instance for a (prior) migration? Our distinct
+      // marker distinguishes our suspension from an operator's deliberate
+      // `kro.run/reconcile: suspended` (finding #3) — we only ever RESUME what WE
+      // suspended, never clearing an operator's intentional suspend.
+      const suspendedByUs =
+        inst.metadata?.annotations?.[TYPEKRO_MIGRATION_SUSPEND_MARKER] === 'true';
       const expectedApplySetId = computeApplySetId(instName, instNs, kind, group);
 
       // This instance's owned workload Namespace(s), resolved from ITS OWN spec.
@@ -1338,16 +1421,33 @@ export class KroResourceFactoryImpl<
         });
         if (action === 'transfer') {
           pendingTransfer = true;
-          toStrip.push({ nsName, labels: live.labels });
+          toStrip.push({
+            nsName,
+            instanceRef: `${instNs}/${instName}`,
+            expectedApplySetId,
+            instanceUid: uid,
+          });
         } else if (action === 'already-transferred') {
           completedTransfer = true;
         }
       }
 
       const ref: InstanceRef = { name: instName, namespace: instNs };
-      if (pendingTransfer) {
+      // Decide suspend/resume from pre-existing state (finding #3). An
+      // operator-suspended instance (suspended WITHOUT our marker) is left
+      // suspended and NEVER resumed — but its Namespace is still transferred
+      // (it's in `toStrip`), so the shared RGD change can't prune it.
+      const plan = planInstanceMigrationAction({
+        preexistingSuspended: suspended,
+        suspendedByUs,
+        pendingTransfer,
+        completedTransfer,
+      });
+      if (plan.suspend) {
         toSuspend.set(`${instNs}/${instName}`, ref);
-      } else if (suspended && completedTransfer) {
+      } else if (plan.resume) {
+        // Already suspended by US (now-noop or a prior partial migration) — resume
+        // after the new RGD is applied, without re-suspending.
         recoveryResume.push(ref);
       }
     }
@@ -1363,14 +1463,26 @@ export class KroResourceFactoryImpl<
 
     const suspendedTargets: InstanceRef[] = [];
     try {
-      // 2. SUSPEND each instance with a Namespace to transfer.
+      // 2. SUSPEND each instance with a Namespace to transfer, then CONFIRM KRO has
+      //    OBSERVED the suspension (its status reflects the suspend generation)
+      //    before stripping (blocker #1). Once the suspend is observed, KRO will
+      //    start no NEW reconcile that re-stamps ownership; only a reconcile already
+      //    in flight when we suspended remains, and the conditional strip +
+      //    confirm-held below closes that window.
       for (const ref of toSuspend.values()) {
         const didSuspend = await this.suspendInstanceReconciliation(ref.name, ref.namespace);
-        if (didSuspend) suspendedTargets.push(ref);
+        if (didSuspend) {
+          suspendedTargets.push(ref);
+          await this.waitForInstanceReconcileObserved(ref.name, ref.namespace);
+        }
       }
       // 3. STRIP KRO ownership from each selected live Namespace + stamp retention.
-      for (const { nsName, labels } of toStrip) {
-        await this.stripKroOwnershipFromNamespace(k8sApi, nsName, labels);
+      //    The strip RE-READS + RE-VALIDATES ownership post-suspension, patches with a
+      //    resourceVersion precondition (retrying on 409), and CONFIRMS the strip held
+      //    before returning — so an in-flight reconcile cannot silently re-adopt the
+      //    Namespace before the new RGD is applied (blocker #1).
+      for (const target of toStrip) {
+        await this.stripKroOwnershipFromNamespace(k8sApi, target);
       }
     } catch (error) {
       // Fail closed: resume everything we suspended before rethrowing, so a failed
@@ -1508,14 +1620,17 @@ export class KroResourceFactoryImpl<
   private async readNamespaceOwnership(
     k8sApi: k8s.KubernetesObjectApi,
     name: string
-  ): Promise<{ labels: Record<string, string> } | undefined> {
+  ): Promise<{ labels: Record<string, string>; resourceVersion: string | undefined } | undefined> {
     try {
       const live = (await k8sApi.read({
         apiVersion: 'v1',
         kind: 'Namespace',
         metadata: { name },
-      })) as { metadata?: { labels?: Record<string, string> } };
-      return { labels: live.metadata?.labels ?? {} };
+      })) as { metadata?: { labels?: Record<string, string>; resourceVersion?: string } };
+      return {
+        labels: live.metadata?.labels ?? {},
+        resourceVersion: live.metadata?.resourceVersion,
+      };
     } catch (error: unknown) {
       if (isNotFoundError(error)) return undefined;
       throw new ResourceGraphFactoryError(
@@ -1528,54 +1643,212 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  /** Bounded retry budget for the resourceVersion-conditional ownership strip (blocker #1). */
+  private static readonly STRIP_MAX_ATTEMPTS = 5;
+
   /**
-   * Transfer a live Namespace OUT of KRO's ApplySet: null out `part-of` and every
-   * `kro.run/*` bookkeeping label + KRO's `managed-by`, and add typekro retention
-   * markers. A merge-patch with `null` values removes exactly those keys, so KRO's
-   * prune selector no longer matches the Namespace while everything else (Pod
-   * Security labels, user annotations) is preserved. Fails loudly on error.
+   * Transfer a live Namespace OUT of KRO's ApplySet, RACE-SAFELY (blocker #1).
+   *
+   * A reconcile already in flight when the instance was suspended can re-stamp the
+   * ApplySet `part-of`/`kro.run/*` ownership between our validate and our patch, or
+   * even just after our patch — and if that re-adoption survives when the new
+   * (hoisted) RGD is applied, KRO's next reconcile prunes the live Namespace. So
+   * this does NOT trust the labels read during pre-suspend classification. Instead,
+   * on each attempt it:
+   *   (a) RE-READS the live Namespace (labels + resourceVersion) and RE-VALIDATES
+   *       that its ownership identity still belongs to THIS instance (a foreign
+   *       owner or already-stripped state ends the loop — nothing to strip);
+   *   (b) STRIPS with a resourceVersion-CONDITIONAL merge-patch, so a concurrent
+   *       write makes the API server reject with 409 Conflict instead of silently
+   *       clobbering it — on 409 it re-reads/re-validates/re-patches (bounded); and
+   *   (c) CONFIRMS the strip HELD by re-reading and checking no `part-of`/KRO
+   *       ownership remains. If an in-flight reconcile re-stamped ownership after the
+   *       patch, it retries; if it cannot confirm within the budget it ABORTS
+   *       fail-closed (throws) BEFORE the caller applies the new RGD.
+   *
+   * The merge-patch nulls `part-of` + every `kro.run/*` label + KRO's `managed-by`
+   * and stamps typekro retention markers, preserving everything else (Pod Security
+   * labels, user annotations).
    */
   private async stripKroOwnershipFromNamespace(
     k8sApi: k8s.KubernetesObjectApi,
-    name: string,
-    liveLabels: Record<string, string>
+    target: {
+      nsName: string;
+      instanceRef: string;
+      expectedApplySetId: string;
+      instanceUid: string | undefined;
+    }
   ): Promise<void> {
-    const labelPatch: Record<string, string | null> = {};
-    for (const key of Object.keys(liveLabels)) {
-      if (key === APPLYSET_PART_OF_LABEL || key.startsWith(KRO_LABEL_PREFIX)) {
-        labelPatch[key] = null;
-      }
-    }
-    if (liveLabels[MANAGED_BY_LABEL] === MANAGED_BY_KRO) labelPatch[MANAGED_BY_LABEL] = null;
-    // Stamp typekro retention so a later GitOps prune can't delete it either.
-    Object.assign(labelPatch, KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels);
+    const { nsName: name, instanceRef, expectedApplySetId, instanceUid } = target;
 
-    try {
-      await k8sApi.patch(
-        {
-          apiVersion: 'v1',
-          kind: 'Namespace',
-          metadata: {
-            name,
-            labels: labelPatch,
-            annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
-          },
-        } as unknown as k8s.KubernetesObject,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        'application/merge-patch+json'
-      );
-    } catch (error: unknown) {
+    for (let attempt = 1; attempt <= KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS; attempt++) {
+      // (a) RE-READ + RE-VALIDATE ownership post-suspension.
+      const live = await this.readNamespaceOwnership(k8sApi, name);
+      if (live === undefined) return; // Namespace vanished → nothing to transfer.
+      const action = classifyNamespaceForMigration({
+        nsName: name,
+        instanceRef,
+        nsLabels: live.labels,
+        expectedApplySetId,
+        instanceUid,
+      });
+      // Not (or no longer) KRO-owned-by-this-instance → nothing to strip. A DIFFERENT
+      // KRO owner would have THROWN in classify above (fail closed). 'skip' means an
+      // in-flight reconcile / another actor already removed the ownership labels
+      // without stamping retention — treat as done idempotently; 'already-transferred'
+      // means a prior strip completed.
+      if (action !== 'transfer') return;
+
+      const labelPatch: Record<string, string | null> = {};
+      for (const key of Object.keys(live.labels)) {
+        if (key === APPLYSET_PART_OF_LABEL || key.startsWith(KRO_LABEL_PREFIX)) {
+          labelPatch[key] = null;
+        }
+      }
+      if (live.labels[MANAGED_BY_LABEL] === MANAGED_BY_KRO) labelPatch[MANAGED_BY_LABEL] = null;
+      // Stamp typekro retention so a later GitOps prune can't delete it either.
+      Object.assign(labelPatch, KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels);
+
+      // (b) CONDITIONAL patch: the resourceVersion precondition makes a concurrent
+      //     re-stamp fail with 409 rather than silently overwriting our strip.
+      try {
+        await k8sApi.patch(
+          {
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: {
+              name,
+              resourceVersion: live.resourceVersion,
+              labels: labelPatch,
+              annotations: { ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations },
+            },
+          } as unknown as k8s.KubernetesObject,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          'application/merge-patch+json'
+        );
+      } catch (error: unknown) {
+        if (isConflictError(error) && attempt < KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS) {
+          // A concurrent write bumped resourceVersion between our read and patch —
+          // re-read, re-validate, re-patch.
+          this.logger.debug('Ownership strip hit a 409 conflict; retrying with fresh read', {
+            namespace: name,
+            instanceRef,
+            attempt,
+          });
+          continue;
+        }
+        throw new ResourceGraphFactoryError(
+          `Failed to transfer workload Namespace "${name}" out of KRO's ApplySet during upgrade — ` +
+            `aborting before applying the new RGD so KRO's prune cannot delete the live namespace: ${ensureError(error).message}`,
+          this.name,
+          'deployment',
+          ensureError(error)
+        );
+      }
+
+      // (c) CONFIRM the strip HELD: re-read must show no ApplySet/KRO ownership.
+      const confirm = await this.readNamespaceOwnership(k8sApi, name);
+      if (confirm === undefined || !isKroOwnedNamespace(confirm.labels)) {
+        this.logger.debug('Confirmed workload Namespace transferred out of KRO ApplySet', {
+          namespace: name,
+          instanceRef,
+          attempt,
+        });
+        return; // stripped AND confirmed held.
+      }
+      // An in-flight reconcile re-stamped ownership after our patch. Retry within
+      // budget; otherwise fail closed (never proceed to apply the new RGD while the
+      // live Namespace still carries KRO ownership KRO's prune would enumerate).
+      if (attempt < KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS) {
+        this.logger.debug('KRO re-stamped ownership after strip; retrying', {
+          namespace: name,
+          instanceRef,
+          attempt,
+        });
+        continue;
+      }
       throw new ResourceGraphFactoryError(
-        `Failed to transfer workload Namespace "${name}" out of KRO's ApplySet during upgrade — ` +
-          `aborting before applying the new RGD so KRO's prune cannot delete the live namespace: ${ensureError(error).message}`,
+        `Could not confirm workload Namespace "${name}" stayed out of KRO's ApplySet after ` +
+          `${KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS} attempts — an in-flight KRO reconcile keeps ` +
+          `re-stamping ownership (part-of="${confirm.labels[APPLYSET_PART_OF_LABEL] ?? '<none>'}"). ` +
+          `Aborting before applying the new RGD (fail closed) so KRO's prune cannot delete the live ` +
+          `namespace. Retry the upgrade once the instance is quiescent.`,
         this.name,
-        'deployment',
-        ensureError(error)
+        'deployment'
       );
     }
+  }
+
+  /**
+   * Best-effort bounded wait until KRO has OBSERVED an instance's suspend — i.e. its
+   * status conditions carry an `observedGeneration` >= the instance's current
+   * `metadata.generation` (KRO stamps status even while suspended). Once observed,
+   * KRO starts no NEW reconcile that could re-stamp Namespace ownership, shrinking
+   * the strip race to just a reconcile already in flight (which the conditional strip
+   * + confirm-held in {@link stripKroOwnershipFromNamespace} handles). Non-fatal: on
+   * timeout or read error it logs and returns, because the conditional strip is the
+   * real guarantee — this only narrows the window (blocker #1, the "consider" step).
+   */
+  private async waitForInstanceReconcileObserved(
+    instanceName: string,
+    instanceNamespace: string
+  ): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    let customApi: Awaited<ReturnType<typeof this.createCustomObjectsApi>>;
+    let plural: string | undefined;
+    try {
+      customApi = await this.createCustomObjectsApi();
+      plural = this.discoveredPlural ?? (await this.lookupCRDPlural());
+    } catch (error: unknown) {
+      this.logger.debug('Could not resolve API to confirm suspend; proceeding to strip', {
+        instanceName,
+        instanceNamespace,
+        error: ensureError(error).message,
+      });
+      return;
+    }
+    if (plural === undefined) return;
+    while (Date.now() < deadline) {
+      try {
+        const cr = (await customApi.getNamespacedCustomObject({
+          group: this.getSchemaGroup(),
+          version: this.getSchemaVersion(),
+          namespace: instanceNamespace,
+          plural,
+          name: instanceName,
+        })) as {
+          metadata?: { generation?: number };
+          status?: { conditions?: Array<{ observedGeneration?: number }> };
+        };
+        const generation = cr.metadata?.generation ?? 0;
+        const observed = (cr.status?.conditions ?? []).some(
+          (c) => typeof c.observedGeneration === 'number' && c.observedGeneration >= generation
+        );
+        if (observed) {
+          this.logger.debug('Confirmed instance suspend observed by KRO', {
+            instanceName,
+            instanceNamespace,
+            generation,
+          });
+          return;
+        }
+      } catch (error: unknown) {
+        this.logger.debug('Could not read instance status while confirming suspend; continuing', {
+          instanceName,
+          instanceNamespace,
+          error: ensureError(error).message,
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    this.logger.debug('Timed out confirming instance suspend was observed; proceeding to strip', {
+      instanceName,
+      instanceNamespace,
+    });
   }
 
   /**
@@ -1597,7 +1870,12 @@ export class KroResourceFactoryImpl<
           metadata: {
             name: instanceName,
             namespace: instanceNamespace,
-            annotations: { [KRO_RECONCILE_ANNOTATION]: KRO_RECONCILE_SUSPENDED },
+            annotations: {
+              [KRO_RECONCILE_ANNOTATION]: KRO_RECONCILE_SUSPENDED,
+              // Mark this as OUR suspension so resume only ever clears what we set,
+              // never an operator's deliberate suspend (finding #3).
+              [TYPEKRO_MIGRATION_SUSPEND_MARKER]: 'true',
+            },
           },
         } as unknown as k8s.KubernetesObject,
         undefined,
@@ -1648,7 +1926,12 @@ export class KroResourceFactoryImpl<
           metadata: {
             name: instanceName,
             namespace: instanceNamespace,
-            annotations: { [KRO_RECONCILE_ANNOTATION]: null },
+            annotations: {
+              [KRO_RECONCILE_ANNOTATION]: null,
+              // Clear our migration marker too (finding #3) so a later run doesn't
+              // mistake a fresh operator suspend for our own.
+              [TYPEKRO_MIGRATION_SUSPEND_MARKER]: null,
+            },
           },
         } as unknown as k8s.KubernetesObject,
         undefined,
@@ -2561,19 +2844,15 @@ export class KroResourceFactoryImpl<
    * matching an id that is only a suffix of a longer identifier.
    */
   private assertNoDanglingHoistedReferences(rgdYaml: string, hoistIds: ReadonlySet<string>): void {
-    for (const id of hoistIds) {
-      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const celRef = new RegExp(`\\$\\{[^}]*?(?<![A-Za-z0-9_$])${escaped}\\.`);
-      const markerRef = new RegExp(`__KUBERNETES_REF_${escaped}_`);
-      if (celRef.test(rgdYaml) || markerRef.test(rgdYaml)) {
-        throw new ResourceGraphFactoryError(
-          `Hoisting the owned Namespace left a dangling reference to removed resource "${id}" in the ` +
-            'emitted RGD. This would make KRO reject the graph. Report this as a typekro bug (the ' +
-            'reference form was not structurally rewritten).',
-          this.name,
-          'deployment'
-        );
-      }
+    const dangling = findDanglingHoistedReference(rgdYaml, hoistIds);
+    if (dangling !== undefined) {
+      throw new ResourceGraphFactoryError(
+        `Hoisting the owned Namespace left a dangling reference to removed resource "${dangling}" in the ` +
+          'emitted RGD. This would make KRO reject the graph. Report this as a typekro bug (the ' +
+          'reference form was not structurally rewritten).',
+        this.name,
+        'deployment'
+      );
     }
   }
 

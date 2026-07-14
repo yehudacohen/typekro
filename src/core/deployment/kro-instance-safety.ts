@@ -515,6 +515,33 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Scan an emitted RGD YAML for any leftover reference to a hoisted (removed)
+ * resource id — either a CEL interpolation `${<id>.…}` or a raw
+ * `__KUBERNETES_REF_<id>_…` marker. Returns the FIRST offending id, or
+ * `undefined` when the RGD is clean.
+ *
+ * This is the shared post-serialization dangling-reference check applied to BOTH
+ * the factory serialization path ({@link KroResourceFactoryImpl.buildRgdYaml})
+ * and the graph/composition serialization path (`core.ts`). After hoisting an
+ * owned Namespace out of the RGD, NO reference to it may remain anywhere in the
+ * emitted RGD (resource templates, status CEL, nested CEL, overrides); otherwise
+ * KRO rejects the graph at runtime with a dangling `${...}` reference. A negative
+ * lookbehind avoids matching an id that is only a suffix of a longer identifier.
+ */
+export function findDanglingHoistedReference(
+  rgdYaml: string,
+  hoistedIds: ReadonlySet<string>
+): string | undefined {
+  for (const id of hoistedIds) {
+    const escaped = escapeRegExp(id);
+    const celRef = new RegExp(`\\$\\{[^}]*?(?<![A-Za-z0-9_$])${escaped}\\.`);
+    const markerRef = new RegExp(`__KUBERNETES_REF_${escaped}_`);
+    if (celRef.test(rgdYaml) || markerRef.test(rgdYaml)) return id;
+  }
+  return undefined;
+}
+
+/**
  * Reject a KRO instance that would own the Namespace containing its own CR.
  *
  * KRO deletes graph children before clearing the owner CR's finalizer. If a

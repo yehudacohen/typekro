@@ -23,6 +23,23 @@ export function isNotFoundError(error: unknown): boolean {
 }
 
 /**
+ * Check if an error is an HTTP 409 Conflict error — e.g. an optimistic-concurrency
+ * failure when a PATCH/PUT carries a `metadata.resourceVersion` that no longer
+ * matches the server (the object was modified between read and write).
+ */
+export function isConflictError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const k8sError = error as KubernetesApiError;
+    return (
+      k8sError.statusCode === 409 ||
+      k8sError.response?.statusCode === 409 ||
+      k8sError.body?.code === 409
+    );
+  }
+  return false;
+}
+
+/**
  * Check if an error is an HTTP 415 Unsupported Media Type error
  */
 export function isUnsupportedMediaTypeError(error: unknown): boolean {

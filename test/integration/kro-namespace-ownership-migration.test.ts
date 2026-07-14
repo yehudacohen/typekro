@@ -73,6 +73,7 @@ const clusterAvailable = isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 const APPLYSET_PART_OF_LABEL = 'applyset.kubernetes.io/part-of';
+const KRO_FINALIZER = 'kro.run/finalizer';
 const RGD_GROUP = 'kro.run';
 const RGD_VERSION = 'v1alpha1';
 const RGD_PLURAL = 'resourcegraphdefinitions';
@@ -80,11 +81,26 @@ const RGD_PLURAL = 'resourcegraphdefinitions';
 const MigrationSpec = type({ name: 'string', namespace: 'string' });
 const MigrationStatus = type({ ready: 'boolean' });
 
+/**
+ * Finding #6 — PARALLEL SAFETY. The workload Namespace was already randomized, but
+ * the CLUSTER-SCOPED API identity (RGD name, kind, group → generated CRD name) was
+ * FIXED, so two concurrent runs shared one RGD/CRD and pruned/deleted each other's
+ * resources. Randomize the COMPLETE identity with a single per-run token so every
+ * run is fully isolated.
+ */
+const runToken = Math.random().toString(36).slice(2, 8); // lowercase alphanumeric
+const RGD_NAME = `ns-migration-${runToken}`;
+const INSTANCE_KIND = `NsMigration${runToken}`;
+const INSTANCE_GROUP = `t${runToken}.typekro.dev`;
+const INSTANCE_API_VERSION = `${INSTANCE_GROUP}/v1alpha1`;
+const INSTANCE_PLURAL = `${INSTANCE_KIND.toLowerCase()}s`;
+const GENERATED_CRD_NAME = `${INSTANCE_PLURAL}.${INSTANCE_GROUP}`;
+
 const ownsNamespaceComposition = kubernetesComposition(
   {
-    name: 'ns-migration',
-    apiVersion: 'test.typekro.dev/v1alpha1',
-    kind: 'NsMigration',
+    name: RGD_NAME,
+    apiVersion: INSTANCE_API_VERSION,
+    kind: INSTANCE_KIND,
     spec: MigrationSpec,
     status: MigrationStatus,
   },
@@ -169,8 +185,18 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
         group: RGD_GROUP,
         version: RGD_VERSION,
         plural: RGD_PLURAL,
-        name: 'ns-migration',
+        name: RGD_NAME,
       });
+    } catch {
+      /* best effort */
+    }
+    // Sweep the generated CRD too so a failed run leaves nothing cluster-scoped behind.
+    try {
+      await objectApi.delete({
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: GENERATED_CRD_NAME },
+      } as k8s.KubernetesObject);
     } catch {
       /* best effort */
     }
@@ -197,8 +223,8 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
     );
 
     // Wait for the CRD the RGD generates to be established before posting the CR.
-    const instanceApiVersion = 'test.typekro.dev/v1alpha1';
-    const instancePlural = 'nsmigrations';
+    const instanceApiVersion = INSTANCE_API_VERSION;
+    const instancePlural = INSTANCE_PLURAL;
     const waitFor = async (fn: () => Promise<boolean>, timeoutMs: number, label: string) => {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -210,7 +236,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
     await waitFor(
       async () => {
         await customApi.listClusterCustomObject({
-          group: 'test.typekro.dev',
+          group: INSTANCE_GROUP,
           version: RGD_VERSION,
           plural: instancePlural,
         });
@@ -235,7 +261,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
     await objectApi.patch(
       {
         apiVersion: instanceApiVersion,
-        kind: 'NsMigration',
+        kind: INSTANCE_KIND,
         metadata: { name: instanceName, namespace: workloadNamespace },
         spec,
       } as unknown as k8s.KubernetesObject,
@@ -278,15 +304,20 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
     // Retention markers were stamped during the transfer.
     expect(after.metadata?.labels?.['typekro.io/kro-instance-namespace']).toBe('true');
 
-    // 5. The instance CR is still present in its namespace.
+    // 5. The instance CR is still present in its namespace AND carries the KRO
+    //    finalizer (finding #8): asserting the finalizer EXISTS is what makes the
+    //    deletion phase below a GENUINE test of finalizer-safe deletion rather than a
+    //    no-op — if KRO hadn't stamped `kro.run/finalizer`, delete could never
+    //    deadlock and the test would prove nothing.
     const instance = (await customApi.getNamespacedCustomObject({
-      group: 'test.typekro.dev',
+      group: INSTANCE_GROUP,
       version: RGD_VERSION,
       namespace: workloadNamespace,
       plural: instancePlural,
       name: instanceName,
-    })) as { metadata?: { name?: string } };
+    })) as { metadata?: { name?: string; finalizers?: string[] } };
     expect(instance.metadata?.name).toBe(instanceName);
+    expect(instance.metadata?.finalizers ?? []).toContain(KRO_FINALIZER);
 
     // ────────────────────────────────────────────────────────────────────────
     // PHASE B — finalizer-SAFE DELETION (finding #4): the ACTUAL original defect.
@@ -314,7 +345,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
       async () => {
         try {
           await customApi.getNamespacedCustomObject({
-            group: 'test.typekro.dev',
+            group: INSTANCE_GROUP,
             version: RGD_VERSION,
             namespace: workloadNamespace,
             plural: instancePlural,
@@ -371,7 +402,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
             group: RGD_GROUP,
             version: RGD_VERSION,
             plural: RGD_PLURAL,
-            name: 'ns-migration',
+            name: RGD_NAME,
           });
           return false;
         } catch (e: unknown) {
@@ -384,6 +415,31 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
       },
       60000,
       'the shared RGD to be deleted by deleteInstance()'
+    );
+
+    // The GENERATED CRD is fully gone too (finding #8): a prior run left
+    // `nsmigrations.test.typekro.dev` Terminating for ~200s because the test ended
+    // before the CRD finished deleting. WAIT for it (bounded) so nothing cluster-
+    // scoped is left terminating when the test returns.
+    await waitFor(
+      async () => {
+        try {
+          await objectApi.read({
+            apiVersion: 'apiextensions.k8s.io/v1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: GENERATED_CRD_NAME },
+          });
+          return false;
+        } catch (e: unknown) {
+          const code =
+            (e as { statusCode?: number; code?: number; body?: { code?: number } })?.statusCode ??
+            (e as { code?: number })?.code ??
+            (e as { body?: { code?: number } })?.body?.code;
+          return code === 404;
+        }
+      },
+      240000,
+      'the generated CRD to be fully deleted (nothing left Terminating)'
     );
   }, 900000);
 });

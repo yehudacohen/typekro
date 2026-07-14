@@ -351,11 +351,18 @@ Skipping it risks KRO pruning the live workload Namespace on the next reconcile.
 > (4) resume ALL.**
 
 List every instance of the CRD and its owned workload Namespace, then run the script
-below. It is **ordered and gated**: step 4 (resume) is unreachable until step 3 (apply
-the new RGD) is **confirmed** applied. This matters — if you stripped ownership and then
-resumed while the OLD (pre-hoist) RGD was still live, KRO would immediately re-adopt and
-re-stamp every workload Namespace, undoing the transfer. So step 3 is an **executable,
-BLOCKING** step with a verification gate, not a comment.
+below. It is **at parity with the automatic direct-mode migration** — it (a) validates
+each Namespace's **ApplySet identity** before stripping it (so it never steals a
+Namespace owned by a *different* instance), (b) records **pre-existing suspension** and
+only resumes what **it** suspended (so it never clears an operator's deliberate
+`kro.run/reconcile: suspended`), (c) gates on the RGD's **`observedGeneration`** (status
+reflects the generation you just applied, not a stale `Active`), and (d) confirms the
+**specific self-owned Namespace** is gone from `spec.resources` (it does not reject a
+graph that legitimately contains some *other* Namespace). It is **ordered and gated**:
+step 4 (resume) is unreachable until step 3 (apply the new RGD) is **confirmed** applied —
+resuming against the OLD (pre-hoist) RGD would let KRO immediately re-adopt and re-stamp
+every workload Namespace, undoing the transfer. So step 3 is an **executable, BLOCKING**
+step with a verification gate, not a comment.
 
 ```bash
 #!/usr/bin/env bash
@@ -363,6 +370,8 @@ set -euo pipefail
 
 CR_RESOURCE="nsmigrations.test.typekro.dev"   # <plural>.<group> of the instance CRD
 RGD_NAME="ns-migration"                         # metadata.name of the SHARED RGD
+PART_OF_LABEL='applyset.kubernetes.io/part-of'
+INSTANCE_ID_LABEL='kro.run/instance-id'
 
 # All affected instances, as "INSTANCE_NS/INSTANCE WORKLOAD_NS" triples. INSTANCE_NS
 # is the namespace the CR lives in — the FACTORY namespace (TypeKro always places the
@@ -374,19 +383,56 @@ INSTANCES=(
   # "dagster-prod/ns-migration-instance dagster-prod"
 )
 
-# 1. SUSPEND ALL instances first, so KRO stops reconciling + pruning ANY of them
-#    during the transfer.
+# RESUME_LIST records ONLY the instances THIS run suspended, so step 4 never clears an
+# operator's deliberate suspend (parity with the code's migration marker, finding #3).
+RESUME_LIST=()
+
+# 1. SUSPEND — but only instances not ALREADY suspended. An instance an operator
+#    intentionally suspended is left as-is and will NOT be resumed by step 4.
 for entry in "${INSTANCES[@]}"; do
   read -r ref workload_ns <<<"${entry}"
   instance_ns="${ref%%/*}"; instance="${ref##*/}"
+  current="$(kubectl get "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
+    -o jsonpath='{.metadata.annotations.kro\.run/reconcile}' 2>/dev/null || true)"
+  if [ "${current}" = "suspended" ] || [ "${current}" = "disabled" ]; then
+    echo "leave ${ref}: already suspended (operator intent) — will NOT resume it" >&2
+    continue
+  fi
   kubectl annotate "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
     kro.run/reconcile=suspended --overwrite
+  RESUME_LIST+=("${ref}")
 done
 
-# 2. STRIP KRO's ApplySet/ownership labels from EVERY owned workload Namespace so the
-#    prune selector no longer matches any of them, and stamp typekro's retention markers.
+# 2. For each instance, VALIDATE the owned Namespace's ownership identity belongs to
+#    THAT instance BEFORE stripping (never steal a Namespace owned by another owner),
+#    then strip KRO's ApplySet/ownership labels and stamp typekro's retention markers.
 for entry in "${INSTANCES[@]}"; do
   read -r ref workload_ns <<<"${entry}"
+  instance_ns="${ref%%/*}"; instance="${ref##*/}"
+  instance_uid="$(kubectl get "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
+    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  ns_part_of="$(kubectl get namespace "${workload_ns}" \
+    -o "jsonpath={.metadata.labels.${PART_OF_LABEL//./\\.}}" 2>/dev/null || true)"
+  ns_instance_id="$(kubectl get namespace "${workload_ns}" \
+    -o "jsonpath={.metadata.labels.${INSTANCE_ID_LABEL//./\\.}}" 2>/dev/null || true)"
+
+  # Not KRO-owned (fresh / already transferred) → nothing to strip.
+  if [ -z "${ns_part_of}" ] && [ -z "${ns_instance_id}" ]; then
+    echo "skip ${workload_ns}: not a KRO ApplySet member (nothing to transfer)" >&2
+    continue
+  fi
+  # Every PRESENT identity must AGREE with THIS instance; a present instance-id that
+  # differs from the CR's UID means the Namespace is owned by ANOTHER instance → ABORT
+  # (fail closed) rather than steal it. (part-of parity: recompute the ApplySet id as
+  # applyset-<rawurl base64(sha256("<name>.<ns>.<kind>.<group>"))>-v1 if you want to
+  # verify it too; the instance-id/UID check below is sufficient in practice.)
+  if [ -n "${ns_instance_id}" ] && [ "${ns_instance_id}" != "${instance_uid}" ]; then
+    echo "ABORT: ${workload_ns} is owned by a DIFFERENT KRO instance" \
+         "(instance-id='${ns_instance_id}' != this instance UID '${instance_uid}')." >&2
+    echo "Resolve the conflicting ownership before migrating. Suspended instances remain suspended (safe)." >&2
+    exit 1
+  fi
+
   kubectl label namespace "${workload_ns}" \
     applyset.kubernetes.io/part-of- \
     kro.run/owned- \
@@ -413,16 +459,24 @@ done
 
 # 3b. GATE — BLOCK until the new (hoisted) RGD is confirmed live before resuming:
 #     (a) the RGD reports status.state == Active, AND
-#     (b) the RGD no longer declares the owned Namespace as a graph child (proof the
-#         HOISTED revision — not the pre-hoist one — is what's applied), AND
-#     (c) every workload Namespace still lacks `applyset.kubernetes.io/part-of` (proof
+#     (b) the RGD's Ready condition's observedGeneration == metadata.generation (the
+#         status reflects the generation you JUST applied — not a stale prior Active), AND
+#     (c) the SPECIFIC self-owned Namespace (a Namespace template named
+#         "${schema.spec.namespace}") is gone from spec.resources — a graph that
+#         legitimately contains some OTHER (unrelated) Namespace is still accepted, AND
+#     (d) every workload Namespace still lacks `applyset.kubernetes.io/part-of` (proof
 #         the strip is still in effect and nothing re-adopted it).
 gate_timeout=$((SECONDS + 600))   # wait up to 10 min for the apply to land
 until
   state="$(kubectl get resourcegraphdefinition "${RGD_NAME}" -o jsonpath='{.status.state}' 2>/dev/null || true)"
-  # jq -e: exit 0 only if NO resource template is a Namespace (i.e. hoisted out).
+  gen="$(kubectl get resourcegraphdefinition "${RGD_NAME}" -o jsonpath='{.metadata.generation}' 2>/dev/null || true)"
+  obs="$(kubectl get resourcegraphdefinition "${RGD_NAME}" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].observedGeneration}' 2>/dev/null || true)"
+  observed="no"; [ -n "${obs}" ] && [ "${obs}" = "${gen}" ] && observed="yes"
+  # jq -e: exit 0 only if NO resource template is the SELF-OWNED Namespace (a Namespace
+  # whose name is the schema namespace expression) — i.e. it was hoisted out.
   hoisted="$(kubectl get resourcegraphdefinition "${RGD_NAME}" -o json 2>/dev/null \
-    | jq -e '[.spec.resources[]?.template.kind] | index("Namespace") | not' >/dev/null 2>&1 && echo yes || echo no)"
+    | jq -e '[.spec.resources[]? | select(.template.kind=="Namespace" and .template.metadata.name=="${schema.spec.namespace}")] | length == 0' >/dev/null 2>&1 && echo yes || echo no)"
   stripped="yes"
   for entry in "${INSTANCES[@]}"; do
     read -r _ref workload_ns <<<"${entry}"
@@ -430,22 +484,23 @@ until
       -o jsonpath='{.metadata.labels.applyset\.kubernetes\.io/part-of}' 2>/dev/null || true)"
     [ -n "${part_of}" ] && stripped="no"
   done
-  [ "${state}" = "Active" ] && [ "${hoisted}" = "yes" ] && [ "${stripped}" = "yes" ]
+  [ "${state}" = "Active" ] && [ "${observed}" = "yes" ] && [ "${hoisted}" = "yes" ] && [ "${stripped}" = "yes" ]
 do
   if [ "${SECONDS}" -ge "${gate_timeout}" ]; then
-    echo "ABORT: hoisted RGD not confirmed Active/applied (state='${state}', hoisted='${hoisted}', stripped='${stripped}')." >&2
+    echo "ABORT: hoisted RGD not confirmed (state='${state}', observedGen='${obs}' vs gen='${gen}', hoisted='${hoisted}', stripped='${stripped}')." >&2
     echo "Instances remain SUSPENDED (safe). Apply the new RGD (step 3) and re-run — do NOT resume manually." >&2
     exit 1
   fi
-  echo "Waiting for the hoisted RGD to become Active (state='${state}', hoisted='${hoisted}', stripped='${stripped}')…" >&2
+  echo "Waiting for the hoisted RGD (state='${state}', observedGen='${obs}' vs gen='${gen}', hoisted='${hoisted}', stripped='${stripped}')…" >&2
   sleep 5
 done
 
-# 4. RESUME ALL instances — reachable ONLY after the gate confirmed the hoisted RGD is
-#    live and the strip is still in effect. Each Namespace no longer carries `part-of`,
-#    so the prune cannot enumerate it — they all survive.
-for entry in "${INSTANCES[@]}"; do
-  read -r ref workload_ns <<<"${entry}"
+# 4. RESUME — ONLY the instances THIS run suspended (RESUME_LIST). Reachable ONLY after
+#    the gate confirmed the hoisted RGD is live and the strip is still in effect. Each
+#    Namespace no longer carries `part-of`, so the prune cannot enumerate it — they all
+#    survive. Operator-suspended instances are deliberately left suspended.
+for ref in "${RESUME_LIST[@]:-}"; do
+  [ -z "${ref}" ] && continue
   instance_ns="${ref%%/*}"; instance="${ref##*/}"
   kubectl annotate "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
     kro.run/reconcile- --overwrite
