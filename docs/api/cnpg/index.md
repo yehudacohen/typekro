@@ -264,9 +264,13 @@ await factory.deploy({
 });
 ```
 
-The factory namespace holds the KRO instance and must differ from
-`spec.namespace`, because the bootstrap graph owns the CNPG operator
-Namespace.
+The factory namespace holds the KRO instance and **can be the same as**
+`spec.namespace` (as shown above, both `cnpg-system`). Even though the bootstrap
+graph owns the CNPG operator Namespace, TypeKro **hoists that owned Namespace out
+of the RGD graph** and emits it as a retained resource created deps-first, so the
+instance CR living in the same namespace can never have its finalizer stranded by
+KRO garbage-collecting its own namespace. (Set `instanceNamespace` on the factory
+only if you deliberately want the CR in a *different* namespace.)
 
 ### Bootstrap Status
 

@@ -97,6 +97,7 @@ import {
   concreteOwnedNamespaceResources,
   detectStructurallyOwnedNamespaceIds,
   findDanglingHoistedReference,
+  hoistWeakenedStatusFields,
   resolveNamespaceName,
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
@@ -275,6 +276,62 @@ export function classifyNamespaceForMigration(params: {
   return 'skip';
 }
 
+/** A candidate owner of a (possibly shared) workload Namespace during migration. */
+export interface NamespaceConsumer {
+  readonly ref: InstanceRef;
+  readonly expectedApplySetId: string;
+  readonly uid: string | undefined;
+}
+
+/**
+ * ORDER-INDEPENDENT owner selection for a workload Namespace that may be referenced by
+ * MORE THAN ONE instance of the same RGD (finding #7).
+ *
+ * The previous per-instance classification was list-order dependent: a non-matching
+ * consumer enumerated BEFORE the real owner aborted the whole migration (its identity
+ * check saw a foreign owner), while the owner enumerated first stripped the Namespace
+ * out from under later consumers (they then saw it already-transferred). This decides
+ * from the Namespace's labels + ALL its consumers at once, so the result is the same
+ * regardless of enumeration order:
+ *
+ *  - not KRO-owned + retention marker → `already-transferred` (a prior migration did it).
+ *  - not KRO-owned + no marker        → `skip` (fresh / user-managed).
+ *  - KRO-owned: find the consumer whose ApplySet identity MATCHES (every present
+ *    identity must AGREE, findings #4 + #5). Exactly that consumer is the owner →
+ *    `transfer` (strip ONCE by its identity). If NONE of the consumers match, the
+ *    Namespace belongs to a DIFFERENT ApplySet → THROW (abort fail-closed) — never
+ *    steal it.
+ *
+ * **Exported for testing.**
+ */
+export function selectNamespaceOwnerAmongConsumers(params: {
+  readonly nsName: string;
+  readonly nsLabels: Record<string, string>;
+  readonly rgdName: string;
+  readonly consumers: readonly NamespaceConsumer[];
+}): { action: 'transfer'; owner: NamespaceConsumer } | { action: 'already-transferred' | 'skip' } {
+  const { nsName, nsLabels, rgdName, consumers } = params;
+  if (!isKroOwnedNamespace(nsLabels)) {
+    if (nsLabels[TYPEKRO_INSTANCE_NAMESPACE_LABEL] === 'true') return { action: 'already-transferred' };
+    return { action: 'skip' };
+  }
+  const owner = consumers.find((c) =>
+    namespaceOwnershipMatchesInstance(nsLabels, c.expectedApplySetId, c.uid)
+  );
+  if (owner === undefined) {
+    throw new Error(
+      `Ownership conflict: workload Namespace "${nsName}" is KRO-owned ` +
+        `(part-of="${nsLabels[APPLYSET_PART_OF_LABEL] ?? '<none>'}", ` +
+        `instance-id="${nsLabels[KRO_INSTANCE_ID_LABEL] ?? '<none>'}") but its identity matches ` +
+        `NONE of the ${consumers.length} instance(s) of RGD "${rgdName}" that reference it ` +
+        `(${consumers.map((c) => `${c.ref.namespace}/${c.ref.name}`).join(', ')}). It belongs to ` +
+        `another ApplySet. Refusing to migrate — the shared RGD is left untouched so KRO cannot ` +
+        `prune a Namespace owned by another instance. Resolve the conflicting ownership before upgrading.`
+    );
+  }
+  return { action: 'transfer', owner };
+}
+
 /**
  * Decide, from an instance's PRE-EXISTING state, whether the ownership-transfer
  * migration should suspend it and/or resume it afterwards (finding #3).
@@ -338,9 +395,17 @@ interface InstanceRef {
  * The result of the ownership-transfer migration: every instance the caller must
  * RESUME after the new RGD is applied (instances the migration suspended, plus any
  * crash-recovery resumes). Resuming is idempotent, so it is safe to apply twice.
+ *
+ * `strippedNamespaces` records every workload Namespace this migration transferred
+ * out of KRO's ApplySet, so that AFTER the new RGD is applied the caller can RE-VERIFY
+ * each one still EXISTS and is still UNOWNED — detecting (loudly, never silently) an
+ * in-flight reconcile that re-adopted it or a prune that deleted it despite the
+ * transfer (blocker #1, the residual client-unfixable race — see
+ * {@link KroResourceFactoryImpl.stripKroOwnershipFromNamespace}).
  */
 interface NamespaceMigrationHandle {
   readonly resumeTargets: InstanceRef[];
+  readonly strippedNamespaces: string[];
 }
 
 /**
@@ -1308,6 +1373,13 @@ export class KroResourceFactoryImpl<
           rgdName: this.rgdName,
         });
 
+        // BLOCKER #1 (residual-race safety net): the new RGD is live and instances are
+        // resumed, so re-verify every Namespace the migration transferred still exists
+        // and stayed OUT of KRO's ApplySet. This DETECTS (never silently loses) the
+        // client-unfixable case where a reconcile in flight when we suspended re-adopts
+        // the Namespace after our settle window and KRO then prunes it. Fails loud.
+        await this.verifyHoistedNamespacesSurvived(migration);
+
         // Create Enhanced proxy for the deployed instance
         return await this.createEnhancedProxy(spec, instanceName);
       } finally {
@@ -1362,7 +1434,8 @@ export class KroResourceFactoryImpl<
    */
   private async migrateHoistedNamespaceOwnership(): Promise<NamespaceMigrationHandle> {
     // Migration only applies when this factory hoists an owned Namespace at all.
-    if (this.structurallyHoistedIds().size === 0) return { resumeTargets: [] };
+    if (this.structurallyHoistedIds().size === 0)
+      return { resumeTargets: [], strippedNamespaces: [] };
 
     const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
     const kind = this.schemaDefinition.kind;
@@ -1371,7 +1444,56 @@ export class KroResourceFactoryImpl<
     // 1. Discover EVERY live instance of this RGD cluster-wide.
     const liveInstances = await this.listInstancesForMigration();
 
-    const toSuspend = new Map<string, InstanceRef>();
+    /** Per-instance facts gathered up front so decisions are order-independent (#7). */
+    interface InstanceMigrationInfo {
+      readonly ref: InstanceRef;
+      readonly uid: string | undefined;
+      readonly expectedApplySetId: string;
+      readonly preexistingSuspended: boolean;
+      readonly suspendedByUs: boolean;
+      readonly nsNames: string[];
+      pendingTransfer: boolean;
+      completedTransfer: boolean;
+    }
+    const infos: InstanceMigrationInfo[] = [];
+    // A SHARED workload Namespace can be referenced by more than one instance of the
+    // same RGD. Group consumers BY Namespace (#7) so the decision is order-independent:
+    // read each live Namespace ONCE, find the ACTUAL matching owner among ALL its
+    // consumers, and strip ONCE by the owner's identity. The previous per-instance
+    // loop was list-order dependent — a non-matching consumer enumerated before the
+    // real owner aborted the whole migration, while the owner enumerated first
+    // stripped it out from under later consumers.
+    const nsConsumers = new Map<string, InstanceMigrationInfo[]>();
+
+    for (const inst of liveInstances) {
+      const instName = typeof inst.metadata?.name === 'string' ? inst.metadata.name : undefined;
+      const instNs =
+        typeof inst.metadata?.namespace === 'string' ? inst.metadata.namespace : undefined;
+      if (instName === undefined || instNs === undefined) continue;
+      const uid = typeof inst.metadata?.uid === 'string' ? inst.metadata.uid : undefined;
+      const info: InstanceMigrationInfo = {
+        ref: { name: instName, namespace: instNs },
+        uid,
+        expectedApplySetId: computeApplySetId(instName, instNs, kind, group),
+        preexistingSuspended: isReconcileSuspended(inst.metadata?.annotations),
+        // Did TYPEKRO suspend this instance for a (prior) migration? Our distinct
+        // marker distinguishes our suspension from an operator's deliberate
+        // `kro.run/reconcile: suspended` (finding #3) — we only ever RESUME what WE
+        // suspended, never clearing an operator's intentional suspend.
+        suspendedByUs: inst.metadata?.annotations?.[TYPEKRO_MIGRATION_SUSPEND_MARKER] === 'true',
+        // This instance's owned workload Namespace(s), resolved from ITS OWN spec.
+        nsNames: [...this.hoistedNamespaceNames(inst.spec as TSpec)],
+        pendingTransfer: false,
+        completedTransfer: false,
+      };
+      infos.push(info);
+      for (const nsName of info.nsNames) {
+        const arr = nsConsumers.get(nsName) ?? [];
+        arr.push(info);
+        nsConsumers.set(nsName, arr);
+      }
+    }
+
     // Each strip target carries the OWNING instance's identity so the strip can
     // RE-VALIDATE ownership after suspension (blocker #1) rather than trusting the
     // labels read during classification (before suspend), which an in-flight
@@ -1382,77 +1504,67 @@ export class KroResourceFactoryImpl<
       expectedApplySetId: string;
       instanceUid: string | undefined;
     }> = [];
+
+    // Decide per-NAMESPACE (order-independent, #7). Read each live Namespace ONCE.
+    for (const [nsName, consumers] of nsConsumers) {
+      const live = await this.readNamespaceOwnership(k8sApi, nsName); // FAIL CLOSED on non-404
+      if (live === undefined) continue; // Namespace absent → nothing to transfer
+
+      // Decide ONCE per Namespace from its labels + ALL its consumers — order
+      // independent (#7). A KRO-owned Namespace matching NONE of this RGD's consumers
+      // is owned by a DIFFERENT ApplySet and ABORTS the migration (throws) BEFORE
+      // anything is suspended/stripped or the RGD is touched (findings #3 + #5).
+      const decision = selectNamespaceOwnerAmongConsumers({
+        nsName,
+        nsLabels: live.labels,
+        rgdName: this.rgdName,
+        consumers,
+      });
+      if (decision.action !== 'transfer') {
+        // `already-transferred`: a prior migration did it → every consumer's transfer
+        // is already done (idempotent recovery, finding #4). `skip`: fresh/user-managed.
+        if (decision.action === 'already-transferred') {
+          for (const c of consumers) c.completedTransfer = true;
+        }
+        continue;
+      }
+      // Strip ONCE by the OWNER's identity; mark EVERY consumer of this shared
+      // Namespace as pending-transfer so ALL are suspended (order-independent, #7) —
+      // no consumer's reconcile can race the transfer.
+      const owner = decision.owner;
+      toStrip.push({
+        nsName,
+        instanceRef: `${owner.ref.namespace}/${owner.ref.name}`,
+        expectedApplySetId: owner.expectedApplySetId,
+        instanceUid: owner.uid,
+      });
+      for (const c of consumers) c.pendingTransfer = true;
+    }
+
+    const toSuspend = new Map<string, InstanceRef>();
     // Instances a PRIOR partial migration already stripped but left suspended — a
     // retry must resume them to a consistent state (idempotent recovery, finding #4).
     const recoveryResume: InstanceRef[] = [];
-
-    for (const inst of liveInstances) {
-      const instName = typeof inst.metadata?.name === 'string' ? inst.metadata.name : undefined;
-      const instNs =
-        typeof inst.metadata?.namespace === 'string' ? inst.metadata.namespace : undefined;
-      if (instName === undefined || instNs === undefined) continue;
-      const uid = typeof inst.metadata?.uid === 'string' ? inst.metadata.uid : undefined;
-      const suspended = isReconcileSuspended(inst.metadata?.annotations);
-      // Did TYPEKRO suspend this instance for a (prior) migration? Our distinct
-      // marker distinguishes our suspension from an operator's deliberate
-      // `kro.run/reconcile: suspended` (finding #3) — we only ever RESUME what WE
-      // suspended, never clearing an operator's intentional suspend.
-      const suspendedByUs =
-        inst.metadata?.annotations?.[TYPEKRO_MIGRATION_SUSPEND_MARKER] === 'true';
-      const expectedApplySetId = computeApplySetId(instName, instNs, kind, group);
-
-      // This instance's owned workload Namespace(s), resolved from ITS OWN spec.
-      const nsNames = this.hoistedNamespaceNames(inst.spec as TSpec);
-      let pendingTransfer = false;
-      let completedTransfer = false;
-      for (const nsName of nsNames) {
-        const live = await this.readNamespaceOwnership(k8sApi, nsName); // FAIL CLOSED on non-404
-        if (live === undefined) continue; // Namespace absent → nothing to transfer
-        // Identity-checked classification (findings #3 + #5): only strip a Namespace
-        // that belongs to THIS instance; a KRO-owned Namespace belonging to a
-        // DIFFERENT ApplySet ABORTS the whole migration (throws) BEFORE anything is
-        // suspended/stripped or the shared RGD is touched — fail closed.
-        const action = classifyNamespaceForMigration({
-          nsName,
-          instanceRef: `${instNs}/${instName}`,
-          nsLabels: live.labels,
-          expectedApplySetId,
-          instanceUid: uid,
-        });
-        if (action === 'transfer') {
-          pendingTransfer = true;
-          toStrip.push({
-            nsName,
-            instanceRef: `${instNs}/${instName}`,
-            expectedApplySetId,
-            instanceUid: uid,
-          });
-        } else if (action === 'already-transferred') {
-          completedTransfer = true;
-        }
-      }
-
-      const ref: InstanceRef = { name: instName, namespace: instNs };
+    for (const info of infos) {
       // Decide suspend/resume from pre-existing state (finding #3). An
-      // operator-suspended instance (suspended WITHOUT our marker) is left
-      // suspended and NEVER resumed — but its Namespace is still transferred
-      // (it's in `toStrip`), so the shared RGD change can't prune it.
+      // operator-suspended instance (suspended WITHOUT our marker) is left suspended
+      // and NEVER resumed — but its Namespace is still transferred (via `toStrip`), so
+      // the shared RGD change can't prune it.
       const plan = planInstanceMigrationAction({
-        preexistingSuspended: suspended,
-        suspendedByUs,
-        pendingTransfer,
-        completedTransfer,
+        preexistingSuspended: info.preexistingSuspended,
+        suspendedByUs: info.suspendedByUs,
+        pendingTransfer: info.pendingTransfer,
+        completedTransfer: info.completedTransfer,
       });
-      if (plan.suspend) {
-        toSuspend.set(`${instNs}/${instName}`, ref);
-      } else if (plan.resume) {
-        // Already suspended by US (now-noop or a prior partial migration) — resume
-        // after the new RGD is applied, without re-suspending.
-        recoveryResume.push(ref);
-      }
+      const key = `${info.ref.namespace}/${info.ref.name}`;
+      if (plan.suspend) toSuspend.set(key, info.ref);
+      else if (plan.resume) recoveryResume.push(info.ref);
     }
 
-    const handle: NamespaceMigrationHandle = { resumeTargets: [...recoveryResume] };
+    const handle: NamespaceMigrationHandle = {
+      resumeTargets: [...recoveryResume],
+      strippedNamespaces: toStrip.map((s) => s.nsName),
+    };
     if (toSuspend.size === 0 && toStrip.length === 0) return handle;
 
     this.logger.info('Migrating hoisted Namespace ownership out of KRO ApplySet', {
@@ -1463,24 +1575,26 @@ export class KroResourceFactoryImpl<
 
     const suspendedTargets: InstanceRef[] = [];
     try {
-      // 2. SUSPEND each instance with a Namespace to transfer, then CONFIRM KRO has
-      //    OBSERVED the suspension (its status reflects the suspend generation)
-      //    before stripping (blocker #1). Once the suspend is observed, KRO will
-      //    start no NEW reconcile that re-stamps ownership; only a reconcile already
-      //    in flight when we suspended remains, and the conditional strip +
-      //    confirm-held below closes that window.
+      // 2. SUSPEND each instance with a Namespace to transfer.
+      //    BLOCKER #1 — HONEST LIMITATION: KRO's suspend is an INLINE annotation
+      //    check at the top of reconcile (controller.go IsReconcileSuspended); it sets
+      //    NO "suspended" status condition and does NOT bump metadata.generation. So
+      //    there is NO client-observable "controller quiesced" signal to wait on — an
+      //    observedGeneration wait would satisfy INSTANTLY and prove nothing (that is
+      //    why the prior round's wait was removed). We therefore CANNOT know that a
+      //    reconcile already in flight has finished. The bounded settle window inside
+      //    the strip (below) plus the post-RGD re-verify NARROW this race but cannot
+      //    fully eliminate it purely client-side. See the drafted upstream KRO issue.
       for (const ref of toSuspend.values()) {
         const didSuspend = await this.suspendInstanceReconciliation(ref.name, ref.namespace);
-        if (didSuspend) {
-          suspendedTargets.push(ref);
-          await this.waitForInstanceReconcileObserved(ref.name, ref.namespace);
-        }
+        if (didSuspend) suspendedTargets.push(ref);
       }
       // 3. STRIP KRO ownership from each selected live Namespace + stamp retention.
       //    The strip RE-READS + RE-VALIDATES ownership post-suspension, patches with a
       //    resourceVersion precondition (retrying on 409), and CONFIRMS the strip held
-      //    before returning — so an in-flight reconcile cannot silently re-adopt the
-      //    Namespace before the new RGD is applied (blocker #1).
+      //    across a bounded SETTLE WINDOW before returning — so an in-flight reconcile
+      //    that re-adopts the Namespace shortly after the patch is re-detected and
+      //    re-stripped, or the migration aborts fail-closed (blocker #1).
       for (const target of toStrip) {
         await this.stripKroOwnershipFromNamespace(k8sApi, target);
       }
@@ -1645,6 +1759,14 @@ export class KroResourceFactoryImpl<
 
   /** Bounded retry budget for the resourceVersion-conditional ownership strip (blocker #1). */
   private static readonly STRIP_MAX_ATTEMPTS = 5;
+  /**
+   * Post-strip SETTLE window (blocker #1): re-read the Namespace this many times,
+   * this far apart, requiring it to stay unowned across the WHOLE window before
+   * accepting the strip — so a reconcile that was in flight when we suspended has time
+   * to land and be re-detected. Narrows, does not eliminate, the re-stamp race.
+   */
+  private static readonly STRIP_SETTLE_READS = 4;
+  private static readonly STRIP_SETTLE_INTERVAL_MS = 750;
 
   /**
    * Transfer a live Namespace OUT of KRO's ApplySet, RACE-SAFELY (blocker #1).
@@ -1749,21 +1871,44 @@ export class KroResourceFactoryImpl<
         );
       }
 
-      // (c) CONFIRM the strip HELD: re-read must show no ApplySet/KRO ownership.
-      const confirm = await this.readNamespaceOwnership(k8sApi, name);
-      if (confirm === undefined || !isKroOwnedNamespace(confirm.labels)) {
-        this.logger.debug('Confirmed workload Namespace transferred out of KRO ApplySet', {
-          namespace: name,
-          instanceRef,
-          attempt,
-        });
-        return; // stripped AND confirmed held.
+      // (c) SETTLE + CONFIRM the strip HELD across a bounded window (blocker #1).
+      //     A single confirm read can miss a reconcile that was already IN FLIGHT when
+      //     we suspended and re-stamps ownership shortly AFTER our patch. KRO gives no
+      //     "controller quiesced" signal (its suspend is an inline annotation check
+      //     with no status condition / no generation bump), so we cannot know such a
+      //     reconcile has drained. Instead we RE-READ several times over a short window
+      //     and only accept the strip once the Namespace has STAYED unowned across the
+      //     WHOLE window — giving an in-flight reconcile time to land and be re-detected.
+      //     If it re-stamps during the window we retry (re-read/re-validate/re-patch);
+      //     if it keeps re-stamping past the budget we ABORT fail-closed before the new
+      //     RGD is applied. This NARROWS the race; it does not eliminate it — a reconcile
+      //     that re-stamps AFTER the window still exists (detected post-RGD by
+      //     {@link verifyHoistedNamespacesSurvived}). See the drafted upstream KRO issue.
+      let restampedLabels: Record<string, string> | undefined;
+      for (let settle = 0; settle < KroResourceFactoryImpl.STRIP_SETTLE_READS; settle++) {
+        const confirm = await this.readNamespaceOwnership(k8sApi, name);
+        if (confirm === undefined || !isKroOwnedNamespace(confirm.labels)) {
+          if (settle < KroResourceFactoryImpl.STRIP_SETTLE_READS - 1) {
+            await new Promise((r) => setTimeout(r, KroResourceFactoryImpl.STRIP_SETTLE_INTERVAL_MS));
+            continue; // stayed stripped so far — keep watching the window
+          }
+          this.logger.debug('Confirmed workload Namespace transferred out of KRO ApplySet', {
+            namespace: name,
+            instanceRef,
+            attempt,
+          });
+          return; // stripped AND held unowned across the whole settle window.
+        }
+        // Re-stamped during the window → break out and retry the strip attempt.
+        restampedLabels = confirm.labels;
+        break;
       }
-      // An in-flight reconcile re-stamped ownership after our patch. Retry within
-      // budget; otherwise fail closed (never proceed to apply the new RGD while the
-      // live Namespace still carries KRO ownership KRO's prune would enumerate).
+
+      // An in-flight reconcile re-stamped ownership within the settle window. Retry
+      // within budget; otherwise fail closed (never proceed to apply the new RGD while
+      // the live Namespace still carries KRO ownership KRO's prune would enumerate).
       if (attempt < KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS) {
-        this.logger.debug('KRO re-stamped ownership after strip; retrying', {
+        this.logger.debug('KRO re-stamped ownership during the settle window; retrying', {
           namespace: name,
           instanceRef,
           attempt,
@@ -1773,7 +1918,7 @@ export class KroResourceFactoryImpl<
       throw new ResourceGraphFactoryError(
         `Could not confirm workload Namespace "${name}" stayed out of KRO's ApplySet after ` +
           `${KroResourceFactoryImpl.STRIP_MAX_ATTEMPTS} attempts — an in-flight KRO reconcile keeps ` +
-          `re-stamping ownership (part-of="${confirm.labels[APPLYSET_PART_OF_LABEL] ?? '<none>'}"). ` +
+          `re-stamping ownership (part-of="${restampedLabels?.[APPLYSET_PART_OF_LABEL] ?? '<none>'}"). ` +
           `Aborting before applying the new RGD (fail closed) so KRO's prune cannot delete the live ` +
           `namespace. Retry the upgrade once the instance is quiescent.`,
         this.name,
@@ -1782,72 +1927,74 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  /** Bounded post-RGD re-verify window for transferred Namespaces (blocker #1). */
+  private static readonly POST_RGD_VERIFY_READS = 6;
+  private static readonly POST_RGD_VERIFY_INTERVAL_MS = 1000;
+
   /**
-   * Best-effort bounded wait until KRO has OBSERVED an instance's suspend — i.e. its
-   * status conditions carry an `observedGeneration` >= the instance's current
-   * `metadata.generation` (KRO stamps status even while suspended). Once observed,
-   * KRO starts no NEW reconcile that could re-stamp Namespace ownership, shrinking
-   * the strip race to just a reconcile already in flight (which the conditional strip
-   * + confirm-held in {@link stripKroOwnershipFromNamespace} handles). Non-fatal: on
-   * timeout or read error it logs and returns, because the conditional strip is the
-   * real guarantee — this only narrows the window (blocker #1, the "consider" step).
+   * AFTER the new (hoisted) RGD is applied and the suspended instances are resumed,
+   * RE-VERIFY every Namespace the migration transferred still EXISTS and is still
+   * UNOWNED (blocker #1). This is the honest safety net for the residual race the
+   * client cannot close: KRO exposes no "controller quiesced" signal, so a reconcile
+   * that was already in flight when we suspended could, in principle, re-stamp
+   * `applyset.kubernetes.io/part-of` after our settle window — and once the new RGD is
+   * live KRO's prune would then delete the (re-adopted) live Namespace. We cannot
+   * PREVENT that purely client-side, but we DETECT it: read each transferred Namespace
+   * a few times over a short window and FAIL LOUDLY if any is gone (pruned) or has been
+   * re-adopted into KRO's ApplySet — so re-stamp/data-loss surfaces as a deploy error
+   * instead of silently losing the namespace. Best-effort on transient read errors
+   * (logs + continues); a definitive "gone" or "re-owned" observation throws.
    */
-  private async waitForInstanceReconcileObserved(
-    instanceName: string,
-    instanceNamespace: string
+  private async verifyHoistedNamespacesSurvived(
+    handle: NamespaceMigrationHandle,
+    injectedApi?: k8s.KubernetesObjectApi
   ): Promise<void> {
-    const deadline = Date.now() + 30_000;
-    let customApi: Awaited<ReturnType<typeof this.createCustomObjectsApi>>;
-    let plural: string | undefined;
-    try {
-      customApi = await this.createCustomObjectsApi();
-      plural = this.discoveredPlural ?? (await this.lookupCRDPlural());
-    } catch (error: unknown) {
-      this.logger.debug('Could not resolve API to confirm suspend; proceeding to strip', {
-        instanceName,
-        instanceNamespace,
-        error: ensureError(error).message,
-      });
-      return;
-    }
-    if (plural === undefined) return;
-    while (Date.now() < deadline) {
-      try {
-        const cr = (await customApi.getNamespacedCustomObject({
-          group: this.getSchemaGroup(),
-          version: this.getSchemaVersion(),
-          namespace: instanceNamespace,
-          plural,
-          name: instanceName,
-        })) as {
-          metadata?: { generation?: number };
-          status?: { conditions?: Array<{ observedGeneration?: number }> };
-        };
-        const generation = cr.metadata?.generation ?? 0;
-        const observed = (cr.status?.conditions ?? []).some(
-          (c) => typeof c.observedGeneration === 'number' && c.observedGeneration >= generation
-        );
-        if (observed) {
-          this.logger.debug('Confirmed instance suspend observed by KRO', {
-            instanceName,
-            instanceNamespace,
-            generation,
+    if (handle.strippedNamespaces.length === 0) return;
+    const k8sApi = injectedApi ?? createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
+    for (const nsName of handle.strippedNamespaces) {
+      for (let read = 0; read < KroResourceFactoryImpl.POST_RGD_VERIFY_READS; read++) {
+        let live: Awaited<ReturnType<typeof this.readNamespaceOwnership>>;
+        try {
+          live = await this.readNamespaceOwnership(k8sApi, nsName);
+        } catch (error: unknown) {
+          // Transient read error — log and keep watching the window (don't fail the
+          // deploy on a flaky read; a real prune/re-adopt is observed, not inferred).
+          this.logger.debug('Transient error re-verifying transferred Namespace; retrying', {
+            namespace: nsName,
+            error: ensureError(error).message,
           });
-          return;
+          await new Promise((r) => setTimeout(r, KroResourceFactoryImpl.POST_RGD_VERIFY_INTERVAL_MS));
+          continue;
         }
-      } catch (error: unknown) {
-        this.logger.debug('Could not read instance status while confirming suspend; continuing', {
-          instanceName,
-          instanceNamespace,
-          error: ensureError(error).message,
-        });
-        return;
+        if (live === undefined) {
+          throw new ResourceGraphFactoryError(
+            `Transferred workload Namespace "${nsName}" DISAPPEARED after the new RGD was applied — ` +
+              `an in-flight KRO reconcile likely re-adopted it into the ApplySet after the ownership ` +
+              `strip and KRO then pruned it (the residual race this migration narrows but cannot fully ` +
+              `eliminate client-side, because KRO exposes no "controller quiesced" signal). Recreate the ` +
+              `namespace from backup and re-run the upgrade once the instance is quiescent.`,
+            this.name,
+            'deployment'
+          );
+        }
+        if (isKroOwnedNamespace(live.labels)) {
+          throw new ResourceGraphFactoryError(
+            `Transferred workload Namespace "${nsName}" was RE-ADOPTED into KRO's ApplySet after the ` +
+              `new RGD was applied (part-of="${live.labels[APPLYSET_PART_OF_LABEL] ?? '<none>'}") — an ` +
+              `in-flight reconcile re-stamped ownership; KRO's next prune would delete it. Re-run the ` +
+              `upgrade once the instance is quiescent (this is the residual, client-unfixable race).`,
+            this.name,
+            'deployment'
+          );
+        }
+        if (read < KroResourceFactoryImpl.POST_RGD_VERIFY_READS - 1) {
+          await new Promise((r) => setTimeout(r, KroResourceFactoryImpl.POST_RGD_VERIFY_INTERVAL_MS));
+        }
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    this.logger.debug('Timed out confirming instance suspend was observed; proceeding to strip', {
-      instanceName,
-      instanceNamespace,
+    this.logger.debug('Re-verified all transferred Namespaces survived the new RGD (unowned)', {
+      rgdName: this.rgdName,
+      namespaces: handle.strippedNamespaces,
     });
   }
 
@@ -2329,6 +2476,19 @@ export class KroResourceFactoryImpl<
         }
       }
 
+      // DETERMINISTIC TEARDOWN ORDERING: WAIT for the RGD to be FULLY gone before
+      // deleting the CRD. The RGD carries a KRO finalizer; while KRO processes it,
+      // KRO's per-RGD dynamic (micro)controller is still WATCHING the generated CRD's
+      // custom resources. Deleting the CRD in that window makes the apiextensions
+      // `customresourcecleanup.apiextensions.k8s.io` finalizer block until that watch
+      // closes — which only happens once KRO finishes the RGD finalizer and tears the
+      // microcontroller down — so the CRD can sit Terminating for minutes (the source
+      // of the flaky slow-CRD-teardown seen in the migration integration test). Waiting
+      // for the RGD to disappear first lets KRO tear down its controller, after which
+      // the CRD cleanup completes promptly. Bounded + best-effort: on timeout we still
+      // attempt the CRD delete rather than fail the whole teardown.
+      await this.waitForRgdFullyDeleted(k8sApi);
+
       // Delete the CRD that KRO created from the RGD. KRO's default config
       // has allowCRDDeletion=false, so it won't clean up the CRD when the
       // RGD is deleted. Prefer the server-discovered plural over the
@@ -2358,6 +2518,48 @@ export class KroResourceFactoryImpl<
     // Namespaces are resources in the composition's dependency graph.
     // KRO's finalizer processing handles deleting all child resources
     // (including Namespaces) via its applyset — no manual cleanup needed.
+  }
+
+  /** Bounded wait for the shared RGD to be fully deleted before deleting the CRD. */
+  private static readonly RGD_DELETE_WAIT_MS = 120_000;
+
+  /**
+   * Poll until this factory's shared RGD is fully gone (404), bounded. See the call
+   * site in {@link deleteInstance}: deleting the generated CRD while KRO is still
+   * processing the RGD's finalizer (its per-RGD dynamic controller still watching the
+   * CRD's resources) makes the apiextensions CRD-cleanup finalizer stall for minutes.
+   * Waiting for the RGD to disappear first lets KRO tear its controller down so the CRD
+   * cleanup completes promptly. Best-effort: logs and returns on timeout (the caller
+   * still attempts the CRD delete) — this only sequences teardown, it is not a gate.
+   */
+  private async waitForRgdFullyDeleted(k8sApi: k8s.KubernetesObjectApi): Promise<void> {
+    const deadline = Date.now() + KroResourceFactoryImpl.RGD_DELETE_WAIT_MS;
+    while (Date.now() < deadline) {
+      try {
+        await k8sApi.read({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: this.rgdName },
+        });
+      } catch (error: unknown) {
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (code === 404) {
+          this.logger.debug('RGD fully deleted; safe to delete the generated CRD', {
+            rgdName: this.rgdName,
+          });
+          return;
+        }
+        // Any other read error: stop waiting and let the caller proceed (best-effort).
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    this.logger.warn(
+      'Timed out waiting for the RGD to finish deleting before CRD cleanup; proceeding — ' +
+        'the generated CRD may take longer to finish Terminating',
+      { rgdName: this.rgdName }
+    );
   }
 
   /**
@@ -2756,6 +2958,23 @@ export class KroResourceFactoryImpl<
     // reference a resource removed from the graph and KRO would reject the RGD.
     const statusMappings = rewriteHoistedNamespaceRefsInValue(this.statusMappings, hoistIds);
     const nestedCel = rewriteHoistedNamespaceRefsInValue(this.getNestedStatusCel(), hoistIds);
+
+    // #6 — WARN LOUDLY (never silently) about any status field whose only reference was
+    // the hoisted Namespace: it becomes `schema.spec.namespace`, which KRO status CEL
+    // cannot evaluate, so it is dropped from the KRO status schema and hydrated
+    // client-side (fine on direct mode; NOT populated by KRO on the GitOps toYaml path).
+    // Resource-derived sibling status fields are unaffected. See docs/advanced/migration.md
+    // "Known limitations".
+    const weakenedStatusFields = hoistWeakenedStatusFields(this.statusMappings, hoistIds);
+    if (weakenedStatusFields.length > 0) {
+      this.logger.warn(
+        'Hoisting the owned workload Namespace turns these status field(s) into CLIENT-HYDRATED ' +
+          'fields: they resolve only to the (removed) Namespace and become `schema.spec.namespace`, ' +
+          'which KRO status CEL cannot evaluate. They are populated on the direct/imperative path but ' +
+          'NOT by KRO on the pure GitOps (toYaml) path. Resource-derived sibling fields are unaffected.',
+        { rgdName: this.rgdName, fields: weakenedStatusFields }
+      );
+    }
 
     const aspectResources = applyAspects(graphResources, {
       mode: 'kro',

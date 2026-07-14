@@ -59,6 +59,7 @@ import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import {
   detectStructurallyOwnedNamespaceIds,
   findDanglingHoistedReference,
+  hoistWeakenedStatusFields,
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
 } from '../deployment/kro-instance-safety.js';
@@ -2368,6 +2369,25 @@ function createTypedResourceGraph<
           }
         }
         graphStatusMappings = rewritten;
+
+        // #6 — WARN LOUDLY (never silently) about status fields that become
+        // client-hydrated because they referenced ONLY the hoisted Namespace: their
+        // rewritten value `schema.spec.namespace` cannot be evaluated by KRO status CEL,
+        // so they are dropped from the KRO status schema (populated on direct mode, NOT
+        // by KRO on the pure GitOps toYaml path). Sibling resource-derived fields survive.
+        const weakenedStatusFields = hoistWeakenedStatusFields(
+          optimizedStatusMappings as Record<string, unknown>,
+          hoistedNamespaceIds
+        );
+        if (weakenedStatusFields.length > 0) {
+          serializationLogger.warn(
+            'Hoisting the owned workload Namespace turns these status field(s) into CLIENT-HYDRATED ' +
+              'fields: they resolve only to the (removed) Namespace and become `schema.spec.namespace`, ' +
+              'which KRO status CEL cannot evaluate. They are NOT populated by KRO on the GitOps toYaml ' +
+              'path (resource-derived sibling fields are unaffected). See docs/advanced/migration.md.',
+            { composition: definition.name, fields: weakenedStatusFields }
+          );
+        }
       }
       const graphNestedStatusCel =
         hoistedNamespaceIds.size === 0

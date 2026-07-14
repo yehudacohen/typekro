@@ -93,8 +93,18 @@ const RGD_NAME = `ns-migration-${runToken}`;
 const INSTANCE_KIND = `NsMigration${runToken}`;
 const INSTANCE_GROUP = `t${runToken}.typekro.dev`;
 const INSTANCE_API_VERSION = `${INSTANCE_GROUP}/v1alpha1`;
-const INSTANCE_PLURAL = `${INSTANCE_KIND.toLowerCase()}s`;
-const GENERATED_CRD_NAME = `${INSTANCE_PLURAL}.${INSTANCE_GROUP}`;
+
+/**
+ * DETERMINISM (finding #5): KRO's server-side pluralization is authoritative and NOT
+ * always `kind.toLowerCase() + "s"` — e.g. a random token ending in `o`/`s`/`x` yields
+ * `…oes`/`…es`. Guessing the plural made the test flaky ("CRD not established" when the
+ * guess didn't match KRO's actual plural). We DISCOVER the real plural + CRD name from
+ * the generated CRD (unique per run because the whole API identity is randomized) and
+ * use it everywhere. `instancePlural`/`generatedCrdName` are populated once the CRD is
+ * established (and, best-effort, re-discovered in `afterAll` if a run failed early).
+ */
+let instancePlural: string | undefined;
+let generatedCrdName: string | undefined;
 
 const ownsNamespaceComposition = kubernetesComposition(
   {
@@ -151,6 +161,26 @@ function buildPreHoistRgdManifest(hoistedRgdYaml: string): Record<string, unknow
   return rgd as Record<string, unknown>;
 }
 
+/**
+ * Discover the generated CRD for this run's (unique) group+kind, returning KRO's
+ * AUTHORITATIVE plural + the full CRD name — never guessing the plural (finding #5).
+ */
+async function discoverGeneratedCrd(
+  api: k8s.KubernetesObjectApi
+): Promise<{ plural: string; name: string } | undefined> {
+  const list = (await api.list('apiextensions.k8s.io/v1', 'CustomResourceDefinition')) as unknown as {
+    items?: Array<{
+      metadata?: { name?: string };
+      spec?: { group?: string; names?: { kind?: string; plural?: string } };
+    }>;
+  };
+  const crd = list.items?.find(
+    (c) => c.spec?.group === INSTANCE_GROUP && c.spec?.names?.kind === INSTANCE_KIND
+  );
+  if (!crd?.spec?.names?.plural || !crd.metadata?.name) return undefined;
+  return { plural: crd.spec.names.plural, name: crd.metadata.name };
+}
+
 describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe deletion (findings #1 + #4 + #9)', () => {
   let kc: k8s.KubeConfig;
   let coreApi: k8s.CoreV1Api;
@@ -191,12 +221,17 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
       /* best effort */
     }
     // Sweep the generated CRD too so a failed run leaves nothing cluster-scoped behind.
+    // Discover its real name if the test failed before capturing it (never guess).
     try {
-      await objectApi.delete({
-        apiVersion: 'apiextensions.k8s.io/v1',
-        kind: 'CustomResourceDefinition',
-        metadata: { name: GENERATED_CRD_NAME },
-      } as k8s.KubernetesObject);
+      const crdName =
+        generatedCrdName ?? (await discoverGeneratedCrd(objectApi).catch(() => undefined))?.name;
+      if (crdName) {
+        await objectApi.delete({
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: crdName },
+        } as k8s.KubernetesObject);
+      }
     } catch {
       /* best effort */
     }
@@ -224,7 +259,6 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
 
     // Wait for the CRD the RGD generates to be established before posting the CR.
     const instanceApiVersion = INSTANCE_API_VERSION;
-    const instancePlural = INSTANCE_PLURAL;
     const waitFor = async (fn: () => Promise<boolean>, timeoutMs: number, label: string) => {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
@@ -233,18 +267,28 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
       }
       throw new Error(`Timed out waiting for ${label}`);
     };
+    // DISCOVER the CRD (and KRO's authoritative plural) rather than guessing it (#5).
     await waitFor(
       async () => {
+        const crd = await discoverGeneratedCrd(objectApi);
+        if (!crd) return false;
+        instancePlural = crd.plural;
+        generatedCrdName = crd.name;
+        // Confirm it is actually servable (established) before proceeding.
         await customApi.listClusterCustomObject({
           group: INSTANCE_GROUP,
           version: RGD_VERSION,
-          plural: instancePlural,
+          plural: crd.plural,
         });
         return true;
       },
       120000,
-      'NsMigration CRD to be established'
+      'NsMigration CRD to be established + plural discovered'
     );
+    if (!instancePlural || !generatedCrdName) throw new Error('CRD plural discovery failed');
+    // Narrow to locals (a module-level `let` doesn't stay narrowed across awaits).
+    const plural = instancePlural;
+    const crdName = generatedCrdName;
 
     // 2a. Pre-create the workload Namespace so the instance CR (which lives IN that
     //     namespace — the self-owned pattern) can be POSTed at all. KRO cannot create
@@ -313,7 +357,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
       group: INSTANCE_GROUP,
       version: RGD_VERSION,
       namespace: workloadNamespace,
-      plural: instancePlural,
+      plural,
       name: instanceName,
     })) as { metadata?: { name?: string; finalizers?: string[] } };
     expect(instance.metadata?.name).toBe(instanceName);
@@ -348,7 +392,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
             group: INSTANCE_GROUP,
             version: RGD_VERSION,
             namespace: workloadNamespace,
-            plural: instancePlural,
+            plural,
             name: instanceName,
           });
           return false; // still present
@@ -427,7 +471,7 @@ describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe dele
           await objectApi.read({
             apiVersion: 'apiextensions.k8s.io/v1',
             kind: 'CustomResourceDefinition',
-            metadata: { name: GENERATED_CRD_NAME },
+            metadata: { name: crdName },
           });
           return false;
         } catch (e: unknown) {
