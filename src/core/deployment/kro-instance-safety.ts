@@ -438,7 +438,12 @@ export function rewriteHoistedNamespaceRefsInValue<T>(
 
   const rewriteValue = (val: unknown): unknown => {
     if (isKubernetesRef(val)) {
-      return hoistedIds.has(val.resourceId) && val.fieldPath.startsWith('metadata.name')
+      // Rewrite ONLY an exact `metadata.name` reference to the hoisted Namespace
+      // (finding #7). `startsWith('metadata.name')` also matched `metadata.namespace`
+      // and arbitrary `metadata.name*` fields and silently rewrote them to
+      // `schema.spec.namespace`; requiring EXACT equality lets any unsupported
+      // reference fall through to the dangling-reference validation instead.
+      return hoistedIds.has(val.resourceId) && val.fieldPath === 'metadata.name'
         ? schemaNamespaceCelExpression()
         : val;
     }

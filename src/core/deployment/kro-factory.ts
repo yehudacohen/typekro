@@ -426,11 +426,12 @@ export class KroResourceFactoryImpl<
    * CR placement. An explicit `instanceNamespace` factory option still wins as an
    * override (the only way to place the CR elsewhere).
    *
-   * Identity distinctness is preserved without a spec-derived namespace: the
-   * top-level alchemy id is qualified by the RESOLVED (factory) namespace, so two
-   * instances collapse only when they share BOTH name AND resolved namespace — i.e.
-   * genuinely the same instance. dev/prod are distinguished by a different factory
-   * namespace (or an explicit `instanceNamespace` pin), never by `spec.namespace`.
+   * Identity distinctness is preserved without a spec-derived namespace: two
+   * genuinely-distinct instances differ by NAME within one factory (one alchemy
+   * scope), and a dev-vs-prod factory lives in a DIFFERENT namespace → a different
+   * alchemy stack/scope. The top-level alchemy id is the legacy namespace-agnostic
+   * kind+name (see {@link instanceAlchemyId}, finding #1); dev/prod are distinguished
+   * by the factory namespace / alchemy scope, never by `spec.namespace`.
    *
    * The `spec` parameter is accepted only for call-site symmetry with the other
    * resolvers and is deliberately unused (CR placement must not vary per spec, or
@@ -1082,8 +1083,11 @@ export class KroResourceFactoryImpl<
     // Fresh installs (no live instance / Namespace) need no migration.
     const migration = await this.migrateHoistedNamespaceOwnership();
 
-    // The whole suspended window is wrapped so ANY failure after suspend resumes
-    // every suspended instance (finding #4) — no path leaves an instance suspended.
+    // Track whether the NORMAL-path resume already ran. This keeps two concerns
+    // clean (finding #3): (a) a normal-path resume failure SURFACES as the deploy
+    // error (a suspended instance never becomes ready), and (b) the failure-cleanup
+    // path doesn't redundantly re-resume — and never masks the original error.
+    let normalResumeAttempted = false;
     try {
       // Ensure RGD is deployed. The owned workload Namespace is hoisted OUT of the
       // RGD graph (created deps-first, below) rather than left a graph child that
@@ -1172,7 +1176,9 @@ export class KroResourceFactoryImpl<
         // memory), but the LIVE Namespaces no longer carry
         // `applyset.kubernetes.io/part-of`, so they are not enumerated and SURVIVE.
         // Must resume BEFORE waiting for readiness (a suspended instance never
-        // reconciles to Ready).
+        // reconciles to Ready). A resume failure SURFACES here (finding #3) — it
+        // fails the deploy rather than being swallowed.
+        normalResumeAttempted = true;
         await this.resumeMigration(migration);
 
         // Handle Kro-specific readiness checking if requested
@@ -1193,11 +1199,25 @@ export class KroResourceFactoryImpl<
       } finally {
         await deploymentEngine.dispose();
       }
-    } finally {
-      // Safety net: if any step above threw after the migration suspended
-      // instances, resume them all so none is left permanently suspended
-      // (finding #4). Idempotent — resuming an already-resumed instance is a no-op.
-      await this.resumeMigration(migration);
+    } catch (deployError) {
+      // FAILURE-cleanup path (findings #3 + #4): resume every suspended instance so
+      // none is left permanently suspended. If the normal-path resume already ran,
+      // there is nothing more to resume (it attempts ALL targets, idempotently) — and
+      // if the failure IS that resume failure, surface it directly rather than
+      // wrapping it in its own aggregate. Otherwise attempt the cleanup resume and,
+      // if it also fails, AGGREGATE it WITH the original deploy error so the resume
+      // issue never MASKS the original (finding #3).
+      if (normalResumeAttempted) throw deployError;
+      try {
+        await this.resumeMigration(migration);
+      } catch (resumeError) {
+        throw new AggregateError(
+          [ensureError(deployError), ensureError(resumeError)],
+          'Deploy failed AND resuming suspended instance(s) during cleanup also failed — ' +
+            'the original deploy error is the first in this aggregate'
+        );
+      }
+      throw deployError;
     }
   }
 
@@ -1302,9 +1322,23 @@ export class KroResourceFactoryImpl<
       }
     } catch (error) {
       // Fail closed: resume everything we suspended before rethrowing, so a failed
-      // transfer never leaves an instance suspended (finding #4).
+      // transfer never leaves an instance suspended (finding #4). Resume failures are
+      // aggregated WITH the original error (finding #3) so a resume issue during
+      // cleanup can never mask the original transfer failure.
+      const resumeErrors: Error[] = [];
       for (const ref of [...suspendedTargets, ...recoveryResume]) {
-        await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+        try {
+          await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+        } catch (resumeError) {
+          resumeErrors.push(ensureError(resumeError));
+        }
+      }
+      if (resumeErrors.length > 0) {
+        throw new AggregateError(
+          [ensureError(error), ...resumeErrors],
+          'Ownership-transfer migration failed AND resuming suspended instance(s) during cleanup ' +
+            'also failed — the original error is the first in this aggregate'
+        );
       }
       throw error;
     }
@@ -1313,10 +1347,29 @@ export class KroResourceFactoryImpl<
     return handle;
   }
 
-  /** Resume every instance the migration suspended. Idempotent (safe to call twice). */
+  /**
+   * Resume every instance the migration suspended. Idempotent (safe to call twice).
+   * Attempts EVERY target even if one fails (so a single failure never leaves the
+   * rest suspended), then SURFACES any failures (finding #3): a single failure is
+   * rethrown as-is, multiple are aggregated. The caller decides whether this is a
+   * hard deploy failure (normal path) or must be aggregated with an in-flight deploy
+   * error (failure-cleanup path).
+   */
   private async resumeMigration(handle: NamespaceMigrationHandle): Promise<void> {
+    const errors: Error[] = [];
     for (const ref of handle.resumeTargets) {
-      await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+      try {
+        await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+      } catch (error) {
+        errors.push(ensureError(error));
+      }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(
+        errors,
+        `Failed to resume ${errors.length} suspended instance(s) after the ownership-transfer migration`
+      );
     }
   }
 
@@ -1521,10 +1574,14 @@ export class KroResourceFactoryImpl<
   /**
    * Resume the instance CR after the ownership transfer + new RGD are applied by
    * removing the `kro.run/reconcile` annotation (merge-patch `null`). A 404 here is
-   * benign (the CR was recreated without the annotation). Any OTHER failure is
-   * surfaced LOUDLY (error-level, not swallowed) with actionable guidance, because
-   * a still-suspended instance never reconciles (finding #4); it deliberately does
-   * NOT throw so a resume issue in a `finally` cannot mask the original deploy error.
+   * benign (the CR was recreated without the annotation) → resolves. Any OTHER
+   * failure is surfaced LOUDLY (error-level log AND thrown) because a still-suspended
+   * instance never reconciles to Ready — that is a real deploy failure, not something
+   * to swallow (finding #3). The caller decides how to surface it: on the NORMAL path
+   * the throw fails the deploy; on the FAILURE-cleanup path the caller aggregates it
+   * WITH the original error so it never masks the original (see {@link resumeMigration}
+   * and {@link deployDirect}). Idempotent — resuming an already-resumed instance is a
+   * no-op merge-patch.
    */
   private async resumeInstanceReconciliation(
     instanceName: string,
@@ -1565,6 +1622,16 @@ export class KroResourceFactoryImpl<
           annotation: KRO_RECONCILE_ANNOTATION,
         }
       );
+      // Surface (do NOT swallow, finding #3): a suspended instance never becomes
+      // ready. The caller aggregates this appropriately on the failure-cleanup path.
+      throw new ResourceGraphFactoryError(
+        `Failed to resume KRO instance "${instanceName}" after the ownership-transfer migration — ` +
+          `it is left SUSPENDED (annotation "${KRO_RECONCILE_ANNOTATION}") and will NOT reconcile to ` +
+          `ready. Clear the annotation manually or re-run the deploy (idempotent): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
     }
   }
 
@@ -1597,6 +1664,10 @@ export class KroResourceFactoryImpl<
         name: merged.name,
         labels: merged.labels,
         annotations: merged.annotations,
+        ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+        ...(merged.ownerReferences !== undefined
+          ? { ownerReferences: merged.ownerReferences }
+          : {}),
       },
       ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
     } as unknown as k8s.KubernetesObject;
@@ -2093,7 +2164,7 @@ export class KroResourceFactoryImpl<
     // Cast: a plain KubernetesResource is fine — the alchemy path only reads kind/metadata.
     const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
     const instanceDeclaration: AlchemyResourceDeclaration = {
-      id: this.instanceAlchemyId(crdAsEnhanced, instanceNamespace),
+      id: this.instanceAlchemyId(crdAsEnhanced),
       // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
       // before the main deploy), so the instance applies only once its dependencies exist.
       dependsOn: [rgdId, ...singletonInstanceIds, ...instanceNamespaceIds],
@@ -2124,27 +2195,23 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * The alchemy resource id for a KRO instance CR — kind + name QUALIFIED BY the
-   * namespace the CR lives in.
+   * The alchemy resource id for a KRO instance CR — the LEGACY, namespace-agnostic
+   * kind+name id (finding #1).
    *
-   * A KRO instance is identified by (namespace, name): two deploys with the SAME
-   * name in DIFFERENT namespaces (analytics/dev vs analytics/prod) are distinct
-   * resources and must get distinct alchemy ids so the second never clobbers the
-   * first (the collapse the instance-relocation design caused by forcing both into
-   * one namespace). `generateDeterministicResourceId` intentionally omits the
-   * namespace (in-graph resource ids are kind+name), so the namespace is folded in
-   * HERE, at the top-level alchemy-resource boundary, where it is the identity.
-   *
-   * The namespace is folded in via a STABLE HASH, not by concatenating and
-   * camel-casing (finding #7): camel-casing destroys separators, so `foo-bar` and
-   * `foo--bar` would collapse to the same id. Hashing the raw namespace keeps
-   * distinct namespaces distinct while staying deterministic.
+   * This deliberately does NOT fold the namespace into the id. An earlier revision
+   * appended a namespace hash to distinguish same-named instances placed in
+   * different namespaces, but round-5 made CR placement ALWAYS the factory namespace
+   * (see {@link resolveInstanceNamespace}): two genuinely-distinct instances now
+   * differ by NAME (within one factory/alchemy scope) or by ALCHEMY SCOPE (a
+   * dev-vs-prod factory lives in a different namespace → a different alchemy
+   * stack/scope), never by a per-CR namespace segment. Appending the hash therefore
+   * bought nothing AND was harmful: it changed every existing instance's id versus
+   * the released v0.26.0, so alchemy would see remove+replace and could tear down
+   * (delete) the live CR on upgrade. Reverting to the legacy id keeps existing
+   * alchemy state identity stable.
    */
-  private instanceAlchemyId(
-    resource: Enhanced<unknown, unknown>,
-    instanceNamespace: string
-  ): string {
-    return `${createAlchemyResourceId(resource, instanceNamespace)}Ns${shortStableHash(instanceNamespace)}`;
+  private instanceAlchemyId(resource: Enhanced<unknown, unknown>): string {
+    return createAlchemyResourceId(resource);
   }
 
   /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */
@@ -3305,10 +3372,11 @@ export class KroResourceFactoryImpl<
   /**
    * Merge the SHARED/RETAINED marker labels + annotations onto an ORIGINAL,
    * fully-concrete Namespace resource, PRESERVING the COMPLETE declared config
-   * (finding #8): ALL labels — including Pod Security (`pod-security.kubernetes.io/*`)
+   * (findings #6 + #8): ALL labels — including Pod Security (`pod-security.kubernetes.io/*`)
    * AND non-string / schema-derived labels resolved against the spec — ALL
-   * annotations, AND the Namespace `spec` (e.g. finalizers). The retention markers
-   * are added on top.
+   * annotations, the remaining declarative ObjectMeta (`finalizers`,
+   * `ownerReferences`), AND the Namespace `spec` (e.g. `spec.finalizers`). The
+   * retention markers are added on top.
    */
   private static mergedHoistedNamespaceMetadata(
     workloadNamespace: string,
@@ -3318,11 +3386,15 @@ export class KroResourceFactoryImpl<
     name: string;
     labels: Record<string, string>;
     annotations: Record<string, string>;
+    finalizers?: string[];
+    ownerReferences?: unknown[];
     spec?: unknown;
   } {
     const originalMeta = (original.metadata ?? {}) as {
       labels?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
+      finalizers?: unknown;
+      ownerReferences?: unknown;
     };
     const resolveMap = (value: Record<string, unknown> | undefined): Record<string, string> => {
       const out: Record<string, string> = {};
@@ -3332,7 +3404,42 @@ export class KroResourceFactoryImpl<
       }
       return out;
     };
-    const originalSpec = (original as { spec?: unknown }).spec;
+    // `original` is an Enhanced PROXY: reading an UNDECLARED field returns a
+    // KubernetesRef marker (a truthy function-like proxy), NOT undefined. Passing
+    // such a proxy through to the k8s client serializer makes it try to iterate a
+    // `{}`-looking value for an array-typed attribute (e.g. `spec.finalizers`) and
+    // throw "{} is not iterable". So extract only the CONCRETE, own-enumerable
+    // declared values via a JSON round-trip (drops proxies, ref-markers, symbols,
+    // functions) and omit anything empty.
+    const concretize = <T>(value: unknown): T | undefined => {
+      if (value === undefined || value === null) return undefined;
+      try {
+        const cloned = JSON.parse(JSON.stringify(value)) as T;
+        return cloned;
+      } catch {
+        return undefined;
+      }
+    };
+    const concreteSpecRaw = concretize<Record<string, unknown>>(
+      (original as { spec?: unknown }).spec
+    );
+    // Only keep a spec that actually declares something (an empty proxy spec must
+    // NOT be emitted — that is the "{} is not iterable" trap).
+    const originalSpec =
+      concreteSpecRaw !== undefined && Object.keys(concreteSpecRaw).length > 0
+        ? concreteSpecRaw
+        : undefined;
+    // Preserve the remaining declarative ObjectMeta the user may have set on the
+    // owned Namespace (finding #6): metadata.finalizers + metadata.ownerReferences.
+    // Server-set fields (uid/resourceVersion/managedFields/…) are intentionally not
+    // carried — only declared configuration is retained. Array.isArray guards against
+    // the proxy's ref-markers for undeclared fields (which are functions, not arrays).
+    const finalizers = Array.isArray(originalMeta.finalizers)
+      ? (concretize<string[]>(originalMeta.finalizers) ?? []).map((f) => String(f))
+      : undefined;
+    const ownerReferences = Array.isArray(originalMeta.ownerReferences)
+      ? concretize<unknown[]>(originalMeta.ownerReferences)
+      : undefined;
     return {
       name: workloadNamespace,
       labels: {
@@ -3343,6 +3450,8 @@ export class KroResourceFactoryImpl<
         ...resolveMap(originalMeta.annotations),
         ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations,
       },
+      ...(finalizers !== undefined && finalizers.length > 0 ? { finalizers } : {}),
+      ...(ownerReferences !== undefined && ownerReferences.length > 0 ? { ownerReferences } : {}),
       ...(originalSpec !== undefined && originalSpec !== null ? { spec: originalSpec } : {}),
     };
   }
@@ -3378,6 +3487,13 @@ export class KroResourceFactoryImpl<
         name: merged.name,
         labels: merged.labels,
         annotations: merged.annotations,
+        ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+        ...(merged.ownerReferences !== undefined
+          ? {
+              ownerReferences:
+                merged.ownerReferences as import('@kubernetes/client-node').V1OwnerReference[],
+            }
+          : {}),
       },
       ...(merged.spec !== undefined
         ? { spec: merged.spec as NonNullable<import('@kubernetes/client-node').V1Namespace['spec']> }
@@ -3442,6 +3558,10 @@ export class KroResourceFactoryImpl<
             name: merged.name,
             labels: merged.labels,
             annotations: merged.annotations,
+            ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+            ...(merged.ownerReferences !== undefined
+              ? { ownerReferences: merged.ownerReferences }
+              : {}),
           },
           ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
         },

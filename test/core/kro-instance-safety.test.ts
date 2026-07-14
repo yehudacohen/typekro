@@ -194,20 +194,24 @@ describe('KRO instance namespace ownership: hoisting keeps the instance in its n
     expect(decls.at(-1)?.props.namespace).toBe('app');
   });
 
-  it('finding #2: same name in distinct FACTORY namespaces → distinct instance identities', async () => {
+  it('finding #2: the CR lives in the FACTORY namespace; dev/prod separated by alchemy scope', async () => {
     // Per the maintainer's decision (finding #2), the CR lives in the FACTORY
     // namespace, so dev/prod are distinguished by a DIFFERENT factory namespace (not
-    // by spec.namespace). The alchemy id is qualified by the resolved (factory)
-    // namespace, so the two never collapse.
+    // by spec.namespace). The alchemy id is the LEGACY namespace-agnostic kind+name
+    // (round-6 finding #1) — the two are separated by their alchemy SCOPE/STACK (the
+    // different factory namespace), not by a per-CR namespace segment in the id.
     const dev = await ownedNsComposition()
       .factory('kro', { namespace: 'dev' })
       .toAlchemyResources({ name: 'x', namespace: 'dev' });
     const prod = await ownedNsComposition()
       .factory('kro', { namespace: 'prod' })
       .toAlchemyResources({ name: 'x', namespace: 'prod' });
+    // The CR is placed in the FACTORY namespace in each case.
     expect(dev.at(-1)?.props.namespace).toBe('dev');
     expect(prod.at(-1)?.props.namespace).toBe('prod');
-    expect(dev.at(-1)?.id).not.toBe(prod.at(-1)?.id as string);
+    // Namespace-agnostic id: same instance name → same id (dev/prod live in different
+    // alchemy scopes, so this is not a collapse).
+    expect(dev.at(-1)?.id).toBe(prod.at(-1)?.id as string);
   });
 
   it('explicit instanceNamespace overrides the natural placement (and ignores spec)', () => {

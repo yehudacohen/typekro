@@ -342,43 +342,70 @@ automatically** on those paths. Before rolling out the hoisted RGD via GitOps or
 Alchemy for an existing (pre-hoist) deployment, run the one-time transfer below.
 Skipping it risks KRO pruning the live workload Namespace on the next reconcile.
 
-Run this once per affected instance (`suspend-all → strip → apply new RGD →
-resume-all`). Set `INSTANCE`, `INSTANCE_NS`, `CR_KIND`/`CR_RESOURCE`, and `WORKLOAD_NS`:
+> ⚠️ The RGD is **shared by every instance** of a factory. You must run this as ONE
+> GLOBAL, ORDERED pass over ALL affected instances — **not** the full script once per
+> instance. If you migrated one instance and then applied the new (hoisted) RGD, every
+> OTHER instance that still owns its Namespace via KRO's ApplySet would reconcile the
+> new RGD and **prune its own Namespace** before you got to it. The safe order is:
+> **(1) suspend ALL → (2) strip ALL their namespaces → (3) apply the new RGD ONCE →
+> (4) resume ALL.**
+
+List every instance of the CRD and its owned workload Namespace, then run:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 CR_RESOURCE="nsmigrations.test.typekro.dev"   # <plural>.<group> of the instance CRD
-INSTANCE="ns-migration-instance"              # instance (CR) name
-INSTANCE_NS="dagster"                          # namespace the CR lives in
-WORKLOAD_NS="dagster"                          # the owned workload Namespace
 
-# 1. Suspend the instance so KRO stops reconciling + pruning during the transfer.
-kubectl annotate "${CR_RESOURCE}" "${INSTANCE}" -n "${INSTANCE_NS}" \
-  kro.run/reconcile=suspended --overwrite
+# All affected instances, as "INSTANCE_NS/INSTANCE WORKLOAD_NS" triples. INSTANCE_NS
+# is the namespace the CR lives in — the FACTORY namespace (TypeKro always places the
+# CR in the factory namespace unless you set `instanceNamespace`); for a self-owned
+# bootstrap the factory namespace and WORKLOAD_NS are typically the same value.
+# e.g. discover them: kubectl get "${CR_RESOURCE}" -A
+INSTANCES=(
+  "dagster/ns-migration-instance dagster"
+  # "dagster-prod/ns-migration-instance dagster-prod"
+)
 
-# 2. Strip KRO's ApplySet/ownership labels from the live workload Namespace so the
-#    prune selector no longer matches it, and stamp typekro's retention markers.
-kubectl label namespace "${WORKLOAD_NS}" \
-  applyset.kubernetes.io/part-of- \
-  kro.run/owned- \
-  kro.run/instance-id- \
-  kro.run/node-id- \
-  kro.run/resource-graph-definition-id- \
-  app.kubernetes.io/managed-by- \
-  typekro.io/kro-instance-namespace=true --overwrite
-kubectl annotate namespace "${WORKLOAD_NS}" \
-  kustomize.toolkit.fluxcd.io/prune=disabled \
-  argocd.argoproj.io/sync-options=Prune=false,Delete=false --overwrite
+# 1. SUSPEND ALL instances first, so KRO stops reconciling + pruning ANY of them
+#    during the transfer.
+for entry in "${INSTANCES[@]}"; do
+  read -r ref workload_ns <<<"${entry}"
+  instance_ns="${ref%%/*}"; instance="${ref##*/}"
+  kubectl annotate "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
+    kro.run/reconcile=suspended --overwrite
+done
 
-# 3. Now let GitOps/Alchemy apply the NEW (hoisted) RGD + retained Namespace.
+# 2. STRIP KRO's ApplySet/ownership labels from EVERY owned workload Namespace so the
+#    prune selector no longer matches any of them, and stamp typekro's retention markers.
+for entry in "${INSTANCES[@]}"; do
+  read -r ref workload_ns <<<"${entry}"
+  kubectl label namespace "${workload_ns}" \
+    applyset.kubernetes.io/part-of- \
+    kro.run/owned- \
+    kro.run/instance-id- \
+    kro.run/node-id- \
+    kro.run/resource-graph-definition-id- \
+    app.kubernetes.io/managed-by- \
+    typekro.io/kro-instance-namespace=true --overwrite
+  kubectl annotate namespace "${workload_ns}" \
+    kustomize.toolkit.fluxcd.io/prune=disabled \
+    argocd.argoproj.io/sync-options=Prune=false,Delete=false --overwrite
+done
+
+# 3. Apply the NEW (hoisted) RGD + retained Namespaces ONCE (all namespaces are now
+#    detached from KRO's ApplySet, so no instance can prune its namespace).
 #    e.g. `flux reconcile kustomization <name>` / `argocd app sync <app>` / alchemy up.
 
-# 4. Resume the instance so KRO reconciles the new graph. Its Namespace no longer
-#    carries `part-of`, so the prune cannot enumerate it — it survives.
-kubectl annotate "${CR_RESOURCE}" "${INSTANCE}" -n "${INSTANCE_NS}" \
-  kro.run/reconcile- --overwrite
+# 4. RESUME ALL instances so KRO reconciles the new graph. Each Namespace no longer
+#    carries `part-of`, so the prune cannot enumerate it — they all survive.
+for entry in "${INSTANCES[@]}"; do
+  read -r ref workload_ns <<<"${entry}"
+  instance_ns="${ref%%/*}"; instance="${ref##*/}"
+  kubectl annotate "${CR_RESOURCE}" "${instance}" -n "${instance_ns}" \
+    kro.run/reconcile- --overwrite
+done
 ```
 
 Fresh installs (the workload Namespace does not exist yet, or carries no KRO

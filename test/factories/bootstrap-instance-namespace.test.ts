@@ -83,13 +83,14 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
   });
 
-  it('finding #2: same name in distinct FACTORY namespaces → DISTINCT identities (no collapse)', async () => {
+  it('finding #2: same name in distinct FACTORY namespaces → separated by alchemy scope (no collapse)', async () => {
     // The instance-relocation design forced both analytics/dev and analytics/prod
-    // into `typekro-system`, collapsing them to the SAME alchemy id (the second
-    // clobbering the first). Per the maintainer's decision (finding #2) the CR lives
-    // in the FACTORY namespace, so analytics/dev and analytics/prod are kept distinct
-    // by distinct FACTORY namespaces; the alchemy id qualified by the resolved
-    // (factory) namespace never collapses.
+    // into `typekro-system`, collapsing them to the SAME alchemy id in the SAME scope
+    // (the second clobbering the first). Per the maintainer's decision (finding #2)
+    // the CR lives in the FACTORY namespace, so analytics/dev and analytics/prod are
+    // kept distinct by distinct FACTORY namespaces = distinct alchemy SCOPES/STACKS.
+    // The alchemy id is the legacy namespace-agnostic kind+name (round-6 finding #1),
+    // so the two share an id but never collapse — they live in different scopes.
     const dev = await dagsterBootstrap
       .factory('kro', { namespace: 'dev' })
       .toAlchemyResources({ name: 'analytics', namespace: 'dev' } as never);
@@ -99,12 +100,13 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
 
     const devInstance = dev.at(-1);
     const prodInstance = prod.at(-1);
-    // Different namespaces...
+    // Different (factory) namespaces = different alchemy scopes...
     expect(devInstance?.props.namespace).toBe('dev');
     expect(prodInstance?.props.namespace).toBe('prod');
-    // ...and different alchemy ids — no collapse.
-    expect(devInstance?.id).not.toBe(prodInstance?.id as string);
-    // Their hoisted retained namespaces are also distinct (one per workload ns).
+    // ...and the same namespace-agnostic id (distinctness comes from the scope, not
+    // from a per-CR namespace segment in the id — round-6 finding #1).
+    expect(devInstance?.id).toBe(prodInstance?.id as string);
+    // Their hoisted retained namespaces are distinct (one per workload ns name).
     expect(dev[0]?.props.resource.metadata?.name).toBe('dev');
     expect(prod[0]?.props.resource.metadata?.name).toBe('prod');
     expect(dev[0]?.id).not.toBe(prod[0]?.id as string);

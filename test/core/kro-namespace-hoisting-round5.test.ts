@@ -18,7 +18,7 @@ import {
   setResourceId,
 } from '../../src/core/metadata/index.js';
 import { Cel } from '../../src/core/references/cel.js';
-import { CEL_EXPRESSION_BRAND } from '../../src/shared/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 
 /**
@@ -228,6 +228,74 @@ describe('finding #6: references to a hoisted Namespace are rewritten STRUCTURAL
   });
 });
 
+describe('finding #3 (round-6): resume failures are surfaced, not silently swallowed', () => {
+  it('resumeMigration rethrows a single resume failure (never resolves silently)', async () => {
+    const factory = ownsNs().factory('kro', { namespace: 'app' });
+    (factory as unknown as Rec).resumeInstanceReconciliation = async () => {
+      throw new Error('boom');
+    };
+    const resumeMigration = priv(factory, 'resumeMigration');
+    let caught: unknown;
+    await (
+      resumeMigration({ resumeTargets: [{ name: 'a', namespace: 'app' }] }) as Promise<void>
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    expect((caught as Error | undefined)?.message).toBe('boom');
+  });
+
+  it('resumeMigration attempts ALL targets and AGGREGATES multiple failures', async () => {
+    const factory = ownsNs().factory('kro', { namespace: 'app' });
+    const attempted: string[] = [];
+    (factory as unknown as Rec).resumeInstanceReconciliation = async (name: string) => {
+      attempted.push(name);
+      throw new Error(`fail-${name}`);
+    };
+    const resumeMigration = priv(factory, 'resumeMigration');
+    let caught: unknown;
+    await (
+      resumeMigration({
+        resumeTargets: [
+          { name: 'a', namespace: 'app' },
+          { name: 'b', namespace: 'app' },
+        ],
+      }) as Promise<void>
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    // A single failure never leaves the rest suspended — BOTH were attempted.
+    expect(attempted).toEqual(['a', 'b']);
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(2);
+  });
+});
+
+describe('finding #7 (round-6): reference rewriting requires EXACT metadata.name (no over-match)', () => {
+  const kref = (resourceId: string, fieldPath: string) =>
+    ({ [KUBERNETES_REF_BRAND]: true, resourceId, fieldPath }) as unknown;
+  const ids = new Set(['ownedNamespace']);
+
+  it('rewrites an EXACT metadata.name KubernetesRef to the hoisted Namespace', () => {
+    const out = rewriteHoistedNamespaceRefsInValue(kref('ownedNamespace', 'metadata.name'), ids) as {
+      expression?: string;
+    };
+    // Rewritten to a CEL expression referencing schema.spec.namespace.
+    expect(out.expression).toBe('schema.spec.namespace');
+  });
+
+  it('does NOT rewrite a metadata.namespace KubernetesRef (falls through unchanged)', () => {
+    const ref = kref('ownedNamespace', 'metadata.namespace');
+    // startsWith('metadata.name') used to (wrongly) match this and silently rewrite
+    // it; exact equality lets it fall through unchanged to dangling-ref validation.
+    expect(rewriteHoistedNamespaceRefsInValue(ref, ids)).toBe(ref);
+  });
+
+  it('does NOT rewrite an arbitrary metadata.name* KubernetesRef (e.g. metadata.nameservers)', () => {
+    const ref = kref('ownedNamespace', 'metadata.nameservers');
+    expect(rewriteHoistedNamespaceRefsInValue(ref, ids)).toBe(ref);
+  });
+});
+
 describe('finding #7: rewriting a resource preserves its TypeKro metadata', () => {
   it('non-enumerable includeWhen + __resourceId survive a reference rewrite', () => {
     const cfg = {
@@ -316,5 +384,48 @@ describe('finding #8: the retained Namespace preserves the COMPLETE declared con
     expect(labels.team).toBe('data-platform');
     expect(labels.replicas).toBe('3');
     expect((ns as { spec?: { finalizers?: string[] } })?.spec?.finalizers).toEqual(['kubernetes']);
+  });
+});
+
+describe('finding #6 (round-6): the retained Namespace preserves metadata.finalizers + ownerReferences', () => {
+  const ownerRef = {
+    apiVersion: 'example.com/v1',
+    kind: 'Owner',
+    name: 'parent',
+    uid: 'parent-uid-123',
+  };
+  const richComposition = () =>
+    kubernetesComposition(schema, (spec) => {
+      namespace({
+        id: 'ownedNamespace',
+        metadata: {
+          name: Cel.expr(spec.namespace) as string,
+          // Declarative ObjectMeta that the "complete preservation" guarantee covers.
+          finalizers: ['example.com/protect'],
+          ownerReferences: [ownerRef] as never,
+        },
+      });
+      return { ready: true };
+    });
+
+  it('toYaml retains metadata.finalizers and metadata.ownerReferences', () => {
+    const yaml = richComposition()
+      .factory('kro', { namespace: 'app' })
+      .toYaml({ name: 'x', namespace: 'app' });
+    const nsDoc = splitDocs(yaml).find((doc) => /^kind: Namespace$/m.test(doc)) ?? '';
+    expect(nsDoc).toContain('example.com/protect');
+    expect(nsDoc).toContain('parent-uid-123');
+  });
+
+  it('toAlchemyResources retains metadata.finalizers and metadata.ownerReferences', async () => {
+    const decls = await richComposition()
+      .factory('kro', { namespace: 'app' })
+      .toAlchemyResources({ name: 'x', namespace: 'app' });
+    const meta = decls[0]?.props.resource?.metadata as {
+      finalizers?: string[];
+      ownerReferences?: Array<{ uid?: string }>;
+    };
+    expect(meta.finalizers).toEqual(['example.com/protect']);
+    expect(meta.ownerReferences?.[0]?.uid).toBe('parent-uid-123');
   });
 });

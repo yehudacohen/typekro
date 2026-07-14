@@ -3,7 +3,6 @@ import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { Cel } from '../../src/core/references/cel.js';
-import { shortStableHash } from '../../src/utils/string.js';
 import { configMap } from '../../src/factories/kubernetes/config/index.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 
@@ -199,26 +198,28 @@ describe('finding #5: the hoisted Namespace PRESERVES its original configuration
   });
 });
 
-describe('finding #7: alchemy ids are collision-free across namespace separators', () => {
-  it('shortStableHash distinguishes foo-bar from foo--bar', () => {
-    expect(shortStableHash('foo-bar')).not.toBe(shortStableHash('foo--bar'));
-    // Deterministic: same input → same hash (so intended dedup still holds).
-    expect(shortStableHash('foo-bar')).toBe(shortStableHash('foo-bar'));
+describe('finding #1 (round-6): the instance alchemy id is the legacy namespace-agnostic kind+name', () => {
+  it('two genuinely-distinct instances (different names) get distinct ids', async () => {
+    const factory = ownsNs().factory('kro', { namespace: 'apps' });
+    const a = await factory.toAlchemyResources({ name: 'alpha', namespace: 'apps' });
+    const b = await factory.toAlchemyResources({ name: 'beta', namespace: 'apps' });
+    // Distinct by NAME within one factory (one alchemy scope).
+    expect(a.at(-1)?.id).not.toBe(b.at(-1)?.id as string);
   });
 
-  it('instance + hoisted-namespace ids differ for foo-bar vs foo--bar namespaces', async () => {
-    const forNs = (ns: string) =>
-      ownsNs()
-        .factory('kro', { namespace: ns })
-        .toAlchemyResources({ name: 'inst', namespace: ns });
-    const a = await forNs('foo-bar');
-    const b = await forNs('foo--bar');
-
-    // Instance ids are distinct (would have collided under camel-case folding).
-    expect(a.at(-1)?.id).not.toBe(b.at(-1)?.id as string);
-    // The hoisted retained-namespace ids are distinct too (no false dedup).
-    expect(a[0]?.props.resource.metadata?.name).toBe('foo-bar');
-    expect(b[0]?.props.resource.metadata?.name).toBe('foo--bar');
-    expect(a[0]?.id).not.toBe(b[0]?.id as string);
+  it('the id carries NO namespace hash suffix (reverted to legacy) so existing alchemy state is stable', async () => {
+    const decls = await ownsNs()
+      .factory('kro', { namespace: 'apps' })
+      .toAlchemyResources({ name: 'inst', namespace: 'apps' });
+    const instanceId = decls.at(-1)?.id as string;
+    // Legacy form: kind+name only. The removed hash suffix looked like `...Ns<hash>`.
+    expect(instanceId).not.toMatch(/Ns[0-9a-z]+$/);
+    // A dev-vs-prod factory in a DIFFERENT namespace yields the SAME namespace-agnostic
+    // id for the same instance name — distinctness comes from the alchemy scope/stack,
+    // not from a per-CR namespace segment.
+    const prod = await ownsNs()
+      .factory('kro', { namespace: 'prod' })
+      .toAlchemyResources({ name: 'inst', namespace: 'prod' });
+    expect(prod.at(-1)?.id).toBe(instanceId);
   });
 });

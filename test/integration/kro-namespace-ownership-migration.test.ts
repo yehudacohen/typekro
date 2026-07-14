@@ -21,10 +21,12 @@
  *  1. Take the factory's own (hoisted) RGD and RE-INSERT the owned Namespace as a
  *     graph child, yielding the exact PRE-HOIST RGD shape KRO would have managed
  *     before this fix — same RGD name/schema, Namespace back in `spec.resources`.
- *  2. Apply that pre-hoist RGD directly and create an instance CR IN the workload
- *     namespace. Let KRO reconcile: it CREATES the Namespace as an ApplySet member
- *     and stamps the REAL `part-of` (== the instance's ApplySet ID) + `kro.run/*`
- *     ownership labels. Capture the Namespace UID + real part-of.
+ *  2. Apply that pre-hoist RGD directly, PRE-CREATE the workload Namespace (so the
+ *     self-owned instance CR can be POSTed — otherwise the CR needs the namespace and
+ *     the namespace needs the CR: chicken-and-egg), then create the instance CR IN the
+ *     workload namespace. Let KRO reconcile: it ADOPTS the pre-created Namespace as an
+ *     ApplySet member (same UID) and stamps the REAL `part-of` (== the instance's
+ *     ApplySet ID) + `kro.run/*` ownership labels. Capture the Namespace UID + part-of.
  *  3. Upgrade via the normal `factory.deploy()` path. This runs the migration:
  *     discover the live instance, verify the Namespace's ownership identity matches
  *     it (real part-of), suspend → strip → apply the hoisted RGD → resume.
@@ -201,8 +203,18 @@ describeOrSkip('KRO namespace ownership-transfer migration (findings #1 + #9)', 
       'NsMigration CRD to be established'
     );
 
-    // 2. Create the instance CR IN the workload namespace so KRO creates + OWNS the
-    //    Namespace as a real ApplySet member (stamping the real part-of on it).
+    // 2a. Pre-create the workload Namespace so the instance CR (which lives IN that
+    //     namespace — the self-owned pattern) can be POSTed at all. KRO cannot create
+    //     the namespace until the CR exists, and the CR cannot be created until the
+    //     namespace exists (chicken-and-egg). Pre-creating a bare Namespace breaks the
+    //     cycle: KRO then ADOPTS it via server-side apply on the pre-hoist RGD's
+    //     Namespace child, keeping the SAME UID and stamping the REAL `part-of` +
+    //     `kro.run/*` ownership labels onto it — a genuine pre-hoist ApplySet member.
+    await coreApi.createNamespace({ body: { metadata: { name: workloadNamespace } } });
+
+    // 2b. Create the instance CR IN the workload namespace so KRO reconciles the
+    //     pre-hoist RGD, ADOPTS the pre-created Namespace as a real ApplySet member,
+    //     and stamps the real part-of + kro.run/* ownership labels on it.
     await objectApi.patch(
       {
         apiVersion: instanceApiVersion,
