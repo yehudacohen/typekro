@@ -208,6 +208,49 @@ export function namespaceOwnershipMatchesInstance(
 }
 
 /**
+ * How the ownership-transfer migration must treat a live workload Namespace this
+ * instance expects to own, decided from the Namespace's labels alone:
+ *  - `'transfer'`           — KRO-owned by THIS instance → strip KRO ownership + stamp retention.
+ *  - `'already-transferred'`— not KRO-owned but carries typekro's retention marker → nothing to do.
+ *  - `'skip'`               — not KRO-owned (fresh / user-managed) → leave it untouched.
+ *
+ * FAIL CLOSED (finding #3): if the Namespace is KRO-owned but its ApplySet identity
+ * matches NEITHER this instance's computed ApplySet ID NOR its UID, it belongs to a
+ * DIFFERENT KRO owner. Silently skipping it while still replacing the shared RGD
+ * would leave that Namespace owned by another ApplySet and eligible for pruning by
+ * its real owner on the next reconcile — the exact finalizer-stranding deadlock this
+ * guard exists to prevent. So this THROWS an ownership-conflict error, before the
+ * migration suspends/strips anything or the RGD is touched.
+ *
+ * **Exported for testing.**
+ */
+export function classifyNamespaceForMigration(params: {
+  readonly nsName: string;
+  readonly instanceRef: string;
+  readonly nsLabels: Record<string, string>;
+  readonly expectedApplySetId: string;
+  readonly instanceUid: string | undefined;
+}): 'transfer' | 'already-transferred' | 'skip' {
+  const { nsName, instanceRef, nsLabels, expectedApplySetId, instanceUid } = params;
+  if (isKroOwnedNamespace(nsLabels)) {
+    if (namespaceOwnershipMatchesInstance(nsLabels, expectedApplySetId, instanceUid)) {
+      return 'transfer';
+    }
+    throw new Error(
+      `Ownership conflict: workload Namespace "${nsName}" (expected to be owned by ` +
+        `instance "${instanceRef}") is KRO-owned by a DIFFERENT ApplySet ` +
+        `(part-of="${nsLabels[APPLYSET_PART_OF_LABEL] ?? '<none>'}", ` +
+        `instance-id="${nsLabels[KRO_INSTANCE_ID_LABEL] ?? '<none>'}"); this instance's ` +
+        `ApplySet ID is "${expectedApplySetId}". Refusing to migrate — the shared RGD is ` +
+        `left untouched so KRO cannot prune a Namespace owned by another instance. ` +
+        `Resolve the conflicting ownership before upgrading.`
+    );
+  }
+  if (nsLabels[TYPEKRO_INSTANCE_NAMESPACE_LABEL] === 'true') return 'already-transferred';
+  return 'skip';
+}
+
+/**
  * Whether an instance CR's annotations mark it as reconcile-suspended. Mirrors
  * KRO's `IsReconcileSuspended`: the `kro.run/reconcile` annotation equal to
  * `suspended` (or the legacy `disabled`), case-insensitive.
@@ -426,12 +469,15 @@ export class KroResourceFactoryImpl<
    * CR placement. An explicit `instanceNamespace` factory option still wins as an
    * override (the only way to place the CR elsewhere).
    *
-   * Identity distinctness is preserved without a spec-derived namespace: two
-   * genuinely-distinct instances differ by NAME within one factory (one alchemy
-   * scope), and a dev-vs-prod factory lives in a DIFFERENT namespace → a different
-   * alchemy stack/scope. The top-level alchemy id is the legacy namespace-agnostic
-   * kind+name (see {@link instanceAlchemyId}, finding #1); dev/prod are distinguished
-   * by the factory namespace / alchemy scope, never by `spec.namespace`.
+   * Identity distinctness within a single alchemy stack comes from the instance
+   * NAME: the top-level alchemy id is the legacy namespace-agnostic kind+name (see
+   * {@link instanceAlchemyId}, finding #1). NOTE: a different k8s factory namespace
+   * does NOT by itself create a different alchemy scope — two factories with the same
+   * instance name but different namespaces expose the SAME alchemy id and, if
+   * materialized in the SAME alchemy stack, collide (last write wins). Isolating
+   * same-named instances (e.g. `analytics` in dev vs prod) is the CALLER's
+   * responsibility: put them in SEPARATE alchemy stacks/scopes. `spec.namespace` is
+   * never consulted for CR placement or identity.
    *
    * The `spec` parameter is accepted only for call-site symmetry with the other
    * resolvers and is deliberately unused (CR placement must not vary per spec, or
@@ -1279,15 +1325,21 @@ export class KroResourceFactoryImpl<
       for (const nsName of nsNames) {
         const live = await this.readNamespaceOwnership(k8sApi, nsName); // FAIL CLOSED on non-404
         if (live === undefined) continue; // Namespace absent → nothing to transfer
-        if (isKroOwnedNamespace(live.labels)) {
-          // Identity check (finding #5): only strip a Namespace that belongs to THIS
-          // instance's ApplySet — never one owned by a different KRO instance.
-          if (namespaceOwnershipMatchesInstance(live.labels, expectedApplySetId, uid)) {
-            pendingTransfer = true;
-            toStrip.push({ nsName, labels: live.labels });
-          }
-        } else if (live.labels[TYPEKRO_INSTANCE_NAMESPACE_LABEL] === 'true') {
-          // Already transferred (retention marker present, no KRO ownership).
+        // Identity-checked classification (findings #3 + #5): only strip a Namespace
+        // that belongs to THIS instance; a KRO-owned Namespace belonging to a
+        // DIFFERENT ApplySet ABORTS the whole migration (throws) BEFORE anything is
+        // suspended/stripped or the shared RGD is touched — fail closed.
+        const action = classifyNamespaceForMigration({
+          nsName,
+          instanceRef: `${instNs}/${instName}`,
+          nsLabels: live.labels,
+          expectedApplySetId,
+          instanceUid: uid,
+        });
+        if (action === 'transfer') {
+          pendingTransfer = true;
+          toStrip.push({ nsName, labels: live.labels });
+        } else if (action === 'already-transferred') {
           completedTransfer = true;
         }
       }
@@ -2200,15 +2252,16 @@ export class KroResourceFactoryImpl<
    *
    * This deliberately does NOT fold the namespace into the id. An earlier revision
    * appended a namespace hash to distinguish same-named instances placed in
-   * different namespaces, but round-5 made CR placement ALWAYS the factory namespace
-   * (see {@link resolveInstanceNamespace}): two genuinely-distinct instances now
-   * differ by NAME (within one factory/alchemy scope) or by ALCHEMY SCOPE (a
-   * dev-vs-prod factory lives in a different namespace → a different alchemy
-   * stack/scope), never by a per-CR namespace segment. Appending the hash therefore
-   * bought nothing AND was harmful: it changed every existing instance's id versus
-   * the released v0.26.0, so alchemy would see remove+replace and could tear down
+   * different namespaces, but that changed every existing instance's id versus the
+   * released v0.26.0, so alchemy would see remove+replace and could tear down
    * (delete) the live CR on upgrade. Reverting to the legacy id keeps existing
    * alchemy state identity stable.
+   *
+   * Consequence to be honest about: within ONE alchemy stack, two instances collide
+   * iff they share this kind+name id — regardless of their k8s namespace. A
+   * different factory namespace does NOT automatically yield a different alchemy
+   * scope. To keep same-named instances (e.g. `analytics` in dev vs prod) separate,
+   * the CALLER must materialize them in SEPARATE alchemy stacks/scopes.
    */
   private instanceAlchemyId(resource: Enhanced<unknown, unknown>): string {
     return createAlchemyResourceId(resource);

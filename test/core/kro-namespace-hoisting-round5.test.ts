@@ -4,6 +4,7 @@ import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import {
+  classifyNamespaceForMigration,
   computeApplySetId,
   namespaceOwnershipMatchesInstance,
 } from '../../src/core/deployment/kro-factory.js';
@@ -162,6 +163,79 @@ describe('finding #5: ownership identity check (matches KRO applyset.ID / KEP-36
     expect(
       namespaceOwnershipMatchesInstance({ 'app.kubernetes.io/managed-by': 'kro' }, applySetId, uid)
     ).toBe(false);
+  });
+});
+
+describe('finding #3 (round-7): an ownership mismatch FAILS CLOSED (aborts, never silently skips)', () => {
+  const applySetId = computeApplySetId('analytics', 'dev', 'Round7', 'test.typekro.dev');
+  const uid = 'instance-uid-abc';
+  const base = {
+    nsName: 'analytics',
+    instanceRef: 'dev/analytics',
+    expectedApplySetId: applySetId,
+    instanceUid: uid,
+  };
+
+  it("classifies THIS instance's KRO-owned Namespace (by part-of or UID) as 'transfer'", () => {
+    expect(
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: { 'applyset.kubernetes.io/part-of': applySetId },
+      })
+    ).toBe('transfer');
+    // KRO-owned (owned marker) AND identity matches by UID → transfer.
+    expect(
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: { 'kro.run/owned': 'true', 'kro.run/instance-id': uid },
+      })
+    ).toBe('transfer');
+  });
+
+  it("classifies a non-KRO Namespace as 'skip', and a retention-marked one as 'already-transferred'", () => {
+    expect(classifyNamespaceForMigration({ ...base, nsLabels: {} })).toBe('skip');
+    expect(
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: { 'user-label': 'x' },
+      })
+    ).toBe('skip');
+    expect(
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: { 'typekro.io/kro-instance-namespace': 'true' },
+      })
+    ).toBe('already-transferred');
+  });
+
+  it('ABORTS (throws an ownership-conflict error) when the Namespace is KRO-owned by a DIFFERENT ApplySet', () => {
+    // The regression: previously this case was silently SKIPPED while the shared RGD
+    // was STILL replaced — leaving the foreign-owned Namespace eligible for pruning by
+    // its real owner. It must now fail closed, before the RGD is touched.
+    expect(() =>
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: {
+          'applyset.kubernetes.io/part-of': 'applyset-someone-else-v1',
+          'kro.run/instance-id': 'other-uid',
+        },
+      })
+    ).toThrow(/Ownership conflict/);
+  });
+
+  it('ABORTS when the Namespace is KRO-owned (managed-by=kro) but carries NO matching identity', () => {
+    let message = '';
+    try {
+      classifyNamespaceForMigration({
+        ...base,
+        nsLabels: { 'app.kubernetes.io/managed-by': 'kro' },
+      });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('Ownership conflict');
+    expect(message).toContain('analytics'); // names the conflicting Namespace
+    expect(message).toContain('dev/analytics'); // names the expecting instance
   });
 });
 

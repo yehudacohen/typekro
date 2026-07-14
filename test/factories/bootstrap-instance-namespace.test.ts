@@ -83,14 +83,16 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
   });
 
-  it('finding #2: same name in distinct FACTORY namespaces → separated by alchemy scope (no collapse)', async () => {
-    // The instance-relocation design forced both analytics/dev and analytics/prod
-    // into `typekro-system`, collapsing them to the SAME alchemy id in the SAME scope
-    // (the second clobbering the first). Per the maintainer's decision (finding #2)
-    // the CR lives in the FACTORY namespace, so analytics/dev and analytics/prod are
-    // kept distinct by distinct FACTORY namespaces = distinct alchemy SCOPES/STACKS.
-    // The alchemy id is the legacy namespace-agnostic kind+name (round-6 finding #1),
-    // so the two share an id but never collapse — they live in different scopes.
+  it('finding #2: same-named instances in different factory namespaces share ONE alchemy id (a different k8s namespace is NOT an alchemy scope)', async () => {
+    // The alchemy id is the legacy namespace-agnostic kind+name (round-6 finding #1) —
+    // reverted from the namespace-hashed id that broke existing state. The honest
+    // consequence (finding #2): a different k8s FACTORY namespace does NOT by itself
+    // create a different alchemy scope. `analytics` deployed from a `dev` factory and
+    // from a `prod` factory expose the SAME alchemy id; materialized in the SAME
+    // alchemy stack they would COLLIDE (last write wins). Isolating them is the
+    // CALLER's responsibility — separate alchemy stacks/scopes — NOT something the
+    // differing k8s namespace does automatically. This test pins that reality; it must
+    // NOT assert automatic isolation.
     const dev = await dagsterBootstrap
       .factory('kro', { namespace: 'dev' })
       .toAlchemyResources({ name: 'analytics', namespace: 'dev' } as never);
@@ -100,13 +102,16 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
 
     const devInstance = dev.at(-1);
     const prodInstance = prod.at(-1);
-    // Different (factory) namespaces = different alchemy scopes...
+    // The CR lands in its own factory namespace (a k8s placement fact only)...
     expect(devInstance?.props.namespace).toBe('dev');
     expect(prodInstance?.props.namespace).toBe('prod');
-    // ...and the same namespace-agnostic id (distinctness comes from the scope, not
-    // from a per-CR namespace segment in the id — round-6 finding #1).
+    // ...but that does NOT isolate them in alchemy: they share the SAME alchemy id, so
+    // in one stack the second clobbers the first. Distinctness requires SEPARATE
+    // alchemy stacks/scopes (the caller's job), not the differing k8s namespace.
     expect(devInstance?.id).toBe(prodInstance?.id as string);
-    // Their hoisted retained namespaces are distinct (one per workload ns name).
+    // The hoisted retained-namespace declaration IS keyed by the workload ns NAME, so
+    // those two happen to differ here — but that is the namespace singleton's id, not
+    // the instance CR's, and does not isolate the CRs from each other.
     expect(dev[0]?.props.resource.metadata?.name).toBe('dev');
     expect(prod[0]?.props.resource.metadata?.name).toBe('prod');
     expect(dev[0]?.id).not.toBe(prod[0]?.id as string);

@@ -350,13 +350,19 @@ Skipping it risks KRO pruning the live workload Namespace on the next reconcile.
 > **(1) suspend ALL → (2) strip ALL their namespaces → (3) apply the new RGD ONCE →
 > (4) resume ALL.**
 
-List every instance of the CRD and its owned workload Namespace, then run:
+List every instance of the CRD and its owned workload Namespace, then run the script
+below. It is **ordered and gated**: step 4 (resume) is unreachable until step 3 (apply
+the new RGD) is **confirmed** applied. This matters — if you stripped ownership and then
+resumed while the OLD (pre-hoist) RGD was still live, KRO would immediately re-adopt and
+re-stamp every workload Namespace, undoing the transfer. So step 3 is an **executable,
+BLOCKING** step with a verification gate, not a comment.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 CR_RESOURCE="nsmigrations.test.typekro.dev"   # <plural>.<group> of the instance CRD
+RGD_NAME="ns-migration"                         # metadata.name of the SHARED RGD
 
 # All affected instances, as "INSTANCE_NS/INSTANCE WORKLOAD_NS" triples. INSTANCE_NS
 # is the namespace the CR lives in — the FACTORY namespace (TypeKro always places the
@@ -394,12 +400,50 @@ for entry in "${INSTANCES[@]}"; do
     argocd.argoproj.io/sync-options=Prune=false,Delete=false --overwrite
 done
 
-# 3. Apply the NEW (hoisted) RGD + retained Namespaces ONCE (all namespaces are now
-#    detached from KRO's ApplySet, so no instance can prune its namespace).
-#    e.g. `flux reconcile kustomization <name>` / `argocd app sync <app>` / alchemy up.
+# 3. APPLY the NEW (hoisted) RGD + retained Namespaces ONCE. Uncomment the line for
+#    your delivery tool. All namespaces are already detached from KRO's ApplySet
+#    (step 2), so applying the new RGD cannot cause any instance to prune its namespace.
+#    ▶ Flux:    flux reconcile kustomization <name> -n flux-system --with-source
+#    ▶ Argo CD: argocd app sync <app>
+#    ▶ Alchemy: (cd <alchemy-project> && bun run alchemy.run.ts)   # `alchemy up`
+#
+#    DO NOT edit out the gate below. Until it PASSES, step 4 does not run — so a
+#    forgotten/failed apply leaves every instance SUSPENDED (safe: KRO prunes nothing)
+#    rather than resumed against the old RGD (unsafe: KRO re-adopts the namespaces).
 
-# 4. RESUME ALL instances so KRO reconciles the new graph. Each Namespace no longer
-#    carries `part-of`, so the prune cannot enumerate it — they all survive.
+# 3b. GATE — BLOCK until the new (hoisted) RGD is confirmed live before resuming:
+#     (a) the RGD reports status.state == Active, AND
+#     (b) the RGD no longer declares the owned Namespace as a graph child (proof the
+#         HOISTED revision — not the pre-hoist one — is what's applied), AND
+#     (c) every workload Namespace still lacks `applyset.kubernetes.io/part-of` (proof
+#         the strip is still in effect and nothing re-adopted it).
+gate_timeout=$((SECONDS + 600))   # wait up to 10 min for the apply to land
+until
+  state="$(kubectl get resourcegraphdefinition "${RGD_NAME}" -o jsonpath='{.status.state}' 2>/dev/null || true)"
+  # jq -e: exit 0 only if NO resource template is a Namespace (i.e. hoisted out).
+  hoisted="$(kubectl get resourcegraphdefinition "${RGD_NAME}" -o json 2>/dev/null \
+    | jq -e '[.spec.resources[]?.template.kind] | index("Namespace") | not' >/dev/null 2>&1 && echo yes || echo no)"
+  stripped="yes"
+  for entry in "${INSTANCES[@]}"; do
+    read -r _ref workload_ns <<<"${entry}"
+    part_of="$(kubectl get namespace "${workload_ns}" \
+      -o jsonpath='{.metadata.labels.applyset\.kubernetes\.io/part-of}' 2>/dev/null || true)"
+    [ -n "${part_of}" ] && stripped="no"
+  done
+  [ "${state}" = "Active" ] && [ "${hoisted}" = "yes" ] && [ "${stripped}" = "yes" ]
+do
+  if [ "${SECONDS}" -ge "${gate_timeout}" ]; then
+    echo "ABORT: hoisted RGD not confirmed Active/applied (state='${state}', hoisted='${hoisted}', stripped='${stripped}')." >&2
+    echo "Instances remain SUSPENDED (safe). Apply the new RGD (step 3) and re-run — do NOT resume manually." >&2
+    exit 1
+  fi
+  echo "Waiting for the hoisted RGD to become Active (state='${state}', hoisted='${hoisted}', stripped='${stripped}')…" >&2
+  sleep 5
+done
+
+# 4. RESUME ALL instances — reachable ONLY after the gate confirmed the hoisted RGD is
+#    live and the strip is still in effect. Each Namespace no longer carries `part-of`,
+#    so the prune cannot enumerate it — they all survive.
 for entry in "${INSTANCES[@]}"; do
   read -r ref workload_ns <<<"${entry}"
   instance_ns="${ref%%/*}"; instance="${ref##*/}"

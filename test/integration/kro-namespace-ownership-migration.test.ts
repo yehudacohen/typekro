@@ -1,20 +1,33 @@
 /**
- * Live upgrade test — findings #1 + #9 (PR #113).
+ * Live upgrade + DELETION test — findings #1 + #4 + #9 (PR #113).
  *
- * Proves the ownership-transfer MIGRATION reproduces and survives the DANGEROUS
- * upgrade: a deployment whose workload Namespace is a GENUINE KRO ApplySet member
- * (a real PRE-HOIST graph that KRO created — Namespace IN the RGD, so KRO records
- * the Namespace group-kind in the parent's remembered prune scope AND stamps a REAL
- * `applyset.kubernetes.io/part-of` on the Namespace) must, when upgraded to the
- * hoisted graph, NOT let KRO prune that Namespace. It must survive with the SAME
- * UID (not Terminating, not recreated) and lose its `part-of` membership, while the
- * instance CR stays healthy.
+ * The guard this PR adds exists to prevent a finalizer-stranding DEADLOCK on DELETE:
+ * when a composition's own workload Namespace is a KRO ApplySet member AND holds the
+ * instance CR (which carries `kro.run/finalizer`), deleting or pruning that Namespace
+ * puts it into Terminating while the CR's finalizer can never clear (the Namespace it
+ * lives in is going away) — a deadlock. This test proves BOTH halves end-to-end on a
+ * real cluster:
  *
- * ⚠️ This test is GATED like the other integration tests (`isClusterAvailable()` +
- * `describe.skip`) and is intended to run via `./scripts/run-integration-tests.sh`
- * against a real cluster (Flux + KRO + cert-manager + CNPG — see shared-bootstrap).
- * It is WRITTEN but was NOT executed in this change set (the only reachable cluster
- * here is a live production cluster; running it there is forbidden).
+ *  (A) UPGRADE survival — a deployment whose workload Namespace is a GENUINE KRO
+ *      ApplySet member (a real PRE-HOIST graph KRO created: Namespace IN the RGD, so
+ *      KRO records the Namespace group-kind in the parent's remembered prune scope AND
+ *      stamps a REAL `applyset.kubernetes.io/part-of` on it) must, when upgraded to
+ *      the hoisted graph, NOT let KRO prune the Namespace: it survives with the SAME
+ *      UID (not Terminating, not recreated) and loses its `part-of` membership.
+ *
+ *  (B) DELETION safety — the ACTUAL original defect. Deleting the instance CR must
+ *      clear `kro.run/finalizer` within a BOUNDED time while the retained workload
+ *      Namespace stays ACTIVE (never Terminating). `deleteInstance()` deletes the CR,
+ *      WAITS for the finalizer to clear, then tears down the RGD/CRD — it must never
+ *      delete the retained Namespace, and the Namespace must NOT be deleted by the
+ *      test's own cleanup until the CR's finalizer has cleared (deleting it earlier is
+ *      exactly what re-creates the deadlock). If the delete deadlocks, `deleteInstance`
+ *      rejects with a bounded CRDInstanceError timeout and this test FAILS loudly.
+ *
+ * ✅ EXECUTED on a local OrbStack cluster via an isolated kubeconfig (KRO/Flux/
+ * cert-manager/CNPG pre-installed). It is GATED like the other integration tests
+ * (`isClusterAvailable()` + `describe.skip`). It must NEVER be run against a
+ * production cluster.
  *
  * Reproduction strategy (finding #9 — a GENUINE pre-hoist graph, not an invented
  * ApplySet value):
@@ -30,8 +43,12 @@
  *  3. Upgrade via the normal `factory.deploy()` path. This runs the migration:
  *     discover the live instance, verify the Namespace's ownership identity matches
  *     it (real part-of), suspend → strip → apply the hoisted RGD → resume.
- *  4. Assert the Namespace survived with the SAME UID and no longer carries
- *     `part-of`, and the instance CR is present.
+ *  4. Assert the Namespace survived with the SAME UID and no longer carries `part-of`,
+ *     and the instance CR is present (phase A).
+ *  5. DELETE the instance via `factory.deleteInstance()`; assert the CR disappears
+ *     (finalizer clears) within a bounded timeout WHILE the retained Namespace stays
+ *     Active with the SAME UID; then strict-clean the retained Namespace + RGD/CRD and
+ *     assert they are gone (phase B).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
@@ -118,7 +135,7 @@ function buildPreHoistRgdManifest(hoistedRgdYaml: string): Record<string, unknow
   return rgd as Record<string, unknown>;
 }
 
-describeOrSkip('KRO namespace ownership-transfer migration (findings #1 + #9)', () => {
+describeOrSkip('KRO namespace ownership-transfer migration + finalizer-safe deletion (findings #1 + #4 + #9)', () => {
   let kc: k8s.KubeConfig;
   let coreApi: k8s.CoreV1Api;
   let objectApi: k8s.KubernetesObjectApi;
@@ -159,7 +176,7 @@ describeOrSkip('KRO namespace ownership-transfer migration (findings #1 + #9)', 
     }
   });
 
-  it('upgrades a GENUINE pre-hoist graph without pruning the live workload Namespace', async () => {
+  it('upgrades a GENUINE pre-hoist graph AND deletes it without stranding the workload Namespace finalizer', async () => {
     const factory = ownsNamespaceComposition.factory('kro', {
       namespace: workloadNamespace,
       kubeConfig: kc,
@@ -270,5 +287,103 @@ describeOrSkip('KRO namespace ownership-transfer migration (findings #1 + #9)', 
       name: instanceName,
     })) as { metadata?: { name?: string } };
     expect(instance.metadata?.name).toBe(instanceName);
-  }, 600000);
+
+    // ────────────────────────────────────────────────────────────────────────
+    // PHASE B — finalizer-SAFE DELETION (finding #4): the ACTUAL original defect.
+    // Migration survival (above) only proves the Namespace survives an UPGRADE. The
+    // whole reason this guard exists is a DELETE-time finalizer deadlock, which must
+    // be an ASSERTED step, not swallowed cleanup.
+    // ────────────────────────────────────────────────────────────────────────
+
+    // Bound the delete so a finalizer deadlock surfaces as a timeout error (a bounded
+    // CRDInstanceError rejection) instead of hanging — rather than the pre-fix hang.
+    const deletionFactory = ownsNamespaceComposition.factory('kro', {
+      namespace: workloadNamespace,
+      kubeConfig: kc,
+      timeout: 120000,
+    });
+
+    // 6. Delete the instance. deleteInstance() deletes the CR, WAITS for KRO to clear
+    //    kro.run/finalizer, THEN tears down the shared RGD/CRD. It must NOT touch the
+    //    retained Namespace, and the finalizer MUST clear (no deadlock) — so this
+    //    resolves. If deletion deadlocked, it would reject with a bounded timeout.
+    await deletionFactory.deleteInstance(instanceName);
+
+    // 7. The CR is actually GONE (finalizer cleared, not stuck Terminating).
+    await waitFor(
+      async () => {
+        try {
+          await customApi.getNamespacedCustomObject({
+            group: 'test.typekro.dev',
+            version: RGD_VERSION,
+            namespace: workloadNamespace,
+            plural: instancePlural,
+            name: instanceName,
+          });
+          return false; // still present
+        } catch (e: unknown) {
+          const code =
+            (e as { statusCode?: number; code?: number; body?: { code?: number } })?.statusCode ??
+            (e as { code?: number })?.code ??
+            (e as { body?: { code?: number } })?.body?.code;
+          return code === 404;
+        }
+      },
+      60000,
+      'the instance CR to disappear (finalizer cleared, no deadlock)'
+    );
+
+    // 8. The retained workload Namespace SURVIVED the CR deletion: SAME UID, still
+    //    Active (no deletionTimestamp) — the finalizer deadlock is gone.
+    const afterDelete = await coreApi.readNamespace({ name: workloadNamespace });
+    expect(afterDelete.metadata?.uid).toBe(originalUid as string);
+    expect(afterDelete.metadata?.deletionTimestamp).toBeUndefined();
+    expect(afterDelete.status?.phase).toBe('Active');
+
+    // 9. STRICT CLEANUP — only NOW (the CR + its finalizer are gone) is it safe to
+    //    delete the retained Namespace. Deleting it while the CR's finalizer was still
+    //    processing is exactly what re-creates the deadlock, so ordering matters.
+    await deleteNamespaceAndWait(workloadNamespace, kc, 120000);
+
+    // Namespace is gone.
+    await waitFor(
+      async () => {
+        try {
+          await coreApi.readNamespace({ name: workloadNamespace });
+          return false;
+        } catch (e: unknown) {
+          const code =
+            (e as { statusCode?: number; code?: number; body?: { code?: number } })?.statusCode ??
+            (e as { code?: number })?.code ??
+            (e as { body?: { code?: number } })?.body?.code;
+          return code === 404;
+        }
+      },
+      120000,
+      'the retained Namespace to be fully deleted'
+    );
+
+    // The RGD was torn down by deleteInstance() (no remaining instances share it).
+    await waitFor(
+      async () => {
+        try {
+          await customApi.getClusterCustomObject({
+            group: RGD_GROUP,
+            version: RGD_VERSION,
+            plural: RGD_PLURAL,
+            name: 'ns-migration',
+          });
+          return false;
+        } catch (e: unknown) {
+          const code =
+            (e as { statusCode?: number; code?: number; body?: { code?: number } })?.statusCode ??
+            (e as { code?: number })?.code ??
+            (e as { body?: { code?: number } })?.body?.code;
+          return code === 404;
+        }
+      },
+      60000,
+      'the shared RGD to be deleted by deleteInstance()'
+    );
+  }, 900000);
 });
