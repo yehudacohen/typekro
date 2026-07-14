@@ -1,28 +1,40 @@
 /**
- * Live upgrade test — finding #1 (PR #113 round 4).
+ * Live upgrade test — findings #1 + #9 (PR #113).
  *
- * Proves the ownership-transfer MIGRATION: upgrading a deployment whose workload
- * Namespace is a live KRO ApplySet member (as a pre-hoist version of the graph
- * left it) to the hoisted graph must NOT let KRO prune that Namespace. The
- * Namespace must survive the upgrade with the SAME UID (not Terminating, not
- * recreated) and must no longer carry `applyset.kubernetes.io/part-of`, while the
+ * Proves the ownership-transfer MIGRATION reproduces and survives the DANGEROUS
+ * upgrade: a deployment whose workload Namespace is a GENUINE KRO ApplySet member
+ * (a real PRE-HOIST graph that KRO created — Namespace IN the RGD, so KRO records
+ * the Namespace group-kind in the parent's remembered prune scope AND stamps a REAL
+ * `applyset.kubernetes.io/part-of` on the Namespace) must, when upgraded to the
+ * hoisted graph, NOT let KRO prune that Namespace. It must survive with the SAME
+ * UID (not Terminating, not recreated) and lose its `part-of` membership, while the
  * instance CR stays healthy.
  *
- * Gated exactly like the other integration tests (`isClusterAvailable()` +
- * `describe.skip`); it runs via `./scripts/run-integration-tests.sh` against a
- * real cluster (Flux + KRO + cert-manager + CNPG — see shared-bootstrap.ts).
+ * ⚠️ This test is GATED like the other integration tests (`isClusterAvailable()` +
+ * `describe.skip`) and is intended to run via `./scripts/run-integration-tests.sh`
+ * against a real cluster (Flux + KRO + cert-manager + CNPG — see shared-bootstrap).
+ * It is WRITTEN but was NOT executed in this change set (the only reachable cluster
+ * here is a live production cluster; running it there is forbidden).
  *
- * Reproduction strategy (no hand-built pre-hoist RGD needed): deploy the current
- * (hoisting) factory once to establish the RGD/CRD/instance and the workload
- * Namespace, then STAMP the exact KRO ApplySet ownership labels onto the live
- * Namespace to recreate the pre-hoist "KRO owns this Namespace" state that makes
- * the prune dangerous. The second deploy (the upgrade) must run the migration —
- * suspend the instance, strip KRO's ownership labels, re-apply the retained
- * Namespace, resume — leaving the Namespace intact.
+ * Reproduction strategy (finding #9 — a GENUINE pre-hoist graph, not an invented
+ * ApplySet value):
+ *  1. Take the factory's own (hoisted) RGD and RE-INSERT the owned Namespace as a
+ *     graph child, yielding the exact PRE-HOIST RGD shape KRO would have managed
+ *     before this fix — same RGD name/schema, Namespace back in `spec.resources`.
+ *  2. Apply that pre-hoist RGD directly and create an instance CR IN the workload
+ *     namespace. Let KRO reconcile: it CREATES the Namespace as an ApplySet member
+ *     and stamps the REAL `part-of` (== the instance's ApplySet ID) + `kro.run/*`
+ *     ownership labels. Capture the Namespace UID + real part-of.
+ *  3. Upgrade via the normal `factory.deploy()` path. This runs the migration:
+ *     discover the live instance, verify the Namespace's ownership identity matches
+ *     it (real part-of), suspend → strip → apply the hoisted RGD → resume.
+ *  4. Assert the Namespace survived with the SAME UID and no longer carries
+ *     `part-of`, and the instance CR is present.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
+import * as yaml from 'js-yaml';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
@@ -42,6 +54,9 @@ const clusterAvailable = isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 const APPLYSET_PART_OF_LABEL = 'applyset.kubernetes.io/part-of';
+const RGD_GROUP = 'kro.run';
+const RGD_VERSION = 'v1alpha1';
+const RGD_PLURAL = 'resourcegraphdefinitions';
 
 const MigrationSpec = type({ name: 'string', namespace: 'string' });
 const MigrationStatus = type({ ready: 'boolean' });
@@ -74,7 +89,34 @@ const ownsNamespaceComposition = kubernetesComposition(
   }
 );
 
-describeOrSkip('KRO namespace ownership-transfer migration (finding #1)', () => {
+/**
+ * Reconstruct the GENUINE pre-hoist RGD from the factory's own hoisted RGD by
+ * re-inserting the owned Namespace as a graph child (finding #9). This is the exact
+ * RGD KRO would have managed before the hoist fix: same name + schema, Namespace
+ * back in `spec.resources` so KRO owns it as an ApplySet member and stamps a real
+ * `part-of` on it.
+ */
+function buildPreHoistRgdManifest(hoistedRgdYaml: string): Record<string, unknown> {
+  const rgd = yaml.load(hoistedRgdYaml) as {
+    spec?: { resources?: Record<string, unknown>[] };
+  };
+  const resources = rgd.spec?.resources ?? [];
+  // Insert the owned Namespace FIRST (deps-first) as a graph child named after the
+  // schema namespace — the pre-hoist shape.
+  resources.unshift({
+    id: 'ownedNamespace',
+    template: {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      // KRO RGD templates use ${schema.spec.*} CEL for schema-driven fields.
+      metadata: { name: '${schema.spec.namespace}' },
+    },
+  });
+  if (rgd.spec) rgd.spec.resources = resources;
+  return rgd as Record<string, unknown>;
+}
+
+describeOrSkip('KRO namespace ownership-transfer migration (findings #1 + #9)', () => {
   let kc: k8s.KubeConfig;
   let coreApi: k8s.CoreV1Api;
   let objectApi: k8s.KubernetesObjectApi;
@@ -105,9 +147,9 @@ describeOrSkip('KRO namespace ownership-transfer migration (finding #1)', () => 
     await deleteNamespaceAndWait(workloadNamespace, kc).catch(() => {});
     try {
       await customApi.deleteClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
+        group: RGD_GROUP,
+        version: RGD_VERSION,
+        plural: RGD_PLURAL,
         name: 'ns-migration',
       });
     } catch {
@@ -115,7 +157,7 @@ describeOrSkip('KRO namespace ownership-transfer migration (finding #1)', () => 
     }
   });
 
-  it('upgrades without pruning the live workload Namespace', async () => {
+  it('upgrades a GENUINE pre-hoist graph without pruning the live workload Namespace', async () => {
     const factory = ownsNamespaceComposition.factory('kro', {
       namespace: workloadNamespace,
       kubeConfig: kc,
@@ -123,43 +165,78 @@ describeOrSkip('KRO namespace ownership-transfer migration (finding #1)', () => 
     });
     const spec = { name: instanceName, namespace: workloadNamespace };
 
-    // 1. Initial deploy establishes the RGD/CRD, instance, and workload Namespace.
-    await factory.deploy(spec);
+    // 1. Build the GENUINE pre-hoist RGD (Namespace re-inserted as a graph child)
+    //    and apply it directly, then create the instance CR in the workload ns.
+    const preHoistRgd = buildPreHoistRgdManifest(factory.toYaml());
+    await objectApi.patch(
+      preHoistRgd as k8s.KubernetesObject,
+      undefined,
+      undefined,
+      'typekro-test',
+      true,
+      'application/apply-patch+yaml'
+    );
 
-    const before = await coreApi.readNamespace({ name: workloadNamespace });
-    const originalUid = before.metadata?.uid;
-    expect(originalUid).toBeDefined();
+    // Wait for the CRD the RGD generates to be established before posting the CR.
+    const instanceApiVersion = 'test.typekro.dev/v1alpha1';
+    const instancePlural = 'nsmigrations';
+    const waitFor = async (fn: () => Promise<boolean>, timeoutMs: number, label: string) => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (await fn().catch(() => false)) return;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      throw new Error(`Timed out waiting for ${label}`);
+    };
+    await waitFor(
+      async () => {
+        await customApi.listClusterCustomObject({
+          group: 'test.typekro.dev',
+          version: RGD_VERSION,
+          plural: instancePlural,
+        });
+        return true;
+      },
+      120000,
+      'NsMigration CRD to be established'
+    );
 
-    // 2. Recreate the PRE-HOIST state: stamp KRO's ApplySet ownership labels onto
-    //    the live Namespace so it looks like a Namespace a pre-hoist graph owned.
-    //    This is exactly what would make KRO's next reconcile prune it.
+    // 2. Create the instance CR IN the workload namespace so KRO creates + OWNS the
+    //    Namespace as a real ApplySet member (stamping the real part-of on it).
     await objectApi.patch(
       {
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: {
-          name: workloadNamespace,
-          labels: {
-            [APPLYSET_PART_OF_LABEL]: 'applyset-ns-migration',
-            'kro.run/owned': 'true',
-            'kro.run/instance-id': 'legacy-instance-uid',
-            'app.kubernetes.io/managed-by': 'kro',
-          },
-        },
+        apiVersion: instanceApiVersion,
+        kind: 'NsMigration',
+        metadata: { name: instanceName, namespace: workloadNamespace },
+        spec,
       } as unknown as k8s.KubernetesObject,
       undefined,
       undefined,
-      undefined,
-      undefined,
-      'application/merge-patch+json'
+      'typekro-test',
+      true,
+      'application/apply-patch+yaml'
     );
 
-    const stamped = await coreApi.readNamespace({ name: workloadNamespace });
-    expect(stamped.metadata?.labels?.[APPLYSET_PART_OF_LABEL]).toBe('applyset-ns-migration');
+    // Wait for KRO to create the Namespace AND stamp a REAL part-of on it.
+    await waitFor(
+      async () => {
+        const ns = await coreApi.readNamespace({ name: workloadNamespace });
+        return ns.metadata?.labels?.[APPLYSET_PART_OF_LABEL] !== undefined;
+      },
+      180000,
+      'KRO to create + stamp the workload Namespace (genuine pre-hoist ownership)'
+    );
 
-    // 3. Upgrade via the normal deploy path — this must run the ownership-transfer
-    //    migration (suspend instance → strip KRO ownership → re-apply retained
-    //    Namespace → resume) BEFORE KRO can prune the Namespace.
+    const before = await coreApi.readNamespace({ name: workloadNamespace });
+    const originalUid = before.metadata?.uid;
+    const realPartOf = before.metadata?.labels?.[APPLYSET_PART_OF_LABEL];
+    expect(originalUid).toBeDefined();
+    // A GENUINE KRO ApplySet id (KEP-3659), not an invented value.
+    expect(realPartOf).toMatch(/^applyset-.*-v1$/);
+
+    // 3. Upgrade via the normal deploy path — this runs the ownership-transfer
+    //    migration (identity-checked against the REAL part-of): suspend → strip →
+    //    apply hoisted RGD → resume, BEFORE KRO can prune the Namespace.
     await factory.deploy(spec);
 
     // 4. The Namespace survived the upgrade: SAME UID (not recreated), not
@@ -172,14 +249,14 @@ describeOrSkip('KRO namespace ownership-transfer migration (finding #1)', () => 
     // Retention markers were stamped during the transfer.
     expect(after.metadata?.labels?.['typekro.io/kro-instance-namespace']).toBe('true');
 
-    // 5. The instance CR is still present and reconciling in its namespace.
+    // 5. The instance CR is still present in its namespace.
     const instance = (await customApi.getNamespacedCustomObject({
       group: 'test.typekro.dev',
-      version: 'v1alpha1',
+      version: RGD_VERSION,
       namespace: workloadNamespace,
-      plural: 'nsmigrations',
+      plural: instancePlural,
       name: instanceName,
-    })) as { metadata?: { name?: string }; status?: { state?: string } };
+    })) as { metadata?: { name?: string } };
     expect(instance.metadata?.name).toBe(instanceName);
   }, 600000);
 });

@@ -3,7 +3,7 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
-import { getIncludeWhen } from '../metadata/index.js';
+import { copyResourceMetadata, getIncludeWhen } from '../metadata/index.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
@@ -387,87 +387,120 @@ function schemaNamespaceCelExpression(): { expression: string } {
 }
 
 /**
- * Rewrite every reference to a HOISTED Namespace's `metadata.name` to the concrete
- * schema namespace expression `${schema.spec.namespace}` (finding #3).
+ * Rewrite every reference to a HOISTED Namespace's `metadata.name` — ANYWHERE it
+ * appears in a value — to the concrete schema namespace expression
+ * `schema.spec.namespace` (findings #3 + #6).
  *
- * When a Namespace is hoisted OUT of the RGD graph, any other resource that still
- * refers to it (e.g. a ConfigMap using `${ownedNamespace.metadata.name}`) would
- * leave a live `${...}` reference to a resource KRO no longer knows about, and KRO
- * rejects the whole graph. Because a hoisted Namespace's name is, by construction,
- * exactly the schema field `spec.namespace` (see
+ * When a Namespace is hoisted OUT of the RGD graph, any other value that still
+ * refers to it would leave a live reference to a resource KRO no longer knows
+ * about, and KRO rejects the whole graph. Because a hoisted Namespace's name is,
+ * by construction, exactly the schema field `spec.namespace` (see
  * {@link namespaceNameTracksSchemaNamespace}), rewriting the dangling reference to
  * `schema.spec.namespace` is exact — it yields the same value the removed resource
  * would have.
  *
+ * The rewrite is STRUCTURAL, not exact-string (finding #6): it replaces the
+ * reference TOKEN `<id>.metadata.name` wherever it occurs, so embedded /
+ * concatenated (`ns-${string(id.metadata.name)}`), function-wrapped
+ * (`string(id.metadata.name)`), and ternary (`... ? id.metadata.name : "x"`)
+ * forms are all handled — in plain strings, CEL expressions, and raw
+ * `__KUBERNETES_REF_*` markers alike. It applies to arbitrary values (resource
+ * bodies AND status mappings), so a status CEL like
+ * `ns-${string(ownedNamespace.metadata.name)}` is rewritten too.
+ */
+export function rewriteHoistedNamespaceRefsInValue<T>(
+  value: T,
+  hoistedIds: ReadonlySet<string>
+): T {
+  if (hoistedIds.size === 0) return value;
+
+  // TOKEN-level (not whole-`${...}`) patterns for a reference to
+  // `<id>.metadata.name`, so wrappers/concatenation/ternaries are handled. A
+  // negative lookbehind avoids matching an id that is only a SUFFIX of a longer
+  // identifier (e.g. `myOwnedNamespace` when the hoisted id is `ownedNamespace`).
+  const celTokenPatterns = [...hoistedIds].map(
+    (id) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(id)}\\.metadata\\.name\\b`, 'g')
+  );
+  const markerTokenPatterns = [...hoistedIds].map(
+    (id) => new RegExp(`__KUBERNETES_REF_${escapeRegExp(id)}_metadata\\.name__`, 'g')
+  );
+
+  // The concrete CEL body + raw marker a hoisted-Namespace reference becomes.
+  const schemaNamespaceCelBody = 'schema.spec.namespace';
+  const schemaNamespaceMarker = '__KUBERNETES_REF___schema___spec.namespace__';
+
+  const rewriteString = (input: string): string => {
+    let out = input;
+    for (const pattern of celTokenPatterns) out = out.replace(pattern, schemaNamespaceCelBody);
+    for (const pattern of markerTokenPatterns) out = out.replace(pattern, schemaNamespaceMarker);
+    return out;
+  };
+
+  const rewriteValue = (val: unknown): unknown => {
+    if (isKubernetesRef(val)) {
+      return hoistedIds.has(val.resourceId) && val.fieldPath.startsWith('metadata.name')
+        ? schemaNamespaceCelExpression()
+        : val;
+    }
+    if (isCelExpression(val)) {
+      const rewritten = rewriteString(val.expression);
+      return rewritten === val.expression
+        ? val
+        : ({ [CEL_EXPRESSION_BRAND]: true, expression: rewritten } as unknown);
+    }
+    if (typeof val === 'string') {
+      return rewriteString(val);
+    }
+    if (Array.isArray(val)) {
+      let changed = false;
+      const next = val.map((item) => {
+        const rewritten = rewriteValue(item);
+        if (rewritten !== item) changed = true;
+        return rewritten;
+      });
+      return changed ? next : val;
+    }
+    if (val !== null && typeof val === 'object') {
+      let changed = false;
+      const next: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(val as Record<string, unknown>)) {
+        const rewritten = rewriteValue(item);
+        if (rewritten !== item) changed = true;
+        next[key] = rewritten;
+      }
+      return changed ? (next as unknown) : val;
+    }
+    return val;
+  };
+
+  return rewriteValue(value) as T;
+}
+
+/**
+ * Resource-map form of {@link rewriteHoistedNamespaceRefsInValue}: rewrite every
+ * dangling reference to a hoisted Namespace across a resource collection.
+ *
  * Only resources that actually contain such a reference are reconstructed; every
  * other resource is passed through by identity, so the common case (no reference
- * to the hoisted Namespace) is untouched.
+ * to the hoisted Namespace) is untouched. When a resource IS reconstructed, its
+ * TypeKro metadata (WeakMap-stored `includeWhen` / `readinessEvaluator` /
+ * `__resourceId` / readiness+iteration markers) is copied onto the new object via
+ * {@link copyResourceMetadata} so the rewrite never silently drops it (finding #7).
  */
 export function rewriteHoistedNamespaceReferences<
   T extends Record<string, KubernetesResource>,
 >(resources: T, hoistedIds: ReadonlySet<string>): T {
   if (hoistedIds.size === 0) return resources;
 
-  // CEL / marker forms of a reference to `<id>.metadata.name`, per hoisted id.
-  const celRefPatterns = [...hoistedIds].map(
-    (id) => new RegExp(`\\$\\{\\s*${escapeRegExp(id)}\\.metadata\\.name\\s*\\}`, 'g')
-  );
-  const markerRefPatterns = [...hoistedIds].map(
-    (id) => new RegExp(`__KUBERNETES_REF_${escapeRegExp(id)}_metadata\\.name__`, 'g')
-  );
-
-  // The literal CEL expression + raw marker a hoisted-Namespace reference becomes.
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: this is a literal CEL expression string, not a JS template.
-  const schemaNamespaceCel = '${schema.spec.namespace}';
-  const schemaNamespaceMarker = '__KUBERNETES_REF___schema___spec.namespace__';
-
-  const rewriteString = (value: string): string => {
-    let out = value;
-    for (const pattern of celRefPatterns) out = out.replace(pattern, schemaNamespaceCel);
-    for (const pattern of markerRefPatterns) out = out.replace(pattern, schemaNamespaceMarker);
-    return out;
-  };
-
-  const rewriteValue = (value: unknown): unknown => {
-    if (isKubernetesRef(value)) {
-      return hoistedIds.has(value.resourceId) && value.fieldPath.startsWith('metadata.name')
-        ? schemaNamespaceCelExpression()
-        : value;
-    }
-    if (isCelExpression(value)) {
-      const rewritten = rewriteString(value.expression);
-      return rewritten === value.expression
-        ? value
-        : ({ [CEL_EXPRESSION_BRAND]: true, expression: rewritten } as unknown);
-    }
-    if (typeof value === 'string') {
-      return rewriteString(value);
-    }
-    if (Array.isArray(value)) {
-      let changed = false;
-      const next = value.map((item) => {
-        const rewritten = rewriteValue(item);
-        if (rewritten !== item) changed = true;
-        return rewritten;
-      });
-      return changed ? next : value;
-    }
-    if (value !== null && typeof value === 'object') {
-      let changed = false;
-      const next: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        const rewritten = rewriteValue(item);
-        if (rewritten !== item) changed = true;
-        next[key] = rewritten;
-      }
-      return changed ? next : value;
-    }
-    return value;
-  };
-
   const result: Record<string, KubernetesResource> = {};
   for (const [id, resource] of Object.entries(resources)) {
-    result[id] = rewriteValue(resource) as KubernetesResource;
+    const rewritten = rewriteHoistedNamespaceRefsInValue(resource, hoistedIds);
+    if (rewritten !== resource) {
+      // Reconstructed a NEW resource object — carry its non-enumerable / WeakMap
+      // TypeKro metadata across so readiness/iteration/includeWhen survive.
+      copyResourceMetadata(resource as object, rewritten as object);
+    }
+    result[id] = rewritten;
   }
   return result as T;
 }

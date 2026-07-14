@@ -312,6 +312,79 @@ await factory.deploy({ name: 'app', image: 'nginx' });
 4. **Week 4**: Add status expressions for runtime state
 5. **Ongoing**: Migrate remaining resources as needed
 
+## Upgrading a Self-Owned-Namespace Bootstrap (KRO)
+
+If a composition **owns the Namespace its own instance lives in** (a bootstrap that
+creates `spec.namespace` and places the CR inside it), recent TypeKro versions
+**hoist that Namespace out of the RGD graph** and retain it, so deleting the
+instance can never strand its finalizer by terminating its own namespace.
+
+Upgrading from a **pre-hoist** release requires transferring the live workload
+Namespace out of KRO's ApplySet **before** the new (hoisted) RGD reconciles.
+Otherwise KRO's prune — whose scope still lists the Namespace's group-kind from the
+parent's remembered ApplySet annotations — deletes the live Namespace (the
+`applyset.kubernetes.io/part-of` label still matches), recreating the exact deadlock.
+
+### Direct mode: automatic
+
+The imperative `factory.deploy()` path performs this ownership transfer
+**automatically and idempotently**: it discovers every live instance of the RGD,
+suspends each (`kro.run/reconcile: suspended`), strips KRO's ApplySet/ownership
+labels from each owned Namespace (identity-checked so it never touches a Namespace
+owned by a different instance), applies the hoisted RGD, then resumes. It fails
+closed — if the transfer can't complete it never applies the new RGD.
+
+### GitOps / Alchemy: one-time manual migration required
+
+Flux, Argo CD, and Alchemy apply manifests **declaratively** — there is no
+in-process step to run the ownership transfer, so **this migration cannot happen
+automatically** on those paths. Before rolling out the hoisted RGD via GitOps or
+Alchemy for an existing (pre-hoist) deployment, run the one-time transfer below.
+Skipping it risks KRO pruning the live workload Namespace on the next reconcile.
+
+Run this once per affected instance (`suspend-all → strip → apply new RGD →
+resume-all`). Set `INSTANCE`, `INSTANCE_NS`, `CR_KIND`/`CR_RESOURCE`, and `WORKLOAD_NS`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+CR_RESOURCE="nsmigrations.test.typekro.dev"   # <plural>.<group> of the instance CRD
+INSTANCE="ns-migration-instance"              # instance (CR) name
+INSTANCE_NS="dagster"                          # namespace the CR lives in
+WORKLOAD_NS="dagster"                          # the owned workload Namespace
+
+# 1. Suspend the instance so KRO stops reconciling + pruning during the transfer.
+kubectl annotate "${CR_RESOURCE}" "${INSTANCE}" -n "${INSTANCE_NS}" \
+  kro.run/reconcile=suspended --overwrite
+
+# 2. Strip KRO's ApplySet/ownership labels from the live workload Namespace so the
+#    prune selector no longer matches it, and stamp typekro's retention markers.
+kubectl label namespace "${WORKLOAD_NS}" \
+  applyset.kubernetes.io/part-of- \
+  kro.run/owned- \
+  kro.run/instance-id- \
+  kro.run/node-id- \
+  kro.run/resource-graph-definition-id- \
+  app.kubernetes.io/managed-by- \
+  typekro.io/kro-instance-namespace=true --overwrite
+kubectl annotate namespace "${WORKLOAD_NS}" \
+  kustomize.toolkit.fluxcd.io/prune=disabled \
+  argocd.argoproj.io/sync-options=Prune=false,Delete=false --overwrite
+
+# 3. Now let GitOps/Alchemy apply the NEW (hoisted) RGD + retained Namespace.
+#    e.g. `flux reconcile kustomization <name>` / `argocd app sync <app>` / alchemy up.
+
+# 4. Resume the instance so KRO reconciles the new graph. Its Namespace no longer
+#    carries `part-of`, so the prune cannot enumerate it — it survives.
+kubectl annotate "${CR_RESOURCE}" "${INSTANCE}" -n "${INSTANCE_NS}" \
+  kro.run/reconcile- --overwrite
+```
+
+Fresh installs (the workload Namespace does not exist yet, or carries no KRO
+labels) need **no** migration — the hoisted Namespace is simply created as a
+retained resource, deps-first.
+
 ## Next Steps
 
 - [Getting Started](/guide/getting-started) - Quick start guide

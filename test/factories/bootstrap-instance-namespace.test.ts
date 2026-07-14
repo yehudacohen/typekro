@@ -83,16 +83,18 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(yaml).toContain('typekro.io/kro-instance-namespace');
   });
 
-  it('finding #1: same name in different namespaces → DISTINCT identities (no collapse)', async () => {
+  it('finding #2: same name in distinct FACTORY namespaces → DISTINCT identities (no collapse)', async () => {
     // The instance-relocation design forced both analytics/dev and analytics/prod
     // into `typekro-system`, collapsing them to the SAME alchemy id (the second
-    // clobbering the first). Leaving the instance in its natural namespace and
-    // qualifying the alchemy id by namespace keeps the two distinct.
+    // clobbering the first). Per the maintainer's decision (finding #2) the CR lives
+    // in the FACTORY namespace, so analytics/dev and analytics/prod are kept distinct
+    // by distinct FACTORY namespaces; the alchemy id qualified by the resolved
+    // (factory) namespace never collapses.
     const dev = await dagsterBootstrap
-      .factory('kro')
+      .factory('kro', { namespace: 'dev' })
       .toAlchemyResources({ name: 'analytics', namespace: 'dev' } as never);
     const prod = await dagsterBootstrap
-      .factory('kro')
+      .factory('kro', { namespace: 'prod' })
       .toAlchemyResources({ name: 'analytics', namespace: 'prod' } as never);
 
     const devInstance = dev.at(-1);

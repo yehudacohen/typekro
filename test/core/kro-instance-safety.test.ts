@@ -194,12 +194,16 @@ describe('KRO instance namespace ownership: hoisting keeps the instance in its n
     expect(decls.at(-1)?.props.namespace).toBe('app');
   });
 
-  it('finding #1: same name in different namespaces → distinct instance identities', async () => {
+  it('finding #2: same name in distinct FACTORY namespaces → distinct instance identities', async () => {
+    // Per the maintainer's decision (finding #2), the CR lives in the FACTORY
+    // namespace, so dev/prod are distinguished by a DIFFERENT factory namespace (not
+    // by spec.namespace). The alchemy id is qualified by the resolved (factory)
+    // namespace, so the two never collapse.
     const dev = await ownedNsComposition()
-      .factory('kro')
+      .factory('kro', { namespace: 'dev' })
       .toAlchemyResources({ name: 'x', namespace: 'dev' });
     const prod = await ownedNsComposition()
-      .factory('kro')
+      .factory('kro', { namespace: 'prod' })
       .toAlchemyResources({ name: 'x', namespace: 'prod' });
     expect(dev.at(-1)?.props.namespace).toBe('dev');
     expect(prod.at(-1)?.props.namespace).toBe('prod');

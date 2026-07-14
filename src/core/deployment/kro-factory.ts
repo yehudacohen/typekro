@@ -5,6 +5,7 @@
  * using the Kro controller for dependency resolution and resource management.
  */
 
+import { createHash } from 'node:crypto';
 import type * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
 import * as yaml from 'js-yaml';
@@ -97,6 +98,7 @@ import {
   detectStructurallyOwnedNamespaceIds,
   resolveNamespaceName,
   rewriteHoistedNamespaceReferences,
+  rewriteHoistedNamespaceRefsInValue,
 } from './kro-instance-safety.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
@@ -142,6 +144,10 @@ const MANAGED_BY_LABEL = 'app.kubernetes.io/managed-by';
 const MANAGED_BY_KRO = 'kro';
 /** KRO stamps all its bookkeeping/ownership labels under this prefix. */
 const KRO_LABEL_PREFIX = 'kro.run/';
+/** KRO stamps the owning instance's UID here on every child it manages. */
+const KRO_INSTANCE_ID_LABEL = 'kro.run/instance-id';
+/** typekro's retention marker stamped onto a Namespace once its ownership is transferred out of KRO. */
+const TYPEKRO_INSTANCE_NAMESPACE_LABEL = 'typekro.io/kro-instance-namespace';
 
 /**
  * Whether a live Namespace's labels mark it as a current KRO ApplySet member —
@@ -153,6 +159,77 @@ function isKroOwnedNamespace(labels: Record<string, string>): boolean {
   if (labels[APPLYSET_PART_OF_LABEL] !== undefined) return true;
   if (labels[`${KRO_LABEL_PREFIX}owned`] !== undefined) return true;
   return labels[MANAGED_BY_LABEL] === MANAGED_BY_KRO;
+}
+
+/**
+ * Compute the ApplySet ID KRO stamps on every child of an instance CR, per
+ * KEP-3659 and KRO's `applyset.ID(parent)`:
+ *   `applyset-<base64url(sha256("<name>.<namespace>.<kind>.<group>"))>-v1`
+ * (GKNN of the PARENT instance; base64 is RawURLEncoding — url-safe, no padding).
+ *
+ * A child Namespace's `applyset.kubernetes.io/part-of` equals its owner instance's
+ * ApplySet ID, so this lets the migration verify a Namespace belongs to the
+ * specific instance being migrated before stripping it (finding #5) — never
+ * stealing a Namespace owned by a different KRO instance.
+ */
+export function computeApplySetId(
+  instanceName: string,
+  instanceNamespace: string,
+  kind: string,
+  group: string
+): string {
+  const unencoded = [instanceName, instanceNamespace, kind, group].join('.');
+  const digest = createHash('sha256').update(unencoded).digest();
+  const b64url = digest.toString('base64url');
+  return `applyset-${b64url}-v1`;
+}
+
+/**
+ * Whether a live Namespace's ownership identity MATCHES the given instance — i.e.
+ * the Namespace is genuinely a child of THIS instance's ApplySet, not some other
+ * KRO owner (finding #5). True when the Namespace's `part-of` equals the instance's
+ * computed ApplySet ID OR its `kro.run/instance-id` equals the instance UID.
+ *
+ * A Namespace carrying KRO labels but matching NEITHER belongs to a different owner
+ * and must never be stripped.
+ */
+export function namespaceOwnershipMatchesInstance(
+  nsLabels: Record<string, string>,
+  expectedApplySetId: string,
+  instanceUid: string | undefined
+): boolean {
+  const partOf = nsLabels[APPLYSET_PART_OF_LABEL];
+  if (partOf !== undefined && partOf === expectedApplySetId) return true;
+  const instanceId = nsLabels[KRO_INSTANCE_ID_LABEL];
+  if (instanceUid !== undefined && instanceId !== undefined && instanceId === instanceUid) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an instance CR's annotations mark it as reconcile-suspended. Mirrors
+ * KRO's `IsReconcileSuspended`: the `kro.run/reconcile` annotation equal to
+ * `suspended` (or the legacy `disabled`), case-insensitive.
+ */
+function isReconcileSuspended(annotations: Record<string, string> | undefined): boolean {
+  const value = annotations?.[KRO_RECONCILE_ANNOTATION]?.trim().toLowerCase();
+  return value === KRO_RECONCILE_SUSPENDED || value === 'disabled';
+}
+
+/** A live instance CR addressed by (name, namespace). */
+interface InstanceRef {
+  readonly name: string;
+  readonly namespace: string;
+}
+
+/**
+ * The result of the ownership-transfer migration: every instance the caller must
+ * RESUME after the new RGD is applied (instances the migration suspended, plus any
+ * crash-recovery resumes). Resuming is idempotent, so it is safe to apply twice.
+ */
+interface NamespaceMigrationHandle {
+  readonly resumeTargets: InstanceRef[];
 }
 
 /**
@@ -340,39 +417,34 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * The concrete workload namespace for a given deploy/serialize call — the
-   * NATURAL namespace the instance CR lives in.
-   *
-   * The workload namespace the composition creates/owns is carried on the
-   * instance `spec.namespace`, so a per-call spec wins over the factory's
-   * declared `namespace`. Without a spec (e.g. `getInstances`, `deleteInstance`)
-   * we fall back to the factory namespace, exactly as the pre-guard lifecycle did.
-   */
-  private workloadNamespaceFor(spec?: TSpec): string {
-    const specNamespace = (spec as { namespace?: unknown } | undefined)?.namespace;
-    return typeof specNamespace === 'string' && specNamespace.length > 0
-      ? specNamespace
-      : this.namespace;
-  }
-
-  /**
    * Resolve the namespace the KRO instance CR lives in for this call.
    *
-   * The instance ALWAYS stays in its NATURAL namespace — no relocation. An
-   * explicit `instanceNamespace` factory option wins outright (the override);
-   * otherwise the natural namespace is `spec.namespace ?? factory namespace`.
-   * Because the natural namespace is derived from `spec.namespace`, two deploys
-   * with the SAME name in DIFFERENT namespaces (analytics/dev vs analytics/prod)
-   * keep DISTINCT instance identities — they never collapse.
+   * The default CR placement is the FACTORY namespace (`this.namespace`), exactly
+   * as v0.26.0 always did — the maintainer's explicit decision (finding #2). This
+   * fixes the silent-relocation regression: an upgrade never moves an existing CR
+   * versus the released v0.26.0, and NO per-call `spec.namespace` is consulted for
+   * CR placement. An explicit `instanceNamespace` factory option still wins as an
+   * override (the only way to place the CR elsewhere).
+   *
+   * Identity distinctness is preserved without a spec-derived namespace: the
+   * top-level alchemy id is qualified by the RESOLVED (factory) namespace, so two
+   * instances collapse only when they share BOTH name AND resolved namespace — i.e.
+   * genuinely the same instance. dev/prod are distinguished by a different factory
+   * namespace (or an explicit `instanceNamespace` pin), never by `spec.namespace`.
+   *
+   * The `spec` parameter is accepted only for call-site symmetry with the other
+   * resolvers and is deliberately unused (CR placement must not vary per spec, or
+   * `getInstances`/`deleteInstance` — which have no spec — could target a different
+   * namespace than `deploy` and orphan the CR, finding #3).
    *
    * Finalizer-stranding safety comes from HOISTING the composition's own workload
    * Namespace OUT of the RGD graph (see {@link hoistedNamespaceNames}), not from
-   * moving the instance elsewhere.
+   * where the instance CR lives.
    */
-  private resolveInstanceNamespace(spec?: TSpec): string {
+  private resolveInstanceNamespace(_spec?: TSpec): string {
     const explicit = this.factoryOptions.instanceNamespace;
     if (explicit !== undefined) return explicit;
-    return this.workloadNamespaceFor(spec);
+    return this.namespace;
   }
 
   /**
@@ -996,194 +1068,337 @@ export class KroResourceFactoryImpl<
     const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
     const hoistedNamespaces = this.concreteHoistedNamespaces(spec);
 
-    // UPGRADE MIGRATION (finding #1): if a workload Namespace we now hoist OUT of
-    // the RGD is currently a LIVE KRO ApplySet member (created by a pre-hoist
-    // version of this graph), transfer its ownership OUT of KRO's ApplySet BEFORE
-    // applying the new RGD. Otherwise KRO's next reconcile would prune the Namespace
-    // (its group-kind stays in the parent's remembered prune scope, and the live
-    // Namespace still carries `applyset.kubernetes.io/part-of`), terminating the
-    // namespace that holds the instance CR's finalizer — the exact deadlock. Fresh
-    // installs (Namespace absent or not KRO-owned) need no migration. The transfer
-    // suspends the instance, strips KRO's ownership labels, and is finalized by the
-    // resume below — it fails LOUDLY (before the new RGD is applied) if it can't
-    // complete, so we never let the prune delete a live Namespace.
-    const suspendedForMigration = await this.migrateHoistedNamespaceOwnership(
-      instanceName,
-      instanceNamespace,
-      [...hoistedNamespaces.keys()]
-    );
+    // UPGRADE MIGRATION (findings #1 + #4): replacing the SHARED RGD with the
+    // hoisted graph makes EVERY live instance of this RGD reconcile it, so BEFORE
+    // the RGD is updated we must transfer each instance's still-owned workload
+    // Namespace OUT of KRO's ApplySet — not just the instance being deployed.
+    // Otherwise KRO's next reconcile prunes those Namespaces (their group-kind
+    // stays in the parent's remembered prune scope and the live Namespace still
+    // carries `applyset.kubernetes.io/part-of`), terminating the namespace holding
+    // an instance CR's finalizer — the exact deadlock. The migration discovers all
+    // instances cluster-wide, suspends each whose Namespace it must transfer,
+    // strips KRO's ownership labels (identity-checked, finding #5), and FAILS
+    // CLOSED (throws before the RGD is touched) if any required step can't complete.
+    // Fresh installs (no live instance / Namespace) need no migration.
+    const migration = await this.migrateHoistedNamespaceOwnership();
 
-    // Ensure RGD is deployed. The owned workload Namespace is hoisted OUT of the RGD
-    // graph (created deps-first, below) rather than left a graph child that would
-    // strand the instance's finalizer on delete. The hoist is STRUCTURAL, so the
-    // shared RGD shape is the same for every instance (finding #4).
-    await this.ensureRGDDeployed(spec);
-
-    // Ensure the namespace that will hold the CR exists before posting it. KRO
-    // reconciles resources from the RGD into their own namespaces, but the CR
-    // instance itself must live in a namespace the user can write to. The instance
-    // stays in its NATURAL namespace; if the composition owns that namespace it was
-    // hoisted out of the graph above, so creating it here (outside the graph) means
-    // KRO never garbage-collects it. Without this, the first deploy after
-    // `kubectl delete ns` fails with a 404 on the CR POST.
-    //
-    // A hoisted Namespace is applied with its COMPLETE preserved configuration
-    // (Pod Security labels + user annotations) plus retention markers (finding #5);
-    // a non-hoisted instance namespace just needs to exist.
-    if (hoistedNamespaces.has(instanceNamespace)) {
-      for (const [name, original] of hoistedNamespaces) {
-        await this.applyRetainedHoistedNamespace(name, original);
-      }
-    } else {
-      await this.ensureTargetNamespace(instanceNamespace);
-      for (const [name, original] of hoistedNamespaces) {
-        await this.applyRetainedHoistedNamespace(name, original);
-      }
-    }
-
-    // Create DirectDeploymentEngine with KRO mode for CEL string conversion
-    const deploymentEngine = new DirectDeploymentEngine(
-      this.getKubeConfig(),
-      undefined,
-      undefined,
-      DeploymentMode.KRO
-    );
-
-    // Create custom resource instance
-    const customResourceData = this.createCustomResourceInstance(
-      instanceName,
-      spec,
-      singletonSpecFingerprint
-    );
-
-    // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
-    const kroCustomResource =
-      this.kroCustomResourceProvider ??
-      (await import('../../factories/kro/kro-custom-resource.js')).kroCustomResource;
-    const enhancedCustomResource = kroCustomResource({
-      apiVersion: customResourceData.apiVersion,
-      kind: customResourceData.kind,
-      metadata: {
-        ...customResourceData.metadata,
-      },
-      spec: customResourceData.spec,
-    });
-
-    // Deploy using DirectDeploymentEngine with built-in waitForReady logic
-    const deployableResource: DeployableK8sResource<typeof enhancedCustomResource> = {
-      ...enhancedCustomResource,
-      id: instanceName,
-      metadata: {
-        ...enhancedCustomResource.metadata,
-        name: instanceName,
-        namespace: instanceNamespace,
-      },
-      spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
-    } as DeployableK8sResource<typeof enhancedCustomResource>;
-
-    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
-    preserveNonEnumerableProperties(enhancedCustomResource, deployableResource);
-
-    // Deploy without waiting for readiness - we'll handle that ourselves
-    this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
+    // The whole suspended window is wrapped so ANY failure after suspend resumes
+    // every suspended instance (finding #4) — no path leaves an instance suspended.
     try {
-      await deploymentEngine.deployResource(deployableResource, {
-        mode: 'kro',
-        namespace: instanceNamespace,
-        waitForReady: false, // We'll handle Kro-specific readiness ourselves
-        timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
-      });
-      this.logger.info('Instance deployed, checking readiness', {
-        instanceName,
-        rgdName: this.rgdName,
-      });
+      // Ensure RGD is deployed. The owned workload Namespace is hoisted OUT of the
+      // RGD graph (created deps-first, below) rather than left a graph child that
+      // would strand the instance's finalizer on delete. The hoist is STRUCTURAL,
+      // so the shared RGD shape is the same for every instance (finding #4).
+      await this.ensureRGDDeployed(spec);
 
-      // RESUME the instance if the upgrade migration suspended it (finding #1). The
-      // new RGD + retained Namespace are applied and the new CR is posted, so KRO
-      // can safely reconcile the new graph: the prune scope still lists the
-      // Namespace's group-kind (parent memory), but the LIVE Namespace no longer
-      // carries `applyset.kubernetes.io/part-of`, so it is not enumerated and
-      // SURVIVES. Must resume BEFORE waiting for readiness (a suspended instance
-      // never reconciles to Ready).
-      if (suspendedForMigration) {
-        await this.resumeInstanceReconciliation(instanceName, instanceNamespace);
+      // Ensure the namespace that will hold the CR exists before posting it. KRO
+      // reconciles resources from the RGD into their own namespaces, but the CR
+      // instance itself must live in a namespace the user can write to. If the
+      // composition owns that namespace it was hoisted out of the graph above, so
+      // creating it here (outside the graph) means KRO never garbage-collects it.
+      // Without this, the first deploy after `kubectl delete ns` fails with a 404
+      // on the CR POST.
+      //
+      // A hoisted Namespace is applied with its COMPLETE preserved configuration
+      // (all labels incl. Pod Security + spec) plus retention markers (finding #8);
+      // a non-hoisted instance namespace just needs to exist.
+      if (!hoistedNamespaces.has(instanceNamespace)) {
+        await this.ensureTargetNamespace(instanceNamespace);
+      }
+      for (const [name, original] of hoistedNamespaces) {
+        await this.applyRetainedHoistedNamespace(name, original, spec);
       }
 
-      // Handle Kro-specific readiness checking if requested
-      if (this.factoryOptions.waitForReady ?? true) {
-        await this.waitForKroInstanceReady(
+      // Create DirectDeploymentEngine with KRO mode for CEL string conversion
+      const deploymentEngine = new DirectDeploymentEngine(
+        this.getKubeConfig(),
+        undefined,
+        undefined,
+        DeploymentMode.KRO
+      );
+
+      // Create custom resource instance
+      const customResourceData = this.createCustomResourceInstance(
+        instanceName,
+        spec,
+        singletonSpecFingerprint
+      );
+
+      // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+      const kroCustomResource =
+        this.kroCustomResourceProvider ??
+        (await import('../../factories/kro/kro-custom-resource.js')).kroCustomResource;
+      const enhancedCustomResource = kroCustomResource({
+        apiVersion: customResourceData.apiVersion,
+        kind: customResourceData.kind,
+        metadata: {
+          ...customResourceData.metadata,
+        },
+        spec: customResourceData.spec,
+      });
+
+      // Deploy using DirectDeploymentEngine with built-in waitForReady logic
+      const deployableResource: DeployableK8sResource<typeof enhancedCustomResource> = {
+        ...enhancedCustomResource,
+        id: instanceName,
+        metadata: {
+          ...enhancedCustomResource.metadata,
+          name: instanceName,
+          namespace: instanceNamespace,
+        },
+        spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
+      } as DeployableK8sResource<typeof enhancedCustomResource>;
+
+      // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+      preserveNonEnumerableProperties(enhancedCustomResource, deployableResource);
+
+      // Deploy without waiting for readiness - we'll handle that ourselves
+      this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
+      try {
+        await deploymentEngine.deployResource(deployableResource, {
+          mode: 'kro',
+          namespace: instanceNamespace,
+          waitForReady: false, // We'll handle Kro-specific readiness ourselves
+          timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
+        });
+        this.logger.info('Instance deployed, checking readiness', {
           instanceName,
-          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT,
-          instanceNamespace
-        ); // 10 minutes
-      }
-      this.logger.info('Instance ready, creating enhanced proxy', {
-        instanceName,
-        rgdName: this.rgdName,
-      });
+          rgdName: this.rgdName,
+        });
 
-      // Create Enhanced proxy for the deployed instance
-      return await this.createEnhancedProxy(spec, instanceName);
+        // RESUME every instance the migration suspended (findings #1 + #4). The new
+        // RGD + retained Namespaces are applied, so KRO can safely reconcile the new
+        // graph: the prune scope still lists the Namespace's group-kind (parent
+        // memory), but the LIVE Namespaces no longer carry
+        // `applyset.kubernetes.io/part-of`, so they are not enumerated and SURVIVE.
+        // Must resume BEFORE waiting for readiness (a suspended instance never
+        // reconciles to Ready).
+        await this.resumeMigration(migration);
+
+        // Handle Kro-specific readiness checking if requested
+        if (this.factoryOptions.waitForReady ?? true) {
+          await this.waitForKroInstanceReady(
+            instanceName,
+            this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT,
+            instanceNamespace
+          ); // 10 minutes
+        }
+        this.logger.info('Instance ready, creating enhanced proxy', {
+          instanceName,
+          rgdName: this.rgdName,
+        });
+
+        // Create Enhanced proxy for the deployed instance
+        return await this.createEnhancedProxy(spec, instanceName);
+      } finally {
+        await deploymentEngine.dispose();
+      }
     } finally {
-      await deploymentEngine.dispose();
+      // Safety net: if any step above threw after the migration suspended
+      // instances, resume them all so none is left permanently suspended
+      // (finding #4). Idempotent — resuming an already-resumed instance is a no-op.
+      await this.resumeMigration(migration);
     }
   }
 
   /**
-   * Race-free ownership-transfer migration (finding #1). For each workload
-   * Namespace now hoisted OUT of the RGD that is a LIVE KRO ApplySet member,
-   * relinquish KRO's ownership BEFORE the new RGD is applied, so KRO's next
-   * reconcile does not prune the (finalizer-bearing) Namespace.
+   * Race-free ownership-transfer migration across EVERY live instance of the shared
+   * RGD (findings #1 + #4 + #5). Replacing the shared RGD with the hoisted graph
+   * makes ALL instances reconcile it, so BEFORE the RGD is applied each instance's
+   * still-owned workload Namespace must be transferred OUT of KRO's ApplySet, or
+   * KRO's next reconcile prunes it (its group-kind stays in the parent's remembered
+   * prune scope; the live Namespace still carries `applyset.kubernetes.io/part-of`).
    *
-   * Idempotent and safe when the Namespace is absent / already migrated:
-   *  - Namespace absent or not KRO-owned → fresh install / already migrated → skip.
-   *  - Otherwise: SUSPEND the instance (stop KRO reconciling/pruning), then STRIP
-   *    the KRO ApplySet/ownership labels from the live Namespace (so the prune
-   *    selector no longer matches it) and add typekro retention markers.
+   * Steps:
+   *  1. Discover every live instance of this RGD cluster-wide.
+   *  2. For each instance, resolve its hoisted workload Namespace(s) from ITS OWN
+   *     spec, read each live Namespace's ownership labels (FAIL CLOSED on any
+   *     non-404 read error), and select only those Namespaces whose ownership
+   *     IDENTITY matches that instance (finding #5) — never stealing a Namespace
+   *     owned by a different KRO instance.
+   *  3. SUSPEND each instance that has a Namespace to transfer, then STRIP KRO's
+   *     ApplySet/ownership labels from each selected Namespace + stamp retention.
    *
-   * Returns whether the instance was suspended (so the caller resumes it after the
-   * new graph is applied). FAILS LOUDLY: if suspend or strip fails, it throws
-   * before the caller applies the new RGD — never leaving KRO free to prune.
+   * Returns a handle listing every instance the caller must RESUME after the new
+   * RGD is applied (including crash-recovery resumes for instances a prior partial
+   * migration stripped but never resumed — idempotent recovery, finding #4). FAILS
+   * CLOSED: on any error it resumes anything it suspended and rethrows before the
+   * caller touches the RGD, so KRO is never left free to prune AND no instance is
+   * left suspended.
    */
-  private async migrateHoistedNamespaceOwnership(
-    instanceName: string,
-    instanceNamespace: string,
-    hoistedNamespaceNames: readonly string[]
-  ): Promise<boolean> {
-    if (hoistedNamespaceNames.length === 0) return false;
+  private async migrateHoistedNamespaceOwnership(): Promise<NamespaceMigrationHandle> {
+    // Migration only applies when this factory hoists an owned Namespace at all.
+    if (this.structurallyHoistedIds().size === 0) return { resumeTargets: [] };
 
     const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
+    const kind = this.schemaDefinition.kind;
+    const group = this.getSchemaGroup();
 
-    // Which hoisted Namespaces are currently live KRO ApplySet members?
-    const toTransfer: Array<{ name: string; labels: Record<string, string> }> = [];
-    for (const name of hoistedNamespaceNames) {
-      const live = await this.readNamespaceOwnership(k8sApi, name);
-      if (live === undefined) continue; // absent or unreadable → no migration
-      if (isKroOwnedNamespace(live.labels)) toTransfer.push({ name, labels: live.labels });
+    // 1. Discover EVERY live instance of this RGD cluster-wide.
+    const liveInstances = await this.listInstancesForMigration();
+
+    const toSuspend = new Map<string, InstanceRef>();
+    const toStrip: Array<{ nsName: string; labels: Record<string, string> }> = [];
+    // Instances a PRIOR partial migration already stripped but left suspended — a
+    // retry must resume them to a consistent state (idempotent recovery, finding #4).
+    const recoveryResume: InstanceRef[] = [];
+
+    for (const inst of liveInstances) {
+      const instName = typeof inst.metadata?.name === 'string' ? inst.metadata.name : undefined;
+      const instNs =
+        typeof inst.metadata?.namespace === 'string' ? inst.metadata.namespace : undefined;
+      if (instName === undefined || instNs === undefined) continue;
+      const uid = typeof inst.metadata?.uid === 'string' ? inst.metadata.uid : undefined;
+      const suspended = isReconcileSuspended(inst.metadata?.annotations);
+      const expectedApplySetId = computeApplySetId(instName, instNs, kind, group);
+
+      // This instance's owned workload Namespace(s), resolved from ITS OWN spec.
+      const nsNames = this.hoistedNamespaceNames(inst.spec as TSpec);
+      let pendingTransfer = false;
+      let completedTransfer = false;
+      for (const nsName of nsNames) {
+        const live = await this.readNamespaceOwnership(k8sApi, nsName); // FAIL CLOSED on non-404
+        if (live === undefined) continue; // Namespace absent → nothing to transfer
+        if (isKroOwnedNamespace(live.labels)) {
+          // Identity check (finding #5): only strip a Namespace that belongs to THIS
+          // instance's ApplySet — never one owned by a different KRO instance.
+          if (namespaceOwnershipMatchesInstance(live.labels, expectedApplySetId, uid)) {
+            pendingTransfer = true;
+            toStrip.push({ nsName, labels: live.labels });
+          }
+        } else if (live.labels[TYPEKRO_INSTANCE_NAMESPACE_LABEL] === 'true') {
+          // Already transferred (retention marker present, no KRO ownership).
+          completedTransfer = true;
+        }
+      }
+
+      const ref: InstanceRef = { name: instName, namespace: instNs };
+      if (pendingTransfer) {
+        toSuspend.set(`${instNs}/${instName}`, ref);
+      } else if (suspended && completedTransfer) {
+        recoveryResume.push(ref);
+      }
     }
-    if (toTransfer.length === 0) return false;
+
+    const handle: NamespaceMigrationHandle = { resumeTargets: [...recoveryResume] };
+    if (toSuspend.size === 0 && toStrip.length === 0) return handle;
 
     this.logger.info('Migrating hoisted Namespace ownership out of KRO ApplySet', {
       rgdName: this.rgdName,
-      instanceName,
-      namespaces: toTransfer.map((n) => n.name),
+      instances: [...toSuspend.values()].map((r) => `${r.namespace}/${r.name}`),
+      namespaces: toStrip.map((s) => s.nsName),
     });
 
-    // 1. SUSPEND the instance so KRO neither reconciles nor prunes during transfer.
-    const suspended = await this.suspendInstanceReconciliation(instanceName, instanceNamespace);
-
-    // 2. STRIP KRO ownership from each live Namespace + stamp retention markers.
-    for (const { name, labels } of toTransfer) {
-      await this.stripKroOwnershipFromNamespace(k8sApi, name, labels);
+    const suspendedTargets: InstanceRef[] = [];
+    try {
+      // 2. SUSPEND each instance with a Namespace to transfer.
+      for (const ref of toSuspend.values()) {
+        const didSuspend = await this.suspendInstanceReconciliation(ref.name, ref.namespace);
+        if (didSuspend) suspendedTargets.push(ref);
+      }
+      // 3. STRIP KRO ownership from each selected live Namespace + stamp retention.
+      for (const { nsName, labels } of toStrip) {
+        await this.stripKroOwnershipFromNamespace(k8sApi, nsName, labels);
+      }
+    } catch (error) {
+      // Fail closed: resume everything we suspended before rethrowing, so a failed
+      // transfer never leaves an instance suspended (finding #4).
+      for (const ref of [...suspendedTargets, ...recoveryResume]) {
+        await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+      }
+      throw error;
     }
 
-    return suspended;
+    handle.resumeTargets.push(...suspendedTargets);
+    return handle;
+  }
+
+  /** Resume every instance the migration suspended. Idempotent (safe to call twice). */
+  private async resumeMigration(handle: NamespaceMigrationHandle): Promise<void> {
+    for (const ref of handle.resumeTargets) {
+      await this.resumeInstanceReconciliation(ref.name, ref.namespace);
+    }
+  }
+
+  /**
+   * List every live instance of this RGD cluster-wide (name, namespace, uid,
+   * annotations, spec) for the ownership-transfer migration.
+   *
+   * Distinguishes a GENUINELY-absent CRD (fresh factory before its RGD/CRD exist →
+   * no instances → empty list) from a transient API error: the CRD list must
+   * succeed and simply contain no matching CRD to treat this as a fresh install.
+   * Any read/list ERROR FAILS CLOSED (throws) so the caller never updates the
+   * shared RGD without knowing which instances need migrating (finding #1) — the
+   * ambiguous swallow in {@link lookupCRDPlural} is deliberately NOT used here.
+   */
+  private async listInstancesForMigration(): Promise<
+    Array<{
+      metadata?: {
+        name?: unknown;
+        namespace?: unknown;
+        uid?: unknown;
+        annotations?: Record<string, string>;
+      };
+      spec?: unknown;
+    }>
+  > {
+    const failClosed = (error: unknown): never => {
+      throw new ResourceGraphFactoryError(
+        `Failed to enumerate instances of RGD "${this.rgdName}" for the ownership-transfer ` +
+          `migration — aborting before applying the new RGD (fail closed): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    };
+
+    // Resolve the CRD plural WITHOUT swallowing errors: list CRDs and match on
+    // (group, kind). A successful list with NO match = the CRD genuinely does not
+    // exist yet (fresh install). A list ERROR = fail closed.
+    const k8sApi = this.createKubernetesObjectApi();
+    let crds: {
+      items?: Array<{ spec?: { group?: string; names?: { kind?: string; plural?: string } } }>;
+    };
+    try {
+      crds = (await k8sApi.list(
+        'apiextensions.k8s.io/v1',
+        'CustomResourceDefinition'
+      )) as unknown as typeof crds;
+    } catch (error: unknown) {
+      return failClosed(error);
+    }
+    const plural = crds.items?.find(
+      (crd) =>
+        crd.spec?.group === this.getSchemaGroup() &&
+        crd.spec?.names?.kind === this.schemaDefinition.kind
+    )?.spec?.names?.plural;
+    if (plural === undefined) return []; // CRD genuinely absent → fresh install
+    this.discoveredPlural ??= plural;
+
+    const customApi = await this.createCustomObjectsApi();
+    try {
+      const listResponse = await customApi.listClusterCustomObject({
+        group: this.getSchemaGroup(),
+        version: this.getSchemaVersion(),
+        plural,
+      });
+      return (
+        (
+          listResponse as {
+            items?: Array<{ metadata?: Record<string, unknown>; spec?: unknown }>;
+          }
+        ).items ?? []
+      );
+    } catch (error: unknown) {
+      return failClosed(error);
+    }
   }
 
   /**
    * Read a live Namespace's labels for ownership detection. Returns `undefined`
-   * when the Namespace is absent (404) or unreadable — the caller then performs no
-   * migration (fresh install), per the migration contract.
+   * ONLY when the Namespace is absent (404) — a fresh install / nothing to
+   * transfer. FAILS CLOSED on any other read error (finding #4): the migration must
+   * not proceed to update the RGD when it cannot determine a Namespace's ownership.
    */
   private async readNamespaceOwnership(
     k8sApi: k8s.KubernetesObjectApi,
@@ -1198,11 +1413,13 @@ export class KroResourceFactoryImpl<
       return { labels: live.metadata?.labels ?? {} };
     } catch (error: unknown) {
       if (isNotFoundError(error)) return undefined;
-      this.logger.warn('Could not read workload Namespace for ownership migration — skipping', {
-        namespace: name,
-        error: ensureError(error).message,
-      });
-      return undefined;
+      throw new ResourceGraphFactoryError(
+        `Failed to read workload Namespace "${name}" for the ownership-transfer migration — ` +
+          `aborting before applying the new RGD (fail closed): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
     }
   }
 
@@ -1304,7 +1521,10 @@ export class KroResourceFactoryImpl<
   /**
    * Resume the instance CR after the ownership transfer + new RGD are applied by
    * removing the `kro.run/reconcile` annotation (merge-patch `null`). A 404 here is
-   * benign (the CR was recreated without the annotation).
+   * benign (the CR was recreated without the annotation). Any OTHER failure is
+   * surfaced LOUDLY (error-level, not swallowed) with actionable guidance, because
+   * a still-suspended instance never reconciles (finding #4); it deliberately does
+   * NOT throw so a resume issue in a `finally` cannot mask the original deploy error.
    */
   private async resumeInstanceReconciliation(
     instanceName: string,
@@ -1334,26 +1554,42 @@ export class KroResourceFactoryImpl<
       });
     } catch (error: unknown) {
       if (isNotFoundError(error)) return;
-      this.logger.warn('Failed to resume instance reconciliation after ownership transfer', {
-        instanceName,
-        instanceNamespace,
-        error: ensureError(error).message,
-      });
+      this.logger.error(
+        'Failed to resume instance reconciliation after ownership transfer — the instance ' +
+          `is left SUSPENDED and will NOT reconcile. Manually clear the "${KRO_RECONCILE_ANNOTATION}" ` +
+          'annotation, or re-run the deploy (the migration is idempotent and will resume it).',
+        ensureError(error),
+        {
+          instanceName,
+          instanceNamespace,
+          annotation: KRO_RECONCILE_ANNOTATION,
+        }
+      );
     }
   }
 
   /**
    * Apply a hoisted workload Namespace as a RETAINED resource OUTSIDE the KRO
-   * graph, with its COMPLETE preserved configuration (Pod Security labels + user
-   * annotations) plus retention markers (finding #5), using typekro's own field
-   * manager (not KRO's). Server-side apply is idempotent and does not conflict with
-   * KRO because KRO no longer considers the Namespace desired.
+   * graph, with its COMPLETE preserved configuration — all labels (incl. Pod
+   * Security + schema-derived), all annotations, AND spec — plus retention markers
+   * (finding #8), using typekro's own field manager (not KRO's). Server-side apply
+   * is idempotent and does not conflict with KRO because KRO no longer considers
+   * the Namespace desired.
+   *
+   * If the full Namespace cannot be applied, this FAILS (finding #8) rather than
+   * silently degrading to a bare `ensureTargetNamespace` that would drop Pod
+   * Security + other declared configuration.
    */
   private async applyRetainedHoistedNamespace(
     name: string,
-    original: KubernetesResource
+    original: KubernetesResource,
+    spec: TSpec
   ): Promise<void> {
-    const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(name, original);
+    const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
+      name,
+      original,
+      spec as KroCompatibleType
+    );
     const manifest = {
       apiVersion: 'v1',
       kind: 'Namespace',
@@ -1362,6 +1598,7 @@ export class KroResourceFactoryImpl<
         labels: merged.labels,
         annotations: merged.annotations,
       },
+      ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
     } as unknown as k8s.KubernetesObject;
 
     const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
@@ -1375,15 +1612,16 @@ export class KroResourceFactoryImpl<
         'application/apply-patch+yaml' // server-side apply
       );
     } catch (error: unknown) {
-      if (!isNotFoundError(error)) {
-        // SSA creates when absent; a genuine failure (RBAC, terminating) still needs
-        // the namespace to exist for the CR to land in — fall back to ensure-create.
-        this.logger.debug('SSA of retained namespace failed; falling back to ensureTargetNamespace', {
-          namespace: name,
-          error: ensureError(error).message,
-        });
-      }
-      await this.ensureTargetNamespace(name);
+      // Do NOT fall back to a bare namespace (finding #8): that would drop the
+      // declared Pod Security labels + other config. Fail loudly so the operator
+      // sees the real problem instead of a silently-degraded workload namespace.
+      throw new ResourceGraphFactoryError(
+        `Failed to apply the retained workload Namespace "${name}" with its complete declared ` +
+          `configuration (Pod Security labels, annotations, spec): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
     }
   }
 
@@ -1764,7 +2002,7 @@ export class KroResourceFactoryImpl<
     for (const [hoistedNs, original] of this.concreteHoistedNamespaces(spec)) {
       const decl = this.hoistedNamespaceAlchemyDeclaration(
         hoistedNs,
-        this.buildHoistedNamespaceResource(hoistedNs, original),
+        this.buildHoistedNamespaceResource(hoistedNs, original, spec),
         kubeConfigOptions,
         prerequisiteIds
       );
@@ -2059,7 +2297,7 @@ export class KroResourceFactoryImpl<
       const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
       const leadingInstanceYamls = [
         ...[...this.concreteHoistedNamespaces(spec)].map(([ns, original]) =>
-          this.hoistedNamespaceYaml(ns, original)
+          this.hoistedNamespaceYaml(ns, original, spec)
         ),
         ...ownerYamls,
       ];
@@ -2106,7 +2344,15 @@ export class KroResourceFactoryImpl<
     // reference to it. The hoisted Namespace is created deps-first as a retained
     // resource (toYaml/toAlchemyResources/imperative deploy), so deleting the
     // instance can never garbage-collect the namespace holding its own finalizer.
+    const hoistIds = this.structurallyHoistedIds(this.resources);
     const graphResources = this.resourcesForRgd(this.resources);
+
+    // Rewrite references to the hoisted Namespace in the STATUS mappings too
+    // (finding #6): a status CEL like `ns-${string(ownedNamespace.metadata.name)}`
+    // or `has(spec.namespace) ? ownedNamespace.metadata.name : "x"` would otherwise
+    // reference a resource removed from the graph and KRO would reject the RGD.
+    const statusMappings = rewriteHoistedNamespaceRefsInValue(this.statusMappings, hoistIds);
+    const nestedCel = rewriteHoistedNamespaceRefsInValue(this.getNestedStatusCel(), hoistIds);
 
     const aspectResources = applyAspects(graphResources, {
       mode: 'kro',
@@ -2124,13 +2370,12 @@ export class KroResourceFactoryImpl<
       this.name,
       this.schemaDefinition,
       aspectResources,
-      this.statusMappings,
-      this.getNestedStatusCel()
+      statusMappings,
+      nestedCel
     );
 
     // Attach nested status CEL mappings as non-enumerable property so
     // serializeResourceGraphToYaml can inline virtual composition IDs.
-    const nestedCel = this.getNestedStatusCel();
     if (nestedCel && Object.keys(nestedCel).length > 0) {
       Object.defineProperty(kroSchema, '__nestedStatusCel', {
         value: nestedCel,
@@ -2145,14 +2390,15 @@ export class KroResourceFactoryImpl<
       // identifiers: [schema]") and are hydrated client-side instead, like any
       // other static status field.
       const resourceIdList = Object.keys(aspectResources);
-      const nestedCel = this.getNestedStatusCel();
       const nestedCelForClassification =
         nestedCel && Object.keys(nestedCel).length > 0 ? nestedCel : undefined;
       for (const override of statusOverrides) {
-        if (isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList))
-          continue;
+        // Rewrite any reference to a hoisted Namespace in the override expression
+        // too (finding #6), so a status override never dangles at the removed id.
+        const celExpression = rewriteHoistedNamespaceRefsInValue(override.celExpression, hoistIds);
+        if (isStaticExpression(celExpression, nestedCelForClassification, resourceIdList)) continue;
         kroSchema.status ??= {};
-        const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
+        const yamlSafe = celExpression.replace(/"([^"\\]*)"/g, "'$1'");
         kroSchema.status[override.propertyPath] = yamlSafe;
       }
     }
@@ -2172,12 +2418,43 @@ export class KroResourceFactoryImpl<
       }
     }
 
-    return serializeResourceGraphToYaml(
+    const rgdYaml = serializeResourceGraphToYaml(
       this.rgdName,
       aspectResources,
       { namespace: this.namespace },
       kroSchema
     );
+
+    // VALIDATE (finding #6): after hoisting, NO reference to any removed resource id
+    // may remain anywhere in the emitted RGD. If one slipped through (a form the
+    // rewrite didn't structurally cover), fail LOUDLY here rather than shipping an
+    // RGD KRO will reject at runtime with a dangling `${...}` reference.
+    this.assertNoDanglingHoistedReferences(rgdYaml, hoistIds);
+
+    return rgdYaml;
+  }
+
+  /**
+   * Assert the emitted RGD carries NO leftover reference to a hoisted (removed)
+   * resource id — neither a CEL interpolation `${<id>.…}` nor a raw
+   * `__KUBERNETES_REF_<id>_…` marker (finding #6). A negative lookbehind avoids
+   * matching an id that is only a suffix of a longer identifier.
+   */
+  private assertNoDanglingHoistedReferences(rgdYaml: string, hoistIds: ReadonlySet<string>): void {
+    for (const id of hoistIds) {
+      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const celRef = new RegExp(`\\$\\{[^}]*?(?<![A-Za-z0-9_$])${escaped}\\.`);
+      const markerRef = new RegExp(`__KUBERNETES_REF_${escaped}_`);
+      if (celRef.test(rgdYaml) || markerRef.test(rgdYaml)) {
+        throw new ResourceGraphFactoryError(
+          `Hoisting the owned Namespace left a dangling reference to removed resource "${id}" in the ` +
+            'emitted RGD. This would make KRO reject the graph. Report this as a typekro bug (the ' +
+            'reference form was not structurally rewritten).',
+          this.name,
+          'deployment'
+        );
+      }
+    }
   }
 
   /**
@@ -3004,36 +3281,69 @@ export class KroResourceFactoryImpl<
   }
 
   /**
+   * Resolve a single Namespace metadata VALUE (a label/annotation value) against
+   * the concrete spec to its final string form (finding #8). Handles:
+   *   - plain strings (kept verbatim),
+   *   - numbers / booleans (stringified — a "non-string" declared value),
+   *   - schema-derived CEL expressions / KubernetesRefs (resolved to the concrete
+   *     value; re-execution already collapsed the schema ref, but this evaluates
+   *     it against the spec for robustness).
+   * Returns `undefined` for a value that cannot be resolved to a string, so the
+   * caller drops only genuinely-unresolvable entries rather than the whole class of
+   * non-string / schema-derived metadata (the old string-only filter dropped them).
+   */
+  private static resolveMetadataStringValue(
+    value: unknown,
+    spec: KroCompatibleType
+  ): string | undefined {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    const resolved = resolveNamespaceName(value, spec);
+    return resolved;
+  }
+
+  /**
    * Merge the SHARED/RETAINED marker labels + annotations onto an ORIGINAL,
-   * fully-concrete Namespace's metadata, PRESERVING everything the composition set
-   * (finding #5): all labels — including Pod Security (`pod-security.kubernetes.io/*`)
-   * — and all user annotations survive; the retention markers are added on top.
+   * fully-concrete Namespace resource, PRESERVING the COMPLETE declared config
+   * (finding #8): ALL labels — including Pod Security (`pod-security.kubernetes.io/*`)
+   * AND non-string / schema-derived labels resolved against the spec — ALL
+   * annotations, AND the Namespace `spec` (e.g. finalizers). The retention markers
+   * are added on top.
    */
   private static mergedHoistedNamespaceMetadata(
     workloadNamespace: string,
-    original: KubernetesResource
-  ): { name: string; labels: Record<string, string>; annotations: Record<string, string> } {
+    original: KubernetesResource,
+    spec: KroCompatibleType
+  ): {
+    name: string;
+    labels: Record<string, string>;
+    annotations: Record<string, string>;
+    spec?: unknown;
+  } {
     const originalMeta = (original.metadata ?? {}) as {
       labels?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
     };
-    const toStringMap = (value: Record<string, unknown> | undefined): Record<string, string> => {
+    const resolveMap = (value: Record<string, unknown> | undefined): Record<string, string> => {
       const out: Record<string, string> = {};
       for (const [key, val] of Object.entries(value ?? {})) {
-        if (typeof val === 'string') out[key] = val;
+        const resolved = KroResourceFactoryImpl.resolveMetadataStringValue(val, spec);
+        if (resolved !== undefined) out[key] = resolved;
       }
       return out;
     };
+    const originalSpec = (original as { spec?: unknown }).spec;
     return {
       name: workloadNamespace,
       labels: {
-        ...toStringMap(originalMeta.labels),
+        ...resolveMap(originalMeta.labels),
         ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels,
       },
       annotations: {
-        ...toStringMap(originalMeta.annotations),
+        ...resolveMap(originalMeta.annotations),
         ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations,
       },
+      ...(originalSpec !== undefined && originalSpec !== null ? { spec: originalSpec } : {}),
     };
   }
 
@@ -3052,14 +3362,16 @@ export class KroResourceFactoryImpl<
    */
   private buildHoistedNamespaceResource(
     workloadNamespace: string,
-    original: KubernetesResource
+    original: KubernetesResource,
+    spec: TSpec
   ): Enhanced<
     import('@kubernetes/client-node').V1Namespace['spec'],
     import('@kubernetes/client-node').V1Namespace['status']
   > {
     const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
       workloadNamespace,
-      original
+      original,
+      spec as KroCompatibleType
     );
     return namespaceResource({
       metadata: {
@@ -3067,6 +3379,9 @@ export class KroResourceFactoryImpl<
         labels: merged.labels,
         annotations: merged.annotations,
       },
+      ...(merged.spec !== undefined
+        ? { spec: merged.spec as NonNullable<import('@kubernetes/client-node').V1Namespace['spec']> }
+        : {}),
       id: KroResourceFactoryImpl.hoistedNamespaceId(workloadNamespace),
     }) as Enhanced<
       import('@kubernetes/client-node').V1Namespace['spec'],
@@ -3108,10 +3423,15 @@ export class KroResourceFactoryImpl<
     };
   }
 
-  private hoistedNamespaceYaml(workloadNamespace: string, original: KubernetesResource): string {
+  private hoistedNamespaceYaml(
+    workloadNamespace: string,
+    original: KubernetesResource,
+    spec: TSpec
+  ): string {
     const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
       workloadNamespace,
-      original
+      original,
+      spec as KroCompatibleType
     );
     return yaml
       .dump(
@@ -3123,6 +3443,7 @@ export class KroResourceFactoryImpl<
             labels: merged.labels,
             annotations: merged.annotations,
           },
+          ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
         },
         { lineWidth: -1, noRefs: true, sortKeys: false }
       )

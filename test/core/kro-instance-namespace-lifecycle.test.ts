@@ -41,14 +41,14 @@ function priv(factory: unknown, method: string): (...args: unknown[]) => unknown
   return fn.bind(factory);
 }
 
-describe('instance stays in its NATURAL namespace (no relocation)', () => {
-  it('resolveInstanceNamespace returns the workload namespace, spec-ful and spec-less', () => {
+describe('instance CR lives in the FACTORY namespace (finding #2, matches v0.26.0)', () => {
+  it('resolveInstanceNamespace returns the factory namespace regardless of spec', () => {
     const factory = ownsNsFactory('lifecycle-selfowns', { namespace: 'app' });
     const resolve = priv(factory, 'resolveInstanceNamespace');
-    // A per-call spec.namespace wins...
-    expect(resolve({ name: 'x', namespace: 'dev' })).toBe('dev');
-    // ...and a spec-less lifecycle resolve falls back to the factory namespace,
-    // exactly as the pre-guard lifecycle did (never a control-plane constant).
+    // The maintainer's decision (finding #2): CR placement is ALWAYS the factory
+    // namespace — never a per-call spec.namespace — so an upgrade never relocates an
+    // existing CR vs v0.26.0, and create/getInstances/deleteInstance provably agree.
+    expect(resolve({ name: 'x', namespace: 'dev' })).toBe('app');
     expect(resolve()).toBe('app');
     expect(resolve()).not.toBe('typekro-system');
   });
