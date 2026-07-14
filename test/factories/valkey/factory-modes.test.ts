@@ -211,11 +211,57 @@ describe('valkeyBootstrap factory modes', () => {
     expect(decls.at(-1)?.props.namespace).toBe('valkey-system');
   });
 
-  it('hoists through composition nesting; explicit pin to an owned namespace still throws', () => {
+  it('hoists a nested-owned namespace that STRUCTURALLY tracks spec.namespace', () => {
+    // When the nested-owned namespace is named after the PARENT's `spec.namespace`
+    // (the field the instance's namespace also derives from), hoisting is a stable
+    // STRUCTURAL property of the shared RGD (finding #4) — it is hoisted through the
+    // nesting and retained, with the instance left in its natural namespace.
     const parent = kubernetesComposition(
       {
         name: 'valkey-nested-owner',
         kind: 'ValkeyNestedOwner',
+        spec: type({ name: 'string', namespace: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (parentSpec) => {
+        const operator = valkeyBootstrap({
+          name: 'valkey-operator',
+          namespace: parentSpec.namespace,
+        });
+        return { ready: operator.status.ready };
+      }
+    );
+
+    const yaml = parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
+      name: 'platform',
+      namespace: 'valkey-system',
+    });
+    expect(yaml).toMatch(/namespace: valkey-system$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    // The shared RGD no longer owns the Namespace as a graph child.
+    expect(parent.factory('kro', { namespace: 'valkey-system' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
+
+    // Guard intact: explicitly pinning the instance back into the owned namespace throws.
+    expect(() =>
+      parent
+        .factory('kro', { namespace: 'valkey-system', instanceNamespace: 'valkey-system' })
+        .toYaml({ name: 'platform', namespace: 'valkey-system' })
+    ).toThrow('cannot also be an owned Namespace');
+  });
+
+  it('FAILS CLOSED when a nested-owned namespace tracks a DIFFERENT field (not spec.namespace)', () => {
+    // A nested-owned namespace named after some OTHER field (`operatorNamespace`)
+    // cannot be PROVEN, spec-independently, to always equal the instance's
+    // namespace — so it is NOT hoisted (that would make the shared RGD spec-
+    // dependent, finding #4). When a concrete spec makes them coincide, the
+    // ownership guard fails closed rather than silently mutating the graph.
+    const parent = kubernetesComposition(
+      {
+        name: 'valkey-nested-otherfield',
+        kind: 'ValkeyNestedOtherField',
         spec: type({ name: 'string', operatorNamespace: 'string' }),
         status: type({ ready: 'boolean' }),
       },
@@ -228,20 +274,9 @@ describe('valkeyBootstrap factory modes', () => {
       }
     );
 
-    // Detection sees the nested-owned namespace and HOISTS it instead of throwing;
-    // the instance stays in its natural namespace (the factory namespace here).
-    const yaml = parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
-      name: 'platform',
-      operatorNamespace: 'valkey-system',
-    });
-    expect(yaml).toMatch(/namespace: valkey-system$/m);
-    expect(yaml).not.toContain('typekro-system');
-    expect(yaml).toContain('typekro.io/kro-instance-namespace');
-
-    // Guard intact: explicitly pinning the instance back into the owned namespace throws.
     expect(() =>
       parent
-        .factory('kro', { namespace: 'valkey-system', instanceNamespace: 'valkey-system' })
+        .factory('kro', { namespace: 'valkey-system' })
         .toYaml({ name: 'platform', operatorNamespace: 'valkey-system' })
     ).toThrow('cannot also be an owned Namespace');
   });

@@ -56,7 +56,10 @@ import {
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
-import { detectStructurallyOwnedNamespaceIds } from '../deployment/kro-instance-safety.js';
+import {
+  detectStructurallyOwnedNamespaceIds,
+  rewriteHoistedNamespaceReferences,
+} from '../deployment/kro-instance-safety.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
 function isToYamlOptions(value: unknown): value is ToYamlOptions {
@@ -2319,13 +2322,18 @@ function createTypedResourceGraph<
       // instance garbage-collect the namespace holding its own finalizer. The
       // factory emits it instead as a retained resource created deps-first. This
       // keeps the graph-level RGD (`graph.toYaml()`) consistent with the factory's
-      // RGD (`factory('kro').toYaml()`), both of which drop it.
+      // RGD (`factory('kro').toYaml()`), both of which drop it. Any remaining
+      // reference to the hoisted Namespace's `metadata.name` is rewritten to
+      // `${schema.spec.namespace}` (finding #3) so the RGD carries no dangling ref.
       const hoistedNamespaceIds = detectStructurallyOwnedNamespaceIds(resourcesWithKeys);
       const graphResources =
         hoistedNamespaceIds.size === 0
           ? resourcesWithKeys
-          : (Object.fromEntries(
-              Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
+          : (rewriteHoistedNamespaceReferences(
+              Object.fromEntries(
+                Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
+              ) as Record<string, KubernetesResource>,
+              hoistedNamespaceIds
             ) as typeof resourcesWithKeys);
 
       const kroSchema = generateKroSchemaFromArktype(
