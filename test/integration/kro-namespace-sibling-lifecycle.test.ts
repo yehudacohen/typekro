@@ -52,7 +52,9 @@ const runToken = Math.random().toString(36).slice(2, 8); // lowercase alphanumer
 const LifecycleSpec = type({ name: 'string', namespace: 'string' });
 const LifecycleStatus = type({ ready: 'boolean' });
 
-type NsRead = { metadata?: { uid?: string; labels?: Record<string, string> } } | undefined;
+type NsRead =
+  | { metadata?: { uid?: string; deletionTimestamp?: string; labels?: Record<string, string> } }
+  | undefined;
 
 /** Read a Namespace, returning `undefined` on 404 (throws on any other error). */
 async function readNamespace(api: k8s.KubernetesObjectApi, name: string): Promise<NsRead> {
@@ -61,7 +63,7 @@ async function readNamespace(api: k8s.KubernetesObjectApi, name: string): Promis
       apiVersion: 'v1',
       kind: 'Namespace',
       metadata: { name },
-    })) as NsRead;
+    })) as unknown as NsRead;
   } catch (error: unknown) {
     const code = (error as { statusCode?: number; body?: { code?: number } }).statusCode ??
       (error as { body?: { code?: number } }).body?.code;
@@ -214,10 +216,22 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (1:1 deleted after RGD; share
     // waits for the RGD to be fully gone → deletes the 1:1 namespace LAST.
     await factory.deleteInstance(instanceName);
 
-    // The instance's OWN (1:1) namespace was deleted after the RGD — it is gone (or
-    // Terminating with the CR's finalizer already cleared, so it drains cleanly).
-    const own = await readNamespace(objectApi, ownNamespace);
-    expect(own).toBeUndefined();
+    // deleteInstance initiates the 1:1 namespace deletion AFTER the RGD is gone. k8s
+    // namespace termination is async (Terminating → contents drain → the `kubernetes`
+    // finalizer clears → 404). So first assert deletion was INITIATED (deletionTimestamp
+    // set, or already 404), then wait for it to fully drain — proving no finalizer
+    // deadlock (a stranded CR finalizer would keep it Terminating forever).
+    const rightAfter = await readNamespace(objectApi, ownNamespace);
+    if (rightAfter !== undefined) {
+      expect(rightAfter.metadata?.deletionTimestamp).toBeDefined();
+    }
+    const deadline = Date.now() + 120_000;
+    let own = rightAfter;
+    while (own !== undefined && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      own = await readNamespace(objectApi, ownNamespace);
+    }
+    expect(own).toBeUndefined(); // drained cleanly within the deadline — no deadlock
 
     // The SHARED namespace (name != instance namespace) is RETAINED — still present.
     const shared = await readNamespace(objectApi, sharedNamespace);
