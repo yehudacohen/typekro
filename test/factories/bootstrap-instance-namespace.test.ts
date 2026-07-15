@@ -40,7 +40,7 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(rgd).not.toContain('kind: Namespace');
   });
 
-  it('dagsterBootstrap.toAlchemyResources emits the retained workload namespace first', async () => {
+  it('dagsterBootstrap.toAlchemyResources emits the instance-owned (1:1) namespace first, NOT retained', async () => {
     const factory = dagsterBootstrap.factory('kro', { namespace: 'dagster' });
     const decls = await factory.toAlchemyResources({
       name: 'analytics',
@@ -49,7 +49,13 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     const nsDecl = decls[0];
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('dagster');
-    expect(nsDecl?.props.retain).toBe(true);
+    // The namespace is the instance's OWN (1:1) namespace (name == instance ns), so it
+    // is NOT retained: alchemy's reverse-topo teardown deletes it AFTER the RGD +
+    // instance (both dependsOn it) — the load-bearing delete-after-RGD ordering.
+    expect(nsDecl?.props.retain).toBeUndefined();
+    // The instance CR depends on the namespace, so reverse-topo teardown removes the
+    // instance (then the RGD) before the namespace — the delete-after-RGD ordering.
+    expect(decls.at(-1)?.dependsOn).toContain(nsDecl?.id);
     // The instance CR (last declaration) stays in the workload namespace.
     expect(decls.at(-1)?.props.namespace).toBe('dagster');
     // The instance CR itself is NOT retained (it's per-consumer, torn down normally).

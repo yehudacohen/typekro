@@ -121,10 +121,11 @@ describe('finding #3: references to a hoisted Namespace are rewritten (no dangli
   });
 });
 
-describe('finding #4: the shared RGD shape is spec-INDEPENDENT', () => {
-  it('buildRgdYaml is identical across specs and hoists only the spec.namespace-named Namespace', () => {
-    // Owns TWO namespaces: one named after spec.namespace (hoistable), one a literal
-    // (never provably the instance namespace → stays a graph child for EVERY spec).
+describe('finding #4: the shared RGD shape is spec-INDEPENDENT and NEVER contains a Namespace', () => {
+  it('buildRgdYaml is identical across specs and hoists EVERY Namespace (spec-named AND literal)', () => {
+    // Owns TWO namespaces: one named after spec.namespace, one a literal. The v2
+    // model hoists BOTH out of the RGD unconditionally — typekro NEVER emits a
+    // Namespace into RGD YAML — so neither is a graph child for ANY spec.
     const composition = () =>
       kubernetesComposition(schema, (spec) => {
         namespace({
@@ -145,11 +146,9 @@ describe('finding #4: the shared RGD shape is spec-INDEPENDENT', () => {
     // Deploying a different instance never mutates the shared RGD's shape.
     expect(rgdA).toBe(rgdB);
     expect(rgdA).toBe(rgdNoSpec);
-    // The literal namespace stays a graph child; the spec.namespace one is hoisted.
-    expect(rgdA).toContain('shared-literal-ns');
-    expect(rgdA).toContain('kind: Namespace');
-    // Only ONE Namespace remains (the literal), not the hoisted instance namespace.
-    expect(rgdA.match(/kind: Namespace/g)?.length).toBe(1);
+    // NO Namespace remains in the RGD — both were hoisted out as siblings.
+    expect(rgdA).not.toContain('kind: Namespace');
+    expect(rgdA).not.toContain('shared-literal-ns');
   });
 });
 

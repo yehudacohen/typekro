@@ -57,11 +57,11 @@ import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import {
-  detectStructurallyOwnedNamespaceIds,
+  assertNoHoistWeakenedStatusFields,
   findDanglingHoistedReference,
-  hoistWeakenedStatusFields,
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
+  selectHoistedNamespaces,
 } from '../deployment/kro-instance-safety.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
@@ -2319,24 +2319,26 @@ function createTypedResourceGraph<
         statusMappingsHasField: '__nestedStatusCel' in (statusMappings as Record<string, unknown>),
       });
 
-      // HOIST any owned workload Namespace OUT of the shared RGD graph: a Namespace
-      // named after `spec.namespace` is, per instance, the very namespace that
-      // instance lands in, so leaving it a graph CHILD would let deleting the
-      // instance garbage-collect the namespace holding its own finalizer. The
-      // factory emits it instead as a retained resource created deps-first. This
-      // keeps the graph-level RGD (`graph.toYaml()`) consistent with the factory's
-      // RGD (`factory('kro').toYaml()`), both of which drop it. Any remaining
-      // reference to the hoisted Namespace's `metadata.name` is rewritten to
-      // `${schema.spec.namespace}` (finding #3) so the RGD carries no dangling ref.
-      const hoistedNamespaceIds = detectStructurallyOwnedNamespaceIds(resourcesWithKeys);
+      // HOIST EVERY owned Namespace OUT of the shared RGD graph (the unconditional
+      // model — typekro NEVER emits a Namespace into RGD YAML). Selection is trivially
+      // `kind === 'Namespace'` (see {@link selectHoistedNamespaces}). Leaving a
+      // Namespace a graph CHILD would let deleting the instance garbage-collect the
+      // namespace holding its own finalizer; the factory emits it as a sibling created
+      // deps-first (and torn down after the RGD) instead. This keeps the graph-level
+      // RGD (`graph.toYaml()`) consistent with the factory's RGD
+      // (`factory('kro').toYaml()`), both of which drop it. Any remaining reference to
+      // a hoisted Namespace's `metadata.name` is rewritten to that Namespace's own
+      // concrete name expression (finding #3) so the RGD carries no dangling ref.
+      const hoistedNamespaces = selectHoistedNamespaces(resourcesWithKeys);
+      const hoistedNamespaceIds = new Set(hoistedNamespaces.keys());
       const graphResources =
-        hoistedNamespaceIds.size === 0
+        hoistedNamespaces.size === 0
           ? resourcesWithKeys
           : (rewriteHoistedNamespaceReferences(
               Object.fromEntries(
                 Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
               ) as Record<string, KubernetesResource>,
-              hoistedNamespaceIds
+              hoistedNamespaces
             ) as typeof resourcesWithKeys);
 
       // BLOCKER #2 — apply the SAME status-reference rewriting the FACTORY path
@@ -2345,13 +2347,13 @@ function createTypedResourceGraph<
       // mappings, nested-composition CEL, and status overrides can ALSO reference it
       // (e.g. `status.nsName: ${ownedNamespace.metadata.name}`), which would emit an
       // RGD with `resources:[]` for that id and a dangling `${...}` KRO rejects.
-      // Rewrite every such reference to `${schema.spec.namespace}` (finding #3),
-      // preserving the non-enumerable composition metadata on optimizedStatusMappings.
+      // Rewrite every such reference to the Namespace's own name expression (finding
+      // #3), preserving the non-enumerable composition metadata on optimizedStatusMappings.
       let graphStatusMappings = optimizedStatusMappings;
-      if (hoistedNamespaceIds.size > 0) {
+      if (hoistedNamespaces.size > 0) {
         const rewritten = rewriteHoistedNamespaceRefsInValue(
           optimizedStatusMappings,
-          hoistedNamespaceIds
+          hoistedNamespaces
         );
         if (rewritten !== optimizedStatusMappings) {
           // The rewrite clones via Object.entries, dropping non-enumerable
@@ -2370,29 +2372,22 @@ function createTypedResourceGraph<
         }
         graphStatusMappings = rewritten;
 
-        // #6 — WARN LOUDLY (never silently) about status fields that become
-        // client-hydrated because they referenced ONLY the hoisted Namespace: their
-        // rewritten value `schema.spec.namespace` cannot be evaluated by KRO status CEL,
-        // so they are dropped from the KRO status schema (populated on direct mode, NOT
-        // by KRO on the pure GitOps toYaml path). Sibling resource-derived fields survive.
-        const weakenedStatusFields = hoistWeakenedStatusFields(
+        // #6 — REJECT (throw) HONESTLY, never silently drop: status fields that resolve
+        // ONLY to a hoisted Namespace become a schema-only expression
+        // (`schema.spec.namespace`), which KRO status CEL cannot evaluate, so they
+        // cannot be represented in the KRO status schema. Fail loudly naming the
+        // field(s) rather than ship a weakened status API. Resource-derived sibling
+        // fields are unaffected.
+        assertNoHoistWeakenedStatusFields(
           optimizedStatusMappings as Record<string, unknown>,
-          hoistedNamespaceIds
+          hoistedNamespaces,
+          definition.name
         );
-        if (weakenedStatusFields.length > 0) {
-          serializationLogger.warn(
-            'Hoisting the owned workload Namespace turns these status field(s) into CLIENT-HYDRATED ' +
-              'fields: they resolve only to the (removed) Namespace and become `schema.spec.namespace`, ' +
-              'which KRO status CEL cannot evaluate. They are NOT populated by KRO on the GitOps toYaml ' +
-              'path (resource-derived sibling fields are unaffected). See docs/advanced/migration.md.',
-            { composition: definition.name, fields: weakenedStatusFields }
-          );
-        }
       }
       const graphNestedStatusCel =
-        hoistedNamespaceIds.size === 0
+        hoistedNamespaces.size === 0
           ? nestedStatusCel
-          : (rewriteHoistedNamespaceRefsInValue(nestedStatusCel, hoistedNamespaceIds) as Record<
+          : (rewriteHoistedNamespaceRefsInValue(nestedStatusCel, hoistedNamespaces) as Record<
               string,
               string
             >);
@@ -2444,7 +2439,7 @@ function createTypedResourceGraph<
           // removed id (mirrors the factory path).
           const celExpression = rewriteHoistedNamespaceRefsInValue(
             override.celExpression,
-            hoistedNamespaceIds
+            hoistedNamespaces
           );
           // Schema-only overrides (no resource refs) are hydrated client-side by
           // the static-field path, like any other static status field — KRO

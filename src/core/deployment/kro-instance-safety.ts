@@ -19,14 +19,16 @@ export interface KroInstanceNamespaceSafetyInput<TSpec extends KroCompatibleType
   readonly compositionFn?: (spec: TSpec) => unknown;
   /**
    * Namespace names the factory has HOISTED out of the RGD graph (emitted as
-   * retained resources OUTSIDE the graph, created deps-first). A hoisted
-   * namespace is no longer a graph-owned child, so it can never be garbage
-   * collected when the instance CR is deleted — the finalizer-stranding concern
-   * this guard protects against is structurally resolved. The guard therefore
-   * treats an owned namespace that has been hoisted as SAFE, even though it still
-   * appears in the composition's resources. Everything NOT hoisted (an owned
-   * namespace whose name can't be proven, or one the caller EXPLICITLY pinned the
-   * instance back into) still throws.
+   * SIBLING resources OUTSIDE the graph, created deps-first). typekro NEVER emits a
+   * Namespace into RGD YAML: every owned Namespace is applied as a sibling before
+   * the RGD and torn down after it, so KRO never owns a namespace and can never
+   * garbage-collect one when the instance CR is deleted — the finalizer-stranding
+   * concern this guard protects against is structurally resolved for typekro's own
+   * factories. The guard therefore treats an owned namespace that has been hoisted
+   * as SAFE, even though it still appears in the composition's resources. It remains
+   * a defense-in-depth net for HAND-AUTHORED graphs that place a Namespace directly
+   * in an RGD (an owned namespace whose name can't be proven, or one the caller
+   * EXPLICITLY pinned the instance back into without hoisting) — those still throw.
    */
   readonly hoistedNamespaces?: ReadonlySet<string>;
 }
@@ -211,7 +213,7 @@ export function detectOwnedNamespaces<TSpec extends KroCompatibleType>(
  * this returns the full concrete metadata — labels (incl. Pod Security),
  * annotations, name — so the KRO factory can PRESERVE the original Namespace
  * configuration when it hoists the Namespace out of the graph and re-emits it as
- * a retained resource (finding #5), rather than synthesizing a bare Namespace.
+ * a sibling resource (finding #5), rather than synthesizing a bare Namespace.
  */
 export function concreteOwnedNamespaceResources<TSpec extends KroCompatibleType>(
   input: Omit<KroInstanceNamespaceSafetyInput<TSpec>, 'instanceNamespace'>
@@ -226,182 +228,130 @@ export function concreteOwnedNamespaceResources<TSpec extends KroCompatibleType>
 }
 
 /**
- * Whether a name expression, IN ITS ENTIRETY, is exactly the schema field
- * `spec.namespace` — the single field a hoistable owned workload Namespace tracks.
+ * Select EVERY Namespace to HOIST out of the RGD graph — the new, UNCONDITIONAL
+ * model: typekro NEVER emits a Namespace into RGD YAML. Selection is trivially
+ * `kind === 'Namespace'` (excluding `__externalRef` observed namespaces, which are
+ * not owned graph children), NOT the old structural "name tracks spec.namespace"
+ * detection. Every owned Namespace becomes a sibling resource applied before the
+ * RGD and torn down after it, so KRO never owns a namespace.
  *
- * This is a STRUCTURAL equivalence check (finding #4), not substring matching.
- * A Namespace is hoistable out of the SHARED RGD only when it can be PROVEN,
- * spec-independently, that for every instance its name === the instance's
- * resolved namespace. That holds exactly when the whole name expression is:
- *   - a bare `spec.namespace` / `schema.spec.namespace` (optionally `string(...)`
- *     wrapped), or
- *   - the `spec.namespace || <default>` idiom, which the JS→CEL compiler emits as
- *     `has(schema.spec.namespace) ? schema.spec.namespace : "<literal>"` — the
- *     active value is still the single field `spec.namespace`, and the literal
- *     only applies when the field is absent (in which case the instance couldn't
- *     land in a schema-driven namespace either), or
- *   - the raw `__KUBERNETES_REF___schema___spec.namespace__` marker (whole string).
+ * Returns a map from each hoisted Namespace's resource id to its RAW
+ * `metadata.name` VALUE (a schema `KubernetesRef`, a `CelExpression`, or a plain
+ * string). The name value is what {@link rewriteHoistedNamespaceReferences} /
+ * {@link rewriteHoistedNamespaceRefsInValue} rewrite dangling references TO — a
+ * reference to a hoisted Namespace's `metadata.name` becomes that Namespace's own
+ * concrete name expression. The map is a STABLE STRUCTURAL property of the graph
+ * (spec-independent), so the shared RGD's shape is identical for every instance.
  *
- * Anything else — a literal, a DIFFERENT field, a concatenation, a prefix/suffix,
- * or any other transform — is NOT provable and FAILS CLOSED (not hoisted; the
- * ownership guard then decides its safety per concrete spec).
+ * Deliberately does NOT filter on `includeWhen`: a namespace's ACTIVITY is
+ * spec-dependent, but whether a resource is a Namespace is not. A namespace that is
+ * inactive for a given spec is simply not created as a sibling; removing it from the
+ * RGD is harmless (it was not going to be created there either).
  */
-/** Strip one layer of redundant, fully-enclosing parentheses. */
-function stripOuterParens(expr: string): string {
-  let out = expr.trim();
-  while (out.startsWith('(') && out.endsWith(')')) {
-    let depth = 0;
-    let enclosing = true;
-    for (let i = 0; i < out.length; i++) {
-      const ch = out[i];
-      if (ch === '(') depth++;
-      else if (ch === ')') {
-        depth--;
-        if (depth === 0 && i < out.length - 1) {
-          enclosing = false;
-          break;
-        }
-      }
-    }
-    if (!enclosing) break;
-    out = out.slice(1, -1).trim();
+export function selectHoistedNamespaces(resources: ResourceCollection): Map<string, unknown> {
+  const byId = new Map<string, unknown>();
+  for (const [resourceId, resource] of resourceEntries(resources)) {
+    if (resource.kind !== 'Namespace') continue;
+    if (Reflect.get(resource, '__externalRef') === true) continue;
+    byId.set(resourceId, resource.metadata?.name);
   }
-  return out;
+  return byId;
 }
 
-/** Split `<true> : <false>` at the top-level (paren/quote-aware) `:`. */
-function splitTopLevelColon(expr: string): [string, string] | undefined {
-  let depth = 0;
-  let quote: string | undefined;
-  for (let i = 0; i < expr.length; i++) {
-    const ch = expr[i];
-    if (quote) {
-      if (ch === quote) quote = undefined;
-      continue;
+/** A branded CEL expression object built from a bare expression body. */
+function makeCelExpression(expression: string): unknown {
+  return { [CEL_EXPRESSION_BRAND]: true, expression } as unknown;
+}
+
+/**
+ * The substitution forms a reference to a hoisted Namespace's `metadata.name`
+ * rewrites TO — derived from the Namespace's OWN name VALUE (finding #3,
+ * generalized beyond the `spec.namespace` case):
+ *   - `celBody`: what a `<id>.metadata.name` TOKEN inside a CEL expression becomes.
+ *   - `marker`:  what a `__KUBERNETES_REF_<id>_metadata.name__` TOKEN inside a
+ *                plain/template string becomes (`undefined` when the name has no
+ *                representable marker form — the caller then leaves the reference,
+ *                and {@link findDanglingHoistedReference} fails loudly).
+ *   - `ref`:     what an EXACT `metadata.name` `KubernetesRef` to the hoisted
+ *                Namespace becomes.
+ *
+ * Handles the two provable, common cases end-to-end: a Namespace named by the
+ * schema (`${schema.spec.namespace}` and friends → `schema.<fieldPath>`) and a
+ * Namespace named by a plain string LITERAL (→ that constant). A Namespace named
+ * by an arbitrary CEL expression rewrites its CEL-context and exact-ref references
+ * (using the CEL body) but has no simple marker form; a Namespace named by a
+ * concatenated/template string is not represented (fails closed). Anything not
+ * representable returns `undefined`, leaving the reference for the dangling-
+ * reference assertion to catch rather than silently emitting a wrong value.
+ */
+interface HoistedNameForms {
+  readonly celBody: string;
+  readonly marker: string | undefined;
+  readonly ref: unknown;
+}
+
+function hoistedNamespaceNameForms(nameValue: unknown): HoistedNameForms | undefined {
+  if (isKubernetesRef(nameValue)) {
+    // Only a schema-driven name is representable as an RGD-portable expression.
+    if (nameValue.resourceId !== '__schema__') return undefined;
+    const fieldPath = nameValue.fieldPath === 'namespace' ? 'spec.namespace' : nameValue.fieldPath;
+    const celBody = `schema.${fieldPath}`;
+    return {
+      celBody,
+      marker: `__KUBERNETES_REF___schema___${fieldPath}__`,
+      ref: makeCelExpression(celBody),
+    };
+  }
+  if (isCelExpression(nameValue)) {
+    const celBody = nameValue.expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
+    // If the CEL body is itself a bare schema field, it has a clean marker form too.
+    const schemaField = /^schema\.(spec\.[A-Za-z_$][\w$.]*)$/.exec(celBody)?.[1];
+    return {
+      celBody,
+      marker: schemaField ? `__KUBERNETES_REF___schema___${schemaField}__` : undefined,
+      ref: nameValue,
+    };
+  }
+  if (typeof nameValue === 'string') {
+    // A serialized schema marker (whole string) → schema field.
+    const markerMatch = /^__KUBERNETES_REF___schema___(spec\.[A-Za-z0-9_.$]+?)__$/.exec(
+      nameValue.trim()
+    );
+    if (markerMatch?.[1]) {
+      const fieldPath = markerMatch[1];
+      return {
+        celBody: `schema.${fieldPath}`,
+        marker: nameValue.trim(),
+        ref: makeCelExpression(`schema.${fieldPath}`),
+      };
     }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-    else if (ch === ':' && depth === 0) return [expr.slice(0, i), expr.slice(i + 1)];
+    // A template string carrying embedded markers is a concatenation with no simple
+    // single-token substitution — fail closed.
+    if (/__KUBERNETES_REF_/.test(nameValue)) return undefined;
+    // A plain string literal (a concrete DNS namespace name).
+    return { celBody: JSON.stringify(nameValue), marker: nameValue, ref: nameValue };
   }
   return undefined;
 }
 
-function isStringLiteral(expr: string): boolean {
-  return /^"[^"]*"$/.test(expr) || /^'[^']*'$/.test(expr);
-}
-
-/**
- * Whether a CEL body, in its entirety, tracks the single schema field
- * `spec.namespace`. Handles the bare field, the raw schema marker, and the
- * `spec.namespace || <default>` idiom compiled to a `has()`-guarded ternary —
- * INCLUDING arbitrary nesting of that idiom (`has(x) ? (has(x) ? x : "lit") :
- * "lit"`, which layered defaulting produces), because the active value is always
- * `spec.namespace` and every fallback branch is a string literal.
- */
-function tracksSchemaNamespaceBody(expr: string): boolean {
-  const body = stripOuterParens(expr.trim());
-  // Bare field access (optionally `string(...)`-wrapped, optionally schema-prefixed).
-  if (/^(?:string\(\s*)?(?:schema\.)?spec\.namespace(?:\s*\))?$/.test(body)) return true;
-  // Raw schema-ref marker for `spec.namespace` (whole string, no surrounding text).
-  if (/^__KUBERNETES_REF___schema___spec\.namespace__$/.test(body)) return true;
-  // `has(schema.spec.namespace) ? <tracks-namespace> : "<literal>"`.
-  const guard = /^has\(\s*(?:schema\.)?spec\.namespace\s*\)\s*\?([\s\S]*)$/.exec(body);
-  if (!guard?.[1]) return false;
-  const split = splitTopLevelColon(guard[1]);
-  if (!split) return false;
-  const [trueBranch, falseBranch] = split;
-  // The fallback must be a plain string literal (the `|| "default"` value)...
-  if (!isStringLiteral(stripOuterParens(falseBranch.trim()))) return false;
-  // ...and the active branch must itself track `spec.namespace` (allows nesting).
-  return tracksSchemaNamespaceBody(trueBranch);
-}
-
-function isExactSchemaNamespaceExpression(raw: string): boolean {
-  const body = raw
-    .trim()
-    .replace(/^\$\{\s*/, '')
-    .replace(/\s*\}$/, '')
-    .trim();
-  return tracksSchemaNamespaceBody(body);
-}
-
-/**
- * Whether a Namespace resource's name STRUCTURALLY tracks the schema field
- * `spec.namespace`. Used on the spec-less RGD path where a schema-driven name can't
- * be resolved to a concrete value. The instance CR itself is placed in the FACTORY
- * namespace (never `spec.namespace` — see PublicFactoryOptions), but for the
- * self-owned bootstrap pattern the factory namespace IS `spec.namespace`, so a
- * Namespace whose name is EXACTLY `spec.namespace` is then the very namespace the CR
- * lands in — hoisting it out of the shared RGD is what keeps deleting the instance
- * from garbage-collecting the namespace that holds its own finalizer. See
- * {@link isExactSchemaNamespaceExpression} for the exact grammar.
- */
-export function namespaceNameTracksSchemaNamespace(name: unknown): boolean {
-  if (isKubernetesRef(name)) {
-    // A schema namespace ref is `__schema__` with fieldPath `spec.namespace` (the
-    // real convention) or the bare `namespace` alias — both resolve to the single
-    // field `spec.namespace`.
-    return (
-      name.resourceId === '__schema__' &&
-      (name.fieldPath === 'spec.namespace' || name.fieldPath === 'namespace')
-    );
-  }
-  if (isCelExpression(name)) {
-    return isExactSchemaNamespaceExpression(name.expression);
-  }
-  if (typeof name === 'string') {
-    return isExactSchemaNamespaceExpression(name);
-  }
-  return false;
-}
-
-/**
- * Spec-less STRUCTURAL detection: the ids of owned Namespaces whose name is
- * exactly the schema field `spec.namespace`. These are the owned workload
- * namespaces to HOIST out of the SHARED RGD graph — a STABLE property that is the
- * same for every instance of a factory (finding #4).
- *
- * Deliberately does NOT filter on `includeWhen`: a namespace's ACTIVITY is
- * spec-dependent (`includeWhen: spec.create`), but a namespace named
- * `spec.namespace` is, whenever it IS active, the workload namespace that — for a
- * self-owned bootstrap (factory namespace == `spec.namespace`) — the instance CR
- * lands in, so it must never be a graph child. When it is INACTIVE for a
- * given spec, removing it from the RGD is harmless (it was not going to be created)
- * and the concrete retained-emission path simply emits nothing for it. Evaluating
- * `includeWhen` here (against an empty spec) would wrongly drop an owned namespace
- * from the hoist set and leave the ownership guard to reject the instance. External
- * references are excluded — they are observed, not owned graph children.
- */
-export function detectStructurallyOwnedNamespaceIds(resources: ResourceCollection): Set<string> {
-  const ids = new Set<string>();
-  for (const [resourceId, resource] of resourceEntries(resources)) {
-    if (resource.kind !== 'Namespace') continue;
-    if (Reflect.get(resource, '__externalRef') === true) continue;
-    if (namespaceNameTracksSchemaNamespace(resource.metadata?.name)) ids.add(resourceId);
-  }
-  return ids;
-}
-
-/** A CEL expression that resolves to the instance's schema namespace. */
-function schemaNamespaceCelExpression(): { expression: string } {
-  return { [CEL_EXPRESSION_BRAND]: true, expression: 'schema.spec.namespace' } as unknown as {
-    expression: string;
-  };
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
  * Rewrite every reference to a HOISTED Namespace's `metadata.name` — ANYWHERE it
- * appears in a value — to the concrete schema namespace expression
- * `schema.spec.namespace` (findings #3 + #6).
+ * appears in a value — to that Namespace's CONCRETE name expression (findings
+ * #3 + #6).
  *
- * When a Namespace is hoisted OUT of the RGD graph, any other value that still
- * refers to it would leave a live reference to a resource KRO no longer knows
- * about, and KRO rejects the whole graph. Because a hoisted Namespace's name is,
- * by construction, exactly the schema field `spec.namespace` (see
- * {@link namespaceNameTracksSchemaNamespace}), rewriting the dangling reference to
- * `schema.spec.namespace` is exact — it yields the same value the removed resource
- * would have.
+ * `hoisted` maps each hoisted Namespace's resource id to its RAW `metadata.name`
+ * value (see {@link selectHoistedNamespaces}). When a Namespace is hoisted OUT of
+ * the RGD graph, any other value that still refers to it would leave a live
+ * reference to a resource KRO no longer knows about, and KRO rejects the whole
+ * graph. Each reference is rewritten to the referenced Namespace's own name
+ * expression — for a Namespace named `${schema.spec.namespace}` that is
+ * `schema.spec.namespace` (as before); for a literally-named Namespace `"foo"`
+ * that is the constant `foo` — which is exactly the value the removed resource
+ * would have produced.
  *
  * The rewrite is STRUCTURAL, not exact-string (finding #6): it replaces the
  * reference TOKEN `<id>.metadata.name` wherever it occurs, so embedded /
@@ -409,53 +359,63 @@ function schemaNamespaceCelExpression(): { expression: string } {
  * (`string(id.metadata.name)`), and ternary (`... ? id.metadata.name : "x"`)
  * forms are all handled — in plain strings, CEL expressions, and raw
  * `__KUBERNETES_REF_*` markers alike. It applies to arbitrary values (resource
- * bodies AND status mappings), so a status CEL like
- * `ns-${string(ownedNamespace.metadata.name)}` is rewritten too.
+ * bodies AND status mappings). A reference whose target Namespace name has no
+ * representable form is left as-is and caught by
+ * {@link findDanglingHoistedReference}.
  */
 export function rewriteHoistedNamespaceRefsInValue<T>(
   value: T,
-  hoistedIds: ReadonlySet<string>
+  hoisted: ReadonlyMap<string, unknown>
 ): T {
-  if (hoistedIds.size === 0) return value;
+  if (hoisted.size === 0) return value;
+
+  // Per-id substitution forms; ids whose name is not representable are skipped
+  // (the reference is left dangling for the post-serialization assertion).
+  const forms = new Map<string, HoistedNameForms>();
+  for (const [id, nameValue] of hoisted) {
+    const f = hoistedNamespaceNameForms(nameValue);
+    if (f) forms.set(id, f);
+  }
+  if (forms.size === 0) return value;
 
   // TOKEN-level (not whole-`${...}`) patterns for a reference to
   // `<id>.metadata.name`, so wrappers/concatenation/ternaries are handled. A
   // negative lookbehind avoids matching an id that is only a SUFFIX of a longer
   // identifier (e.g. `myOwnedNamespace` when the hoisted id is `ownedNamespace`).
-  const celTokenPatterns = [...hoistedIds].map(
-    (id) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(id)}\\.metadata\\.name\\b`, 'g')
-  );
-  const markerTokenPatterns = [...hoistedIds].map(
-    (id) => new RegExp(`__KUBERNETES_REF_${escapeRegExp(id)}_metadata\\.name__`, 'g')
-  );
-
-  // The concrete CEL body + raw marker a hoisted-Namespace reference becomes.
-  const schemaNamespaceCelBody = 'schema.spec.namespace';
-  const schemaNamespaceMarker = '__KUBERNETES_REF___schema___spec.namespace__';
+  const celTokenReplacers = [...forms].map(([id, f]) => ({
+    pattern: new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(id)}\\.metadata\\.name\\b`, 'g'),
+    replacement: f.celBody,
+  }));
+  const markerTokenReplacers = [...forms]
+    .filter(([, f]) => f.marker !== undefined)
+    .map(([id, f]) => ({
+      pattern: new RegExp(`__KUBERNETES_REF_${escapeRegExp(id)}_metadata\\.name__`, 'g'),
+      // biome-ignore lint/style/noNonNullAssertion: filtered on marker !== undefined
+      replacement: f.marker!,
+    }));
 
   const rewriteString = (input: string): string => {
     let out = input;
-    for (const pattern of celTokenPatterns) out = out.replace(pattern, schemaNamespaceCelBody);
-    for (const pattern of markerTokenPatterns) out = out.replace(pattern, schemaNamespaceMarker);
+    // Use a function replacer so `$` in a replacement is never treated as a
+    // special replacement pattern.
+    for (const { pattern, replacement } of celTokenReplacers)
+      out = out.replace(pattern, () => replacement);
+    for (const { pattern, replacement } of markerTokenReplacers)
+      out = out.replace(pattern, () => replacement);
     return out;
   };
 
   const rewriteValue = (val: unknown): unknown => {
     if (isKubernetesRef(val)) {
-      // Rewrite ONLY an exact `metadata.name` reference to the hoisted Namespace
-      // (finding #7). `startsWith('metadata.name')` also matched `metadata.namespace`
-      // and arbitrary `metadata.name*` fields and silently rewrote them to
-      // `schema.spec.namespace`; requiring EXACT equality lets any unsupported
-      // reference fall through to the dangling-reference validation instead.
-      return hoistedIds.has(val.resourceId) && val.fieldPath === 'metadata.name'
-        ? schemaNamespaceCelExpression()
-        : val;
+      // Rewrite ONLY an exact `metadata.name` reference to a hoisted Namespace
+      // (finding #7); requiring EXACT field equality lets any unsupported reference
+      // fall through to the dangling-reference validation instead.
+      const f = forms.get(val.resourceId);
+      return f && val.fieldPath === 'metadata.name' ? f.ref : val;
     }
     if (isCelExpression(val)) {
       const rewritten = rewriteString(val.expression);
-      return rewritten === val.expression
-        ? val
-        : ({ [CEL_EXPRESSION_BRAND]: true, expression: rewritten } as unknown);
+      return rewritten === val.expression ? val : makeCelExpression(rewritten);
     }
     if (typeof val === 'string') {
       return rewriteString(val);
@@ -487,32 +447,89 @@ export function rewriteHoistedNamespaceRefsInValue<T>(
 
 /**
  * The top-level STATUS field names whose value references a HOISTED Namespace's
- * `metadata.name` (finding #6). When a Namespace is hoisted OUT of the RGD, such a
- * status field's only reference becomes `schema.spec.namespace` — a static, schema-
- * only expression KRO's status CEL cannot evaluate (KRO status CEL has no `schema`
- * identifier). TypeKro therefore drops it from the KRO status schema and hydrates it
- * CLIENT-SIDE instead. That is fine on the direct/imperative path (the factory
- * hydrates it) but means the field is NOT populated by KRO on the pure GitOps
- * (`toYaml()`) path. Callers use this to WARN LOUDLY (never silently) which status
- * fields become client-hydrated because of hoisting — so a weakened GitOps status API
- * is surfaced, not hidden. Resource-derived SIBLING fields are unaffected (they still
+ * `metadata.name` in a way that WEAKENS the KRO status schema (finding #6).
+ *
+ * When a Namespace is hoisted OUT of the RGD, such a status field's reference is
+ * rewritten to the Namespace's own name expression. If that expression is
+ * schema-only (`schema.spec.namespace`), KRO's status CEL cannot evaluate it (the
+ * status environment has no `schema` identifier), so the field cannot be honestly
+ * represented in the KRO status schema. Callers use this to REJECT such a
+ * composition (see {@link assertNoHoistWeakenedStatusFields}) rather than silently
+ * drop the field and ship a status API weaker than the declared one. A reference
+ * that rewrites to a plain CONSTANT (a literally-named namespace) is representable
+ * and NOT weakened. Resource-derived SIBLING fields are unaffected (they still
  * reference a real graph resource and stay in the KRO status schema).
  *
- * Returns only TOP-LEVEL status keys (the KRO status schema is a flat map of field →
- * CEL); a field is included iff rewriting its value actually changed it (i.e. it
- * referenced a hoisted Namespace).
+ * Returns only TOP-LEVEL status keys (the KRO status schema is a flat map of field
+ * → CEL); a field is included iff rewriting its value changed it AND the rewritten
+ * value still references `schema`.
  */
 export function hoistWeakenedStatusFields(
   statusMappings: Record<string, unknown> | undefined,
-  hoistedIds: ReadonlySet<string>
+  hoisted: ReadonlyMap<string, unknown>
 ): string[] {
-  if (!statusMappings || hoistedIds.size === 0) return [];
+  if (!statusMappings || hoisted.size === 0) return [];
   const weakened: string[] = [];
   for (const [key, value] of Object.entries(statusMappings)) {
     if (key.startsWith('__')) continue; // internal composition metadata, not a status field
-    if (rewriteHoistedNamespaceRefsInValue(value, hoistedIds) !== value) weakened.push(key);
+    const rewritten = rewriteHoistedNamespaceRefsInValue(value, hoisted);
+    if (rewritten === value) continue; // did not reference a hoisted Namespace
+    if (rewrittenReferencesSchema(rewritten)) weakened.push(key);
   }
   return weakened;
+}
+
+/**
+ * Whether a rewritten status value still references the `schema` identifier — a
+ * schema-only expression KRO status CEL cannot evaluate. Used to distinguish a
+ * genuinely-weakened field (rewrote to `schema.spec.namespace`) from a benign one
+ * (rewrote to a constant, e.g. a literally-named namespace).
+ */
+function rewrittenReferencesSchema(value: unknown): boolean {
+  const hasSchema = (s: string): boolean =>
+    /(?<![A-Za-z0-9_$])schema\./.test(s) || /__KUBERNETES_REF___schema__/.test(s);
+  if (typeof value === 'string') return hasSchema(value);
+  if (isCelExpression(value)) return hasSchema(value.expression);
+  if (isKubernetesRef(value)) return value.resourceId === '__schema__';
+  if (Array.isArray(value)) return value.some(rewrittenReferencesSchema);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(rewrittenReferencesSchema);
+  }
+  return false;
+}
+
+/**
+ * HONEST behavior for finding #6: REJECT (throw) a composition whose status
+ * field(s) reference ONLY a hoisted Namespace's `metadata.name` in a way that
+ * cannot be represented in the KRO status schema.
+ *
+ * Hoisting the owned Namespace out of the RGD turns such a field into a
+ * schema-only expression (`schema.spec.namespace`), which KRO status CEL cannot
+ * evaluate — so the field could only be dropped from the emitted KRO status schema.
+ * Silently dropping it would ship a status API weaker than the one the composition
+ * declares: a consumer reading the CR status, or a pure-GitOps deploy, sees the
+ * field simply missing with no error. Instead we FAIL LOUDLY at serialization,
+ * naming the offending field(s), so the composition author restructures the status
+ * (derive the value from a managed resource, or drop the field) rather than
+ * discovering a silently-weakened API in production.
+ */
+export function assertNoHoistWeakenedStatusFields(
+  statusMappings: Record<string, unknown> | undefined,
+  hoisted: ReadonlyMap<string, unknown>,
+  compositionName: string
+): void {
+  const weakened = hoistWeakenedStatusFields(statusMappings, hoisted);
+  if (weakened.length === 0) return;
+  throw new TypeKroError(
+    `Composition "${compositionName}" cannot be serialized for KRO: status field(s) ` +
+      `[${weakened.join(', ')}] resolve ONLY to a hoisted owned Namespace's metadata.name. ` +
+      `Once that Namespace is hoisted out of the RGD the reference becomes a schema-only ` +
+      `expression (\`schema.spec.namespace\`), which KRO status CEL cannot evaluate, so the field ` +
+      `cannot be represented in the KRO status schema. Remove the field or derive its value from a ` +
+      `managed resource instead of the owned Namespace's name. See docs/advanced/migration.md.`,
+    'HOIST_WEAKENED_STATUS_FIELD',
+    { compositionName, fields: weakened }
+  );
 }
 
 /**
@@ -526,14 +543,15 @@ export function hoistWeakenedStatusFields(
  * `__resourceId` / readiness+iteration markers) is copied onto the new object via
  * {@link copyResourceMetadata} so the rewrite never silently drops it (finding #7).
  */
-export function rewriteHoistedNamespaceReferences<
-  T extends Record<string, KubernetesResource>,
->(resources: T, hoistedIds: ReadonlySet<string>): T {
-  if (hoistedIds.size === 0) return resources;
+export function rewriteHoistedNamespaceReferences<T extends Record<string, KubernetesResource>>(
+  resources: T,
+  hoisted: ReadonlyMap<string, unknown>
+): T {
+  if (hoisted.size === 0) return resources;
 
   const result: Record<string, KubernetesResource> = {};
   for (const [id, resource] of Object.entries(resources)) {
-    const rewritten = rewriteHoistedNamespaceRefsInValue(resource, hoistedIds);
+    const rewritten = rewriteHoistedNamespaceRefsInValue(resource, hoisted);
     if (rewritten !== resource) {
       // Reconstructed a NEW resource object — carry its non-enumerable / WeakMap
       // TypeKro metadata across so readiness/iteration/includeWhen survive.
@@ -542,10 +560,6 @@ export function rewriteHoistedNamespaceReferences<
     result[id] = rewritten;
   }
   return result as T;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -583,16 +597,15 @@ export function findDanglingHoistedReference(
  * finalizer permanently. Re-executing with the concrete instance spec makes
  * this check survive nested compositions and schema-driven namespace names.
  *
- * The KRO factory HOISTS a self-owned workload Namespace OUT of the RGD graph
- * (emitting it as a retained resource created deps-first, outside the graph)
- * before calling this guard and passes its name in `hoistedNamespaces`. Because a
- * hoisted namespace is no longer a graph child, deleting the instance can't GC it,
- * so the common create-namespace-and-put-the-instance-in-it pattern is safe with
- * the instance left in its natural namespace — this guard skips it. The guard
- * remains the real protection for the cases hoisting cannot cover: an owned
- * Namespace whose name can't be proven safe (fails closed), and a caller who
- * EXPLICITLY pins `instanceNamespace` back onto a namespace the composition owns
- * (opts into the unsafe pattern, so it is never hoisted).
+ * The KRO factory now HOISTS every owned Namespace OUT of the RGD graph (emitting
+ * it as a SIBLING resource created deps-first and torn down after the RGD) before
+ * calling this guard, and passes the hoisted names in `hoistedNamespaces`. Because
+ * a hoisted namespace is no longer a graph child, deleting the instance can't GC
+ * it, so the common create-namespace-and-put-the-instance-in-it pattern is safe —
+ * this guard skips it. The guard remains the defense-in-depth net for HAND-AUTHORED
+ * graphs that hoisting does not cover: an owned Namespace whose name can't be proven
+ * safe (fails closed), and a caller who places `instanceNamespace` on a namespace
+ * the composition owns WITHOUT hoisting it (opts into the unsafe pattern).
  */
 export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompatibleType>(
   input: KroInstanceNamespaceSafetyInput<TSpec>

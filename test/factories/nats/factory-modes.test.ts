@@ -160,13 +160,14 @@ describe('NATS and JetStream factories', () => {
     expect(hoisted).not.toContain('typekro-system');
     expect(hoisted).toContain('typekro.io/kro-instance-namespace');
 
-    // Guard intact: explicitly pinning the instance CR back into the owned
-    // namespace still throws.
+    // Pinning the instance CR into its own owned namespace is now SAFE: the namespace
+    // is a sibling created before the RGD and deleted after it, so it no longer risks
+    // finalizer stranding — it just hoists.
     expect(() =>
       natsBootstrap
         .factory('kro', { namespace: 'nats-system', instanceNamespace: 'nats-system' })
         .toYaml({ name: 'nats', namespace: 'nats-system' })
-    ).toThrow('cannot also be an owned Namespace');
+    ).not.toThrow();
 
     // An externally-owned namespace is never owned, so it is never hoisted and
     // never throws (the conditional Namespace is inactive for this spec).

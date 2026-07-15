@@ -66,10 +66,12 @@ describe('KRO instance namespace ownership safety', () => {
     ).toThrow('cannot be evaluated from the concrete spec');
   });
 
-  it('finding #3: an owned Namespace that is NOT the instance namespace is left alone', () => {
+  it('finding #3: an owned Namespace that is NOT the instance namespace is hoisted + RETAINED (shared)', () => {
     // The composition owns `spec.operatorNamespace`, but the instance lands in
-    // `spec.namespace` — they differ, so the namespace is never the instance's own
-    // and is left in the graph unchanged (not hoisted, no throw).
+    // `spec.namespace` — they differ. In the v2 model EVERY Namespace is hoisted out
+    // of the RGD (typekro never emits a Namespace into RGD YAML). Because this one is
+    // NOT the instance's own (1:1) namespace, it is emitted as a SHARED, retained
+    // sibling — never auto-deleted on this instance's teardown.
     const composition = kubernetesComposition(schema, (spec) => {
       namespace({
         id: 'operatorNamespace',
@@ -85,10 +87,12 @@ describe('KRO instance namespace ownership safety', () => {
     }).not.toThrow();
     // Instance stays in its natural namespace.
     expect(yaml).toMatch(/namespace: app$/m);
-    // Nothing was hoisted (the owned namespace differs from the instance's).
-    expect(yaml).not.toContain('typekro.io/kro-instance-namespace');
-    // The owned namespace remains a graph child in the RGD.
-    expect(composition.factory('kro', { namespace: 'app' }).toYaml()).toContain('kind: Namespace');
+    // The owned namespace IS hoisted (as a shared, retained sibling).
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    // The RGD never owns a Namespace as a graph child.
+    expect(composition.factory('kro', { namespace: 'app' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
   });
 
   it('allows an externalRef to the instance Namespace because it is not owned', () => {
@@ -182,14 +186,17 @@ describe('KRO instance namespace ownership: hoisting keeps the instance in its n
     expect(rgd).not.toContain('kind: Namespace');
   });
 
-  it('hoists + retains via toAlchemyResources too (instance in the workload namespace)', async () => {
+  it('hoists via toAlchemyResources too; the 1:1 namespace is NOT retained (teardown after RGD)', async () => {
     const factory = ownedNsComposition().factory('kro', { namespace: 'app' });
     const decls = await factory.toAlchemyResources({ name: 'x', namespace: 'app' });
-    // First declaration is the retained workload Namespace.
+    // First declaration is the hoisted workload Namespace.
     const nsDecl = decls[0];
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('app');
-    expect(nsDecl?.props.retain).toBe(true);
+    // It is the instance's OWN (1:1) namespace (name == instance ns 'app'), so it is
+    // NOT retained: reverse-topo teardown deletes it AFTER the RGD + instance.
+    expect(nsDecl?.props.retain).toBeUndefined();
+    expect(decls.at(-1)?.dependsOn).toContain(nsDecl?.id);
     // The instance CR declaration stays in the workload namespace.
     expect(decls.at(-1)?.props.namespace).toBe('app');
   });
@@ -221,20 +228,27 @@ describe('KRO instance namespace ownership: hoisting keeps the instance in its n
     });
     const yaml = factory.toYaml({ name: 'x', namespace: 'other' });
     expect(yaml).toContain('namespace: custom-control-plane');
-    // An explicit pin opts out of auto-hoisting; the owned namespace is not the
-    // instance's namespace here ('other' != 'custom-control-plane'), so it is safe.
-    expect(yaml).not.toContain('typekro.io/kro-instance-namespace');
+    // The owned namespace ('other') is still hoisted — as a shared, retained sibling,
+    // since it is not the instance's own namespace ('custom-control-plane').
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
   });
 
-  it('an explicit instanceNamespace pinned to an owned namespace STILL throws (guard intact)', () => {
-    // Opting the instance back into the owned namespace is the unsafe case that
-    // hoisting deliberately does NOT cover — the guard must still reject it.
+  it('an explicit instanceNamespace pinned to an owned namespace is SAFE (hoisted, not rejected)', () => {
+    // In the v2 model the owned namespace is applied as a sibling created before the
+    // RGD and deleted after it, so placing the instance inside its own owned namespace
+    // no longer risks finalizer stranding — the guard passes (it now only fires for
+    // hand-authored graphs that leave a Namespace inside the RGD).
     const factory = ownedNsComposition().factory('kro', {
       namespace: 'app',
       instanceNamespace: 'app',
     });
-    expect(() => factory.toYaml({ name: 'x', namespace: 'app' })).toThrow(
-      'cannot also be an owned Namespace'
-    );
+    let yaml = '';
+    expect(() => {
+      yaml = factory.toYaml({ name: 'x', namespace: 'app' });
+    }).not.toThrow();
+    // The instance's own (1:1) namespace is hoisted out of the RGD as a sibling, and
+    // the instance CR still lands in it.
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    expect(yaml).toMatch(/namespace: app$/m);
   });
 });

@@ -1,13 +1,7 @@
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import {
-  classifyNamespaceForMigration,
-  computeApplySetId,
-  namespaceOwnershipMatchesInstance,
-} from '../../src/core/deployment/kro-factory.js';
 import {
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
@@ -23,9 +17,11 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/bra
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 
 /**
- * Round-5 rework coverage for PR #113 — the OFFLINE proofs for findings #2, #3,
- * #5, #6, #7, #8. (The live upgrade test for findings #1/#9 lives under
- * test/integration and is gated on a cluster; it is WRITTEN but NOT executed.)
+ * Round-5 rework coverage for PR #113 (v2: namespaces NEVER in the RGD). OFFLINE
+ * proofs for the namespace-placement resolver, the generalized reference rewriting,
+ * the #6 hoist-weakened status REJECT, and the complete config preservation of the
+ * hoisted (sibling) namespace. The create/delete ORDER proof lives under
+ * test/integration and is gated on a cluster (WRITTEN but NOT executed here).
  */
 
 type Rec = Record<string, unknown>;
@@ -58,6 +54,17 @@ const ownsNs = () =>
 
 const cel = (expression: string) =>
   ({ [CEL_EXPRESSION_BRAND]: true, expression }) as unknown as { expression: string };
+
+const kref = (resourceId: string, fieldPath: string) =>
+  ({ [KUBERNETES_REF_BRAND]: true, resourceId, fieldPath }) as unknown;
+
+/**
+ * The hoisted-namespace map the rewriters consume: resource id → the Namespace's
+ * raw `metadata.name` VALUE. Here the namespace is named after `spec.namespace`
+ * (the dominant case), so a reference to it rewrites to `schema.spec.namespace`.
+ */
+const specNamedNs = (id = 'ownedNamespace') =>
+  new Map<string, unknown>([[id, kref('__schema__', 'spec.namespace')]]);
 
 describe('finding #2: CR placement defaults to the FACTORY namespace (v0.26.0), not spec.namespace', () => {
   it('resolveInstanceNamespace returns the factory namespace regardless of spec', () => {
@@ -119,129 +126,9 @@ describe('finding #3: create / getInstances / deleteInstance provably target the
   });
 });
 
-describe('finding #5: ownership identity check (matches KRO applyset.ID / KEP-3659)', () => {
-  it('computeApplySetId matches base64url(sha256("<name>.<ns>.<kind>.<group>")) with the applyset-…-v1 shape', () => {
-    const id = computeApplySetId('analytics', 'dev', 'Round5', 'test.typekro.dev');
-    // Independently recompute the KRO algorithm.
-    const digest = createHash('sha256')
-      .update('analytics.dev.Round5.test.typekro.dev')
-      .digest()
-      .toString('base64url');
-    expect(id).toBe(`applyset-${digest}-v1`);
-    // Distinct GKNN → distinct id (dev vs prod).
-    expect(id).not.toBe(computeApplySetId('analytics', 'prod', 'Round5', 'test.typekro.dev'));
-  });
-
-  it('a Namespace is transferred ONLY when its ownership matches the instance being migrated', () => {
-    const applySetId = computeApplySetId('analytics', 'dev', 'Round5', 'test.typekro.dev');
-    const uid = 'instance-uid-123';
-
-    // Matches by part-of.
-    expect(
-      namespaceOwnershipMatchesInstance(
-        { 'applyset.kubernetes.io/part-of': applySetId },
-        applySetId,
-        uid
-      )
-    ).toBe(true);
-    // Matches by kro.run/instance-id == instance UID.
-    expect(
-      namespaceOwnershipMatchesInstance({ 'kro.run/instance-id': uid }, applySetId, uid)
-    ).toBe(true);
-    // A Namespace owned by a DIFFERENT KRO instance must NOT be stolen.
-    expect(
-      namespaceOwnershipMatchesInstance(
-        {
-          'applyset.kubernetes.io/part-of': 'applyset-someone-else-v1',
-          'kro.run/instance-id': 'other-uid',
-        },
-        applySetId,
-        uid
-      )
-    ).toBe(false);
-    // KRO-owned but no identity labels at all → not this instance → not stolen.
-    expect(
-      namespaceOwnershipMatchesInstance({ 'app.kubernetes.io/managed-by': 'kro' }, applySetId, uid)
-    ).toBe(false);
-  });
-});
-
-describe('finding #3 (round-7): an ownership mismatch FAILS CLOSED (aborts, never silently skips)', () => {
-  const applySetId = computeApplySetId('analytics', 'dev', 'Round7', 'test.typekro.dev');
-  const uid = 'instance-uid-abc';
-  const base = {
-    nsName: 'analytics',
-    instanceRef: 'dev/analytics',
-    expectedApplySetId: applySetId,
-    instanceUid: uid,
-  };
-
-  it("classifies THIS instance's KRO-owned Namespace (by part-of or UID) as 'transfer'", () => {
-    expect(
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: { 'applyset.kubernetes.io/part-of': applySetId },
-      })
-    ).toBe('transfer');
-    // KRO-owned (owned marker) AND identity matches by UID → transfer.
-    expect(
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: { 'kro.run/owned': 'true', 'kro.run/instance-id': uid },
-      })
-    ).toBe('transfer');
-  });
-
-  it("classifies a non-KRO Namespace as 'skip', and a retention-marked one as 'already-transferred'", () => {
-    expect(classifyNamespaceForMigration({ ...base, nsLabels: {} })).toBe('skip');
-    expect(
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: { 'user-label': 'x' },
-      })
-    ).toBe('skip');
-    expect(
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: { 'typekro.io/kro-instance-namespace': 'true' },
-      })
-    ).toBe('already-transferred');
-  });
-
-  it('ABORTS (throws an ownership-conflict error) when the Namespace is KRO-owned by a DIFFERENT ApplySet', () => {
-    // The regression: previously this case was silently SKIPPED while the shared RGD
-    // was STILL replaced — leaving the foreign-owned Namespace eligible for pruning by
-    // its real owner. It must now fail closed, before the RGD is touched.
-    expect(() =>
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: {
-          'applyset.kubernetes.io/part-of': 'applyset-someone-else-v1',
-          'kro.run/instance-id': 'other-uid',
-        },
-      })
-    ).toThrow(/Ownership conflict/);
-  });
-
-  it('ABORTS when the Namespace is KRO-owned (managed-by=kro) but carries NO matching identity', () => {
-    let message = '';
-    try {
-      classifyNamespaceForMigration({
-        ...base,
-        nsLabels: { 'app.kubernetes.io/managed-by': 'kro' },
-      });
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toContain('Ownership conflict');
-    expect(message).toContain('analytics'); // names the conflicting Namespace
-    expect(message).toContain('dev/analytics'); // names the expecting instance
-  });
-});
-
 describe('finding #6: references to a hoisted Namespace are rewritten STRUCTURALLY, incl. status', () => {
   it('rewrites string()-wrapped, concatenated, ternary, and marker reference forms', () => {
-    const ids = new Set(['ownedNamespace']);
+    const ids = specNamedNs();
 
     // string()-wrapped inside a CEL interpolation.
     expect(
@@ -279,7 +166,24 @@ describe('finding #6: references to a hoisted Namespace are rewritten STRUCTURAL
     );
   });
 
-  it('a status mapping referencing the hoisted Namespace produces a valid RGD (no dangling ref)', () => {
+  it('a LITERALLY-named hoisted Namespace rewrites references to the constant name', () => {
+    // Generalization beyond spec.namespace: a Namespace named by a plain string
+    // literal rewrites a reference to that constant (not to a schema expression).
+    const ids = new Map<string, unknown>([['monitoringNs', 'monitoring']]);
+    expect(rewriteHoistedNamespaceRefsInValue('${monitoringNs.metadata.name}', ids)).toBe(
+      '${"monitoring"}'
+    );
+    // A raw marker rewrites to the literal text.
+    expect(
+      rewriteHoistedNamespaceRefsInValue('ns-__KUBERNETES_REF_monitoringNs_metadata.name__', ids)
+    ).toBe('ns-monitoring');
+    // An exact KubernetesRef rewrites to the constant string.
+    expect(rewriteHoistedNamespaceRefsInValue(kref('monitoringNs', 'metadata.name'), ids)).toBe(
+      'monitoring'
+    );
+  });
+
+  it('#6: a status mapping resolving only to the hoisted Namespace is REJECTED (named), not silently dropped', () => {
     const composition = kubernetesComposition(schema, (spec) => {
       const ns = namespace({
         id: 'ownedNamespace',
@@ -287,67 +191,21 @@ describe('finding #6: references to a hoisted Namespace are rewritten STRUCTURAL
       });
       return {
         ready: true,
-        // Status references the owned Namespace, embedded in a mixed template.
+        // Status references ONLY the owned Namespace (embedded in a template). After
+        // hoisting it becomes `schema.spec.namespace`, which KRO status CEL cannot
+        // evaluate — so the composition is rejected for KRO serialization, naming the field.
         namespaceName: Cel.template('ns-%s', ns.metadata.name) as unknown as string,
       };
     });
 
-    const rgd = composition.factory('kro', { namespace: 'app' }).toYaml();
-    // The owned Namespace is hoisted out of the graph...
-    expect(rgd).not.toContain('kind: Namespace');
-    // ...and no status/resource reference dangles at the removed resource id
-    // (buildRgdYaml's assertNoDanglingHoistedReferences would have thrown otherwise).
-    expect(rgd).not.toContain('ownedNamespace.metadata');
-    expect(rgd).not.toContain('__KUBERNETES_REF_ownedNamespace_');
+    expect(() => composition.factory('kro', { namespace: 'app' }).toYaml()).toThrow(
+      /status field\(s\) \[namespaceName\]/
+    );
   });
 });
 
-describe('finding #3 (round-6): resume failures are surfaced, not silently swallowed', () => {
-  it('resumeMigration rethrows a single resume failure (never resolves silently)', async () => {
-    const factory = ownsNs().factory('kro', { namespace: 'app' });
-    (factory as unknown as Rec).resumeInstanceReconciliation = async () => {
-      throw new Error('boom');
-    };
-    const resumeMigration = priv(factory, 'resumeMigration');
-    let caught: unknown;
-    await (
-      resumeMigration({ resumeTargets: [{ name: 'a', namespace: 'app' }] }) as Promise<void>
-    ).catch((e: unknown) => {
-      caught = e;
-    });
-    expect((caught as Error | undefined)?.message).toBe('boom');
-  });
-
-  it('resumeMigration attempts ALL targets and AGGREGATES multiple failures', async () => {
-    const factory = ownsNs().factory('kro', { namespace: 'app' });
-    const attempted: string[] = [];
-    (factory as unknown as Rec).resumeInstanceReconciliation = async (name: string) => {
-      attempted.push(name);
-      throw new Error(`fail-${name}`);
-    };
-    const resumeMigration = priv(factory, 'resumeMigration');
-    let caught: unknown;
-    await (
-      resumeMigration({
-        resumeTargets: [
-          { name: 'a', namespace: 'app' },
-          { name: 'b', namespace: 'app' },
-        ],
-      }) as Promise<void>
-    ).catch((e: unknown) => {
-      caught = e;
-    });
-    // A single failure never leaves the rest suspended — BOTH were attempted.
-    expect(attempted).toEqual(['a', 'b']);
-    expect(caught).toBeInstanceOf(AggregateError);
-    expect((caught as AggregateError).errors).toHaveLength(2);
-  });
-});
-
-describe('finding #7 (round-6): reference rewriting requires EXACT metadata.name (no over-match)', () => {
-  const kref = (resourceId: string, fieldPath: string) =>
-    ({ [KUBERNETES_REF_BRAND]: true, resourceId, fieldPath }) as unknown;
-  const ids = new Set(['ownedNamespace']);
+describe('finding #7: reference rewriting requires EXACT metadata.name (no over-match)', () => {
+  const ids = specNamedNs();
 
   it('rewrites an EXACT metadata.name KubernetesRef to the hoisted Namespace', () => {
     const out = rewriteHoistedNamespaceRefsInValue(kref('ownedNamespace', 'metadata.name'), ids) as {
@@ -381,10 +239,7 @@ describe('finding #7: rewriting a resource preserves its TypeKro metadata', () =
     setIncludeWhen(cfg, [cel('${schema.spec.enabled}')]);
     setResourceId(cfg, 'cfg');
 
-    const out = rewriteHoistedNamespaceReferences(
-      { cfg: cfg as never },
-      new Set(['ownedNamespace'])
-    );
+    const out = rewriteHoistedNamespaceReferences({ cfg: cfg as never }, specNamedNs());
     // The resource WAS reconstructed (its reference changed)...
     expect(out.cfg).not.toBe(cfg as never);
     expect((out.cfg as Rec).data).toEqual({ targetNamespace: '${schema.spec.namespace}' });
@@ -400,15 +255,12 @@ describe('finding #7: rewriting a resource preserves its TypeKro metadata', () =
       metadata: { name: 'cfg' },
       data: { unrelated: 'value' },
     } as Rec;
-    const out = rewriteHoistedNamespaceReferences(
-      { cfg: cfg as never },
-      new Set(['ownedNamespace'])
-    );
+    const out = rewriteHoistedNamespaceReferences({ cfg: cfg as never }, specNamedNs());
     expect(out.cfg).toBe(cfg as never);
   });
 });
 
-describe('finding #8: the retained Namespace preserves the COMPLETE declared config', () => {
+describe('finding #8: the hoisted (sibling) Namespace preserves the COMPLETE declared config', () => {
   const richComposition = () =>
     kubernetesComposition(schema, (spec) => {
       namespace({
@@ -461,7 +313,7 @@ describe('finding #8: the retained Namespace preserves the COMPLETE declared con
   });
 });
 
-describe('finding #6 (round-6): the retained Namespace preserves metadata.finalizers + ownerReferences', () => {
+describe('finding #6 (round-6): the hoisted Namespace preserves metadata.finalizers + ownerReferences', () => {
   const ownerRef = {
     apiVersion: 'example.com/v1',
     kind: 'Owner',
