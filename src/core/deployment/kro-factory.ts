@@ -96,11 +96,16 @@ import {
   assertSingletonOwnerNamespaceOwnershipSafe,
   concreteOwnedNamespaceResources,
   findDanglingHoistedReference,
+  resolveConcreteMetadataValue,
   resolveNamespaceName,
   rewriteHoistedNamespaceReferences,
   rewriteHoistedNamespaceRefsInValue,
   selectHoistedNamespaces,
 } from './kro-instance-safety.js';
+import {
+  deleteNamespaceIfEmpty,
+  waitForResourceFullyDeleted,
+} from './kro-namespace-teardown.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
 import {
@@ -127,14 +132,6 @@ import {
  * to decide whether other instances still share the RGD.
  */
 const INSTANCE_RGD_LABEL = 'typekro.io/rgd';
-
-/**
- * typekro's marker label stamped on every Namespace it HOISTS out of an RGD graph
- * and applies as a sibling. `deleteInstance` uses it to identify the instance's own
- * (1:1) hoisted namespace it may auto-delete after the RGD is gone; also the shared
- * retention marker in {@link KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA}.
- */
-const TYPEKRO_INSTANCE_NAMESPACE_LABEL = 'typekro.io/kro-instance-namespace';
 
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
@@ -423,17 +420,6 @@ export class KroResourceFactoryImpl<
    */
   private hoistedNamespaceNames(spec?: TSpec): Set<string> {
     return new Set(this.concreteHoistedNamespaces(spec).keys());
-  }
-
-  /**
-   * Whether a hoisted namespace NAME is the instance's OWN (1:1) namespace — i.e.
-   * the namespace the instance CR itself lives in ({@link resolveInstanceNamespace}).
-   * The 1:1 namespace is the ONLY one this factory auto-deletes on teardown; a
-   * namespace whose name differs from the instance's is SHARED and RETAINED
-   * (maintainer decision — see {@link INSTANCE_NAMESPACE_METADATA}).
-   */
-  private isOwnInstanceNamespace(namespaceName: string, spec?: TSpec): boolean {
-    return namespaceName === this.resolveInstanceNamespace(spec);
   }
 
   /**
@@ -978,6 +964,14 @@ export class KroResourceFactoryImpl<
     const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
     const hoistedNamespaces = this.concreteHoistedNamespaces(spec);
 
+    // FINDING #2: fail closed on a PRE-HOIST upgrade BEFORE touching the RGD. If a
+    // namespace this factory now hoists is currently a KRO ApplySet member (a namespace
+    // a pre-hoist RGD owned as a graph child), rolling the new hoisted RGD over the old
+    // one drops the namespace from the ApplySet — and KRO's prune then deletes the live
+    // namespace out from under the workload. Detect it and THROW (detection only — no
+    // automatic migration). See the migration doc for the one-time manual step.
+    await this.assertNoPreHoistNamespaceConflict(hoistedNamespaces.keys());
+
     // Ensure RGD is deployed. Every owned Namespace is hoisted OUT of the RGD graph
     // and applied as a SIBLING below (deps-first), never a graph child — so KRO never
     // owns a namespace and deleting the instance can never garbage-collect the
@@ -1138,6 +1132,71 @@ export class KroResourceFactoryImpl<
         'deployment',
         ensureError(error)
       );
+    }
+  }
+
+  /**
+   * FINDING #2 — fail-closed PRE-HOIST detection (detection only; no migration).
+   *
+   * On deploy, BEFORE the RGD is (re)applied, check every namespace this factory would
+   * hoist. If a live namespace is currently a KRO ApplySet member — it carries
+   * `applyset.kubernetes.io/part-of` and/or any `kro.run/*` ownership label from a
+   * PRE-HOIST RGD (which owned the namespace as a graph child) — then rolling the new,
+   * hoisted RGD (which no longer lists the namespace) over the old one makes KRO's
+   * ApplySet prune enumerate and DELETE the live namespace, taking the workload with
+   * it. We THROW a clear, actionable error instead. This does NOT re-introduce the
+   * removed automatic migration/drain/strip machinery — it only refuses to proceed.
+   *
+   * typekro's own v2 sibling namespaces carry `typekro.io/kro-instance-namespace=true`
+   * but NEITHER an ApplySet `part-of` NOR any `kro.run/*` label (KRO never owns them),
+   * so steady-state re-deploys never trip this. A 404 (fresh) or a transient read error
+   * is not a pre-hoist signal and does not block the deploy.
+   */
+  private async assertNoPreHoistNamespaceConflict(
+    hoistedNamespaceNames: Iterable<string>
+  ): Promise<void> {
+    const names = [...hoistedNamespaceNames];
+    if (names.length === 0) return;
+    const k8sApi = this.createKubernetesObjectApi();
+    for (const name of names) {
+      let labels: Record<string, string> = {};
+      try {
+        const live = (await k8sApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name },
+        })) as { metadata?: { labels?: Record<string, string> } };
+        labels = live.metadata?.labels ?? {};
+      } catch (error: unknown) {
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (code === 404) continue; // fresh namespace — nothing to migrate
+        // A transient / permission read error is NOT proof of a pre-hoist state; do not
+        // block the deploy on it (the ownership guard + KRO still protect correctness).
+        this.logger.debug('Pre-hoist namespace check: read failed; skipping', {
+          namespace: name,
+          error: ensureError(error).message,
+        });
+        continue;
+      }
+      const partOfKro =
+        typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
+        Object.keys(labels).some((key) => key.startsWith('kro.run/'));
+      if (partOfKro) {
+        throw new TypeKroError(
+          `Pre-hoist deployment detected for composition "${this.name}": the live Namespace ` +
+            `"${name}" is a KRO ApplySet member (carries applyset.kubernetes.io/part-of and/or ` +
+            `kro.run/* ownership labels from a pre-hoist RGD). typekro now HOISTS every owned ` +
+            `Namespace out of the RGD, so applying the new RGD in place would drop "${name}" from ` +
+            `KRO's ApplySet and KRO's prune would DELETE the live namespace and its workloads. ` +
+            `This upgrade is not auto-migrated. Either recreate (delete the instance, then ` +
+            `redeploy — the namespace is recreated as a sibling) or perform the one-time manual ` +
+            `label-strip while the controller is quiesced. See docs/advanced/migration.md ` +
+            `("Upgrading from a pre-hoist TypeKro release").`,
+          'PRE_HOIST_NAMESPACE_CONFLICT',
+          { composition: this.name, namespace: name, labels: Object.keys(labels), mode: 'kro' }
+        );
+      }
     }
   }
 
@@ -1473,15 +1532,29 @@ export class KroResourceFactoryImpl<
         }
       }
 
-      // Delete the instance's OWN (1:1) hoisted namespace LAST — after the CR is gone
-      // (404-confirmed above), the RGD is deleted, AND the RGD is fully gone
-      // (`waitForRgdFullyDeleted`). typekro never puts a Namespace in the RGD; the
-      // instance's own namespace was applied as a sibling, so KRO's finalizer never
-      // touches it and we must clean it up ourselves. The ordering is LOAD-BEARING:
-      // deleting the namespace while the CR is still inside it re-creates the
-      // finalizer deadlock. Only the 1:1 namespace (name == the instance's resolved
-      // namespace) is auto-deleted; a SHARED namespace (different name) is retained.
-      await this.deleteOwnInstanceNamespaceIfHoisted(k8sApi);
+      // FINDING #1: WAIT for the generated CRD to be fully gone (404) before touching
+      // the namespace. The CRD carries the apiextensions
+      // `customresourcecleanup.apiextensions.k8s.io` finalizer, which sticks until KRO's
+      // per-RGD dynamic controller stops watching the CRD's custom resources. If we
+      // delete (or emptiness-check) the namespace while the CRD is still Terminating,
+      // KRO's remaining children have not finished draining, so the namespace either
+      // stalls Terminating behind them or the emptiness gate wrongly sees them as
+      // occupants and RETAINS. Waiting for the CRD 404 makes "our resources are drained"
+      // TRUE before the emptiness gate runs — the prerequisite for it to be meaningful.
+      await this.waitForCrdFullyDeleted(k8sApi, crdName);
+
+      // Delete the instance's OWN hoisted namespace LAST — after the CR is gone
+      // (404-confirmed above), the RGD is deleted + fully gone (`waitForRgdFullyDeleted`),
+      // AND the generated CRD is fully gone (`waitForCrdFullyDeleted`). typekro never
+      // puts a Namespace in the RGD; the instance's own namespace was applied as a
+      // sibling, so KRO's finalizer never touches it and we clean it up ourselves.
+      // The ordering is LOAD-BEARING (deleting the namespace while the CR is still
+      // inside it re-creates the finalizer deadlock). The delete is EMPTY-GATED
+      // (findings #3 + #4): now that everything THIS instance owned has drained, the
+      // namespace is deleted ONLY if empty (no non-default resources) and RETAINED if
+      // another stack/user still has resources there — replacing the old unsafe
+      // marker + name-equality ownership check.
+      await this.deleteOwnInstanceNamespaceIfEmpty(k8sApi);
     } else {
       this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
         rgdName: this.rgdName,
@@ -1490,58 +1563,56 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Delete the instance's OWN (1:1) hoisted namespace, if typekro created it. Called
-   * ONLY once the CR is gone and the RGD is fully deleted (see the ordering note in
-   * {@link deleteInstance}). The 1:1 namespace is the one named exactly the
-   * instance's resolved namespace ({@link resolveInstanceNamespace}); it is deleted
-   * ONLY when it carries typekro's {@link TYPEKRO_INSTANCE_NAMESPACE_LABEL} marker
-   * (proving typekro hoisted+created it, rather than a pre-existing / user-managed
-   * namespace the CR merely happened to live in). A SHARED namespace (name differs
-   * from the instance's, e.g. one the composition creates for OTHERS) is never the
-   * target here and stays retained. Best-effort: a 404 is benign; other errors are
-   * logged, not thrown (the RGD/CRD are already gone — teardown succeeded).
+   * Delete the instance's OWN namespace — the one the CR lives in
+   * ({@link resolveInstanceNamespace}) — IF IT IS EMPTY (findings #3 + #4). Called
+   * ONLY once the CR, RGD, and generated CRD are all fully gone (see the ordering note
+   * in {@link deleteInstance}), so everything THIS instance owned has drained. The
+   * shared {@link deleteNamespaceIfEmpty} enumerates every namespaced resource type
+   * via API discovery and deletes the namespace ONLY when nothing but k8s
+   * auto-provisioned defaults remain; if another stack/user still has resources there,
+   * or emptiness can't be proven, it RETAINS (fail-safe).
+   *
+   * This REPLACES the old marker + name-equality ownership check: the marker was
+   * stampable onto adopted/pre-existing namespaces (#3) and name-equality clobbered a
+   * namespace shared across alchemy stacks (#4). Runtime emptiness is the truth. Only
+   * the instance's own declared/hoisted namespace is ever considered — never an
+   * arbitrary scan. Best-effort throughout (the RGD/CRD are already gone).
    */
-  private async deleteOwnInstanceNamespaceIfHoisted(
+  private async deleteOwnInstanceNamespaceIfEmpty(
     k8sApi: k8s.KubernetesObjectApi
   ): Promise<void> {
     const namespace = this.resolveInstanceNamespace();
-    try {
-      const live = (await k8sApi.read({
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: { name: namespace },
-      })) as { metadata?: { labels?: Record<string, string> } };
-      // Only delete a namespace typekro hoisted+created (carries our marker). Never
-      // delete a pre-existing / user-managed namespace the CR merely lived in.
-      if (live.metadata?.labels?.[TYPEKRO_INSTANCE_NAMESPACE_LABEL] !== 'true') {
-        this.logger.debug(
-          'Instance namespace is not a typekro-hoisted namespace — leaving it in place',
-          { namespace }
-        );
-        return;
-      }
-      await k8sApi.delete({
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: { name: namespace },
-      } as k8s.KubernetesObject);
-      this.logger.debug('Deleted the instance-owned (1:1) hoisted namespace after the RGD', {
-        namespace,
-        rgdName: this.rgdName,
-      });
-    } catch (error: unknown) {
-      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-      if (code === 404) return; // already gone — nothing to do
-      this.logger.warn('Failed to delete the instance-owned namespace after teardown', {
-        namespace,
-        error: ensureError(error).message,
-      });
-    }
+    await deleteNamespaceIfEmpty(this.getKubeConfig(), namespace, {
+      logger: this.logger,
+      // Reuse the SAME (mockable) object API deleteInstance created for the existence
+      // check + delete, so the discovery/delete path is consistent and unit-testable.
+      k8sApi,
+      context: { rgdName: this.rgdName },
+    });
   }
 
   /** Bounded wait for the shared RGD to be fully deleted before deleting the CRD. */
   private static readonly RGD_DELETE_WAIT_MS = 120_000;
+
+  /** Bounded wait for the generated CRD to be fully deleted before the namespace. */
+  private static readonly CRD_DELETE_WAIT_MS = 120_000;
+
+  /**
+   * Poll until the generated CRD is fully gone (404), bounded — mirrors
+   * {@link waitForRgdFullyDeleted}. See finding #1 in {@link deleteInstance}: the
+   * namespace delete / emptiness check must run AFTER the CRD's cleanup finalizer
+   * clears, so KRO's children have drained. Best-effort: logs and returns on timeout.
+   */
+  private async waitForCrdFullyDeleted(
+    k8sApi: k8s.KubernetesObjectApi,
+    crdName: string
+  ): Promise<void> {
+    await waitForResourceFullyDeleted(
+      k8sApi,
+      { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
+      { deadlineMs: KroResourceFactoryImpl.CRD_DELETE_WAIT_MS, logger: this.logger }
+    );
+  }
 
   /**
    * Poll until this factory's shared RGD is fully gone (404), bounded. See the call
@@ -1622,13 +1693,16 @@ export class KroResourceFactoryImpl<
     // Every Namespace the composition owns is HOISTED out of the RGD graph and
     // emitted here instead — before the RGD + instance and OUTSIDE the graph, so the
     // CR always has a namespace to land in and KRO never garbage-collects it (which
-    // would strand the instance's finalizer). The instance's OWN (1:1) namespace
-    // (name == the instance's resolved namespace) is NOT retained: alchemy's
-    // reverse-topo teardown deletes it AFTER the RGD + instance (both `dependsOn` it),
-    // matching the imperative delete order. A SHARED namespace (a different name — one
-    // the composition creates for OTHERS) IS retained + deduped by name, so multiple
-    // stacks targeting it share ONE declaration and no single stack's teardown/prune
-    // deletes it.
+    // would strand the instance's finalizer). Teardown is EMPTY-GATED (findings #3 +
+    // #4): alchemy's reverse-topo teardown runs the namespace's delete AFTER the RGD +
+    // instance (both `dependsOn` it), and the instance's delete waits for its
+    // `kro.run/finalizer` to clear (KRO graph-deletes all children) — so by then
+    // everything THIS instance owned has drained (finding #1's ordering, via the
+    // dependency graph + instance-drain wait). The namespace is then deleted ONLY if
+    // empty and RETAINED if another stack/user still has resources there. This is the
+    // same for the instance's OWN namespace and a SHARED one — deduped by name, so
+    // multiple stacks share ONE declaration and none deletes it while another still
+    // occupies it (no cross-stack refcount needed).
     const instanceNamespaceDeclarations: AlchemyResourceDeclaration[] = [];
     const instanceNamespaceIds: string[] = [];
     for (const [hoistedNs, original] of this.concreteHoistedNamespaces(spec)) {
@@ -1636,9 +1710,7 @@ export class KroResourceFactoryImpl<
         hoistedNs,
         this.buildHoistedNamespaceResource(hoistedNs, original, spec),
         kubeConfigOptions,
-        prerequisiteIds,
-        // 1:1-owned → teardown dependency (delete after RGD); shared → retain.
-        !this.isOwnInstanceNamespace(hoistedNs, spec)
+        prerequisiteIds
       );
       instanceNamespaceDeclarations.push(decl);
       instanceNamespaceIds.push(decl.id);
@@ -2935,10 +3007,10 @@ export class KroResourceFactoryImpl<
     value: unknown,
     spec: KroCompatibleType
   ): string | undefined {
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-    const resolved = resolveNamespaceName(value, spec);
-    return resolved;
+    // Metadata VALUES are unrestricted strings (finding #5): `Team_A`, free text with
+    // spaces, etc. — resolve any CONCRETE value, without the DNS-label shape
+    // restriction that `resolveNamespaceName` correctly applies to namespace NAMES.
+    return resolveConcreteMetadataValue(value, spec);
   }
 
   /**
@@ -3084,8 +3156,7 @@ export class KroResourceFactoryImpl<
       import('@kubernetes/client-node').V1Namespace['status']
     >,
     kubeConfigOptions: SerializableKubeConfigOptions,
-    dependsOn: readonly string[],
-    retain: boolean
+    dependsOn: readonly string[]
   ): AlchemyResourceDeclaration {
     const timeout = this.factoryOptions.timeout;
     const resourceId = (nsEnhanced as { id?: string }).id;
@@ -3099,14 +3170,14 @@ export class KroResourceFactoryImpl<
         ...(resourceId !== undefined ? { resourceId } : {}),
         namespace: workloadNamespace,
         deploymentStrategy: 'direct' as const,
-        // SHARED namespace (`retain: true`): shared infrastructure — never delete it
-        // on a single stack's teardown/prune, since another stack targeting the same
-        // namespace may still have resources inside it. The instance's OWN (1:1)
-        // namespace (`retain: false`): alchemy's reverse-topo teardown deletes it
-        // AFTER the RGD + instance (both `dependsOn` this declaration), which is the
-        // load-bearing delete-after-RGD ordering — a namespace deleted while the CR is
-        // still inside it re-creates the finalizer deadlock.
-        ...(retain ? { retain: true } : {}),
+        // EMPTY-GATED teardown (findings #3 + #4), replacing the old retain-by-name
+        // distinction: on delete, the namespace is removed ONLY if empty and RETAINED
+        // if another stack/user still has resources inside it. Alchemy's reverse-topo
+        // teardown runs this AFTER the RGD + instance (both `dependsOn` this
+        // declaration) are gone — the load-bearing delete-after-RGD ordering (a
+        // namespace deleted while the CR is still inside it re-creates the finalizer
+        // deadlock).
+        namespaceEmptyGate: true,
         kubeConfigOptions,
         options: {
           waitForReady: false,

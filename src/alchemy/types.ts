@@ -95,6 +95,16 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   retain?: boolean;
 
   /**
+   * When true, this resource is a typekro-HOISTED workload Namespace whose teardown is
+   * EMPTY-GATED (findings #3 + #4): on delete, the namespace is removed ONLY if it is
+   * empty (no non-default resources) and RETAINED if another stack/user still has
+   * resources inside it. Replaces the old retain-by-name-equality distinction between
+   * the instance's own namespace and a shared one — runtime emptiness is the truth for
+   * both. Persisted to output so a state-driven delete (no live `news`) still gates.
+   */
+  namespaceEmptyGate?: boolean;
+
+  /**
    * Resolved outputs of the resources this one depends on. Two jobs:
    *
    *  1. **Ordering** — because each entry traces back (via an alchemy `Output`) to another
@@ -184,6 +194,8 @@ export interface TypeKroResource<T extends Enhanced<any, any>> {
   kroDeletion?: KroDeletionOptions;
   /** Mirrors {@link TypeKroResourceProps.retain}: a retained resource is never deleted on teardown. */
   retain?: boolean;
+  /** Mirrors {@link TypeKroResourceProps.namespaceEmptyGate}: empty-gated Namespace teardown. */
+  namespaceEmptyGate?: boolean;
 
   /**
    * The deployed resource with live status from the cluster

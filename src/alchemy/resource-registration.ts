@@ -27,6 +27,7 @@ import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
 import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
+import { deleteNamespaceIfEmpty } from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
@@ -60,6 +61,7 @@ interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   kubeConfigOptions?: SerializableKubeConfigOptions;
   kroDeletion?: KroDeletionOptions;
   retain?: boolean;
+  namespaceEmptyGate?: boolean;
   deployedResource: T;
   ready: boolean;
   deployedAt: number;
@@ -408,6 +410,7 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
     ...(output.kubeConfigOptions !== undefined && { kubeConfigOptions: output.kubeConfigOptions }),
     ...(output.kroDeletion !== undefined && { kroDeletion: output.kroDeletion }),
     ...(output.retain === true && { retain: true }),
+    ...(output.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
   };
 }
 
@@ -578,6 +581,31 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
     });
     return;
   }
+  // Empty-gated Namespace teardown (findings #3 + #4): a typekro-hoisted workload
+  // Namespace is deleted ONLY if empty and RETAINED if another stack/user still has
+  // resources inside it. Alchemy's reverse-topo teardown runs this AFTER the RGD +
+  // instance that `dependsOn` it are gone; the instance is deleted FIRST and its delete
+  // waits for the CR's `kro.run/finalizer` to clear (KRO graph-deletes all children),
+  // so by the time this runs everything THIS instance owned has already drained from
+  // the namespace (finding #1's ordering, provided here by the dependency graph + the
+  // instance-drain wait rather than an in-line CRD-404 wait; the gate is fail-safe
+  // regardless). Replaces the old retain-by-name-equality distinction — runtime
+  // emptiness is the truth for both the instance's own namespace and a shared one.
+  if (props.namespaceEmptyGate === true) {
+    const namespaceName = props.resource.metadata?.name;
+    if (typeof namespaceName !== 'string' || namespaceName.length === 0) {
+      logger.warn('Empty-gated namespace teardown skipped: resource has no metadata.name', {
+        namespace: props.namespace,
+      });
+      return;
+    }
+    const kubeConfig = _createClientProvider(props, 'delete');
+    await deleteNamespaceIfEmpty(kubeConfig, namespaceName, {
+      logger,
+      context: { alchemyType: KRO_RESOURCE_TYPE },
+    });
+    return;
+  }
   const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
     await deployer.delete(props.resource, {
@@ -639,6 +667,7 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     ...(props.kubeConfigOptions !== undefined && { kubeConfigOptions: props.kubeConfigOptions }),
     ...(props.kroDeletion !== undefined && { kroDeletion: props.kroDeletion }),
     ...(props.retain === true && { retain: true }),
+    ...(props.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
     deployedResource: cleanDeployedResource,
     ready: true,
     deployedAt: Date.now(),

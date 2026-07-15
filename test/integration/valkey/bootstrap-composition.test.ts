@@ -85,11 +85,13 @@ describe('Valkey operator installation contract', () => {
     expect(rgdYaml).not.toContain('kind: Namespace');
     expect(rgdYaml).toContain('schema.spec.namespace');
 
-    // The alchemy bundle: retained Namespace first (retain:true), instance last.
+    // The alchemy bundle: hoisted Namespace first (empty-gated on teardown), instance last.
     const decls = await factory.toAlchemyResources(spec);
     expect(decls[0]?.props.resource.kind).toBe('Namespace');
     expect(decls[0]?.props.resource.metadata?.name).toBe('valkey-system');
-    expect(decls[0]?.props.retain).toBe(true);
+    // Findings #3 + #4: empty-gated teardown replaces retain-by-name-equality.
+    expect(decls[0]?.props.namespaceEmptyGate).toBe(true);
+    expect(decls[0]?.props.retain).toBeUndefined();
     expect(decls.at(-1)?.props.namespace).toBe('valkey-system');
     expect(decls.at(-1)?.props.retain).toBeUndefined();
   });

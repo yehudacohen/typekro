@@ -95,6 +95,69 @@ export function resolveNamespaceName(value: unknown, spec: KroCompatibleType): s
   return unresolved ? undefined : resolved;
 }
 
+/**
+ * Resolve a Namespace METADATA value (a label or annotation VALUE) to its concrete
+ * string form (finding #5).
+ *
+ * Unlike {@link resolveNamespaceName} — which resolves a namespace NAME and is
+ * correctly restricted to DNS-label shape — metadata values are UNRESTRICTED strings:
+ * `Team_A`, free text with spaces, arbitrary annotation content. The old path routed
+ * these through `resolveNamespaceName`, whose DNS-label short-circuit only accepts a
+ * CEL body matching a DNS label and then hands anything else to the CEL evaluator,
+ * which throws / returns undefined for a plain literal like `Team_A` or `some text` —
+ * silently DROPPING valid metadata.
+ *
+ * A concrete re-execution collapses a schema-derived value into a CEL whose BODY is
+ * the resolved literal. So for a CEL value we:
+ *   - first try evaluating it (handles genuine expressions — `has()`, `orValue()`,
+ *     concatenations); if that yields a primitive, use it;
+ *   - otherwise the body is a concrete literal that is not a valid standalone CEL
+ *     program (e.g. `Team_A`, `some text`) — return it VERBATIM as the concrete value,
+ *     with NO DNS-label restriction.
+ * Numbers / booleans are stringified; refs resolve against the spec; plain strings and
+ * marker-embedded strings defer to {@link resolveNamespaceName} (which returns them
+ * verbatim / resolves the marker). Returns `undefined` only for a genuinely
+ * unresolvable value (an unresolved schema ref), so the caller drops just those.
+ */
+export function resolveConcreteMetadataValue(
+  value: unknown,
+  spec: KroCompatibleType
+): string | undefined {
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (isCelExpression(value)) {
+    const body = value.expression.trim().replace(/^\$\{\s*|\s*\}$/g, '');
+    // A concrete re-execution collapses a schema-derived value into a CEL whose BODY is
+    // the resolved LITERAL — that literal must be returned VERBATIM, NEVER fed to the
+    // CEL evaluator, which mis-parses many literals (e.g. `data-platform` → `data -
+    // platform` → NaN, `Team_A`/free text → identifier/parse errors). Only a body that
+    // STILL references the schema (`spec.*` / `schema.spec.*`) or uses a schema CEL
+    // helper (`has()` / `.orValue()`) genuinely needs evaluation against the spec.
+    const referencesSchema =
+      /(?<![\w$])(?:schema\.)?spec\.[A-Za-z_$]/.test(body) ||
+      /\bhas\(/.test(body) ||
+      /\.orValue\(/.test(body);
+    if (referencesSchema) {
+      try {
+        const evaluated = evaluateSchemaCelExpression(value, spec);
+        if (typeof evaluated === 'string') return evaluated;
+        if (
+          typeof evaluated === 'number' ||
+          typeof evaluated === 'boolean' ||
+          typeof evaluated === 'bigint'
+        ) {
+          return String(evaluated);
+        }
+      } catch {
+        // Unevaluable despite looking schema-shaped — fall through to the verbatim body.
+      }
+    }
+    return body.length > 0 ? body : undefined;
+  }
+  return resolveNamespaceName(value, spec);
+}
+
 function concreteResources<TSpec extends KroCompatibleType>(
   input: Omit<KroInstanceNamespaceSafetyInput<TSpec>, 'instanceNamespace'>
 ): [string, KubernetesResource][] {
@@ -446,23 +509,29 @@ export function rewriteHoistedNamespaceRefsInValue<T>(
 }
 
 /**
- * The top-level STATUS field names whose value references a HOISTED Namespace's
- * `metadata.name` in a way that WEAKENS the KRO status schema (finding #6).
+ * The top-level STATUS field names whose value, once the owned Namespace is HOISTED
+ * out of the RGD, can no longer be represented in the KRO status schema (finding #6).
  *
- * When a Namespace is hoisted OUT of the RGD, such a status field's reference is
- * rewritten to the Namespace's own name expression. If that expression is
- * schema-only (`schema.spec.namespace`), KRO's status CEL cannot evaluate it (the
- * status environment has no `schema` identifier), so the field cannot be honestly
- * represented in the KRO status schema. Callers use this to REJECT such a
- * composition (see {@link assertNoHoistWeakenedStatusFields}) rather than silently
- * drop the field and ship a status API weaker than the declared one. A reference
- * that rewrites to a plain CONSTANT (a literally-named namespace) is representable
- * and NOT weakened. Resource-derived SIBLING fields are unaffected (they still
- * reference a real graph resource and stay in the KRO status schema).
+ * When a Namespace is hoisted OUT of the RGD, a status field that referenced its
+ * `metadata.name` is rewritten to the Namespace's own name expression. KRO requires
+ * every instance status field to reference at least one RESOURCE (KRO builder.go:
+ * `instance status field must refer to a resource`), and its status CEL environment
+ * has no `schema` identifier. So a rewritten value that references NO managed resource
+ * is unrepresentable in the KRO status — in BOTH shapes:
+ *   - schema-only (`schema.spec.namespace`, for a schema-named Namespace) — KRO
+ *     status CEL cannot evaluate `schema`; and
+ *   - a plain CONSTANT (for a literally-named Namespace) — a literal has zero resource
+ *     dependencies, so KRO rejects it, AND typekro's own schema generation classifies
+ *     a literal-only status as static and DROPS it from the emitted KRO status.
+ * BOTH were previously handled inconsistently (schema-only rejected, literal silently
+ * dropped). We now REJECT both consistently (see {@link assertNoHoistWeakenedStatusFields})
+ * — the one behavior. A field that ALSO references a real managed resource stays
+ * representable (KRO accepts it; a literal inside it is fine) and is NOT flagged.
  *
- * Returns only TOP-LEVEL status keys (the KRO status schema is a flat map of field
- * → CEL); a field is included iff rewriting its value changed it AND the rewritten
- * value still references `schema`.
+ * Returns only TOP-LEVEL status keys (the KRO status schema is a flat map of field →
+ * CEL); a field is included iff rewriting its value CHANGED it (it referenced the
+ * hoisted Namespace) AND the rewritten value references no managed resource (i.e. it
+ * references `schema`, or is a pure constant).
  */
 export function hoistWeakenedStatusFields(
   statusMappings: Record<string, unknown> | undefined,
@@ -474,16 +543,19 @@ export function hoistWeakenedStatusFields(
     if (key.startsWith('__')) continue; // internal composition metadata, not a status field
     const rewritten = rewriteHoistedNamespaceRefsInValue(value, hoisted);
     if (rewritten === value) continue; // did not reference a hoisted Namespace
-    if (rewrittenReferencesSchema(rewritten)) weakened.push(key);
+    // Unrepresentable in KRO status when the rewritten value references `schema`
+    // (KRO can't eval it) OR references NO managed resource (a pure constant — KRO
+    // requires a resource dependency, and typekro would drop it as static).
+    if (rewrittenReferencesSchema(rewritten) || !rewrittenReferencesManagedResource(rewritten)) {
+      weakened.push(key);
+    }
   }
   return weakened;
 }
 
 /**
  * Whether a rewritten status value still references the `schema` identifier — a
- * schema-only expression KRO status CEL cannot evaluate. Used to distinguish a
- * genuinely-weakened field (rewrote to `schema.spec.namespace`) from a benign one
- * (rewrote to a constant, e.g. a literally-named namespace).
+ * schema-only expression KRO status CEL cannot evaluate.
  */
 function rewrittenReferencesSchema(value: unknown): boolean {
   const hasSchema = (s: string): boolean =>
@@ -499,19 +571,49 @@ function rewrittenReferencesSchema(value: unknown): boolean {
 }
 
 /**
- * HONEST behavior for finding #6: REJECT (throw) a composition whose status
- * field(s) reference ONLY a hoisted Namespace's `metadata.name` in a way that
- * cannot be represented in the KRO status schema.
+ * Whether a rewritten status value references at least one MANAGED RESOURCE — a
+ * non-`schema` KubernetesRef, or a `<id>.status|spec|metadata` / `__KUBERNETES_REF_<id>_`
+ * token whose id is not `schema`. KRO requires every status field to reference a
+ * resource; a value that references none (a pure constant, or schema-only) is
+ * unrepresentable. Used together with {@link rewrittenReferencesSchema} so the
+ * literal-only case (finding #6) is rejected consistently with the schema-only case.
+ */
+function rewrittenReferencesManagedResource(value: unknown): boolean {
+  const hasResourceToken = (s: string): boolean => {
+    const dotRef = /(?<![A-Za-z0-9_$])([A-Za-z_$][\w$]*)\.(?:status|spec|metadata)\b/g;
+    for (const match of s.matchAll(dotRef)) {
+      if (match[1] !== 'schema') return true;
+    }
+    const markerRef = /__KUBERNETES_REF_([A-Za-z0-9_$]+?)_/g;
+    for (const match of s.matchAll(markerRef)) {
+      if (match[1] !== '__schema__' && match[1] !== 'schema') return true;
+    }
+    return false;
+  };
+  if (typeof value === 'string') return hasResourceToken(value);
+  if (isCelExpression(value)) return hasResourceToken(value.expression);
+  if (isKubernetesRef(value)) return value.resourceId !== '__schema__';
+  if (Array.isArray(value)) return value.some(rewrittenReferencesManagedResource);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(rewrittenReferencesManagedResource);
+  }
+  return false;
+}
+
+/**
+ * HONEST, CONSISTENT behavior for finding #6: REJECT (throw) a composition whose
+ * status field(s) resolve ONLY to a hoisted owned Namespace's `metadata.name` — i.e.
+ * once the Namespace leaves the RGD the field references no managed resource.
  *
- * Hoisting the owned Namespace out of the RGD turns such a field into a
- * schema-only expression (`schema.spec.namespace`), which KRO status CEL cannot
- * evaluate — so the field could only be dropped from the emitted KRO status schema.
- * Silently dropping it would ship a status API weaker than the one the composition
- * declares: a consumer reading the CR status, or a pure-GitOps deploy, sees the
- * field simply missing with no error. Instead we FAIL LOUDLY at serialization,
- * naming the offending field(s), so the composition author restructures the status
- * (derive the value from a managed resource, or drop the field) rather than
- * discovering a silently-weakened API in production.
+ * KRO requires every instance status field to reference a resource and cannot
+ * evaluate `schema` in status CEL, so such a field is unrepresentable in the emitted
+ * KRO status whether the Namespace is schema-named (rewrites to `schema.spec.namespace`)
+ * or literally-named (rewrites to a constant). Previously the schema case threw while
+ * the literal case was silently dropped (schema generation classifies literal-only
+ * status as static and excludes it) — the two code paths disagreed. Both are now
+ * REJECTED the same way: FAIL LOUDLY at serialization, naming the field(s), so the
+ * author restructures the status (derive the value from a managed resource, or drop
+ * the field) instead of shipping a silently-weakened status API.
  */
 export function assertNoHoistWeakenedStatusFields(
   statusMappings: Record<string, unknown> | undefined,
@@ -523,9 +625,11 @@ export function assertNoHoistWeakenedStatusFields(
   throw new TypeKroError(
     `Composition "${compositionName}" cannot be serialized for KRO: status field(s) ` +
       `[${weakened.join(', ')}] resolve ONLY to a hoisted owned Namespace's metadata.name. ` +
-      `Once that Namespace is hoisted out of the RGD the reference becomes a schema-only ` +
-      `expression (\`schema.spec.namespace\`), which KRO status CEL cannot evaluate, so the field ` +
-      `cannot be represented in the KRO status schema. Remove the field or derive its value from a ` +
+      `Once that Namespace is hoisted out of the RGD the reference no longer targets any managed ` +
+      `resource (it becomes a schema-only expression \`schema.spec.namespace\` for a schema-named ` +
+      `Namespace, or a bare constant for a literally-named one). KRO requires every status field ` +
+      `to reference a resource and cannot evaluate \`schema\` in status CEL, so the field cannot be ` +
+      `represented in the KRO status schema either way. Remove the field or derive its value from a ` +
       `managed resource instead of the owned Namespace's name. See docs/advanced/migration.md.`,
     'HOIST_WEAKENED_STATUS_FIELD',
     { compositionName, fields: weakened }

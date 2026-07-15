@@ -324,37 +324,62 @@ strand its finalizer by terminating the namespace that holds it.
 
 **Upgrading an existing (pre-hoist) deployment** whose Namespace was a KRO graph child
 is **not migrated automatically**. A pre-hoist RGD had the Namespace inside its
-ApplySet; the new RGD does not. Rolling the new RGD out over the old one is safe for
-the RGD itself, but the previously KRO-owned live Namespace is left carrying KRO's
-`applyset.kubernetes.io/part-of` / `kro.run/*` ownership labels. This is a rare,
-one-time situation and there is no supported automatic reclaim. Choose one:
+ApplySet; the new RGD does not. The previously KRO-owned live Namespace is left
+carrying KRO's `applyset.kubernetes.io/part-of` / `kro.run/*` ownership labels, and
+rolling the new (hoisted) RGD out over the old one would drop the Namespace from the
+ApplySet — so KRO's prune would **delete the live namespace** and its workloads.
 
-- **Recreate (simplest).** Delete the instance (which triggers KRO's finalizer-safe
-  teardown), then redeploy with the current TypeKro version. The namespace is
-  recreated as a sibling. Use this when the namespace holds no irreplaceable state.
-- **Adopt the live namespace in place.** If the namespace must survive, remove KRO's
-  ownership labels from it *before* rolling out the new RGD, so KRO's prune no longer
-  enumerates it:
+TypeKro **fails closed** on this: an imperative `deploy()` detects a to-be-hoisted
+namespace that still carries KRO ApplySet ownership labels and **throws**
+(`PRE_HOIST_NAMESPACE_CONFLICT`) before touching the RGD, rather than silently
+pruning your namespace. There is no automatic reclaim. Choose one:
+
+- **Recreate (simplest, recommended).** Delete the instance (which triggers KRO's
+  finalizer-safe teardown), then redeploy with the current TypeKro version. The
+  namespace is recreated as a sibling. Use this when the namespace holds no
+  irreplaceable state.
+- **Adopt the live namespace in place (advanced; requires quiescing KRO).** If the
+  namespace must survive, remove KRO's ownership labels from it *before* rolling out
+  the new RGD, so KRO's prune no longer enumerates it. **This label strip is racy
+  against a live KRO controller**: if the controller reconciles the old RGD between
+  your strip and the new-RGD apply, it can re-stamp the ownership labels (or prune the
+  namespace) in that window. Do it only with the controller **quiesced** — scale the
+  KRO controller deployment to `0` (or otherwise pause reconciliation of the old RGD),
+  strip the labels, apply the new hoisted RGD, then resume the controller:
 
   ```bash
+  # 1. Quiesce KRO so it cannot reconcile the old RGD mid-migration.
+  kubectl -n kro-system scale deploy/kro --replicas=0
+
+  # 2. Strip KRO's ownership labels so the new RGD's prune no longer enumerates the ns.
   kubectl label namespace <ns> \
     applyset.kubernetes.io/part-of- \
     kro.run/owned- kro.run/instance-id- \
     app.kubernetes.io/managed-by- \
     typekro.io/kro-instance-namespace=true --overwrite
+
+  # 3. Apply the new (hoisted) RGD, then resume the controller.
+  kubectl -n kro-system scale deploy/kro --replicas=1
   ```
 
-  Then apply the new (hoisted) RGD. The namespace is now a plain, TypeKro-marked
-  sibling that the current delete path manages.
+  The namespace is now a plain, TypeKro-marked sibling that the current empty-gated
+  delete path manages. If you cannot quiesce the controller, prefer **Recreate**.
 
 ### Status fields that reference an owned namespace's name
 
-A status field whose value resolves **only** to a hoisted Namespace's
-`metadata.name` (e.g. `status.namespace: ${ownedNamespace.metadata.name}`) rewrites
-to a schema-only expression (`schema.spec.namespace`) once the Namespace leaves the
-RGD, and KRO status CEL cannot evaluate `schema`. TypeKro **rejects** such a
-composition at serialization (naming the field) rather than silently shipping a
-weaker status API. Derive the value from a managed resource, or drop the field.
+A status field whose value resolves **only** to a hoisted Namespace's `metadata.name`
+(e.g. `status.namespace: ${ownedNamespace.metadata.name}`) cannot be represented in
+the KRO status once the Namespace leaves the RGD — in **either** shape:
+
+- a **schema-named** Namespace rewrites the field to `schema.spec.namespace`, which
+  KRO status CEL cannot evaluate; and
+- a **literally-named** Namespace rewrites it to a bare constant, which KRO rejects
+  (KRO requires every status field to reference a resource) and TypeKro would drop as
+  a static field.
+
+TypeKro **rejects** such a composition at serialization (naming the field) in both
+cases — one consistent behavior — rather than silently shipping a weaker status API.
+Derive the value from a managed resource, or drop the field.
 
 ## Next Steps
 

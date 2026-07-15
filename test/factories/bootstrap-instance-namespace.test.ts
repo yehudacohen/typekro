@@ -40,7 +40,7 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(rgd).not.toContain('kind: Namespace');
   });
 
-  it('dagsterBootstrap.toAlchemyResources emits the instance-owned (1:1) namespace first, NOT retained', async () => {
+  it('dagsterBootstrap.toAlchemyResources emits the hoisted namespace first, EMPTY-GATED', async () => {
     const factory = dagsterBootstrap.factory('kro', { namespace: 'dagster' });
     const decls = await factory.toAlchemyResources({
       name: 'analytics',
@@ -49,17 +49,19 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     const nsDecl = decls[0];
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('dagster');
-    // The namespace is the instance's OWN (1:1) namespace (name == instance ns), so it
-    // is NOT retained: alchemy's reverse-topo teardown deletes it AFTER the RGD +
-    // instance (both dependsOn it) — the load-bearing delete-after-RGD ordering.
+    // Findings #3 + #4: the namespace is EMPTY-GATED (delete-if-empty / retain-if-occupied)
+    // rather than retain-by-name-equality. Alchemy's reverse-topo teardown runs its
+    // delete AFTER the RGD + instance (both dependsOn it) — the delete-after-RGD ordering.
+    expect(nsDecl?.props.namespaceEmptyGate).toBe(true);
     expect(nsDecl?.props.retain).toBeUndefined();
     // The instance CR depends on the namespace, so reverse-topo teardown removes the
     // instance (then the RGD) before the namespace — the delete-after-RGD ordering.
     expect(decls.at(-1)?.dependsOn).toContain(nsDecl?.id);
     // The instance CR (last declaration) stays in the workload namespace.
     expect(decls.at(-1)?.props.namespace).toBe('dagster');
-    // The instance CR itself is NOT retained (it's per-consumer, torn down normally).
+    // The instance CR itself is neither retained nor empty-gated (torn down normally).
     expect(decls.at(-1)?.props.retain).toBeUndefined();
+    expect(decls.at(-1)?.props.namespaceEmptyGate).toBeUndefined();
   });
 
   it('clickhouseOperatorBootstrap serializes without throwing (instance in workload ns)', () => {
@@ -134,23 +136,28 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(yaml).toContain('argocd.argoproj.io/sync-options: Prune=false,Delete=false');
   });
 
-  it('the hoisted namespace alchemy declaration is retained (never deleted on teardown)', async () => {
+  it('the hoisted namespace alchemy declaration is EMPTY-GATED on teardown (delete-if-empty)', async () => {
     const decls = await dagsterBootstrap
       .factory('kro')
       .toAlchemyResources({ name: 'demo', namespace: 'dagster' } as never);
     const nsDecl = decls[0];
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('dagster');
-    expect(nsDecl?.props.retain).toBe(true);
-    // The instance CR itself is NOT retained (it's per-consumer, torn down normally).
-    expect(decls.at(-1)?.props.retain).toBeUndefined();
+    // Findings #3 + #4: replaces the old retain-by-name-equality distinction. Every
+    // hoisted namespace is empty-gated — deleted ONLY if empty, retained if another
+    // stack/user still has resources inside it — so `retain` is no longer set.
+    expect(nsDecl?.props.namespaceEmptyGate).toBe(true);
+    expect(nsDecl?.props.retain).toBeUndefined();
+    // The instance CR itself is not empty-gated (it's per-consumer, torn down normally).
+    expect(decls.at(-1)?.props.namespaceEmptyGate).toBeUndefined();
   });
 
   it('the hoisted namespace is a SINGLETON deduped by NAME across factories', async () => {
     // Two independent factories/stacks targeting the SAME workload namespace emit
-    // the SAME retained namespace declaration (same id), so alchemy converges on
-    // ONE shared, retained object rather than N fighting copies. Different kinds,
-    // same workload namespace ('shared-ns') → one deduped namespace declaration.
+    // the SAME namespace declaration (same id), so alchemy converges on ONE shared
+    // object rather than N fighting copies. Its teardown is empty-gated: whichever
+    // stack tears down last (leaving it empty) deletes it; while any stack still has
+    // resources inside, the gate retains it — no cross-stack refcount needed.
     const a = await dagsterBootstrap
       .factory('kro')
       .toAlchemyResources({ name: 'a', namespace: 'shared-ns' } as never);
@@ -160,8 +167,8 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(a[0]?.props.resource.metadata?.name).toBe('shared-ns');
     expect(b[0]?.props.resource.metadata?.name).toBe('shared-ns');
     expect(a[0]?.id).toBe(b[0]?.id as string);
-    expect(a[0]?.props.retain).toBe(true);
-    expect(b[0]?.props.retain).toBe(true);
+    expect(a[0]?.props.namespaceEmptyGate).toBe(true);
+    expect(b[0]?.props.namespaceEmptyGate).toBe(true);
   });
 
   it('clickstackBootstrap serializes without throwing (instance in workload ns)', () => {
