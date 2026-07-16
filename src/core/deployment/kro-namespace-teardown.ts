@@ -257,22 +257,25 @@ const METRICS_AGGREGATION_GROUPS = new Set([
 ]);
 
 /**
- * Default {@link NamespaceInventory} backed by the live cluster. Discovery uses the
- * typed group clients' `getAPIResources()` (core + the built-in namespaced groups)
- * plus the CRD list (for custom namespaced kinds), all via the Bun-compatible client
- * wrappers — no raw HTTP, so it behaves identically under Bun and Node. Listing uses
- * `KubernetesObjectApi.list(apiVersion, kind, namespace)` and FOLLOWS the list
- * continuation token so a namespace with more objects than one page never hides an
- * occupant behind a silent cap (finding #5b).
+ * Default {@link NamespaceInventory} backed by the live cluster. Discovery enumerates
+ * EVERY served API group DYNAMICALLY — the core group via `CoreV1Api.getAPIResources()`
+ * and every other served group via `CustomObjectsApi.getAPIResources(group, version)`
+ * (the generic per-group discovery endpoint, `GET /apis/{group}/{version}`) — all
+ * through the Bun-compatible client wrappers (no raw HTTP; identical under Bun and Node).
+ * This covers built-in AND custom (CRD) namespaced kinds uniformly, since a CRD's group
+ * appears in the served-group list. Listing uses `KubernetesObjectApi.list(apiVersion,
+ * kind, namespace)` and FOLLOWS the list continuation token so a namespace with more
+ * objects than one page never hides an occupant behind a silent cap (finding #5b).
  *
- * COVERAGE / UNCERTAINTY (finding #5a): after enumerating the built-in groups + CRDs,
- * discovery cross-checks the cluster's SERVED API groups. A served group that this
- * inventory did not enumerate AND that is backed by an aggregated APIService (an
- * external backend this client cannot enumerate) — excluding the ephemeral metrics
- * groups — makes discovery THROW an uncertainty error, which {@link classifyNamespaceEmptiness}
- * turns into a fail-safe RETAIN. Non-aggregated (apiserver-native) groups outside the
- * enumerated set are overwhelmingly cluster-scoped-only; treating them as covered is
- * the documented boundary, with the ownership record (not emptiness) as the primary guard.
+ * COVERAGE / UNCERTAINTY (finding #5a): the emptiness gate is a SECONDARY backstop
+ * (ownership is the PRIMARY teardown guard), so it must never misclassify occupied as
+ * empty. If the cluster serves a namespaced group this inventory CANNOT enumerate — for
+ * ANY reason: a native group whose discovery call fails, or an aggregated APIService
+ * whose external backend is unreachable — discovery THROWS an uncertainty error, which
+ * {@link classifyNamespaceEmptiness} turns into a fail-safe RETAIN. The ONLY groups
+ * deliberately skipped are the ephemeral metrics aggregation groups (their samples are
+ * never persistent occupants). There is no native-vs-aggregated distinction: anything we
+ * can't enumerate is uncertainty.
  */
 export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): NamespaceInventory {
   const objectApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
@@ -280,38 +283,25 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
     async discoverNamespacedTypes(): Promise<NamespacedResourceType[]> {
       // Deduplicate by apiVersion/kind — a kind can surface via more than one path.
       const seen = new Map<string, NamespacedResourceType>();
-      // The API GROUPS we actually enumerated (so we can detect coverage gaps below).
-      const enumeratedGroups = new Set<string>(['']); // '' = the core group
       const add = (apiVersion: string, kind: string): void => {
         const key = `${apiVersion}/${kind}`;
         if (!seen.has(key)) seen.set(key, { apiVersion, kind });
       };
-
-      // Discover built-in groups via each typed client's getAPIResources(). The core
-      // group and the namespaced built-in groups are covered; getAPIResources returns
-      // the group's V1APIResourceList with each resource's `namespaced`/`verbs`. Every
-      // typed client exposes getAPIResources with the same shape, so casting each to a
-      // representative (CoreV1Api) for that single call is sound.
-      const k8sClient = await import('@kubernetes/client-node');
-      const groupClients: (typeof k8sClient.CoreV1Api)[] = [
-        k8sClient.CoreV1Api,
-        k8sClient.AppsV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.BatchV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.NetworkingV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.RbacAuthorizationV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.PolicyV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.AutoscalingV2Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.DiscoveryV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.CoordinationV1Api as unknown as typeof k8sClient.CoreV1Api,
-        k8sClient.StorageV1Api as unknown as typeof k8sClient.CoreV1Api,
-      ];
-
-      for (const ClientClass of groupClients) {
-        const client = createBunCompatibleApiClient(kubeConfig, ClientClass);
-        const list = await client.getAPIResources();
-        const groupVersion = list.groupVersion || 'v1';
-        // groupVersion is `v1` (core) or `group/version`; record the bare group.
-        enumeratedGroups.add(groupVersion.includes('/') ? (groupVersion.split('/')[0] ?? '') : '');
+      // Add every NAMESPACED, LISTABLE (non-subresource) kind from a discovered
+      // V1APIResourceList served at `groupVersion`.
+      const addFromList = (
+        groupVersion: string,
+        list: {
+          resources?: Array<{
+            name: string;
+            kind: string;
+            namespaced?: boolean;
+            verbs?: string[];
+            group?: string;
+            version?: string;
+          }>;
+        }
+      ): void => {
         for (const resource of list.resources ?? []) {
           if (resource.namespaced !== true) continue;
           if (resource.name.includes('/')) continue; // subresource
@@ -322,56 +312,50 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
               : groupVersion;
           add(apiVersion, resource.kind);
         }
-      }
+      };
 
-      // Discover custom (CRD) namespaced kinds. These are the extensibility surface the
-      // built-in group set cannot cover.
-      const apiextensions = createBunCompatibleApiClient(kubeConfig, k8sClient.ApiextensionsV1Api);
-      const crds = await apiextensions.listCustomResourceDefinition();
-      for (const crd of crds.items ?? []) {
-        if (!crd.spec?.group) continue;
-        enumeratedGroups.add(crd.spec.group); // group is served by a CRD we DID enumerate
-        if (crd.spec.scope !== 'Namespaced') continue;
-        const group = crd.spec.group;
-        const kind = crd.spec.names?.kind;
-        if (!group || !kind) continue;
-        // Prefer the storage version, else the first served version.
-        const version =
-          crd.spec.versions?.find((v) => v.storage && v.served)?.name ??
-          crd.spec.versions?.find((v) => v.served)?.name;
-        if (!version) continue;
-        add(`${group}/${version}`, kind);
-      }
+      const k8sClient = await import('@kubernetes/client-node');
 
-      // COVERAGE CHECK (finding #5a): fail toward RETAIN if the cluster serves an
-      // aggregated APIService group this inventory cannot enumerate. `getAPIVersions`
-      // lists every served group; `listAPIService` distinguishes aggregated groups
-      // (`spec.service` set → external backend) from apiserver-native ones.
+      // 1. Core group (`/api/v1`) — no group name, so use the core client directly.
+      const coreClient = createBunCompatibleApiClient(kubeConfig, k8sClient.CoreV1Api);
+      addFromList('v1', await coreClient.getAPIResources());
+
+      // 2. EVERY other served API group, enumerated dynamically. `getAPIVersions` lists
+      // all served groups; for each we discover its preferred version's resources via
+      // the GENERIC per-group endpoint. A group we cannot enumerate (discovery failure,
+      // or an unreachable aggregated backend) is UNCERTAINTY → RETAIN (throw).
       const apisApi = createBunCompatibleApiClient(kubeConfig, k8sClient.ApisApi);
       const groupList = await apisApi.getAPIVersions();
-      const servedGroups = new Set(
-        (groupList.groups ?? []).map((g) => g.name).filter((n): n is string => typeof n === 'string')
-      );
-      const uncoveredServed = [...servedGroups].filter((g) => !enumeratedGroups.has(g));
-      if (uncoveredServed.length > 0) {
-        const apiregistration = createBunCompatibleApiClient(
-          kubeConfig,
-          k8sClient.ApiregistrationV1Api
-        );
-        const apiServices = await apiregistration.listAPIService();
-        const aggregatedGroups = new Set(
-          (apiServices.items ?? [])
-            .filter((svc) => svc.spec?.service != null) // aggregated (external backend)
-            .map((svc) => svc.spec?.group)
-            .filter((g): g is string => typeof g === 'string')
-        );
-        const unenumerableAggregated = uncoveredServed.filter(
-          (g) => aggregatedGroups.has(g) && !METRICS_AGGREGATION_GROUPS.has(g)
-        );
-        if (unenumerableAggregated.length > 0) {
+      // Cast to the CustomObjectsApi shape whose generic `getAPIResources({group, version})`
+      // hits `GET /apis/{group}/{version}` for ANY group (built-in or CRD-backed).
+      const customApi = createBunCompatibleApiClient(kubeConfig, k8sClient.CustomObjectsApi) as unknown as {
+        getAPIResources(request: {
+          group: string;
+          version: string;
+        }): Promise<Parameters<typeof addFromList>[1]>;
+      };
+
+      for (const group of groupList.groups ?? []) {
+        const groupName = group.name;
+        if (typeof groupName !== 'string' || groupName.length === 0) continue;
+        // Metrics groups are ephemeral read-only samples — never persistent occupants —
+        // so they are deliberately skipped rather than treated as uncertainty.
+        if (METRICS_AGGREGATION_GROUPS.has(groupName)) continue;
+        const version = group.preferredVersion?.version ?? group.versions?.[0]?.version;
+        if (typeof version !== 'string' || version.length === 0) {
+          // A served group with no discoverable version — cannot enumerate it → RETAIN.
           throw new Error(
-            `cluster serves aggregated API group(s) this inventory cannot enumerate ` +
-              `(${unenumerableAggregated.join(', ')}); cannot prove the namespace is empty`
+            `served API group "${groupName}" reports no discoverable version; cannot prove the namespace is empty`
+          );
+        }
+        try {
+          addFromList(`${groupName}/${version}`, await customApi.getAPIResources({ group: groupName, version }));
+        } catch (error: unknown) {
+          // Cannot enumerate this served namespaced group (native OR aggregated) →
+          // UNCERTAINTY → fail-safe RETAIN (finding #5).
+          throw new Error(
+            `cannot enumerate served API group "${groupName}/${version}" ` +
+              `(${ensureError(error).message}); cannot prove the namespace is empty`
           );
         }
       }

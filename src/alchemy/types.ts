@@ -113,6 +113,16 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   namespaceOwnerRgd?: string;
 
   /**
+   * CRD coordinates for the ALCHEMY pre-hoist safety check (finding #7). When set
+   * alongside {@link namespaceEmptyGate}, the deploy hook enumerates EVERY existing
+   * instance of this shared RGD (via the generated CRD) and checks each one's namespace
+   * for pre-hoist KRO ApplySet ownership — not just the incoming namespace — so an
+   * upgrade cannot let KRO's prune delete another instance's namespace unchecked. The
+   * `group`/`version`/`kind` identify the generated CRD; the plural is discovered live.
+   */
+  namespacePreHoistQuery?: { group: string; version: string; kind: string };
+
+  /**
    * Resolved outputs of the resources this one depends on. Two jobs:
    *
    *  1. **Ordering** — because each entry traces back (via an alchemy `Output`) to another

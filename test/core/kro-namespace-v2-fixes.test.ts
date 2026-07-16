@@ -64,6 +64,10 @@ describe('#2: assertNoPreHoistNamespaceConflict fails closed on a KRO-owned name
     (factory as Record<string, unknown>).createKubernetesObjectApi = () => ({
       read,
       delete: async () => ({}),
+      // The guard enumerates existing instances FIRST (finding #7): a CRD list with no
+      // match means a fresh cluster (no prior instances), so only the incoming namespace
+      // (via `read`) is checked — isolating these cases to the namespace-read behavior.
+      list: async () => ({ items: [] }),
     });
     return priv(factory, 'assertNoPreHoistNamespaceConflict');
   };
@@ -113,6 +117,26 @@ describe('#2: assertNoPreHoistNamespaceConflict fails closed on a KRO-owned name
       throw err;
     });
     await expect(assertFn(['app'])).rejects.toThrow(/PRE_HOIST_NAMESPACE_CHECK_FAILED|could not read/);
+  });
+
+  it('FAILS CLOSED on a CRD-discovery error while enumerating instances (finding #3)', async () => {
+    // The instance-enumeration step lists CRDs to find the generated CRD's plural. A LIST
+    // failure (RBAC/connectivity) is NOT proof the CRD is absent — it must ABORT the
+    // deploy, not be swallowed as "fresh cluster".
+    const factory = ownsNs().factory('kro', { namespace: 'app' });
+    (factory as unknown as Record<string, unknown>).createKubernetesObjectApi = () => ({
+      read: async () => ({ metadata: { labels: {} } }),
+      delete: async () => ({}),
+      list: async () => {
+        const err = new Error('forbidden') as Error & { statusCode?: number };
+        err.statusCode = 403;
+        throw err;
+      },
+    });
+    const assertFn = priv(factory, 'assertNoPreHoistNamespaceConflict');
+    await expect(assertFn(['app'])).rejects.toThrow(
+      /PRE_HOIST_CRD_DISCOVERY_FAILED|could not discover the generated CRD/
+    );
   });
 });
 

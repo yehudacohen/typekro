@@ -365,6 +365,62 @@ pruning your namespace. There is no automatic reclaim. Choose one:
   The namespace is now a plain, TypeKro-marked sibling that the current empty-gated
   delete path manages. If you cannot quiesce the controller, prefer **Recreate**.
 
+### How teardown deletes (order) and what it leaves behind
+
+Deleting a KRO instance tears its footprint down in strict **reverse-topological**
+order — the reverse of how it was created (CRDs are the most foundational type, so they
+are created first and destroyed last):
+
+1. **Instance CR** — deleted and gated to a real `404`, so KRO's `kro.run/finalizer`
+   has cleared (KRO graph-deleted every child) **before** the next step. Deleting the
+   RGD while KRO is mid-finalizer orphans cleanup, so this gate is load-bearing.
+2. **RGD** — deleted and gated to `404` (only when no other instance shares it).
+3. **Owned workload Namespace** — deleted **before** the CRD, gated to `404`. This
+   ordering is what makes the namespace delete *reliable*: the generated CRD is still
+   **healthy/Active** at this point, so the namespace controller enumerates that type's
+   zero instances **instantly** to confirm the namespace is empty. (Only a *Terminating*
+   CRD stalls a namespace — the apiextensions `customresourcecleanup` finalizer can hang
+   for minutes even with zero instances, [kro#1171]. That is exactly why the CRD is
+   deleted *after* the namespace.) A namespace is deleted **only if** it is both owned by
+   this RGD (carries the `typekro.io/created-by-rgd` record) **and** empty; otherwise it
+   is retained.
+4. **Generated CRD** — deleted **last**, and **best-effort / non-fatal**. KRO never
+   deletes it itself (`allowCRDDeletion=false`), and its apiextensions cleanup finalizer
+   can stall. By this point the namespace is already gone, so a slow CRD teardown blocks
+   nothing: the delete is issued and awaited generously, but a timeout is *logged, not
+   thrown* — it must never undo an otherwise-successful teardown.
+
+**What can be left behind:** if the generated CRD's cleanup finalizer is slow, the CRD
+may linger (Terminating, or occasionally leftover). This is **harmless** — it has zero
+instances and is not referenced by anything — and an operator may garbage-collect it
+out-of-band (`kubectl delete crd <plural>.<group>`). In high-churn ephemeral
+environments that create/destroy many short-lived instances, these dangling CRDs can
+accumulate; sweep them periodically if desired.
+
+### Namespace deletion is best-effort-safe, not atomic (ownership primary, emptiness secondary)
+
+The empty-gate reads the namespace's contents and then deletes it — a check→delete
+window that is **inherently racy** for a namespace another actor might write to
+concurrently. TypeKro treats this as acceptable by design:
+
+- **Ownership is the PRIMARY guard** (record-based, not racy): a namespace is a deletion
+  candidate only if it carries this RGD's `typekro.io/created-by-rgd` annotation, stamped
+  **only** when TypeKro actually created it. An adopted or pre-existing namespace never
+  carries the record and is **never** deleted, regardless of emptiness.
+- **Emptiness is the SECONDARY backstop** (best-effort): a fail-safe net that RETAINS on
+  *any* doubt. Its cluster discovery enumerates every served namespaced API group; if it
+  cannot enumerate one (a native group whose discovery fails, or an unreachable
+  aggregated APIService backend), it treats that as uncertainty and **retains** the
+  namespace rather than risk deleting an occupied one.
+
+The net contract: namespace deletion is **best-effort-safe** — never atomic, and
+retained on any doubt. The residual check→delete race can, at worst, leave an
+owned-but-now-occupied namespace deleted if another actor writes into it in the exact
+window between the emptiness check and the delete; ownership scoping keeps this confined
+to namespaces TypeKro itself created for this composition.
+
+[kro#1171]: https://github.com/kro-run/kro/issues/1171
+
 ### Status fields that reference an owned namespace's name
 
 A status field whose value resolves **only** to a hoisted Namespace's `metadata.name`

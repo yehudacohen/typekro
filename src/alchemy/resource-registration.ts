@@ -25,9 +25,15 @@ import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
-import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
+import {
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+} from '../core/kubernetes/index.js';
 import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
-import { deleteNamespaceIfEmpty } from '../core/deployment/kro-namespace-teardown.js';
+import {
+  deleteNamespaceIfEmpty,
+  NAMESPACE_OWNER_ANNOTATION,
+} from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
@@ -201,26 +207,31 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
   // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
   await _assertNoSingletonDrift(props, logger);
-  const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
+  // finding #2 (adopted-namespace): the hoisted workload Namespace is stamped
+  // owned-by-this-RGD at BUILD time (cluster-free). READ the live namespace here and
+  // KEEP that stamp ONLY when typekro actually creates it (404) or already owns it;
+  // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
+  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger);
+  const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment');
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
     // resolves its cross-resource references + CEL expressions against them (the deps deployed
     // first via alchemy ordering). KRO docs are self-contained, so the seed is irrelevant there.
-    const seedResources = _seedFromDependencies(props);
+    const seedResources = _seedFromDependencies(effectiveProps);
     // alchemy serializes props to state, flattening this resource's CEL refs to `${…}` STRINGS.
     // The engine resolver only evaluates CEL OBJECTS, so (direct mode, with dependency state to
     // resolve against) re-hydrate those strings into template CEL objects before deploying — but
     // ONLY strings that reference a known dependency id, so genuine `${…}` literals (e.g. a shell
     // `${HOME}` in an env var) are left untouched.
-    let resourceForDeploy: T = props.resource;
-    if (seedResources && props.deploymentStrategy === 'direct') {
+    let resourceForDeploy: T = effectiveProps.resource;
+    if (seedResources && effectiveProps.deploymentStrategy === 'direct') {
       resourceForDeploy = _rehydrateCelStrings(
-        props.resource,
+        effectiveProps.resource,
         new Set(seedResources.map((s) => s.id))
       ) as T;
     } else if (
-      props.deploymentStrategy === 'kro' &&
-      (props.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (effectiveProps.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
     ) {
       // KRO CR instance (the custom resource an RGD defines — not the RGD itself). After alchemy
       // serializes props to state, the resource is a plain manifest with no readiness evaluator, so a
@@ -229,7 +240,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       // InstanceSynced) — the same KRO-instance readiness the imperative deploy path waits on. The RGD
       // is excluded (it carries its own evaluator via the resourceGraphDefinition factory).
       const { kroCustomResource } = await import('../factories/kro/kro-custom-resource.js');
-      const r = props.resource as {
+      const r = effectiveProps.resource as {
         apiVersion?: string;
         kind?: string;
         metadata?: { name: string; namespace?: string };
@@ -242,9 +253,12 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
         spec: (r.spec ?? {}) as Record<string, unknown>,
       }) as unknown as T;
     }
-    const deployProps = resourceForDeploy === props.resource ? props : { ...props, resource: resourceForDeploy };
+    const deployProps =
+      resourceForDeploy === effectiveProps.resource
+        ? effectiveProps
+        : { ...effectiveProps, resource: resourceForDeploy };
     const { resourceProperties } = await _deployAndCreateResult(deployProps, deployer, seedResources);
-    _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, props, resourceProperties);
+    _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, effectiveProps, resourceProperties);
     return resourceProperties as unknown as TypeKroResource<T>;
   } catch (error: unknown) {
     logger.error('Error deploying resource through Alchemy', ensureError(error));
@@ -306,42 +320,198 @@ async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unkn
   logger: TypeKroLogger
 ): Promise<void> {
   if (props.namespaceEmptyGate !== true) return;
-  const name = props.resource.metadata?.name;
-  if (typeof name !== 'string' || name.length === 0) return;
+  const incoming = props.resource.metadata?.name;
+  if (typeof incoming !== 'string' || incoming.length === 0) return;
 
   const kc = _createClientProvider(props, 'pre-hoist-check');
   const api = createBunCompatibleKubernetesObjectApi(kc);
-  let labels: Record<string, string> = {};
+
+  // The set of namespaces to check: the incoming one PLUS every EXISTING instance's
+  // namespace (finding #7). An upgrade prunes the ApplySet for ALL instances of the
+  // shared RGD at once, so missing one would let KRO delete it.
+  const namespacesToCheck = new Set<string>([incoming]);
+  for (const ns of await _existingInstanceNamespacesAlchemy(props, kc, logger)) {
+    namespacesToCheck.add(ns);
+  }
+
+  for (const name of namespacesToCheck) {
+    let labels: Record<string, string> = {};
+    try {
+      const live = (await api.read({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name },
+      } as Parameters<typeof api.read>[0])) as { metadata?: { labels?: Record<string, string> } };
+      labels = live.metadata?.labels ?? {};
+    } catch (error: unknown) {
+      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+      if (code === 404) continue; // fresh namespace — nothing to migrate
+      // FAIL CLOSED: a non-404 read error means we cannot prove the namespace is safe.
+      throw new Error(
+        `Pre-hoist safety check could not read Namespace "${name}" (${ensureError(error).message}). ` +
+          `Refusing to deploy: a hoist over an unreadable namespace could let KRO's ApplySet prune delete it.`
+      );
+    }
+
+    const partOfKro =
+      typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
+      Object.keys(labels).some((key) => key.startsWith('kro.run/'));
+    if (partOfKro) {
+      throw new Error(
+        `Pre-hoist deployment detected: the live Namespace "${name}" is a KRO ApplySet member ` +
+          `(carries applyset.kubernetes.io/part-of and/or kro.run/* labels from a pre-hoist RGD). ` +
+          `typekro now HOISTS every owned Namespace out of the RGD, so applying the new RGD in place ` +
+          `would drop "${name}" from KRO's ApplySet and KRO's prune would DELETE it and its workloads. ` +
+          `This upgrade is not auto-migrated — see docs/advanced/migration.md.`
+      );
+    }
+  }
+  logger.debug('Pre-hoist namespace check passed (alchemy)', {
+    namespaces: [...namespacesToCheck],
+  });
+}
+
+/**
+ * The namespaces of EVERY existing instance of the shared RGD (finding #7, alchemy).
+ * Discovers the generated CRD from {@link TypeKroResourceProps.namespacePreHoistQuery},
+ * lists instances cluster-wide, and returns each instance's namespace.
+ *
+ * FAIL CLOSED: a CRD-discovery or instance-list FAILURE (RBAC/connectivity) is NOT proof
+ * of absence — it THROWS. Only a successful CRD list with no matching CRD (fresh cluster),
+ * or a definitive 404 listing instances, yields an empty set.
+ *
+ * NOTE (approximation vs. the imperative guard): the alchemy state is cluster-free and
+ * carries no composition function, so an instance's hoisted namespace cannot be
+ * re-derived from its spec here. We use the namespace the instance CR LIVES in
+ * (`metadata.namespace`, plus a string `spec.namespace` when present) — correct for the
+ * self-owned (1:1) case that hoisting targets. The incoming namespace is always checked
+ * directly by the caller regardless.
+ */
+async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  kc: KubeConfig,
+  logger: TypeKroLogger
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  const query = props.namespacePreHoistQuery;
+  if (!query) return result;
+
+  // STRICT CRD discovery — a list failure FAILS CLOSED (throws).
+  const objectApi = createBunCompatibleKubernetesObjectApi(kc);
+  const crds = (await objectApi.list(
+    'apiextensions.k8s.io/v1',
+    'CustomResourceDefinition'
+  )) as unknown as {
+    items?: Array<{ spec?: { group?: string; names?: { kind?: string; plural?: string } } }>;
+  };
+  const match = crds?.items?.find(
+    (crd) => crd.spec?.group === query.group && crd.spec?.names?.kind === query.kind
+  );
+  const plural = match?.spec?.names?.plural;
+  if (!plural) return result; // definitively fresh — no CRD, so no existing instances
+
+  let items: Array<{ metadata?: { namespace?: unknown }; spec?: unknown }>;
+  try {
+    const customApi = createBunCompatibleCustomObjectsApi(kc) as unknown as {
+      listClusterCustomObject(request: { group: string; version: string; plural: string }): Promise<{
+        items?: Array<{ metadata?: { namespace?: unknown }; spec?: unknown }>;
+      }>;
+    };
+    const listResponse = await customApi.listClusterCustomObject({
+      group: query.group,
+      version: query.version,
+      plural,
+    });
+    items = listResponse.items ?? [];
+  } catch (error: unknown) {
+    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+    const status = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+    if (status === 404) return result; // CRD/instances vanished — fresh
+    throw new Error(
+      `Pre-hoist safety check could not list existing instances of the RGD's CRD ` +
+        `(${ensureError(error).message}). Refusing to deploy: another instance's namespace could ` +
+        `be pruned by the hoist without being checked.`
+    );
+  }
+
+  for (const item of items) {
+    if (typeof item.metadata?.namespace === 'string') result.add(item.metadata.namespace);
+    const specNs = (item.spec as { namespace?: unknown } | undefined)?.namespace;
+    if (typeof specNs === 'string' && specNs.length > 0) result.add(specNs);
+  }
+  logger.debug('Enumerated existing-instance namespaces for the alchemy pre-hoist check', {
+    count: result.size,
+  });
+  return result;
+}
+
+/**
+ * finding #2 (alchemy adopted-namespace, mirrors the imperative `applyRetainedHoistedNamespace`
+ * create-vs-adopt logic): the hoisted workload Namespace carries a build-time
+ * `typekro.io/created-by-rgd` ownership stamp (added cluster-free in
+ * `buildHoistedNamespaceResource`). Applying it unconditionally would let the empty-gated
+ * teardown DELETE a namespace typekro merely ADOPTED. So READ the live namespace and keep
+ * the stamp ONLY when typekro truly creates it (404) or already owns it (stamp already ==
+ * this RGD); otherwise STRIP the stamp from the resource before apply so the live namespace
+ * never carries our ownership record and teardown retains it. `namespaceOwnerRgd` is KEPT on
+ * props either way — at delete time the empty-gate compares the LIVE annotation to it, and a
+ * stripped/adopted namespace (no matching annotation) is retained.
+ *
+ * Returns props unchanged for non-hoisted-namespace resources or when the stamp should
+ * stay; otherwise a shallow copy whose resource has the ownership annotation removed.
+ */
+async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<TypeKroResourceProps<T>> {
+  if (props.namespaceEmptyGate !== true || props.namespaceOwnerRgd === undefined) return props;
+  const name = props.resource.metadata?.name;
+  if (typeof name !== 'string' || name.length === 0) return props;
+
+  const kc = _createClientProvider(props, 'ownership-check');
+  const api = createBunCompatibleKubernetesObjectApi(kc);
+  let ownsNamespace: boolean;
   try {
     const live = (await api.read({
       apiVersion: 'v1',
       kind: 'Namespace',
       metadata: { name },
-    } as Parameters<typeof api.read>[0])) as { metadata?: { labels?: Record<string, string> } };
-    labels = live.metadata?.labels ?? {};
+    } as Parameters<typeof api.read>[0])) as { metadata?: { annotations?: Record<string, string> } };
+    // The namespace exists: typekro owns it ONLY if it already carries our ownership
+    // record (a prior deploy of this composition stamped it). Otherwise it is adopted.
+    ownsNamespace = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === props.namespaceOwnerRgd;
   } catch (error: unknown) {
     const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
     const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-    if (code === 404) return; // fresh namespace — nothing to migrate
-    throw new Error(
-      `Pre-hoist safety check could not read Namespace "${name}" (${ensureError(error).message}). ` +
-        `Refusing to deploy: a hoist over an unreadable namespace could let KRO's ApplySet prune delete it.`
-    );
+    // 404 → fresh: typekro is creating it, so it owns it. Any other read error → do NOT
+    // claim ownership (conservative — an unreadable namespace is not provably ours).
+    ownsNamespace = code === 404;
   }
 
-  const partOfKro =
-    typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
-    Object.keys(labels).some((key) => key.startsWith('kro.run/'));
-  if (partOfKro) {
-    throw new Error(
-      `Pre-hoist deployment detected: the live Namespace "${name}" is a KRO ApplySet member ` +
-        `(carries applyset.kubernetes.io/part-of and/or kro.run/* labels from a pre-hoist RGD). ` +
-        `typekro now HOISTS every owned Namespace out of the RGD, so applying the new RGD in place ` +
-        `would drop "${name}" from KRO's ApplySet and KRO's prune would DELETE it and its workloads. ` +
-        `This upgrade is not auto-migrated — see docs/advanced/migration.md.`
-    );
-  }
-  logger.debug('Pre-hoist namespace check passed (alchemy)', { namespace: name });
+  if (ownsNamespace) return props; // keep the build-time ownership stamp
+
+  logger.debug('Preserving namespace adoption — stripping build-time ownership stamp (alchemy)', {
+    namespace: name,
+    rgd: props.namespaceOwnerRgd,
+  });
+  return { ...props, resource: _stripNamespaceOwnerAnnotation(props.resource) };
+}
+
+/**
+ * Return a shallow copy of a Namespace resource with the `typekro.io/created-by-rgd`
+ * ownership annotation removed. Used by {@link _preserveHoistedNamespaceAdoption} to avoid
+ * stamping ownership onto an adopted namespace. By reconcile time alchemy has JSON-round-
+ * tripped props to state (no symbols/brands), so a shallow object copy is safe here.
+ */
+function _stripNamespaceOwnerAnnotation<T extends Enhanced<unknown, unknown>>(resource: T): T {
+  const src = resource as unknown as { metadata?: { annotations?: Record<string, string> } };
+  const annotations = { ...(src.metadata?.annotations ?? {}) };
+  delete annotations[NAMESPACE_OWNER_ANNOTATION];
+  return {
+    ...(resource as unknown as Record<string, unknown>),
+    metadata: { ...(src.metadata ?? {}), annotations },
+  } as unknown as T;
 }
 
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(

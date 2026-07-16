@@ -592,13 +592,46 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  /**
+   * STRICT plural discovery (finding #3, fail-closed). Distinguishes a definitive
+   * "CRD absent" (a successful CRD list with no matching definition → fresh cluster)
+   * from a discovery FAILURE (RBAC/connectivity/list error) — the latter is NOT proof
+   * of absence, so it THROWS rather than being swallowed into `undefined` the way
+   * {@link lookupCRDPlural} does. Callers that must fail closed (the pre-hoist safety
+   * guard) use this; callers that may fall back to a heuristic keep using
+   * {@link lookupCRDPlural}.
+   */
+  private async discoverGeneratedCrdPlural(): Promise<
+    { present: true; plural: string } | { present: false }
+  > {
+    const k8sApi = this.createKubernetesObjectApi();
+    // A LIST failure propagates (NOT caught) so callers FAIL CLOSED.
+    const crds = (await k8sApi.list(
+      'apiextensions.k8s.io/v1',
+      'CustomResourceDefinition'
+    )) as unknown as {
+      items?: Array<{ spec?: { group?: string; names?: { kind?: string; plural?: string } } }>;
+    };
+    const match = crds?.items?.find(
+      (crd) =>
+        crd.spec?.group === this.getSchemaGroup() &&
+        crd.spec?.names?.kind === this.schemaDefinition.kind
+    );
+    const plural = match?.spec?.names?.plural;
+    return plural ? { present: true, plural } : { present: false };
+  }
+
   private async requireCRDPluralForCleanup(): Promise<string> {
     if (!this.discoveredPlural) {
       this.discoveredPlural = await this.lookupCRDPlural();
     }
     if (!this.discoveredPlural) {
+      // Teardown-only guard: without the plural we cannot list instances to decide
+      // whether the RGD is shared, so the caller preserves the RGD (conservative). The
+      // generated CRD is intentionally RETAINED regardless (v4), so this no longer
+      // guards against orphaning it.
       throw new CRDInstanceError(
-        `Cannot determine CRD plural for ${this.schemaDefinition.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+        `Cannot determine CRD plural for ${this.schemaDefinition.kind}; preserving RGD to avoid deleting shared KRO state`,
         this.schemaDefinition.apiVersion,
         this.schemaDefinition.kind,
         '*',
@@ -1257,33 +1290,43 @@ export class KroResourceFactoryImpl<
    */
   private async existingInstancesHoistedNamespaceNames(): Promise<Set<string>> {
     const result = new Set<string>();
+
+    // Discover the generated CRD via a STRICT lookup that THROWS on a real list error
+    // (finding #3, fail-closed): a discovery/RBAC failure is NOT proof the CRD is
+    // absent. Only a successful list with no matching CRD is a definitive "fresh
+    // cluster" (no prior instances to protect).
+    let discovery: { present: true; plural: string } | { present: false };
+    try {
+      discovery = await this.discoverGeneratedCrdPlural();
+    } catch (error: unknown) {
+      throw new TypeKroError(
+        `Pre-hoist safety check could not discover the generated CRD for RGD "${this.rgdName}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: a discovery/RBAC error is not ` +
+          `proof the CRD is absent, and proceeding could let the hoist prune an existing ` +
+          `instance's namespace unchecked.`,
+        'PRE_HOIST_CRD_DISCOVERY_FAILED',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+    if (!discovery.present) return result; // definitively fresh — no prior instances
+
     let items: Array<{ spec?: unknown }>;
     try {
       const customApi = await this.createCustomObjectsApi();
-      const plural = await this.requireCRDPluralForCleanup();
       const listResponse = await customApi.listClusterCustomObject({
         group: this.getSchemaGroup(),
         version: this.getSchemaVersion(),
-        plural,
+        plural: discovery.plural,
       });
       items = (listResponse as { items?: Array<{ spec?: unknown }> }).items ?? [];
     } catch (error: unknown) {
-      // The CRD/RGD not existing yet (fresh deploy) is the common, SAFE case: there are
-      // no prior instances to protect. Treat "not found" as no instances; fail closed on
-      // anything else.
-      const k8sErr = error as {
-        statusCode?: number;
-        code?: number;
-        body?: { code?: number };
-        message?: string;
-        errorCode?: string;
-      };
+      // Only a DEFINITIVE 404 (the CRD/instances vanished between discovery and list)
+      // is treated as fresh; ANY other error FAILS CLOSED (finding #3) — a message
+      // that merely mentions "CRD"/"not found" no longer counts (that was the swallow
+      // bug), only a real NotFound status.
+      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
       const status = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-      const looksNotFound =
-        status === 404 ||
-        /not found|could not find|the server could not find|CRD/i.test(k8sErr.message ?? '') ||
-        /Cannot determine CRD plural/i.test(k8sErr.message ?? '');
-      if (looksNotFound) return result;
+      if (status === 404) return result;
       throw new TypeKroError(
         `Pre-hoist safety check could not list existing instances of RGD "${this.rgdName}" ` +
           `(${ensureError(error).message}). Refusing to deploy: another instance's namespace could ` +
@@ -1295,16 +1338,22 @@ export class KroResourceFactoryImpl<
 
     for (const item of items) {
       if (item.spec === undefined) continue;
+      // FAIL CLOSED (finding #3): if we cannot derive an existing instance's hoisted
+      // namespaces we cannot prove the hoist won't prune one — ABORT rather than log
+      // and silently under-count the protected set.
+      let namespaceNames: string[];
       try {
-        for (const ns of this.concreteHoistedNamespaces(item.spec as TSpec).keys()) {
-          result.add(ns);
-        }
+        namespaceNames = [...this.concreteHoistedNamespaces(item.spec as TSpec).keys()];
       } catch (error: unknown) {
-        this.logger.debug('Could not derive hoisted namespaces for an existing instance', {
-          rgdName: this.rgdName,
-          error: ensureError(error).message,
-        });
+        throw new TypeKroError(
+          `Pre-hoist safety check could not derive the hoisted namespaces of an existing ` +
+            `instance of RGD "${this.rgdName}" (${ensureError(error).message}). Refusing to ` +
+            `deploy: an underivable instance could own a namespace the hoist would prune unchecked.`,
+          'PRE_HOIST_INSTANCE_DERIVE_FAILED',
+          { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+        );
       }
+      for (const ns of namespaceNames) result.add(ns);
     }
     return result;
   }
@@ -1557,44 +1606,31 @@ export class KroResourceFactoryImpl<
       return;
     }
 
-    // Prove the generated CRD can be cleaned up before deleting the RGD. If plural
-    // discovery is unavailable this THROWS, preserving both rather than orphaning the
-    // generated CRD without its owning RGD.
-    const crdPlural = await this.requireCRDPluralForCleanup();
-    const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
-
     // 2. Delete the RGD and GATE on its 404 (findings #1 + #2). The RGD carries a KRO
     // finalizer; while KRO processes it, KRO's per-RGD dynamic controller is still
-    // WATCHING the generated CRD's resources. Deleting the CRD in that window makes the
-    // apiextensions `customresourcecleanup.apiextensions.k8s.io` finalizer block for
-    // minutes. Waiting for the RGD 404 first lets KRO tear its controller down so the
-    // CRD cleanup completes promptly. The gate THROWS on timeout (no silent proceed).
+    // WATCHING the generated CRD's resources. Waiting for the RGD 404 first lets KRO
+    // tear its controller down cleanly. The gate THROWS on timeout (no silent proceed).
     await rollback.deleteResourceAndWait(
       { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', name: this.rgdName },
       { timeout }
     );
     this.logger.debug('RGD deleted and fully gone', { rgdName: this.rgdName });
 
-    // 3. Delete the generated CRD and GATE on its 404 (finding #1). KRO's default
-    // config has allowCRDDeletion=false, so it does not clean up the CRD itself. The
-    // namespace step MUST wait for this 404: deleting/emptiness-checking the namespace
-    // while the CRD is still Terminating means KRO's children have not drained, so the
-    // namespace stalls behind them or the emptiness gate wrongly counts them. The gate
-    // THROWS on timeout, so we NEVER touch the namespace behind a stuck CRD.
-    await rollback.deleteResourceAndWait(
-      { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
-      { timeout }
-    );
-    this.logger.debug('Generated CRD deleted and fully gone', { crdName });
-
-    // 4. Delete each hoisted namespace THIS instance declared AND created (finding #4),
-    // LAST — after the CR (404), RGD (404), and CRD (404) are all gone, so everything
-    // this instance owned has drained. Ownership is decided by BOTH the declared set
-    // (from the CR's own spec, above) AND the create-time ownership annotation
-    // (`ownedByRgd`), with emptiness as the secondary guard; the delete itself is gated
-    // on a real 404 via the SAME primitive (throws on timeout). typekro never puts a
-    // Namespace in the RGD, so KRO's finalizer never touched these — we own their
-    // teardown. The delete-after-CRD ordering is LOAD-BEARING.
+    // 3. Delete each hoisted namespace THIS instance declared AND created (finding #4),
+    // BEFORE the generated CRD — reverse-topological teardown (CRDs are the most
+    // foundational type: deployed FIRST, destroyed LAST). This ordering is what makes
+    // the namespace delete RELIABLE: the generated CRD is STILL HEALTHY/Active at this
+    // point, so the namespace controller enumerates that type's zero instances INSTANTLY
+    // to confirm the namespace is empty. (Only a *Terminating* CRD stalls a namespace —
+    // the apiextensions `customresourcecleanup.apiextensions.k8s.io` finalizer is
+    // slow/fragile even with zero instances left, upstream kro #1171 — which is exactly
+    // why the CRD is deleted AFTER the namespace, not before.) Ownership is decided by
+    // BOTH the declared set (from the CR's own spec, above) AND the create-time ownership
+    // annotation (`ownedByRgd`) — the PRIMARY guard — with emptiness as the secondary
+    // guard; the delete itself is gated on a real 404 via the SAME primitive (throws on
+    // timeout). typekro never puts a Namespace in the RGD, so KRO's finalizer never
+    // touched these — we own their teardown. The namespace delete does NOT wait on the
+    // CRD; the CRD delete comes next. This delete-before-CRD ordering is LOAD-BEARING.
     for (const namespace of declaredHoistedNamespaces.keys()) {
       await deleteNamespaceIfEmpty(this.getKubeConfig(), namespace, {
         logger: this.logger,
@@ -1604,6 +1640,54 @@ export class KroResourceFactoryImpl<
         timeoutMs: timeout,
         context: { rgdName: this.rgdName },
       });
+    }
+
+    // 4. Delete the generated CRD LAST — after the CR (404), RGD (404), and the owned
+    // namespace are all gone (reverse-topo: CRDs die last). This step is BEST-EFFORT and
+    // NON-FATAL: KRO's default config has allowCRDDeletion=false so KRO never deletes it,
+    // and the apiextensions `customresourcecleanup` finalizer can stall for minutes even
+    // with zero instances (upstream kro #1171). By now the namespace is already cleanly
+    // gone, so a slow CRD teardown blocks NOTHING — we initiate the delete and wait
+    // generously, but a timeout/failure is LOGGED, never thrown: it must not undo an
+    // otherwise-successful teardown. A dangling (Terminating or leftover) CRD is
+    // harmless; an operator may GC it out-of-band. See docs/advanced/migration.md.
+    await this.deleteGeneratedCrdBestEffort(rollback, timeout);
+  }
+
+  /**
+   * BEST-EFFORT deletion of this factory's generated CRD, the LAST teardown step (after
+   * the owned namespace is gone). Never throws: a slow/stuck apiextensions cleanup
+   * finalizer (upstream kro #1171) must not fail an otherwise-complete teardown, and by
+   * this point nothing depends on the CRD being gone. Logs the outcome.
+   */
+  private async deleteGeneratedCrdBestEffort(
+    rollback: ReturnType<typeof createRollbackManager>,
+    timeout: number
+  ): Promise<void> {
+    // Prefer the already-discovered plural; else the non-throwing lookup (this is
+    // best-effort): if we cannot determine the CRD name, log and skip rather than fail
+    // the completed teardown.
+    const crdPlural = this.discoveredPlural ?? (await this.lookupCRDPlural());
+    if (!crdPlural) {
+      this.logger.debug('Skipping best-effort CRD delete — plural undiscoverable (teardown already complete)', {
+        rgdName: this.rgdName,
+      });
+      return;
+    }
+    const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
+    try {
+      await rollback.deleteResourceAndWait(
+        { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
+        { timeout }
+      );
+      this.logger.debug('Generated CRD deleted and fully gone (last teardown step)', { crdName });
+    } catch (error: unknown) {
+      // NON-FATAL: the namespace is already gone; a lingering/Terminating CRD is
+      // harmless (kro #1171). Log and return success.
+      this.logger.warn(
+        'Best-effort generated-CRD delete did not complete — leaving it (harmless; GC out-of-band)',
+        { crdName, error: ensureError(error).message }
+      );
     }
   }
 
@@ -3084,12 +3168,14 @@ export class KroResourceFactoryImpl<
       metadata: {
         name: merged.name,
         labels: merged.labels,
-        // OWNERSHIP RECORD (finding #4b): the declarative alchemy path declares this
-        // namespace as owned by THIS composition's RGD, so stamp the ownership
-        // annotation the empty-gated teardown checks (`ownedByRgd`). Unlike the
-        // imperative path this cannot distinguish create-vs-adopt at build time (it is
-        // cluster-free); the empty-gate remains the secondary guard against deleting a
-        // namespace a foreign stack/user still occupies.
+        // OWNERSHIP RECORD (findings #4b + #2): the declarative alchemy path stamps this
+        // namespace as owned by THIS composition's RGD (the annotation the empty-gated
+        // teardown checks). This build step is cluster-free, so it cannot yet distinguish
+        // create-vs-adopt — that is resolved at DEPLOY time by
+        // `_preserveHoistedNamespaceAdoption` (resource-registration.ts), which reads the
+        // live namespace and STRIPS this stamp when adopting a pre-existing namespace, so
+        // teardown never deletes a namespace typekro merely adopted. Ownership is the
+        // PRIMARY teardown guard; the empty-gate is the secondary one.
         annotations: { ...merged.annotations, [NAMESPACE_OWNER_ANNOTATION]: this.rgdName },
         ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
         ...(merged.ownerReferences !== undefined
@@ -3141,6 +3227,13 @@ export class KroResourceFactoryImpl<
         // Ownership record for the empty-gated delete (finding #4): only a namespace
         // carrying this RGD's `created-by-rgd` annotation is a candidate.
         namespaceOwnerRgd: this.rgdName,
+        // CRD coordinates so the alchemy pre-hoist check enumerates EVERY existing
+        // instance of this shared RGD (finding #7), not just the incoming namespace.
+        namespacePreHoistQuery: {
+          group: this.getSchemaGroup(),
+          version: this.getSchemaVersion(),
+          kind: this.schemaDefinition.kind,
+        },
         kubeConfigOptions,
         options: {
           waitForReady: false,

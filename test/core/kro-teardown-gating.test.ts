@@ -2,27 +2,33 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { DeploymentTimeoutError } from '../../src/core/errors.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 
 /**
- * DETERMINISTIC, OFFLINE proof that KRO teardown routes through the engine's ONE
- * GATING deletion primitive (PR #113 v3):
+ * DETERMINISTIC, OFFLINE proof of the PR #113 v4 teardown ORDER + CRD retention policy.
  *
- *  - THE KEY TEST (finding #1): mock the generated CRD's read so it NEVER returns 404
- *    (a stuck CRD on a slow cluster). `deleteInstance` MUST THROW (a
- *    DeploymentTimeoutError) and the hoisted namespace MUST NEVER be deleted — the gate
- *    held. This is exactly what the old non-gating `waitForResourceFullyDeleted` (which
- *    silently returned on timeout and then deleted the namespace behind a Terminating
- *    CRD) failed to do.
- *  - POSITIVE: once the CRD 404s, teardown REACHES the namespace step (delete-after-CRD
- *    ordering preserved).
- *  - OWNERSHIP (finding #4): a declared namespace that is NOT recorded as created by
- *    this RGD (no matching `typekro.io/created-by-rgd` annotation) is NEVER deleted.
+ * Teardown is REVERSE-TOPOLOGICAL (the reverse of create order; CRDs are the most
+ * foundational type, created first + destroyed last):
  *
- * The real cluster create/delete ORDER is validated by the maintainer on OrbStack via
- * test/integration/kro-namespace-sibling-lifecycle.test.ts (WRITTEN, not run here).
+ *   instance CR (gated → 404)  →  RGD (gated → 404)  →  owned namespace  →  generated CRD
+ *
+ *  - THE KEY TEST: the generated CRD delete is issued LAST, AFTER the namespace step —
+ *    so the namespace delete is NEVER gated on the CRD. And that final CRD delete is
+ *    BEST-EFFORT / NON-FATAL: a CRD whose finalizer is stuck (never 404s) does NOT reject
+ *    the whole teardown (deleteInstance resolves), because by then the namespace is
+ *    already gone and a lingering CRD is harmless (kro#1171). This is the v4 fix for the
+ *    stall where deleting a *Terminating* CRD before the namespace hung the namespace.
+ *  - POSITIVE: when the CRD 404s, teardown completes with the CRD delete as the final op.
+ *  - OWNERSHIP: a declared namespace NOT recorded as created by this RGD (no matching
+ *    `typekro.io/created-by-rgd`) is never deleted; a namespace this instance never
+ *    declared is never even considered.
+ *
+ * The actual owned+empty namespace DELETE (empty-gate) is proven by the
+ * `deleteNamespaceIfEmpty` unit tests in kro-namespace-v2-fixes.test.ts (which inject a
+ * mock inventory). The real cluster ORDER end-to-end is validated by the maintainer on
+ * OrbStack via test/integration/kro-namespace-sibling-lifecycle.test.ts (WRITTEN, not run
+ * here).
  */
 
 type Rec = Record<string, unknown>;
@@ -44,26 +50,26 @@ function makeFactory(factoryName: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  // Short timeout so the stuck-CRD gate throws in ~1 poll rather than minutes.
+  // Short timeout so the stuck-CRD best-effort wait resolves in ~1 poll rather than minutes.
   return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
 }
 
-interface Call {
+interface Op {
+  op: 'read' | 'delete';
   kind: string;
   name: string;
 }
 
 /**
- * A mock KubernetesObjectApi (read + delete) whose per-kind 404 behavior is
- * configurable. `crdEverGone` false simulates a CRD stuck Terminating. The hoisted
- * Namespace read returns the given annotations (ownership record).
+ * A mock KubernetesObjectApi (read + delete) that records the ORDER of every read/delete
+ * as `ops`. `crdEverGone` false simulates a CRD stuck Terminating (never 404). The
+ * hoisted Namespace read returns the given annotations (ownership record).
  */
 function makeMockApi(opts: {
   crdEverGone: boolean;
   namespaceAnnotations?: Record<string, string>;
 }) {
-  const reads: Call[] = [];
-  const deletes: Call[] = [];
+  const ops: Op[] = [];
   let crReadCount = 0;
   const notFound = () => {
     const err = new Error('not found') as Error & { statusCode?: number };
@@ -73,7 +79,8 @@ function makeMockApi(opts: {
   const api = {
     read: async (obj: { kind?: string; metadata?: { name?: string } }) => {
       const kind = obj.kind ?? '?';
-      reads.push({ kind, name: obj.metadata?.name ?? '?' });
+      const name = obj.metadata?.name ?? '?';
+      ops.push({ op: 'read', kind, name });
       if (kind === 'TeardownGate') {
         // First read captures the CR's spec; after the delete gate it is gone (404).
         crReadCount += 1;
@@ -83,32 +90,29 @@ function makeMockApi(opts: {
       if (kind === 'ResourceGraphDefinition') throw notFound(); // RGD drains promptly
       if (kind === 'CustomResourceDefinition') {
         if (opts.crdEverGone) throw notFound();
-        return { metadata: { name: obj.metadata?.name } }; // STUCK: never 404
+        return { metadata: { name } }; // STUCK: never 404
       }
       if (kind === 'Namespace') {
-        return { metadata: { name: obj.metadata?.name, annotations: opts.namespaceAnnotations ?? {} } };
+        return { metadata: { name, annotations: opts.namespaceAnnotations ?? {} } };
       }
       throw notFound();
     },
     delete: async (obj: { kind?: string; metadata?: { name?: string } }) => {
-      deletes.push({ kind: obj.kind ?? '?', name: obj.metadata?.name ?? '?' });
+      ops.push({ op: 'delete', kind: obj.kind ?? '?', name: obj.metadata?.name ?? '?' });
       return {};
     },
   };
-  return { api, reads, deletes };
+  return { api, ops };
 }
 
 /** Wire the mock cluster surfaces onto a factory's private methods. */
-function wire(
-  factory: unknown,
-  api: unknown,
-  declaredNamespaces: string[]
-): { rgdName: string } {
+function wire(factory: unknown, api: unknown, declaredNamespaces: string[]): { rgdName: string } {
   const rec = factory as Rec;
   rec.createKubernetesObjectApi = () => api;
+  // The best-effort CRD delete uses the already-discovered plural (no list call).
   rec.discoveredPlural = 'teardowngates';
   rec.createCustomObjectsApi = async () => ({
-    // No OTHER instances remain — so RGD/CRD/namespace teardown proceeds.
+    // No OTHER instances remain — so RGD/namespace/CRD teardown proceeds.
     listClusterCustomObject: async () => ({ items: [] }),
   });
   // Declared hoisted namespaces (finding #4a) — normally derived from the CR's spec.
@@ -117,65 +121,76 @@ function wire(
   return { rgdName: rec.rgdName as string };
 }
 
-describe('KRO teardown gates on a real 404 via the engine primitive (finding #1)', () => {
-  it('THE KEY TEST: a stuck CRD makes deleteInstance THROW and the namespace is NEVER deleted', async () => {
-    const factory = makeFactory('teardown-stuck', 'app-ns');
-    const { api, deletes } = makeMockApi({ crdEverGone: false });
+const first = (ops: Op[], op: Op['op'], kind: string): number =>
+  ops.findIndex((o) => o.op === op && o.kind === kind);
+
+describe('KRO teardown deletes the CRD LAST — never gating the namespace on it (v4)', () => {
+  it('THE KEY TEST: order is CR → RGD → namespace → CRD (CRD LAST); a never-404 CRD is NON-FATAL', async () => {
+    const factory = makeFactory('teardown-order', 'app-ns');
+    // Stuck CRD (never 404) + a non-matching ownership annotation so the namespace step is
+    // REACHED (the ns is read) then RETAINED offline — the empty-gate's cluster discovery
+    // is unavailable here; the owned+empty delete is proven in the deleteNamespaceIfEmpty
+    // unit tests. The point of THIS test is ORDER + non-fatal CRD.
+    const { api, ops } = makeMockApi({ crdEverGone: false, namespaceAnnotations: {} });
     wire(factory, api, ['app-ns']);
 
-    // The gate holds on the never-404 CRD: deleteInstance rejects (does NOT silently
-    // proceed) with a timeout error.
-    await expect(factory.deleteInstance('inst')).rejects.toBeInstanceOf(DeploymentTimeoutError);
+    // A stuck CRD does NOT reject the whole teardown — the CRD delete is the LAST step
+    // and is best-effort / non-fatal (the namespace is already gone by then).
+    await factory.deleteInstance('inst'); // resolves, does NOT throw
 
-    // The CRD delete WAS attempted (we reached that step) ...
-    expect(deletes.some((d) => d.kind === 'CustomResourceDefinition')).toBe(true);
-    // ... but because the CRD never 404'd, the namespace was NEVER deleted — the exact
-    // failure the old silent-return wait allowed.
-    expect(deletes.some((d) => d.kind === 'Namespace')).toBe(false);
+    const crDelete = first(ops, 'delete', 'TeardownGate');
+    const rgdDelete = first(ops, 'delete', 'ResourceGraphDefinition');
+    const nsRead = first(ops, 'read', 'Namespace');
+    const crdDelete = first(ops, 'delete', 'CustomResourceDefinition');
+
+    // All four steps ran, strictly ordered CR → RGD → namespace → CRD.
+    expect(crDelete).toBeGreaterThanOrEqual(0);
+    expect(rgdDelete).toBeGreaterThan(crDelete); // RGD after the CR (finalizer cleared)
+    expect(nsRead).toBeGreaterThan(rgdDelete); // namespace step after the RGD
+    // CRD delete is issued AFTER the namespace step — i.e. the namespace was processed
+    // (and would have been deleted, if owned+empty) BEFORE the CRD, so the namespace
+    // delete is NOT gated on the CRD. This is the v4 stall fix.
+    expect(crdDelete).toBeGreaterThan(nsRead);
   });
 
-  it('POSITIVE: once the CRD 404s, teardown REACHES the namespace step (delete-after-CRD ordering)', async () => {
+  it('POSITIVE: when the CRD 404s, teardown completes and the CRD delete is the final op', async () => {
     const factory = makeFactory('teardown-ok', 'app-ns');
-    // Use a non-matching ownership annotation so the ownership guard RETAINS BEFORE the
-    // cluster-backed emptiness discovery runs (which is unavailable offline). The point
-    // of this test is ORDERING: with the CRD 404'd, the namespace step is REACHED (the
-    // namespace is read) — the opposite of the stuck-CRD case above. The actual
-    // owned+empty delete is covered by the deleteNamespaceIfEmpty unit tests.
-    const { api, reads, deletes } = makeMockApi({ crdEverGone: true, namespaceAnnotations: {} });
+    const { api, ops } = makeMockApi({ crdEverGone: true, namespaceAnnotations: {} });
     wire(factory, api, ['app-ns']);
 
     await factory.deleteInstance('inst');
-    // Reached the namespace teardown (read it) — the CRD gate did NOT block.
-    expect(reads.some((r) => r.kind === 'Namespace' && r.name === 'app-ns')).toBe(true);
-    // The RGD and CRD were both deleted and gated to 404 before the namespace step.
-    expect(deletes.some((d) => d.kind === 'ResourceGraphDefinition')).toBe(true);
-    expect(deletes.some((d) => d.kind === 'CustomResourceDefinition')).toBe(true);
+
+    const nsRead = first(ops, 'read', 'Namespace');
+    const crdDelete = first(ops, 'delete', 'CustomResourceDefinition');
+    expect(first(ops, 'delete', 'ResourceGraphDefinition')).toBeGreaterThanOrEqual(0);
+    expect(nsRead).toBeGreaterThanOrEqual(0);
+    expect(crdDelete).toBeGreaterThan(nsRead);
   });
 });
 
 describe('KRO teardown ownership record (finding #4)', () => {
-  it('an declared namespace NOT created by this RGD (no ownership annotation) is NEVER deleted', async () => {
+  it('a declared namespace NOT created by this RGD (no ownership annotation) is NEVER deleted', async () => {
     const factory = makeFactory('teardown-adopted', 'app-ns');
     // Annotation ABSENT → adopted/undeclared → must be retained.
-    const { api, deletes, reads } = makeMockApi({ crdEverGone: true, namespaceAnnotations: {} });
+    const { api, ops } = makeMockApi({ crdEverGone: true, namespaceAnnotations: {} });
     wire(factory, api, ['app-ns']);
 
     await factory.deleteInstance('inst');
 
     // We reached the namespace step (read it for ownership) ...
-    expect(reads.some((r) => r.kind === 'Namespace')).toBe(true);
+    expect(first(ops, 'read', 'Namespace')).toBeGreaterThanOrEqual(0);
     // ... but ownership did not match, so the namespace was RETAINED (never deleted).
-    expect(deletes.some((d) => d.kind === 'Namespace')).toBe(false);
+    expect(ops.some((o) => o.op === 'delete' && o.kind === 'Namespace')).toBe(false);
   });
 
   it('a namespace this instance never declared is never even considered', async () => {
     const factory = makeFactory('teardown-undeclared', 'app-ns');
-    const { api, deletes, reads } = makeMockApi({ crdEverGone: true });
+    const { api, ops } = makeMockApi({ crdEverGone: true });
     wire(factory, api, []); // declares NO hoisted namespaces
 
     await factory.deleteInstance('inst');
 
-    expect(reads.some((r) => r.kind === 'Namespace')).toBe(false);
-    expect(deletes.some((d) => d.kind === 'Namespace')).toBe(false);
+    expect(ops.some((o) => o.op === 'read' && o.kind === 'Namespace')).toBe(false);
+    expect(ops.some((o) => o.op === 'delete' && o.kind === 'Namespace')).toBe(false);
   });
 });

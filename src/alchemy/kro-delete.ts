@@ -156,15 +156,13 @@ export async function deleteKroDefinition(
   k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectCleanupApi
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-kro-delete');
-  const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options, k8sApi);
-  // ONE gating mechanism (finding #1 + #6): the engine's rollback manager deletes then
-  // polls to a REAL 404 and THROWS on timeout — the SAME primitive the imperative KRO
-  // teardown uses. The RGD is waited to 404 BEFORE the CRD (KRO's per-RGD controller
-  // must tear down first, else the CRD cleanup finalizer stalls). A pre-existing 404 on
-  // either delete is treated as already-gone.
+  // ONE gating mechanism (finding #1): the engine's rollback manager deletes then polls
+  // to a REAL 404 and THROWS on timeout — the SAME primitive the imperative KRO teardown
+  // uses. A pre-existing 404 is treated as already-gone.
   const rollback = createRollbackManager(k8sApi as unknown as KubernetesObjectApi);
   const timeout = options.timeout ?? 300000;
 
+  // The RGD delete is a HARD gate (throws on timeout).
   try {
     await rollback.deleteResourceAndWait(
       { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', name: options.rgdName },
@@ -178,26 +176,53 @@ export async function deleteKroDefinition(
     throw error;
   }
 
+  // Delete the generated CRD LAST and BEST-EFFORT / NON-FATAL (mirroring the imperative
+  // teardown's final step): KRO never deletes it (allowCRDDeletion=false), and the
+  // apiextensions `customresourcecleanup` finalizer can stall for minutes even with zero
+  // instances (upstream kro #1171). A slow/stuck CRD teardown must NOT wedge the alchemy
+  // destroy, so we initiate the delete and wait generously but LOG (never throw) on
+  // failure. A dangling CRD is harmless; GC it out-of-band. NOTE: under alchemy's
+  // reverse-topo teardown the hoisted workload Namespace is a SEPARATE, later resource
+  // (deleted after the RGD/instance), so its delete does not depend on this CRD being
+  // gone; the imperative path enforces the strict namespace-before-CRD order 1:1.
+  const crdPlural = options.plural ?? (await lookupCRDPluralBestEffort(kubeConfig, options, k8sApi));
   if (!crdPlural) {
-    logger.debug('Alchemy KRO CRD already absent during RGD cleanup', {
+    logger.debug('Alchemy KRO CRD plural undiscoverable during cleanup — leaving CRD (harmless)', {
       kind: options.kind,
       rgdName: options.rgdName,
     });
     return;
   }
-
   const crdName = `${crdPlural}.${getSchemaGroup(options)}`;
   try {
     await rollback.deleteResourceAndWait(
       { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
       { timeout }
     );
+    logger.debug('Alchemy KRO generated CRD deleted (last teardown step)', { crdName });
   } catch (error: unknown) {
-    logger.error('Alchemy KRO CRD cleanup failed', ensureError(error), {
+    // NON-FATAL (kro #1171): leave the CRD rather than fail the completed teardown.
+    logger.warn('Alchemy best-effort generated-CRD delete did not complete — leaving it (harmless)', {
       crdName,
       error: ensureError(error).message,
     });
-    throw error;
+  }
+}
+
+/**
+ * Best-effort variant of {@link lookupCRDPlural} for the NON-FATAL final CRD delete:
+ * returns `undefined` (rather than throwing) if the CRD list is unavailable, so a
+ * discovery failure cannot wedge an otherwise-complete teardown.
+ */
+async function lookupCRDPluralBestEffort(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  k8sApi: KubernetesObjectCleanupApi
+): Promise<string | undefined> {
+  try {
+    return await lookupCRDPlural(kubeConfig, options, k8sApi);
+  } catch {
+    return undefined;
   }
 }
 

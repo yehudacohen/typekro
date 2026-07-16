@@ -2133,7 +2133,7 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     ) as () => Promise<string>;
 
     await expect(requireCRDPluralForCleanup()).rejects.toThrow(
-      'Cannot determine CRD plural for TestApp; preserving RGD/CRD'
+      'Cannot determine CRD plural for TestApp; preserving RGD'
     );
   });
 
