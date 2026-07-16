@@ -286,17 +286,24 @@ function fakeInventory(
   };
 }
 
-describe('#3+#4: isAutoProvisionedDefault recognizes only the k8s defaults', () => {
+describe('#3+#4+#5: isAutoProvisionedDefault recognizes only the CORE-group k8s defaults', () => {
   it('treats the default SA, kube-root-ca.crt CM, and default-token secrets as defaults', () => {
-    expect(isAutoProvisionedDefault('ServiceAccount', 'default')).toBe(true);
-    expect(isAutoProvisionedDefault('ConfigMap', 'kube-root-ca.crt')).toBe(true);
-    expect(isAutoProvisionedDefault('Secret', 'default-token-abcde')).toBe(true);
+    expect(isAutoProvisionedDefault('', 'ServiceAccount', 'default')).toBe(true);
+    expect(isAutoProvisionedDefault('', 'ConfigMap', 'kube-root-ca.crt')).toBe(true);
+    expect(isAutoProvisionedDefault('', 'Secret', 'default-token-abcde')).toBe(true);
   });
 
   it('treats a user/stack object as an occupant', () => {
-    expect(isAutoProvisionedDefault('ServiceAccount', 'my-sa')).toBe(false);
-    expect(isAutoProvisionedDefault('ConfigMap', 'app-config')).toBe(false);
-    expect(isAutoProvisionedDefault('Deployment', 'web')).toBe(false);
+    expect(isAutoProvisionedDefault('', 'ServiceAccount', 'my-sa')).toBe(false);
+    expect(isAutoProvisionedDefault('', 'ConfigMap', 'app-config')).toBe(false);
+    expect(isAutoProvisionedDefault('apps', 'Deployment', 'web')).toBe(false);
+  });
+
+  it('#5: does NOT exempt an unrelated CRD named ServiceAccount/ConfigMap/Secret in ANOTHER group', () => {
+    // Keying by kind/name alone would wrongly exempt these real occupants.
+    expect(isAutoProvisionedDefault('acme.io', 'ServiceAccount', 'default')).toBe(false);
+    expect(isAutoProvisionedDefault('acme.io', 'ConfigMap', 'kube-root-ca.crt')).toBe(false);
+    expect(isAutoProvisionedDefault('acme.io', 'Secret', 'default-token-abcde')).toBe(false);
   });
 });
 

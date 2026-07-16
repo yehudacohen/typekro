@@ -104,8 +104,12 @@ import {
   selectHoistedNamespaces,
 } from './kro-instance-safety.js';
 import {
+  decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
+  HOISTED_NAMESPACES_ANNOTATION,
   NAMESPACE_OWNER_ANNOTATION,
+  type NamespaceOwnershipDecision,
+  parseHoistedNamespacesAnnotation,
 } from './kro-namespace-teardown.js';
 import { createRollbackManager } from './rollback-manager.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
@@ -1134,51 +1138,61 @@ export class KroResourceFactoryImpl<
 
     const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
 
-    // OWNERSHIP RECORD (finding #4b): stamp `created-by-rgd = <this RGD>` ONLY when
-    // typekro CREATES this namespace (it did not exist) or already owns it (a prior
-    // deploy of this composition stamped it). An ADOPTED, pre-existing namespace never
-    // gets the marker, so teardown never deletes a namespace typekro merely adopted —
-    // fixing the "marker stampable onto adopted namespaces" gap. The stamp is stable
-    // across re-deploys (SSA preserves it because we keep including it once owned).
-    let ownsNamespace = false;
-    try {
-      const live = (await k8sApi.read({
+    const baseMetadata = {
+      name: merged.name,
+      labels: merged.labels,
+      ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+      ...(merged.ownerReferences !== undefined
+        ? { ownerReferences: merged.ownerReferences }
+        : {}),
+    };
+    const buildManifest = (annotations: Record<string, string>): k8s.KubernetesObject =>
+      ({
         apiVersion: 'v1',
         kind: 'Namespace',
-        metadata: { name: merged.name },
-      })) as { metadata?: { annotations?: Record<string, string> } };
-      ownsNamespace = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === this.rgdName;
+        metadata: { ...baseMetadata, annotations },
+        ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
+      }) as unknown as k8s.KubernetesObject;
+
+    const annotationsWithStamp = {
+      ...merged.annotations,
+      [NAMESPACE_OWNER_ANNOTATION]: this.rgdName,
+    };
+
+    // CREATE-FIRST ownership (finding #3): attempt to CREATE the namespace WITH the
+    // ownership stamp and complete declared config. A 201 is atomic proof WE created it
+    // (owned). A 409 means it already exists — owned ONLY if a prior create by this RGD
+    // stamped it; otherwise adopted (never stamped, so teardown never deletes it). This
+    // replaces the raceable GET→(404)→patch-with-stamp: no window in which another actor
+    // creates the namespace between our read and our stamping patch.
+    let decision: NamespaceOwnershipDecision;
+    try {
+      decision = await decideNamespaceOwnershipCreateFirst(
+        k8sApi,
+        buildManifest(annotationsWithStamp),
+        this.rgdName
+      );
     } catch (error: unknown) {
-      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-      // 404 → fresh: typekro is creating it, so it owns it. Any other read error →
-      // do NOT claim ownership (be conservative — an unreadable namespace is not
-      // provably ours), but still apply the retained config below.
-      ownsNamespace = code === 404;
+      // A non-conflict CREATE failure (or a failed conflict-read) — do NOT fall back to a
+      // bare namespace (finding #8). Fail loudly so the operator sees the real problem.
+      throw new ResourceGraphFactoryError(
+        `Failed to create the retained workload Namespace "${name}" with its complete declared ` +
+          `configuration (Pod Security labels, annotations, spec): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
     }
 
-    const annotations = ownsNamespace
-      ? { ...merged.annotations, [NAMESPACE_OWNER_ANNOTATION]: this.rgdName }
-      : merged.annotations;
+    // 201 CREATE landed the full config + stamp atomically — nothing more to apply.
+    if (decision.created) return;
 
-    const manifest = {
-      apiVersion: 'v1',
-      kind: 'Namespace',
-      metadata: {
-        name: merged.name,
-        labels: merged.labels,
-        annotations,
-        ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
-        ...(merged.ownerReferences !== undefined
-          ? { ownerReferences: merged.ownerReferences }
-          : {}),
-      },
-      ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
-    } as unknown as k8s.KubernetesObject;
-
+    // 409: the namespace already existed. Apply the retained config via SSA, keeping the
+    // ownership stamp ONLY if we already own it (adoption must NOT be stamped).
+    const annotations = decision.owned ? annotationsWithStamp : merged.annotations;
     try {
       await k8sApi.patch(
-        manifest,
+        buildManifest(annotations),
         undefined,
         undefined,
         'typekro', // fieldManager — typekro's, NOT kro's
@@ -1310,7 +1324,7 @@ export class KroResourceFactoryImpl<
     }
     if (!discovery.present) return result; // definitively fresh — no prior instances
 
-    let items: Array<{ spec?: unknown }>;
+    let items: Array<{ spec?: unknown; metadata?: { annotations?: Record<string, string> } }>;
     try {
       const customApi = await this.createCustomObjectsApi();
       const listResponse = await customApi.listClusterCustomObject({
@@ -1318,7 +1332,12 @@ export class KroResourceFactoryImpl<
         version: this.getSchemaVersion(),
         plural: discovery.plural,
       });
-      items = (listResponse as { items?: Array<{ spec?: unknown }> }).items ?? [];
+      items =
+        (
+          listResponse as {
+            items?: Array<{ spec?: unknown; metadata?: { annotations?: Record<string, string> } }>;
+          }
+        ).items ?? [];
     } catch (error: unknown) {
       // Only a DEFINITIVE 404 (the CRD/instances vanished between discovery and list)
       // is treated as fresh; ANY other error FAILS CLOSED (finding #3) — a message
@@ -1337,10 +1356,21 @@ export class KroResourceFactoryImpl<
     }
 
     for (const item of items) {
+      // PREFER the durable RECORD (finding #4): the recorded `typekro.io/hoisted-namespaces`
+      // annotation carries this instance's EXACT hoisted names (round-tripping a name derived
+      // from an arbitrary spec field). Use it when present.
+      const recorded = parseHoistedNamespacesAnnotation(
+        item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+      );
+      if (recorded.length > 0) {
+        for (const ns of recorded) result.add(ns);
+        continue;
+      }
+      // Fallback for instances deployed BEFORE the annotation existed: re-derive from the
+      // stored spec (the imperative path can re-execute the composition). FAIL CLOSED
+      // (finding #3): if we can neither read a record NOR derive the namespaces we cannot
+      // prove the hoist won't prune one — ABORT rather than under-count the protected set.
       if (item.spec === undefined) continue;
-      // FAIL CLOSED (finding #3): if we cannot derive an existing instance's hoisted
-      // namespaces we cannot prove the hoist won't prune one — ABORT rather than log
-      // and silently under-count the protected set.
       let namespaceNames: string[];
       try {
         namespaceNames = [...this.concreteHoistedNamespaces(item.spec as TSpec).keys()];
@@ -1519,19 +1549,27 @@ export class KroResourceFactoryImpl<
     // the wrong namespace and mistake a 404 there for "already gone".
     const instanceNamespace = this.resolveInstanceNamespace();
 
-    // Capture the CR's OWN spec BEFORE deleting it — the durable RECORD of which
-    // namespaces THIS instance declared/hoisted (finding #4a). deleteInstance has no
-    // caller spec, so the live CR is the only source of the declared set. If the CR is
-    // already gone (404) or unreadable, we cannot reconstruct it, so NO namespace
-    // becomes a delete candidate (fail-safe: an owned-but-unprovable namespace is kept).
+    // Capture the CR's durable RECORD of which namespaces THIS instance hoisted BEFORE
+    // deleting it (finding #4). deleteInstance has no caller spec, so the live CR is the
+    // only source of the declared set. PREFER the recorded `typekro.io/hoisted-namespaces`
+    // annotation (stamped at deploy time) — it round-trips a name derived from an
+    // arbitrary spec field (e.g. spec.targetNamespace) EXACTLY. Fall back to re-deriving
+    // from the CR's spec for instances deployed before the annotation existed (the
+    // imperative path CAN re-execute the composition). If the CR is already gone (404) or
+    // unreadable, we cannot reconstruct it, so NO namespace becomes a delete candidate
+    // (fail-safe: an owned-but-unprovable namespace is kept).
     let crSpec: TSpec | undefined;
+    let recordedHoistedNames: string[] = [];
     try {
       const live = (await k8sApi.read({
         apiVersion,
         kind: this.schemaDefinition.kind,
         metadata: { name, namespace: instanceNamespace },
-      })) as { spec?: TSpec };
+      })) as { spec?: TSpec; metadata?: { annotations?: Record<string, string> } };
       crSpec = live.spec;
+      recordedHoistedNames = parseHoistedNamespacesAnnotation(
+        live.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+      );
     } catch (readError: unknown) {
       const k8sErr = readError as { statusCode?: number; code?: number; body?: { code?: number } };
       const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
@@ -1542,9 +1580,12 @@ export class KroResourceFactoryImpl<
         );
       }
     }
-    const declaredHoistedNamespaces = crSpec
-      ? this.concreteHoistedNamespaces(crSpec)
-      : new Map<string, KubernetesResource>();
+    const declaredHoistedNamespaceNames =
+      recordedHoistedNames.length > 0
+        ? recordedHoistedNames
+        : crSpec
+          ? [...this.concreteHoistedNamespaces(crSpec).keys()]
+          : [];
 
     // 1. Delete the CR and GATE on its 404 — KRO cleared `kro.run/finalizer` after
     // graph-deleting every child (findings #1 + #2). On timeout the gate THROWS, so we
@@ -1580,6 +1621,32 @@ export class KroResourceFactoryImpl<
       );
     }
 
+    // 2. Delete THIS instance's OWN hoisted namespace(s) NOW — right after the CR is gone
+    // and BEFORE the remaining-instance / RGD / CRD block (finding #2). Every instance
+    // cleans its OWN owned namespace(s) when deleted, so a NON-last instance's namespace
+    // is never leaked (the old code early-returned on `hasRemainingInstances` before ever
+    // reaching namespace cleanup). Only RGD + CRD teardown depends on the remaining-instance
+    // check below. Ownership is the PRIMARY guard (`ownedByRgd`: a namespace only this
+    // RGD's create stamped) with emptiness as the secondary — a namespace another
+    // instance/stack still occupies is RETAINED. The names come from the CR's recorded
+    // `typekro.io/hoisted-namespaces` annotation (finding #4), so an arbitrary-field name
+    // round-trips and this works cross-process. Namespace-before-RGD/CRD is safe (and even
+    // better than before): the RGD + generated CRD both stay HEALTHY/Active during ns
+    // termination, so the namespace controller confirms emptiness INSTANTLY — the namespace
+    // can NEVER terminate against a *Terminating* CRD (upstream kro #1171). typekro never
+    // puts a Namespace in the RGD, so KRO's finalizer never touched these — we own their
+    // teardown; the delete is gated on a real 404 via the SAME primitive (throws on timeout).
+    for (const ns of declaredHoistedNamespaceNames) {
+      await deleteNamespaceIfEmpty(this.getKubeConfig(), ns, {
+        logger: this.logger,
+        // Reuse the SAME (mockable) object API so discovery/delete is unit-testable.
+        k8sApi,
+        ownedByRgd: this.rgdName,
+        timeoutMs: timeout,
+        context: { rgdName: this.rgdName },
+      });
+    }
+
     // Only delete the RGD and CRD if no other instances remain. Multiple
     // instances can share one RGD — deleting it would break the others.
     // The decision is a pure function of (listed instances, target name,
@@ -1606,7 +1673,7 @@ export class KroResourceFactoryImpl<
       return;
     }
 
-    // 2. Delete the RGD and GATE on its 404 (findings #1 + #2). The RGD carries a KRO
+    // 3. Delete the RGD and GATE on its 404 (findings #1 + #2). The RGD carries a KRO
     // finalizer; while KRO processes it, KRO's per-RGD dynamic controller is still
     // WATCHING the generated CRD's resources. Waiting for the RGD 404 first lets KRO
     // tear its controller down cleanly. The gate THROWS on timeout (no silent proceed).
@@ -1615,32 +1682,6 @@ export class KroResourceFactoryImpl<
       { timeout }
     );
     this.logger.debug('RGD deleted and fully gone', { rgdName: this.rgdName });
-
-    // 3. Delete each hoisted namespace THIS instance declared AND created (finding #4),
-    // BEFORE the generated CRD — reverse-topological teardown (CRDs are the most
-    // foundational type: deployed FIRST, destroyed LAST). This ordering is what makes
-    // the namespace delete RELIABLE: the generated CRD is STILL HEALTHY/Active at this
-    // point, so the namespace controller enumerates that type's zero instances INSTANTLY
-    // to confirm the namespace is empty. (Only a *Terminating* CRD stalls a namespace —
-    // the apiextensions `customresourcecleanup.apiextensions.k8s.io` finalizer is
-    // slow/fragile even with zero instances left, upstream kro #1171 — which is exactly
-    // why the CRD is deleted AFTER the namespace, not before.) Ownership is decided by
-    // BOTH the declared set (from the CR's own spec, above) AND the create-time ownership
-    // annotation (`ownedByRgd`) — the PRIMARY guard — with emptiness as the secondary
-    // guard; the delete itself is gated on a real 404 via the SAME primitive (throws on
-    // timeout). typekro never puts a Namespace in the RGD, so KRO's finalizer never
-    // touched these — we own their teardown. The namespace delete does NOT wait on the
-    // CRD; the CRD delete comes next. This delete-before-CRD ordering is LOAD-BEARING.
-    for (const namespace of declaredHoistedNamespaces.keys()) {
-      await deleteNamespaceIfEmpty(this.getKubeConfig(), namespace, {
-        logger: this.logger,
-        // Reuse the SAME (mockable) object API so discovery/delete is unit-testable.
-        k8sApi,
-        ownedByRgd: this.rgdName,
-        timeoutMs: timeout,
-        context: { rgdName: this.rgdName },
-      });
-    }
 
     // 4. Delete the generated CRD LAST — after the CR (404), RGD (404), and the owned
     // namespace are all gone (reverse-topo: CRDs die last). This step is BEST-EFFORT and
@@ -2966,6 +3007,21 @@ export class KroResourceFactoryImpl<
   ) {
     const apiVersion = this.getInstanceApiVersion();
 
+    // DURABLE RECORD (finding #4): stamp the CONCRETE hoisted-namespace names on the CR so
+    // teardown + the pre-hoist guard read them back EXACTLY, without re-deriving from
+    // metadata.namespace/spec.namespace. This is what lets a name derived from an ARBITRARY
+    // spec field (e.g. spec.targetNamespace) round-trip. Omit the annotation entirely when
+    // the instance hoists no namespace (keeps the CR clean + back-compatible).
+    const hoistedNamespaceNames = [...this.concreteHoistedNamespaces(spec).keys()];
+    const annotations: Record<string, string> = {
+      ...(singletonSpecFingerprint
+        ? { 'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint }
+        : {}),
+      ...(hoistedNamespaceNames.length > 0
+        ? { [HOISTED_NAMESPACES_ANNOTATION]: JSON.stringify(hoistedNamespaceNames) }
+        : {}),
+    };
+
     return {
       apiVersion,
       kind: this.schemaDefinition.kind,
@@ -2977,13 +3033,7 @@ export class KroResourceFactoryImpl<
           'typekro.io/mode': this.mode,
           [INSTANCE_RGD_LABEL]: this.rgdName,
         },
-        ...(singletonSpecFingerprint
-          ? {
-              annotations: {
-                'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint,
-              },
-            }
-          : {}),
+        ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
       },
       spec,
     };

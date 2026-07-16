@@ -31,8 +31,11 @@ import {
 } from '../core/kubernetes/index.js';
 import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
 import {
+  decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
+  HOISTED_NAMESPACES_ANNOTATION,
   NAMESPACE_OWNER_ANNOTATION,
+  parseHoistedNamespacesAnnotation,
 } from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
@@ -411,11 +414,17 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   const plural = match?.spec?.names?.plural;
   if (!plural) return result; // definitively fresh — no CRD, so no existing instances
 
-  let items: Array<{ metadata?: { namespace?: unknown }; spec?: unknown }>;
+  let items: Array<{
+    metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+    spec?: unknown;
+  }>;
   try {
     const customApi = createBunCompatibleCustomObjectsApi(kc) as unknown as {
       listClusterCustomObject(request: { group: string; version: string; plural: string }): Promise<{
-        items?: Array<{ metadata?: { namespace?: unknown }; spec?: unknown }>;
+        items?: Array<{
+          metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+          spec?: unknown;
+        }>;
       }>;
     };
     const listResponse = await customApi.listClusterCustomObject({
@@ -436,6 +445,19 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
   }
 
   for (const item of items) {
+    // PREFER the durable RECORD (finding #4): the recorded `typekro.io/hoisted-namespaces`
+    // annotation carries the instance's EXACT hoisted names, so a name derived from an
+    // arbitrary spec field (e.g. spec.targetNamespace) is enumerated correctly here — the
+    // alchemy state is cluster-free (no composition fn) so this record is the ONLY exact
+    // source. Fall back to the metadata.namespace/spec.namespace approximation only for
+    // instances deployed before the annotation existed (correct for the 1:1 self-owned case).
+    const recorded = parseHoistedNamespacesAnnotation(
+      item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+    );
+    if (recorded.length > 0) {
+      for (const ns of recorded) result.add(ns);
+      continue;
+    }
     if (typeof item.metadata?.namespace === 'string') result.add(item.metadata.namespace);
     const specNs = (item.spec as { namespace?: unknown } | undefined)?.namespace;
     if (typeof specNs === 'string' && specNs.length > 0) result.add(specNs);
@@ -471,22 +493,33 @@ async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unk
 
   const kc = _createClientProvider(props, 'ownership-check');
   const api = createBunCompatibleKubernetesObjectApi(kc);
+
+  // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
+  // the namespace WITH the build-time stamp. A 201 is atomic proof typekro created it
+  // (owned). A 409 means it already exists — owned ONLY if a prior create by this RGD
+  // stamped it; otherwise adopted. This replaces the raceable read→(404)→own decision:
+  // there is no window in which another actor creates the namespace between our read and
+  // our claim. The generic deployer still SSA-applies the full config afterwards
+  // (idempotent), so a 201 here is not the final apply — it is the ownership PROBE.
   let ownsNamespace: boolean;
   try {
-    const live = (await api.read({
-      apiVersion: 'v1',
-      kind: 'Namespace',
-      metadata: { name },
-    } as Parameters<typeof api.read>[0])) as { metadata?: { annotations?: Record<string, string> } };
-    // The namespace exists: typekro owns it ONLY if it already carries our ownership
-    // record (a prior deploy of this composition stamped it). Otherwise it is adopted.
-    ownsNamespace = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === props.namespaceOwnerRgd;
+    const decision = await decideNamespaceOwnershipCreateFirst(
+      api,
+      props.resource as unknown as import('@kubernetes/client-node').KubernetesObject,
+      props.namespaceOwnerRgd
+    );
+    ownsNamespace = decision.owned;
   } catch (error: unknown) {
-    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-    const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-    // 404 → fresh: typekro is creating it, so it owns it. Any other read error → do NOT
-    // claim ownership (conservative — an unreadable namespace is not provably ours).
-    ownsNamespace = code === 404;
+    // A non-conflict CREATE failure (or a failed conflict-read) — do NOT claim ownership
+    // (conservative: a namespace we cannot provably create/own must not be stampable, or
+    // teardown might delete an adopted one). The deployer's SSA apply below surfaces the
+    // real error if the cluster is genuinely broken.
+    logger.debug('Create-first ownership probe failed; treating as adopted (alchemy)', {
+      namespace: name,
+      rgd: props.namespaceOwnerRgd,
+      error: ensureError(error).message,
+    });
+    ownsNamespace = false;
   }
 
   if (ownsNamespace) return props; // keep the build-time ownership stamp

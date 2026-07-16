@@ -11,20 +11,25 @@
  *      member, i.e. no `applyset.kubernetes.io/part-of`) and the RGD's child resource
  *      lands INSIDE it, with the instance reaching Ready.
  *
- *  (B) DELETE-ORDER (v4) — REVERSE-TOPOLOGICAL: the reverse of create order, so CRDs
- *      (the most foundational type) are destroyed LAST. Deleting the instance clears
- *      `kro.run/finalizer` (CR → 404, a hard gate) BEFORE the RGD is deleted (→ 404, hard
- *      gate), then the instance's OWN namespace, then the generated CRD LAST. The
- *      namespace is deleted BEFORE the CRD — while the CRD is still HEALTHY, so the
- *      namespace controller enumerates its zero instances instantly and the namespace
- *      terminates reliably (a *Terminating* CRD is what stalls a namespace; kro#1171).
- *      The final CRD delete is BEST-EFFORT / NON-FATAL: it is initiated and awaited
- *      generously, but a slow/stuck apiextensions cleanup finalizer is tolerated (it
- *      blocks nothing — the namespace is already gone). The namespace is deleted ONLY if
- *      BOTH (a) it is declared+created by THIS RGD — it carries the
- *      `typekro.io/created-by-rgd` ownership record (finding #4) — AND (b) it is empty
- *      (secondary guard, finding #5); it is RETAINED if another stack/user still holds a
- *      resource there, or if it was merely ADOPTED (no ownership record).
+ *  (B) DELETE-ORDER (v5) — the generated CRD (the most foundational type) is destroyed
+ *      LAST. Deleting the instance clears `kro.run/finalizer` (CR → 404, a hard gate),
+ *      then cleans the instance's OWN namespace(s) RIGHT AWAY (finding #2: per-instance
+ *      cleanup runs BEFORE the shared-RGD / CRD teardown, so a non-last instance never
+ *      leaks its namespace), then — only when no other instance remains — deletes the RGD
+ *      (→ 404, hard gate) and finally the generated CRD LAST. So the order is
+ *      CR → namespace → RGD → CRD. The namespace is deleted while the RGD + CRD are both
+ *      still HEALTHY/Active, so the namespace controller enumerates zero instances
+ *      instantly and the namespace terminates reliably (a *Terminating* CRD is what stalls
+ *      a namespace; kro#1171) — it can never terminate against a Terminating CRD. The final
+ *      CRD delete is BEST-EFFORT / NON-FATAL: initiated and awaited generously, but a
+ *      slow/stuck apiextensions cleanup finalizer is tolerated (it blocks nothing — the
+ *      namespace is already gone). The instance CR carries a durable
+ *      `typekro.io/hoisted-namespaces` record (finding #4) so teardown knows its exact
+ *      owned namespaces cross-process. The namespace is deleted ONLY if BOTH (a) it is
+ *      created by THIS RGD — it carries the `typekro.io/created-by-rgd` ownership record,
+ *      stamped atomically create-first (finding #3) — AND (b) it is empty (secondary
+ *      guard, finding #5); it is RETAINED if another stack/user still holds a resource
+ *      there, or if it was merely ADOPTED (no ownership record).
  *
  * ⚠️ WRITTEN + GATED but NOT executed here. It is gated like the other integration
  * tests (`isClusterAvailable()` + `describe.skip`) and MUST be run only by the
@@ -243,10 +248,11 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     // The generated CRD exists after deploy.
     expect(await findGeneratedCrdName(objectApi, group, kind)).toBeDefined();
 
-    // deleteInstance MUST resolve (not reject): CR → 404 (hard gate) → RGD → 404 (hard
-    // gate) → empty-gate deletes the (empty) OWNED namespace → generated CRD deleted LAST
-    // (best-effort/non-fatal). The namespace delete is NOT gated on the CRD; the CRD is
-    // still healthy while the namespace terminates, so the namespace drains cleanly.
+    // deleteInstance MUST resolve (not reject): CR → 404 (hard gate) → empty-gate deletes
+    // the (empty) OWNED namespace (finding #2: per-instance, before the RGD/CRD block) →
+    // RGD → 404 (hard gate) → generated CRD deleted LAST (best-effort/non-fatal). The
+    // namespace delete is NOT gated on the CRD; the RGD + CRD are both still healthy while
+    // the namespace terminates, so the namespace drains cleanly.
     await factory.deleteInstance('ns-del-empty-instance');
 
     // (1) The namespace is DELETED (hard). Termination is async (Terminating → drain →
@@ -298,9 +304,9 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
       },
     });
 
-    // deleteInstance drains THIS instance (CR → 404 → RGD → 404), then the empty-gate
-    // finds a non-default occupant and RETAINS the namespace rather than deleting it (the
-    // generated CRD delete still runs last, best-effort).
+    // deleteInstance drains THIS instance (CR → 404), then the empty-gate finds a
+    // non-default occupant and RETAINS the namespace rather than deleting it; the RGD
+    // (→ 404) and then the generated CRD (last, best-effort) still run.
     await factory.deleteInstance('ns-del-occ-instance');
 
     // The namespace is RETAINED — still present and NOT terminating — because it is

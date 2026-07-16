@@ -703,7 +703,7 @@ describe('KroTypeKroDeployer', () => {
     expect(instances[0]?.metadata?.namespace).toBe('apps-b');
   });
 
-  it('deletes KRO instance then removes RGD and CRD when no instances remain', async () => {
+  it('deletes KRO instance then removes RGD (leaves the CRD for out-of-band GC) when no instances remain', async () => {
     const deletes: Record<string, any>[] = [];
     let readCount = 0;
     const k8sApi = {
@@ -735,8 +735,10 @@ describe('KroTypeKroDeployer', () => {
       sleep: mock(() => Promise.resolve()),
     });
 
-    // 2 reads poll the CR to 404; 2 more GATE the RGD then the CRD to 404 (finding #1).
-    expect(k8sApi.read).toHaveBeenCalledTimes(4);
+    // 2 reads poll the CR to 404; 1 more GATES the RGD to 404. The generated CRD is NOT
+    // deleted in the alchemy path (finding #1: it is left for out-of-band GC so the
+    // separately-torn-down hoisted namespace can never terminate against a Terminating CRD).
+    expect(k8sApi.read).toHaveBeenCalledTimes(3);
     expect(customApi.listClusterCustomObject).toHaveBeenCalledWith({
       group: 'example.com',
       version: 'v1alpha1',
@@ -753,12 +755,9 @@ describe('KroTypeKroDeployer', () => {
         kind: 'ResourceGraphDefinition',
         metadata: { name: 'test-app' },
       },
-      {
-        apiVersion: 'apiextensions.k8s.io/v1',
-        kind: 'CustomResourceDefinition',
-        metadata: { name: 'testapps.example.com' },
-      },
     ]);
+    // The CRD delete is intentionally ABSENT (finding #1).
+    expect(deletes.some((d) => d.kind === 'CustomResourceDefinition')).toBe(false);
   });
 
   it('preserves KRO RGD and CRD while other instances still exist', async () => {
@@ -831,13 +830,12 @@ describe('KroTypeKroDeployer', () => {
       sleep: mock(() => Promise.resolve()),
     });
 
-    // The CR was already gone (delete 404) so it was never polled; the 2 reads are the
-    // RGD and CRD deletion gates.
-    expect(k8sApi.read).toHaveBeenCalledTimes(2);
+    // The CR was already gone (delete 404) so it was never polled; the single read is the
+    // RGD deletion gate. The generated CRD is NOT deleted in the alchemy path (finding #1).
+    expect(k8sApi.read).toHaveBeenCalledTimes(1);
     expect(deletes.map((resource) => resource.kind)).toEqual([
       'TestApp',
       'ResourceGraphDefinition',
-      'CustomResourceDefinition',
     ]);
   });
 
@@ -902,11 +900,11 @@ describe('KroTypeKroDeployer', () => {
     expect(deletes.map((resource) => resource.kind)).toEqual(['TestApp', 'ResourceGraphDefinition']);
   });
 
-  it('treats missing generated CRD as idempotent Alchemy KRO definition cleanup', async () => {
+  it('finding #1: deleteKroDefinition deletes the RGD but NOT the CRD (left for out-of-band GC)', async () => {
     const deletes: Record<string, unknown>[] = [];
     const k8sApi = {
       list: mock(() => Promise.resolve({ items: [] })),
-      // The RGD delete gate reads to a 404 (finding #1); the CRD is absent (no plural).
+      // The RGD delete gate reads to a 404.
       read: mock(() => Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }))),
       delete: mock((resource: Record<string, unknown>) => {
         deletes.push(resource);
@@ -922,7 +920,10 @@ describe('KroTypeKroDeployer', () => {
       rgdName: 'test-app',
     }, k8sApi);
 
-    expect(k8sApi.list).toHaveBeenCalledWith('apiextensions.k8s.io/v1', 'CustomResourceDefinition');
+    // No CRD discovery (no list) and no CRD delete — the CRD is never touched in alchemy so
+    // the separately-torn-down hoisted namespace can never terminate against a Terminating
+    // CRD (finding #1). Only the RGD is deleted here.
+    expect(k8sApi.list).not.toHaveBeenCalled();
     expect(deletes).toEqual([
       {
         apiVersion: 'kro.run/v1alpha1',
@@ -930,6 +931,9 @@ describe('KroTypeKroDeployer', () => {
         metadata: { name: 'test-app' },
       },
     ]);
+    expect(deletes.some((d) => (d as { kind?: string }).kind === 'CustomResourceDefinition')).toBe(
+      false
+    );
   });
 
   it('defers ResourceGraphDefinition state deletion while KRO instances still exist', async () => {

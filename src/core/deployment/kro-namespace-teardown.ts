@@ -18,8 +18,39 @@ import { createRollbackManager } from './rollback-manager.js';
  */
 export const NAMESPACE_OWNER_ANNOTATION = 'typekro.io/created-by-rgd';
 
+/**
+ * Annotation stamped on the instance CR at DEPLOY time recording the CONCRETE names
+ * of every Namespace this instance hoisted out of the RGD graph (finding #4). Value is
+ * a JSON array of names (e.g. `["team-a","team-a-monitoring"]`). Teardown + the pre-hoist
+ * guard read it back EXACTLY so a hoisted name derived from an ARBITRARY spec field (e.g.
+ * `spec.targetNamespace`) round-trips without re-deriving it from `metadata.namespace` /
+ * `spec.namespace` (which can be wrong for non-1:1 hoists).
+ */
+export const HOISTED_NAMESPACES_ANNOTATION = 'typekro.io/hoisted-namespaces';
+
+/**
+ * Parse the {@link HOISTED_NAMESPACES_ANNOTATION} value back into a list of namespace
+ * names. Tolerant: a missing/blank value yields `[]`; a malformed value yields `[]`
+ * (callers decide the fallback). Only string entries are returned.
+ */
+export function parseHoistedNamespacesAnnotation(value: string | undefined): string[] {
+  if (typeof value !== 'string' || value.trim().length === 0) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n): n is string => typeof n === 'string' && n.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 /** Default bound for the gated Namespace delete (poll to a real 404, then throw). */
 const DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS = 120_000;
+
+/** The API group of a `group/version` (or `v1` core, whose group is `""`). */
+function groupOfApiVersion(apiVersion: string): string {
+  return apiVersion.includes('/') ? (apiVersion.split('/')[0] ?? '') : '';
+}
 
 /**
  * A namespaced RESOURCE TYPE discovered from the cluster's API surface. `apiVersion`
@@ -67,17 +98,27 @@ export type NamespaceEmptinessVerdict =
  * they must not pin an otherwise-empty namespace open. Treating them as occupants
  * would make the gate almost never fire. This is a deliberate, documented extension
  * of the brief's three-item default list.
+ *
+ * Keyed by GROUP + kind + name (finding #5): the built-in defaults all live in the
+ * CORE group (`""`). Keying by kind/name alone would wrongly exempt an unrelated CRD
+ * whose kind happened to be `ServiceAccount` / `ConfigMap` / `Secret` in some OTHER
+ * group — a real occupant — from the emptiness gate.
  */
-export function isAutoProvisionedDefault(kind: string, name: string): boolean {
+export function isAutoProvisionedDefault(group: string, kind: string, name: string): boolean {
+  if (group !== '') return false; // only genuine CORE-group built-ins are defaults
   if (kind === 'ServiceAccount' && name === 'default') return true;
   if (kind === 'ConfigMap' && name === 'kube-root-ca.crt') return true;
   if (kind === 'Secret' && name.startsWith('default-token-')) return true;
   return false;
 }
 
-/** Event types (core `v1` + `events.k8s.io`) — transient, never counted as occupants. */
-export function isEventType(kind: string): boolean {
-  return kind === 'Event';
+/**
+ * Event types — transient, never counted as occupants. Keyed by GROUP + kind (finding
+ * #5): only the CORE-group (`""`) `Event` and the `events.k8s.io` `Event` are exempted,
+ * so an unrelated CRD named `Event` in some OTHER group is still treated as an occupant.
+ */
+export function isEventType(group: string, kind: string): boolean {
+  return kind === 'Event' && (group === '' || group === 'events.k8s.io');
 }
 
 /**
@@ -106,7 +147,8 @@ export async function classifyNamespaceEmptiness(
   }
 
   for (const type of types) {
-    if (isEventType(type.kind)) continue; // transient bookkeeping — never an occupant
+    const group = groupOfApiVersion(type.apiVersion);
+    if (isEventType(group, type.kind)) continue; // transient bookkeeping — never an occupant
     let names: string[];
     try {
       names = await inventory.listObjectNames(type, namespace);
@@ -118,7 +160,7 @@ export async function classifyNamespaceEmptiness(
       };
     }
     for (const name of names) {
-      if (!isAutoProvisionedDefault(type.kind, name)) {
+      if (!isAutoProvisionedDefault(group, type.kind, name)) {
         return {
           empty: false,
           reason: `namespace "${namespace}" still contains ${type.apiVersion}/${type.kind} "${name}" (another stack or user owns resources here)`,
@@ -243,6 +285,79 @@ export async function deleteNamespaceIfEmpty(
 }
 
 /**
+ * The create-first API surface: an atomic CREATE (POST) plus a READ used only to
+ * classify a pre-existing namespace on conflict. {@link k8s.KubernetesObjectApi}
+ * satisfies this; tests inject a mock.
+ */
+export interface NamespaceCreateFirstApi {
+  create(
+    resource: k8s.KubernetesObject,
+    pretty?: string,
+    dryRun?: string,
+    fieldManager?: string
+  ): Promise<unknown>;
+  read(resource: {
+    apiVersion: string;
+    kind: string;
+    metadata: { name: string };
+  }): Promise<unknown>;
+}
+
+/** Verdict of {@link decideNamespaceOwnershipCreateFirst}. */
+export interface NamespaceOwnershipDecision {
+  /** True IFF our CREATE returned 201 — i.e. WE created the namespace this call. */
+  readonly created: boolean;
+  /**
+   * True IFF typekro (this RGD) owns the namespace: it either created it now (`created`)
+   * or a PRIOR create by this RGD stamped it (matching {@link NAMESPACE_OWNER_ANNOTATION}).
+   * A namespace merely ADOPTED (created by someone else) is `owned: false`.
+   */
+  readonly owned: boolean;
+}
+
+/**
+ * ATOMIC ownership decision via CREATE-FIRST (finding #3), shared by the imperative and
+ * alchemy deploy paths. The old GET→(if 404)→SSA-patch-with-owner-stamp was raceable:
+ * another actor creating the namespace between the GET and the patch let typekro ADOPT
+ * it yet stamp it owned — and later DELETE it. Instead:
+ *
+ *   1. Attempt to CREATE the namespace (POST) WITH the ownership stamp. A 201 is proof
+ *      WE created it → we own it (ownership is atomic: owned IFF we created it).
+ *   2. On 409 (already exists) it is NOT ours to claim by this call. READ it and treat
+ *      it as owned ONLY if it already carries THIS RGD's stamp (a prior create by us);
+ *      otherwise it is ADOPTED (`owned: false`). This 409-read is race-free for the
+ *      ownership decision because ownership was fixed at the original 201-create.
+ *   3. Any OTHER create error is rethrown for the caller to handle (fail loud).
+ *
+ * `manifestWithStamp` MUST already carry {@link NAMESPACE_OWNER_ANNOTATION} = `ownerRgd`
+ * plus the complete declared namespace config, so a 201 lands the full config atomically.
+ */
+export async function decideNamespaceOwnershipCreateFirst(
+  api: NamespaceCreateFirstApi,
+  manifestWithStamp: k8s.KubernetesObject,
+  ownerRgd: string,
+  fieldManager = 'typekro'
+): Promise<NamespaceOwnershipDecision> {
+  try {
+    await api.create(manifestWithStamp, undefined, undefined, fieldManager);
+    return { created: true, owned: true };
+  } catch (error: unknown) {
+    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+    const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+    if (code !== 409) throw error; // non-conflict create failure — caller decides
+  }
+  // 409: the namespace already exists. Owned only if a prior create by THIS RGD stamped it.
+  const name = manifestWithStamp.metadata?.name;
+  const live = (await api.read({
+    apiVersion: 'v1',
+    kind: 'Namespace',
+    metadata: { name: typeof name === 'string' ? name : '' },
+  })) as { metadata?: { annotations?: Record<string, string> } };
+  const owned = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === ownerRgd;
+  return { created: false, owned };
+}
+
+/**
  * Metrics-only aggregated API groups. Their served resources (`pods`, `nodes`) are
  * EPHEMERAL, read-only metrics samples — never persistent occupants that a stack/user
  * "owns" — so an APIService backing one of these must NOT trip the coverage
@@ -341,22 +456,34 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
         // Metrics groups are ephemeral read-only samples — never persistent occupants —
         // so they are deliberately skipped rather than treated as uncertainty.
         if (METRICS_AGGREGATION_GROUPS.has(groupName)) continue;
-        const version = group.preferredVersion?.version ?? group.versions?.[0]?.version;
-        if (typeof version !== 'string' || version.length === 0) {
+        // Enumerate EVERY SERVED version of the group, not just the preferred one
+        // (finding #5): resources are published per group-VERSION, so a kind served
+        // ONLY on a non-preferred version (a common CRD conversion pattern) would be
+        // MISSED if we discovered the preferred version alone — and a missed kind lets
+        // the gate false-"empty" over a real occupant.
+        const versions = (group.versions ?? [])
+          .map((v) => v?.version)
+          .filter((v): v is string => typeof v === 'string' && v.length > 0);
+        if (versions.length === 0) {
           // A served group with no discoverable version — cannot enumerate it → RETAIN.
           throw new Error(
             `served API group "${groupName}" reports no discoverable version; cannot prove the namespace is empty`
           );
         }
-        try {
-          addFromList(`${groupName}/${version}`, await customApi.getAPIResources({ group: groupName, version }));
-        } catch (error: unknown) {
-          // Cannot enumerate this served namespaced group (native OR aggregated) →
-          // UNCERTAINTY → fail-safe RETAIN (finding #5).
-          throw new Error(
-            `cannot enumerate served API group "${groupName}/${version}" ` +
-              `(${ensureError(error).message}); cannot prove the namespace is empty`
-          );
+        for (const version of versions) {
+          try {
+            addFromList(
+              `${groupName}/${version}`,
+              await customApi.getAPIResources({ group: groupName, version })
+            );
+          } catch (error: unknown) {
+            // Cannot enumerate this served namespaced group-version (native OR
+            // aggregated) → UNCERTAINTY → fail-safe RETAIN (finding #5).
+            throw new Error(
+              `cannot enumerate served API group "${groupName}/${version}" ` +
+                `(${ensureError(error).message}); cannot prove the namespace is empty`
+            );
+          }
         }
       }
 
