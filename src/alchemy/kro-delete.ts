@@ -1,6 +1,7 @@
-import type { KubeConfig } from '@kubernetes/client-node';
+import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 
 import { CRDInstanceError, ensureError } from '../core/errors.js';
+import { createRollbackManager } from '../core/deployment/rollback-manager.js';
 import { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../core/logging/index.js';
 
@@ -58,6 +59,14 @@ interface CustomObjectListApi {
 export interface KubernetesObjectCleanupApi {
   list(apiVersion: string, kind: string): Promise<unknown>;
   delete(resource: {
+    apiVersion: string;
+    kind: string;
+    metadata: { name: string; namespace?: string };
+  }): Promise<unknown>;
+  // `read` is required so the RGD/CRD deletes can GATE on a real 404 (finding #1)
+  // through the engine's shared deletion primitive — the same gate the imperative
+  // path uses. The default bun object API supplies it; tests inject a mock.
+  read(resource: {
     apiVersion: string;
     kind: string;
     metadata: { name: string; namespace?: string };
@@ -148,21 +157,25 @@ export async function deleteKroDefinition(
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-kro-delete');
   const crdPlural = options.plural ?? await lookupCRDPlural(kubeConfig, options, k8sApi);
+  // ONE gating mechanism (finding #1 + #6): the engine's rollback manager deletes then
+  // polls to a REAL 404 and THROWS on timeout — the SAME primitive the imperative KRO
+  // teardown uses. The RGD is waited to 404 BEFORE the CRD (KRO's per-RGD controller
+  // must tear down first, else the CRD cleanup finalizer stalls). A pre-existing 404 on
+  // either delete is treated as already-gone.
+  const rollback = createRollbackManager(k8sApi as unknown as KubernetesObjectApi);
+  const timeout = options.timeout ?? 300000;
 
   try {
-    await k8sApi.delete({
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'ResourceGraphDefinition',
-      metadata: { name: options.rgdName },
-    });
+    await rollback.deleteResourceAndWait(
+      { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', name: options.rgdName },
+      { timeout }
+    );
   } catch (error: unknown) {
-    if (getKubernetesErrorCode(error) !== 404) {
-      logger.error('Alchemy KRO RGD cleanup failed', ensureError(error), {
-        rgdName: options.rgdName,
-        error: ensureError(error).message,
-      });
-      throw error;
-    }
+    logger.error('Alchemy KRO RGD cleanup failed', ensureError(error), {
+      rgdName: options.rgdName,
+      error: ensureError(error).message,
+    });
+    throw error;
   }
 
   if (!crdPlural) {
@@ -175,19 +188,16 @@ export async function deleteKroDefinition(
 
   const crdName = `${crdPlural}.${getSchemaGroup(options)}`;
   try {
-    await k8sApi.delete({
-      apiVersion: 'apiextensions.k8s.io/v1',
-      kind: 'CustomResourceDefinition',
-      metadata: { name: crdName },
-    });
+    await rollback.deleteResourceAndWait(
+      { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
+      { timeout }
+    );
   } catch (error: unknown) {
-    if (getKubernetesErrorCode(error) !== 404) {
-      logger.error('Alchemy KRO CRD cleanup failed', ensureError(error), {
-        crdName,
-        error: ensureError(error).message,
-      });
-      throw error;
-    }
+    logger.error('Alchemy KRO CRD cleanup failed', ensureError(error), {
+      crdName,
+      error: ensureError(error).message,
+    });
+    throw error;
   }
 }
 

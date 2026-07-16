@@ -16,8 +16,12 @@ const logger = getComponentLogger('k8s-helpers');
  */
 export function isNotFoundError(error: unknown): boolean {
   if (error && typeof error === 'object') {
-    const k8sError = error as KubernetesApiError;
-    return k8sError.statusCode === 404 || k8sError.body?.code === 404;
+    // Cover all three shapes the @kubernetes/client-node stack surfaces a 404 as:
+    // `statusCode` (typed API errors), `body.code` (parsed Status body), and the
+    // bare `code` some code paths set — the KRO teardown reads all three, so the
+    // engine's shared 404 check must too or a gate would miss a real 404.
+    const k8sError = error as KubernetesApiError & { code?: number };
+    return k8sError.statusCode === 404 || k8sError.body?.code === 404 || k8sError.code === 404;
   }
   return false;
 }

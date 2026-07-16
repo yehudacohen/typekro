@@ -192,6 +192,11 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
 ): Promise<TypeKroResource<T>> {
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Fail-closed PRE-HOIST guard on the ALCHEMY path (finding #7): before applying a
+  // typekro-hoisted workload Namespace, refuse to proceed if it is still a KRO ApplySet
+  // member from a pre-hoist RGD — rolling the new hoisted RGD over the old one would let
+  // KRO's prune delete it. Cluster-checked here since `toAlchemyResources` is cluster-free.
+  await _assertNoPreHoistNamespaceConflictAlchemy(props, logger);
   // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
   // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
   // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
@@ -289,6 +294,56 @@ export function singletonDriftVerdict(
  * fires for resources carrying the singleton spec-fingerprint annotation (i.e. singleton instances);
  * a missing instance / absent CRD / unreachable cluster is treated as "nothing to drift from".
  */
+/**
+ * Fail-closed PRE-HOIST detection for the ALCHEMY deploy path (finding #7). Runs ONLY
+ * for a typekro-hoisted workload Namespace (`namespaceEmptyGate`). If the live namespace
+ * is a KRO ApplySet member (carries `applyset.kubernetes.io/part-of` or any `kro.run/*`
+ * label from a pre-hoist RGD), applying the new hoisted RGD would let KRO's prune delete
+ * it — so THROW. A 404 (fresh) is safe; any OTHER read error FAILS CLOSED (throws).
+ */
+async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<void> {
+  if (props.namespaceEmptyGate !== true) return;
+  const name = props.resource.metadata?.name;
+  if (typeof name !== 'string' || name.length === 0) return;
+
+  const kc = _createClientProvider(props, 'pre-hoist-check');
+  const api = createBunCompatibleKubernetesObjectApi(kc);
+  let labels: Record<string, string> = {};
+  try {
+    const live = (await api.read({
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name },
+    } as Parameters<typeof api.read>[0])) as { metadata?: { labels?: Record<string, string> } };
+    labels = live.metadata?.labels ?? {};
+  } catch (error: unknown) {
+    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+    const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+    if (code === 404) return; // fresh namespace — nothing to migrate
+    throw new Error(
+      `Pre-hoist safety check could not read Namespace "${name}" (${ensureError(error).message}). ` +
+        `Refusing to deploy: a hoist over an unreadable namespace could let KRO's ApplySet prune delete it.`
+    );
+  }
+
+  const partOfKro =
+    typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
+    Object.keys(labels).some((key) => key.startsWith('kro.run/'));
+  if (partOfKro) {
+    throw new Error(
+      `Pre-hoist deployment detected: the live Namespace "${name}" is a KRO ApplySet member ` +
+        `(carries applyset.kubernetes.io/part-of and/or kro.run/* labels from a pre-hoist RGD). ` +
+        `typekro now HOISTS every owned Namespace out of the RGD, so applying the new RGD in place ` +
+        `would drop "${name}" from KRO's ApplySet and KRO's prune would DELETE it and its workloads. ` +
+        `This upgrade is not auto-migrated — see docs/advanced/migration.md.`
+    );
+  }
+  logger.debug('Pre-hoist namespace check passed (alchemy)', { namespace: name });
+}
+
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger
@@ -411,6 +466,7 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
     ...(output.kroDeletion !== undefined && { kroDeletion: output.kroDeletion }),
     ...(output.retain === true && { retain: true }),
     ...(output.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
+    ...(output.namespaceOwnerRgd !== undefined && { namespaceOwnerRgd: output.namespaceOwnerRgd }),
   };
 }
 
@@ -602,6 +658,10 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
     const kubeConfig = _createClientProvider(props, 'delete');
     await deleteNamespaceIfEmpty(kubeConfig, namespaceName, {
       logger,
+      // Ownership record (finding #4) + gated delete (finding #1): only delete a
+      // namespace this composition's RGD created, and gate it to a real 404.
+      ...(props.namespaceOwnerRgd !== undefined && { ownedByRgd: props.namespaceOwnerRgd }),
+      ...(props.options?.timeout !== undefined && { timeoutMs: props.options.timeout }),
       context: { alchemyType: KRO_RESOURCE_TYPE },
     });
     return;
@@ -668,6 +728,7 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     ...(props.kroDeletion !== undefined && { kroDeletion: props.kroDeletion }),
     ...(props.retain === true && { retain: true }),
     ...(props.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
+    ...(props.namespaceOwnerRgd !== undefined && { namespaceOwnerRgd: props.namespaceOwnerRgd }),
     deployedResource: cleanDeployedResource,
     ready: true,
     deployedAt: Date.now(),

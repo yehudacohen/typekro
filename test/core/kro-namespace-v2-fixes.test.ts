@@ -102,14 +102,17 @@ describe('#2: assertNoPreHoistNamespaceConflict fails closed on a KRO-owned name
     await expect(assertFn(['app'])).resolves.toBeUndefined();
   });
 
-  it('does NOT block the deploy on a transient (non-404) read error', async () => {
+  it('FAILS CLOSED on a transient (non-404) read error (finding #7)', async () => {
+    // A non-404 read is NOT proof the namespace is safe to hoist over, so the guard now
+    // ABORTS the deploy rather than skipping — a hoist over an unreadable namespace could
+    // let KRO's ApplySet prune delete it.
     const factory = ownsNs().factory('kro', { namespace: 'app' });
     const assertFn = withMockedRead(factory, async () => {
       const err = new Error('boom') as Error & { statusCode?: number };
       err.statusCode = 500;
       throw err;
     });
-    await expect(assertFn(['app'])).resolves.toBeUndefined();
+    await expect(assertFn(['app'])).rejects.toThrow(/PRE_HOIST_NAMESPACE_CHECK_FAILED|could not read/);
   });
 });
 
@@ -313,15 +316,19 @@ describe('#3+#4: classifyNamespaceEmptiness', () => {
 describe('#3+#4: deleteNamespaceIfEmpty gates the actual delete', () => {
   const makeK8sApi = (nsExists: boolean) => {
     const deletes: string[] = [];
+    // Once deleted, subsequent reads 404 so the gated delete (delete → poll to a real
+    // 404, throw on timeout) observes the namespace is gone and returns.
+    let deleted = false;
     const api = {
       read: async () => {
-        if (nsExists) return { metadata: { name: 'ns' } };
+        if (nsExists && !deleted) return { metadata: { name: 'ns' } };
         const err = new Error('nf') as Error & { statusCode?: number };
         err.statusCode = 404;
         throw err;
       },
       delete: async (obj: { metadata?: { name?: string } }) => {
         deletes.push(obj.metadata?.name ?? '?');
+        deleted = true;
         return {};
       },
     };
@@ -371,6 +378,66 @@ describe('#3+#4: deleteNamespaceIfEmpty gates the actual delete', () => {
     await deleteNamespaceIfEmpty({} as never, 'ns', {
       k8sApi: api as never,
       inventory: fakeInventory([], {}, { discoverThrows: true }),
+    });
+    expect(deletes).toEqual([]);
+  });
+});
+
+describe('#4: deleteNamespaceIfEmpty ownership record (ownedByRgd)', () => {
+  // The read must ALSO surface the ownership annotation for the ownedByRgd check.
+  const makeOwnedApi = (annotations: Record<string, string>) => {
+    const deletes: string[] = [];
+    let deleted = false;
+    const api = {
+      read: async () => {
+        if (deleted) {
+          const err = new Error('nf') as Error & { statusCode?: number };
+          err.statusCode = 404;
+          throw err;
+        }
+        return { metadata: { name: 'ns', annotations } };
+      },
+      delete: async (obj: { metadata?: { name?: string } }) => {
+        deletes.push(obj.metadata?.name ?? '?');
+        deleted = true;
+        return {};
+      },
+    };
+    return { api, deletes };
+  };
+
+  it('DELETES an owned empty namespace (created-by-rgd matches)', async () => {
+    const { api, deletes } = makeOwnedApi({ 'typekro.io/created-by-rgd': 'my-rgd' });
+    await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([SA, CM], {
+        ServiceAccount: ['default'],
+        ConfigMap: ['kube-root-ca.crt'],
+      }),
+    });
+    expect(deletes).toEqual(['ns']);
+  });
+
+  it('RETAINS an ADOPTED namespace (no ownership annotation) even if empty', async () => {
+    const { api, deletes } = makeOwnedApi({});
+    await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([SA, CM], {
+        ServiceAccount: ['default'],
+        ConfigMap: ['kube-root-ca.crt'],
+      }),
+    });
+    expect(deletes).toEqual([]);
+  });
+
+  it("RETAINS a namespace owned by a DIFFERENT rgd (annotation mismatch)", async () => {
+    const { api, deletes } = makeOwnedApi({ 'typekro.io/created-by-rgd': 'other-rgd' });
+    await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([], {}),
     });
     expect(deletes).toEqual([]);
   });

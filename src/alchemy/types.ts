@@ -105,6 +105,14 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   namespaceEmptyGate?: boolean;
 
   /**
+   * The RGD that owns this hoisted Namespace (finding #4). When set alongside
+   * {@link namespaceEmptyGate}, the empty-gated delete removes the namespace ONLY if it
+   * carries the matching `typekro.io/created-by-rgd` ownership annotation — an
+   * adopted/undeclared namespace is never deleted. Persisted to output.
+   */
+  namespaceOwnerRgd?: string;
+
+  /**
    * Resolved outputs of the resources this one depends on. Two jobs:
    *
    *  1. **Ordering** — because each entry traces back (via an alchemy `Output`) to another
@@ -196,6 +204,8 @@ export interface TypeKroResource<T extends Enhanced<any, any>> {
   retain?: boolean;
   /** Mirrors {@link TypeKroResourceProps.namespaceEmptyGate}: empty-gated Namespace teardown. */
   namespaceEmptyGate?: boolean;
+  /** Mirrors {@link TypeKroResourceProps.namespaceOwnerRgd}: ownership record for the empty-gate. */
+  namespaceOwnerRgd?: string;
 
   /**
    * The deployed resource with live status from the cluster

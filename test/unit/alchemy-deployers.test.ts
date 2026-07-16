@@ -735,7 +735,8 @@ describe('KroTypeKroDeployer', () => {
       sleep: mock(() => Promise.resolve()),
     });
 
-    expect(k8sApi.read).toHaveBeenCalledTimes(2);
+    // 2 reads poll the CR to 404; 2 more GATE the RGD then the CRD to 404 (finding #1).
+    expect(k8sApi.read).toHaveBeenCalledTimes(4);
     expect(customApi.listClusterCustomObject).toHaveBeenCalledWith({
       group: 'example.com',
       version: 'v1alpha1',
@@ -802,7 +803,9 @@ describe('KroTypeKroDeployer', () => {
     const deletes: Record<string, any>[] = [];
     const k8sApi = {
       list: mock(() => Promise.resolve({ items: [] })),
-      read: mock(() => Promise.resolve({})),
+      // The CR delete 404s (already gone) so its poll never reads; the RGD then CRD
+      // gates DO read, and must see a 404 to confirm each is fully deleted (finding #1).
+      read: mock(() => Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }))),
       delete: mock((resource: Record<string, any>) => {
         deletes.push(resource);
         if (resource.kind === 'TestApp') {
@@ -828,7 +831,9 @@ describe('KroTypeKroDeployer', () => {
       sleep: mock(() => Promise.resolve()),
     });
 
-    expect(k8sApi.read).not.toHaveBeenCalled();
+    // The CR was already gone (delete 404) so it was never polled; the 2 reads are the
+    // RGD and CRD deletion gates.
+    expect(k8sApi.read).toHaveBeenCalledTimes(2);
     expect(deletes.map((resource) => resource.kind)).toEqual([
       'TestApp',
       'ResourceGraphDefinition',
@@ -901,6 +906,8 @@ describe('KroTypeKroDeployer', () => {
     const deletes: Record<string, unknown>[] = [];
     const k8sApi = {
       list: mock(() => Promise.resolve({ items: [] })),
+      // The RGD delete gate reads to a 404 (finding #1); the CRD is absent (no plural).
+      read: mock(() => Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }))),
       delete: mock((resource: Record<string, unknown>) => {
         deletes.push(resource);
         return Promise.resolve({});

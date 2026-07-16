@@ -7,6 +7,19 @@ import {
 } from '../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
+import { createRollbackManager } from './rollback-manager.js';
+
+/**
+ * Annotation stamped on a hoisted workload Namespace at CREATE time, recording
+ * the RGD that created it — the durable ownership RECORD used by teardown. A
+ * Namespace is a deletion candidate ONLY if it carries this annotation set to
+ * THIS composition's RGD name (i.e. typekro created it for this composition);
+ * an adopted/pre-existing Namespace never carries it and is never deleted.
+ */
+export const NAMESPACE_OWNER_ANNOTATION = 'typekro.io/created-by-rgd';
+
+/** Default bound for the gated Namespace delete (poll to a real 404, then throw). */
+const DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS = 120_000;
 
 /**
  * A namespaced RESOURCE TYPE discovered from the cluster's API surface. `apiVersion`
@@ -148,17 +161,34 @@ export async function deleteNamespaceIfEmpty(
     inventory?: NamespaceInventory;
     k8sApi?: Pick<k8s.KubernetesObjectApi, 'read' | 'delete'>;
     context?: Record<string, unknown>;
+    /**
+     * When set, delete ONLY if the live Namespace carries
+     * {@link NAMESPACE_OWNER_ANNOTATION} equal to this value (typekro created it
+     * for this composition's RGD). An adopted/undeclared Namespace — no matching
+     * ownership annotation — is RETAINED. This is the PRIMARY ownership guard;
+     * emptiness below is the secondary safety net.
+     */
+    ownedByRgd?: string;
+    /** Bound for the gated delete (poll to a real 404, throw on timeout). */
+    timeoutMs?: number;
   } = {}
 ): Promise<void> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
   const context = options.context ?? {};
   const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
 
-  // Early existence check FIRST — a 404 means the namespace is already gone (skip the
-  // discovery entirely; this also keeps a teardown against an already-removed namespace
-  // fully cluster-free beyond one read). Any OTHER read error → fail-safe RETAIN.
+  // Early existence + OWNERSHIP check FIRST — one read serves both. A 404 means the
+  // namespace is already gone (skip discovery entirely). Any OTHER read error →
+  // fail-safe RETAIN. When `ownedByRgd` is set, the same read proves ownership: only a
+  // namespace typekro created for THIS RGD (matching annotation) is a candidate; an
+  // adopted/undeclared namespace is retained (finding #3/#4).
+  let live: { metadata?: { annotations?: Record<string, string> } };
   try {
-    await k8sApi.read({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: namespace } });
+    live = (await k8sApi.read({
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name: namespace },
+    })) as { metadata?: { annotations?: Record<string, string> } };
   } catch (error: unknown) {
     const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
     const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
@@ -169,12 +199,23 @@ export async function deleteNamespaceIfEmpty(
       });
       return;
     }
-    logger.info('Retaining namespace after teardown — could not read it (emptiness unproven)', {
+    logger.info('Retaining namespace after teardown — could not read it (ownership unproven)', {
       namespace,
       error: ensureError(error).message,
       ...context,
     });
     return;
+  }
+
+  if (options.ownedByRgd !== undefined) {
+    const owner = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION];
+    if (owner !== options.ownedByRgd) {
+      logger.info(
+        'Retaining namespace after teardown — not owned by this composition (adopted/undeclared)',
+        { namespace, expectedOwner: options.ownedByRgd, actualOwner: owner ?? '(none)', ...context }
+      );
+      return;
+    }
   }
 
   const inventory = options.inventory ?? createClusterNamespaceInventory(kubeConfig);
@@ -188,36 +229,50 @@ export async function deleteNamespaceIfEmpty(
     return;
   }
 
-  try {
-    await k8sApi.delete({
-      apiVersion: 'v1',
-      kind: 'Namespace',
-      metadata: { name: namespace },
-    } as k8s.KubernetesObject);
-    logger.debug('Deleted the empty namespace after teardown', { namespace, ...context });
-  } catch (error: unknown) {
-    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-    const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-    if (code === 404) return; // already gone — nothing to do
-    logger.warn('Failed to delete the empty namespace after teardown', {
-      namespace,
-      error: ensureError(error).message,
-      ...context,
-    });
-  }
+  // GATED delete via the engine's ONE deletion primitive: delete, then poll to a real
+  // 404 and THROW on timeout (finding #1). Because teardown already waited for the CRD
+  // to 404, an empty owned namespace should drain promptly; if it does NOT, a stuck
+  // finalizer surfaces as an error rather than a silently-abandoned Terminating
+  // namespace. A pre-delete 404 is benign (handled by the primitive).
+  const rollback = createRollbackManager(k8sApi as k8s.KubernetesObjectApi);
+  await rollback.deleteResourceAndWait(
+    { apiVersion: 'v1', kind: 'Namespace', name: namespace },
+    { timeout: options.timeoutMs ?? DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS }
+  );
+  logger.debug('Deleted the empty owned namespace after teardown', { namespace, ...context });
 }
+
+/**
+ * Metrics-only aggregated API groups. Their served resources (`pods`, `nodes`) are
+ * EPHEMERAL, read-only metrics samples — never persistent occupants that a stack/user
+ * "owns" — so an APIService backing one of these must NOT trip the coverage
+ * uncertainty check below (that would make the secondary emptiness gate RETAIN on
+ * essentially every cluster with metrics-server installed). Any OTHER aggregated
+ * APIService group is treated as UNCERTAINTY → RETAIN.
+ */
+const METRICS_AGGREGATION_GROUPS = new Set([
+  'metrics.k8s.io',
+  'custom.metrics.k8s.io',
+  'external.metrics.k8s.io',
+]);
 
 /**
  * Default {@link NamespaceInventory} backed by the live cluster. Discovery uses the
  * typed group clients' `getAPIResources()` (core + the built-in namespaced groups)
  * plus the CRD list (for custom namespaced kinds), all via the Bun-compatible client
  * wrappers — no raw HTTP, so it behaves identically under Bun and Node. Listing uses
- * `KubernetesObjectApi.list(apiVersion, kind, namespace)`.
+ * `KubernetesObjectApi.list(apiVersion, kind, namespace)` and FOLLOWS the list
+ * continuation token so a namespace with more objects than one page never hides an
+ * occupant behind a silent cap (finding #5b).
  *
- * Only NAMESPACED types that support the `list` verb are returned; subresources
- * (names containing `/`) are skipped. Aggregated/extension API groups outside this
- * set are not enumerated — a resource there that the check cannot see is the fail-safe
- * boundary: the gate errs toward RETAIN, never toward an unsafe delete.
+ * COVERAGE / UNCERTAINTY (finding #5a): after enumerating the built-in groups + CRDs,
+ * discovery cross-checks the cluster's SERVED API groups. A served group that this
+ * inventory did not enumerate AND that is backed by an aggregated APIService (an
+ * external backend this client cannot enumerate) — excluding the ephemeral metrics
+ * groups — makes discovery THROW an uncertainty error, which {@link classifyNamespaceEmptiness}
+ * turns into a fail-safe RETAIN. Non-aggregated (apiserver-native) groups outside the
+ * enumerated set are overwhelmingly cluster-scoped-only; treating them as covered is
+ * the documented boundary, with the ownership record (not emptiness) as the primary guard.
  */
 export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): NamespaceInventory {
   const objectApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
@@ -225,6 +280,8 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
     async discoverNamespacedTypes(): Promise<NamespacedResourceType[]> {
       // Deduplicate by apiVersion/kind — a kind can surface via more than one path.
       const seen = new Map<string, NamespacedResourceType>();
+      // The API GROUPS we actually enumerated (so we can detect coverage gaps below).
+      const enumeratedGroups = new Set<string>(['']); // '' = the core group
       const add = (apiVersion: string, kind: string): void => {
         const key = `${apiVersion}/${kind}`;
         if (!seen.has(key)) seen.set(key, { apiVersion, kind });
@@ -253,6 +310,8 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
         const client = createBunCompatibleApiClient(kubeConfig, ClientClass);
         const list = await client.getAPIResources();
         const groupVersion = list.groupVersion || 'v1';
+        // groupVersion is `v1` (core) or `group/version`; record the bare group.
+        enumeratedGroups.add(groupVersion.includes('/') ? (groupVersion.split('/')[0] ?? '') : '');
         for (const resource of list.resources ?? []) {
           if (resource.namespaced !== true) continue;
           if (resource.name.includes('/')) continue; // subresource
@@ -270,7 +329,9 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
       const apiextensions = createBunCompatibleApiClient(kubeConfig, k8sClient.ApiextensionsV1Api);
       const crds = await apiextensions.listCustomResourceDefinition();
       for (const crd of crds.items ?? []) {
-        if (crd.spec?.scope !== 'Namespaced') continue;
+        if (!crd.spec?.group) continue;
+        enumeratedGroups.add(crd.spec.group); // group is served by a CRD we DID enumerate
+        if (crd.spec.scope !== 'Namespaced') continue;
         const group = crd.spec.group;
         const kind = crd.spec.names?.kind;
         if (!group || !kind) continue;
@@ -282,69 +343,71 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
         add(`${group}/${version}`, kind);
       }
 
+      // COVERAGE CHECK (finding #5a): fail toward RETAIN if the cluster serves an
+      // aggregated APIService group this inventory cannot enumerate. `getAPIVersions`
+      // lists every served group; `listAPIService` distinguishes aggregated groups
+      // (`spec.service` set → external backend) from apiserver-native ones.
+      const apisApi = createBunCompatibleApiClient(kubeConfig, k8sClient.ApisApi);
+      const groupList = await apisApi.getAPIVersions();
+      const servedGroups = new Set(
+        (groupList.groups ?? []).map((g) => g.name).filter((n): n is string => typeof n === 'string')
+      );
+      const uncoveredServed = [...servedGroups].filter((g) => !enumeratedGroups.has(g));
+      if (uncoveredServed.length > 0) {
+        const apiregistration = createBunCompatibleApiClient(
+          kubeConfig,
+          k8sClient.ApiregistrationV1Api
+        );
+        const apiServices = await apiregistration.listAPIService();
+        const aggregatedGroups = new Set(
+          (apiServices.items ?? [])
+            .filter((svc) => svc.spec?.service != null) // aggregated (external backend)
+            .map((svc) => svc.spec?.group)
+            .filter((g): g is string => typeof g === 'string')
+        );
+        const unenumerableAggregated = uncoveredServed.filter(
+          (g) => aggregatedGroups.has(g) && !METRICS_AGGREGATION_GROUPS.has(g)
+        );
+        if (unenumerableAggregated.length > 0) {
+          throw new Error(
+            `cluster serves aggregated API group(s) this inventory cannot enumerate ` +
+              `(${unenumerableAggregated.join(', ')}); cannot prove the namespace is empty`
+          );
+        }
+      }
+
       return [...seen.values()];
     },
 
     async listObjectNames(type: NamespacedResourceType, namespace: string): Promise<string[]> {
-      // `list` returns the list body directly in @kubernetes/client-node 1.x — a limit
-      // keeps the call cheap: any single non-default occupant proves occupation.
-      const result = (await objectApi.list(
-        type.apiVersion,
-        type.kind,
-        namespace,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        50
-      )) as unknown as { items?: Array<{ metadata?: { name?: unknown } }> };
-      return (result.items ?? [])
-        .map((item) => item.metadata?.name)
-        .filter((name): name is string => typeof name === 'string');
+      // FOLLOW the continuation token so an occupant beyond the first page is never
+      // hidden by a silent cap (finding #5b). `list` returns the body directly in
+      // @kubernetes/client-node 1.x; `metadata.continue` drives the next page.
+      const names: string[] = [];
+      let continueToken: string | undefined;
+      do {
+        const result = (await objectApi.list(
+          type.apiVersion,
+          type.kind,
+          namespace,
+          undefined, // pretty
+          undefined, // exact
+          undefined, // export
+          undefined, // fieldSelector
+          undefined, // labelSelector
+          100, // limit
+          continueToken // continue
+        )) as unknown as {
+          items?: Array<{ metadata?: { name?: unknown } }>;
+          metadata?: { continue?: unknown };
+        };
+        for (const item of result.items ?? []) {
+          if (typeof item.metadata?.name === 'string') names.push(item.metadata.name);
+        }
+        const next = result.metadata?.continue;
+        continueToken = typeof next === 'string' && next.length > 0 ? next : undefined;
+      } while (continueToken);
+      return names;
     },
   };
-}
-
-/**
- * Poll until a cluster resource is fully gone (404), bounded. Shared teardown
- * primitive used to wait for the RGD, then the generated CRD, to disappear before the
- * namespace delete (finding #1): deleting the namespace while the CRD's finalizer
- * (`customresourcecleanup.apiextensions.k8s.io`) is still terminating leaves the
- * namespace's own termination waiting on children that never drain.
- *
- * Best-effort: logs and returns on timeout (the caller proceeds); any non-404 read
- * error also returns (this sequences teardown, it is not a gate).
- */
-export async function waitForResourceFullyDeleted(
-  k8sApi: Pick<k8s.KubernetesObjectApi, 'read'>,
-  target: { apiVersion: string; kind: string; name: string; namespace?: string },
-  options: { deadlineMs?: number; pollIntervalMs?: number; logger?: TypeKroLogger } = {}
-): Promise<void> {
-  const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
-  const deadline = Date.now() + (options.deadlineMs ?? 120_000);
-  const pollInterval = options.pollIntervalMs ?? 1000;
-  while (Date.now() < deadline) {
-    try {
-      await k8sApi.read({
-        apiVersion: target.apiVersion,
-        kind: target.kind,
-        metadata: { name: target.name, ...(target.namespace ? { namespace: target.namespace } : {}) },
-      });
-    } catch (error: unknown) {
-      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-      if (code === 404) {
-        logger.debug('Resource fully deleted', { kind: target.kind, name: target.name });
-        return;
-      }
-      // Any other read error: stop waiting and let the caller proceed (best-effort).
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-  }
-  logger.warn('Timed out waiting for resource to finish deleting; proceeding', {
-    kind: target.kind,
-    name: target.name,
-  });
 }

@@ -11,12 +11,15 @@
  *      member, i.e. no `applyset.kubernetes.io/part-of`) and the RGD's child resource
  *      lands INSIDE it, with the instance reaching Ready.
  *
- *  (B) DELETE-ORDER — deleting the instance clears `kro.run/finalizer` within a
- *      BOUNDED time, then the RGD is torn down, the generated CRD is waited to 404
- *      (finding #1), then the instance's OWN namespace is EMPTY-GATED: an EMPTY
- *      namespace is deleted (404) — NO finalizer deadlock — while a namespace still
- *      holding a non-default resource (another stack/user) is RETAINED (findings
- *      #3 + #4), replacing the old marker + name-equality ownership check.
+ *  (B) DELETE-ORDER — every step runs through the engine's ONE GATING deletion
+ *      primitive (`ResourceRollbackManager.deleteResourceAndWait`), which polls to a
+ *      REAL 404 and THROWS on timeout (finding #1). deleting the instance clears
+ *      `kro.run/finalizer` (CR → 404) BEFORE the RGD is deleted (→ 404), then the
+ *      generated CRD (→ 404), then the instance's OWN namespace LAST. The namespace is
+ *      deleted ONLY if BOTH (a) it is declared+created by THIS RGD — it carries the
+ *      `typekro.io/created-by-rgd` ownership record (finding #4) — AND (b) it is empty
+ *      (secondary guard, finding #5); it is RETAINED if another stack/user still holds a
+ *      resource there, or if it was merely ADOPTED (no ownership record).
  *
  * ⚠️ WRITTEN + GATED but NOT executed here. It is gated like the other integration
  * tests (`isClusterAvailable()` + `describe.skip`) and MUST be run only by the
@@ -46,6 +49,7 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 const APPLYSET_PART_OF_LABEL = 'applyset.kubernetes.io/part-of';
 const INSTANCE_NS_LABEL = 'typekro.io/kro-instance-namespace';
+const OWNER_ANNOTATION = 'typekro.io/created-by-rgd';
 
 /** Randomize the COMPLETE cluster-scoped identity so concurrent runs never collide. */
 const runToken = Math.random().toString(36).slice(2, 8); // lowercase alphanumeric
@@ -54,7 +58,14 @@ const LifecycleSpec = type({ name: 'string', namespace: 'string' });
 const LifecycleStatus = type({ ready: 'boolean' });
 
 type NsRead =
-  | { metadata?: { uid?: string; deletionTimestamp?: string; labels?: Record<string, string> } }
+  | {
+      metadata?: {
+        uid?: string;
+        deletionTimestamp?: string;
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+      };
+    }
   | undefined;
 
 /** Read a Namespace, returning `undefined` on 404 (throws on any other error). */
@@ -140,6 +151,10 @@ describeOrSkip('KRO namespace sibling CREATE-ORDER (v2: namespaces never in the 
     expect(ns).toBeDefined();
     expect(ns?.metadata?.labels?.[INSTANCE_NS_LABEL]).toBe('true');
     expect(ns?.metadata?.labels?.[APPLYSET_PART_OF_LABEL]).toBeUndefined();
+    // typekro CREATED this namespace (it did not pre-exist), so it stamped the ownership
+    // record used by teardown (finding #4b): only a namespace carrying this is a
+    // deletion candidate.
+    expect(ns?.metadata?.annotations?.[OWNER_ANNOTATION]).toBeDefined();
 
     // The RGD's child resource reconciled INTO the pre-created workload namespace.
     const cm = await coreApi.readNamespacedConfigMap({
@@ -174,9 +189,10 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
   let coreApi: k8s.CoreV1Api;
   let objectApi: k8s.KubernetesObjectApi;
 
-  // Unique per-test namespaces so the two cases never collide.
+  // Unique per-test namespaces so the cases never collide.
   const emptyNs = `typekro-ns-del-empty-${Date.now().toString().slice(-6)}`;
   const occupiedNs = `typekro-ns-del-occ-${Date.now().toString().slice(-6)}`;
+  const adoptedNs = `typekro-ns-del-adopt-${Date.now().toString().slice(-6)}`;
 
   beforeAll(() => {
     if (!clusterAvailable) return;
@@ -187,8 +203,9 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    // The occupied namespace is intentionally retained by the delete path — sweep it.
+    // The occupied + adopted namespaces are intentionally retained by the delete path — sweep them.
     await deleteNamespaceAndWait(occupiedNs, kc).catch(() => {});
+    await deleteNamespaceAndWait(adoptedNs, kc).catch(() => {});
     await deleteNamespaceAndWait(emptyNs, kc).catch(() => {});
   });
 
@@ -260,5 +277,31 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     expect((cm as { data?: Record<string, string> }).data?.owner).toBe('another-stack');
     // sanity: the sibling namespace still carries typekro's marker.
     expect(retained?.metadata?.labels?.[INSTANCE_NS_LABEL]).toBe('true');
+  });
+
+  it('RETAINS an ADOPTED, pre-existing namespace (no ownership record → never deleted)', async () => {
+    // The namespace PRE-EXISTS (created out-of-band, not by typekro). typekro adopts it
+    // (the CR lands in it) but must NOT stamp the `created-by-rgd` ownership record, so
+    // teardown NEVER deletes a namespace it merely adopted (finding #4b / finding #3).
+    await coreApi.createNamespace({ body: { apiVersion: 'v1', kind: 'Namespace', metadata: { name: adoptedNs } } });
+
+    const factory = ownsNamespace(`ns-del-adopt-${runToken}`, `NsDelAdopt${runToken}`).factory('kro', {
+      namespace: adoptedNs,
+      kubeConfig: kc,
+      timeout: 180_000,
+    });
+    await factory.deploy({ name: 'ns-del-adopt-instance', namespace: adoptedNs });
+
+    // The adopted namespace carries typekro's marker but NOT the ownership record.
+    const afterDeploy = await readNamespace(objectApi, adoptedNs);
+    expect(afterDeploy?.metadata?.annotations?.[OWNER_ANNOTATION]).toBeUndefined();
+
+    // Teardown drains the instance (CR → RGD → CRD, all gated to 404) then RETAINS the
+    // adopted namespace — it is not an ownership candidate.
+    await factory.deleteInstance('ns-del-adopt-instance');
+
+    const retained = await readNamespace(objectApi, adoptedNs);
+    expect(retained).toBeDefined();
+    expect(retained?.metadata?.deletionTimestamp).toBeUndefined();
   });
 });
