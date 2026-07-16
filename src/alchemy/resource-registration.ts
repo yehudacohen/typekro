@@ -34,6 +34,7 @@ import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
   HOISTED_NAMESPACES_ANNOTATION,
+  listNamespacesOwnedByRgd,
   NAMESPACE_OWNER_ANNOTATION,
   parseHoistedNamespacesAnnotation,
 } from '../core/deployment/kro-namespace-teardown.js';
@@ -384,12 +385,15 @@ async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unkn
  * of absence — it THROWS. Only a successful CRD list with no matching CRD (fresh cluster),
  * or a definitive 404 listing instances, yields an empty set.
  *
- * NOTE (approximation vs. the imperative guard): the alchemy state is cluster-free and
- * carries no composition function, so an instance's hoisted namespace cannot be
- * re-derived from its spec here. We use the namespace the instance CR LIVES in
- * (`metadata.namespace`, plus a string `spec.namespace` when present) — correct for the
- * self-owned (1:1) case that hoisting targets. The incoming namespace is always checked
- * directly by the caller regardless.
+ * NAMESPACE RESOLUTION (finding #1, fail-closed): each existing instance's namespaces are
+ * resolved EXACTLY from a DURABLE source — the CR's `typekro.io/hoisted-namespaces` record
+ * OR the set of Namespaces carrying `typekro.io/created-by-rgd == props.namespaceOwnerRgd`
+ * (which survives the CR). The alchemy state is cluster-free (no composition function), so
+ * these annotations are the ONLY exact sources. An instance that resolves from NEITHER (a
+ * genuinely-legacy deployment) FAILS CLOSED (throws) — we do NOT approximate from
+ * `metadata.namespace` / `spec.namespace`, since a name derived from an arbitrary spec field
+ * would be invisible and pruned. The incoming namespace is always checked directly by the
+ * caller regardless.
  */
 async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
@@ -444,13 +448,33 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
     );
   }
 
+  if (items.length === 0) return result;
+
+  // The DURABLE, CR-INDEPENDENT record of every namespace this RGD created: namespaces
+  // carrying `typekro.io/created-by-rgd == props.namespaceOwnerRgd`. It survives the CR, so
+  // it resolves an instance's namespaces EXACTLY even when the CR annotation is absent. A
+  // list error FAILS CLOSED. Without an owner RGD to key on we cannot resolve at all.
+  const ownerRgd = props.namespaceOwnerRgd;
+  const ownedNamespaces = new Set<string>();
+  if (typeof ownerRgd === 'string' && ownerRgd.length > 0) {
+    let owned: string[];
+    try {
+      owned = await listNamespacesOwnedByRgd(kc, ownerRgd, { logger });
+    } catch (error: unknown) {
+      throw new Error(
+        `Pre-hoist safety check could not list namespaces owned by RGD "${ownerRgd}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: without the durable ownership ` +
+          `record we cannot prove the hoist won't prune an existing instance's namespace.`
+      );
+    }
+    for (const ns of owned) ownedNamespaces.add(ns);
+    for (const ns of ownedNamespaces) result.add(ns);
+  }
+
   for (const item of items) {
     // PREFER the durable RECORD (finding #4): the recorded `typekro.io/hoisted-namespaces`
     // annotation carries the instance's EXACT hoisted names, so a name derived from an
-    // arbitrary spec field (e.g. spec.targetNamespace) is enumerated correctly here — the
-    // alchemy state is cluster-free (no composition fn) so this record is the ONLY exact
-    // source. Fall back to the metadata.namespace/spec.namespace approximation only for
-    // instances deployed before the annotation existed (correct for the 1:1 self-owned case).
+    // arbitrary spec field (e.g. spec.targetNamespace) is enumerated correctly here.
     const recorded = parseHoistedNamespacesAnnotation(
       item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
     );
@@ -458,9 +482,20 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
       for (const ns of recorded) result.add(ns);
       continue;
     }
-    if (typeof item.metadata?.namespace === 'string') result.add(item.metadata.namespace);
-    const specNs = (item.spec as { namespace?: unknown } | undefined)?.namespace;
-    if (typeof specNs === 'string' && specNs.length > 0) result.add(specNs);
+    // No exact per-instance CR record. Resolve ONLY from the durable created-by-rgd set
+    // (already unioned in above). If THAT is empty too, this is a genuinely-legacy instance
+    // whose namespaces cannot be resolved EXACTLY from any durable source — FAIL CLOSED
+    // (finding #1). Never approximate from metadata.namespace / spec.namespace.
+    if (ownedNamespaces.size === 0) {
+      throw new Error(
+        `Pre-hoist safety check found an existing instance with no durable namespace record — ` +
+          `neither a "${HOISTED_NAMESPACES_ANNOTATION}" annotation on the instance CR nor any ` +
+          `Namespace carrying "${NAMESPACE_OWNER_ANNOTATION}${ownerRgd ? `=${ownerRgd}` : ''}". ` +
+          `Refusing to deploy: this genuinely-legacy instance's owned namespace could be pruned by ` +
+          `the hoist unseen. Migrate it (redeploy with a current TypeKro) and retry.`
+      );
+    }
+    // else: the instance's namespaces are covered by the durable created-by-rgd set.
   }
   logger.debug('Enumerated existing-instance namespaces for the alchemy pre-hoist check', {
     count: result.size,

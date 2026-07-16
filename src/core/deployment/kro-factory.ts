@@ -107,6 +107,7 @@ import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
   HOISTED_NAMESPACES_ANNOTATION,
+  listNamespacesOwnedByRgd,
   NAMESPACE_OWNER_ANNOTATION,
   type NamespaceOwnershipDecision,
   parseHoistedNamespacesAnnotation,
@@ -1297,10 +1298,15 @@ export class KroResourceFactoryImpl<
 
   /**
    * The hoisted-namespace names of EVERY existing instance of this shared RGD (finding
-   * #7). Lists instances cluster-wide and re-derives each one's concrete hoisted
-   * namespaces from its stored spec. FRESH clusters (no CRD / no instances yet) yield
-   * an empty set; any OTHER list error FAILS CLOSED (throws) so the pre-hoist guard is
-   * never silently bypassed by an unreadable instance list.
+   * #7), resolved EXACTLY from a DURABLE source (finding #1) — never approximated. Each
+   * instance's namespaces come from either the CR's `typekro.io/hoisted-namespaces`
+   * record OR the set of Namespaces carrying `typekro.io/created-by-rgd == this.rgdName`
+   * (which survives the CR). An instance that resolves from NEITHER (a genuinely-legacy
+   * deployment) FAILS CLOSED (throws) rather than being approximated from
+   * metadata.namespace / spec.namespace — a name derived from an arbitrary spec field
+   * would otherwise be invisible and pruned. FRESH clusters (no CRD / no instances yet)
+   * yield an empty set; any list error FAILS CLOSED so the guard is never silently
+   * bypassed.
    */
   private async existingInstancesHoistedNamespaceNames(): Promise<Set<string>> {
     const result = new Set<string>();
@@ -1355,6 +1361,33 @@ export class KroResourceFactoryImpl<
       );
     }
 
+    if (items.length === 0) return result;
+
+    // The DURABLE, CR-INDEPENDENT record of every namespace this RGD created: namespaces
+    // carrying `typekro.io/created-by-rgd == this.rgdName`. It survives the instance CR, so
+    // it resolves an instance's namespaces EXACTLY even when the CR annotation is absent
+    // (an instance deployed before the CR record existed but whose namespace WAS stamped).
+    // A list error FAILS CLOSED — an unreadable list is not proof no owned namespace exists.
+    let ownedNamespaces: Set<string>;
+    try {
+      ownedNamespaces = new Set(
+        await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+          k8sApi: this.createKubernetesObjectApi(),
+          logger: this.logger,
+        })
+      );
+    } catch (error: unknown) {
+      throw new TypeKroError(
+        `Pre-hoist safety check could not list namespaces owned by RGD "${this.rgdName}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: without the durable ownership ` +
+          `record we cannot prove the hoist won't prune an existing instance's namespace.`,
+        'PRE_HOIST_OWNED_NAMESPACE_LIST_FAILED',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+    // Every owned namespace is at risk of the ApplySet prune — protect them all.
+    for (const ns of ownedNamespaces) result.add(ns);
+
     for (const item of items) {
       // PREFER the durable RECORD (finding #4): the recorded `typekro.io/hoisted-namespaces`
       // annotation carries this instance's EXACT hoisted names (round-tripping a name derived
@@ -1366,24 +1399,27 @@ export class KroResourceFactoryImpl<
         for (const ns of recorded) result.add(ns);
         continue;
       }
-      // Fallback for instances deployed BEFORE the annotation existed: re-derive from the
-      // stored spec (the imperative path can re-execute the composition). FAIL CLOSED
-      // (finding #3): if we can neither read a record NOR derive the namespaces we cannot
-      // prove the hoist won't prune one — ABORT rather than under-count the protected set.
-      if (item.spec === undefined) continue;
-      let namespaceNames: string[];
-      try {
-        namespaceNames = [...this.concreteHoistedNamespaces(item.spec as TSpec).keys()];
-      } catch (error: unknown) {
+      // No exact per-instance CR record. Resolve ONLY from the durable created-by-rgd
+      // namespace set (already unioned in above). If THAT is empty too, this is a
+      // genuinely-legacy instance whose namespaces cannot be resolved EXACTLY from any
+      // durable source — FAIL CLOSED (finding #1). We do NOT approximate from
+      // metadata.namespace / spec.namespace: a name derived from an arbitrary spec field
+      // (e.g. spec.targetNamespace) would be invisible and silently pruned. Refusing the
+      // upgrade until the legacy instance is migrated/annotated is the intended, safe
+      // transition cost — refusing beats silently pruning an unseen namespace.
+      if (ownedNamespaces.size === 0) {
         throw new TypeKroError(
-          `Pre-hoist safety check could not derive the hoisted namespaces of an existing ` +
-            `instance of RGD "${this.rgdName}" (${ensureError(error).message}). Refusing to ` +
-            `deploy: an underivable instance could own a namespace the hoist would prune unchecked.`,
-          'PRE_HOIST_INSTANCE_DERIVE_FAILED',
+          `Pre-hoist safety check found an existing instance of RGD "${this.rgdName}" with no ` +
+            `durable namespace record — neither a "${HOISTED_NAMESPACES_ANNOTATION}" annotation on ` +
+            `the instance CR nor any Namespace carrying "${NAMESPACE_OWNER_ANNOTATION}=${this.rgdName}". ` +
+            `Refusing to deploy: this genuinely-legacy instance's owned namespace could be pruned by ` +
+            `the hoist unseen. Migrate it (redeploy the instance with a current TypeKro so its ` +
+            `namespaces are recorded/stamped) and retry.`,
+          'PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE',
           { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
         );
       }
-      for (const ns of namespaceNames) result.add(ns);
+      // else: the instance's namespaces are covered by the durable created-by-rgd set.
     }
     return result;
   }
@@ -1670,6 +1706,66 @@ export class KroResourceFactoryImpl<
       this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
         rgdName: this.rgdName,
       });
+      return;
+    }
+
+    // 2b. RETRY-SAFE owned-namespace sweep (finding #2). The per-instance cleanup above
+    // reads the names off the CR's `typekro.io/hoisted-namespaces` annotation — but that
+    // record dies WITH the CR, so a retry AFTER an earlier attempt already deleted the CR
+    // (crash / partial teardown) would find the CR 404, read NO names, and skip cleanup.
+    // Since this is the LAST instance, find EVERY namespace this RGD created via the
+    // DURABLE `typekro.io/created-by-rgd` namespace annotation (survives the CR) and clean
+    // each — catching any namespace leaked by an interrupted teardown. The names above may
+    // overlap; `deleteNamespaceIfEmpty` is idempotent (a 404 is a no-op). A LIST failure
+    // means we cannot confirm cleanup, so PRESERVE the RGD/CRD and return (a later retry
+    // completes it) — deleting the definitions now could orphan a leaked namespace.
+    let ownedNamespaces: string[];
+    try {
+      ownedNamespaces = await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+        k8sApi,
+        logger: this.logger,
+      });
+    } catch (listError: unknown) {
+      this.logger.warn(
+        'Cannot list owned namespaces to confirm cleanup — preserving RGD/CRD (retry to complete)',
+        { rgdName: this.rgdName, error: ensureError(listError).message }
+      );
+      return;
+    }
+    for (const ns of ownedNamespaces) {
+      await deleteNamespaceIfEmpty(this.getKubeConfig(), ns, {
+        logger: this.logger,
+        k8sApi,
+        ownedByRgd: this.rgdName,
+        timeoutMs: timeout,
+        context: { rgdName: this.rgdName },
+      });
+    }
+
+    // 2c. CONFIRM owned-namespace cleanup BEFORE removing the definitions (finding #2): do
+    // NOT delete the RGD/CRD while any owned namespace still exists or cannot be confirmed
+    // gone. `deleteNamespaceIfEmpty` above RETAINS (does not delete) a namespace another
+    // stack still occupies or one it could not read — those legitimately remain here, so we
+    // keep the RGD/CRD rather than orphan a still-owned namespace from its definition. Only
+    // once NO created-by-rgd namespace remains do we proceed to tear the definitions down.
+    let remainingOwned: string[];
+    try {
+      remainingOwned = await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+        k8sApi,
+        logger: this.logger,
+      });
+    } catch (listError: unknown) {
+      this.logger.warn(
+        'Cannot confirm owned-namespace cleanup — preserving RGD/CRD (retry to complete)',
+        { rgdName: this.rgdName, error: ensureError(listError).message }
+      );
+      return;
+    }
+    if (remainingOwned.length > 0) {
+      this.logger.info(
+        'Owned namespace(s) still present after cleanup — preserving RGD/CRD until they are gone',
+        { rgdName: this.rgdName, remaining: remainingOwned }
+      );
       return;
     }
 

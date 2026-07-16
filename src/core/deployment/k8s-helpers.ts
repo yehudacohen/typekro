@@ -29,15 +29,22 @@ export function isNotFoundError(error: unknown): boolean {
 /**
  * Check if an error is an HTTP 409 Conflict error — e.g. an optimistic-concurrency
  * failure when a PATCH/PUT carries a `metadata.resourceVersion` that no longer
- * matches the server (the object was modified between read and write).
+ * matches the server (the object was modified between read and write), or an
+ * AlreadyExists on a create (create-first namespace ownership).
+ *
+ * Covers ALL four shapes the @kubernetes/client-node stack surfaces a 409 as —
+ * `statusCode` (typed API errors), `response.statusCode` (the http-layer error),
+ * `body.code` (parsed Status body), and the bare `code` some code paths set —
+ * mirroring {@link isNotFoundError} so no gate misses a real 409.
  */
 export function isConflictError(error: unknown): boolean {
   if (error && typeof error === 'object') {
-    const k8sError = error as KubernetesApiError;
+    const k8sError = error as KubernetesApiError & { code?: number };
     return (
       k8sError.statusCode === 409 ||
       k8sError.response?.statusCode === 409 ||
-      k8sError.body?.code === 409
+      k8sError.body?.code === 409 ||
+      k8sError.code === 409
     );
   }
   return false;

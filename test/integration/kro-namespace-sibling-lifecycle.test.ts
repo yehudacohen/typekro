@@ -219,6 +219,7 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
   const emptyNs = `typekro-ns-del-empty-${Date.now().toString().slice(-6)}`;
   const occupiedNs = `typekro-ns-del-occ-${Date.now().toString().slice(-6)}`;
   const adoptedNs = `typekro-ns-del-adopt-${Date.now().toString().slice(-6)}`;
+  const retryNs = `typekro-ns-del-retry-${Date.now().toString().slice(-6)}`;
 
   beforeAll(() => {
     if (!clusterAvailable) return;
@@ -233,6 +234,7 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     await deleteNamespaceAndWait(occupiedNs, kc).catch(() => {});
     await deleteNamespaceAndWait(adoptedNs, kc).catch(() => {});
     await deleteNamespaceAndWait(emptyNs, kc).catch(() => {});
+    await deleteNamespaceAndWait(retryNs, kc).catch(() => {});
   });
 
   it('deletes an EMPTY own namespace BEFORE the (best-effort, last) CRD delete — no deadlock', async () => {
@@ -349,5 +351,71 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     const retained = await readNamespace(objectApi, adoptedNs);
     expect(retained).toBeDefined();
     expect(retained?.metadata?.deletionTimestamp).toBeUndefined();
+  });
+
+  it('RETRY-SAFE: with the CR already gone, finds the owned namespace via created-by-rgd and cleans it before removing RGD/CRD', async () => {
+    const group = `d${runToken}.typekro.dev`;
+    const kind = `NsDelRetry${runToken}`;
+    const factory = ownsNamespace(`ns-del-retry-${runToken}`, kind).factory('kro', {
+      namespace: retryNs,
+      kubeConfig: kc,
+      timeout: 180_000,
+    });
+    await factory.deploy({ name: 'ns-del-retry-instance', namespace: retryNs });
+
+    // The owned namespace carries the DURABLE `created-by-rgd` ownership record (the record
+    // that survives the CR — unlike the CR's `hoisted-namespaces` annotation).
+    const owned = await readNamespace(objectApi, retryNs);
+    expect(owned).toBeDefined();
+    expect(owned?.metadata?.annotations?.[OWNER_ANNOTATION]).toBeDefined();
+    expect(await findGeneratedCrdName(objectApi, group, kind)).toBeDefined();
+
+    // Simulate a CRASHED earlier teardown: delete the instance CR OUT-OF-BAND and wait for
+    // its 404, so the CR (and its `hoisted-namespaces` record) is GONE before we retry.
+    await objectApi
+      .delete({
+        apiVersion,
+        kind,
+        metadata: { name: 'ns-del-retry-instance', namespace: retryNs },
+      } as k8s.KubernetesObject)
+      .catch(() => {});
+    const crDeadline = Date.now() + 120_000;
+    // Poll the CR to a real 404 (KRO clears kro.run/finalizer — the hoisted namespace is
+    // NOT a graph child, so KRO never touches it).
+    while (Date.now() < crDeadline) {
+      try {
+        await objectApi.read({
+          apiVersion,
+          kind,
+          metadata: { name: 'ns-del-retry-instance', namespace: retryNs },
+        });
+        await new Promise((r) => setTimeout(r, 3000));
+      } catch {
+        break; // CR is gone
+      }
+    }
+
+    // RETRY the teardown with the CR already absent. The sweep must find the owned
+    // namespace via the durable `created-by-rgd` annotation (NOT the vanished CR record),
+    // clean it, and only THEN remove the RGD/CRD.
+    await factory.deleteInstance('ns-del-retry-instance');
+
+    // The owned namespace was still found + cleaned → drains to 404 (no leak).
+    const nsDeadline = Date.now() + 120_000;
+    let own = await readNamespace(objectApi, retryNs);
+    while (own !== undefined && Date.now() < nsDeadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      own = await readNamespace(objectApi, retryNs);
+    }
+    expect(own).toBeUndefined();
+
+    // The generated CRD is removed only after the owned namespace is confirmed gone.
+    const crdDeadline = Date.now() + 180_000;
+    let crdName = await findGeneratedCrdName(objectApi, group, kind);
+    while (crdName !== undefined && Date.now() < crdDeadline) {
+      await new Promise((r) => setTimeout(r, 5000));
+      crdName = await findGeneratedCrdName(objectApi, group, kind);
+    }
+    expect(crdName).toBeUndefined();
   });
 });

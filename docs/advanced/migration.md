@@ -367,35 +367,68 @@ pruning your namespace. There is no automatic reclaim. Choose one:
 
 ### How teardown deletes (order) and what it leaves behind
 
-Deleting a KRO instance tears its footprint down in strict **reverse-topological**
-order — the reverse of how it was created (CRDs are the most foundational type, so they
-are created first and destroyed last):
+Deleting a KRO instance (imperative `deleteInstance`) tears its footprint down in this
+order — the generated CRD is the most foundational type, so it is created first and
+destroyed last:
 
 1. **Instance CR** — deleted and gated to a real `404`, so KRO's `kro.run/finalizer`
    has cleared (KRO graph-deleted every child) **before** the next step. Deleting the
    RGD while KRO is mid-finalizer orphans cleanup, so this gate is load-bearing.
-2. **RGD** — deleted and gated to `404` (only when no other instance shares it).
-3. **Owned workload Namespace** — deleted **before** the CRD, gated to `404`. This
-   ordering is what makes the namespace delete *reliable*: the generated CRD is still
-   **healthy/Active** at this point, so the namespace controller enumerates that type's
-   zero instances **instantly** to confirm the namespace is empty. (Only a *Terminating*
-   CRD stalls a namespace — the apiextensions `customresourcecleanup` finalizer can hang
-   for minutes even with zero instances, [kro#1171]. That is exactly why the CRD is
-   deleted *after* the namespace.) A namespace is deleted **only if** it is both owned by
-   this RGD (carries the `typekro.io/created-by-rgd` record) **and** empty; otherwise it
-   is retained.
+2. **Owned workload Namespace(s)** — deleted **before** the RGD/CRD, gated to `404`.
+   This ordering is what makes the namespace delete *reliable*: the RGD and generated
+   CRD are still **healthy/Active** at this point, so the namespace controller enumerates
+   that type's zero instances **instantly** to confirm the namespace is empty. (Only a
+   *Terminating* CRD stalls a namespace — the apiextensions `customresourcecleanup`
+   finalizer can hang for minutes even with zero instances, [kro#1171]. That is exactly
+   why the CRD is deleted *after* the namespace.) A namespace is deleted **only if** it is
+   both owned by this RGD (carries the `typekro.io/created-by-rgd` record) **and** empty;
+   otherwise it is retained.
+3. **RGD** — deleted and gated to `404` (only when no other instance shares it, **and**
+   only once owned-namespace cleanup is confirmed — see *retry-safety* below).
 4. **Generated CRD** — deleted **last**, and **best-effort / non-fatal**. KRO never
    deletes it itself (`allowCRDDeletion=false`), and its apiextensions cleanup finalizer
    can stall. By this point the namespace is already gone, so a slow CRD teardown blocks
    nothing: the delete is issued and awaited generously, but a timeout is *logged, not
    thrown* — it must never undo an otherwise-successful teardown.
 
+**Which namespaces get cleaned (two durable records).** At deploy time TypeKro records
+the concrete names of every hoisted Namespace on the instance CR
+(`typekro.io/hoisted-namespaces`, a JSON array) **and** stamps each Namespace it creates
+with `typekro.io/created-by-rgd=<rgd>`. Teardown reads the CR record to clean *this*
+instance's namespaces right after its CR is gone. When it is the **last** instance of a
+shared RGD, it then sweeps every Namespace carrying this RGD's `created-by-rgd` stamp
+before removing the definitions.
+
+**Retry-safety (the `created-by-rgd` sweep is CR-independent).** The CR's
+`hoisted-namespaces` record dies *with* the CR. If an earlier teardown attempt deleted
+the CR but crashed before cleaning its namespaces, a retry would find the CR `404` and
+read no names. So the last-instance sweep does **not** depend on the CR: it finds owned
+namespaces via the durable `created-by-rgd` **namespace** annotation (which survives the
+CR), cleans each, and then **preserves the RGD/CRD until owned-namespace cleanup is
+confirmed** — the definitions are not deleted while any `created-by-rgd` namespace still
+exists (or cannot be confirmed gone). A retry after the CR is already gone therefore
+still finds and cleans the leaked namespace, and only then removes the definitions.
+
 **What can be left behind:** if the generated CRD's cleanup finalizer is slow, the CRD
 may linger (Terminating, or occasionally leftover). This is **harmless** — it has zero
 instances and is not referenced by anything — and an operator may garbage-collect it
 out-of-band (`kubectl delete crd <plural>.<group>`). In high-churn ephemeral
 environments that create/destroy many short-lived instances, these dangling CRDs can
-accumulate; sweep them periodically if desired.
+accumulate; sweep them periodically if desired. Likewise, an owned namespace that is
+retained because another stack still has resources in it keeps the RGD/CRD alive
+(conservative, by design); remove the other resources (or the namespace) to let a later
+teardown complete.
+
+### Ownership is decided create-first (owned iff we created it)
+
+A hoisted Namespace's ownership is fixed **atomically** at create time: TypeKro issues a
+`CREATE` (POST) carrying the `typekro.io/created-by-rgd` stamp. A `201` means TypeKro
+created it → it is **owned** (and a candidate for the empty-gated delete at teardown). A
+`409 AlreadyExists` means the namespace pre-existed → TypeKro **adopts** it and treats it
+as owned only if it already carried *this* RGD's stamp (a prior create by us); an adopted
+namespace never gains the stamp and is never deleted. This replaces the old
+`GET`→(if 404)→patch-with-stamp sequence, which was raceable (a namespace created by
+another actor between the GET and the patch could be wrongly stamped and later deleted).
 
 ### Namespace deletion is best-effort-safe, not atomic (ownership primary, emptiness secondary)
 

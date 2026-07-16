@@ -7,6 +7,7 @@ import {
 } from '../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
+import { isConflictError } from './k8s-helpers.js';
 import { createRollbackManager } from './rollback-manager.js';
 
 /**
@@ -42,6 +43,81 @@ export function parseHoistedNamespacesAnnotation(value: string | undefined): str
   } catch {
     return [];
   }
+}
+
+/**
+ * The minimal LIST surface used by {@link listNamespacesOwnedByRgd}. {@link
+ * k8s.KubernetesObjectApi} satisfies it; tests inject a mock.
+ */
+export interface NamespaceListApi {
+  list(
+    apiVersion: string,
+    kind: string,
+    namespace?: string,
+    pretty?: string,
+    exact?: boolean,
+    exportt?: boolean,
+    fieldSelector?: string,
+    labelSelector?: string,
+    limit?: number,
+    continueToken?: string
+  ): Promise<unknown>;
+}
+
+/**
+ * List the NAMES of every Namespace carrying {@link NAMESPACE_OWNER_ANNOTATION} == `rgdName`
+ * — the DURABLE, cluster-side record of every workload Namespace typekro created for this RGD.
+ *
+ * Unlike the CR's {@link HOISTED_NAMESPACES_ANNOTATION} (which dies WITH the instance CR), this
+ * record survives the CR, so:
+ *   - a teardown RETRY after the CR is already gone can still FIND + clean the owned
+ *     namespace(s) (and gate the RGD/CRD delete on their cleanup), and
+ *   - the pre-hoist guard can resolve an existing instance's namespaces EXACTLY without
+ *     approximating from `metadata.namespace` / `spec.namespace`.
+ *
+ * Lists cluster-wide (small N in practice) and filters client-side by the ownership
+ * annotation, FOLLOWING the list continuation token so an owned namespace beyond the first
+ * page is never hidden by a silent cap. A list error PROPAGATES (callers fail closed /
+ * preserve): an unreadable list is not proof that no owned namespace exists.
+ */
+export async function listNamespacesOwnedByRgd(
+  kubeConfig: k8s.KubeConfig,
+  rgdName: string,
+  options: { k8sApi?: NamespaceListApi; logger?: TypeKroLogger } = {}
+): Promise<string[]> {
+  const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const owned: string[] = [];
+  let continueToken: string | undefined;
+  do {
+    const result = (await k8sApi.list(
+      'v1',
+      'Namespace',
+      undefined, // namespace (cluster-scoped)
+      undefined, // pretty
+      undefined, // exact
+      undefined, // export
+      undefined, // fieldSelector
+      undefined, // labelSelector
+      100, // limit
+      continueToken // continue
+    )) as unknown as {
+      items?: Array<{ metadata?: { name?: unknown; annotations?: Record<string, string> } }>;
+      metadata?: { continue?: unknown };
+    };
+    for (const item of result.items ?? []) {
+      const name = item.metadata?.name;
+      if (
+        typeof name === 'string' &&
+        name.length > 0 &&
+        item.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION] === rgdName
+      ) {
+        owned.push(name);
+      }
+    }
+    const next = result.metadata?.continue;
+    continueToken = typeof next === 'string' && next.length > 0 ? next : undefined;
+  } while (continueToken);
+  return owned;
 }
 
 /** Default bound for the gated Namespace delete (poll to a real 404, then throw). */
@@ -342,9 +418,11 @@ export async function decideNamespaceOwnershipCreateFirst(
     await api.create(manifestWithStamp, undefined, undefined, fieldManager);
     return { created: true, owned: true };
   } catch (error: unknown) {
-    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-    const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-    if (code !== 409) throw error; // non-conflict create failure — caller decides
+    // Use the project's CENTRALIZED 409 classifier so EVERY conflict shape the
+    // @kubernetes/client-node stack surfaces (statusCode / response.statusCode /
+    // body.code / bare code) is recognized as AlreadyExists — the old hand-rolled
+    // check missed `response.statusCode === 409`.
+    if (!isConflictError(error)) throw error; // non-conflict create failure — caller decides
   }
   // 409: the namespace already exists. Owned only if a prior create by THIS RGD stamped it.
   const name = manifestWithStamp.metadata?.name;

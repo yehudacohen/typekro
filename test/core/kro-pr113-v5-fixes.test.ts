@@ -42,6 +42,11 @@ interface Op {
 function makeMockApi(opts: {
   crBody: { spec?: unknown; metadata?: { annotations?: Record<string, string> } };
   namespaceAnnotations?: Record<string, string>;
+  /**
+   * The cluster-wide Namespace LIST returned by `k8sApi.list('v1','Namespace')` — the
+   * durable `created-by-rgd` sweep + confirm gate (finding #2) read this. Default: none.
+   */
+  ownedNamespaceList?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>;
 }) {
   const ops: Op[] = [];
   let crReadCount = 0;
@@ -70,6 +75,12 @@ function makeMockApi(opts: {
     delete: async (obj: { kind?: string; metadata?: { name?: string } }) => {
       ops.push({ op: 'delete', kind: obj.kind ?? '?', name: obj.metadata?.name ?? '?' });
       return {};
+    },
+    // Cluster-wide Namespace list for the durable created-by-rgd sweep (finding #2).
+    list: async (apiVersion: string, kind: string) => {
+      ops.push({ op: 'read', kind: `list:${kind}`, name: apiVersion });
+      if (kind === 'Namespace') return { items: opts.ownedNamespaceList ?? [], metadata: {} };
+      return { items: [], metadata: {} };
     },
   };
   return { api, ops };

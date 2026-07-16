@@ -103,6 +103,10 @@ function makeMockApi(opts: {
       ops.push({ op: 'delete', kind: obj.kind ?? '?', name: obj.metadata?.name ?? '?' });
       return {};
     },
+    // Cluster-wide Namespace list for the retry-safe created-by-rgd sweep + confirm gate
+    // (finding #2). These order/ownership tests have NO leaked owned namespace, so the
+    // sweep is a no-op and the definitions proceed to delete.
+    list: async (_apiVersion: string, _kind: string) => ({ items: [], metadata: {} }),
   };
   return { api, ops };
 }
