@@ -72,10 +72,12 @@ describe('Status Field Integration', () => {
     // Should contain user-defined status fields as CEL expressions
     expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
     expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
-    // Instance spec fields are referenced via `schema.spec.*` — the canonical Kro CEL form
-    // (the `schema` variable IS the instance spec; see https://kro.run/docs/concepts/rgd/cel-expressions/).
+    // A status field that references a RESOURCE's field serializes as a direct resource
+    // reference (`${webappService.metadata.name}`), NOT inlined to the schema field it happens
+    // to equal — the resource reference stays correct even if the resource's name is computed.
+    // (The status template above references `resources.service.metadata.name`, not schema.spec.)
     expect(yaml).toContain(
-      'url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
+      'url: http://${webappService.metadata.name}.${webappService.metadata.namespace}.svc.cluster.local'
     );
 
     // Verify resources section
