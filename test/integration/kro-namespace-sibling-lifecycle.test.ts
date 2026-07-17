@@ -220,6 +220,9 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
   const occupiedNs = `typekro-ns-del-occ-${Date.now().toString().slice(-6)}`;
   const adoptedNs = `typekro-ns-del-adopt-${Date.now().toString().slice(-6)}`;
   const retryNs = `typekro-ns-del-retry-${Date.now().toString().slice(-6)}`;
+  // v7 #2: two instances SHARE one workload namespace; their CRs live in a separate control ns.
+  const sharedNs = `typekro-ns-del-shared-${Date.now().toString().slice(-6)}`;
+  const sharedControlNs = `typekro-ns-del-shared-ctrl-${Date.now().toString().slice(-6)}`;
 
   beforeAll(() => {
     if (!clusterAvailable) return;
@@ -235,6 +238,8 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     await deleteNamespaceAndWait(adoptedNs, kc).catch(() => {});
     await deleteNamespaceAndWait(emptyNs, kc).catch(() => {});
     await deleteNamespaceAndWait(retryNs, kc).catch(() => {});
+    await deleteNamespaceAndWait(sharedNs, kc).catch(() => {});
+    await deleteNamespaceAndWait(sharedControlNs, kc).catch(() => {});
   });
 
   it('deletes an EMPTY own namespace BEFORE the (best-effort, last) CRD delete — no deadlock', async () => {
@@ -351,6 +356,41 @@ describeOrSkip('KRO namespace sibling DELETE-ORDER (empty deleted after RGD; occ
     const retained = await readNamespace(objectApi, adoptedNs);
     expect(retained).toBeDefined();
     expect(retained?.metadata?.deletionTimestamp).toBeUndefined();
+  });
+
+  it('v7 #2: two instances SHARING a namespace — deleting one PRESERVES the shared ns; deleting the LAST cleans it', async () => {
+    // Two instances of ONE shared RGD both hoist the SAME workload namespace `sharedNs`;
+    // their CRs live in a SEPARATE control namespace, so at A's deletion `sharedNs` is EMPTY
+    // + OWNED — the empty-gate ALONE would delete it. The v7 exclusion (finding #2) must
+    // PRESERVE it because remaining instance B still records it, then clean it when B (the
+    // last instance) is deleted.
+    const kind = `NsShared${runToken}`;
+    const factory = ownsNamespace(`ns-del-shared-${runToken}`, kind).factory('kro', {
+      namespace: sharedControlNs,
+      instanceNamespace: sharedControlNs, // both CRs live here, NOT in the shared workload ns
+      kubeConfig: kc,
+      timeout: 180_000,
+    });
+    await factory.deploy({ name: 'shared-a', namespace: sharedNs });
+    await factory.deploy({ name: 'shared-b', namespace: sharedNs });
+    expect(await readNamespace(objectApi, sharedNs)).toBeDefined();
+
+    // Delete A (NON-last). `sharedNs` is empty + owned, but remaining instance B records it →
+    // it is EXCLUDED from A's deletable set and PRESERVED (not even empty-deleted).
+    await factory.deleteInstance('shared-a');
+    const afterA = await readNamespace(objectApi, sharedNs);
+    expect(afterA).toBeDefined();
+    expect(afterA?.metadata?.deletionTimestamp).toBeUndefined();
+
+    // Delete B (the LAST instance). Nothing records `sharedNs` now → it is cleaned.
+    await factory.deleteInstance('shared-b');
+    const nsDeadline = Date.now() + 120_000;
+    let own = await readNamespace(objectApi, sharedNs);
+    while (own !== undefined && Date.now() < nsDeadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      own = await readNamespace(objectApi, sharedNs);
+    }
+    expect(own).toBeUndefined(); // the shared namespace is deleted once the last instance is gone
   });
 
   it('RETRY-SAFE: with the CR already gone, finds the owned namespace via created-by-rgd and cleans it before removing RGD/CRD', async () => {

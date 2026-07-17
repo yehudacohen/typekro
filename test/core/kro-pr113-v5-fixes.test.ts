@@ -114,7 +114,9 @@ function wire(
   factory: unknown,
   api: unknown,
   opts: {
-    remaining: Array<{ metadata?: { name?: unknown; namespace?: unknown } }>;
+    remaining: Array<{
+      metadata?: { name?: unknown; namespace?: unknown; annotations?: Record<string, string> };
+    }>;
     derivedNamespaces?: string[];
   }
 ): void {
@@ -144,9 +146,19 @@ describe('#2: deleting a NON-last instance cleans ITS namespace but NOT the RGD/
       crBody: { spec: { name: 'inst', namespace: 'app-ns' } },
       namespaceAnnotations: {}, // not owned → retained after the ownership read
     });
-    // Another instance of the same shared RGD still exists.
+    // Another instance of the same shared RGD still exists — and it records a DIFFERENT
+    // namespace, so THIS instance's namespace is provably NOT shared and stays deletable
+    // (v7 finding #2: the exclusion only preserves namespaces a remaining instance records).
     wire(factory, api, {
-      remaining: [{ metadata: { name: 'other', namespace: 'app-ns' } }],
+      remaining: [
+        {
+          metadata: {
+            name: 'other',
+            namespace: 'app-ns',
+            annotations: { [HOISTED_NAMESPACES_ANNOTATION]: '["other-ns"]' },
+          },
+        },
+      ],
       derivedNamespaces: ['app-ns'],
     });
 

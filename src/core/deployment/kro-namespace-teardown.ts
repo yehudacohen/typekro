@@ -253,23 +253,28 @@ export async function classifyNamespaceEmptiness(
 }
 
 /**
- * The EMPTY-GATE delete (findings #3 + #4), shared by BOTH the imperative
- * `deleteInstance` path and the Alchemy teardown handler.
+ * The OWNERSHIP-gated + EMPTY-gated delete (findings #3 + #4), shared by BOTH the
+ * imperative `deleteInstance` path and the Alchemy teardown handler.
  *
- * Called ONLY after the instance CR, its RGD, and the generated CRD are fully gone
- * (finding #1) so that everything THIS instance owned has already drained — the
- * teardown is topological, so by this point the namespace holds only what OTHER
- * stacks/users (or nothing) put there. It then deletes the namespace ONLY when it is
- * empty, and RETAINS it otherwise. Never scans-and-deletes arbitrary namespaces: the
- * caller passes exactly the namespace THIS instance declared/hoisted.
+ * ORDER: this runs AFTER the instance CR is gone (KRO has graph-deleted every child)
+ * but BEFORE the RGD/CRD teardown — the current teardown order is CR → namespace →
+ * RGD → CRD (the generated CRD is torn down LAST). Deleting the namespace while the
+ * RGD + CRD are still HEALTHY/Active is deliberate: the namespace controller confirms
+ * emptiness instantly and can never terminate against a *Terminating* CRD (upstream
+ * kro #1171). Never scans-and-deletes arbitrary namespaces: the caller passes exactly
+ * the namespace THIS instance declared/hoisted.
  *
- * Residual (accepted): a user's PRE-EXISTING but EMPTY namespace that typekro merely
- * adopted (the CR happened to live in it) is deleted here. That is low harm and
- * matches the explicit intent of `deleteInstance` (tear this instance's footprint
- * down); a namespace with ANY real resource is always retained.
+ * TWO GATES, ownership PRIMARY: with `ownedByRgd` set (both callers pass it), the
+ * namespace is deleted ONLY if it carries {@link NAMESPACE_OWNER_ANNOTATION} equal to
+ * this RGD (typekro CREATED it) AND is empty. An ADOPTED/undeclared namespace (no
+ * matching stamp) is RETAINED — never deleted — as is one another stack/user still
+ * OCCUPIES (non-empty) or one that cannot be read (fail-safe retain).
  *
- * Best-effort: a namespace 404 is benign (already gone); a delete error is logged,
- * not thrown (the RGD/CRD are already gone — teardown otherwise succeeded).
+ * GATED (not best-effort): a pre-delete 404 is benign (already gone), but the delete
+ * itself polls to a real 404 and THROWS {@link DeploymentTimeoutError} on timeout — a
+ * stuck namespace finalizer surfaces as an error, never a silently-abandoned
+ * Terminating namespace. (The generated-CRD delete, a LATER step in `deleteInstance`,
+ * is the only best-effort deletion — see {@link KroResourceFactoryImpl.deleteInstance}.)
  */
 export async function deleteNamespaceIfEmpty(
   kubeConfig: k8s.KubeConfig,

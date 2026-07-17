@@ -86,7 +86,7 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
     wire(factory, { instances: [{ spec: { name: 'inst', namespace: 'app-ns' } }], ownedNamespaces: [] });
     const fn = priv(factory, 'existingInstancesHoistedNamespaceNames');
     await expect(fn()).rejects.toThrow(
-      /PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE|no durable namespace record/
+      /PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE|no per-instance namespace record/
     );
   });
 
@@ -103,18 +103,24 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
     expect(result.has('team-a-custom')).toBe(true);
   });
 
-  it('PASSES via the durable created-by-rgd namespace annotation (no CR record needed)', async () => {
+  it('FAILS CLOSED for an unannotated instance EVEN WHEN a created-by-rgd namespace exists (v7 tightening)', async () => {
+    // v7 correction (finding #1): the RGD-wide created-by-rgd set is NOT per-instance proof.
+    // An unannotated instance must FAIL CLOSED even when a stamped namespace exists, because
+    // that namespace could belong to a DIFFERENT instance — the v6 "resolve from the RGD-wide
+    // set" fallback masked exactly this. (The stamped namespace IS still unioned into the
+    // protected set as a superset, but it never SATISFIES the per-instance check.)
     const factory = makeFactory('v6-owned-ns', 'app-ns');
     const rgdName = (factory as unknown as Rec).rgdName as string;
     wire(factory, {
       // Instance carries NO CR record...
       instances: [{ spec: { name: 'inst', namespace: 'app-ns' } }],
-      // ...but a Namespace stamped by THIS RGD exists → resolvable, no throw.
+      // ...and a Namespace stamped by THIS RGD exists — but it is NOT per-instance proof.
       ownedNamespaces: [{ metadata: { name: 'owned-by-rgd', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } }],
     });
-    const fn = priv(factory, 'existingInstancesHoistedNamespaceNames') as () => Promise<Set<string>>;
-    const result = await fn();
-    expect(result.has('owned-by-rgd')).toBe(true);
+    const fn = priv(factory, 'existingInstancesHoistedNamespaceNames');
+    await expect(fn()).rejects.toThrow(
+      /PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE|no per-instance namespace record/
+    );
   });
 });
 
