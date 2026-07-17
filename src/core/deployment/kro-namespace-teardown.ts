@@ -69,10 +69,13 @@ export function readHoistedNamespacesRecord(value: string | undefined): HoistedN
     return { status: 'malformed' };
   }
   if (!Array.isArray(parsed)) return { status: 'malformed' };
-  return {
-    status: 'present',
-    names: parsed.filter((n): n is string => typeof n === 'string' && n.length > 0),
-  };
+  // STRICT: reject the ENTIRE array (→ fail closed) unless EVERY element is a non-empty string.
+  // Filtering junk out (e.g. [42] or [""] → []) would masquerade as a valid empty record and let
+  // the guard proceed WITHOUT protecting the intended namespace. An empty [] is vacuously valid.
+  if (!parsed.every((n): n is string => typeof n === 'string' && n.length > 0)) {
+    return { status: 'malformed' };
+  }
+  return { status: 'present', names: parsed };
 }
 
 /**

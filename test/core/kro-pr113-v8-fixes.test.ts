@@ -64,6 +64,15 @@ describe('readHoistedNamespacesRecord distinguishes present / missing / malforme
     expect(readHoistedNamespacesRecord('not-json')).toEqual({ status: 'malformed' });
     expect(readHoistedNamespacesRecord('{"a":1}')).toEqual({ status: 'malformed' });
   });
+
+  it('rejects the WHOLE array as malformed if ANY element is not a non-empty string (no silent junk-filtering)', () => {
+    // These must NOT masquerade as a valid empty record — they would let the guard proceed
+    // without protecting the intended namespace.
+    expect(readHoistedNamespacesRecord('[42]')).toEqual({ status: 'malformed' });
+    expect(readHoistedNamespacesRecord('[""]')).toEqual({ status: 'malformed' });
+    expect(readHoistedNamespacesRecord('["ok", 42]')).toEqual({ status: 'malformed' });
+    expect(readHoistedNamespacesRecord('["ok", ""]')).toEqual({ status: 'malformed' });
+  });
 });
 
 describe('CR creation ALWAYS records the hoisted-namespaces array (including [])', () => {
@@ -82,7 +91,7 @@ describe('pre-hoist guard does NOT mistake an ordinary/empty-record composition 
     const factory = makeNoNsFactory('v8-shortcircuit');
     // Stub discovery/list to a state that WOULD fail closed (an unannotated instance) — proving
     // the structural short-circuit returns BEFORE the guard ever reaches that path.
-    const rec = factory as Rec;
+    const rec = factory as unknown as Rec;
     rec.discoverGeneratedCrdPlural = async () => ({ present: true, plural: 'nonsgates' });
     rec.createCustomObjectsApi = async () => ({
       listClusterCustomObject: async () => ({ items: [{ spec: { name: 'x', namespace: 'x-ns' } }] }),
@@ -94,7 +103,7 @@ describe('pre-hoist guard does NOT mistake an ordinary/empty-record composition 
 
   it('a valid EMPTY [] record resolves as PRESENT (safe) — the includeWhen:false / no-hoist case does not fail closed', async () => {
     const factory = makeNsFactory('v8-empty-record', 'app-ns');
-    const rec = factory as Rec;
+    const rec = factory as unknown as Rec;
     rec.discoverGeneratedCrdPlural = async () => ({ present: true, plural: 'nsgates' });
     rec.createCustomObjectsApi = async () => ({
       listClusterCustomObject: async () => ({
@@ -111,7 +120,7 @@ describe('pre-hoist guard does NOT mistake an ordinary/empty-record composition 
 
   it('STILL fails closed for a genuinely-legacy (missing-annotation) instance of a hoisting RGD', async () => {
     const factory = makeNsFactory('v8-legacy-still-closed', 'app-ns');
-    const rec = factory as Rec;
+    const rec = factory as unknown as Rec;
     rec.discoverGeneratedCrdPlural = async () => ({ present: true, plural: 'nsgates' });
     rec.createCustomObjectsApi = async () => ({
       listClusterCustomObject: async () => ({

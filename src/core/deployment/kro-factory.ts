@@ -1736,14 +1736,17 @@ export class KroResourceFactoryImpl<
       const preserved = new Set<string>();
       let allRemainingResolvable = true;
       for (const item of remainingInstances) {
-        const recorded = parseHoistedNamespacesAnnotation(
+        const record = readHoistedNamespacesRecord(
           item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
         );
-        if (recorded.length === 0) {
+        if (record.status !== 'present') {
+          // MISSING or MALFORMED — this remaining instance's namespaces are uncomputable.
           allRemainingResolvable = false;
           continue;
         }
-        for (const ns of recorded) preserved.add(ns);
+        // PRESENT (including a valid empty []) is RESOLVED: contribute its namespaces (possibly
+        // none). A valid [] no longer forces the fail-closed preserve-everything path (P2).
+        for (const ns of record.names) preserved.add(ns);
       }
       if (!allRemainingResolvable) {
         this.logger.warn(
