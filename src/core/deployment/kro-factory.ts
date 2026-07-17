@@ -31,6 +31,7 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../co
 import {
   ConversionError,
   CRDInstanceError,
+  DeploymentTimeoutError,
   ensureError,
   ResourceGraphFactoryError,
   TypeKroError,
@@ -41,6 +42,8 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { namespace as namespaceResource } from '../../factories/kubernetes/core/namespace.js';
+import { shortStableHash, toCamelCase } from '../../utils/string.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -90,8 +93,27 @@ import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
+  assertNoHoistWeakenedStatusFields,
   assertSingletonOwnerNamespaceOwnershipSafe,
+  concreteOwnedNamespaceResources,
+  findDanglingHoistedReference,
+  resolveConcreteMetadataValue,
+  resolveNamespaceName,
+  rewriteHoistedNamespaceReferences,
+  rewriteHoistedNamespaceRefsInValue,
+  selectHoistedNamespaces,
 } from './kro-instance-safety.js';
+import {
+  decideNamespaceOwnershipCreateFirst,
+  deleteNamespaceIfEmpty,
+  HOISTED_NAMESPACES_ANNOTATION,
+  listNamespacesOwnedByRgd,
+  NAMESPACE_OWNER_ANNOTATION,
+  type NamespaceOwnershipDecision,
+  parseHoistedNamespacesAnnotation,
+  readHoistedNamespacesRecord,
+} from './kro-namespace-teardown.js';
+import { createRollbackManager } from './rollback-manager.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
 import {
@@ -111,6 +133,13 @@ import {
   assertNoDeployedSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
+
+/**
+ * Label stamped on every KRO instance CR this factory creates, keyed to the
+ * factory's RGD name. Used by the cluster-wide cleanup list in `deleteInstance`
+ * to decide whether other instances still share the RGD.
+ */
+const INSTANCE_RGD_LABEL = 'typekro.io/rgd';
 
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
@@ -297,6 +326,130 @@ export class KroResourceFactoryImpl<
   }
 
   /**
+   * Resolve the namespace the KRO instance CR lives in for this call.
+   *
+   * The default CR placement is the FACTORY namespace (`this.namespace`), exactly
+   * as v0.26.0 always did — the maintainer's explicit decision (finding #2). This
+   * fixes the silent-relocation regression: an upgrade never moves an existing CR
+   * versus the released v0.26.0, and NO per-call `spec.namespace` is consulted for
+   * CR placement. An explicit `instanceNamespace` factory option still wins as an
+   * override (the only way to place the CR elsewhere).
+   *
+   * Identity distinctness within a single alchemy stack comes from the instance
+   * NAME: the top-level alchemy id is the legacy namespace-agnostic kind+name (see
+   * {@link instanceAlchemyId}, finding #1). NOTE: a different k8s factory namespace
+   * does NOT by itself create a different alchemy scope — two factories with the same
+   * instance name but different namespaces expose the SAME alchemy id and, if
+   * materialized in the SAME alchemy stack, collide (last write wins). Isolating
+   * same-named instances (e.g. `analytics` in dev vs prod) is the CALLER's
+   * responsibility: put them in SEPARATE alchemy stacks/scopes. `spec.namespace` is
+   * never consulted for CR placement or identity.
+   *
+   * The `spec` parameter is accepted only for call-site symmetry with the other
+   * resolvers and is deliberately unused (CR placement must not vary per spec, or
+   * `getInstances`/`deleteInstance` — which have no spec — could target a different
+   * namespace than `deploy` and orphan the CR, finding #3).
+   *
+   * Finalizer-stranding safety comes from HOISTING the composition's own workload
+   * Namespace OUT of the RGD graph (see {@link hoistedNamespaceNames}), not from
+   * where the instance CR lives.
+   */
+  private resolveInstanceNamespace(_spec?: TSpec): string {
+    const explicit = this.factoryOptions.instanceNamespace;
+    if (explicit !== undefined) return explicit;
+    return this.namespace;
+  }
+
+  /**
+   * Every Namespace HOISTED out of the RGD graph, mapped to its RAW `metadata.name`
+   * value — the UNCONDITIONAL model (typekro NEVER emits a Namespace into RGD YAML).
+   * Selection is trivially `kind === 'Namespace'` (excluding `__externalRef`
+   * observed namespaces); see {@link selectHoistedNamespaces}.
+   *
+   * This is a STABLE STRUCTURAL property of the RGD, computed WITHOUT any concrete
+   * spec: the set of hoisted ids is IDENTICAL for every instance of this factory, so
+   * the shared RGD never changes shape per-instance (deploying instance 2 can't
+   * mutate the graph instance 1 depends on). The name VALUES feed the reference
+   * rewriter so a reference to a hoisted Namespace's `metadata.name` becomes that
+   * Namespace's own concrete name expression.
+   */
+  private hoistedNamespaceRefs(
+    resources: Record<string, KubernetesResource> = this.resources
+  ): Map<string, unknown> {
+    return selectHoistedNamespaces(resources);
+  }
+
+  /**
+   * The CONCRETE Namespace resources to emit as SIBLINGS (deps-first, outside the
+   * graph) for this spec, keyed by namespace NAME.
+   *
+   * The set of hoisted IDS is STRUCTURAL (spec-independent); resolving those ids to
+   * concrete resources needs the spec. Re-executing the composition against the
+   * concrete spec yields the FULL concrete Namespace metadata (name + all labels,
+   * incl. Pod Security, + all annotations), which the emission paths PRESERVE and
+   * merge retention onto (finding #5) — never a bare synthesized Namespace. A hoisted
+   * id that is inactive under THIS spec (e.g. `includeWhen: false`) or whose name
+   * can't be resolved is skipped, so emission stays per-spec and order-independent.
+   * The map value is the ORIGINAL concrete Namespace resource (keyed by resolved
+   * name).
+   */
+  private concreteHoistedNamespaces(spec?: TSpec): Map<string, KubernetesResource> {
+    const result = new Map<string, KubernetesResource>();
+    const hoistIds = this.hoistedNamespaceRefs();
+    if (hoistIds.size === 0 || spec === undefined) return result;
+
+    const compositionFn = this.factoryOptions.compositionFn as
+      | ((s: TSpec) => unknown)
+      | undefined;
+    const concreteById = concreteOwnedNamespaceResources<TSpec>({
+      compositionName: this.name,
+      spec,
+      resources: this.resources,
+      ...(compositionFn ? { compositionFn } : {}),
+    });
+
+    for (const id of hoistIds.keys()) {
+      const concrete = concreteById.get(id);
+      // Inactive under this spec (conditionally-excluded) → nothing to emit.
+      if (!concrete) continue;
+      const name =
+        resolveNamespaceName(concrete.metadata?.name, spec as KroCompatibleType) ??
+        (typeof concrete.metadata?.name === 'string' ? concrete.metadata.name : undefined);
+      if (name === undefined) continue;
+      result.set(name, concrete);
+    }
+    return result;
+  }
+
+  /**
+   * The concrete NAMES of the namespaces hoisted out of the graph for this spec —
+   * used to tell the ownership guard which owned namespace is now safe (no longer a
+   * graph child), and as the singleton keys for sibling emission.
+   */
+  private hoistedNamespaceNames(spec?: TSpec): Set<string> {
+    return new Set(this.concreteHoistedNamespaces(spec).keys());
+  }
+
+  /**
+   * The resource map serialized into the RGD: `resources` minus EVERY hoisted
+   * Namespace, with every remaining reference to a hoisted Namespace's
+   * `metadata.name` rewritten to that Namespace's own concrete name expression
+   * (finding #3) so the emitted RGD carries no dangling reference to a removed
+   * resource. The hoist decision is STRUCTURAL (spec-independent), so the RGD shape
+   * is stable across every instance of this factory (finding #4).
+   */
+  private resourcesForRgd(
+    resources: Record<string, KubernetesResource>
+  ): Record<string, KubernetesResource> {
+    const hoistIds = this.hoistedNamespaceRefs(resources);
+    if (hoistIds.size === 0) return resources;
+    const remaining = Object.fromEntries(
+      Object.entries(resources).filter(([id]) => !hoistIds.has(id))
+    ) as Record<string, KubernetesResource>;
+    return rewriteHoistedNamespaceReferences(remaining, hoistIds);
+  }
+
+  /**
    * Idempotently create the factory's target namespace if it doesn't
    * exist. KRO does not auto-create the CR's containing namespace, and
    * users specify `{ namespace }` in factory options expecting it to
@@ -445,13 +598,46 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  /**
+   * STRICT plural discovery (finding #3, fail-closed). Distinguishes a definitive
+   * "CRD absent" (a successful CRD list with no matching definition → fresh cluster)
+   * from a discovery FAILURE (RBAC/connectivity/list error) — the latter is NOT proof
+   * of absence, so it THROWS rather than being swallowed into `undefined` the way
+   * {@link lookupCRDPlural} does. Callers that must fail closed (the pre-hoist safety
+   * guard) use this; callers that may fall back to a heuristic keep using
+   * {@link lookupCRDPlural}.
+   */
+  private async discoverGeneratedCrdPlural(): Promise<
+    { present: true; plural: string } | { present: false }
+  > {
+    const k8sApi = this.createKubernetesObjectApi();
+    // A LIST failure propagates (NOT caught) so callers FAIL CLOSED.
+    const crds = (await k8sApi.list(
+      'apiextensions.k8s.io/v1',
+      'CustomResourceDefinition'
+    )) as unknown as {
+      items?: Array<{ spec?: { group?: string; names?: { kind?: string; plural?: string } } }>;
+    };
+    const match = crds?.items?.find(
+      (crd) =>
+        crd.spec?.group === this.getSchemaGroup() &&
+        crd.spec?.names?.kind === this.schemaDefinition.kind
+    );
+    const plural = match?.spec?.names?.plural;
+    return plural ? { present: true, plural } : { present: false };
+  }
+
   private async requireCRDPluralForCleanup(): Promise<string> {
     if (!this.discoveredPlural) {
       this.discoveredPlural = await this.lookupCRDPlural();
     }
     if (!this.discoveredPlural) {
+      // Teardown-only guard: without the plural we cannot list instances to decide
+      // whether the RGD is shared, so the caller preserves the RGD (conservative). The
+      // generated CRD is intentionally RETAINED regardless (v4), so this no longer
+      // guards against orphaning it.
       throw new CRDInstanceError(
-        `Cannot determine CRD plural for ${this.schemaDefinition.kind}; preserving RGD/CRD to avoid deleting shared KRO state`,
+        `Cannot determine CRD plural for ${this.schemaDefinition.kind}; preserving RGD to avoid deleting shared KRO state`,
         this.schemaDefinition.apiVersion,
         this.schemaDefinition.kind,
         '*',
@@ -585,6 +771,11 @@ export class KroResourceFactoryImpl<
   ): KroResourceFactory<KroCompatibleType, KroCompatibleType> {
     return definition.composition.factory('kro', {
       namespace: definition.registryNamespace,
+      // Pin the singleton owner CR to its registry namespace (its externalRef
+      // consumers resolve against that namespace). This equals the workload
+      // namespace, so it is NOT decoupled — a singleton composition that owns
+      // the registry namespace is still rejected by the ownership guard.
+      instanceNamespace: definition.registryNamespace,
       waitForReady: true,
       ...(this.factoryOptions.timeout !== undefined
         ? { timeout: this.factoryOptions.timeout }
@@ -810,15 +1001,42 @@ export class KroResourceFactoryImpl<
     instanceNameOverride?: string,
     singletonSpecFingerprint?: string
   ): Promise<Enhanced<TSpec, TStatus>> {
-    // Ensure RGD is deployed first
-    await this.ensureRGDDeployed();
+    const instanceNamespace = this.resolveInstanceNamespace(spec);
+    const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
+    const hoistedNamespaces = this.concreteHoistedNamespaces(spec);
 
-    // Ensure the target namespace exists before posting the CR. KRO
-    // reconciles resources from the RGD into their own namespaces, but
-    // the CR instance itself must live in a namespace the user can
-    // write to. Without this, the first deploy after `kubectl delete ns`
-    // fails with a 404 on the CR POST.
-    await this.ensureTargetNamespace();
+    // FINDING #2: fail closed on a PRE-HOIST upgrade BEFORE touching the RGD. If a
+    // namespace this factory now hoists is currently a KRO ApplySet member (a namespace
+    // a pre-hoist RGD owned as a graph child), rolling the new hoisted RGD over the old
+    // one drops the namespace from the ApplySet — and KRO's prune then deletes the live
+    // namespace out from under the workload. Detect it and THROW (detection only — no
+    // automatic migration). See the migration doc for the one-time manual step.
+    await this.assertNoPreHoistNamespaceConflict(hoistedNamespaces.keys());
+
+    // Ensure RGD is deployed. Every owned Namespace is hoisted OUT of the RGD graph
+    // and applied as a SIBLING below (deps-first), never a graph child — so KRO never
+    // owns a namespace and deleting the instance can never garbage-collect the
+    // namespace holding its own finalizer. The hoist is STRUCTURAL, so the shared RGD
+    // shape is the same for every instance (finding #4).
+    await this.ensureRGDDeployed(spec);
+
+    // Ensure the namespace that will hold the CR exists before posting it. KRO
+    // reconciles resources from the RGD into their own namespaces, but the CR
+    // instance itself must live in a namespace the user can write to. If the
+    // composition owns that namespace it was hoisted out of the graph above, so
+    // creating it here (as a sibling) means KRO never garbage-collects it. Without
+    // this, the first deploy after `kubectl delete ns` fails with a 404 on the CR
+    // POST.
+    //
+    // A hoisted Namespace is applied with its COMPLETE preserved configuration
+    // (all labels incl. Pod Security + spec) plus retention markers; a non-hoisted
+    // instance namespace just needs to exist.
+    if (!hoistedNamespaces.has(instanceNamespace)) {
+      await this.ensureTargetNamespace(instanceNamespace);
+    }
+    for (const [name, original] of hoistedNamespaces) {
+      await this.applyRetainedHoistedNamespace(name, original, spec);
+    }
 
     // Create DirectDeploymentEngine with KRO mode for CEL string conversion
     const deploymentEngine = new DirectDeploymentEngine(
@@ -829,7 +1047,6 @@ export class KroResourceFactoryImpl<
     );
 
     // Create custom resource instance
-    const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
     const customResourceData = this.createCustomResourceInstance(
       instanceName,
       spec,
@@ -856,7 +1073,7 @@ export class KroResourceFactoryImpl<
       metadata: {
         ...enhancedCustomResource.metadata,
         name: instanceName,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
       },
       spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
     } as DeployableK8sResource<typeof enhancedCustomResource>;
@@ -869,7 +1086,7 @@ export class KroResourceFactoryImpl<
     try {
       await deploymentEngine.deployResource(deployableResource, {
         mode: 'kro',
-        namespace: this.namespace,
+        namespace: instanceNamespace,
         waitForReady: false, // We'll handle Kro-specific readiness ourselves
         timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
       });
@@ -882,7 +1099,8 @@ export class KroResourceFactoryImpl<
       if (this.factoryOptions.waitForReady ?? true) {
         await this.waitForKroInstanceReady(
           instanceName,
-          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT,
+          instanceNamespace
         ); // 10 minutes
       }
       this.logger.info('Instance ready, creating enhanced proxy', {
@@ -895,6 +1113,327 @@ export class KroResourceFactoryImpl<
     } finally {
       await deploymentEngine.dispose();
     }
+  }
+
+  /**
+   * Apply a hoisted workload Namespace as a RETAINED resource OUTSIDE the KRO
+   * graph, with its COMPLETE preserved configuration — all labels (incl. Pod
+   * Security + schema-derived), all annotations, AND spec — plus retention markers
+   * (finding #8), using typekro's own field manager (not KRO's). Server-side apply
+   * is idempotent and does not conflict with KRO because KRO no longer considers
+   * the Namespace desired.
+   *
+   * If the full Namespace cannot be applied, this FAILS (finding #8) rather than
+   * silently degrading to a bare `ensureTargetNamespace` that would drop Pod
+   * Security + other declared configuration.
+   */
+  private async applyRetainedHoistedNamespace(
+    name: string,
+    original: KubernetesResource,
+    spec: TSpec
+  ): Promise<void> {
+    const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
+      name,
+      original,
+      spec as KroCompatibleType
+    );
+
+    const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
+
+    const baseMetadata = {
+      name: merged.name,
+      labels: merged.labels,
+      ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+      ...(merged.ownerReferences !== undefined
+        ? { ownerReferences: merged.ownerReferences }
+        : {}),
+    };
+    const buildManifest = (annotations: Record<string, string>): k8s.KubernetesObject =>
+      ({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { ...baseMetadata, annotations },
+        ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
+      }) as unknown as k8s.KubernetesObject;
+
+    const annotationsWithStamp = {
+      ...merged.annotations,
+      [NAMESPACE_OWNER_ANNOTATION]: this.rgdName,
+    };
+
+    // CREATE-FIRST ownership (finding #3): attempt to CREATE the namespace WITH the
+    // ownership stamp and complete declared config. A 201 is atomic proof WE created it
+    // (owned). A 409 means it already exists — owned ONLY if a prior create by this RGD
+    // stamped it; otherwise adopted (never stamped, so teardown never deletes it). This
+    // replaces the raceable GET→(404)→patch-with-stamp: no window in which another actor
+    // creates the namespace between our read and our stamping patch.
+    let decision: NamespaceOwnershipDecision;
+    try {
+      decision = await decideNamespaceOwnershipCreateFirst(
+        k8sApi,
+        buildManifest(annotationsWithStamp),
+        this.rgdName
+      );
+    } catch (error: unknown) {
+      // A non-conflict CREATE failure (or a failed conflict-read) — do NOT fall back to a
+      // bare namespace (finding #8). Fail loudly so the operator sees the real problem.
+      throw new ResourceGraphFactoryError(
+        `Failed to create the retained workload Namespace "${name}" with its complete declared ` +
+          `configuration (Pod Security labels, annotations, spec): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    }
+
+    // 201 CREATE landed the full config + stamp atomically — nothing more to apply.
+    if (decision.created) return;
+
+    // 409: the namespace already existed. Apply the retained config via SSA, keeping the
+    // ownership stamp ONLY if we already own it (adoption must NOT be stamped).
+    const annotations = decision.owned ? annotationsWithStamp : merged.annotations;
+    try {
+      await k8sApi.patch(
+        buildManifest(annotations),
+        undefined,
+        undefined,
+        'typekro', // fieldManager — typekro's, NOT kro's
+        true, // force (own the retention fields)
+        'application/apply-patch+yaml' // server-side apply
+      );
+    } catch (error: unknown) {
+      // Do NOT fall back to a bare namespace (finding #8): that would drop the
+      // declared Pod Security labels + other config. Fail loudly so the operator
+      // sees the real problem instead of a silently-degraded workload namespace.
+      throw new ResourceGraphFactoryError(
+        `Failed to apply the retained workload Namespace "${name}" with its complete declared ` +
+          `configuration (Pod Security labels, annotations, spec): ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    }
+  }
+
+  /**
+   * FINDING #2 — fail-closed PRE-HOIST detection (detection only; no migration).
+   *
+   * On deploy, BEFORE the RGD is (re)applied, check every namespace this factory would
+   * hoist. If a live namespace is currently a KRO ApplySet member — it carries
+   * `applyset.kubernetes.io/part-of` and/or any `kro.run/*` ownership label from a
+   * PRE-HOIST RGD (which owned the namespace as a graph child) — then rolling the new,
+   * hoisted RGD (which no longer lists the namespace) over the old one makes KRO's
+   * ApplySet prune enumerate and DELETE the live namespace, taking the workload with
+   * it. We THROW a clear, actionable error instead. This does NOT re-introduce the
+   * removed automatic migration/drain/strip machinery — it only refuses to proceed.
+   *
+   * typekro's own v2 sibling namespaces carry `typekro.io/kro-instance-namespace=true`
+   * but NEITHER an ApplySet `part-of` NOR any `kro.run/*` label (KRO never owns them),
+   * so steady-state re-deploys never trip this. A 404 (fresh) is not a pre-hoist signal.
+   *
+   * FINDING #7 (hardened): the check covers not only the namespaces resolved from the
+   * INCOMING spec but EVERY existing instance of this shared RGD (their hoisted
+   * namespaces too) — an upgrade prunes the ApplySet for ALL of them at once, so
+   * missing another instance's namespace would let KRO delete it. And reads FAIL
+   * CLOSED: a non-404 read error is NOT proof of safety, so it ABORTS the deploy
+   * rather than being skipped.
+   */
+  private async assertNoPreHoistNamespaceConflict(
+    hoistedNamespaceNames: Iterable<string>
+  ): Promise<void> {
+    const names = new Set<string>(hoistedNamespaceNames);
+    // Union in every EXISTING instance's hoisted namespaces (finding #7): they are all
+    // dropped from the ApplySet by the same RGD roll. Fails closed on a non-absent list
+    // error.
+    for (const extra of await this.existingInstancesHoistedNamespaceNames()) {
+      names.add(extra);
+    }
+    if (names.size === 0) return;
+
+    const k8sApi = this.createKubernetesObjectApi();
+    for (const name of names) {
+      let labels: Record<string, string> = {};
+      try {
+        const live = (await k8sApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name },
+        })) as { metadata?: { labels?: Record<string, string> } };
+        labels = live.metadata?.labels ?? {};
+      } catch (error: unknown) {
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (code === 404) continue; // fresh namespace — nothing to migrate
+        // FAIL CLOSED (finding #7): a non-404 read error means we cannot prove the
+        // namespace is safe to hoist over. Abort rather than risk KRO's prune deleting
+        // a namespace whose pre-hoist ownership we could not read.
+        throw new TypeKroError(
+          `Pre-hoist safety check could not read Namespace "${name}" for composition ` +
+            `"${this.name}" (${ensureError(error).message}). Refusing to deploy: a hoist over an ` +
+            `unreadable namespace could let KRO's ApplySet prune delete it. Resolve the read ` +
+            `error (RBAC/connectivity) and retry.`,
+          'PRE_HOIST_NAMESPACE_CHECK_FAILED',
+          { composition: this.name, namespace: name, mode: 'kro' }
+        );
+      }
+      const partOfKro =
+        typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
+        Object.keys(labels).some((key) => key.startsWith('kro.run/'));
+      if (partOfKro) {
+        throw new TypeKroError(
+          `Pre-hoist deployment detected for composition "${this.name}": the live Namespace ` +
+            `"${name}" is a KRO ApplySet member (carries applyset.kubernetes.io/part-of and/or ` +
+            `kro.run/* ownership labels from a pre-hoist RGD). typekro now HOISTS every owned ` +
+            `Namespace out of the RGD, so applying the new RGD in place would drop "${name}" from ` +
+            `KRO's ApplySet and KRO's prune would DELETE the live namespace and its workloads. ` +
+            `This upgrade is not auto-migrated. Either recreate (delete the instance, then ` +
+            `redeploy — the namespace is recreated as a sibling) or perform the one-time manual ` +
+            `label-strip while the controller is quiesced. See docs/advanced/migration.md ` +
+            `("Upgrading from a pre-hoist TypeKro release").`,
+          'PRE_HOIST_NAMESPACE_CONFLICT',
+          { composition: this.name, namespace: name, labels: Object.keys(labels), mode: 'kro' }
+        );
+      }
+    }
+  }
+
+  /**
+   * The hoisted-namespace names of EVERY existing instance of this shared RGD (finding
+   * #7), resolved EXACTLY and PER INSTANCE from that instance's OWN durable record
+   * (finding #1, v7) — never approximated, and never from an RGD-wide aggregate.
+   *
+   * Each instance's namespaces come from its OWN CR `typekro.io/hoisted-namespaces`
+   * annotation — the only PER-INSTANCE proof. An instance that lacks its own record (a
+   * genuinely-legacy deployment) FAILS CLOSED (throws): the RGD-wide set of Namespaces
+   * carrying `typekro.io/created-by-rgd == this.rgdName` is NOT per-instance proof — a
+   * DIFFERENT (modern) instance could have stamped it, so a non-empty RGD-wide set would
+   * otherwise MASK a legacy instance whose own — possibly different — namespace is invisible
+   * and would be pruned. We also never approximate from metadata.namespace / spec.namespace.
+   *
+   * The RGD-wide `created-by-rgd` set IS still unioned into the returned protected set (it
+   * is a superset that catches namespaces leaked by an interrupted teardown) — it just never
+   * SATISFIES the per-instance check. FRESH clusters (no CRD / no instances yet) yield an
+   * empty set; any list error FAILS CLOSED so the guard is never silently bypassed.
+   */
+  private async existingInstancesHoistedNamespaceNames(): Promise<Set<string>> {
+    const result = new Set<string>();
+
+    // Short-circuit: if this RGD structurally hoists NO namespace, the hoist can prune nothing —
+    // there is nothing to protect and no per-instance record to require. An ordinary composition
+    // with no Namespace resources must never trip the pre-hoist legacy guard.
+    if (this.hoistedNamespaceRefs().size === 0) return result;
+
+    // Discover the generated CRD via a STRICT lookup that THROWS on a real list error
+    // (finding #3, fail-closed): a discovery/RBAC failure is NOT proof the CRD is
+    // absent. Only a successful list with no matching CRD is a definitive "fresh
+    // cluster" (no prior instances to protect).
+    let discovery: { present: true; plural: string } | { present: false };
+    try {
+      discovery = await this.discoverGeneratedCrdPlural();
+    } catch (error: unknown) {
+      throw new TypeKroError(
+        `Pre-hoist safety check could not discover the generated CRD for RGD "${this.rgdName}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: a discovery/RBAC error is not ` +
+          `proof the CRD is absent, and proceeding could let the hoist prune an existing ` +
+          `instance's namespace unchecked.`,
+        'PRE_HOIST_CRD_DISCOVERY_FAILED',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+    if (!discovery.present) return result; // definitively fresh — no prior instances
+
+    let items: Array<{ spec?: unknown; metadata?: { annotations?: Record<string, string> } }>;
+    try {
+      const customApi = await this.createCustomObjectsApi();
+      const listResponse = await customApi.listClusterCustomObject({
+        group: this.getSchemaGroup(),
+        version: this.getSchemaVersion(),
+        plural: discovery.plural,
+      });
+      items =
+        (
+          listResponse as {
+            items?: Array<{ spec?: unknown; metadata?: { annotations?: Record<string, string> } }>;
+          }
+        ).items ?? [];
+    } catch (error: unknown) {
+      // Only a DEFINITIVE 404 (the CRD/instances vanished between discovery and list)
+      // is treated as fresh; ANY other error FAILS CLOSED (finding #3) — a message
+      // that merely mentions "CRD"/"not found" no longer counts (that was the swallow
+      // bug), only a real NotFound status.
+      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+      const status = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+      if (status === 404) return result;
+      throw new TypeKroError(
+        `Pre-hoist safety check could not list existing instances of RGD "${this.rgdName}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: another instance's namespace could ` +
+          `be pruned by the hoist without being checked.`,
+        'PRE_HOIST_INSTANCE_LIST_FAILED',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+
+    if (items.length === 0) return result;
+
+    // The RGD-wide record of every namespace this RGD created: namespaces carrying
+    // `typekro.io/created-by-rgd == this.rgdName`. We union it into the PROTECTED set as a
+    // superset — it catches namespaces leaked by an interrupted teardown that no live CR
+    // records. It is NOT used to satisfy the per-instance check below (finding #1, v7): being
+    // RGD-wide, it cannot prove a SPECIFIC instance's namespaces. A list error FAILS CLOSED —
+    // an unreadable list is not proof no owned namespace exists.
+    let ownedNamespaces: Set<string>;
+    try {
+      ownedNamespaces = new Set(
+        await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+          k8sApi: this.createKubernetesObjectApi(),
+          logger: this.logger,
+        })
+      );
+    } catch (error: unknown) {
+      throw new TypeKroError(
+        `Pre-hoist safety check could not list namespaces owned by RGD "${this.rgdName}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: without the durable ownership ` +
+          `record we cannot prove the hoist won't prune an existing instance's namespace.`,
+        'PRE_HOIST_OWNED_NAMESPACE_LIST_FAILED',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+    // Every owned namespace is at risk of the ApplySet prune — protect them all.
+    for (const ns of ownedNamespaces) result.add(ns);
+
+    for (const item of items) {
+      // Resolve THIS instance's namespaces from its OWN exact PER-INSTANCE record — the CR
+      // `typekro.io/hoisted-namespaces` annotation (finding #1, v7). It carries the instance's
+      // EXACT hoisted names (round-tripping a name derived from an arbitrary spec field) and is
+      // the ONLY per-instance proof.
+      const record = readHoistedNamespacesRecord(
+        item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+      );
+      if (record.status === 'present') {
+        // A VALID record — including an explicit empty `[]` — is per-instance proof: this
+        // instance hoists exactly these namespaces (possibly none). Resolved; do NOT fail closed.
+        for (const ns of record.names) result.add(ns);
+        continue;
+      }
+      // MISSING or MALFORMED record → NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do
+      // NOT fall back to the RGD-wide `created-by-rgd` set: it is not per-instance proof — a
+      // DIFFERENT (modern) instance could have stamped it, so a non-empty set would MASK this
+      // legacy instance whose own — possibly different — owned namespace is then invisible and
+      // pruned by the hoist. Nor do we approximate from metadata.namespace / spec.namespace.
+      // Refusing the upgrade until the legacy instance is migrated/annotated is the intended,
+      // safe transition cost — refusing beats silently pruning an unseen namespace.
+      throw new TypeKroError(
+        `Pre-hoist safety check found an existing instance of RGD "${this.rgdName}" with no ` +
+          `per-instance namespace record — its CR carries no "${HOISTED_NAMESPACES_ANNOTATION}" ` +
+          `annotation. The RGD-wide "${NAMESPACE_OWNER_ANNOTATION}=${this.rgdName}" set is NOT ` +
+          `per-instance proof (another instance could have stamped it), so this instance's own ` +
+          `owned namespace could be pruned by the hoist unseen. Refusing to deploy: migrate it ` +
+          `(redeploy the instance with a current TypeKro so its namespaces are recorded) and retry.`,
+        'PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE',
+        { composition: this.name, rgdName: this.rgdName, mode: 'kro' }
+      );
+    }
+    return result;
   }
 
   /**
@@ -918,11 +1457,15 @@ export class KroResourceFactoryImpl<
       }
       const plural = this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
 
-      // In the new API, methods take request objects and return objects directly
+      // The instance CR lives in the namespace {@link resolveInstanceNamespace}
+      // resolves to — the SAME shared resolver `deploy()`/`toYaml()` use, so a
+      // create in namespace X is always listed in namespace X (finding #2). No
+      // per-call spec is available here, so it resolves the factory default
+      // (`instanceNamespace` override ?? factory namespace).
       const listResponse = await customApi.listNamespacedCustomObject({
         group: this.getSchemaGroup(),
         version,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(),
         plural,
       });
 
@@ -991,7 +1534,9 @@ export class KroResourceFactoryImpl<
   }
 
   private async listInstancesForCleanup(): Promise<
-    Array<{ metadata?: { name?: unknown; namespace?: unknown } }>
+    Array<{
+      metadata?: { name?: unknown; namespace?: unknown; annotations?: Record<string, string> };
+    }>
   > {
     const customApi = await this.createCustomObjectsApi();
     const version = this.getSchemaVersion();
@@ -1004,7 +1549,9 @@ export class KroResourceFactoryImpl<
         plural,
       });
       const listResult = listResponse as {
-        items?: Array<{ metadata?: { name?: unknown; namespace?: unknown } }>;
+        items?: Array<{
+          metadata?: { name?: unknown; namespace?: unknown; annotations?: Record<string, string> };
+        }>;
       };
       return listResult.items ?? [];
     } catch (error: unknown) {
@@ -1040,87 +1587,75 @@ export class KroResourceFactoryImpl<
         { scopes: opts.scopes, instanceName: name, mode: 'kro' }
       );
     }
-    const kubeConfig = this.getKubeConfig();
-    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+    const k8sApi = this.createKubernetesObjectApi();
+    // ONE gating deletion mechanism for the whole teardown (finding #1): the engine's
+    // rollback manager, whose `deleteResourceAndWait` deletes then polls to a REAL 404
+    // and THROWS DeploymentTimeoutError on timeout — never a silent return that lets a
+    // later step run behind a still-Terminating resource.
+    const rollback = createRollbackManager(k8sApi);
+    const timeout = this.factoryOptions.timeout ?? 300000;
 
     const apiVersion = this.getInstanceApiVersion();
+    // The CR lives in the namespace {@link resolveInstanceNamespace} resolves to — the
+    // SAME shared resolver `deploy()` created it with (finding #2), so we never look in
+    // the wrong namespace and mistake a 404 there for "already gone".
+    const instanceNamespace = this.resolveInstanceNamespace();
 
-    // Tracks whether the CR was confirmed 404 by the poll loop. Used
-    // later to decide whether to tear down the RGD/CRD or preserve
-    // them for KRO to continue finalizer processing in the background.
-    let instanceDeleted = false;
-    let deletionTimedOut = false;
-
+    // Capture the CR's durable RECORD of which namespaces THIS instance hoisted BEFORE
+    // deleting it (finding #4). deleteInstance has no caller spec, so the live CR is the
+    // only source of the declared set. PREFER the recorded `typekro.io/hoisted-namespaces`
+    // annotation (stamped at deploy time) — it round-trips a name derived from an
+    // arbitrary spec field (e.g. spec.targetNamespace) EXACTLY. Fall back to re-deriving
+    // from the CR's spec for instances deployed before the annotation existed (the
+    // imperative path CAN re-execute the composition). If the CR is already gone (404) or
+    // unreadable, we cannot reconstruct it, so NO namespace becomes a delete candidate
+    // (fail-safe: an owned-but-unprovable namespace is kept).
+    let crSpec: TSpec | undefined;
+    let recordedHoistedNames: string[] = [];
     try {
-      // Delete the instance. KRO's controller processes kro.run/finalizer,
-      // which does graph-based deletion of all child resources.
-      await k8sApi.delete({
+      const live = (await k8sApi.read({
         apiVersion,
         kind: this.schemaDefinition.kind,
-        metadata: {
-          name,
-          namespace: this.namespace,
-        },
-      } as k8s.KubernetesObject);
+        metadata: { name, namespace: instanceNamespace },
+      })) as { spec?: TSpec; metadata?: { annotations?: Record<string, string> } };
+      crSpec = live.spec;
+      recordedHoistedNames = parseHoistedNamespacesAnnotation(
+        live.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+      );
+    } catch (readError: unknown) {
+      const k8sErr = readError as { statusCode?: number; code?: number; body?: { code?: number } };
+      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+      if (code !== 404) {
+        this.logger.debug(
+          'Could not read instance CR before delete (declared-namespace record unavailable)',
+          { name, error: ensureError(readError).message }
+        );
+      }
+    }
+    const declaredHoistedNamespaceNames =
+      recordedHoistedNames.length > 0
+        ? recordedHoistedNames
+        : crSpec
+          ? [...this.concreteHoistedNamespaces(crSpec).keys()]
+          : [];
 
-      // Wait for KRO to finish cleanup (finalizer processing).
-      // KRO needs the RGD to exist during this phase — the caller must
-      // not delete the RGD until deleteInstance completes.
-      const timeout = this.factoryOptions.timeout ?? 300000;
-      const startTime = Date.now();
-      while (Date.now() - startTime < timeout) {
-        try {
-          await k8sApi.read({
-            apiVersion,
-            kind: this.schemaDefinition.kind,
-            metadata: { name, namespace: this.namespace },
-          });
-          // Still exists — KRO is processing finalizer
-          await new Promise((r) => setTimeout(r, 2000));
-        } catch (pollError: unknown) {
-          const pollK8sError = pollError as {
-            statusCode?: number;
-            code?: number;
-            body?: { code?: number };
-          };
-          const errorCode = pollK8sError.statusCode ?? pollK8sError.code ?? pollK8sError.body?.code;
-          if (errorCode === 404) {
-            instanceDeleted = true;
-            break;
-          }
-          // Non-404 error (permissions, server error) — log and retry
-          this.logger.debug('Deletion poll error (retrying)', {
-            name,
-            errorCode,
-          });
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-      }
-      if (!instanceDeleted) {
-        // KRO is still processing the finalizer. Treat the stuck instance as
-        // unsafe to clean up, so the RGD/CRD are preserved.
-        // Deleting the RGD while KRO is mid-finalizer would orphan cleanup.
-        deletionTimedOut = true;
-        this.logger.warn('Instance deletion still in progress after timeout', {
-          name,
-          timeout,
-          elapsed: Date.now() - startTime,
-          hint: 'KRO finalizer processing continues in the background. The RGD will be preserved.',
-        });
-      }
+    // 1. Delete the CR and GATE on its 404 — KRO cleared `kro.run/finalizer` after
+    // graph-deleting every child (findings #1 + #2). On timeout the gate THROWS, so we
+    // NEVER proceed to delete the RGD while KRO is mid-finalizer (which would orphan
+    // cleanup). A pre-existing 404 on delete is treated as already-deleted.
+    let instanceDeleted = false;
+    try {
+      await rollback.deleteResourceAndWait(
+        { apiVersion, kind: this.schemaDefinition.kind, name, namespace: instanceNamespace },
+        { timeout }
+      );
+      instanceDeleted = true;
     } catch (error: unknown) {
-      const k8sError = error as {
-        statusCode?: number;
-        code?: number;
-        body?: { code?: number };
-        message?: string;
-      };
-      const errorCode = k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
-      if (errorCode === 404) {
-        instanceDeleted = true;
-      } else {
+      if (error instanceof DeploymentTimeoutError) {
+        // KRO is still processing the finalizer. The RGD/CRD/namespace are LEFT ALONE
+        // (we throw before reaching them) so KRO can finish cleanup in the background.
         throw new CRDInstanceError(
-          `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
+          `KRO instance ${name} deletion did not complete within ${timeout}ms`,
           this.schemaDefinition.apiVersion,
           this.schemaDefinition.kind,
           name,
@@ -1128,92 +1663,244 @@ export class KroResourceFactoryImpl<
           ensureError(error)
         );
       }
-    }
-
-    if (deletionTimedOut) {
       throw new CRDInstanceError(
-        `KRO instance ${name} deletion did not complete within ${this.factoryOptions.timeout ?? 300000}ms`,
+        `Failed to delete instance ${name}: ${ensureError(error).message}`,
         this.schemaDefinition.apiVersion,
         this.schemaDefinition.kind,
         name,
-        'deletion'
+        'deletion',
+        ensureError(error)
       );
     }
 
-    // Only delete the RGD and CRD if no other instances remain. Multiple
-    // instances can share one RGD — deleting it would break the others.
-    // The decision is a pure function of (listed instances, target name,
-    // instanceDeleted flag) — see {@link shouldPreserveRgd} for the rules.
-    let hasRemainingInstances = false;
+    // 2. LIST REMAINING INSTANCES FIRST — BEFORE deleting any namespace (finding #2, v7).
+    // This instance's per-instance namespace cleanup below must EXCLUDE any namespace a
+    // REMAINING instance still records: because ownership is RGD-wide, deleting this instance
+    // could otherwise remove an empty/default-only namespace that another remaining instance
+    // shares (its workloads may momentarily leave it empty), and the later RGD-preserve check
+    // cannot RESTORE a deleted namespace. So we list once, up front, and use the result for
+    // BOTH the shared-namespace exclusion AND the RGD-share decision. A list FAILURE is
+    // fail-closed on BOTH: we can compute NEITHER the exclusion nor the share decision, so we
+    // delete NO namespace and preserve the RGD/CRD (a retry completes teardown once the list
+    // is readable).
+    let remainingItems: Array<{
+      metadata?: { name?: unknown; namespace?: unknown; annotations?: Record<string, string> };
+    }>;
     try {
-      const instances = await this.listInstancesForCleanup();
-      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, this.namespace);
+      remainingItems = await this.listInstancesForCleanup();
     } catch (listError: unknown) {
-      // Can't list instances — could be CRD gone (safe) or transient error
-      // (unsafe to delete RGD). Default to preserving the RGD to avoid
-      // breaking other instances that might still be using it.
-      this.logger.warn('Cannot list instances to check for shared RGD — preserving RGD', {
-        rgdName: this.rgdName,
-        error: ensureError(listError).message,
-      });
-      hasRemainingInstances = true;
+      this.logger.warn(
+        'Cannot list instances — preserving ALL namespaces + the RGD/CRD (fail closed; retry to complete)',
+        { rgdName: this.rgdName, error: ensureError(listError).message }
+      );
+      return;
+    }
+    // The decision to keep the RGD is a pure function of (listed instances, target name,
+    // instanceDeleted flag) — see {@link shouldPreserveRgd} for the rules.
+    const hasRemainingInstances = shouldPreserveRgd(
+      remainingItems,
+      name,
+      instanceDeleted,
+      instanceNamespace
+    );
+    // The remaining instances (this one filtered out) — the SAME filter shouldPreserveRgd
+    // applies — whose recorded namespaces this instance's cleanup must PRESERVE.
+    const remainingInstances = instanceDeleted
+      ? remainingItems.filter((i) => {
+          if (i.metadata?.name !== name) return true;
+          if (!instanceNamespace) return false;
+          return i.metadata?.namespace !== instanceNamespace;
+        })
+      : remainingItems;
+
+    // 3. Delete THIS instance's OWN hoisted namespace(s) — EXCLUDING any a remaining instance
+    // still records (finding #2, v7). Deletable = this instance's declared namespaces MINUS the
+    // UNION of every remaining instance's recorded namespaces. This preserves v5's "each
+    // instance cleans its own namespace even when non-last" (a NON-last instance's exclusive
+    // namespace is still cleaned here, never leaked) while it also EXCLUDES a namespace a
+    // remaining instance shares. Cleanup stays ownership-PRIMARY (`ownedByRgd`: a namespace only
+    // this RGD's create stamped) + emptiness-secondary (a namespace another stack still occupies
+    // is RETAINED) via deleteNamespaceIfEmpty. The names come from the CR's recorded
+    // `typekro.io/hoisted-namespaces` annotation (finding #4), so an arbitrary-field name
+    // round-trips cross-process. Namespace-before-RGD/CRD is safe: the RGD + generated CRD stay
+    // HEALTHY/Active during ns termination, so the namespace controller confirms emptiness
+    // INSTANTLY (never terminating against a *Terminating* CRD, upstream kro #1171). typekro
+    // never puts a Namespace in the RGD, so KRO's finalizer never touched these — we own their
+    // teardown; the delete is gated on a real 404 via the SAME primitive (throws on timeout).
+    //
+    // FAIL CLOSED: if ANY remaining instance's record cannot be resolved exactly (no
+    // `hoisted-namespaces` annotation on an RGD that DOES hoist), the exclusion is uncomputable
+    // → preserve ALL of this instance's namespaces (delete NONE), since any of them could be one
+    // the unresolved instance still needs.
+    if (declaredHoistedNamespaceNames.length > 0) {
+      const preserved = new Set<string>();
+      let allRemainingResolvable = true;
+      for (const item of remainingInstances) {
+        const record = readHoistedNamespacesRecord(
+          item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+        );
+        if (record.status !== 'present') {
+          // MISSING or MALFORMED — this remaining instance's namespaces are uncomputable.
+          allRemainingResolvable = false;
+          continue;
+        }
+        // PRESENT (including a valid empty []) is RESOLVED: contribute its namespaces (possibly
+        // none). A valid [] no longer forces the fail-closed preserve-everything path (P2).
+        for (const ns of record.names) preserved.add(ns);
+      }
+      if (!allRemainingResolvable) {
+        this.logger.warn(
+          "A remaining instance has no resolvable namespace record — preserving ALL of this instance's " +
+            'namespaces (fail closed) to avoid deleting one a remaining instance shares',
+          { rgdName: this.rgdName, instance: name }
+        );
+      } else {
+        for (const ns of declaredHoistedNamespaceNames) {
+          if (preserved.has(ns)) {
+            this.logger.debug('Namespace recorded by a remaining instance — preserving', {
+              namespace: ns,
+              rgdName: this.rgdName,
+            });
+            continue;
+          }
+          await deleteNamespaceIfEmpty(this.getKubeConfig(), ns, {
+            logger: this.logger,
+            // Reuse the SAME (mockable) object API so discovery/delete is unit-testable.
+            k8sApi,
+            ownedByRgd: this.rgdName,
+            timeoutMs: timeout,
+            context: { rgdName: this.rgdName },
+          });
+        }
+      }
     }
 
-    if (!hasRemainingInstances) {
-      // Prove the generated CRD can be cleaned up before deleting the RGD.
-      // If plural discovery is unavailable, preserving both avoids orphaning
-      // the generated CRD without its owning RGD.
-      const crdPlural = await this.requireCRDPluralForCleanup();
-
-      // Delete the RGD after the instance is gone.
-      try {
-        await k8sApi.delete({
-          apiVersion: 'kro.run/v1alpha1',
-          kind: 'ResourceGraphDefinition',
-          metadata: { name: this.rgdName },
-        } as k8s.KubernetesObject);
-        this.logger.debug('RGD deleted', { rgdName: this.rgdName });
-      } catch (error: unknown) {
-        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-        if (errorCode !== 404) {
-          this.logger.warn('RGD cleanup failed', {
-            rgdName: this.rgdName,
-            error: ensureError(error).message,
-          });
-          throw error;
-        }
-      }
-
-      // Delete the CRD that KRO created from the RGD. KRO's default config
-      // has allowCRDDeletion=false, so it won't clean up the CRD when the
-      // RGD is deleted. Prefer the server-discovered plural over the
-      // heuristic fallback so already-plural kinds clean up correctly.
-      const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
-      try {
-        await k8sApi.delete({
-          apiVersion: 'apiextensions.k8s.io/v1',
-          kind: 'CustomResourceDefinition',
-          metadata: { name: crdName },
-        } as k8s.KubernetesObject);
-        this.logger.debug('CRD deleted', { crdName });
-      } catch (error: unknown) {
-        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
-        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-        if (errorCode !== 404) {
-          this.logger.warn('CRD cleanup failed', { crdName, error: ensureError(error).message });
-          throw error;
-        }
-      }
-    } else {
+    // Only delete the RGD and CRD if no other instances remain. Multiple instances can share
+    // one RGD — deleting it would break the others.
+    if (hasRemainingInstances) {
       this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
         rgdName: this.rgdName,
       });
+      return;
     }
 
-    // Namespaces are resources in the composition's dependency graph.
-    // KRO's finalizer processing handles deleting all child resources
-    // (including Namespaces) via its applyset — no manual cleanup needed.
+    // 2b. RETRY-SAFE owned-namespace sweep (finding #2). The per-instance cleanup above
+    // reads the names off the CR's `typekro.io/hoisted-namespaces` annotation — but that
+    // record dies WITH the CR, so a retry AFTER an earlier attempt already deleted the CR
+    // (crash / partial teardown) would find the CR 404, read NO names, and skip cleanup.
+    // Since this is the LAST instance, find EVERY namespace this RGD created via the
+    // DURABLE `typekro.io/created-by-rgd` namespace annotation (survives the CR) and clean
+    // each — catching any namespace leaked by an interrupted teardown. The names above may
+    // overlap; `deleteNamespaceIfEmpty` is idempotent (a 404 is a no-op). A LIST failure
+    // means we cannot confirm cleanup, so PRESERVE the RGD/CRD and return (a later retry
+    // completes it) — deleting the definitions now could orphan a leaked namespace.
+    let ownedNamespaces: string[];
+    try {
+      ownedNamespaces = await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+        k8sApi,
+        logger: this.logger,
+      });
+    } catch (listError: unknown) {
+      this.logger.warn(
+        'Cannot list owned namespaces to confirm cleanup — preserving RGD/CRD (retry to complete)',
+        { rgdName: this.rgdName, error: ensureError(listError).message }
+      );
+      return;
+    }
+    for (const ns of ownedNamespaces) {
+      await deleteNamespaceIfEmpty(this.getKubeConfig(), ns, {
+        logger: this.logger,
+        k8sApi,
+        ownedByRgd: this.rgdName,
+        timeoutMs: timeout,
+        context: { rgdName: this.rgdName },
+      });
+    }
+
+    // 2c. CONFIRM owned-namespace cleanup BEFORE removing the definitions (finding #2): do
+    // NOT delete the RGD/CRD while any owned namespace still exists or cannot be confirmed
+    // gone. `deleteNamespaceIfEmpty` above RETAINS (does not delete) a namespace another
+    // stack still occupies or one it could not read — those legitimately remain here, so we
+    // keep the RGD/CRD rather than orphan a still-owned namespace from its definition. Only
+    // once NO created-by-rgd namespace remains do we proceed to tear the definitions down.
+    let remainingOwned: string[];
+    try {
+      remainingOwned = await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+        k8sApi,
+        logger: this.logger,
+      });
+    } catch (listError: unknown) {
+      this.logger.warn(
+        'Cannot confirm owned-namespace cleanup — preserving RGD/CRD (retry to complete)',
+        { rgdName: this.rgdName, error: ensureError(listError).message }
+      );
+      return;
+    }
+    if (remainingOwned.length > 0) {
+      this.logger.info(
+        'Owned namespace(s) still present after cleanup — preserving RGD/CRD until they are gone',
+        { rgdName: this.rgdName, remaining: remainingOwned }
+      );
+      return;
+    }
+
+    // 3. Delete the RGD and GATE on its 404 (findings #1 + #2). The RGD carries a KRO
+    // finalizer; while KRO processes it, KRO's per-RGD dynamic controller is still
+    // WATCHING the generated CRD's resources. Waiting for the RGD 404 first lets KRO
+    // tear its controller down cleanly. The gate THROWS on timeout (no silent proceed).
+    await rollback.deleteResourceAndWait(
+      { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', name: this.rgdName },
+      { timeout }
+    );
+    this.logger.debug('RGD deleted and fully gone', { rgdName: this.rgdName });
+
+    // 4. Delete the generated CRD LAST — after the CR (404), RGD (404), and the owned
+    // namespace are all gone (reverse-topo: CRDs die last). This step is BEST-EFFORT and
+    // NON-FATAL: KRO's default config has allowCRDDeletion=false so KRO never deletes it,
+    // and the apiextensions `customresourcecleanup` finalizer can stall for minutes even
+    // with zero instances (upstream kro #1171). By now the namespace is already cleanly
+    // gone, so a slow CRD teardown blocks NOTHING — we initiate the delete and wait
+    // generously, but a timeout/failure is LOGGED, never thrown: it must not undo an
+    // otherwise-successful teardown. A dangling (Terminating or leftover) CRD is
+    // harmless; an operator may GC it out-of-band. See docs/advanced/migration.md.
+    await this.deleteGeneratedCrdBestEffort(rollback, timeout);
+  }
+
+  /**
+   * BEST-EFFORT deletion of this factory's generated CRD, the LAST teardown step (after
+   * the owned namespace is gone). Never throws: a slow/stuck apiextensions cleanup
+   * finalizer (upstream kro #1171) must not fail an otherwise-complete teardown, and by
+   * this point nothing depends on the CRD being gone. Logs the outcome.
+   */
+  private async deleteGeneratedCrdBestEffort(
+    rollback: ReturnType<typeof createRollbackManager>,
+    timeout: number
+  ): Promise<void> {
+    // Prefer the already-discovered plural; else the non-throwing lookup (this is
+    // best-effort): if we cannot determine the CRD name, log and skip rather than fail
+    // the completed teardown.
+    const crdPlural = this.discoveredPlural ?? (await this.lookupCRDPlural());
+    if (!crdPlural) {
+      this.logger.debug('Skipping best-effort CRD delete — plural undiscoverable (teardown already complete)', {
+        rgdName: this.rgdName,
+      });
+      return;
+    }
+    const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
+    try {
+      await rollback.deleteResourceAndWait(
+        { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
+        { timeout }
+      );
+      this.logger.debug('Generated CRD deleted and fully gone (last teardown step)', { crdName });
+    } catch (error: unknown) {
+      // NON-FATAL: the namespace is already gone; a lingering/Terminating CRD is
+      // harmless (kro #1171). Log and return success.
+      this.logger.warn(
+        'Best-effort generated-CRD delete did not complete — leaving it (harmless; GC out-of-band)',
+        { crdName, error: ensureError(error).message }
+      );
+    }
   }
 
   /**
@@ -1247,10 +1934,38 @@ export class KroResourceFactoryImpl<
     });
     this.assertInstanceNamespaceOwnershipSafe(spec);
 
+    const instanceNamespace = this.resolveInstanceNamespace(spec);
     const kubeConfigOptions = this.extractKubeConfigOptionsForAlchemy();
-    const kroDeletion = this.createAlchemyKroDeletionOptions();
+    const kroDeletion = this.createAlchemyKroDeletionOptions(instanceNamespace);
     const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
     const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
+
+    // Every Namespace the composition owns is HOISTED out of the RGD graph and
+    // emitted here instead — before the RGD + instance and OUTSIDE the graph, so the
+    // CR always has a namespace to land in and KRO never garbage-collects it (which
+    // would strand the instance's finalizer). Teardown is EMPTY-GATED (findings #3 +
+    // #4): alchemy's reverse-topo teardown runs the namespace's delete AFTER the RGD +
+    // instance (both `dependsOn` it), and the instance's delete waits for its
+    // `kro.run/finalizer` to clear (KRO graph-deletes all children) — so by then
+    // everything THIS instance owned has drained (finding #1's ordering, via the
+    // dependency graph + instance-drain wait). The namespace is then deleted ONLY if
+    // empty and RETAINED if another stack/user still has resources there. This is the
+    // same for the instance's OWN namespace and a SHARED one — deduped by name, so
+    // multiple stacks share ONE declaration and none deletes it while another still
+    // occupies it (no cross-stack refcount needed).
+    const instanceNamespaceDeclarations: AlchemyResourceDeclaration[] = [];
+    const instanceNamespaceIds: string[] = [];
+    for (const [hoistedNs, original] of this.concreteHoistedNamespaces(spec)) {
+      const decl = this.hoistedNamespaceAlchemyDeclaration(
+        hoistedNs,
+        this.buildHoistedNamespaceResource(hoistedNs, original, spec),
+        kubeConfigOptions,
+        prerequisiteIds
+      );
+      instanceNamespaceDeclarations.push(decl);
+      instanceNamespaceIds.push(decl.id);
+    }
+    const leadingIds = [...prerequisiteIds, ...instanceNamespaceIds];
 
     // 0. Singleton owners. The imperative `deploy()` ensures shared singleton owners (each its own
     // RGD + instance, in its registry namespace) via `ensureSingletonOwners` BEFORE the main
@@ -1295,7 +2010,7 @@ export class KroResourceFactoryImpl<
     // RGD would then carry an object where a string belongs — KRO rejects the whole graph
     // (`GraphAccepted=False: expected string type ..., got object`) and it never reconciles. Matching
     // the load schema to the dump makes the round-trip lossless (the scalar stays the string it was).
-    const rgdManifest = yaml.load(this.buildRgdYaml(), { schema: yaml.JSON_SCHEMA }) as Record<
+    const rgdManifest = yaml.load(this.buildRgdYaml(spec), { schema: yaml.JSON_SCHEMA }) as Record<
       string,
       unknown
     >;
@@ -1306,7 +2021,7 @@ export class KroResourceFactoryImpl<
     const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
     const rgdDeclaration: AlchemyResourceDeclaration = {
       id: rgdId,
-      dependsOn: prerequisiteIds,
+      dependsOn: leadingIds,
       props: {
         resource: rgdEnhanced as Enhanced<unknown, unknown>,
         namespace: this.namespace,
@@ -1334,13 +2049,13 @@ export class KroResourceFactoryImpl<
     // Cast: a plain KubernetesResource is fine — the alchemy path only reads kind/metadata.
     const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
     const instanceDeclaration: AlchemyResourceDeclaration = {
-      id: createAlchemyResourceId(crdAsEnhanced, this.namespace),
+      id: this.instanceAlchemyId(crdAsEnhanced),
       // Wait for the RGD's CRD AND for any singleton owners (mirrors `ensureSingletonOwners` running
       // before the main deploy), so the instance applies only once its dependencies exist.
-      dependsOn: [rgdId, ...singletonInstanceIds],
+      dependsOn: [rgdId, ...singletonInstanceIds, ...instanceNamespaceIds],
       props: {
         resource: crdAsEnhanced,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
         deploymentStrategy: 'kro',
         kubeConfigOptions,
         kroDeletion,
@@ -1357,10 +2072,32 @@ export class KroResourceFactoryImpl<
 
     return [
       ...prerequisiteDeclarations,
+      ...instanceNamespaceDeclarations,
       ...singletonDeclarations,
       rgdDeclaration,
       instanceDeclaration,
     ];
+  }
+
+  /**
+   * The alchemy resource id for a KRO instance CR — the LEGACY, namespace-agnostic
+   * kind+name id (finding #1).
+   *
+   * This deliberately does NOT fold the namespace into the id. An earlier revision
+   * appended a namespace hash to distinguish same-named instances placed in
+   * different namespaces, but that changed every existing instance's id versus the
+   * released v0.26.0, so alchemy would see remove+replace and could tear down
+   * (delete) the live CR on upgrade. Reverting to the legacy id keeps existing
+   * alchemy state identity stable.
+   *
+   * Consequence to be honest about: within ONE alchemy stack, two instances collide
+   * iff they share this kind+name id — regardless of their k8s namespace. A
+   * different factory namespace does NOT automatically yield a different alchemy
+   * scope. To keep same-named instances (e.g. `analytics` in dev vs prod) separate,
+   * the CALLER must materialize them in SEPARATE alchemy stacks/scopes.
+   */
+  private instanceAlchemyId(resource: Enhanced<unknown, unknown>): string {
+    return createAlchemyResourceId(resource);
   }
 
   /** Serialize the factory's cluster connection so an alchemy resource can reconnect after rehydration. */
@@ -1372,12 +2109,12 @@ export class KroResourceFactoryImpl<
   }
 
   /** Build the finalizer-safe, shared-RGD-aware deletion metadata for this factory's instances. */
-  private createAlchemyKroDeletionOptions(): KroDeletionOptions {
+  private createAlchemyKroDeletionOptions(instanceNamespace = this.namespace): KroDeletionOptions {
     return {
       apiVersion: this.schemaDefinition.apiVersion,
       kind: this.schemaDefinition.kind,
       ...(this.schemaDefinition.group && { group: this.schemaDefinition.group }),
-      namespace: this.namespace,
+      namespace: instanceNamespace,
       rgdName: this.rgdName,
       ...(this.discoveredPlural && { plural: this.discoveredPlural }),
       timeout: this.factoryOptions.timeout ?? 300000,
@@ -1508,8 +2245,18 @@ export class KroResourceFactoryImpl<
       // Shared singleton owner instances are created by `deploy()`; for the
       // GitOps path we emit them alongside the consuming instance, deps-first,
       // so the consuming RGD's externalRef resolves. No-op without singletons.
+      // Any owned workload Namespace hoisted out of the RGD graph leads, so the CR
+      // always has a namespace to apply into and KRO never garbage-collects it.
       const ownerYamls = singletonOwnerInstanceYamls(this.discoverSingletonDefinitions(spec));
-      return ownerYamls.length === 0 ? instanceYaml : joinYamlDocuments(ownerYamls, instanceYaml);
+      const leadingInstanceYamls = [
+        ...[...this.concreteHoistedNamespaces(spec)].map(([ns, original]) =>
+          this.hoistedNamespaceYaml(ns, original, spec)
+        ),
+        ...ownerYamls,
+      ];
+      return leadingInstanceYamls.length === 0
+        ? instanceYaml
+        : joinYamlDocuments(leadingInstanceYamls, instanceYaml);
     }
 
     const rgdYaml = this.buildRgdYaml();
@@ -1529,8 +2276,14 @@ export class KroResourceFactoryImpl<
    * step — it's applied inline during ref-to-CEL conversion via
    * `SerializationContext.omitFields`, which `serializeResourceGraphToYaml`
    * populates from `kroSchema.__omitFields` automatically.
+   *
+   * The hoist decision is SPEC-INDEPENDENT (finding #4): the RGD is shared by every
+   * instance of this factory, so its shape must be a stable structural property and
+   * must NOT vary with a per-call spec. `spec` is accepted only for signature
+   * symmetry with the callers and is deliberately NOT used to decide hoisting — see
+   * {@link hoistedNamespaceRefs} / {@link resourcesForRgd}.
    */
-  private buildRgdYaml(): string {
+  private buildRgdYaml(_spec?: TSpec): string {
     if (this.factoryOptions.compositionAnalysis && !this.compositionAnalysisApplied) {
       this.compositionAnalysisApplied = true;
       applyAnalysisToResources(
@@ -1539,7 +2292,34 @@ export class KroResourceFactoryImpl<
       );
     }
 
-    const aspectResources = applyAspects(this.resources, {
+    // Hoist EVERY owned Namespace OUT of the RGD graph (STRUCTURALLY, so the shared
+    // RGD shape is identical for every instance) and rewrite any dangling reference
+    // to it. typekro NEVER emits a Namespace into RGD YAML; each is applied as a
+    // sibling (toYaml/toAlchemyResources/imperative deploy), so deleting the instance
+    // can never garbage-collect the namespace holding its own finalizer.
+    const hoistIds = this.hoistedNamespaceRefs(this.resources);
+    const graphResources = this.resourcesForRgd(this.resources);
+
+    // Rewrite references to a hoisted Namespace in the STATUS mappings too
+    // (finding #6): a status CEL like `ns-${string(ownedNamespace.metadata.name)}`
+    // would otherwise reference a resource removed from the graph and KRO would
+    // reject the RGD. Each becomes the referenced Namespace's own name expression.
+    const statusMappings = rewriteHoistedNamespaceRefsInValue(this.statusMappings, hoistIds);
+    const nestedCel = rewriteHoistedNamespaceRefsInValue(this.getNestedStatusCel(), hoistIds);
+
+    // #6 — REJECT (throw) HONESTLY, never silently drop: a status field whose only
+    // reference was a hoisted Namespace becomes a schema-only expression
+    // (`schema.spec.namespace`), which KRO status CEL cannot evaluate, so it cannot be
+    // represented in the KRO status schema. Rather than ship a status API weaker than
+    // the declared one (the old warn-and-drop), fail loudly naming the field(s).
+    // Resource-derived sibling fields are unaffected.
+    assertNoHoistWeakenedStatusFields(
+      this.statusMappings as Record<string, unknown>,
+      hoistIds,
+      this.name
+    );
+
+    const aspectResources = applyAspects(graphResources, {
       mode: 'kro',
       aspects: this.factoryOptions.aspects ?? [],
     });
@@ -1555,13 +2335,12 @@ export class KroResourceFactoryImpl<
       this.name,
       this.schemaDefinition,
       aspectResources,
-      this.statusMappings,
-      this.getNestedStatusCel()
+      statusMappings,
+      nestedCel
     );
 
     // Attach nested status CEL mappings as non-enumerable property so
     // serializeResourceGraphToYaml can inline virtual composition IDs.
-    const nestedCel = this.getNestedStatusCel();
     if (nestedCel && Object.keys(nestedCel).length > 0) {
       Object.defineProperty(kroSchema, '__nestedStatusCel', {
         value: nestedCel,
@@ -1576,14 +2355,15 @@ export class KroResourceFactoryImpl<
       // identifiers: [schema]") and are hydrated client-side instead, like any
       // other static status field.
       const resourceIdList = Object.keys(aspectResources);
-      const nestedCel = this.getNestedStatusCel();
       const nestedCelForClassification =
         nestedCel && Object.keys(nestedCel).length > 0 ? nestedCel : undefined;
       for (const override of statusOverrides) {
-        if (isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList))
-          continue;
+        // Rewrite any reference to a hoisted Namespace in the override expression
+        // too (finding #6), so a status override never dangles at the removed id.
+        const celExpression = rewriteHoistedNamespaceRefsInValue(override.celExpression, hoistIds);
+        if (isStaticExpression(celExpression, nestedCelForClassification, resourceIdList)) continue;
         kroSchema.status ??= {};
-        const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
+        const yamlSafe = celExpression.replace(/"([^"\\]*)"/g, "'$1'");
         kroSchema.status[override.propertyPath] = yamlSafe;
       }
     }
@@ -1603,12 +2383,39 @@ export class KroResourceFactoryImpl<
       }
     }
 
-    return serializeResourceGraphToYaml(
+    const rgdYaml = serializeResourceGraphToYaml(
       this.rgdName,
       aspectResources,
       { namespace: this.namespace },
       kroSchema
     );
+
+    // VALIDATE (finding #6): after hoisting, NO reference to any removed resource id
+    // may remain anywhere in the emitted RGD. If one slipped through (a form the
+    // rewrite didn't structurally cover), fail LOUDLY here rather than shipping an
+    // RGD KRO will reject at runtime with a dangling `${...}` reference.
+    this.assertNoDanglingHoistedReferences(rgdYaml, new Set(hoistIds.keys()));
+
+    return rgdYaml;
+  }
+
+  /**
+   * Assert the emitted RGD carries NO leftover reference to a hoisted (removed)
+   * resource id — neither a CEL interpolation `${<id>.…}` nor a raw
+   * `__KUBERNETES_REF_<id>_…` marker (finding #6). A negative lookbehind avoids
+   * matching an id that is only a suffix of a longer identifier.
+   */
+  private assertNoDanglingHoistedReferences(rgdYaml: string, hoistIds: ReadonlySet<string>): void {
+    const dangling = findDanglingHoistedReference(rgdYaml, hoistIds);
+    if (dangling !== undefined) {
+      throw new ResourceGraphFactoryError(
+        `Hoisting the owned Namespace left a dangling reference to removed resource "${dangling}" in the ` +
+          'emitted RGD. This would make KRO reject the graph. Report this as a typekro bug (the ' +
+          'reference form was not structurally rewritten).',
+        this.name,
+        'deployment'
+      );
+    }
   }
 
   /**
@@ -1723,9 +2530,12 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine
+   * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine.
+   *
+   * The `spec` (when the caller has one) lets the RGD hoist the composition's own
+   * workload Namespace out of the graph with its schema-driven name resolved.
    */
-  private async ensureRGDDeployed(): Promise<void> {
+  private async ensureRGDDeployed(spec?: TSpec): Promise<void> {
     // Create DirectDeploymentEngine instance with KRO mode for CEL string generation
     const deploymentEngine = new DirectDeploymentEngine(
       this.getKubeConfig(),
@@ -1736,7 +2546,7 @@ export class KroResourceFactoryImpl<
 
     // Build the RGD YAML — shared with toYaml() so both call sites emit
     // identical post-processed output and share the single-apply guard.
-    const rgdYaml = this.buildRgdYaml();
+    const rgdYaml = this.buildRgdYaml(spec);
 
     // Parse the YAML to get the RGD object. Use js-yaml with JSON_SCHEMA to MATCH the dump schema in
     // `serializeResourceGraphToYaml` (same fix as the alchemy path above — this is the imperative/direct
@@ -2368,27 +3178,321 @@ export class KroResourceFactoryImpl<
   ) {
     const apiVersion = this.getInstanceApiVersion();
 
+    // DURABLE RECORD (finding #4): stamp the CONCRETE hoisted-namespace names on the CR so
+    // teardown + the pre-hoist guard read them back EXACTLY, without re-deriving from
+    // metadata.namespace/spec.namespace. This is what lets a name derived from an ARBITRARY
+    // spec field (e.g. spec.targetNamespace) round-trip. ALWAYS record the array — INCLUDING an
+    // empty [] — so the pre-hoist guard can distinguish "this instance hoists zero namespaces"
+    // (a valid, safe record) from a genuinely-legacy CR that predates the annotation (missing →
+    // fail closed). Omitting [] made an ordinary namespace-less composition's 2nd deploy throw.
+    const hoistedNamespaceNames = [...this.concreteHoistedNamespaces(spec).keys()];
+    const annotations: Record<string, string> = {
+      ...(singletonSpecFingerprint
+        ? { 'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint }
+        : {}),
+      [HOISTED_NAMESPACES_ANNOTATION]: JSON.stringify(hoistedNamespaceNames),
+    };
+
     return {
       apiVersion,
       kind: this.schemaDefinition.kind,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(spec),
         labels: {
           'typekro.io/factory': this.name,
           'typekro.io/mode': this.mode,
-          'typekro.io/rgd': this.rgdName,
+          [INSTANCE_RGD_LABEL]: this.rgdName,
         },
-        ...(singletonSpecFingerprint
-          ? {
-              annotations: {
-                'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint,
-              },
-            }
-          : {}),
+        ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
       },
       spec,
     };
+  }
+
+  /**
+   * Labels/annotations marking a hoisted workload Namespace as SHARED, RETAINED
+   * infrastructure that must survive any single consumer's teardown/prune.
+   *
+   * Retention is declared for BOTH major GitOps reconcilers, not just Flux, so a
+   * prune (or an Application deletion) by whichever tool manages a consuming app
+   * can never delete this shared namespace (and with it every OTHER stack's
+   * resources living inside it):
+   *   - `kustomize.toolkit.fluxcd.io/prune: disabled` — Flux Kustomize.
+   *   - `argocd.argoproj.io/sync-options: Prune=false,Delete=false` — Argo CD.
+   *     `Delete=false` is what survives an Argo Application DELETION, not merely a
+   *     sync-prune (`Prune=false` alone does NOT).
+   * The alchemy path pairs these with a `retain` prop (see
+   * {@link hoistedNamespaceAlchemyDeclaration}) that skips delete. For any other
+   * GitOps tool, pre-create the workload namespace out-of-band.
+   */
+  private static readonly INSTANCE_NAMESPACE_METADATA = {
+    labels: {
+      'app.kubernetes.io/managed-by': 'typekro',
+      'typekro.io/kro-instance-namespace': 'true',
+    },
+    annotations: {
+      'kustomize.toolkit.fluxcd.io/prune': 'disabled',
+      'argocd.argoproj.io/sync-options': 'Prune=false,Delete=false',
+    },
+  } as const;
+
+  /**
+   * The collision-free singleton id for a hoisted workload Namespace, deduped by
+   * the namespace NAME (finding #7). {@link toCamelCase} alone destroys separators
+   * (`foo-bar` and `foo--bar` both camel-case to `fooBar`), so two DISTINCT
+   * namespaces would collapse to one id — silently deduping unrelated namespaces
+   * into a single retained resource. Appending a stable hash of the RAW name keeps
+   * distinct names distinct while staying deterministic (same name → same id, so
+   * the intended cross-factory dedup still holds).
+   */
+  private static hoistedNamespaceId(workloadNamespace: string): string {
+    return `${toCamelCase(`kro-instance-namespace-${workloadNamespace}`)}${shortStableHash(workloadNamespace)}`;
+  }
+
+  /**
+   * Resolve a single Namespace metadata VALUE (a label/annotation value) against
+   * the concrete spec to its final string form (finding #8). Handles:
+   *   - plain strings (kept verbatim),
+   *   - numbers / booleans (stringified — a "non-string" declared value),
+   *   - schema-derived CEL expressions / KubernetesRefs (resolved to the concrete
+   *     value; re-execution already collapsed the schema ref, but this evaluates
+   *     it against the spec for robustness).
+   * Returns `undefined` for a value that cannot be resolved to a string, so the
+   * caller drops only genuinely-unresolvable entries rather than the whole class of
+   * non-string / schema-derived metadata (the old string-only filter dropped them).
+   */
+  private static resolveMetadataStringValue(
+    value: unknown,
+    spec: KroCompatibleType
+  ): string | undefined {
+    // Metadata VALUES are unrestricted strings (finding #5): `Team_A`, free text with
+    // spaces, etc. — resolve any CONCRETE value, without the DNS-label shape
+    // restriction that `resolveNamespaceName` correctly applies to namespace NAMES.
+    return resolveConcreteMetadataValue(value, spec);
+  }
+
+  /**
+   * Merge the SHARED/RETAINED marker labels + annotations onto an ORIGINAL,
+   * fully-concrete Namespace resource, PRESERVING the COMPLETE declared config
+   * (findings #6 + #8): ALL labels — including Pod Security (`pod-security.kubernetes.io/*`)
+   * AND non-string / schema-derived labels resolved against the spec — ALL
+   * annotations, the remaining declarative ObjectMeta (`finalizers`,
+   * `ownerReferences`), AND the Namespace `spec` (e.g. `spec.finalizers`). The
+   * retention markers are added on top.
+   */
+  private static mergedHoistedNamespaceMetadata(
+    workloadNamespace: string,
+    original: KubernetesResource,
+    spec: KroCompatibleType
+  ): {
+    name: string;
+    labels: Record<string, string>;
+    annotations: Record<string, string>;
+    finalizers?: string[];
+    ownerReferences?: unknown[];
+    spec?: unknown;
+  } {
+    const originalMeta = (original.metadata ?? {}) as {
+      labels?: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+      finalizers?: unknown;
+      ownerReferences?: unknown;
+    };
+    const resolveMap = (value: Record<string, unknown> | undefined): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const [key, val] of Object.entries(value ?? {})) {
+        const resolved = KroResourceFactoryImpl.resolveMetadataStringValue(val, spec);
+        if (resolved !== undefined) out[key] = resolved;
+      }
+      return out;
+    };
+    // `original` is an Enhanced PROXY: reading an UNDECLARED field returns a
+    // KubernetesRef marker (a truthy function-like proxy), NOT undefined. Passing
+    // such a proxy through to the k8s client serializer makes it try to iterate a
+    // `{}`-looking value for an array-typed attribute (e.g. `spec.finalizers`) and
+    // throw "{} is not iterable". So extract only the CONCRETE, own-enumerable
+    // declared values via a JSON round-trip (drops proxies, ref-markers, symbols,
+    // functions) and omit anything empty.
+    const concretize = <T>(value: unknown): T | undefined => {
+      if (value === undefined || value === null) return undefined;
+      try {
+        const cloned = JSON.parse(JSON.stringify(value)) as T;
+        return cloned;
+      } catch {
+        return undefined;
+      }
+    };
+    const concreteSpecRaw = concretize<Record<string, unknown>>(
+      (original as { spec?: unknown }).spec
+    );
+    // Only keep a spec that actually declares something (an empty proxy spec must
+    // NOT be emitted — that is the "{} is not iterable" trap).
+    const originalSpec =
+      concreteSpecRaw !== undefined && Object.keys(concreteSpecRaw).length > 0
+        ? concreteSpecRaw
+        : undefined;
+    // Preserve the remaining declarative ObjectMeta the user may have set on the
+    // owned Namespace (finding #6): metadata.finalizers + metadata.ownerReferences.
+    // Server-set fields (uid/resourceVersion/managedFields/…) are intentionally not
+    // carried — only declared configuration is retained. Array.isArray guards against
+    // the proxy's ref-markers for undeclared fields (which are functions, not arrays).
+    const finalizers = Array.isArray(originalMeta.finalizers)
+      ? (concretize<string[]>(originalMeta.finalizers) ?? []).map((f) => String(f))
+      : undefined;
+    const ownerReferences = Array.isArray(originalMeta.ownerReferences)
+      ? concretize<unknown[]>(originalMeta.ownerReferences)
+      : undefined;
+    return {
+      name: workloadNamespace,
+      labels: {
+        ...resolveMap(originalMeta.labels),
+        ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.labels,
+      },
+      annotations: {
+        ...resolveMap(originalMeta.annotations),
+        ...KroResourceFactoryImpl.INSTANCE_NAMESPACE_METADATA.annotations,
+      },
+      ...(finalizers !== undefined && finalizers.length > 0 ? { finalizers } : {}),
+      ...(ownerReferences !== undefined && ownerReferences.length > 0 ? { ownerReferences } : {}),
+      ...(originalSpec !== undefined && originalSpec !== null ? { spec: originalSpec } : {}),
+    };
+  }
+
+  /**
+   * A workload Namespace this composition owns, HOISTED out of the RGD graph and
+   * emitted as a retained resource instead. It is created OUTSIDE the KRO graph —
+   * deps-first in GitOps/alchemy, and applied directly in the imperative path — so
+   * KRO never garbage-collects it and the instance's finalizer can never be
+   * stranded by its own namespace terminating.
+   *
+   * The COMPLETE original Namespace configuration is preserved (finding #5) — see
+   * {@link mergedHoistedNamespaceMetadata}. It is a SHARED SINGLETON deduped by the
+   * namespace NAME (collision-free id, see {@link hoistedNamespaceId}), so every
+   * consumer/stack targeting the SAME workload namespace emits the SAME declaration
+   * — alchemy dedupes them to one retained owner rather than N fighting copies.
+   */
+  private buildHoistedNamespaceResource(
+    workloadNamespace: string,
+    original: KubernetesResource,
+    spec: TSpec
+  ): Enhanced<
+    import('@kubernetes/client-node').V1Namespace['spec'],
+    import('@kubernetes/client-node').V1Namespace['status']
+  > {
+    const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
+      workloadNamespace,
+      original,
+      spec as KroCompatibleType
+    );
+    return namespaceResource({
+      metadata: {
+        name: merged.name,
+        labels: merged.labels,
+        // OWNERSHIP RECORD (findings #4b + #2): the declarative alchemy path stamps this
+        // namespace as owned by THIS composition's RGD (the annotation the empty-gated
+        // teardown checks). This build step is cluster-free, so it cannot yet distinguish
+        // create-vs-adopt — that is resolved at DEPLOY time by
+        // `_preserveHoistedNamespaceAdoption` (resource-registration.ts), which reads the
+        // live namespace and STRIPS this stamp when adopting a pre-existing namespace, so
+        // teardown never deletes a namespace typekro merely adopted. Ownership is the
+        // PRIMARY teardown guard; the empty-gate is the secondary one.
+        annotations: { ...merged.annotations, [NAMESPACE_OWNER_ANNOTATION]: this.rgdName },
+        ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+        ...(merged.ownerReferences !== undefined
+          ? {
+              ownerReferences:
+                merged.ownerReferences as import('@kubernetes/client-node').V1OwnerReference[],
+            }
+          : {}),
+      },
+      ...(merged.spec !== undefined
+        ? { spec: merged.spec as NonNullable<import('@kubernetes/client-node').V1Namespace['spec']> }
+        : {}),
+      id: KroResourceFactoryImpl.hoistedNamespaceId(workloadNamespace),
+    }) as Enhanced<
+      import('@kubernetes/client-node').V1Namespace['spec'],
+      import('@kubernetes/client-node').V1Namespace['status']
+    >;
+  }
+
+  private hoistedNamespaceAlchemyDeclaration(
+    workloadNamespace: string,
+    nsEnhanced: Enhanced<
+      import('@kubernetes/client-node').V1Namespace['spec'],
+      import('@kubernetes/client-node').V1Namespace['status']
+    >,
+    kubeConfigOptions: SerializableKubeConfigOptions,
+    dependsOn: readonly string[]
+  ): AlchemyResourceDeclaration {
+    const timeout = this.factoryOptions.timeout;
+    const resourceId = (nsEnhanced as { id?: string }).id;
+    return {
+      // Collision-free (finding #7) and cluster-scoped (no namespace segment):
+      // distinct workload namespaces → distinct ids; same name → same id (dedup).
+      id: KroResourceFactoryImpl.hoistedNamespaceId(workloadNamespace),
+      dependsOn,
+      props: {
+        resource: nsEnhanced as Enhanced<unknown, unknown>,
+        ...(resourceId !== undefined ? { resourceId } : {}),
+        namespace: workloadNamespace,
+        deploymentStrategy: 'direct' as const,
+        // EMPTY-GATED teardown (findings #3 + #4), replacing the old retain-by-name
+        // distinction: on delete, the namespace is removed ONLY if empty and RETAINED
+        // if another stack/user still has resources inside it. Alchemy's reverse-topo
+        // teardown runs this AFTER the RGD + instance (both `dependsOn` this
+        // declaration) are gone — the load-bearing delete-after-RGD ordering (a
+        // namespace deleted while the CR is still inside it re-creates the finalizer
+        // deadlock).
+        namespaceEmptyGate: true,
+        // Ownership record for the empty-gated delete (finding #4): only a namespace
+        // carrying this RGD's `created-by-rgd` annotation is a candidate.
+        namespaceOwnerRgd: this.rgdName,
+        // CRD coordinates so the alchemy pre-hoist check enumerates EVERY existing
+        // instance of this shared RGD (finding #7), not just the incoming namespace.
+        namespacePreHoistQuery: {
+          group: this.getSchemaGroup(),
+          version: this.getSchemaVersion(),
+          kind: this.schemaDefinition.kind,
+        },
+        kubeConfigOptions,
+        options: {
+          waitForReady: false,
+          ...(timeout !== undefined && { timeout }),
+        },
+      },
+    };
+  }
+
+  private hoistedNamespaceYaml(
+    workloadNamespace: string,
+    original: KubernetesResource,
+    spec: TSpec
+  ): string {
+    const merged = KroResourceFactoryImpl.mergedHoistedNamespaceMetadata(
+      workloadNamespace,
+      original,
+      spec as KroCompatibleType
+    );
+    return yaml
+      .dump(
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: {
+            name: merged.name,
+            labels: merged.labels,
+            annotations: merged.annotations,
+            ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
+            ...(merged.ownerReferences !== undefined
+              ? { ownerReferences: merged.ownerReferences }
+              : {}),
+          },
+          ...(merged.spec !== undefined ? { spec: merged.spec } : {}),
+        },
+        { lineWidth: -1, noRefs: true, sortKeys: false }
+      )
+      .trimEnd();
   }
 
   private assertInstanceNamespaceOwnershipSafe(spec: TSpec): void {
@@ -2397,9 +3501,14 @@ export class KroResourceFactoryImpl<
       | undefined;
     assertKroInstanceNamespaceOwnershipSafe({
       compositionName: this.name,
-      instanceNamespace: this.namespace,
+      instanceNamespace: this.resolveInstanceNamespace(spec),
       spec,
       resources: this.resources,
+      // The owned workload namespace is hoisted out of the graph (created retained,
+      // deps-first), so the guard treats it as safe. Everything not hoisted — an
+      // unprovable owned name, or an EXPLICIT `instanceNamespace` pin back onto an
+      // owned namespace — still throws.
+      hoistedNamespaces: this.hoistedNamespaceNames(spec),
       ...(compositionFn ? { compositionFn } : {}),
     });
   }
@@ -2443,11 +3552,11 @@ export class KroResourceFactoryImpl<
       status,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: this.resolveInstanceNamespace(spec),
         labels: {
           'typekro.io/factory': this.name,
           'typekro.io/mode': this.mode,
-          'typekro.io/rgd': this.rgdName,
+          [INSTANCE_RGD_LABEL]: this.rgdName,
         },
         annotations: {
           'typekro.io/deployed-at': new Date().toISOString(),
@@ -2465,7 +3574,8 @@ export class KroResourceFactoryImpl<
       try {
         const hydratedDynamicFields = await this.hydrateDynamicStatusFields(
           instanceName,
-          dynamicFields
+          dynamicFields,
+          this.resolveInstanceNamespace(spec)
         );
 
         // Merge evaluated static fields with dynamic fields from KRO.
@@ -2694,7 +3804,11 @@ export class KroResourceFactoryImpl<
    * Wait for Kro instance to be ready with Kro-specific logic.
    * Delegates to the shared `waitForKroInstanceReady` in `kro-readiness.ts`.
    */
-  private async waitForKroInstanceReady(instanceName: string, timeout: number): Promise<void> {
+  private async waitForKroInstanceReady(
+    instanceName: string,
+    timeout: number,
+    instanceNamespace = this.resolveInstanceNamespace()
+  ): Promise<void> {
     const apiVersion = this.getInstanceApiVersion();
 
     const kubeConfig = this.getKubeConfig();
@@ -2705,7 +3819,7 @@ export class KroResourceFactoryImpl<
       timeout,
       k8sApi,
       customObjectsApi: this.getCustomObjectsApi(),
-      namespace: this.namespace,
+      namespace: instanceNamespace,
       apiVersion,
       kind: this.schemaDefinition.kind,
       rgdName: this.rgdName,
@@ -2718,7 +3832,8 @@ export class KroResourceFactoryImpl<
    */
   private async hydrateDynamicStatusFields(
     instanceName: string,
-    dynamicFields: Record<string, unknown>
+    dynamicFields: Record<string, unknown>,
+    instanceNamespace = this.resolveInstanceNamespace()
   ): Promise<Record<string, unknown>> {
     const dynamicLogger = this.logger.child({ instanceName });
 
@@ -2732,7 +3847,7 @@ export class KroResourceFactoryImpl<
       kind: this.schemaDefinition.kind,
       metadata: {
         name: instanceName,
-        namespace: this.namespace,
+        namespace: instanceNamespace,
       },
     });
 

@@ -389,7 +389,13 @@ describe('Dagster bootstrap composition integration surfaces', () => {
     const yaml = dagsterBootstrap.toYaml();
 
     expect(yaml).toContain('kind: ResourceGraphDefinition');
-    expect(yaml).toContain('dagsterNamespace');
+    // PR #113: the composition's self-owned workload Namespace is HOISTED OUT of the
+    // shared RGD (emitted as a retained resource created deps-first, NOT an RGD child)
+    // so deleting the instance can't garbage-collect the namespace holding its own
+    // finalizer. The RGD therefore contains NEITHER the `dagsterNamespace` graph child
+    // NOR a `kind: Namespace` template.
+    expect(yaml).not.toContain('dagsterNamespace');
+    expect(yaml).not.toContain('kind: Namespace');
     // The HelmRepository is a shared singleton owner, emitted as its own RGD (the GitOps singleton
     // contract); its url is the owner's schema input rather than a literal inlined in the RGD.
     expect(yaml).toContain('dagster-helm-repository');

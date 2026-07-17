@@ -31,8 +31,10 @@ import {
 ## Quick Example
 
 ```typescript
-// 1. The stack (internal dev-first Mongo, external ClickHouse):
-const factory = clickstackBootstrap.factory('kro', { namespace: 'typekro-system' });
+// 1. The stack (internal dev-first Mongo, external ClickHouse). The bootstrap
+// owns its Namespace, so TypeKro hoists that namespace out of the RGD graph
+// (retained) and the instance CR stays in the `clickstack` namespace:
+const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
 const stack = await factory.deploy({
   name: 'clickstack',
   clickhouse: {
@@ -44,7 +46,7 @@ const stack = await factory.deploy({
 });
 
 // 2. Cluster telemetry into it (wired from the status contract):
-const telemetry = clickstackK8sTelemetry.factory('kro', { namespace: 'typekro-system' });
+const telemetry = clickstackK8sTelemetry.factory('kro', { namespace: 'clickstack-telemetry' });
 await telemetry.deploy({
   name: 'telemetry',
   endpoint: stack.status.gateway.otlpHttpEndpoint,

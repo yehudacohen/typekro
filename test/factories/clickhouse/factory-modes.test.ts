@@ -183,8 +183,11 @@ describe('clickhouseOperatorBootstrap factory modes', () => {
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
     it('toYaml(instance) bundles the singleton owner instance BEFORE the operator CR', () => {
+      // The bootstrap owns its workload namespace, so pin the instance CR to an
+      // explicit control-plane namespace (decoupled from the `clickhouse-system`
+      // workload namespace the graph creates).
       const factory = clickhouseOperatorBootstrap.factory('kro', {
-        namespace: 'typekro-system',
+        instanceNamespace: 'typekro-system',
       });
       const yaml = factory.toYaml({
         name: 'clickhouse-operator',

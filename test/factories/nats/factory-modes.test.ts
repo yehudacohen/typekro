@@ -122,7 +122,7 @@ describe('NATS and JetStream factories', () => {
     expect(customName).toContain('url: nats://application-events.nats-system.svc:4222');
   });
 
-  it('serializes bootstrap in KRO mode and rejects an owner instance in its owned namespace', () => {
+  it('serializes bootstrap in KRO mode and hoists an owned workload Namespace out of the graph', () => {
     const factory = natsBootstrap.factory('kro', { namespace: 'typekro-system' });
     const rgd = factory.toYaml();
     expect(rgd).toContain('kind: ResourceGraphDefinition');
@@ -132,12 +132,11 @@ describe('NATS and JetStream factories', () => {
     expect(rgd).toContain('replicas: integer | minimum=1');
     expect(rgd).toContain('pvcRetentionPolicy: string | enum="delete,retain"');
     expect(rgd).toContain('namespaceOwnership: string | enum="external,owned"');
-    expect(rgd).toContain('schema.spec.namespaceOwnership');
-    expect(rgd).toContain(
-      'includeWhen:\n        - ${!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"}'
-    );
     expect(rgd).toContain('schema.spec.pvcRetentionPolicy');
     expect(rgd).toContain('Delete');
+    // The owned workload Namespace (named after spec.namespace) is hoisted OUT of
+    // the shared RGD graph — it is no longer a graph child that KRO could GC.
+    expect(rgd).not.toContain('kind: Namespace');
 
     const minimal = factory.toYaml({ name: 'nats' });
     expect(minimal).toContain('kind: NatsBootstrap');
@@ -148,19 +147,37 @@ describe('NATS and JetStream factories', () => {
 
     const clustered = factory.toYaml({ name: 'nats', replicas: 3 });
     expect(clustered).toContain('replicas: 3');
+
+    // natsBootstrap owns its workload Namespace, so the natural same-namespace call
+    // HOISTS that namespace out of the graph (retained, deps-first) and leaves the
+    // instance CR in its natural namespace — no relocation, no rejection.
+    const hoisted = natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
+      name: 'nats',
+      namespace: 'nats-system',
+    });
+    expect(hoisted).toContain('kind: NatsBootstrap');
+    expect(hoisted).toMatch(/namespace: nats-system$/m);
+    expect(hoisted).not.toContain('typekro-system');
+    expect(hoisted).toContain('typekro.io/kro-instance-namespace');
+
+    // Pinning the instance CR into its own owned namespace is now SAFE: the namespace
+    // is a sibling created before the RGD and deleted after it, so it no longer risks
+    // finalizer stranding — it just hoists.
     expect(() =>
-      natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
-        name: 'nats',
-        namespace: 'nats-system',
-      })
-    ).toThrow('cannot also be an owned Namespace');
-    expect(() =>
-      natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
-        name: 'nats',
-        namespace: 'nats-system',
-        namespaceOwnership: 'external',
-      })
+      natsBootstrap
+        .factory('kro', { namespace: 'nats-system', instanceNamespace: 'nats-system' })
+        .toYaml({ name: 'nats', namespace: 'nats-system' })
     ).not.toThrow();
+
+    // An externally-owned namespace is never owned, so it is never hoisted and
+    // never throws (the conditional Namespace is inactive for this spec).
+    const external = natsBootstrap.factory('kro', { namespace: 'nats-system' }).toYaml({
+      name: 'nats',
+      namespace: 'nats-system',
+      namespaceOwnership: 'external',
+    });
+    expect(external).toContain('kind: NatsBootstrap');
+    expect(external).not.toContain('typekro.io/kro-instance-namespace');
   });
 
   it('rejects non-positive and fractional replica counts', () => {

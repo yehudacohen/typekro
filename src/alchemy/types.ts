@@ -85,6 +85,44 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   kroDeletion?: KroDeletionOptions;
 
   /**
+   * When true, this resource is SHARED, retained infrastructure: `delete` skips
+   * tearing it down (it drops only the state entry) so one stack's destroy/prune
+   * never removes an object another stack still depends on. Used for the KRO
+   * instance's control-plane Namespace, which is shared by every stack targeting
+   * the same workload namespace. Persisted to output so a state-driven delete
+   * (no live `news`) still honors it.
+   */
+  retain?: boolean;
+
+  /**
+   * When true, this resource is a typekro-HOISTED workload Namespace whose teardown is
+   * EMPTY-GATED (findings #3 + #4): on delete, the namespace is removed ONLY if it is
+   * empty (no non-default resources) and RETAINED if another stack/user still has
+   * resources inside it. Replaces the old retain-by-name-equality distinction between
+   * the instance's own namespace and a shared one — runtime emptiness is the truth for
+   * both. Persisted to output so a state-driven delete (no live `news`) still gates.
+   */
+  namespaceEmptyGate?: boolean;
+
+  /**
+   * The RGD that owns this hoisted Namespace (finding #4). When set alongside
+   * {@link namespaceEmptyGate}, the empty-gated delete removes the namespace ONLY if it
+   * carries the matching `typekro.io/created-by-rgd` ownership annotation — an
+   * adopted/undeclared namespace is never deleted. Persisted to output.
+   */
+  namespaceOwnerRgd?: string;
+
+  /**
+   * CRD coordinates for the ALCHEMY pre-hoist safety check (finding #7). When set
+   * alongside {@link namespaceEmptyGate}, the deploy hook enumerates EVERY existing
+   * instance of this shared RGD (via the generated CRD) and checks each one's namespace
+   * for pre-hoist KRO ApplySet ownership — not just the incoming namespace — so an
+   * upgrade cannot let KRO's prune delete another instance's namespace unchecked. The
+   * `group`/`version`/`kind` identify the generated CRD; the plural is discovered live.
+   */
+  namespacePreHoistQuery?: { group: string; version: string; kind: string };
+
+  /**
    * Resolved outputs of the resources this one depends on. Two jobs:
    *
    *  1. **Ordering** — because each entry traces back (via an alchemy `Output`) to another
@@ -172,6 +210,12 @@ export interface TypeKroResource<T extends Enhanced<any, any>> {
   deploymentStrategy?: 'direct' | 'kro';
   kubeConfigOptions?: SerializableKubeConfigOptions;
   kroDeletion?: KroDeletionOptions;
+  /** Mirrors {@link TypeKroResourceProps.retain}: a retained resource is never deleted on teardown. */
+  retain?: boolean;
+  /** Mirrors {@link TypeKroResourceProps.namespaceEmptyGate}: empty-gated Namespace teardown. */
+  namespaceEmptyGate?: boolean;
+  /** Mirrors {@link TypeKroResourceProps.namespaceOwnerRgd}: ownership record for the empty-gate. */
+  namespaceOwnerRgd?: string;
 
   /**
    * The deployed resource with live status from the cluster

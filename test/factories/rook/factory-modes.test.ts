@@ -104,14 +104,17 @@ describe('Rook operator bootstrap factory modes', () => {
   });
 
   it('renders a KRO operator-owner instance with an explicit lifecycle', () => {
+    // The real bootstrap usage: workload namespace == the namespace the
+    // composition owns, so the owned Namespace is hoisted out of the graph and
+    // leads (deps-first), followed by the instance CR (which stays in that ns).
     const factory = rookCephOperatorBootstrap.factory('kro', {
-      namespace: 'platform-control',
+      namespace: 'rook-ceph',
     });
-    const documents = splitDocs(factory.toYaml({ name: 'rook-ceph' } as never));
+    const documents = splitDocs(factory.toYaml({ name: 'rook-ceph', namespace: 'rook-ceph' } as never));
     const kinds = documents.map(documentKind);
 
     expect(kinds).toContain('RookCephOperatorBootstrap');
-    expect(kinds).toEqual(['RookCephOperatorBootstrap']);
+    expect(kinds).toEqual(['Namespace', 'RookCephOperatorBootstrap']);
   });
 
   it('generates an RGD with graph-aware chart values and readiness status', () => {
@@ -128,22 +131,75 @@ describe('Rook operator bootstrap factory modes', () => {
     expectNoInternalMarkers(yaml);
   });
 
-  it('rejects an instance inside its owned namespace across YAML, deploy, and Alchemy', async () => {
+  it('hoists the owned namespace instead of relocating; instance stays in the workload ns', async () => {
+    // rookCephOperatorBootstrap creates and owns its operator Namespace. The owned
+    // Namespace is HOISTED out of the RGD graph (retained, deps-first) and the
+    // instance stays in its natural workload namespace — the v0.25.0 ownership
+    // guard passes with no flag.
     const factory = rookCephOperatorBootstrap.factory('kro', { namespace: 'rook-ceph' });
-    const unsafeSpec = { name: 'rook-ceph', namespace: 'rook-ceph' } as never;
+    const spec = { name: 'rook-ceph', namespace: 'rook-ceph' } as never;
 
-    expect(() => factory.toYaml(unsafeSpec)).toThrow('cannot also be an owned Namespace');
-    await expect(factory.deploy(unsafeSpec)).rejects.toThrow('cannot also be an owned Namespace');
-    await expect(factory.toAlchemyResources(unsafeSpec)).rejects.toThrow(
-      'cannot also be an owned Namespace'
-    );
+    const yaml = factory.toYaml(spec);
+    expect(yaml).toMatch(/namespace: rook-ceph$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+
+    const decls = await factory.toAlchemyResources(spec);
+    expect(decls[0]?.props.resource.kind).toBe('Namespace');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('rook-ceph');
+    // The instance's OWN (1:1) namespace (name == instance ns) is NOT retained:
+    // reverse-topo teardown deletes it after the RGD + instance.
+    expect(decls[0]?.props.retain).toBeUndefined();
+    expect(decls.at(-1)?.props.namespace).toBe('rook-ceph');
   });
 
-  it('rejects the same namespace invariant through composition nesting', () => {
+  it('hoists a nested-owned namespace named after the parent spec.namespace', () => {
+    // A nested-owned namespace is hoisted out of the shared RGD like any other
+    // (typekro never emits a Namespace into RGD YAML) — hoisted through nesting.
     const parent = kubernetesComposition(
       {
         name: 'rook-nested-owner',
         kind: 'RookNestedOwner',
+        spec: type({ name: 'string', namespace: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (parentSpec) => {
+        const operator = rookCephOperatorBootstrap({
+          name: 'rook-ceph',
+          namespace: parentSpec.namespace,
+        });
+        return { ready: operator.status.ready };
+      }
+    );
+
+    const yaml = parent.factory('kro', { namespace: 'rook-ceph' }).toYaml({
+      name: 'platform',
+      namespace: 'rook-ceph',
+    });
+    expect(yaml).toMatch(/namespace: rook-ceph$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    expect(parent.factory('kro', { namespace: 'rook-ceph' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
+
+    // Pinning the instance into its own owned namespace is now SAFE (the namespace is
+    // a sibling deleted after the RGD), so it no longer throws — it just hoists.
+    expect(() =>
+      parent
+        .factory('kro', { namespace: 'rook-ceph', instanceNamespace: 'rook-ceph' })
+        .toYaml({ name: 'platform', namespace: 'rook-ceph' })
+    ).not.toThrow();
+  });
+
+  it('hoists a nested-owned namespace named after a DIFFERENT field too (unconditional)', () => {
+    // The v2 model has no structural "tracks spec.namespace" gate — EVERY owned
+    // Namespace is hoisted out of the RGD regardless of which field names it. When it
+    // is the instance's own namespace it is a teardown-managed 1:1 sibling.
+    const parent = kubernetesComposition(
+      {
+        name: 'rook-nested-otherfield',
+        kind: 'RookNestedOtherField',
         spec: type({ name: 'string', operatorNamespace: 'string' }),
         status: type({ ready: 'boolean' }),
       },
@@ -156,12 +212,16 @@ describe('Rook operator bootstrap factory modes', () => {
       }
     );
 
-    expect(() =>
-      parent.factory('kro', { namespace: 'rook-ceph' }).toYaml({
-        name: 'platform',
-        operatorNamespace: 'rook-ceph',
-      })
-    ).toThrow('cannot also be an owned Namespace');
+    let yaml = '';
+    expect(() => {
+      yaml = parent
+        .factory('kro', { namespace: 'rook-ceph' })
+        .toYaml({ name: 'platform', operatorNamespace: 'rook-ceph' });
+    }).not.toThrow();
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    expect(parent.factory('kro', { namespace: 'rook-ceph' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
   });
 
   it('rejects unsafe singleton owners before GitOps or live-cluster side effects', async () => {

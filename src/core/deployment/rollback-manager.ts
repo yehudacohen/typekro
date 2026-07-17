@@ -225,47 +225,59 @@ export class ResourceRollbackManager {
     resource: Enhanced<unknown, unknown>,
     timeout: number
   ): Promise<void> {
+    const name = this.extractStringValue(resource.metadata?.name);
+    if (!name) {
+      throw new TypeKroError(
+        `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`,
+        'MISSING_RESOURCE_NAME',
+        {
+          resourceIdentifier: this.getResourceIdentifier(resource),
+          operation: 'deletion-check',
+        }
+      );
+    }
+    const namespace = this.extractStringValue(resource.metadata?.namespace);
+    await this.waitForDeletionByHeader(
+      {
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        name,
+        ...(namespace ? { namespace } : {}),
+      },
+      timeout
+    );
+  }
+
+  /**
+   * The ONE gating wait shared by every deletion path: poll `read` until the
+   * resource returns a real 404, and THROW {@link DeploymentTimeoutError} if it
+   * does not within `timeout`. Unlike a best-effort wait it NEVER returns
+   * silently on timeout — a stuck finalizer surfaces as an error so the caller
+   * does not proceed to a dependent step (e.g. deleting a Namespace while its
+   * generated CRD is still Terminating). Transient non-404 read errors are
+   * retried until the deadline.
+   */
+  private async waitForDeletionByHeader(
+    target: { apiVersion: string; kind: string; name: string; namespace?: string },
+    timeout: number
+  ): Promise<void> {
     const startTime = Date.now();
-    const pollInterval = DEFAULT_POLL_INTERVAL;
+    const pollInterval = Math.min(DEFAULT_POLL_INTERVAL, Math.max(1, timeout));
+    const metadata = target.namespace
+      ? { name: target.name, namespace: target.namespace }
+      : { name: target.name };
 
     while (Date.now() - startTime < timeout) {
       try {
-        const name = this.extractStringValue(resource.metadata?.name);
-        const namespace = this.extractStringValue(resource.metadata?.namespace);
-
-        if (!name) {
-          throw new TypeKroError(
-            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`,
-            'MISSING_RESOURCE_NAME',
-            {
-              resourceIdentifier: this.getResourceIdentifier(resource),
-              operation: 'deletion-check',
-            }
-          );
-        }
-        const readObject: {
-          apiVersion: string;
-          kind: string;
-          metadata: { name: string; namespace?: string };
-        } = {
-          apiVersion: resource.apiVersion,
-          kind: resource.kind,
-          metadata: { name },
-        };
-
-        if (namespace) {
-          readObject.metadata.namespace = namespace;
-        }
-
-        await this.k8sApi.read(
-          readObject as unknown as KubernetesResourceHeader<KubernetesResource>
-        );
-
+        await this.k8sApi.read({
+          apiVersion: target.apiVersion,
+          kind: target.kind,
+          metadata,
+        } as unknown as KubernetesResourceHeader<KubernetesResource>);
         // Resource still exists, wait and try again
         await new Promise((resolve) => setTimeout(resolve, pollInterval));
       } catch (error: unknown) {
-        const k8sError = error as { statusCode?: number };
-        if (k8sError.statusCode === 404) {
+        if (isNotFoundError(error)) {
           // Resource is gone, deletion successful
           return;
         }
@@ -275,12 +287,55 @@ export class ResourceRollbackManager {
     }
 
     throw new DeploymentTimeoutError(
-      `Timeout waiting for resource deletion: ${this.getResourceIdentifier(resource)}`,
-      resource.kind,
-      this.extractStringValue(resource.metadata?.name) || 'unknown',
+      `Timeout waiting for resource deletion: ${target.kind}/${target.name}`,
+      target.kind,
+      target.name,
       timeout,
       'deletion'
     );
+  }
+
+  /**
+   * Delete a single resource by header and GATE on its real 404, throwing
+   * {@link DeploymentTimeoutError} if it does not disappear within `timeout`.
+   *
+   * This is the engine's ONE gating deletion primitive, reused by the KRO
+   * teardown sequence (CR → RGD → CRD → Namespace) and the Alchemy KRO delete
+   * path so there is a single, real gate everywhere — replacing the hand-rolled
+   * "poll then silently return on timeout" waits that let a slow teardown
+   * proceed to the next step while the previous resource was still Terminating.
+   *
+   * A 404 on the delete itself is treated as success (already gone). Any other
+   * delete error propagates. On success, the read gate runs to a real 404.
+   */
+  async deleteResourceAndWait(
+    target: { apiVersion: string; kind: string; name: string; namespace?: string },
+    options: { timeout?: number; gracePeriod?: number } = {}
+  ): Promise<void> {
+    const timeout = options.timeout ?? DEFAULT_DELETE_TIMEOUT;
+    const metadata = target.namespace
+      ? { name: target.name, namespace: target.namespace }
+      : { name: target.name };
+
+    try {
+      await this.k8sApi.delete(
+        { apiVersion: target.apiVersion, kind: target.kind, metadata } as k8s.KubernetesObject,
+        undefined,
+        undefined,
+        options.gracePeriod
+      );
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) {
+        this.logger.debug('Resource already gone before delete', {
+          kind: target.kind,
+          name: target.name,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    await this.waitForDeletionByHeader(target, timeout);
   }
 
   /**

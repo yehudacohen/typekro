@@ -613,6 +613,27 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
+  /**
+   * Explicit namespace override for the KRO instance (custom resource), decoupled
+   * from the workload `namespace` the composition creates and owns.
+   *
+   * By default the instance CR is placed in the FACTORY namespace (the `namespace`
+   * passed to `factory()`); `spec.namespace` is NEVER consulted for CR placement.
+   * A composition that creates and owns a workload namespace as a graph child is
+   * handled AUTOMATICALLY: TypeKro HOISTS the owned Namespace OUT of the RGD graph
+   * and emits it as a retained resource created deps-first (outside the graph).
+   * Because the namespace is no longer a graph child, deleting the instance can
+   * never garbage-collect the namespace holding its own finalizer — no relocation,
+   * no flag required.
+   *
+   * Set this option only to pin the instance CR to a namespace OTHER than the
+   * factory namespace. TypeKro ensures the chosen namespace exists. Pinning this to
+   * a namespace the composition itself owns re-opens the unsafe pattern (the
+   * instance would live in a graph-owned Namespace, which is NOT hoisted under an
+   * explicit pin) and is rejected by the ownership-safety guard.
+   */
+  instanceNamespace?: string;
+
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 

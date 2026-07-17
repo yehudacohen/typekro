@@ -25,8 +25,19 @@ import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
-import { createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/index.js';
+import {
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+} from '../core/kubernetes/index.js';
 import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
+import {
+  decideNamespaceOwnershipCreateFirst,
+  deleteNamespaceIfEmpty,
+  HOISTED_NAMESPACES_ANNOTATION,
+  listNamespacesOwnedByRgd,
+  NAMESPACE_OWNER_ANNOTATION,
+  readHoistedNamespacesRecord,
+} from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
@@ -59,6 +70,8 @@ interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   deploymentStrategy: 'direct' | 'kro';
   kubeConfigOptions?: SerializableKubeConfigOptions;
   kroDeletion?: KroDeletionOptions;
+  retain?: boolean;
+  namespaceEmptyGate?: boolean;
   deployedResource: T;
   ready: boolean;
   deployedAt: number;
@@ -189,30 +202,40 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
 ): Promise<TypeKroResource<T>> {
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Fail-closed PRE-HOIST guard on the ALCHEMY path (finding #7): before applying a
+  // typekro-hoisted workload Namespace, refuse to proceed if it is still a KRO ApplySet
+  // member from a pre-hoist RGD — rolling the new hoisted RGD over the old one would let
+  // KRO's prune delete it. Cluster-checked here since `toAlchemyResources` is cluster-free.
+  await _assertNoPreHoistNamespaceConflictAlchemy(props, logger);
   // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
   // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
   // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
   await _assertNoSingletonDrift(props, logger);
-  const { deployer, dispose } = await _resolveDeployer(props, 'deployment');
+  // finding #2 (adopted-namespace): the hoisted workload Namespace is stamped
+  // owned-by-this-RGD at BUILD time (cluster-free). READ the live namespace here and
+  // KEEP that stamp ONLY when typekro actually creates it (404) or already owns it;
+  // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
+  const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger);
+  const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment');
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
     // resolves its cross-resource references + CEL expressions against them (the deps deployed
     // first via alchemy ordering). KRO docs are self-contained, so the seed is irrelevant there.
-    const seedResources = _seedFromDependencies(props);
+    const seedResources = _seedFromDependencies(effectiveProps);
     // alchemy serializes props to state, flattening this resource's CEL refs to `${…}` STRINGS.
     // The engine resolver only evaluates CEL OBJECTS, so (direct mode, with dependency state to
     // resolve against) re-hydrate those strings into template CEL objects before deploying — but
     // ONLY strings that reference a known dependency id, so genuine `${…}` literals (e.g. a shell
     // `${HOME}` in an env var) are left untouched.
-    let resourceForDeploy: T = props.resource;
-    if (seedResources && props.deploymentStrategy === 'direct') {
+    let resourceForDeploy: T = effectiveProps.resource;
+    if (seedResources && effectiveProps.deploymentStrategy === 'direct') {
       resourceForDeploy = _rehydrateCelStrings(
-        props.resource,
+        effectiveProps.resource,
         new Set(seedResources.map((s) => s.id))
       ) as T;
     } else if (
-      props.deploymentStrategy === 'kro' &&
-      (props.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (effectiveProps.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
     ) {
       // KRO CR instance (the custom resource an RGD defines — not the RGD itself). After alchemy
       // serializes props to state, the resource is a plain manifest with no readiness evaluator, so a
@@ -221,7 +244,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       // InstanceSynced) — the same KRO-instance readiness the imperative deploy path waits on. The RGD
       // is excluded (it carries its own evaluator via the resourceGraphDefinition factory).
       const { kroCustomResource } = await import('../factories/kro/kro-custom-resource.js');
-      const r = props.resource as {
+      const r = effectiveProps.resource as {
         apiVersion?: string;
         kind?: string;
         metadata?: { name: string; namespace?: string };
@@ -234,9 +257,12 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
         spec: (r.spec ?? {}) as Record<string, unknown>,
       }) as unknown as T;
     }
-    const deployProps = resourceForDeploy === props.resource ? props : { ...props, resource: resourceForDeploy };
+    const deployProps =
+      resourceForDeploy === effectiveProps.resource
+        ? effectiveProps
+        : { ...effectiveProps, resource: resourceForDeploy };
     const { resourceProperties } = await _deployAndCreateResult(deployProps, deployer, seedResources);
-    _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, props, resourceProperties);
+    _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, effectiveProps, resourceProperties);
     return resourceProperties as unknown as TypeKroResource<T>;
   } catch (error: unknown) {
     logger.error('Error deploying resource through Alchemy', ensureError(error));
@@ -286,6 +312,327 @@ export function singletonDriftVerdict(
  * fires for resources carrying the singleton spec-fingerprint annotation (i.e. singleton instances);
  * a missing instance / absent CRD / unreachable cluster is treated as "nothing to drift from".
  */
+/**
+ * Fail-closed PRE-HOIST detection for the ALCHEMY deploy path (finding #7). Runs ONLY
+ * for a typekro-hoisted workload Namespace (`namespaceEmptyGate`). If the live namespace
+ * is a KRO ApplySet member (carries `applyset.kubernetes.io/part-of` or any `kro.run/*`
+ * label from a pre-hoist RGD), applying the new hoisted RGD would let KRO's prune delete
+ * it — so THROW. A 404 (fresh) is safe; any OTHER read error FAILS CLOSED (throws).
+ */
+async function _assertNoPreHoistNamespaceConflictAlchemy<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<void> {
+  if (props.namespaceEmptyGate !== true) return;
+  const incoming = props.resource.metadata?.name;
+  if (typeof incoming !== 'string' || incoming.length === 0) return;
+
+  const kc = _createClientProvider(props, 'pre-hoist-check');
+  const api = createBunCompatibleKubernetesObjectApi(kc);
+
+  // The set of namespaces to check: the incoming one PLUS every EXISTING instance's
+  // namespace (finding #7). An upgrade prunes the ApplySet for ALL instances of the
+  // shared RGD at once, so missing one would let KRO delete it.
+  const namespacesToCheck = new Set<string>([incoming]);
+  for (const ns of await _existingInstanceNamespacesAlchemy(props, kc, logger)) {
+    namespacesToCheck.add(ns);
+  }
+
+  for (const name of namespacesToCheck) {
+    let labels: Record<string, string> = {};
+    try {
+      const live = (await api.read({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name },
+      } as Parameters<typeof api.read>[0])) as { metadata?: { labels?: Record<string, string> } };
+      labels = live.metadata?.labels ?? {};
+    } catch (error: unknown) {
+      const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+      if (code === 404) continue; // fresh namespace — nothing to migrate
+      // FAIL CLOSED: a non-404 read error means we cannot prove the namespace is safe.
+      throw new Error(
+        `Pre-hoist safety check could not read Namespace "${name}" (${ensureError(error).message}). ` +
+          `Refusing to deploy: a hoist over an unreadable namespace could let KRO's ApplySet prune delete it.`
+      );
+    }
+
+    const partOfKro =
+      typeof labels['applyset.kubernetes.io/part-of'] === 'string' ||
+      Object.keys(labels).some((key) => key.startsWith('kro.run/'));
+    if (partOfKro) {
+      throw new Error(
+        `Pre-hoist deployment detected: the live Namespace "${name}" is a KRO ApplySet member ` +
+          `(carries applyset.kubernetes.io/part-of and/or kro.run/* labels from a pre-hoist RGD). ` +
+          `typekro now HOISTS every owned Namespace out of the RGD, so applying the new RGD in place ` +
+          `would drop "${name}" from KRO's ApplySet and KRO's prune would DELETE it and its workloads. ` +
+          `This upgrade is not auto-migrated — see docs/advanced/migration.md.`
+      );
+    }
+  }
+  logger.debug('Pre-hoist namespace check passed (alchemy)', {
+    namespaces: [...namespacesToCheck],
+  });
+}
+
+/**
+ * The namespaces of EVERY existing instance of the shared RGD (finding #7, alchemy).
+ * Discovers the generated CRD from {@link TypeKroResourceProps.namespacePreHoistQuery},
+ * lists instances cluster-wide, and returns each instance's namespace.
+ *
+ * FAIL CLOSED: a CRD-discovery or instance-list FAILURE (RBAC/connectivity) is NOT proof
+ * of absence — it THROWS. Only a successful CRD list with no matching CRD (fresh cluster),
+ * or a definitive 404 listing instances, yields an empty set.
+ *
+ * NAMESPACE RESOLUTION (finding #1, v7 — per-instance exact or fail closed): each existing
+ * instance's namespaces are resolved EXACTLY and PER INSTANCE from that instance's OWN CR
+ * `typekro.io/hoisted-namespaces` record — the only per-instance proof. An instance that
+ * lacks its own record (a genuinely-legacy deployment) FAILS CLOSED (throws): the RGD-wide
+ * set of Namespaces carrying `typekro.io/created-by-rgd == props.namespaceOwnerRgd` is NOT
+ * per-instance proof — a DIFFERENT (modern) instance could have stamped it, so a non-empty
+ * RGD-wide set would MASK a legacy instance whose own — possibly different — namespace is
+ * then invisible and pruned. We never approximate from `metadata.namespace` / `spec.namespace`.
+ * The RGD-wide set IS unioned into the returned protected set (a superset catching leaked
+ * namespaces) — it just never SATISFIES the per-instance check. The incoming namespace is
+ * always checked directly by the caller regardless.
+ */
+/**
+ * Injectable API surface for {@link _existingInstanceNamespacesAlchemy} — lets the
+ * deterministic unit test supply mocks instead of a live cluster. Production passes
+ * nothing and the Bun-compatible clients are constructed from the KubeConfig.
+ */
+interface AlchemyPreHoistDeps {
+  objectApi?: {
+    list(apiVersion: string, kind: string): Promise<unknown>;
+  };
+  customApi?: {
+    listClusterCustomObject(request: {
+      group: string;
+      version: string;
+      plural: string;
+    }): Promise<{
+      items?: Array<{
+        metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+        spec?: unknown;
+      }>;
+    }>;
+  };
+  /** The NamespaceListApi passed to {@link listNamespacesOwnedByRgd}. */
+  ownedNamespaceListApi?: Parameters<typeof listNamespacesOwnedByRgd>[2] extends infer O
+    ? O extends { k8sApi?: infer A }
+      ? A
+      : never
+    : never;
+}
+
+async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  kc: KubeConfig,
+  logger: TypeKroLogger,
+  deps: AlchemyPreHoistDeps = {}
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  const query = props.namespacePreHoistQuery;
+  if (!query) return result;
+
+  // STRICT CRD discovery — a list failure FAILS CLOSED (throws).
+  const objectApi = deps.objectApi ?? createBunCompatibleKubernetesObjectApi(kc);
+  const crds = (await objectApi.list(
+    'apiextensions.k8s.io/v1',
+    'CustomResourceDefinition'
+  )) as unknown as {
+    items?: Array<{ spec?: { group?: string; names?: { kind?: string; plural?: string } } }>;
+  };
+  const match = crds?.items?.find(
+    (crd) => crd.spec?.group === query.group && crd.spec?.names?.kind === query.kind
+  );
+  const plural = match?.spec?.names?.plural;
+  if (!plural) return result; // definitively fresh — no CRD, so no existing instances
+
+  let items: Array<{
+    metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+    spec?: unknown;
+  }>;
+  try {
+    const customApi =
+      deps.customApi ??
+      (createBunCompatibleCustomObjectsApi(kc) as unknown as {
+        listClusterCustomObject(request: {
+          group: string;
+          version: string;
+          plural: string;
+        }): Promise<{
+          items?: Array<{
+            metadata?: { namespace?: unknown; annotations?: Record<string, string> };
+            spec?: unknown;
+          }>;
+        }>;
+      });
+    const listResponse = await customApi.listClusterCustomObject({
+      group: query.group,
+      version: query.version,
+      plural,
+    });
+    items = listResponse.items ?? [];
+  } catch (error: unknown) {
+    const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+    const status = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+    if (status === 404) return result; // CRD/instances vanished — fresh
+    throw new Error(
+      `Pre-hoist safety check could not list existing instances of the RGD's CRD ` +
+        `(${ensureError(error).message}). Refusing to deploy: another instance's namespace could ` +
+        `be pruned by the hoist without being checked.`
+    );
+  }
+
+  if (items.length === 0) return result;
+
+  // The RGD-wide record of every namespace this RGD created: namespaces carrying
+  // `typekro.io/created-by-rgd == props.namespaceOwnerRgd`. We union it into the PROTECTED set
+  // as a superset (it catches namespaces leaked by an interrupted teardown), but it is NOT
+  // used to satisfy the per-instance check below (finding #1, v7) — being RGD-wide it cannot
+  // prove a SPECIFIC instance's namespaces. A list error FAILS CLOSED.
+  const ownerRgd = props.namespaceOwnerRgd;
+  const ownedNamespaces = new Set<string>();
+  if (typeof ownerRgd === 'string' && ownerRgd.length > 0) {
+    let owned: string[];
+    try {
+      owned = await listNamespacesOwnedByRgd(kc, ownerRgd, {
+        logger,
+        ...(deps.ownedNamespaceListApi ? { k8sApi: deps.ownedNamespaceListApi } : {}),
+      });
+    } catch (error: unknown) {
+      throw new Error(
+        `Pre-hoist safety check could not list namespaces owned by RGD "${ownerRgd}" ` +
+          `(${ensureError(error).message}). Refusing to deploy: without the durable ownership ` +
+          `record we cannot prove the hoist won't prune an existing instance's namespace.`
+      );
+    }
+    for (const ns of owned) ownedNamespaces.add(ns);
+    for (const ns of ownedNamespaces) result.add(ns);
+  }
+
+  for (const item of items) {
+    // Resolve THIS instance's namespaces from its OWN exact PER-INSTANCE record — the CR
+    // `typekro.io/hoisted-namespaces` annotation (finding #1, v7). It carries the instance's
+    // EXACT hoisted names (a name derived from an arbitrary spec field round-trips) and is the
+    // ONLY per-instance proof.
+    const record = readHoistedNamespacesRecord(
+      item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
+    );
+    if (record.status === 'present') {
+      // A VALID record — including an explicit empty `[]` — is per-instance proof: this instance
+      // hoists exactly these namespaces (possibly none). Resolved; do NOT fail closed.
+      for (const ns of record.names) result.add(ns);
+      continue;
+    }
+    // MISSING or MALFORMED record → NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do NOT
+    // fall back to the RGD-wide `created-by-rgd` set: being RGD-wide it is not per-instance
+    // proof — a DIFFERENT (modern) instance could have stamped it, so a non-empty set would
+    // MASK this legacy instance whose own — possibly different — owned namespace is then
+    // invisible and pruned. Nor do we approximate from metadata.namespace / spec.namespace.
+    throw new Error(
+      `Pre-hoist safety check found an existing instance with no per-instance namespace record — ` +
+        `its CR carries no "${HOISTED_NAMESPACES_ANNOTATION}" annotation. The RGD-wide ` +
+        `"${NAMESPACE_OWNER_ANNOTATION}${ownerRgd ? `=${ownerRgd}` : ''}" set is NOT per-instance ` +
+        `proof (another instance could have stamped it), so this instance's own owned namespace ` +
+        `could be pruned by the hoist unseen. Refusing to deploy: migrate it (redeploy with a ` +
+        `current TypeKro so its namespaces are recorded) and retry.`
+    );
+  }
+  logger.debug('Enumerated existing-instance namespaces for the alchemy pre-hoist check', {
+    count: result.size,
+  });
+  return result;
+}
+
+/**
+ * Test-only export of the alchemy pre-hoist namespace resolver (finding #1, v7) so the
+ * deterministic unit test can prove the per-instance-exact-or-fail-closed behavior with
+ * injected API mocks (no cluster).
+ */
+export const existingInstanceNamespacesAlchemyForTest = _existingInstanceNamespacesAlchemy;
+
+/**
+ * finding #2 (alchemy adopted-namespace, mirrors the imperative `applyRetainedHoistedNamespace`
+ * create-vs-adopt logic): the hoisted workload Namespace carries a build-time
+ * `typekro.io/created-by-rgd` ownership stamp (added cluster-free in
+ * `buildHoistedNamespaceResource`). Applying it unconditionally would let the empty-gated
+ * teardown DELETE a namespace typekro merely ADOPTED. So READ the live namespace and keep
+ * the stamp ONLY when typekro truly creates it (404) or already owns it (stamp already ==
+ * this RGD); otherwise STRIP the stamp from the resource before apply so the live namespace
+ * never carries our ownership record and teardown retains it. `namespaceOwnerRgd` is KEPT on
+ * props either way — at delete time the empty-gate compares the LIVE annotation to it, and a
+ * stripped/adopted namespace (no matching annotation) is retained.
+ *
+ * Returns props unchanged for non-hoisted-namespace resources or when the stamp should
+ * stay; otherwise a shallow copy whose resource has the ownership annotation removed.
+ */
+async function _preserveHoistedNamespaceAdoption<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  logger: TypeKroLogger
+): Promise<TypeKroResourceProps<T>> {
+  if (props.namespaceEmptyGate !== true || props.namespaceOwnerRgd === undefined) return props;
+  const name = props.resource.metadata?.name;
+  if (typeof name !== 'string' || name.length === 0) return props;
+
+  const kc = _createClientProvider(props, 'ownership-check');
+  const api = createBunCompatibleKubernetesObjectApi(kc);
+
+  // CREATE-FIRST ownership (finding #3), matching the imperative path: attempt to CREATE
+  // the namespace WITH the build-time stamp. A 201 is atomic proof typekro created it
+  // (owned). A 409 means it already exists — owned ONLY if a prior create by this RGD
+  // stamped it; otherwise adopted. This replaces the raceable read→(404)→own decision:
+  // there is no window in which another actor creates the namespace between our read and
+  // our claim. The generic deployer still SSA-applies the full config afterwards
+  // (idempotent), so a 201 here is not the final apply — it is the ownership PROBE.
+  let ownsNamespace: boolean;
+  try {
+    const decision = await decideNamespaceOwnershipCreateFirst(
+      api,
+      props.resource as unknown as import('@kubernetes/client-node').KubernetesObject,
+      props.namespaceOwnerRgd
+    );
+    ownsNamespace = decision.owned;
+  } catch (error: unknown) {
+    // A non-conflict CREATE failure (or a failed conflict-read) — do NOT claim ownership
+    // (conservative: a namespace we cannot provably create/own must not be stampable, or
+    // teardown might delete an adopted one). The deployer's SSA apply below surfaces the
+    // real error if the cluster is genuinely broken.
+    logger.debug('Create-first ownership probe failed; treating as adopted (alchemy)', {
+      namespace: name,
+      rgd: props.namespaceOwnerRgd,
+      error: ensureError(error).message,
+    });
+    ownsNamespace = false;
+  }
+
+  if (ownsNamespace) return props; // keep the build-time ownership stamp
+
+  logger.debug('Preserving namespace adoption — stripping build-time ownership stamp (alchemy)', {
+    namespace: name,
+    rgd: props.namespaceOwnerRgd,
+  });
+  return { ...props, resource: _stripNamespaceOwnerAnnotation(props.resource) };
+}
+
+/**
+ * Return a shallow copy of a Namespace resource with the `typekro.io/created-by-rgd`
+ * ownership annotation removed. Used by {@link _preserveHoistedNamespaceAdoption} to avoid
+ * stamping ownership onto an adopted namespace. By reconcile time alchemy has JSON-round-
+ * tripped props to state (no symbols/brands), so a shallow object copy is safe here.
+ */
+function _stripNamespaceOwnerAnnotation<T extends Enhanced<unknown, unknown>>(resource: T): T {
+  const src = resource as unknown as { metadata?: { annotations?: Record<string, string> } };
+  const annotations = { ...(src.metadata?.annotations ?? {}) };
+  delete annotations[NAMESPACE_OWNER_ANNOTATION];
+  return {
+    ...(resource as unknown as Record<string, unknown>),
+    metadata: { ...(src.metadata ?? {}), annotations },
+  } as unknown as T;
+}
+
 async function _assertNoSingletonDrift<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   logger: TypeKroLogger
@@ -406,6 +753,9 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
     deploymentStrategy: output.deploymentStrategy ?? 'kro',
     ...(output.kubeConfigOptions !== undefined && { kubeConfigOptions: output.kubeConfigOptions }),
     ...(output.kroDeletion !== undefined && { kroDeletion: output.kroDeletion }),
+    ...(output.retain === true && { retain: true }),
+    ...(output.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
+    ...(output.namespaceOwnerRgd !== undefined && { namespaceOwnerRgd: output.namespaceOwnerRgd }),
   };
 }
 
@@ -565,6 +915,46 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>
 ): Promise<void> {
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
+  // Retained (shared) resources — e.g. the KRO instance control-plane Namespace —
+  // must survive a single stack's teardown/prune: another stack targeting the same
+  // workload namespace may still have KRO instances inside it. Drop only the state
+  // entry (like the deferred shared-RGD delete below), leaving the object on-cluster.
+  if (props.retain === true) {
+    logger.debug('Skipping delete: resource is retained (shared); dropping state entry only', {
+      resourceName: props.resource.metadata?.name,
+      namespace: props.namespace,
+    });
+    return;
+  }
+  // Empty-gated Namespace teardown (findings #3 + #4): a typekro-hoisted workload
+  // Namespace is deleted ONLY if empty and RETAINED if another stack/user still has
+  // resources inside it. Alchemy's reverse-topo teardown runs this AFTER the RGD +
+  // instance that `dependsOn` it are gone; the instance is deleted FIRST and its delete
+  // waits for the CR's `kro.run/finalizer` to clear (KRO graph-deletes all children),
+  // so by the time this runs everything THIS instance owned has already drained from
+  // the namespace (finding #1's ordering, provided here by the dependency graph + the
+  // instance-drain wait rather than an in-line CRD-404 wait; the gate is fail-safe
+  // regardless). Replaces the old retain-by-name-equality distinction — runtime
+  // emptiness is the truth for both the instance's own namespace and a shared one.
+  if (props.namespaceEmptyGate === true) {
+    const namespaceName = props.resource.metadata?.name;
+    if (typeof namespaceName !== 'string' || namespaceName.length === 0) {
+      logger.warn('Empty-gated namespace teardown skipped: resource has no metadata.name', {
+        namespace: props.namespace,
+      });
+      return;
+    }
+    const kubeConfig = _createClientProvider(props, 'delete');
+    await deleteNamespaceIfEmpty(kubeConfig, namespaceName, {
+      logger,
+      // Ownership record (finding #4) + gated delete (finding #1): only delete a
+      // namespace this composition's RGD created, and gate it to a real 404.
+      ...(props.namespaceOwnerRgd !== undefined && { ownedByRgd: props.namespaceOwnerRgd }),
+      ...(props.options?.timeout !== undefined && { timeoutMs: props.options.timeout }),
+      context: { alchemyType: KRO_RESOURCE_TYPE },
+    });
+    return;
+  }
   const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
     await deployer.delete(props.resource, {
@@ -625,6 +1015,9 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     deploymentStrategy: props.deploymentStrategy,
     ...(props.kubeConfigOptions !== undefined && { kubeConfigOptions: props.kubeConfigOptions }),
     ...(props.kroDeletion !== undefined && { kroDeletion: props.kroDeletion }),
+    ...(props.retain === true && { retain: true }),
+    ...(props.namespaceEmptyGate === true && { namespaceEmptyGate: true }),
+    ...(props.namespaceOwnerRgd !== undefined && { namespaceOwnerRgd: props.namespaceOwnerRgd }),
     deployedResource: cleanDeployedResource,
     ready: true,
     deployedAt: Date.now(),

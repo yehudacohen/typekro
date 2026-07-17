@@ -56,6 +56,13 @@ import {
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
+import {
+  assertNoHoistWeakenedStatusFields,
+  findDanglingHoistedReference,
+  rewriteHoistedNamespaceReferences,
+  rewriteHoistedNamespaceRefsInValue,
+  selectHoistedNamespaces,
+} from '../deployment/kro-instance-safety.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
 function isToYamlOptions(value: unknown): value is ToYamlOptions {
@@ -2312,12 +2319,85 @@ function createTypedResourceGraph<
         statusMappingsHasField: '__nestedStatusCel' in (statusMappings as Record<string, unknown>),
       });
 
+      // HOIST EVERY owned Namespace OUT of the shared RGD graph (the unconditional
+      // model — typekro NEVER emits a Namespace into RGD YAML). Selection is trivially
+      // `kind === 'Namespace'` (see {@link selectHoistedNamespaces}). Leaving a
+      // Namespace a graph CHILD would let deleting the instance garbage-collect the
+      // namespace holding its own finalizer; the factory emits it as a sibling created
+      // deps-first (and torn down after the RGD) instead. This keeps the graph-level
+      // RGD (`graph.toYaml()`) consistent with the factory's RGD
+      // (`factory('kro').toYaml()`), both of which drop it. Any remaining reference to
+      // a hoisted Namespace's `metadata.name` is rewritten to that Namespace's own
+      // concrete name expression (finding #3) so the RGD carries no dangling ref.
+      const hoistedNamespaces = selectHoistedNamespaces(resourcesWithKeys);
+      const hoistedNamespaceIds = new Set(hoistedNamespaces.keys());
+      const graphResources =
+        hoistedNamespaces.size === 0
+          ? resourcesWithKeys
+          : (rewriteHoistedNamespaceReferences(
+              Object.fromEntries(
+                Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
+              ) as Record<string, KubernetesResource>,
+              hoistedNamespaces
+            ) as typeof resourcesWithKeys);
+
+      // BLOCKER #2 — apply the SAME status-reference rewriting the FACTORY path
+      // already does (kro-factory.ts `buildRgdYaml`) to this graph/composition path.
+      // Removing a hoisted Namespace from `graphResources` is not enough: the status
+      // mappings, nested-composition CEL, and status overrides can ALSO reference it
+      // (e.g. `status.nsName: ${ownedNamespace.metadata.name}`), which would emit an
+      // RGD with `resources:[]` for that id and a dangling `${...}` KRO rejects.
+      // Rewrite every such reference to the Namespace's own name expression (finding
+      // #3), preserving the non-enumerable composition metadata on optimizedStatusMappings.
+      let graphStatusMappings = optimizedStatusMappings;
+      if (hoistedNamespaces.size > 0) {
+        const rewritten = rewriteHoistedNamespaceRefsInValue(
+          optimizedStatusMappings,
+          hoistedNamespaces
+        );
+        if (rewritten !== optimizedStatusMappings) {
+          // The rewrite clones via Object.entries, dropping non-enumerable
+          // composition metadata — re-attach it from the original statusMappings.
+          for (const metadataKey of [
+            '__originalCompositionFn',
+            '__nestedCompositionFns',
+            '__nestedCompositionDefinitions',
+            '__nestedCompositionResources',
+            '__nestedCompositionSpecMappings',
+            '__nestedStatusCel',
+          ]) {
+            const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
+            if (descriptor) Object.defineProperty(rewritten, metadataKey, descriptor);
+          }
+        }
+        graphStatusMappings = rewritten;
+
+        // #6 — REJECT (throw) HONESTLY, never silently drop: status fields that resolve
+        // ONLY to a hoisted Namespace become a schema-only expression
+        // (`schema.spec.namespace`), which KRO status CEL cannot evaluate, so they
+        // cannot be represented in the KRO status schema. Fail loudly naming the
+        // field(s) rather than ship a weakened status API. Resource-derived sibling
+        // fields are unaffected.
+        assertNoHoistWeakenedStatusFields(
+          optimizedStatusMappings as Record<string, unknown>,
+          hoistedNamespaces,
+          definition.name
+        );
+      }
+      const graphNestedStatusCel =
+        hoistedNamespaces.size === 0
+          ? nestedStatusCel
+          : (rewriteHoistedNamespaceRefsInValue(nestedStatusCel, hoistedNamespaces) as Record<
+              string,
+              string
+            >);
+
       const kroSchema = generateKroSchemaFromArktype(
         definition.name,
         schemaDefinition,
-        resourcesWithKeys,
-        optimizedStatusMappings,
-        Object.keys(nestedStatusCel).length > 0 ? nestedStatusCel : undefined
+        graphResources,
+        graphStatusMappings,
+        Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined
       );
 
       if (definition.group) {
@@ -2329,9 +2409,9 @@ function createTypedResourceGraph<
       // Non-enumerable so it doesn't appear in the YAML output, but
       // accessible via KroSimpleSchemaWithMetadata for the YAML serializer
       // to resolve virtual composition IDs in resource templates.
-      if (Object.keys(nestedStatusCel).length > 0) {
+      if (Object.keys(graphNestedStatusCel).length > 0) {
         Object.defineProperty(kroSchema, '__nestedStatusCel', {
-          value: nestedStatusCel,
+          value: graphNestedStatusCel,
           enumerable: false,
         });
       }
@@ -2347,22 +2427,30 @@ function createTypedResourceGraph<
       // factory's inline-CEL evaluator (see `evaluateStaticFieldValue`).
       const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
       if (statusOverrides.length > 0) {
-        const resourceIdList = Object.keys(resourcesWithKeys);
+        // Classify against the HOISTED graph's resource ids (the hoisted Namespace
+        // is no longer a graph resource) so an override that referenced only it is
+        // treated correctly after rewriting.
+        const resourceIdList = Object.keys(graphResources);
         const nestedCelForClassification =
-          Object.keys(nestedStatusCel).length > 0 ? nestedStatusCel : undefined;
+          Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined;
         for (const override of statusOverrides) {
+          // BLOCKER #2 — rewrite any reference to a hoisted Namespace in the override
+          // expression too (finding #6), so a status override never dangles at the
+          // removed id (mirrors the factory path).
+          const celExpression = rewriteHoistedNamespaceRefsInValue(
+            override.celExpression,
+            hoistedNamespaces
+          );
           // Schema-only overrides (no resource refs) are hydrated client-side by
           // the static-field path, like any other static status field — KRO
           // status CEL cannot reference `schema.spec.*`. Only inject the
           // resource-referencing (dynamic) overrides into the KRO schema.
-          if (
-            isStaticExpression(override.celExpression, nestedCelForClassification, resourceIdList)
-          )
+          if (isStaticExpression(celExpression, nestedCelForClassification, resourceIdList))
             continue;
           if (!kroSchema.status) {
             kroSchema.status = {};
           }
-          const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
+          const yamlSafe = celExpression.replace(/"([^"\\]*)"/g, "'$1'");
           kroSchema.status[override.propertyPath] = yamlSafe;
         }
       }
@@ -2387,10 +2475,28 @@ function createTypedResourceGraph<
 
       const rgdYaml = serializeResourceGraphToYaml(
         definition.name,
-        resourcesWithKeys,
+        graphResources,
         options,
         kroSchema
       );
+
+      // BLOCKER #2 — the SAME post-serialization dangling-reference assertion the
+      // factory path runs (kro-factory.ts `assertNoDanglingHoistedReferences`). After
+      // hoisting an owned Namespace out of the graph, NO reference to it may remain
+      // anywhere in the emitted RGD (resource templates, status CEL, nested CEL,
+      // overrides). If one slipped through a form the rewrite didn't structurally
+      // cover, fail LOUDLY here instead of shipping an RGD KRO rejects at runtime.
+      const dangling = findDanglingHoistedReference(rgdYaml, hoistedNamespaceIds);
+      if (dangling !== undefined) {
+        throw new ValidationError(
+          `Hoisting the owned Namespace left a dangling reference to removed resource "${dangling}" ` +
+            `in the emitted RGD for composition "${definition.name}". This would make KRO reject the ` +
+            `graph. Report this as a typekro bug (the reference form was not structurally rewritten).`,
+          'ResourceGraphDefinition',
+          definition.name,
+          `status/${dangling}`
+        );
+      }
 
       // Singleton owners are deployed once outside any consuming instance's
       // ApplySet (see `singleton(...)`). The factory's `deploy()` creates them

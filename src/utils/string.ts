@@ -26,6 +26,29 @@ export function toCamelCase(str: string): string {
 }
 
 /**
+ * A short, stable, collision-resistant hash of a string, as a lowercase base-36
+ * token (deterministic across runs; no separators).
+ *
+ * {@link toCamelCase} destroys separators (`foo-bar` and `foo--bar` both become
+ * `fooBar`), so it cannot safely encode a value like a Kubernetes namespace into
+ * an identifier: two DISTINCT namespaces can collapse to the SAME id. Append this
+ * hash of the raw value to keep distinct inputs distinct while staying
+ * deterministic (same input → same id, so dedup by identity still works).
+ *
+ * Uses FNV-1a (32-bit) — not cryptographic, just a fast, well-distributed,
+ * dependency-free hash suitable for identity disambiguation.
+ */
+export function shortStableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    // FNV prime multiply, kept in 32-bit unsigned range.
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+/**
  * Converts a string to PascalCase.
  */
 export function pascalCase(str: string): string {

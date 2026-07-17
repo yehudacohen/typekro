@@ -161,16 +161,18 @@ describe('valkeyBootstrap factory modes', () => {
     expectFullyConcrete(yaml);
   });
 
-  it('KRO mode emits the explicit operator-owner instance', () => {
+  it('KRO mode emits the operator-owner instance with the hoisted namespace leading', () => {
     const yaml = valkeyBootstrap
-      .factory('kro', { namespace: 'typekro-system' })
+      .factory('kro', { namespace: 'valkey-system' })
       .toYaml(bootstrapSpec as never);
     const docs = splitDocs(yaml);
 
-    expect(docs.map(docKind)).toEqual(['ValkeyBootstrap']);
+    // The hoisted workload Namespace leads (deps-first, outside the KRO graph),
+    // followed by the instance CR itself (which stays in the workload namespace).
+    expect(docs.map(docKind)).toEqual(['Namespace', 'ValkeyBootstrap']);
   });
 
-  it('KRO mode preserves repository ownership, runtime values, status, and version labels', () => {
+  it('KRO mode preserves repository ownership, runtime values, status, and version', () => {
     const yaml = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' }).toYaml();
     const docs = splitDocs(yaml);
 
@@ -180,31 +182,85 @@ describe('valkeyBootstrap factory modes', () => {
     expect(yaml).toContain('schema.spec.repositoryNamespace');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.values))');
     expect(yaml).toContain('ready: ${valkeyHelmRelease.status.conditions.exists');
+    // The owned workload Namespace (which carried the version label) is hoisted out
+    // of the RGD graph; the chart version still resolves in the HelmRelease.
+    expect(yaml).not.toContain('kind: Namespace');
     expect(yaml).toContain(
-      'app.kubernetes.io/version: "${has(schema.spec.version) ? schema.spec.version : \\"v0.0.61\\"}"'
+      'version: "${has(schema.spec.version) ? schema.spec.version : \\"v0.0.61-chart\\"}"'
     );
     expect(yaml).not.toContain('__typekroSchemaKey');
   });
 
-  it('rejects an instance inside its owned namespace across YAML, deploy, and Alchemy', async () => {
+  it('hoists the owned namespace instead of relocating; instance stays in the workload ns', async () => {
+    // valkeyBootstrap creates and owns its operator Namespace. Instead of relocating
+    // the instance CR, the owned Namespace is HOISTED out of the RGD graph (retained,
+    // deps-first) and the instance stays in its natural workload namespace — the
+    // v0.25.0 ownership guard passes with no flag.
     const factory = valkeyBootstrap.factory('kro', { namespace: 'valkey-system' });
-    const unsafeSpec = {
-      name: 'valkey-operator',
-      namespace: 'valkey-system',
-    } as never;
+    const spec = { name: 'valkey-operator', namespace: 'valkey-system' } as never;
 
-    expect(() => factory.toYaml(unsafeSpec)).toThrow('cannot also be an owned Namespace');
-    await expect(factory.deploy(unsafeSpec)).rejects.toThrow('cannot also be an owned Namespace');
-    await expect(factory.toAlchemyResources(unsafeSpec)).rejects.toThrow(
-      'cannot also be an owned Namespace'
-    );
+    const yaml = factory.toYaml(spec);
+    expect(yaml).toMatch(/namespace: valkey-system$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+
+    const decls = await factory.toAlchemyResources(spec);
+    expect(decls[0]?.props.resource.kind).toBe('Namespace');
+    expect(decls[0]?.props.resource.metadata?.name).toBe('valkey-system');
+    // The instance's OWN (1:1) namespace is NOT retained: reverse-topo teardown
+    // deletes it after the RGD + instance.
+    expect(decls[0]?.props.retain).toBeUndefined();
+    expect(decls.at(-1)?.props.namespace).toBe('valkey-system');
   });
 
-  it('rejects the same namespace invariant through composition nesting', () => {
+  it('hoists a nested-owned namespace named after the parent spec.namespace', () => {
+    // A nested-owned namespace is hoisted out of the shared RGD like any other
+    // (typekro never emits a Namespace into RGD YAML) — hoisted through nesting, with
+    // the instance left in its natural namespace.
     const parent = kubernetesComposition(
       {
         name: 'valkey-nested-owner',
         kind: 'ValkeyNestedOwner',
+        spec: type({ name: 'string', namespace: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (parentSpec) => {
+        const operator = valkeyBootstrap({
+          name: 'valkey-operator',
+          namespace: parentSpec.namespace,
+        });
+        return { ready: operator.status.ready };
+      }
+    );
+
+    const yaml = parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
+      name: 'platform',
+      namespace: 'valkey-system',
+    });
+    expect(yaml).toMatch(/namespace: valkey-system$/m);
+    expect(yaml).not.toContain('typekro-system');
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    // The shared RGD no longer owns the Namespace as a graph child.
+    expect(parent.factory('kro', { namespace: 'valkey-system' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
+
+    // Pinning the instance into its own owned namespace is now SAFE (the namespace is
+    // a sibling deleted after the RGD), so it no longer throws — it just hoists.
+    expect(() =>
+      parent
+        .factory('kro', { namespace: 'valkey-system', instanceNamespace: 'valkey-system' })
+        .toYaml({ name: 'platform', namespace: 'valkey-system' })
+    ).not.toThrow();
+  });
+
+  it('hoists a nested-owned namespace named after a DIFFERENT field too (unconditional)', () => {
+    // The v2 model has no structural "tracks spec.namespace" gate — EVERY owned
+    // Namespace is hoisted out of the RGD regardless of which field names it.
+    const parent = kubernetesComposition(
+      {
+        name: 'valkey-nested-otherfield',
+        kind: 'ValkeyNestedOtherField',
         spec: type({ name: 'string', operatorNamespace: 'string' }),
         status: type({ ready: 'boolean' }),
       },
@@ -217,12 +273,16 @@ describe('valkeyBootstrap factory modes', () => {
       }
     );
 
-    expect(() =>
-      parent.factory('kro', { namespace: 'valkey-system' }).toYaml({
-        name: 'platform',
-        operatorNamespace: 'valkey-system',
-      })
-    ).toThrow('cannot also be an owned Namespace');
+    let yaml = '';
+    expect(() => {
+      yaml = parent
+        .factory('kro', { namespace: 'valkey-system' })
+        .toYaml({ name: 'platform', operatorNamespace: 'valkey-system' });
+    }).not.toThrow();
+    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    expect(parent.factory('kro', { namespace: 'valkey-system' }).toYaml()).not.toContain(
+      'kind: Namespace'
+    );
   });
 
   it('rejects unsafe singleton owners before GitOps or live-cluster side effects', async () => {

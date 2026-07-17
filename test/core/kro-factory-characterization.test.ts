@@ -898,6 +898,7 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
     const factory = makeFactory('myApp');
     const factoryRecord = factory as unknown as Record<string, unknown>;
     factoryRecord.discoveredPlural = 'testapps';
+    // getInstances lists the factory namespace (the instance is never relocated).
     factoryRecord.createCustomObjectsApi = async () => ({
       listNamespacedCustomObject: async () => ({
         items: [
@@ -2132,7 +2133,7 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     ) as () => Promise<string>;
 
     await expect(requireCRDPluralForCleanup()).rejects.toThrow(
-      'Cannot determine CRD plural for TestApp; preserving RGD/CRD'
+      'Cannot determine CRD plural for TestApp; preserving RGD'
     );
   });
 

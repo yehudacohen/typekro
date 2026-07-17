@@ -52,7 +52,11 @@ describe('Caddy ingress composition', () => {
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: caddy-ingress');
-    expect(yaml).toContain('kind: Namespace');
+    // The composition owns its workload Namespace (named after `spec.namespace`),
+    // so it is HOISTED out of the shared RGD graph and emitted as a retained
+    // resource by the instance/deploy paths — the RGD no longer owns it as a graph
+    // child (PR #113: retained-namespace model, consistent across every instance).
+    expect(yaml).not.toContain('kind: Namespace');
     expect(yaml).toContain('kind: ConfigMap');
     expect(yaml).toContain('kind: Deployment');
     expect(yaml).toContain('kind: Service');

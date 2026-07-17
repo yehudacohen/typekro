@@ -40,11 +40,19 @@ TypeKro inspected chart-generated Deployments or Pods.
 
 ## Minimal Bootstrap
 
+`dagsterBootstrap` creates and owns its target Namespace, so TypeKro auto-detects
+this and **hoists that Namespace out of the RGD graph** (emitting it as a retained
+resource created deps-first) rather than leaving it a graph child. The instance CR
+stays in its natural namespace — deleting the instance can therefore never
+garbage-collect the namespace holding its own finalizer.
+
 ```ts
 import { dagsterBootstrap } from 'typekro/dagster';
 
+// Deploy Dagster into the `dagster` namespace; the instance CR stays there and the
+// owned namespace is hoisted out of the graph (retained) automatically.
 const factory = dagsterBootstrap.factory('kro', {
-  namespace: 'typekro-system',
+  namespace: 'dagster',
 });
 
 await factory.deploy({
@@ -102,9 +110,10 @@ Use YAML generation for GitOps:
 // emitted deps-first as a multi-document stream.
 const rgdYaml = dagsterBootstrap.toYaml();
 
-// Instances: the shared singleton owner instance plus this Dagster instance.
+// Instances: the retained workload Namespace, the shared singleton owner
+// instance, then this Dagster instance (which stays in its `analytics` namespace).
 const instanceYaml = dagsterBootstrap
-  .factory('kro', { namespace: 'typekro-system' })
+  .factory('kro', { namespace: 'analytics' })
   .toYaml({ name: 'analytics', namespace: 'analytics' });
 ```
 
