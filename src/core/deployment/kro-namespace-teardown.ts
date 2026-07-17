@@ -46,6 +46,36 @@ export function parseHoistedNamespacesAnnotation(value: string | undefined): str
 }
 
 /**
+ * A richer read of {@link HOISTED_NAMESPACES_ANNOTATION} that DISTINGUISHES three cases the
+ * pre-hoist guard must treat differently:
+ *  - `present` — a valid JSON array, INCLUDING an explicit empty `[]` (the instance hoists zero
+ *    namespaces). This is per-instance PROOF and is SAFE — the guard must NOT fail closed on it.
+ *  - `missing` — no annotation at all: a genuinely-legacy CR predating the record → FAIL CLOSED.
+ *  - `malformed` — present but not a JSON array → FAIL CLOSED.
+ * (Teardown uses {@link parseHoistedNamespacesAnnotation}, where any non-list just means "nothing
+ * to clean" — the missing-vs-empty distinction only matters for the fail-closed guard.)
+ */
+export type HoistedNamespacesRecord =
+  | { readonly status: 'present'; readonly names: string[] }
+  | { readonly status: 'missing' }
+  | { readonly status: 'malformed' };
+
+export function readHoistedNamespacesRecord(value: string | undefined): HoistedNamespacesRecord {
+  if (typeof value !== 'string' || value.trim().length === 0) return { status: 'missing' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { status: 'malformed' };
+  }
+  if (!Array.isArray(parsed)) return { status: 'malformed' };
+  return {
+    status: 'present',
+    names: parsed.filter((n): n is string => typeof n === 'string' && n.length > 0),
+  };
+}
+
+/**
  * The minimal LIST surface used by {@link listNamespacesOwnedByRgd}. {@link
  * k8s.KubernetesObjectApi} satisfies it; tests inject a mock.
  */

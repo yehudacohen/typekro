@@ -111,6 +111,7 @@ import {
   NAMESPACE_OWNER_ANNOTATION,
   type NamespaceOwnershipDecision,
   parseHoistedNamespacesAnnotation,
+  readHoistedNamespacesRecord,
 } from './kro-namespace-teardown.js';
 import { createRollbackManager } from './rollback-manager.js';
 import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
@@ -1317,6 +1318,11 @@ export class KroResourceFactoryImpl<
   private async existingInstancesHoistedNamespaceNames(): Promise<Set<string>> {
     const result = new Set<string>();
 
+    // Short-circuit: if this RGD structurally hoists NO namespace, the hoist can prune nothing —
+    // there is nothing to protect and no per-instance record to require. An ordinary composition
+    // with no Namespace resources must never trip the pre-hoist legacy guard.
+    if (this.hoistedNamespaceRefs().size === 0) return result;
+
     // Discover the generated CRD via a STRICT lookup that THROWS on a real list error
     // (finding #3, fail-closed): a discovery/RBAC failure is NOT proof the CRD is
     // absent. Only a successful list with no matching CRD is a definitive "fresh
@@ -1400,14 +1406,16 @@ export class KroResourceFactoryImpl<
       // `typekro.io/hoisted-namespaces` annotation (finding #1, v7). It carries the instance's
       // EXACT hoisted names (round-tripping a name derived from an arbitrary spec field) and is
       // the ONLY per-instance proof.
-      const recorded = parseHoistedNamespacesAnnotation(
+      const record = readHoistedNamespacesRecord(
         item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
       );
-      if (recorded.length > 0) {
-        for (const ns of recorded) result.add(ns);
+      if (record.status === 'present') {
+        // A VALID record — including an explicit empty `[]` — is per-instance proof: this
+        // instance hoists exactly these namespaces (possibly none). Resolved; do NOT fail closed.
+        for (const ns of record.names) result.add(ns);
         continue;
       }
-      // This instance has NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do
+      // MISSING or MALFORMED record → NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do
       // NOT fall back to the RGD-wide `created-by-rgd` set: it is not per-instance proof — a
       // DIFFERENT (modern) instance could have stamped it, so a non-empty set would MASK this
       // legacy instance whose own — possibly different — owned namespace is then invisible and
@@ -3170,16 +3178,16 @@ export class KroResourceFactoryImpl<
     // DURABLE RECORD (finding #4): stamp the CONCRETE hoisted-namespace names on the CR so
     // teardown + the pre-hoist guard read them back EXACTLY, without re-deriving from
     // metadata.namespace/spec.namespace. This is what lets a name derived from an ARBITRARY
-    // spec field (e.g. spec.targetNamespace) round-trip. Omit the annotation entirely when
-    // the instance hoists no namespace (keeps the CR clean + back-compatible).
+    // spec field (e.g. spec.targetNamespace) round-trip. ALWAYS record the array — INCLUDING an
+    // empty [] — so the pre-hoist guard can distinguish "this instance hoists zero namespaces"
+    // (a valid, safe record) from a genuinely-legacy CR that predates the annotation (missing →
+    // fail closed). Omitting [] made an ordinary namespace-less composition's 2nd deploy throw.
     const hoistedNamespaceNames = [...this.concreteHoistedNamespaces(spec).keys()];
     const annotations: Record<string, string> = {
       ...(singletonSpecFingerprint
         ? { 'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint }
         : {}),
-      ...(hoistedNamespaceNames.length > 0
-        ? { [HOISTED_NAMESPACES_ANNOTATION]: JSON.stringify(hoistedNamespaceNames) }
-        : {}),
+      [HOISTED_NAMESPACES_ANNOTATION]: JSON.stringify(hoistedNamespaceNames),
     };
 
     return {

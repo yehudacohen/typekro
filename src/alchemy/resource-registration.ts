@@ -36,7 +36,7 @@ import {
   HOISTED_NAMESPACES_ANNOTATION,
   listNamespacesOwnedByRgd,
   NAMESPACE_OWNER_ANNOTATION,
-  parseHoistedNamespacesAnnotation,
+  readHoistedNamespacesRecord,
 } from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { stableSerialize } from '../core/singleton/singleton.js';
@@ -518,14 +518,16 @@ async function _existingInstanceNamespacesAlchemy<T extends Enhanced<unknown, un
     // `typekro.io/hoisted-namespaces` annotation (finding #1, v7). It carries the instance's
     // EXACT hoisted names (a name derived from an arbitrary spec field round-trips) and is the
     // ONLY per-instance proof.
-    const recorded = parseHoistedNamespacesAnnotation(
+    const record = readHoistedNamespacesRecord(
       item.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
     );
-    if (recorded.length > 0) {
-      for (const ns of recorded) result.add(ns);
+    if (record.status === 'present') {
+      // A VALID record — including an explicit empty `[]` — is per-instance proof: this instance
+      // hoists exactly these namespaces (possibly none). Resolved; do NOT fail closed.
+      for (const ns of record.names) result.add(ns);
       continue;
     }
-    // This instance has NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do NOT
+    // MISSING or MALFORMED record → NO per-instance exact record. FAIL CLOSED (finding #1, v7). We do NOT
     // fall back to the RGD-wide `created-by-rgd` set: being RGD-wide it is not per-instance
     // proof — a DIFFERENT (modern) instance could have stamped it, so a non-empty set would
     // MASK this legacy instance whose own — possibly different — owned namespace is then
