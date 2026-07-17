@@ -10,6 +10,7 @@ import {
   DEFAULT_FAST_POLL_INTERVAL,
   DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_MAX_BACKOFF,
+  DEFAULT_READINESS_PROBE_TIMEOUT,
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
@@ -81,15 +82,23 @@ export class ResourceReadinessChecker {
       attempt++;
 
       try {
-        // In the new API, methods return objects directly (no .body wrapper)
-        const currentResource = await this.k8sApi.read({
-          apiVersion: deployedResource.manifest.apiVersion,
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
+        // In the new API, methods return objects directly (no .body wrapper).
+        // Bound the probe with a HARD per-attempt deadline (clamped to the
+        // remaining budget) so a read that hangs before the HTTP layer arms its
+        // own timeout — e.g. exec credential auth (`aws eks get-token`) blocking
+        // on expired credentials — cannot stall the poll loop indefinitely. This
+        // path has no abort signal, so the deadline is the only escape hatch.
+        const currentResource = await this.readWithDeadline(
+          {
+            apiVersion: deployedResource.manifest.apiVersion,
+            kind: deployedResource.kind,
+            metadata: {
+              name: deployedResource.name,
+              namespace: deployedResource.namespace,
+            },
           },
-        });
+          readinessConfig.timeout - (Date.now() - startTime)
+        );
 
         const isReady = this.isResourceReady(currentResource);
 
@@ -199,6 +208,47 @@ export class ResourceReadinessChecker {
     }
 
     throw new ResourceReadinessTimeoutError(deployedResource, readinessConfig.timeout);
+  }
+
+  /**
+   * Read a resource from the cluster bounded by a HARD per-attempt deadline.
+   *
+   * Races the read against a wall-clock timer (the smaller of the remaining
+   * readiness budget and a per-attempt probe cap) so an attempt that never
+   * settles — because the underlying client or its exec credential auth is
+   * stuck and ignores the abort — is force-rejected. The deadline rejection
+   * (a `ReadinessProbeTimeoutError`) is caught by the poll loop and treated as
+   * a transient read failure, so polling continues until the OVERALL budget is
+   * exhausted and the loop throws ResourceReadinessTimeoutError.
+   */
+  private async readWithDeadline(
+    resourceRef: Parameters<k8s.KubernetesObjectApi['read']>[0],
+    remainingBudgetMs: number
+  ): Promise<k8s.KubernetesObject> {
+    const deadlineMs = Math.max(1, Math.min(DEFAULT_READINESS_PROBE_TIMEOUT, remainingBudgetMs));
+
+    const readPromise = this.k8sApi.read(resourceRef);
+    // Swallow the non-winning branch's rejection so a dangling read promise does
+    // not surface as an unhandled rejection after the deadline wins the race.
+    // (The pending socket is unref'd by the HTTP layer, so it won't keep the
+    // process alive.)
+    readPromise.catch(() => undefined);
+
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        const err = new Error(`Readiness probe timed out after ${deadlineMs}ms`);
+        err.name = 'ReadinessProbeTimeoutError';
+        reject(err);
+      }, deadlineMs);
+      deadlineTimer.unref?.();
+    });
+
+    try {
+      return (await Promise.race([readPromise, deadline])) as k8s.KubernetesObject;
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
   }
 
   /**

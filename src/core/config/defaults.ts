@@ -29,6 +29,18 @@ export const DEFAULT_KRO_INSTANCE_TIMEOUT = 600_000;
 /** Default timeout for HTTP read operations — GET/LIST (30 seconds) */
 export const DEFAULT_HTTP_READ_TIMEOUT = 30_000;
 
+/**
+ * Hard per-attempt deadline for a single readiness probe (60 seconds).
+ *
+ * Bounds one `k8sApi.read` call during a readiness poll so a probe that hangs
+ * before the HTTP layer ever arms its own timeout — e.g. an exec credential
+ * plugin (`aws eks get-token`) blocking on expired AWS/SSO credentials — cannot
+ * stall the poll loop indefinitely. Each attempt is also clamped to the
+ * remaining overall readiness budget, so the configured `timeout` is always
+ * honored as the wall-clock ceiling regardless of a stuck client/auth.
+ */
+export const DEFAULT_READINESS_PROBE_TIMEOUT = 60_000;
+
 /** Default timeout for cluster readiness checks (30 seconds) */
 export const DEFAULT_CLUSTER_READY_TIMEOUT = 30_000;
 
