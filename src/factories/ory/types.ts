@@ -1018,7 +1018,7 @@ const serviceEndpointSchema = type({
   'type?': '"ClusterIP" | "NodePort" | "LoadBalancer" | "ExternalName"',
   'clusterIP?': 'string',
   'loadBalancerIP?': 'string',
-  'nodePort?': 'string | number',
+  'nodePort?': 'string | number.integer',
   'port?': 'number.integer',
   'containerPort?': 'number.integer',
   'name?': 'string',
@@ -1087,7 +1087,7 @@ const podRuntimeShape = {
 } as const;
 const deploymentStrategySchema = type({
   'type?': 'string',
-  'rollingUpdate?': { 'maxSurge?': 'string | number', 'maxUnavailable?': 'string | number' },
+  'rollingUpdate?': { 'maxSurge?': 'string | number.integer', 'maxUnavailable?': 'string | number.integer' },
 });
 const automigrationSchema = type({
   'enabled?': 'boolean',
@@ -1098,7 +1098,7 @@ const automigrationSchema = type({
   'extraEnv?': yamlObjectArraySchema,
 });
 const customMigrationsSchema = type({ 'jobs?': 'object' });
-const pdbSchema = type({ 'enabled?': 'boolean', 'spec?': { 'minAvailable?': 'string | number', 'maxUnavailable?': 'string | number' } });
+const pdbSchema = type({ 'enabled?': 'boolean', 'spec?': { 'minAvailable?': 'string | number.integer', 'maxUnavailable?': 'string | number.integer' } });
 const serviceMonitorValuesSchema = type({
   'enabled?': 'boolean',
   'scheme?': 'string',

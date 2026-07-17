@@ -252,8 +252,8 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
     'stream?': {
       'enabled?': 'boolean',
       'only?': 'boolean',
-      'tcp?': 'number[]',
-      'udp?': 'number[]',
+      'tcp?': 'number.integer[]',
+      'udp?': 'number.integer[]',
     },
     'ingress?': {
       'enabled?': 'boolean',
