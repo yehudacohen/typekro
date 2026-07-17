@@ -252,9 +252,9 @@ const bootstrapBaseShape = {
     /** DNS host of the external ClickHouse service (no scheme, no port). */
     host: 'string',
     /** Native TCP port (default: 9000) → `CLICKHOUSE_ENDPOINT`/`CLICKHOUSE_SERVER_ENDPOINT`. */
-    'nativePort?': 'number',
+    'nativePort?': 'number.integer',
     /** HTTP port (default: 8123) → HyperDX UI `defaultConnections` host. */
-    'httpPort?': 'number',
+    'httpPort?': 'number.integer',
     /** OTel export target database (default: 'default') → `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`. */
     'database?': 'string',
     /** Ingest/collector user (default: 'default') → `hyperdx.config.CLICKHOUSE_USER`. Needs SELECT,INSERT,CREATE,SHOW on the database. */
@@ -270,7 +270,7 @@ const bootstrapBaseShape = {
   'apiKey?': 'string',
   /** HyperDX app (UI/API) conveniences. */
   'hyperdx?': {
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     'resources?': resourceRequirementsShape,
     'image?': imageShape,
     /** Public URL of the HyperDX UI → `hyperdx.config.FRONTEND_URL`. */
@@ -382,9 +382,9 @@ export const ClickStackBootstrapStatusSchema = type({
     /** In-cluster DNS host of the HyperDX app Service. */
     host: 'string',
     /** UI port. */
-    appPort: 'number',
+    appPort: 'number.integer',
     /** API port. */
-    apiPort: 'number',
+    apiPort: 'number.integer',
   },
 });
 

@@ -108,7 +108,7 @@ function buildSpecSchema(topology: ResolvedTopology) {
   };
 
   if (topology.keeper) {
-    definition.keeper = { host: 'string', 'port?': 'number' };
+    definition.keeper = { host: 'string', 'port?': 'number.integer' };
   }
 
   if (topology.users.length > 0) {

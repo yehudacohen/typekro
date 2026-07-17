@@ -18,16 +18,16 @@ const resourceRequirementsSchemaShape = {
 } as const;
 
 const replicatedPoolSchemaShape = {
-  size: 'number',
+  size: 'number.integer',
   'requireSafeReplicaSize?': 'boolean',
   'targetSizeRatio?': 'number',
-  'replicasPerFailureDomain?': 'number',
+  'replicasPerFailureDomain?': 'number.integer',
   'subFailureDomain?': 'string',
 } as const;
 
 const erasureCodedPoolSchemaShape = {
-  dataChunks: 'number',
-  codingChunks: 'number',
+  dataChunks: 'number.integer',
+  codingChunks: 'number.integer',
   'algorithm?': '"isa" | "jerasure"',
   'stripeUnit?': '"4Ki" | "16Ki" | "64Ki" | "256Ki" | "1Mi"',
 } as const;
@@ -124,7 +124,7 @@ export const CephObjectStoreConfigSchema = type({
     'hosting?': {
       'advertiseEndpoint?': {
         dnsName: 'string',
-        port: 'number',
+        port: 'number.integer',
         useTls: 'boolean',
       },
       'dnsNames?': 'string[]',
@@ -182,9 +182,9 @@ export const CephObjectStoreUserConfigSchema = type({
       'ratelimit?': '"*" | "read" | "write" | "read, write"',
     },
     'quotas?': {
-      'maxBuckets?': 'number',
+      'maxBuckets?': 'number.integer',
       'maxSize?': 'string',
-      'maxObjects?': 'number',
+      'maxObjects?': 'number.integer',
     },
     'keys?': type({
       accessKeyRef: secretKeySelectorSchemaShape,

@@ -65,12 +65,12 @@ const barmanObjectStoreSchemaShape = {
   'data?': {
     'compression?': 'string',
     'encryption?': 'string',
-    'jobs?': 'number',
+    'jobs?': 'number.integer',
     'immediateCheckpoint?': 'boolean',
   },
   'wal?': {
     'compression?': 'string',
-    'maxParallel?': 'number',
+    'maxParallel?': 'number.integer',
   },
   'tags?': 'Record<string, string>',
 } as const;
@@ -81,7 +81,7 @@ const tolerationSchemaShape = {
   'operator?': '"Exists" | "Equal"',
   'value?': 'string',
   'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
-  'tolerationSeconds?': 'number',
+  'tolerationSeconds?': 'number.integer',
 } as const;
 
 // ============================================================================
@@ -105,7 +105,7 @@ export const CnpgBootstrapConfigSchema = type({
   /** Whether to install CRDs with the chart (default: true). */
   'installCRDs?': 'boolean',
   /** Number of operator controller replicas (default: 1). */
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
   /** Monitoring configuration. */
   'monitoring?': { 'enabled?': 'boolean' },
   /** Operator pod resources. */
@@ -171,7 +171,7 @@ export const ClusterConfigSchema = type({
   /** Cluster specification. */
   spec: {
     /** Number of PostgreSQL instances (primary + replicas). Default: 1. */
-    'instances?': 'number',
+    'instances?': 'number.integer',
     /** PostgreSQL container image. */
     'imageName?': 'string',
     /** Image pull policy. */
@@ -506,7 +506,7 @@ export const PoolerConfigSchema = type({
     /** Pooler type: 'rw' (read-write primary), 'ro' (read-only, any replica), 'r' (load-balanced across all standbys). */
     'type?': '"rw" | "ro" | "r"',
     /** Number of PgBouncer replicas (default: 1). */
-    'instances?': 'number',
+    'instances?': 'number.integer',
     /** PgBouncer configuration. Required. */
     pgbouncer: {
       /** Pool mode: 'session' (default) or 'transaction'. */

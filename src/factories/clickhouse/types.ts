@@ -247,9 +247,9 @@ export const ClickHouseInstallationConfigSchema = type({
   /** Full image override (takes precedence over `version`). */
   'image?': 'string',
   /** Shard count (default: 1). */
-  'shards?': 'number',
+  'shards?': 'number.integer',
   /** Replicas per shard (default: 1). */
-  'replicas?': 'number',
+  'replicas?': 'number.integer',
   /**
    * Availability zones to pin replicas to (e.g. ['us-east-2a','us-east-2b']).
    *
@@ -289,7 +289,7 @@ export const ClickHouseInstallationConfigSchema = type({
   'keeper?': {
     host: 'string',
     /** Keeper client port (default: 2181). */
-    'port?': 'number',
+    'port?': 'number.integer',
   },
   /** ClickHouse server container resources. */
   'podResources?': {
@@ -604,20 +604,20 @@ export const ClickHouseClusterStatusSchema = type({
   phase: '"Installing" | "Ready" | "Failed"',
   clickhouse: {
     host: 'string',
-    port: 'number',
+    port: 'number.integer',
     nativeUrl: 'string',
     httpUrl: 'string',
     clusterName: 'string',
     database: 'string',
     'user?': 'string',
   },
-  'keeper?': { host: 'string', port: 'number' },
+  'keeper?': { host: 'string', port: 'number.integer' },
   installation: {
     name: 'string',
     namespace: 'string',
     'endpoint?': 'string',
-    'hostsCount?': 'number',
-    'hostsCompletedCount?': 'number',
+    'hostsCount?': 'number.integer',
+    'hostsCompletedCount?': 'number.integer',
   },
 });
 
@@ -640,7 +640,7 @@ export const ClickHouseKeeperInstallationConfigSchema = type({
   /** Resource ID for composition references. */
   'id?': 'string',
   /** Keeper replica count (default: 1; use an odd number for quorum). */
-  'replicas?': 'number',
+  'replicas?': 'number.integer',
   /** Persistent storage for the keeper log/snapshot data. */
   'storage?': {
     size: 'string',

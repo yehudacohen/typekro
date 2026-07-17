@@ -91,9 +91,9 @@ export const ExternalDnsBootstrapStatusSchema: Type<ExternalDnsBootstrapStatus> 
 
   // DNS record management status
   records: {
-    managed: 'number',
-    total: 'number',
-    errors: 'number',
+    managed: 'number.integer',
+    total: 'number.integer',
+    errors: 'number.integer',
   },
 });
 

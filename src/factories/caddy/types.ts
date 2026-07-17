@@ -56,9 +56,9 @@ const baseCaddyIngressShape = {
    */
   'version?': 'string',
   /** HTTP listener port on the Service + container (default 80). */
-  'httpPort?': 'number',
+  'httpPort?': 'number.integer',
   /** HTTPS listener port on the Service + container (default 443). */
-  'httpsPort?': 'number',
+  'httpsPort?': 'number.integer',
   /** Service type (default ClusterIP — reached via the access tunnel; no public LB). */
   'serviceType?': '"ClusterIP" | "NodePort" | "LoadBalancer"',
   'resources?': resourceRequirementsSchemaShape,
