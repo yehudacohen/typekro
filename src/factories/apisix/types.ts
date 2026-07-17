@@ -228,7 +228,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
 
   // Installation configuration
   'installCRDs?': 'boolean',
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
 
   // Global configuration
   'global?': {
@@ -241,19 +241,19 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
     'type?': '"NodePort" | "LoadBalancer" | "ClusterIP"',
     'http?': {
       'enabled?': 'boolean',
-      'servicePort?': 'number',
-      'containerPort?': 'number',
+      'servicePort?': 'number.integer',
+      'containerPort?': 'number.integer',
     },
     'https?': {
       'enabled?': 'boolean',
-      'servicePort?': 'number',
-      'containerPort?': 'number',
+      'servicePort?': 'number.integer',
+      'containerPort?': 'number.integer',
     },
     'stream?': {
       'enabled?': 'boolean',
       'only?': 'boolean',
-      'tcp?': 'number[]',
-      'udp?': 'number[]',
+      'tcp?': 'number.integer[]',
+      'udp?': 'number.integer[]',
     },
     'ingress?': {
       'enabled?': 'boolean',
@@ -286,7 +286,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'apisix?': {
         'serviceNamespace?': 'string',
         'serviceName?': 'string',
-        'servicePort?': 'number',
+        'servicePort?': 'number.integer',
         'adminAPIVersion?': 'string',
       },
       'kubernetes?': {
@@ -326,7 +326,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   // etcd configuration
   'etcd?': {
     'enabled?': 'boolean',
-    'replicaCount?': 'number',
+    'replicaCount?': 'number.integer',
     'image?': imageSchemaShape,
     'resources?': resourceRequirementsSchemaShape,
     'auth?': {
@@ -379,8 +379,8 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
     'externalIP?': 'string',
     'ports?': type({
       name: 'string',
-      port: 'number',
-      targetPort: 'number',
+      port: 'number.integer',
+      targetPort: 'number.integer',
       protocol: 'string',
     }).array(),
   },

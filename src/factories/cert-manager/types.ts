@@ -942,14 +942,14 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
 
   // Installation configuration
   'installCRDs?': 'boolean',
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
 
   // Global configuration
   'global?': {
     'leaderElection?': {
       'namespace?': 'string',
     },
-    'logLevel?': 'number',
+    'logLevel?': 'number.integer',
     'podSecurityPolicy?': {
       'enabled?': 'boolean',
       'useAppArmor?': 'boolean',
@@ -992,7 +992,7 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
 
   // Webhook configuration (cert-manager 1.19+ — no 'enabled' or admission webhook config)
   'webhook?': {
-    'replicaCount?': 'number',
+    'replicaCount?': 'number.integer',
     'image?': {
       'repository?': 'string',
       'tag?': 'string',
@@ -1018,7 +1018,7 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
   // CA Injector configuration
   'cainjector?': {
     'enabled?': 'boolean',
-    'replicaCount?': 'number',
+    'replicaCount?': 'number.integer',
     'image?': {
       'repository?': 'string',
       'tag?': 'string',
@@ -1070,7 +1070,7 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
     },
     'nodeSelector?': 'Record<string, string>',
     'timeout?': 'string',
-    'backoffLimit?': 'number',
+    'backoffLimit?': 'number.integer',
   },
 
   // Monitoring configuration
@@ -1079,7 +1079,7 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
     'servicemonitor?': {
       'enabled?': 'boolean',
       'prometheusInstance?': 'string',
-      'targetPort?': 'number',
+      'targetPort?': 'number.integer',
       'path?': 'string',
       'interval?': 'string',
       'scrapeTimeout?': 'string',

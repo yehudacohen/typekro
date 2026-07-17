@@ -30,7 +30,7 @@ export const CiliumBootstrapSpecSchema = type({
   'version?': 'string',
   cluster: {
     name: 'string',
-    id: 'number',
+    id: 'number.integer',
   },
   'networking?': {
     'ipamMode?': '"kubernetes" | "cluster-pool" | "azure" | "aws-eni" | "crd"',
@@ -59,7 +59,7 @@ export const CiliumBootstrapSpecSchema = type({
     'prometheusEnabled?': 'boolean',
   },
   'operator?': {
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
   },
 });
 
@@ -100,10 +100,10 @@ export const CiliumBootstrapStatusSchema = type({
     authenticationEnabled: 'boolean',
   },
   resources: {
-    totalNodes: 'number',
-    readyNodes: 'number',
-    totalEndpoints: 'number',
-    totalIdentities: 'number',
+    totalNodes: 'number.integer',
+    readyNodes: 'number.integer',
+    totalEndpoints: 'number.integer',
+    totalIdentities: 'number.integer',
   },
 });
 

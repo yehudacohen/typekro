@@ -50,9 +50,9 @@ export const WebAppWithProcessingConfigSchema = type({
     /** Container image (e.g., 'myapp:latest'). */
     image: 'string',
     /** Container port (default: 3000). */
-    'port?': 'number',
+    'port?': 'number.integer',
     /** Number of replicas (default: 1). */
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     /** Additional environment variables. */
     'env?': 'Record<string, string>',
     /**
@@ -76,7 +76,7 @@ export const WebAppWithProcessingConfigSchema = type({
   /** PostgreSQL database settings. */
   database: {
     /** Number of PostgreSQL instances (default: 1). */
-    'instances?': 'number',
+    'instances?': 'number.integer',
     /** Storage size (e.g., '10Gi', '50Gi'). */
     storageSize: 'string',
     /** Storage class name (e.g. 'gp3', 'local-path'). */
@@ -89,9 +89,9 @@ export const WebAppWithProcessingConfigSchema = type({
   /** Valkey cache settings. Always deployed (omitting uses defaults, does not skip cache). */
   'cache?': {
     /** Number of Valkey shards (default: 3). */
-    'shards?': 'number',
+    'shards?': 'number.integer',
     /** Replicas per shard (default: 0). */
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     /** Enable volume permissions init container. */
     'volumePermissions?': 'boolean',
     /** Storage size per shard (default: '1Gi'). */
@@ -114,7 +114,7 @@ export const WebAppWithProcessingConfigSchema = type({
     /** SDK URLs to auto-sync functions from. */
     'sdkUrl?': 'string[]',
     /** Number of Inngest server replicas (default: 1). */
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     /** Pod resource requirements for the Inngest server. */
     'resources?': resourceRequirementsSchemaShape,
   },
@@ -181,10 +181,10 @@ export const WebAppWithProcessingStatusSchema = type({
   ready: 'boolean',
   databaseUrl: 'string',
   databaseHost: 'string',
-  databasePort: 'number',
+  databasePort: 'number.integer',
   cacheUrl: 'string',
   cacheHost: 'string',
-  cachePort: 'number',
+  cachePort: 'number.integer',
   inngestUrl: 'string',
   appUrl: 'string',
   components: {

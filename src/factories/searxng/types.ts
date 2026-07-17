@@ -59,7 +59,7 @@ export const SearxngConfigSchema = type({
     /** Image pull policy. */
     'imagePullPolicy?': '"Always" | "Never" | "IfNotPresent"',
     /** Number of replicas (default: 1). */
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     /** SearXNG instance name shown in the UI. */
     'instanceName?': 'string',
     /** Base URL for the instance (used for redirects/links). */
@@ -144,7 +144,7 @@ const SearxngBootstrapBaseConfigSchema = type({
   /** Container image (default: 'searxng/searxng:2026.3.29-7ac4ff39f'). */
   'image?': 'string',
   /** Number of replicas (default: 1). */
-  'replicas?': 'number',
+  'replicas?': 'number.integer',
   /** SearXNG instance name shown in the UI. */
   'instanceName?': 'string',
   /** Base URL for the instance. */

@@ -23,7 +23,7 @@ const tolerationSchemaShape = {
   'operator?': '"Exists" | "Equal"',
   'value?': 'string',
   'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
-  'tolerationSeconds?': 'number',
+  'tolerationSeconds?': 'number.integer',
 } as const;
 
 /** Shared ArkType schema shape for pod resource requirements. */
@@ -93,12 +93,12 @@ export const ValkeyConfigSchema = type({
     /** Metrics exporter image. */
     'exporterImage?': 'string',
     /** Number of primary nodes/shards (default: 3). */
-    'shards?': 'number',
+    'shards?': 'number.integer',
     /**
      * Requested replicas per shard (default: 0). Hyperspike v0.0.61 currently
      * creates additional primaries; see upstream issue #186.
      */
-    'replicas?': 'number',
+    'replicas?': 'number.integer',
     /** Cluster domain (default: 'cluster.local'). */
     'clusterDomain?': 'string',
 
@@ -156,7 +156,7 @@ export const ValkeyConfigSchema = type({
         /** Envoy proxy image (default: 'envoyproxy/envoy:v1.32.1'). */
         'image?': 'string',
         /** Number of proxy replicas (default: 1). */
-        'replicas?': 'number',
+        'replicas?': 'number.integer',
         /** External proxy hostname. */
         'hostname?': 'string',
         /** Proxy pod resources. */

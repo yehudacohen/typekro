@@ -25,7 +25,7 @@ const tolerationSchemaShape = {
   'operator?': '"Exists" | "Equal"',
   'value?': 'string',
   'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
-  'tolerationSeconds?': 'number',
+  'tolerationSeconds?': 'number.integer',
 } as const;
 
 /** Shared ArkType schema shape for pod resource requirements. */
@@ -56,7 +56,7 @@ export const InngestBootstrapConfigSchema = type({
   /** HelmRepository name in the Flux namespace (default: derived from name). */
   'repositoryName?': 'string',
   /** Number of Inngest replicas (default: 1). */
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
 
   /** Core Inngest application configuration. */
   inngest: {
@@ -75,9 +75,9 @@ export const InngestBootstrapConfigSchema = type({
     /** Disable the web UI. */
     'noUI?': 'boolean',
     /** App polling interval in seconds (default: 60). */
-    'pollInterval?': 'number',
+    'pollInterval?': 'number.integer',
     /** Number of executor queue workers (default: 100). */
-    'queueWorkers?': 'number',
+    'queueWorkers?': 'number.integer',
     /** Log level (default: 'info'). */
     'logLevel?': 'string',
     /** Enable JSON log output. */
@@ -148,13 +148,13 @@ export const InngestBootstrapConfigSchema = type({
     /** Enable KEDA-based autoscaling (default: false). */
     'enabled?': 'boolean',
     /** Minimum replicas (default: 1). */
-    'minReplicas?': 'number',
+    'minReplicas?': 'number.integer',
     /** Maximum replicas (default: 10). */
-    'maxReplicas?': 'number',
+    'maxReplicas?': 'number.integer',
     /** Metric polling interval in seconds (default: 30). */
-    'pollingInterval?': 'number',
+    'pollingInterval?': 'number.integer',
     /** Cooldown period after scaling in seconds (default: 300). */
-    'cooldownPeriod?': 'number',
+    'cooldownPeriod?': 'number.integer',
   },
 
   /** Node selector for pod scheduling. */

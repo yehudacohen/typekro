@@ -148,7 +148,7 @@ const tolerationSchemaShape = {
   'operator?': '"Exists" | "Equal"',
   'value?': 'string',
   'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
-  'tolerationSeconds?': 'number',
+  'tolerationSeconds?': 'number.integer',
 } as const;
 
 /** Shared ArkType schema shape for Kubernetes-style environment entries. */
@@ -191,11 +191,11 @@ const podConfigSchemaShape = {
 
 const webserverSchemaShape = {
   ...podConfigSchemaShape,
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
   'image?': imageSchemaShape,
   'service?': {
     'type?': 'string',
-    'port?': 'number',
+    'port?': 'number.integer',
     'annotations?': 'Record<string, string>',
   },
   'pathPrefix?': 'string',
@@ -204,7 +204,7 @@ const webserverSchemaShape = {
   'logLevel?': 'string',
   'workspace?': {
     'enabled?': 'boolean',
-    'servers?': type({ host: 'string', port: 'number', 'name?': 'string' }).array(),
+    'servers?': type({ host: 'string', port: 'number.integer', 'name?': 'string' }).array(),
     'externalConfigmap?': 'string',
   },
   'readinessProbe?': objectMapSchema,
@@ -216,7 +216,7 @@ const daemonSchemaShape = {
   ...podConfigSchemaShape,
   'enabled?': 'boolean',
   'image?': imageSchemaShape,
-  'heartbeatTolerance?': 'number',
+  'heartbeatTolerance?': 'number.integer',
   'logFormat?': '"colored" | "json" | "rich"',
   'runCoordinator?': {
     'enabled?': 'boolean',
@@ -237,8 +237,8 @@ const userDeploymentSchema = type({
   image: imageSchemaShape,
   'dagsterApiGrpcArgs?': 'string[]',
   'codeServerArgs?': 'string[]',
-  'port?': 'number',
-  'replicaCount?': 'number',
+  'port?': 'number.integer',
+  'replicaCount?': 'number.integer',
   'includeConfigInLaunchedRuns?': { 'enabled?': 'boolean' },
   'env?': envVarSchema.array(),
   'envConfigMaps?': namedRefSchema.array(),
@@ -285,7 +285,7 @@ const postgresqlSchemaShape = {
   'database?': 'string',
   'password?': 'string',
   'passwordSecretName?': 'string',
-  'servicePort?': 'number',
+  'servicePort?': 'number.integer',
   'params?': 'Record<string, string>',
   'scheme?': 'string',
   'authProvider?': objectMapSchema,
@@ -312,7 +312,7 @@ const k8sRunLauncherSchemaShape = {
 
 const celeryWorkerQueueSchema = type({
   name: 'string',
-  'replicaCount?': 'number',
+  'replicaCount?': 'number.integer',
   'labels?': 'Record<string, string>',
   'nodeSelector?': 'Record<string, string>',
   'configSource?': objectMapSchema,
@@ -355,7 +355,7 @@ const flowerSchemaShape = {
   'service?': {
     'type?': 'string',
     'annotations?': 'Record<string, string>',
-    'port?': 'number',
+    'port?': 'number.integer',
   },
   'livenessProbe?': objectMapSchema,
   'startupProbe?': objectMapSchema,
@@ -385,7 +385,7 @@ const rabbitmqSchemaShape = {
   'image?': imageSchemaShape,
   'username?': 'string',
   'password?': 'string',
-  'servicePort?': 'number',
+  'servicePort?': 'number.integer',
   'values?': objectMapSchema,
 } as const;
 
@@ -396,9 +396,9 @@ const redisSchemaShape = {
   'usePassword?': 'boolean',
   'password?': 'string',
   'host?': 'string',
-  'port?': 'number',
-  'brokerDbNumber?': 'number',
-  'backendDbNumber?': 'number',
+  'port?': 'number.integer',
+  'brokerDbNumber?': 'number.integer',
+  'backendDbNumber?': 'number.integer',
   'brokerUrl?': 'string',
   'backendUrl?': 'string',
   'values?': objectMapSchema,
