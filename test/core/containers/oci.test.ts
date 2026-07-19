@@ -363,6 +363,28 @@ process.exit(0);
       { namespace: 'harbor-system', name: 'push-robot', context: 'orbstack' },
     ]);
 
+    const fixedUsername = kubernetesSecretRegistryCredentials({
+      namespace: 'harbor-system',
+      name: 'harbor-admin',
+      username: 'admin',
+      passwordKey: 'HARBOR_ADMIN_PASSWORD',
+      secretReader: async () => ({
+        HARBOR_ADMIN_PASSWORD: Buffer.from('generated-admin-password').toString('base64'),
+      }),
+    });
+    expect(await fixedUsername()).toEqual({
+      username: 'admin',
+      password: 'generated-admin-password',
+    });
+    expect(() =>
+      kubernetesSecretRegistryCredentials({
+        namespace: 'harbor-system',
+        name: 'invalid',
+        username: 'admin',
+        usernameKey: 'username',
+      })
+    ).toThrow('either username or usernameKey');
+
     const dockerConfig = kubernetesSecretRegistryCredentials({
       namespace: 'chirp',
       name: 'push-json',

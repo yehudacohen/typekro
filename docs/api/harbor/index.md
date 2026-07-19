@@ -201,9 +201,17 @@ The Harbor API provider is idempotent. Robot credentials are written directly to
 Secrets and are not returned in logs or status. Pull and push identities are separate policies.
 
 ```ts
+import { kubernetesSecretRegistryCredentials } from 'typekro/containers';
+
 const client = new HarborApiClient({
   endpoint: 'https://registry.example.com',
-  credentialProvider: adminCredentials,
+  credentialProvider: kubernetesSecretRegistryCredentials({
+    context: 'production',
+    namespace: 'harbor-system',
+    name: 'harbor-admin',
+    username: 'admin',
+    passwordKey: 'HARBOR_ADMIN_PASSWORD',
+  }),
   ca: platformCa,
 });
 

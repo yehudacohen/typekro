@@ -12,6 +12,8 @@ export interface KubernetesSecretRegistryCredentialOptions {
   name: string;
   /** Registry host used when resolving a kubernetes.io/dockerconfigjson entry. */
   registry?: string;
+  /** Non-secret username paired with passwordKey. Mutually exclusive with usernameKey. */
+  username?: string;
   usernameKey?: string;
   passwordKey?: string;
   dockerConfigJsonKey?: string;
@@ -87,6 +89,18 @@ function credentialFromDockerConfig(
 export function kubernetesSecretRegistryCredentials(
   options: KubernetesSecretRegistryCredentialOptions
 ): OciRegistryCredentialProvider {
+  if (options.username !== undefined && options.usernameKey !== undefined) {
+    throw new ContainerBuildError(
+      'Registry credential options must select either username or usernameKey, not both.',
+      'REGISTRY_SECRET_INVALID'
+    );
+  }
+  if (options.username !== undefined && options.username.trim().length === 0) {
+    throw new ContainerBuildError(
+      'Registry credential username must not be empty.',
+      'REGISTRY_SECRET_INVALID'
+    );
+  }
   return async (signal) => {
     if (signal?.aborted) throw ContainerBuildError.cancelled();
     const request = {
@@ -103,10 +117,14 @@ export function kubernetesSecretRegistryCredentials(
     if (data[dockerConfigKey]) {
       return credentialFromDockerConfig(data[dockerConfigKey], options.registry);
     }
-    const usernameKey = options.usernameKey ?? 'username';
     const passwordKey = options.passwordKey ?? 'password';
     return {
-      username: decodeSecretValue(data[usernameKey], usernameKey),
+      username:
+        options.username ??
+        decodeSecretValue(
+          data[options.usernameKey ?? 'username'],
+          options.usernameKey ?? 'username'
+        ),
       password: decodeSecretValue(data[passwordKey], passwordKey),
     };
   };
