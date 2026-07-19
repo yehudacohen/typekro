@@ -96,6 +96,8 @@ export const CephObjectStoreConfigSchema = type({
   name: 'string',
   'namespace?': 'string',
   'id?': 'string',
+  'labels?': 'Record<string, string>',
+  'annotations?': 'Record<string, string>',
   spec: {
     metadataPool: metadataPoolSchema,
     dataPool: dataPoolSchema,
@@ -246,8 +248,8 @@ export const RookBucketStorageClassConfigSchema = type({
   name: 'string',
   objectStoreName: 'string',
   objectStoreNamespace: 'string',
-  /** Namespace containing the Rook operator; determines its default OBC provisioner identity. */
-  operatorNamespace: 'string',
+  /** @deprecated Kept for source compatibility; Rook's default provisioner identity uses the cluster namespace. */
+  'operatorNamespace?': 'string',
   'provisionerNamePrefix?': 'string',
   'reclaimPolicy?': '"Delete" | "Retain"',
   'existingBucketName?': 'string',
@@ -315,6 +317,122 @@ export type RookCephHelmReleaseConfig = Omit<
 > & {
   values?: TypeKroChartValue<Record<string, unknown>>;
 };
+
+const cephDaemonResourcesSchemaShape = {
+  mon: resourceRequirementsSchemaShape,
+  mgr: resourceRequirementsSchemaShape,
+  osd: resourceRequirementsSchemaShape,
+  prepareosd: resourceRequirementsSchemaShape,
+  rgw: resourceRequirementsSchemaShape,
+} as const;
+
+const rookCephClusterCommonSchemaShape = {
+  name: 'string',
+  'namespace?': 'string',
+  'operatorNamespace?': 'string',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  'repositoryUrl?': 'string',
+  storageClassName: 'string',
+  'objectStoreName?': 'string',
+  'bucketStorageClassName?': 'string',
+  'cephImageRepository?': 'string',
+  'cephImageTag?': 'string',
+  'values?': 'Record<string, unknown>',
+} as const;
+
+/** Honest one-node development profile. Data is not highly available. */
+export const RookCephSingleNodePlatformConfigSchema = type({
+  ...rookCephClusterCommonSchemaShape,
+  profile: '"single-node-development"',
+  'storageSize?': 'string',
+});
+
+export type RookCephSingleNodePlatformConfig = typeof RookCephSingleNodePlatformConfigSchema.infer;
+
+const {
+  'operatorNamespace?': _optionalOperatorNamespace,
+  ...rookCephExternalOperatorClusterCommonSchemaShape
+} = rookCephClusterCommonSchemaShape;
+
+/**
+ * One-node cluster profile that consumes a separately owned Rook operator.
+ *
+ * This is the safe shape for shared platform clusters: the composition owns
+ * only its Ceph cluster namespace, chart release, object store, and bucket
+ * StorageClass. It observes but never adopts or deletes the operator.
+ */
+export const RookCephExternalOperatorSingleNodePlatformConfigSchema = type({
+  ...rookCephExternalOperatorClusterCommonSchemaShape,
+  profile: '"single-node-development"',
+  operatorNamespace: 'string',
+  'operatorDeploymentName?': 'string',
+  'storageSize?': 'string',
+});
+
+export type RookCephExternalOperatorSingleNodePlatformConfig =
+  typeof RookCephExternalOperatorSingleNodePlatformConfigSchema.infer;
+
+/** Production profile with explicit availability and operational decisions. */
+export const RookCephProductionPlatformConfigSchema = type({
+  ...rookCephClusterCommonSchemaShape,
+  profile: '"production"',
+  storageSize: 'string',
+  osdCount: 'number.integer >= 3',
+  monCount: 'number.integer >= 3',
+  mgrCount: 'number.integer >= 2',
+  poolReplicas: 'number.integer >= 3',
+  failureDomain: 'string',
+  portableVolumes: 'boolean',
+  resources: cephDaemonResourcesSchemaShape,
+  monitoring: {
+    enabled: 'true',
+    createPrometheusRules: 'boolean',
+  },
+  disruptionManagement: {
+    managePodBudgets: 'true',
+    'osdMaintenanceTimeoutMinutes?': 'number.integer >= 1',
+  },
+  backup: {
+    strategy: '"external-s3-replication" | "ceph-multisite" | "documented-manual"',
+    recoveryPointObjective: 'string',
+    recoveryTimeObjective: 'string',
+  },
+});
+
+export type RookCephProductionPlatformConfig = typeof RookCephProductionPlatformConfigSchema.infer;
+
+/** Observable official cluster-chart platform status. */
+export const RookCephPlatformStatusSchema = type({
+  ready: 'boolean',
+  failed: 'boolean',
+  phase: '"Installing" | "Ready" | "Failed"',
+  operatorReady: 'boolean',
+  clusterReady: 'boolean',
+  objectStoreReady: 'boolean',
+  storageClassReady: 'boolean',
+  cephHealth: 'string',
+  endpoint: 'string',
+  bucketStorageClassName: 'string',
+  version: 'string',
+  cephVersion: 'string',
+  profile: '"single-node-development" | "production"',
+});
+
+export type RookCephPlatformStatus = typeof RookCephPlatformStatusSchema.infer;
+
+/** Official `rook-ceph-cluster` chart release configuration. */
+export const RookCephClusterHelmReleaseConfigSchema = RookCephHelmReleaseConfigSchema;
+export type RookCephClusterHelmReleaseConfig = RookCephHelmReleaseConfig;
+
+export interface CephClusterStatus {
+  phase?: string;
+  message?: string;
+  observedGeneration?: number;
+  ceph?: { health?: string };
+  conditions?: RookCondition[];
+}
 
 /** Shared HelmRepository singleton spec. */
 export const RookCephHelmRepositorySingletonSpecSchema = type({

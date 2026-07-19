@@ -1,219 +1,331 @@
-/**
- * Container Build Utility
- *
- * Builds a Docker image from a Dockerfile and optionally pushes it to a
- * container registry. Returns the full image URI for use in K8s deployments.
- *
- * @example
- * ```typescript
- * import { buildContainer } from 'typekro/containers';
- *
- * // Local Orbstack (no push needed)
- * const result = await buildContainer({
- *   context: './apps/my-app',
- *   imageName: 'my-app',
- *   registry: { type: 'orbstack' },
- * });
- *
- * // AWS ECR (auto-creates repo, pushes)
- * const result = await buildContainer({
- *   context: './apps/my-app',
- *   imageName: 'my-app',
- *   tag: 'content-hash',
- *   platform: 'linux/amd64',
- *   registry: { type: 'ecr', region: 'us-west-2' },
- * });
- *
- * // Use the image URI in a TypeKro composition
- * await factory.deploy({
- *   app: { image: result.imageUri, port: 3000 },
- * });
- * ```
- */
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
-import { existsSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
 import { getComponentLogger } from '../logging/index.js';
 import { ContainerBuildError } from './errors.js';
 import { checkDockerAvailable, execDocker, validateBuildArgs } from './exec.js';
 import { resolveRegistry } from './registries/index.js';
-import type { ContainerBuildOptions, ContainerBuildResult } from './registries/types.js';
+import type {
+  ContainerBuildOptions,
+  ContainerBuildResult,
+  RegistrySession,
+} from './registries/types.js';
 
 const logger = getComponentLogger('container-build');
+const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
-/**
- * Build a Docker image and optionally push it to a container registry.
- *
- * Docker's own layer cache handles memoization — if nothing in the build
- * context changed, the build returns near-instantly.
- */
-export async function buildContainer(options: ContainerBuildOptions): Promise<ContainerBuildResult> {
-  const startTime = Date.now();
+function resolvePlatforms(options: ContainerBuildOptions): readonly string[] {
+  if (options.platform && options.platforms) {
+    throw new ContainerBuildError(
+      'Specify either platform or platforms, not both.',
+      'INVALID_PLATFORM'
+    );
+  }
+  const platforms = options.platforms
+    ? [...new Set(options.platforms)]
+    : options.platform
+      ? [options.platform]
+      : [];
+  for (const platform of platforms) {
+    if (!/^linux\/[a-z0-9_]+(?:\/[a-z0-9_]+)?$/.test(platform)) {
+      throw new ContainerBuildError(
+        `Invalid container platform: "${platform}".`,
+        'INVALID_PLATFORM',
+        ['Use an OCI platform such as linux/amd64 or linux/arm64.']
+      );
+    }
+  }
+  return platforms;
+}
+
+function repositoryFromTaggedUri(uri: string): string {
+  const colon = uri.lastIndexOf(':');
+  const slash = uri.lastIndexOf('/');
+  return colon > slash ? uri.slice(0, colon) : uri;
+}
+
+function digestFromInspectOutput(output: string): string {
+  const trimmed = output.trim();
+  let candidate = trimmed;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'string') candidate = parsed;
+  } catch {
+    // Buildx versions may return an unquoted digest despite the JSON format request.
+  }
+  if (!DIGEST_PATTERN.test(candidate)) {
+    throw ContainerBuildError.digestVerificationFailed(
+      `expected sha256 manifest digest, received "${candidate.slice(0, 160)}"`
+    );
+  }
+  return candidate;
+}
+
+async function createBuildxBuilder(
+  session: RegistrySession,
+  timeout: number,
+  signal: AbortSignal | undefined
+): Promise<string> {
+  const name = `typekro-${randomUUID().slice(0, 12)}`;
+  await execDocker(
+    [
+      'buildx',
+      'create',
+      '--name',
+      name,
+      '--driver',
+      'docker-container',
+      ...(session.buildkitConfigPath ? ['--buildkitd-config', session.buildkitConfigPath] : []),
+      '--bootstrap',
+    ],
+    {
+      quiet: true,
+      timeout,
+      ...(session.environment ? { environment: session.environment } : {}),
+      ...(signal ? { signal } : {}),
+    }
+  );
+  return name;
+}
+
+async function removeBuildxBuilder(
+  name: string,
+  session: RegistrySession,
+  timeout: number
+): Promise<void> {
+  await execDocker(['buildx', 'rm', '--force', name], {
+    quiet: true,
+    timeout: Math.min(timeout, 30_000),
+    ...(session.environment ? { environment: session.environment } : {}),
+  }).catch((error) => {
+    logger.warn('Failed to remove temporary Buildx builder', {
+      builder: name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+async function verifyPublishedDigest(
+  taggedImageUri: string,
+  metadataPath: string,
+  session: RegistrySession,
+  builder: string | undefined,
+  timeout: number,
+  signal: AbortSignal | undefined
+): Promise<string> {
+  const inspected = await execDocker(
+    [
+      'buildx',
+      'imagetools',
+      'inspect',
+      taggedImageUri,
+      ...(builder ? ['--builder', builder] : []),
+      '--format',
+      '{{json .Manifest.Digest}}',
+    ],
+    {
+      quiet: true,
+      timeout,
+      ...(session.environment ? { environment: session.environment } : {}),
+      ...(signal ? { signal } : {}),
+    }
+  );
+  const digest = digestFromInspectOutput(inspected.stdout);
+  try {
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as Record<string, unknown>;
+    const pushedDigest = metadata['containerimage.digest'];
+    if (typeof pushedDigest === 'string' && pushedDigest !== digest) {
+      throw ContainerBuildError.digestVerificationFailed(
+        `BuildKit reported ${pushedDigest}, registry returned ${digest}`
+      );
+    }
+  } catch (error) {
+    if (error instanceof ContainerBuildError) throw error;
+    logger.debug('Buildx metadata did not contain a comparable digest', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return digest;
+}
+
+/** Build, publish, and registry-verify a container image. */
+export async function buildContainer(
+  options: ContainerBuildOptions
+): Promise<ContainerBuildResult> {
+  const startedAt = Date.now();
   const {
     context,
     dockerfile = 'Dockerfile',
     imageName,
-    platform,
     buildArgs,
     target,
     quiet = false,
+    progress = 'auto',
     timeout = 300_000,
+    signal,
     extraDockerArgs = [],
-    registry: registryConfig,
   } = options;
-
-  // Validate inputs
   const contextPath = resolve(context);
   if (!existsSync(contextPath)) {
     throw new ContainerBuildError(
       `Build context directory not found: ${contextPath}`,
-      'INVALID_CONTEXT',
-      ['Check the context path is correct.', `Directory: ${contextPath}`]
+      'INVALID_CONTEXT'
     );
   }
-
   const dockerfilePath = join(contextPath, dockerfile);
   if (!existsSync(dockerfilePath)) {
-    throw new ContainerBuildError(
-      `Dockerfile not found: ${dockerfilePath}`,
-      'INVALID_DOCKERFILE',
-      [`Expected Dockerfile at: ${dockerfilePath}`, 'Set the dockerfile option if using a non-default name.']
-    );
+    throw new ContainerBuildError(`Dockerfile not found: ${dockerfilePath}`, 'INVALID_DOCKERFILE');
   }
-
-  // Validate image name — must be a valid Docker/OCI image reference.
-  // Must start and end with alphanumeric, no trailing dots/slashes/hyphens.
   if (!/^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$/.test(imageName)) {
-    throw new ContainerBuildError(
-      `Invalid image name: "${imageName}". Must be lowercase alphanumeric, may contain dots/hyphens/underscores/slashes, must not start or end with a separator.`,
-      'INVALID_IMAGE_NAME',
-      ['Image names must match: /^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$/']
-    );
+    throw new ContainerBuildError(`Invalid image name: "${imageName}".`, 'INVALID_IMAGE_NAME');
   }
-
-  if (buildArgs) {
-    validateBuildArgs(buildArgs);
-  }
-
-  // Resolve tag
+  if (buildArgs) validateBuildArgs(buildArgs);
+  const platforms = resolvePlatforms(options);
   let tag = options.tag ?? 'latest';
-  if (tag === 'content-hash') {
-    tag = await computeContentHash(contextPath, dockerfilePath);
+  if (tag === 'content-hash') tag = await computeContentHash(contextPath, dockerfilePath);
+
+  await checkDockerAvailable(signal);
+  const registry = resolveRegistry(options.registry);
+  const taggedImageUri = await registry.resolveImageUri(imageName, tag);
+  logger.info('Building container image', {
+    taggedImageUri,
+    platforms: platforms.length ? platforms : ['native'],
+  });
+
+  let session: RegistrySession | undefined;
+  let builder: string | undefined;
+  const metadataDirectory = await mkdtemp(join(tmpdir(), 'typekro-build-'));
+  const metadataPath = join(metadataDirectory, 'metadata.json');
+  try {
+    session = await registry.prepare(imageName, timeout, signal);
+    if (!session.remote && platforms.length > 1) {
+      throw new ContainerBuildError(
+        'Multi-platform images must be published to a remote registry.',
+        'MULTI_PLATFORM_REQUIRES_REGISTRY'
+      );
+    }
+    const buildArgFlags = buildArgs
+      ? Object.entries(buildArgs).flatMap(([key, value]) => ['--build-arg', `${key}=${value}`])
+      : [];
+    const common = [
+      '-t',
+      taggedImageUri,
+      '-f',
+      dockerfilePath,
+      ...(platforms.length ? ['--platform', platforms.join(',')] : []),
+      ...(target ? ['--target', target] : []),
+      ...buildArgFlags,
+      ...extraDockerArgs,
+      contextPath,
+    ];
+    if (session.remote) {
+      if (session.buildkitConfigPath || platforms.length > 1) {
+        builder = await createBuildxBuilder(session, timeout, signal);
+      }
+      await execDocker(
+        [
+          'buildx',
+          'build',
+          ...(builder ? ['--builder', builder] : []),
+          '--push',
+          '--metadata-file',
+          metadataPath,
+          ...(quiet ? ['--quiet'] : ['--progress', progress]),
+          ...common,
+        ],
+        {
+          quiet,
+          timeout,
+          ...(session.environment ? { environment: session.environment } : {}),
+          ...(signal ? { signal } : {}),
+        }
+      );
+      const digest = await verifyPublishedDigest(
+        taggedImageUri,
+        metadataPath,
+        session,
+        builder,
+        timeout,
+        signal
+      );
+      const repository = repositoryFromTaggedUri(taggedImageUri);
+      const imageUri = `${repository}@${digest}`;
+      const duration = Date.now() - startedAt;
+      logger.info('Container build published', { imageUri, taggedImageUri, duration });
+      return {
+        imageUri,
+        taggedImageUri,
+        repository,
+        tag,
+        digest,
+        duration,
+        pushed: true,
+        platforms,
+      };
+    }
+
+    await execDocker(['build', ...common], {
+      quiet,
+      timeout,
+      ...(signal ? { signal } : {}),
+    });
+    const duration = Date.now() - startedAt;
+    return {
+      imageUri: taggedImageUri,
+      taggedImageUri,
+      repository: repositoryFromTaggedUri(taggedImageUri),
+      tag,
+      duration,
+      pushed: false,
+      platforms,
+    };
+  } finally {
+    if (builder && session) await removeBuildxBuilder(builder, session, timeout);
+    if (session) await session.cleanup();
+    await rm(metadataDirectory, { recursive: true, force: true });
   }
-
-  logger.info('Building container image', { imageName, tag, context: contextPath, registry: registryConfig.type });
-
-  // Check Docker availability
-  await checkDockerAvailable();
-
-  // Resolve registry handler
-  const registry = resolveRegistry(registryConfig);
-
-  // Resolve full image URI
-  const imageUri = await registry.resolveImageUri(imageName, tag);
-
-  // Authenticate with registry (no-op for local registries)
-  await registry.authenticate();
-
-  // Build the image
-  const buildArgFlags = buildArgs
-    ? Object.entries(buildArgs).flatMap(([k, v]) => ['--build-arg', `${k}=${v}`])
-    : [];
-
-  const dockerBuildArgs = [
-    'build',
-    '-t', imageUri,
-    '-f', dockerfilePath,
-    ...(platform ? ['--platform', platform] : []),
-    ...(target ? ['--target', target] : []),
-    ...buildArgFlags,
-    ...extraDockerArgs,
-    contextPath,
-  ];
-
-  await execDocker(dockerBuildArgs, { quiet, timeout });
-
-  // Push to registry — handler returns whether it actually pushed
-  const pushed = await registry.push(imageUri, imageName);
-
-  const duration = Date.now() - startTime;
-  logger.info('Container build complete', { imageUri, tag, duration, pushed });
-
-  return { imageUri, tag, duration, pushed };
 }
 
-/**
- * Compute a content-based hash of the build context for deterministic tagging.
- * Exported for direct unit testing without Docker.
- *
- * Hashes the Dockerfile content plus all file contents in the context,
- * respecting .dockerignore if present. Files are streamed (not loaded into
- * memory) and hashed in sorted order for determinism.
- */
-export async function computeContentHash(contextPath: string, dockerfilePath: string): Promise<string> {
-  const hasher = new Bun.CryptoHasher('sha256');
+/** Compute a deterministic build-context digest using only Node-compatible APIs. */
+export async function computeContentHash(
+  contextPath: string,
+  dockerfilePath: string
+): Promise<string> {
+  const hasher = createHash('sha256');
+  for await (const chunk of createReadStream(dockerfilePath)) hasher.update(chunk);
 
-  // Hash the Dockerfile content (streamed for memory efficiency)
-  for await (const chunk of Bun.file(dockerfilePath).stream()) {
-    hasher.update(chunk);
-  }
-
-  // Parse .dockerignore if present — same format as .gitignore
   const ignore = (await import('ignore')).default;
-  const ig = ignore();
-  // Always exclude .git and node_modules (Docker does this implicitly)
-  ig.add(['.git', 'node_modules']);
+  const ignored = ignore().add(['.git', 'node_modules']);
   const dockerignorePath = join(contextPath, '.dockerignore');
-  if (existsSync(dockerignorePath)) {
-    const patterns = await Bun.file(dockerignorePath).text();
-    ig.add(patterns);
-  }
+  if (existsSync(dockerignorePath)) ignored.add(await readFile(dockerignorePath, 'utf8'));
 
-  // Collect files, excluding .dockerignore matches.
-  // Use a recursive directory walker that skips ignored DIRECTORIES
-  // upfront (e.g., node_modules/, .git/) instead of Bun.Glob which
-  // enumerates all files before filtering — critical for repos with
-  // multi-GB node_modules.
   const files: string[] = [];
-  // `dir` is relative to contextPath; `prefix` is the slash-joined
-  // path used for ignore matching and file collection. readdir always
-  // receives an absolute path via join(contextPath, dir).
-  const walkDir = async (dir: string, prefix: string): Promise<void> => {
-    const entries = await readdir(join(contextPath, dir), { withFileTypes: true });
+  const walk = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await readdir(join(contextPath, directory), { withFileTypes: true });
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      // Check ignore BEFORE descending — this is the perf optimization
-      // that avoids traversing node_modules/ entirely.
-      if (ig.ignores(relativePath + (entry.isDirectory() ? '/' : ''))) continue;
-      if (entry.isDirectory()) {
-        await walkDir(join(dir, entry.name), relativePath);
-      } else if (entry.isFile()) {
-        // Only include regular files — skip symlinks, sockets, etc.
-        files.push(relativePath);
-      }
+      if (ignored.ignores(relativePath + (entry.isDirectory() ? '/' : ''))) continue;
+      if (entry.isDirectory()) await walk(join(directory, entry.name), relativePath);
+      else if (entry.isFile()) files.push(relativePath);
     }
   };
-  await walkDir('', '');
+  await walk('', '');
   files.sort();
-
   for (const file of files) {
     hasher.update(file);
     try {
-      const stream = Bun.file(join(contextPath, file)).stream();
-      for await (const chunk of stream) {
-        hasher.update(chunk);
-      }
-    } catch (err) {
-      // Skip unreadable files (broken symlinks, permission errors).
-      // Log at debug so build hash inconsistencies can be diagnosed.
-      logger.debug('Skipping unreadable file during content hash', {
-        file,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      for await (const chunk of createReadStream(join(contextPath, file))) hasher.update(chunk);
+    } catch (error) {
+      throw new ContainerBuildError(
+        `Build context file cannot be hashed: ${file}: ${error instanceof Error ? error.message : String(error)}`,
+        'INVALID_CONTEXT',
+        ['Make every included build-context file readable or exclude it through .dockerignore.'],
+        error instanceof Error ? error : undefined
+      );
     }
   }
-
-  const hash = hasher.digest('hex');
-  return `sha-${hash.slice(0, 12)}`;
+  return `sha-${hasher.digest('hex').slice(0, 12)}`;
 }

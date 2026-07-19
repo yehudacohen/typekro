@@ -39,6 +39,39 @@ export class ContainerBuildError extends TypeKroError {
     );
   }
 
+  static commandFailed(
+    exitCode: number,
+    args: readonly string[],
+    stderr: string
+  ): ContainerBuildError {
+    const operation = args.slice(0, 2).join(' ');
+    return new ContainerBuildError(
+      `Docker ${operation} failed with exit code ${exitCode}:\n${stderr.slice(0, 2_000)}`,
+      'DOCKER_COMMAND_FAILED',
+      ['Review the redacted Docker diagnostics and registry/build configuration.']
+    );
+  }
+
+  static timeout(timeout: number, operation: string): ContainerBuildError {
+    return new ContainerBuildError(
+      `Container operation timed out after ${timeout}ms: ${operation}`,
+      'BUILD_TIMEOUT',
+      ['Increase the timeout or inspect registry and builder connectivity.']
+    );
+  }
+
+  static cancelled(): ContainerBuildError {
+    return new ContainerBuildError('Container operation was cancelled.', 'BUILD_CANCELLED');
+  }
+
+  static digestVerificationFailed(detail: string): ContainerBuildError {
+    return new ContainerBuildError(
+      `Registry manifest digest verification failed: ${detail}`,
+      'DIGEST_VERIFICATION_FAILED',
+      ['Verify registry availability, credentials, and that the pushed tag was not mutated.']
+    );
+  }
+
   static pushFailed(imageUri: string, cause: Error): ContainerBuildError {
     return new ContainerBuildError(
       `Failed to push ${imageUri}: ${cause.message}`,
@@ -71,7 +104,7 @@ export class ContainerBuildError extends TypeKroError {
       `Registry type '${type}' is not yet implemented.`,
       'REGISTRY_NOT_SUPPORTED',
       [
-        'Supported registries: orbstack, ecr.',
+        'Supported registries: orbstack, ecr, oci (including Harbor).',
         'GCR and ACR support is planned — contributions welcome.',
       ]
     );

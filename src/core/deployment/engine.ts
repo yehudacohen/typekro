@@ -1413,18 +1413,63 @@ export class DirectDeploymentEngine {
       let orderedResources = deploymentRecord.resources;
       if (deploymentRecord.dependencyGraph) {
         try {
+          const resourcesById = new Map(
+            deploymentRecord.resources.map((resource) => [resource.id, resource])
+          );
+          const graphToDeployed = new Map<string, DeployedResource>();
+          for (const [graphId, node] of deploymentRecord.dependencyGraph.getNodes()) {
+            const compositionId = getResourceMetadataId(node.resource);
+            let deployed = resourcesById.get(graphId);
+            if (!deployed && compositionId) deployed = resourcesById.get(compositionId);
+
+            // Imperative composition expansion can assign a generated graph
+            // id while the applied manifest retains its stable composition
+            // id. Older deployment records may retain neither id, so use an
+            // exact Kubernetes identity only when it is unambiguous.
+            if (!deployed) {
+              const nodeName = node.resource.metadata?.name;
+              const nodeNamespace = node.resource.metadata?.namespace;
+              const identityMatches = deploymentRecord.resources.filter(
+                (resource) =>
+                  resource.kind === node.resource.kind &&
+                  resource.name === nodeName &&
+                  (nodeNamespace === undefined || resource.namespace === nodeNamespace)
+              );
+              if (identityMatches.length === 1) deployed = identityMatches[0];
+            }
+            if (deployed) graphToDeployed.set(graphId, deployed);
+          }
+
+          // Scope filtering is expressed in deployed-resource ids, while the
+          // dependency graph may use generated expansion ids. Translate the
+          // skipped set before planning so a shared dependency can never be
+          // reintroduced by the graph walk.
+          const skippedGraphIds = new Set<string>();
+          for (const [graphId, deployed] of graphToDeployed) {
+            if (skippedIds.has(deployed.id)) skippedGraphIds.add(graphId);
+          }
+          for (const skippedId of skippedIds) {
+            if (deploymentRecord.dependencyGraph.hasNode(skippedId)) {
+              skippedGraphIds.add(skippedId);
+            }
+          }
           const deletionPlan = this.dependencyResolver.analyzeDeletionOrder(
             deploymentRecord.dependencyGraph,
-            skippedIds.size > 0 ? skippedIds : undefined
+            skippedGraphIds.size > 0 ? skippedGraphIds : undefined
           );
 
-          // Map graph node IDs to DeployedResource objects in deletion order
-          const resourceMap = new Map(deploymentRecord.resources.map((r) => [r.id, r]));
+          // Map graph node IDs to DeployedResource objects in deletion order.
+          // De-duplicate defensively in case a legacy graph contains aliases
+          // for one live Kubernetes object.
           orderedResources = [];
+          const orderedIds = new Set<string>();
           for (const level of deletionPlan.levels) {
             for (const id of level) {
-              const resource = resourceMap.get(id);
-              if (resource) orderedResources.push(resource);
+              const resource = graphToDeployed.get(id) ?? resourcesById.get(id);
+              if (resource && !orderedIds.has(resource.id)) {
+                orderedIds.add(resource.id);
+                orderedResources.push(resource);
+              }
             }
           }
 

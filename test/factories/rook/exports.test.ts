@@ -7,6 +7,9 @@ describe('Rook public exports', () => {
     expect(rook.rookCephOperatorBootstrap).toBeDefined();
     expect(rook.rookCephOperatorInstallation).toBe(rook.rookCephOperatorBootstrap);
     expect(rook.rookObjectStorageClaim).toBeDefined();
+    expect(rook.rookCephSingleNodePlatform).toBeDefined();
+    expect(rook.rookCephProductionPlatform).toBeDefined();
+    expect(rook.rookCephClusterHelmRelease).toBeFunction();
     expect(rook.cephObjectStore).toBeFunction();
     expect(rook.cephObjectStoreUser).toBeFunction();
     expect(rook.objectBucketClaim).toBeFunction();

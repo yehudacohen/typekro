@@ -90,6 +90,7 @@ export default withMermaid(
               { text: 'ClickHouse', link: '/api/clickhouse/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },
               { text: 'Flux', link: '/api/flux/' },
+              { text: 'Harbor', link: '/api/harbor/' },
               { text: 'Kro', link: '/api/kro/' },
               { text: 'Kro Runtime Bootstrap', link: '/api/kro/compositions/runtime' },
               { text: 'APISix', link: '/api/apisix/' },
@@ -168,9 +169,6 @@ export default withMermaid(
       theme: 'default',
     },
 
-    ignoreDeadLinks: [
-      /typekro-examples$/,
-      /discord\.gg\/typekro$/,
-    ],
+    ignoreDeadLinks: [/typekro-examples$/, /discord\.gg\/typekro$/],
   })
 );

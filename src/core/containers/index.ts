@@ -29,9 +29,25 @@ export {
   splitImageUri,
 } from './image.js';
 export type {
+  ContainerBuildProgress,
   ContainerBuildOptions,
   ContainerBuildResult,
+  CustomRegistryConfig,
   EcrRegistryConfig,
+  HarborRegistryConfig,
+  OciRegistryConfig,
+  OciRegistryCredential,
+  OciRegistryCredentialProvider,
+  OciRegistryTlsConfig,
   OrbstackRegistryConfig,
   RegistryConfig,
+  RegistryHandler,
+  RegistrySession,
 } from './registries/types.js';
+export { kubernetesSecretRegistryCredentials } from './registries/credentials.js';
+export type {
+  KubernetesRegistrySecretReader,
+  KubernetesSecretRegistryCredentialOptions,
+} from './registries/credentials.js';
+export { harbor } from './registries/harbor.js';
+export { ociRegistry } from './registries/oci.js';

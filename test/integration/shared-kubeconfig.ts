@@ -81,11 +81,7 @@ export function isClusterAvailable(): boolean {
       return false;
     }
 
-    const kubectlCheck = Bun.spawnSync([
-      'kubectl',
-      '--request-timeout=5s',
-      'cluster-info',
-    ], {
+    const kubectlCheck = Bun.spawnSync(['kubectl', '--request-timeout=5s', 'cluster-info'], {
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -205,8 +201,14 @@ export async function deleteNamespaceAndWait(
       console.log(`📦 Test namespace ${namespace} already deleted`);
       return;
     }
-    // For other errors, log but continue to wait
-    console.warn(`⚠️ Error initiating namespace deletion: ${error.message}`);
+    // An initiation failure is not evidence that cleanup is in progress. Surface
+    // it so a green integration run can never leave an active namespace behind.
+    throw new Error(
+      `Failed to initiate deletion of test namespace ${namespace}: ${error.message}`,
+      {
+        cause: error,
+      }
+    );
   }
 
   // Wait for namespace to be fully deleted
@@ -227,7 +229,9 @@ export async function deleteNamespaceAndWait(
     }
   }
 
-  console.warn(`⚠️ Timeout waiting for namespace ${namespace} to be deleted`);
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for test namespace ${namespace} to be deleted`
+  );
 }
 
 /**

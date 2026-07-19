@@ -98,6 +98,24 @@ export interface NamespaceListApi {
 }
 
 /**
+ * Read a Kubernetes list continuation token from either representation used by
+ * `@kubernetes/client-node`:
+ *
+ * - `_continue` is the generated JavaScript model property in current clients.
+ * - `continue` is the Kubernetes wire field and is also what simple test doubles
+ *   and older unmodelled response paths commonly expose.
+ *
+ * Treating only the wire spelling as authoritative silently truncates a real
+ * client-node list at its first page.
+ */
+function listContinuationToken(metadata: unknown): string | undefined {
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const listMetadata = metadata as { _continue?: unknown; continue?: unknown };
+  const token = listMetadata._continue ?? listMetadata.continue;
+  return typeof token === 'string' && token.length > 0 ? token : undefined;
+}
+
+/**
  * List the NAMES of every Namespace carrying {@link NAMESPACE_OWNER_ANNOTATION} == `rgdName`
  * — the DURABLE, cluster-side record of every workload Namespace typekro created for this RGD.
  *
@@ -135,7 +153,7 @@ export async function listNamespacesOwnedByRgd(
       continueToken // continue
     )) as unknown as {
       items?: Array<{ metadata?: { name?: unknown; annotations?: Record<string, string> } }>;
-      metadata?: { continue?: unknown };
+      metadata?: { _continue?: unknown; continue?: unknown };
     };
     for (const item of result.items ?? []) {
       const name = item.metadata?.name;
@@ -147,8 +165,7 @@ export async function listNamespacesOwnedByRgd(
         owned.push(name);
       }
     }
-    const next = result.metadata?.continue;
-    continueToken = typeof next === 'string' && next.length > 0 ? next : undefined;
+    continueToken = listContinuationToken(result.metadata);
   } while (continueToken);
   return owned;
 }
@@ -290,9 +307,10 @@ export async function classifyNamespaceEmptiness(
  * imperative `deleteInstance` path and the Alchemy teardown handler.
  *
  * ORDER: this runs AFTER the instance CR is gone (KRO has graph-deleted every child)
- * but BEFORE the RGD/CRD teardown — the current teardown order is CR → namespace →
- * RGD → CRD (the generated CRD is torn down LAST). Deleting the namespace while the
- * RGD + CRD are still HEALTHY/Active is deliberate: the namespace controller confirms
+ * but BEFORE the RGD teardown — the current teardown order is CR → namespace → RGD,
+ * with the generated CRD retained Active for reuse or explicit administrative GC.
+ * Deleting the namespace while the RGD + CRD are still HEALTHY/Active is deliberate:
+ * the namespace controller confirms
  * emptiness instantly and can never terminate against a *Terminating* CRD (upstream
  * kro #1171). Never scans-and-deletes arbitrary namespaces: the caller passes exactly
  * the namespace THIS instance declared/hoisted.
@@ -306,8 +324,9 @@ export async function classifyNamespaceEmptiness(
  * GATED (not best-effort): a pre-delete 404 is benign (already gone), but the delete
  * itself polls to a real 404 and THROWS {@link DeploymentTimeoutError} on timeout — a
  * stuck namespace finalizer surfaces as an error, never a silently-abandoned
- * Terminating namespace. (The generated-CRD delete, a LATER step in `deleteInstance`,
- * is the only best-effort deletion — see {@link KroResourceFactoryImpl.deleteInstance}.)
+ * Terminating namespace. The generated CRD is not automatically deleted; initiating
+ * a best-effort CRD deletion can leave it Terminating and block a later deployment of
+ * the same RGD/kind.
  */
 export async function deleteNamespaceIfEmpty(
   kubeConfig: k8s.KubeConfig,
@@ -559,7 +578,10 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
       const groupList = await apisApi.getAPIVersions();
       // Cast to the CustomObjectsApi shape whose generic `getAPIResources({group, version})`
       // hits `GET /apis/{group}/{version}` for ANY group (built-in or CRD-backed).
-      const customApi = createBunCompatibleApiClient(kubeConfig, k8sClient.CustomObjectsApi) as unknown as {
+      const customApi = createBunCompatibleApiClient(
+        kubeConfig,
+        k8sClient.CustomObjectsApi
+      ) as unknown as {
         getAPIResources(request: {
           group: string;
           version: string;
@@ -609,7 +631,8 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
     async listObjectNames(type: NamespacedResourceType, namespace: string): Promise<string[]> {
       // FOLLOW the continuation token so an occupant beyond the first page is never
       // hidden by a silent cap (finding #5b). `list` returns the body directly in
-      // @kubernetes/client-node 1.x; `metadata.continue` drives the next page.
+      // @kubernetes/client-node 1.x models the wire field `metadata.continue`
+      // as `metadata._continue`; listContinuationToken accepts both forms.
       const names: string[] = [];
       let continueToken: string | undefined;
       do {
@@ -626,13 +649,12 @@ export function createClusterNamespaceInventory(kubeConfig: k8s.KubeConfig): Nam
           continueToken // continue
         )) as unknown as {
           items?: Array<{ metadata?: { name?: unknown } }>;
-          metadata?: { continue?: unknown };
+          metadata?: { _continue?: unknown; continue?: unknown };
         };
         for (const item of result.items ?? []) {
           if (typeof item.metadata?.name === 'string') names.push(item.metadata.name);
         }
-        const next = result.metadata?.continue;
-        continueToken = typeof next === 'string' && next.length > 0 ? next : undefined;
+        continueToken = listContinuationToken(result.metadata);
       } while (continueToken);
       return names;
     },

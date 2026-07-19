@@ -10,8 +10,9 @@
  * that: you `await` it. It is NOT a deferred reference — resolve images in (async) setup code before
  * composing, then feed the resulting literals into resources or chart values.
  *
- * Memoization: the build is keyed by container identity (`id ?? imageName`) and cached, so awaiting
- * the same container many times (e.g. several deployments sharing one image) builds it exactly ONCE.
+ * Memoization: the build is keyed by the effective content, target, registry, and build options, so
+ * awaiting the same container many times builds it once while a changed context or registry cannot
+ * accidentally reuse a different image.
  *
  * @example
  * ```typescript
@@ -26,22 +27,29 @@
  * ```
  */
 
-import { buildContainer } from './build.js';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+import { buildContainer, computeContentHash } from './build.js';
 import type { ContainerBuildOptions, ContainerBuildResult } from './registries/types.js';
 
 /** A built container image, resolved to a literal — both the full URI and its split parts. */
 export interface ContainerImage {
-  /** Full image URI, e.g. `123.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc`. */
+  /** Immutable digest URI for remote images, or the local tagged URI. */
   readonly imageUri: string;
-  /** The URI without the tag, e.g. `123.dkr.ecr.us-east-1.amazonaws.com/app`. */
+  /** Human-readable tagged URI retained for inspection and retention policy. */
+  readonly taggedImageUri: string;
   readonly repository: string;
-  /** The tag, e.g. `sha-abc`. */
   readonly tag: string;
+  /** Registry-verified digest. Omitted for local, non-pushed images. */
+  readonly digest?: string;
+  readonly platforms: readonly string[];
 }
 
-/** Options for {@link container}: the {@link ContainerBuildOptions} plus an optional stable identity. */
+/** Options for {@link container}: the {@link ContainerBuildOptions} plus an optional diagnostic identity. */
 export interface ContainerOptions extends ContainerBuildOptions {
-  /** Stable identity for build memoization; defaults to `imageName`. Set when two containers share one. */
+  /** Stable diagnostic identity included in, but never substituted for, the complete cache key. */
   id?: string;
 }
 
@@ -59,8 +67,10 @@ export function splitImageUri(uri: string): { repository: string; tag: string } 
     : { repository: uri, tag: 'latest' };
 }
 
-/** Build memoization, keyed by container identity (`id ?? imageName`) — builds each image once. */
+/** Build memoization, keyed by effective content/options — builds each exact image once. */
 const buildCache = new Map<string, Promise<ContainerImage>>();
+const objectIdentities = new WeakMap<object, number>();
+let nextObjectIdentity = 1;
 
 /** Test seam: the builder `container()` delegates to (defaults to the real {@link buildContainer}). */
 type Builder = (options: ContainerBuildOptions) => Promise<ContainerBuildResult>;
@@ -68,8 +78,96 @@ type Builder = (options: ContainerBuildOptions) => Promise<ContainerBuildResult>
 async function buildAndShape(options: ContainerOptions, build: Builder): Promise<ContainerImage> {
   const { id: _id, ...buildOptions } = options;
   const result = await build({ ...buildOptions, tag: buildOptions.tag ?? 'content-hash' });
-  const { repository, tag } = splitImageUri(result.imageUri);
-  return { imageUri: result.imageUri, repository, tag };
+  return {
+    imageUri: result.imageUri,
+    taggedImageUri: result.taggedImageUri,
+    repository: result.repository,
+    tag: result.tag,
+    ...(result.digest ? { digest: result.digest } : {}),
+    platforms: result.platforms,
+  };
+}
+
+function objectIdentity(value: object | undefined): number | undefined {
+  if (!value) return undefined;
+  let identity = objectIdentities.get(value);
+  if (!identity) {
+    identity = nextObjectIdentity++;
+    objectIdentities.set(value, identity);
+  }
+  return identity;
+}
+
+function sortedRecord(
+  value: Readonly<Record<string, string>> | undefined
+): Readonly<Record<string, string>> | undefined {
+  return value
+    ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+    : undefined;
+}
+
+function registryIdentity(registry: ContainerBuildOptions['registry']): object {
+  switch (registry.type) {
+    case 'oci':
+      return {
+        type: registry.type,
+        registry: registry.registry,
+        repositoryPrefix: registry.repositoryPrefix,
+        dockerConfigPath: registry.dockerConfigPath,
+        tls: registry.tls,
+        credentialProvider: objectIdentity(registry.credentialProvider),
+      };
+    case 'ecr':
+      return {
+        type: registry.type,
+        accountId: registry.accountId,
+        region: registry.region,
+        createRepository: registry.createRepository,
+        credentials: objectIdentity(registry.credentials),
+      };
+    case 'custom':
+      return { type: registry.type, handler: objectIdentity(registry.handler) };
+    default:
+      return registry;
+  }
+}
+
+async function resolvedBuildOptions(
+  options: ContainerOptions,
+  build: Builder
+): Promise<ContainerOptions> {
+  const context = resolve(options.context);
+  const dockerfile = options.dockerfile ?? 'Dockerfile';
+  let tag = options.tag ?? 'content-hash';
+  if (
+    tag === 'content-hash' &&
+    build === buildContainer &&
+    existsSync(context) &&
+    existsSync(join(context, dockerfile))
+  ) {
+    tag = await computeContentHash(context, join(context, dockerfile));
+  }
+  return { ...options, context, dockerfile, tag };
+}
+
+function buildCacheKey(options: ContainerOptions, build: Builder): string {
+  const identity = {
+    id: options.id,
+    context: options.context,
+    dockerfile: options.dockerfile,
+    imageName: options.imageName,
+    tag: options.tag,
+    platform: options.platform,
+    platforms: options.platforms ? [...options.platforms] : undefined,
+    buildArgs: sortedRecord(options.buildArgs),
+    target: options.target,
+    timeout: options.timeout,
+    signal: objectIdentity(options.signal),
+    extraDockerArgs: options.extraDockerArgs ? [...options.extraDockerArgs] : undefined,
+    registry: registryIdentity(options.registry),
+    builder: objectIdentity(build),
+  };
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
 
 /**
@@ -81,13 +179,18 @@ export function container(
   options: ContainerOptions,
   build: Builder = buildContainer
 ): Promise<ContainerImage> {
-  const key = options.id ?? options.imageName;
-  let pending = buildCache.get(key);
-  if (!pending) {
-    pending = buildAndShape(options, build);
-    buildCache.set(key, pending);
-  }
-  return pending;
+  return resolvedBuildOptions(options, build).then((resolved) => {
+    const key = buildCacheKey(resolved, build);
+    let pending = buildCache.get(key);
+    if (!pending) {
+      pending = buildAndShape(resolved, build);
+      buildCache.set(key, pending);
+      pending.catch(() => {
+        if (buildCache.get(key) === pending) buildCache.delete(key);
+      });
+    }
+    return pending;
+  });
 }
 
 /** Clear the build memoization cache. Intended for tests/long-lived processes that need a rebuild. */

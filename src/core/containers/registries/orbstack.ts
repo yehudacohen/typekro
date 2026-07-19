@@ -7,7 +7,7 @@
  */
 
 import { getComponentLogger } from '../../logging/index.js';
-import type { RegistryHandler } from './types.js';
+import type { RegistryHandler, RegistrySession } from './types.js';
 
 const logger = getComponentLogger('container-registry-orbstack');
 
@@ -16,14 +16,17 @@ export class OrbstackRegistryHandler implements RegistryHandler {
     return `${imageName}:${tag}`;
   }
 
-  async authenticate(): Promise<void> {
-    // No authentication needed — Orbstack uses the local Docker daemon.
-    logger.debug('Orbstack registry: no authentication needed');
-  }
-
-  async push(_imageUri: string, _imageName: string): Promise<boolean> {
-    // No push needed — images built locally are auto-available to Orbstack K8s.
-    logger.debug('Orbstack registry: skipping push (images auto-available to local K8s)');
-    return false;
+  async prepare(
+    _imageName: string,
+    _timeout: number,
+    _signal?: AbortSignal
+  ): Promise<RegistrySession> {
+    logger.debug('Orbstack registry: using local Docker image availability');
+    return {
+      remote: false,
+      async cleanup() {
+        // Local OrbStack builds create no temporary registry session.
+      },
+    };
   }
 }

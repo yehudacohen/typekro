@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../../src/index.js';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { storageClass } from '../../../src/factories/kubernetes/storage/storage-class.js';
 
 // Helper function to create test schemas
 function createTestSchemas() {
@@ -327,6 +329,33 @@ describe('Comprehensive Factory Tests', () => {
   });
 
   describe('Factory Pattern Type Safety', () => {
+    it('preserves non-spec Kubernetes fields in direct YAML', () => {
+      const graph = kubernetesComposition(
+        {
+          name: 'direct-storage-class',
+          kind: 'DirectStorageClass',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          storageClass({
+            id: 'objectsStorageClass',
+            metadata: { name: spec.name },
+            provisioner: 'example.test/provisioner',
+            parameters: { mode: 'bucket' },
+            reclaimPolicy: 'Retain',
+            volumeBindingMode: 'Immediate',
+          });
+          return { ready: true };
+        }
+      );
+      const yaml = graph.factory('direct').toYaml({ name: 'objects' });
+      expect(yaml).toContain('provisioner: example.test/provisioner');
+      expect(yaml).toContain('mode: bucket');
+      expect(yaml).toContain('reclaimPolicy: Retain');
+      expect(yaml).toContain('volumeBindingMode: Immediate');
+    });
+
     it('should maintain type safety across factory modes', async () => {
       const graph = createComprehensiveResourceGraph();
 

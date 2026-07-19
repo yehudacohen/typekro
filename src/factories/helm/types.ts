@@ -24,11 +24,20 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
   install?: {
     createNamespace?: boolean;
     timeout?: string;
-    remediation?: { retries?: number };
+    remediation?: {
+      retries?: number;
+      remediateLastFailure?: boolean;
+      ignoreTestFailures?: boolean;
+    };
   };
   upgrade?: {
     timeout?: string;
-    remediation?: { retries?: number };
+    remediation?: {
+      retries?: number;
+      remediateLastFailure?: boolean;
+      ignoreTestFailures?: boolean;
+      strategy?: 'rollback' | 'uninstall';
+    };
   };
   driftDetection?: {
     mode: 'enabled' | 'warn' | 'disabled';

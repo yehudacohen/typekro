@@ -6,6 +6,7 @@ import type { TypeKroResourceProps } from '../../src/alchemy/types.js';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import {
   HOISTED_NAMESPACES_ANNOTATION,
+  listNamespacesOwnedByRgd,
   NAMESPACE_OWNER_ANNOTATION,
 } from '../../src/core/deployment/kro-namespace-teardown.js';
 import { getComponentLogger } from '../../src/core/logging/index.js';
@@ -55,6 +56,50 @@ function priv(target: unknown, method: string): (...args: unknown[]) => unknown 
   if (typeof fn !== 'function') throw new Error(`missing private method ${method}`);
   return fn.bind(target);
 }
+
+describe('durable owned Namespace pagination', () => {
+  it('follows client-node metadata._continue and finds an owner beyond page one', async () => {
+    const rgdName = 'page-two-owner';
+    const tokens: Array<string | undefined> = [];
+    const result = await listNamespacesOwnedByRgd({} as never, rgdName, {
+      k8sApi: {
+        list: async (
+          _apiVersion,
+          _kind,
+          _namespace,
+          _pretty,
+          _exact,
+          _export,
+          _fieldSelector,
+          _labelSelector,
+          _limit,
+          continueToken
+        ) => {
+          tokens.push(continueToken);
+          return continueToken === undefined
+            ? {
+                items: [{ metadata: { name: 'unrelated' } }],
+                metadata: { _continue: 'second-page' },
+              }
+            : {
+                items: [
+                  {
+                    metadata: {
+                      name: 'durably-owned',
+                      annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName },
+                    },
+                  },
+                ],
+                metadata: {},
+              };
+        },
+      },
+    });
+
+    expect(tokens).toEqual([undefined, 'second-page']);
+    expect(result).toEqual(['durably-owned']);
+  });
+});
 
 // ===========================================================================
 // #1 [P1] — pre-hoist guard: per-instance EXACT record or FAIL CLOSED.
@@ -342,9 +387,9 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
 
     // The cleanup step WAS reached for the (now-exclusive) namespace...
     expect(nsRead(ops, 'shared-ns')).toBe(true);
-    // ...and, being the last instance, the RGD + CRD are torn down.
+    // ...and, being the last instance, the RGD is torn down while the reusable CRD stays Active.
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(true);
-    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(true);
+    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
   });
 
   it('FAILS CLOSED: an unreadable remaining-instance list preserves ALL namespaces + the RGD/CRD', async () => {

@@ -1,25 +1,21 @@
-/**
- * Docker CLI Execution Helper
- *
- * Wraps Bun.spawn for Docker commands with streaming output,
- * timeout support, and actionable error messages.
- */
+import { spawn } from 'node:child_process';
 
 import { getComponentLogger } from '../logging/index.js';
 import { ContainerBuildError } from './errors.js';
 
 const logger = getComponentLogger('container-exec');
-
-/** Valid Docker build-arg key pattern. */
 const VALID_BUILD_ARG_KEY = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const MAX_CAPTURED_OUTPUT_CHARS = 1_048_576;
+const FORCE_KILL_GRACE_MS = 1_000;
 
 export interface ExecDockerOptions {
-  /** Pipe this string to stdin (used for docker login --password-stdin). */
   stdin?: string;
-  /** Suppress stdout streaming (only log on error). */
   quiet?: boolean;
-  /** Timeout in milliseconds. */
   timeout?: number;
+  signal?: AbortSignal;
+  environment?: Readonly<Record<string, string>>;
+  /** Additional exact values to redact from errors and diagnostics. */
+  sensitiveValues?: readonly string[];
 }
 
 export interface ExecDockerResult {
@@ -28,22 +24,18 @@ export interface ExecDockerResult {
   stderr: string;
 }
 
-/**
- * Validate that build arg keys are safe Docker ARG names.
- * Prevents flag injection via malicious keys like "--platform".
- */
 export function validateBuildArgs(buildArgs: Record<string, string>): void {
   for (const [key, value] of Object.entries(buildArgs)) {
     if (!VALID_BUILD_ARG_KEY.test(key)) {
       throw new ContainerBuildError(
         `Invalid build arg key: "${key}". Must match ${VALID_BUILD_ARG_KEY.source}`,
         'INVALID_BUILD_ARG',
-        ['Build arg keys must be valid Docker ARG names (alphanumeric + underscore, starting with letter/underscore).']
+        ['Build arg keys must be valid Docker ARG names.']
       );
     }
-    if (typeof value === 'string' && value.includes('\n')) {
+    if (value.includes('\n')) {
       throw new ContainerBuildError(
-        `Build arg value for "${key}" contains newlines, which may break Docker --build-arg parsing.`,
+        `Build arg value for "${key}" contains newlines.`,
         'INVALID_BUILD_ARG',
         ['Remove newlines from build arg values.']
       );
@@ -51,105 +43,124 @@ export function validateBuildArgs(buildArgs: Record<string, string>): void {
   }
 }
 
-/**
- * Execute a Docker CLI command.
- *
- * Streams output to the logger in real-time unless `quiet` is set.
- * Throws ContainerBuildError on non-zero exit or timeout.
- */
+function redact(value: string, sensitiveValues: readonly string[]): string {
+  return sensitiveValues.reduce(
+    (current, sensitive) => (sensitive ? current.split(sensitive).join('***') : current),
+    value
+  );
+}
+
+function redactedDockerArgs(args: readonly string[]): string[] {
+  return args.map((arg, index) => {
+    if (args[index - 1] === '--build-arg' && arg.includes('=')) {
+      return `${arg.slice(0, arg.indexOf('='))}=***`;
+    }
+    if (args[index - 1] === '--password') return '***';
+    return arg;
+  });
+}
+
+function appendBounded(current: string, chunk: string): string {
+  const combined = current + chunk;
+  return combined.length <= MAX_CAPTURED_OUTPUT_CHARS
+    ? combined
+    : combined.slice(-MAX_CAPTURED_OUTPUT_CHARS);
+}
+
+/** Execute Docker through a Node-compatible process boundary with timeout and cancellation. */
 export async function execDocker(
   args: string[],
   options: ExecDockerOptions = {}
 ): Promise<ExecDockerResult> {
-  const { stdin, quiet = false, timeout = 300_000 } = options;
+  const {
+    stdin,
+    quiet = false,
+    timeout = 300_000,
+    signal,
+    environment = {},
+    sensitiveValues = [],
+  } = options;
+  if (signal?.aborted) throw ContainerBuildError.cancelled();
 
-  // Redact --build-arg values in logs to prevent secret leakage
-  const redactedArgs = args.map((arg, i) =>
-    args[i - 1] === '--build-arg' && arg.includes('=')
-      ? `${arg.split('=')[0]}=***`
-      : arg
-  );
-  logger.debug('Executing docker command', { args: ['docker', ...redactedArgs] });
+  const safeArgs = redactedDockerArgs(args);
+  logger.debug('Executing docker command', { args: ['docker', ...safeArgs] });
 
-  const proc = Bun.spawn(['docker', ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-    stdin: stdin ? 'pipe' : undefined,
+  const child = spawn('docker', args, {
+    env: { ...process.env, ...environment },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout = appendBounded(stdout, chunk);
+  });
+  child.stderr.on('data', (chunk: string) => {
+    stderr = appendBounded(stderr, chunk);
+  });
+  child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EPIPE')
+      logger.debug('Docker stdin closed unexpectedly', { error: error.message });
+  });
+  if (stdin !== undefined) child.stdin.end(stdin);
+  else child.stdin.end();
+
+  let timedOut = false;
+  let cancelled = false;
+  let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
+  const terminate = () => {
+    child.kill('SIGTERM');
+    forceKillHandle ??= setTimeout(() => child.kill('SIGKILL'), FORCE_KILL_GRACE_MS);
+  };
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    terminate();
+  }, timeout);
+  const abort = () => {
+    cancelled = true;
+    terminate();
+  };
+  signal?.addEventListener('abort', abort, { once: true });
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code ?? 1));
+  }).finally(() => {
+    clearTimeout(timeoutHandle);
+    if (forceKillHandle) clearTimeout(forceKillHandle);
+    signal?.removeEventListener('abort', abort);
   });
 
-  if (stdin && proc.stdin) {
-    proc.stdin.write(stdin);
-    proc.stdin.end();
+  if (cancelled) throw ContainerBuildError.cancelled();
+  if (timedOut) {
+    throw ContainerBuildError.timeout(timeout, `docker ${safeArgs.join(' ')}`);
   }
 
-  // Start reading streams immediately (before awaiting exit) to prevent
-  // resource leaks if the process is killed by timeout.
-  const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
-  const stderrPromise = new Response(proc.stderr).text().catch(() => '');
-
-  // Race exit against timeout. The timeout promise has a .catch() no-op to
-  // prevent unhandled rejections if the timeout fires at the exact moment
-  // the process exits (race condition at the boundary).
-  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(() => {
-      proc.kill();
-      reject(new ContainerBuildError(
-        `Docker command timed out after ${timeout}ms: docker ${redactedArgs.join(' ')}`,
-        'BUILD_TIMEOUT',
-        ['Increase the timeout option.', 'Check network connectivity for pulls.']
-      ));
-    }, timeout);
-  });
-  timeoutPromise.catch(() => { /* Prevent unhandled rejection at race boundary */ });
-
-  const exitCode = await Promise.race([proc.exited, timeoutPromise]).finally(() => {
-    if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
-  });
-
-  const stdout = await stdoutPromise;
-  const stderr = await stderrPromise;
-
-  if (!quiet && stdout.trim()) {
-    for (const line of stdout.trim().split('\n').slice(-20)) {
-      logger.info(line);
-    }
+  const safeStdout = redact(stdout, sensitiveValues);
+  const safeStderr = redact(stderr, sensitiveValues);
+  if (!quiet && safeStdout.trim()) {
+    for (const line of safeStdout.trim().split('\n').slice(-20)) logger.info(line);
   }
-
   if (exitCode !== 0) {
     if (!quiet) {
-      for (const line of stderr.trim().split('\n')) {
-        logger.error(line);
-      }
+      for (const line of safeStderr.trim().split('\n').slice(-40)) logger.error(line);
     }
-    throw ContainerBuildError.buildFailed(exitCode, stderr);
+    throw ContainerBuildError.commandFailed(exitCode, safeArgs, safeStderr);
   }
-
-  return { exitCode, stdout, stderr };
+  return { exitCode, stdout: safeStdout, stderr: safeStderr };
 }
 
-/**
- * Check if Docker is available and the daemon is running.
- */
-export async function checkDockerAvailable(): Promise<void> {
+export async function checkDockerAvailable(signal?: AbortSignal): Promise<void> {
   try {
-    const proc = Bun.spawn(['docker', 'version', '--format', '{{.Server.Version}}'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const result = await execDocker(['version', '--format', '{{.Server.Version}}'], {
+      quiet: true,
+      timeout: 15_000,
+      ...(signal ? { signal } : {}),
     });
-    // Read both streams concurrently before awaiting exit
-    const stdoutPromise = new Response(proc.stdout).text().catch(() => '');
-    const stderrPromise = new Response(proc.stderr).text().catch(() => '');
-    const exitCode = await proc.exited;
-    const stdout = await stdoutPromise;
-    const stderr = await stderrPromise;
-
-    if (exitCode !== 0) {
-      throw ContainerBuildError.dockerNotAvailable(stderr.trim());
-    }
-    logger.debug('Docker available', { version: stdout.trim() });
+    logger.debug('Docker available', { version: result.stdout.trim() });
   } catch (error) {
-    if (error instanceof ContainerBuildError) throw error;
+    if (error instanceof ContainerBuildError && error.code === 'BUILD_CANCELLED') throw error;
     throw ContainerBuildError.dockerNotAvailable(
       error instanceof Error ? error.message : String(error)
     );
