@@ -511,10 +511,12 @@ describe('Networking Factories', () => {
 
       // Verify all properties are preserved
       expect(enhanced.metadata as unknown).toEqual(complexPolicy.metadata!);
-      expect(enhanced.spec as unknown).toEqual(complexPolicy.spec!);
+      expect(enhanced.spec as unknown).toMatchObject(complexPolicy.spec!);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
       expect(enhanced.spec?.ingress?.[0]?._from).toHaveLength(2);
+      expect(JSON.stringify(enhanced)).toContain('"from"');
+      expect(JSON.stringify(enhanced)).not.toContain('"_from"');
       expect(enhanced.spec?.ingress?.[0]?.ports).toHaveLength(2);
     });
 

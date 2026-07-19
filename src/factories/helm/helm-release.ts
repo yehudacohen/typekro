@@ -40,6 +40,16 @@ export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObje
    * mixed-template strings, arrays, and plain objects recursively.
    */
   values?: TypeKroChartValue<TValues>;
+  /**
+   * Flux install policy. The supplied fields override TypeKro's bounded retry
+   * defaults; nested remediation fields are merged rather than replaced.
+   */
+  install?: HelmReleaseSpec['install'];
+  /**
+   * Flux upgrade policy. Stateful charts can disable automatic remediation
+   * when rolling back across a database migration would be unsafe.
+   */
+  upgrade?: HelmReleaseSpec['upgrade'];
   driftDetection?: HelmReleaseSpec['driftDetection'];
   id?: string;
 }
@@ -171,8 +181,36 @@ export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
       },
       // Retry on failed installs — required for charts that depend on external
       // resources (e.g., Inngest waiting for Postgres/Redis to be ready).
-      install: { timeout: '10m', remediation: { retries: 3 } },
-      upgrade: { timeout: '10m', remediation: { retries: 3 } },
+      install: {
+        timeout: config.install?.timeout ?? '10m',
+        remediation: {
+          retries: config.install?.remediation?.retries ?? 3,
+          ...(config.install?.remediation?.remediateLastFailure !== undefined && {
+            remediateLastFailure: config.install.remediation.remediateLastFailure,
+          }),
+          ...(config.install?.remediation?.ignoreTestFailures !== undefined && {
+            ignoreTestFailures: config.install.remediation.ignoreTestFailures,
+          }),
+        },
+        ...(config.install?.createNamespace !== undefined && {
+          createNamespace: config.install.createNamespace,
+        }),
+      },
+      upgrade: {
+        timeout: config.upgrade?.timeout ?? '10m',
+        remediation: {
+          retries: config.upgrade?.remediation?.retries ?? 3,
+          ...(config.upgrade?.remediation?.remediateLastFailure !== undefined && {
+            remediateLastFailure: config.upgrade.remediation.remediateLastFailure,
+          }),
+          ...(config.upgrade?.remediation?.ignoreTestFailures !== undefined && {
+            ignoreTestFailures: config.upgrade.remediation.ignoreTestFailures,
+          }),
+          ...(config.upgrade?.remediation?.strategy && {
+            strategy: config.upgrade.remediation.strategy,
+          }),
+        },
+      },
       ...(config.driftDetection && { driftDetection: config.driftDetection }),
       ...(config.values && { values: config.values }),
     },

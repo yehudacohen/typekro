@@ -12,6 +12,7 @@ import { validateBuildArgs } from '../../../src/core/containers/exec.js';
 import { resolveRegistry } from '../../../src/core/containers/registries/index.js';
 import { OrbstackRegistryHandler } from '../../../src/core/containers/registries/orbstack.js';
 import { EcrRegistryHandler } from '../../../src/core/containers/registries/ecr.js';
+import { OciRegistryHandler } from '../../../src/core/containers/registries/oci.js';
 
 describe('Container Build', () => {
   describe('resolveRegistry', () => {
@@ -23,6 +24,15 @@ describe('Container Build', () => {
     it('should return EcrRegistryHandler for ecr type', () => {
       const handler = resolveRegistry({ type: 'ecr' });
       expect(handler).toBeInstanceOf(EcrRegistryHandler);
+    });
+
+    it('returns the generic OCI handler without Harbor-specific transport assumptions', () => {
+      const handler = resolveRegistry({
+        type: 'oci',
+        registry: 'https://harbor.example.test',
+        repositoryPrefix: 'team',
+      });
+      expect(handler).toBeInstanceOf(OciRegistryHandler);
     });
 
     it('should throw for gcr (not yet implemented)', () => {
@@ -51,12 +61,10 @@ describe('Container Build', () => {
       expect(uri).toBe('my-app:latest');
     });
 
-    it('should not throw on authenticate (no-op)', async () => {
-      await handler.authenticate();
-    });
-
-    it('should not throw on push (no-op)', async () => {
-      await handler.push('my-app:latest', 'my-app');
+    it('opens a local session that does not push', async () => {
+      const session = await handler.prepare('my-app', 1_000);
+      expect(session.remote).toBe(false);
+      await session.cleanup();
     });
   });
 
@@ -168,7 +176,9 @@ describe('Container Build', () => {
 
   describe('validateBuildArgs', () => {
     it('should accept valid build arg keys', () => {
-      expect(() => validateBuildArgs({ NODE_ENV: 'production', _private: 'yes', arg2: 'val' })).not.toThrow();
+      expect(() =>
+        validateBuildArgs({ NODE_ENV: 'production', _private: 'yes', arg2: 'val' })
+      ).not.toThrow();
     });
 
     it('should reject keys starting with digits', () => {
@@ -176,7 +186,9 @@ describe('Container Build', () => {
     });
 
     it('should reject keys that look like Docker flags', () => {
-      expect(() => validateBuildArgs({ '--platform': 'linux/amd64' })).toThrow('Invalid build arg key');
+      expect(() => validateBuildArgs({ '--platform': 'linux/amd64' })).toThrow(
+        'Invalid build arg key'
+      );
     });
 
     it('should reject keys with hyphens', () => {

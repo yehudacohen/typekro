@@ -6,6 +6,7 @@
 
 import { ContainerBuildError } from '../errors.js';
 import { EcrRegistryHandler } from './ecr.js';
+import { OciRegistryHandler } from './oci.js';
 import { OrbstackRegistryHandler } from './orbstack.js';
 import type { RegistryConfig, RegistryHandler } from './types.js';
 
@@ -15,6 +16,10 @@ export function resolveRegistry(config: RegistryConfig): RegistryHandler {
       return new OrbstackRegistryHandler();
     case 'ecr':
       return new EcrRegistryHandler(config);
+    case 'oci':
+      return new OciRegistryHandler(config);
+    case 'custom':
+      return config.handler;
     case 'gcr':
       throw ContainerBuildError.registryNotSupported('gcr');
     case 'acr':

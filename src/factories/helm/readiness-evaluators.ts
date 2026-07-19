@@ -17,11 +17,13 @@ interface HelmReleaseLike {
     phase?: string;
     revision?: number | string;
     message?: string;
+    observedGeneration?: number;
     conditions?: KubernetesCondition[];
     lastDeployed?: string;
   };
   metadata?: {
     creationTimestamp?: string;
+    generation?: number;
     uid?: string;
   };
 }
@@ -54,6 +56,37 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
           ready: false,
           reason: 'Installing',
           message: `${prefix}HelmRelease installation in progress - status not available yet`,
+        };
+      }
+
+      // An apply can advance metadata.generation before Flux has observed the
+      // new spec. Never reuse readiness evidence from the preceding
+      // generation: doing so makes a direct factory update return while Flux
+      // is still reconciling the replacement values. Prefer the top-level
+      // observedGeneration and also honor generation-aware Ready conditions
+      // when the controller supplies them.
+      const desiredGeneration = live.metadata?.generation;
+      const readyCondition = status.conditions?.find(
+        (condition: KubernetesCondition) => condition.type === 'Ready'
+      );
+      const observedGenerations = [
+        status.observedGeneration,
+        readyCondition?.observedGeneration,
+      ].filter((generation): generation is number => typeof generation === 'number');
+      const staleGenerations =
+        typeof desiredGeneration === 'number'
+          ? observedGenerations.filter((generation) => generation < desiredGeneration)
+          : [];
+      if (typeof desiredGeneration === 'number' && staleGenerations.length > 0) {
+        return {
+          ready: false,
+          reason: 'GenerationNotObserved',
+          message: `${prefix}HelmRelease has not observed generation ${desiredGeneration} yet`,
+          details: {
+            desiredGeneration,
+            observedGeneration:
+              staleGenerations.length > 0 ? Math.max(...staleGenerations) : undefined,
+          },
         };
       }
 
@@ -92,9 +125,6 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
 
       // Case 4: Check conditions array if available (Flux CD v2 pattern)
       if (status.conditions && Array.isArray(status.conditions)) {
-        const readyCondition = status.conditions.find(
-          (c: KubernetesCondition) => c.type === 'Ready'
-        );
         if (readyCondition && readyCondition.status === 'True') {
           return {
             ready: true,

@@ -51,8 +51,25 @@ function getKroTypeFromJson(node: unknown): string {
   // Case 1: Object describing a type
   if (typeof node === 'object' && node !== null && !Array.isArray(node)) {
     const nodeObj = node as Record<string, unknown>;
+    if ('unit' in nodeObj) {
+      const unit = nodeObj.unit;
+      if (typeof unit === 'boolean') {
+        return `boolean | validation="self == ${String(unit)}"`;
+      }
+      if (typeof unit === 'number') {
+        const typeName = Number.isInteger(unit) ? 'integer' : 'float';
+        return `${typeName} | validation="self == ${String(unit)}"`;
+      }
+      if (typeof unit === 'string') {
+        return `string | enum="${unit.replaceAll('"', '\\"')}"`;
+      }
+    }
     if (nodeObj.proto === 'Array' && nodeObj.sequence) {
-      return `[]${getKroTypeFromJson(nodeObj.sequence)}`;
+      const arrayType = `[]${getKroTypeFromJson(nodeObj.sequence)}`;
+      const markers: string[] = [];
+      if (typeof nodeObj.minLength === 'number') markers.push(`minItems=${nodeObj.minLength}`);
+      if (typeof nodeObj.maxLength === 'number') markers.push(`maxItems=${nodeObj.maxLength}`);
+      return markers.length > 0 ? `${arrayType} | ${markers.join(' ')}` : arrayType;
     }
     if (nodeObj.domain === 'number') {
       const baseType = nodeObj.divisor === 1 ? 'integer' : 'float';
@@ -1199,7 +1216,8 @@ export function arktypeToKroSchema(
   },
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
-  nestedStatusCel?: Record<string, string>
+  nestedStatusCel?: Record<string, string>,
+  schemaFieldValidations?: Readonly<Record<string, string>>
 ): KroSimpleSchemaWithMetadata {
   const specFields = arktypeJsonToKroFields(schemaDefinition.spec.json);
 
@@ -1390,12 +1408,18 @@ export function arktypeToKroSchema(
     (schemaDefinition.apiVersion.includes('/')
       ? schemaDefinition.apiVersion.split('/')[0]
       : undefined);
+  const customTypes = applySchemaFieldValidations(
+    specFields,
+    schemaDefinition.kind,
+    schemaFieldValidations
+  );
 
   const schema: KroSimpleSchemaWithMetadata = {
     apiVersion: schemaApiVersion,
     kind: schemaDefinition.kind,
     ...(schemaGroup && { group: schemaGroup }),
     spec: specFields,
+    ...(Object.keys(customTypes).length > 0 ? { types: customTypes } : {}),
     status: {
       ...statusCelExpressions,
     },
@@ -1463,7 +1487,56 @@ export function generateKroSchemaFromArktype<
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
-  nestedStatusCel?: Record<string, string>
+  nestedStatusCel?: Record<string, string>,
+  schemaFieldValidations?: Readonly<Record<string, string>>
 ): KroSimpleSchemaWithMetadata {
-  return arktypeToKroSchema(name, schemaDefinition, resources, statusMappings, nestedStatusCel);
+  return arktypeToKroSchema(
+    name,
+    schemaDefinition,
+    resources,
+    statusMappings,
+    nestedStatusCel,
+    schemaFieldValidations
+  );
+}
+
+function applySchemaFieldValidations(
+  specFields: Record<string, unknown>,
+  kind: string,
+  validations: Readonly<Record<string, string>> | undefined
+): Record<string, Record<string, unknown>> {
+  const customTypes: Record<string, Record<string, unknown>> = {};
+  for (const [path, rule] of Object.entries(validations ?? {}).sort(
+    ([left], [right]) => right.split('.').length - left.split('.').length
+  )) {
+    if (!path || !rule.trim())
+      throw new Error('Schema field validation paths and rules must be non-empty.');
+    const segments = path.split('.');
+    let parent = specFields;
+    for (const segment of segments.slice(0, -1)) {
+      const next = parent[segment];
+      if (!next || typeof next !== 'object' || Array.isArray(next)) {
+        throw new Error(
+          `Schema field validation path ${path} does not resolve to a structured spec field.`
+        );
+      }
+      parent = next as Record<string, unknown>;
+    }
+    const field = segments.at(-1) as string;
+    const current = parent[field];
+    if (current === undefined)
+      throw new Error(`Schema field validation path ${path} does not exist.`);
+    const marker = `validation="${rule.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+    if (typeof current === 'string') {
+      parent[field] = current.includes('|') ? `${current} ${marker}` : `${current} | ${marker}`;
+      continue;
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      throw new Error(`Schema field validation path ${path} cannot carry a KRO validation marker.`);
+    }
+    const typeName = `${kind}${segments.map((segment) => pascalCase(segment)).join('')}`;
+    customTypes[typeName] = current as Record<string, unknown>;
+    parent[field] = `${typeName} | ${marker}`;
+  }
+  return customTypes;
 }

@@ -85,6 +85,7 @@ import type {
   MagicAssignableShape,
   SchemaDefinition,
   SchemaProxy,
+  SerializationOptions,
 } from '../types/serialization.js';
 import { validateStatusCelExpressions } from '../validation/cel-validator.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
@@ -95,6 +96,7 @@ import {
   assertKroInstanceNamespaceOwnershipSafe,
   assertNoHoistWeakenedStatusFields,
   assertSingletonOwnerNamespaceOwnershipSafe,
+  concreteActiveOwnedResources,
   concreteOwnedNamespaceResources,
   findDanglingHoistedReference,
   resolveConcreteMetadataValue,
@@ -398,9 +400,7 @@ export class KroResourceFactoryImpl<
     const hoistIds = this.hoistedNamespaceRefs();
     if (hoistIds.size === 0 || spec === undefined) return result;
 
-    const compositionFn = this.factoryOptions.compositionFn as
-      | ((s: TSpec) => unknown)
-      | undefined;
+    const compositionFn = this.factoryOptions.compositionFn as ((s: TSpec) => unknown) | undefined;
     const concreteById = concreteOwnedNamespaceResources<TSpec>({
       compositionName: this.name,
       spec,
@@ -645,6 +645,32 @@ export class KroResourceFactoryImpl<
       );
     }
     return this.discoveredPlural;
+  }
+
+  /**
+   * Definitive retry state: both the generated CRD and its RGD are absent, so
+   * no instance can still exist. This lets a later deleteInstance() invocation
+   * finish durable owned-namespace cleanup after an earlier teardown removed
+   * the definitions. Any read/list uncertainty returns false (fail closed).
+   */
+  private async kroDefinitionsAreAbsent(): Promise<boolean> {
+    try {
+      const crd = await this.discoverGeneratedCrdPlural();
+      if (crd.present) return false;
+      const k8sApi = this.createKubernetesObjectApi();
+      try {
+        await k8sApi.read({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: this.rgdName },
+        });
+        return false;
+      } catch (error: unknown) {
+        return isNotFoundError(error);
+      }
+    } catch {
+      return false;
+    }
   }
 
   private createKubernetesObjectApi(): k8s.KubernetesObjectApi {
@@ -1144,9 +1170,7 @@ export class KroResourceFactoryImpl<
       name: merged.name,
       labels: merged.labels,
       ...(merged.finalizers !== undefined ? { finalizers: merged.finalizers } : {}),
-      ...(merged.ownerReferences !== undefined
-        ? { ownerReferences: merged.ownerReferences }
-        : {}),
+      ...(merged.ownerReferences !== undefined ? { ownerReferences: merged.ownerReferences } : {}),
     };
     const buildManifest = (annotations: Record<string, string>): k8s.KubernetesObject =>
       ({
@@ -1596,6 +1620,17 @@ export class KroResourceFactoryImpl<
     const timeout = this.factoryOptions.timeout ?? 300000;
 
     const apiVersion = this.getInstanceApiVersion();
+    let definitionsAlreadyAbsent = false;
+    try {
+      await this.requireCRDPluralForCleanup();
+    } catch (error: unknown) {
+      if (!(await this.kroDefinitionsAreAbsent())) throw error;
+      definitionsAlreadyAbsent = true;
+      this.logger.info(
+        'KRO definitions already absent; continuing durable namespace cleanup retry',
+        { rgdName: this.rgdName, instance: name }
+      );
+    }
     // The CR lives in the namespace {@link resolveInstanceNamespace} resolves to — the
     // SAME shared resolver `deploy()` created it with (finding #2), so we never look in
     // the wrong namespace and mistake a 404 there for "already gone".
@@ -1612,24 +1647,30 @@ export class KroResourceFactoryImpl<
     // (fail-safe: an owned-but-unprovable namespace is kept).
     let crSpec: TSpec | undefined;
     let recordedHoistedNames: string[] = [];
-    try {
-      const live = (await k8sApi.read({
-        apiVersion,
-        kind: this.schemaDefinition.kind,
-        metadata: { name, namespace: instanceNamespace },
-      })) as { spec?: TSpec; metadata?: { annotations?: Record<string, string> } };
-      crSpec = live.spec;
-      recordedHoistedNames = parseHoistedNamespacesAnnotation(
-        live.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
-      );
-    } catch (readError: unknown) {
-      const k8sErr = readError as { statusCode?: number; code?: number; body?: { code?: number } };
-      const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
-      if (code !== 404) {
-        this.logger.debug(
-          'Could not read instance CR before delete (declared-namespace record unavailable)',
-          { name, error: ensureError(readError).message }
+    if (!definitionsAlreadyAbsent) {
+      try {
+        const live = (await k8sApi.read({
+          apiVersion,
+          kind: this.schemaDefinition.kind,
+          metadata: { name, namespace: instanceNamespace },
+        })) as { spec?: TSpec; metadata?: { annotations?: Record<string, string> } };
+        crSpec = live.spec;
+        recordedHoistedNames = parseHoistedNamespacesAnnotation(
+          live.metadata?.annotations?.[HOISTED_NAMESPACES_ANNOTATION]
         );
+      } catch (readError: unknown) {
+        const k8sErr = readError as {
+          statusCode?: number;
+          code?: number;
+          body?: { code?: number };
+        };
+        const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (code !== 404) {
+          this.logger.debug(
+            'Could not read instance CR before delete (declared-namespace record unavailable)',
+            { name, error: ensureError(readError).message }
+          );
+        }
       }
     }
     const declaredHoistedNamespaceNames =
@@ -1645,10 +1686,12 @@ export class KroResourceFactoryImpl<
     // cleanup). A pre-existing 404 on delete is treated as already-deleted.
     let instanceDeleted = false;
     try {
-      await rollback.deleteResourceAndWait(
-        { apiVersion, kind: this.schemaDefinition.kind, name, namespace: instanceNamespace },
-        { timeout }
-      );
+      if (!definitionsAlreadyAbsent) {
+        await rollback.deleteResourceAndWait(
+          { apiVersion, kind: this.schemaDefinition.kind, name, namespace: instanceNamespace },
+          { timeout }
+        );
+      }
       instanceDeleted = true;
     } catch (error: unknown) {
       if (error instanceof DeploymentTimeoutError) {
@@ -1673,6 +1716,64 @@ export class KroResourceFactoryImpl<
       );
     }
 
+    // KRO's owner CR reaching 404 proves that its finalizer issued child
+    // deletions; it does not prove that controller-owned child finalizers have
+    // completed. Gate on every concrete owned child before touching the RGD or
+    // reporting successful cleanup. External refs and hoisted Namespaces are
+    // deliberately excluded: this instance never owns the former and TypeKro
+    // tears down the latter in the namespace phase below.
+    if (crSpec) {
+      const compositionFn = this.factoryOptions.compositionFn as
+        | ((spec: TSpec) => unknown)
+        | undefined;
+      const ownedChildren = concreteActiveOwnedResources<TSpec>({
+        compositionName: this.name,
+        spec: crSpec,
+        resources: this.resources,
+        ...(compositionFn ? { compositionFn } : {}),
+      });
+      const childTargets: Array<{
+        apiVersion: string;
+        kind: string;
+        name: string;
+        namespace?: string;
+      }> = [];
+      for (const [resourceId, resource] of ownedChildren) {
+        if (resource.kind === 'Namespace') continue;
+        const childName = resolveNamespaceName(resource.metadata?.name, crSpec);
+        const childNamespace = resolveNamespaceName(resource.metadata?.namespace, crSpec);
+        if (!childName) {
+          throw new CRDInstanceError(
+            `Cannot prove KRO child cleanup: resource ${resourceId} (${resource.kind}) has an unresolved concrete name`,
+            this.schemaDefinition.apiVersion,
+            this.schemaDefinition.kind,
+            name,
+            'deletion'
+          );
+        }
+        childTargets.push({
+          apiVersion: resource.apiVersion,
+          kind: resource.kind,
+          name: childName,
+          ...(childNamespace ? { namespace: childNamespace } : {}),
+        });
+      }
+      try {
+        await Promise.all(
+          childTargets.map((target) => rollback.waitForResourceGone(target, { timeout }))
+        );
+      } catch (error: unknown) {
+        throw new CRDInstanceError(
+          `KRO instance ${name} disappeared but one or more owned children did not finish deleting within ${timeout}ms`,
+          this.schemaDefinition.apiVersion,
+          this.schemaDefinition.kind,
+          name,
+          'deletion',
+          ensureError(error)
+        );
+      }
+    }
+
     // 2. LIST REMAINING INSTANCES FIRST — BEFORE deleting any namespace (finding #2, v7).
     // This instance's per-instance namespace cleanup below must EXCLUDE any namespace a
     // REMAINING instance still records: because ownership is RGD-wide, deleting this instance
@@ -1687,7 +1788,7 @@ export class KroResourceFactoryImpl<
       metadata?: { name?: unknown; namespace?: unknown; annotations?: Record<string, string> };
     }>;
     try {
-      remainingItems = await this.listInstancesForCleanup();
+      remainingItems = definitionsAlreadyAbsent ? [] : await this.listInstancesForCleanup();
     } catch (listError: unknown) {
       this.logger.warn(
         'Cannot list instances — preserving ALL namespaces + the RGD/CRD (fail closed; retry to complete)',
@@ -1836,6 +1937,40 @@ export class KroResourceFactoryImpl<
       );
       return;
     }
+    // A graph child reaching 404 only proves its controller accepted deletion;
+    // grandchildren such as Helm-managed Pods or Rook RGW Deployments may need
+    // another reconciliation cycle to disappear. For a normal (non-retry)
+    // deletion, keep retrying the ownership+emptiness gate for a bounded period
+    // before returning the durable "preserved for retry" state. This prevents a
+    // successful deleteInstance() from racing immediately into teardown of a
+    // storage prerequisite while owned descendants are still draining.
+    if (crSpec && remainingOwned.length > 0) {
+      const drainDeadline = Date.now() + Math.min(timeout, 300_000);
+      while (remainingOwned.length > 0 && Date.now() < drainDeadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+        for (const ns of remainingOwned) {
+          await deleteNamespaceIfEmpty(this.getKubeConfig(), ns, {
+            logger: this.logger,
+            k8sApi,
+            ownedByRgd: this.rgdName,
+            timeoutMs: Math.max(1, drainDeadline - Date.now()),
+            context: { rgdName: this.rgdName },
+          });
+        }
+        try {
+          remainingOwned = await listNamespacesOwnedByRgd(this.getKubeConfig(), this.rgdName, {
+            k8sApi,
+            logger: this.logger,
+          });
+        } catch (listError: unknown) {
+          this.logger.warn(
+            'Cannot confirm owned-namespace descendant drain — preserving RGD/CRD for retry',
+            { rgdName: this.rgdName, error: ensureError(listError).message }
+          );
+          return;
+        }
+      }
+    }
     if (remainingOwned.length > 0) {
       this.logger.info(
         'Owned namespace(s) still present after cleanup — preserving RGD/CRD until they are gone',
@@ -1854,53 +1989,20 @@ export class KroResourceFactoryImpl<
     );
     this.logger.debug('RGD deleted and fully gone', { rgdName: this.rgdName });
 
-    // 4. Delete the generated CRD LAST — after the CR (404), RGD (404), and the owned
-    // namespace are all gone (reverse-topo: CRDs die last). This step is BEST-EFFORT and
-    // NON-FATAL: KRO's default config has allowCRDDeletion=false so KRO never deletes it,
-    // and the apiextensions `customresourcecleanup` finalizer can stall for minutes even
-    // with zero instances (upstream kro #1171). By now the namespace is already cleanly
-    // gone, so a slow CRD teardown blocks NOTHING — we initiate the delete and wait
-    // generously, but a timeout/failure is LOGGED, never thrown: it must not undo an
-    // otherwise-successful teardown. A dangling (Terminating or leftover) CRD is
-    // harmless; an operator may GC it out-of-band. See docs/advanced/migration.md.
-    await this.deleteGeneratedCrdBestEffort(rollback, timeout);
-  }
-
-  /**
-   * BEST-EFFORT deletion of this factory's generated CRD, the LAST teardown step (after
-   * the owned namespace is gone). Never throws: a slow/stuck apiextensions cleanup
-   * finalizer (upstream kro #1171) must not fail an otherwise-complete teardown, and by
-   * this point nothing depends on the CRD being gone. Logs the outcome.
-   */
-  private async deleteGeneratedCrdBestEffort(
-    rollback: ReturnType<typeof createRollbackManager>,
-    timeout: number
-  ): Promise<void> {
-    // Prefer the already-discovered plural; else the non-throwing lookup (this is
-    // best-effort): if we cannot determine the CRD name, log and skip rather than fail
-    // the completed teardown.
-    const crdPlural = this.discoveredPlural ?? (await this.lookupCRDPlural());
-    if (!crdPlural) {
-      this.logger.debug('Skipping best-effort CRD delete — plural undiscoverable (teardown already complete)', {
-        rgdName: this.rgdName,
-      });
-      return;
-    }
-    const crdName = `${crdPlural}.${this.getSchemaGroup()}`;
-    try {
-      await rollback.deleteResourceAndWait(
-        { apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: crdName },
-        { timeout }
-      );
-      this.logger.debug('Generated CRD deleted and fully gone (last teardown step)', { crdName });
-    } catch (error: unknown) {
-      // NON-FATAL: the namespace is already gone; a lingering/Terminating CRD is
-      // harmless (kro #1171). Log and return success.
-      this.logger.warn(
-        'Best-effort generated-CRD delete did not complete — leaving it (harmless; GC out-of-band)',
-        { crdName, error: ensureError(error).message }
-      );
-    }
+    // 4. RETAIN the generated CRD. This matches the Alchemy path and KRO's own
+    // `allowCRDDeletion=false` default. Initiating a best-effort delete is not harmless:
+    // apiextensions can leave the definition Terminating behind its
+    // `customresourcecleanup` finalizer, and a Terminating definition prevents a later
+    // deployment of the same RGD/kind from reusing it. At this point it has zero
+    // instances, so keeping it Active is the safe, reusable state. Administrators may
+    // garbage-collect retired definitions explicitly after proving no RGD or instances
+    // need them. See docs/advanced/migration.md.
+    this.logger.debug('Generated CRD retained for safe reuse and out-of-band GC', {
+      rgdName: this.rgdName,
+      ...(this.discoveredPlural
+        ? { crdName: `${this.discoveredPlural}.${this.getSchemaGroup()}` }
+        : {}),
+    });
   }
 
   /**
@@ -2336,7 +2438,9 @@ export class KroResourceFactoryImpl<
       this.schemaDefinition,
       aspectResources,
       statusMappings,
-      nestedCel
+      nestedCel,
+      (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
+        ?.schemaFieldValidations
     );
 
     // Attach nested status CEL mappings as non-enumerable property so
@@ -3407,7 +3511,9 @@ export class KroResourceFactoryImpl<
           : {}),
       },
       ...(merged.spec !== undefined
-        ? { spec: merged.spec as NonNullable<import('@kubernetes/client-node').V1Namespace['spec']> }
+        ? {
+            spec: merged.spec as NonNullable<import('@kubernetes/client-node').V1Namespace['spec']>,
+          }
         : {}),
       id: KroResourceFactoryImpl.hoistedNamespaceId(workloadNamespace),
     }) as Enhanced<

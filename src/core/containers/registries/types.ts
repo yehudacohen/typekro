@@ -1,16 +1,4 @@
-/**
- * Container Registry Types
- *
- * Defines the registry configuration interface and the internal handler
- * contract. New registries (GCR, ACR, etc.) are added by:
- * 1. Adding a config variant to RegistryConfig
- * 2. Implementing RegistryHandler
- * 3. Registering in the resolver
- */
-
-// ---------------------------------------------------------------------------
-// Registry Configurations (user-facing)
-// ---------------------------------------------------------------------------
+/** Container registry provider contracts and public build types. */
 
 export interface OrbstackRegistryConfig {
   type: 'orbstack';
@@ -19,26 +7,14 @@ export interface OrbstackRegistryConfig {
 /**
  * ECR registry configuration.
  *
- * Credential options are passed directly to the AWS SDK's
- * `fromNodeProviderChain`, which handles env vars, profiles,
- * SSO sessions, instance roles, web identity tokens, and role
- * assumption. Any option accepted by the SDK's DefaultProviderInit
- * can be passed via `credentials`.
+ * Credentials are resolved at execution time through the AWS SDK provider chain and are never
+ * retained in a container declaration or emitted artifact.
  */
 export interface EcrRegistryConfig {
   type: 'ecr';
-  /** AWS account ID. Auto-detected from STS if omitted. */
   accountId?: string;
-  /** AWS region. Falls back to AWS_REGION / AWS_DEFAULT_REGION env vars. */
   region?: string;
-  /** Create the ECR repository if it doesn't exist (default: true). */
   createRepository?: boolean;
-  /**
-   * AWS credential options passed to `fromNodeProviderChain`.
-   * Common options: `profile`, `roleArn`, `roleSessionName`,
-   * `mfaCodeProvider`, `configFilepath`.
-   * Omit to use the default credential chain (env vars, profiles, SSO, etc.).
-   */
   credentials?: import('@aws-sdk/credential-provider-node').DefaultProviderInit;
 }
 
@@ -52,66 +28,116 @@ export interface AcrRegistryConfig {
   registryName: string;
 }
 
-/** Discriminated union of all supported container registries. */
+/** Escape hatch for registry providers implemented outside TypeKro core. */
+export interface CustomRegistryConfig {
+  type: 'custom';
+  handler: RegistryHandler;
+}
+
+/** A short-lived registry credential. Implementations must not log or persist these values. */
+export interface OciRegistryCredential {
+  readonly username: string;
+  readonly password: string;
+}
+
+/** Resolve credentials only when a registry session is opened. */
+export type OciRegistryCredentialProvider = (
+  signal?: AbortSignal
+) => Promise<OciRegistryCredential>;
+
+export interface OciRegistryTlsConfig {
+  /** PEM-encoded certificate authority. Public trust material, not a credential. */
+  caCertificate?: string;
+  /** Path to a certificate-authority file. */
+  caFile?: string;
+  /** Allow an HTTPS registry whose certificate cannot be verified. Development only. */
+  insecure?: boolean;
+  /** Use plain HTTP. Development only. */
+  plainHttp?: boolean;
+}
+
+/** Generic OCI Distribution-compatible registry configuration. */
+export interface OciRegistryConfig {
+  type: 'oci';
+  /** Registry origin or host, for example `https://registry.example.com` or `localhost:5000`. */
+  registry: string;
+  /** Repository prefix/project prepended to every image name. */
+  repositoryPrefix?: string;
+  /** Resolve a username/password only for the duration of the build. */
+  credentialProvider?: OciRegistryCredentialProvider;
+  /**
+   * Existing Docker config.json to discover credentials from. Defaults to DOCKER_CONFIG or
+   * `~/.docker/config.json`. The file is copied into an isolated temporary session.
+   */
+  dockerConfigPath?: string;
+  tls?: OciRegistryTlsConfig;
+}
+
+/** Input accepted by the Harbor convenience helper. The resulting transport is generic OCI. */
+export interface HarborRegistryConfig extends Omit<OciRegistryConfig, 'type' | 'repositoryPrefix'> {
+  project: string;
+}
+
 export type RegistryConfig =
   | OrbstackRegistryConfig
   | EcrRegistryConfig
+  | OciRegistryConfig
   | GcrRegistryConfig
-  | AcrRegistryConfig;
+  | AcrRegistryConfig
+  | CustomRegistryConfig;
 
-// ---------------------------------------------------------------------------
-// Build Options & Result (user-facing)
-// ---------------------------------------------------------------------------
+export type ContainerBuildProgress = 'auto' | 'plain' | 'tty' | 'rawjson';
 
 export interface ContainerBuildOptions {
-  /** Path to the build context directory (contains the Dockerfile). */
   context: string;
-  /** Dockerfile path relative to context (default: 'Dockerfile'). */
   dockerfile?: string;
-  /** Image name without registry prefix or tag (e.g., 'my-app'). */
   imageName: string;
-  /** Tag: explicit string, 'content-hash' for SHA-based, or undefined for 'latest'. */
   tag?: string;
-  /** Target platform (e.g., 'linux/amd64'). Omit for native platform. */
+  /** Build one target platform. Mutually exclusive with `platforms`. */
   platform?: string;
-  /** Additional Docker build arguments. */
+  /** Build and publish a multi-platform manifest with Buildx. */
+  platforms?: readonly string[];
   buildArgs?: Record<string, string>;
-  /** Docker build target for multi-stage builds. */
   target?: string;
-  /** Suppress build output — only log on error. */
   quiet?: boolean;
-  /** Build timeout in milliseconds (default: 300_000 = 5 minutes). */
+  progress?: ContainerBuildProgress;
   timeout?: number;
-  /**
-   * Extra Docker CLI arguments appended to the build command.
-   * Escape hatch for --secret, --ssh, --cache-from, etc.
-   */
+  /** Cancel the build, authentication, push, and digest verification as one operation. */
+  signal?: AbortSignal;
   extraDockerArgs?: string[];
-  /** Registry to push the built image to. */
   registry: RegistryConfig;
 }
 
 export interface ContainerBuildResult {
-  /** Full image URI (e.g., '123456.dkr.ecr.us-east-1.amazonaws.com/app:sha-abc123'). */
+  /** Immutable digest URI for remote registries, otherwise the local tagged URI. */
   imageUri: string;
-  /** The tag that was applied. */
+  /** Human-readable tagged URI retained for inspection and registry retention policies. */
+  taggedImageUri: string;
+  repository: string;
   tag: string;
-  /** Build duration in milliseconds. */
+  /** Registry-verified manifest digest. Omitted for non-pushed local images. */
+  digest?: string;
   duration: number;
-  /** Whether the image was pushed to a remote registry. */
   pushed: boolean;
+  platforms: readonly string[];
 }
 
-// ---------------------------------------------------------------------------
-// Registry Handler (internal contract)
-// ---------------------------------------------------------------------------
+export interface RegistrySession {
+  /** Whether the completed build must be pushed and digest-verified. */
+  readonly remote: boolean;
+  /** Process environment additions, normally an isolated DOCKER_CONFIG. */
+  readonly environment?: Readonly<Record<string, string>>;
+  /** Optional BuildKit configuration for custom registry trust. */
+  readonly buildkitConfigPath?: string;
+  /** Remove temporary auth/trust material. Must be safe to call after partial setup. */
+  cleanup(): Promise<void>;
+}
 
-/** Internal interface that each registry implementation fulfills. */
+/**
+ * Registry extension contract. Core build orchestration is provider-neutral; handlers only resolve
+ * image names and prepare a short-lived authenticated execution session.
+ */
 export interface RegistryHandler {
-  /** Compute the full image URI (registry prefix + name + tag). */
   resolveImageUri(imageName: string, tag: string): Promise<string>;
-  /** Authenticate with the registry. No-op for local registries. */
-  authenticate(): Promise<void>;
-  /** Push the image to the registry. Returns true if pushed, false for local registries. */
-  push(imageUri: string, imageName: string): Promise<boolean>;
+  prepare(imageName: string, timeout: number, signal?: AbortSignal): Promise<RegistrySession>;
 }

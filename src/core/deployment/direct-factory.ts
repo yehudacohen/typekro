@@ -917,19 +917,22 @@ export class DirectResourceFactoryImpl<
         },
       };
 
-      // Handle different resource types
-      const resourceWithSpec = cleanResource as KubernetesResource & {
-        spec?: Record<string, unknown>;
-      };
-      if (resourceWithSpec.spec) {
-        manifest.spec = resourceWithSpec.spec;
-      }
-
-      const resourceWithData = cleanResource as KubernetesResource & {
-        data?: Record<string, string | unknown>;
-      };
-      if (resourceWithData.data) {
-        manifest.data = resourceWithData.data;
+      // Preserve every ordinary top-level Kubernetes field. Many resources do
+      // not place their desired state under `spec`: StorageClass uses
+      // provisioner/parameters/reclaimPolicy, RBAC uses rules/roleRef/subjects,
+      // and Secret uses stringData/type. A spec/data allowlist silently emitted
+      // syntactically valid but behaviorally empty manifests for those kinds.
+      for (const [key, value] of Object.entries(cleanResource)) {
+        if (
+          key === 'apiVersion' ||
+          key === 'kind' ||
+          key === 'metadata' ||
+          key === 'id' ||
+          key === 'status'
+        ) {
+          continue;
+        }
+        if (value !== undefined) manifest[key] = value;
       }
 
       // JSON round-trip strips non-serializable values (functions, symbols, proxies)

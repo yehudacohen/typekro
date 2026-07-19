@@ -17,8 +17,8 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { AwsCredentialIdentityProvider } from '@aws-sdk/types';
 import { getComponentLogger } from '../../logging/index.js';
 import { ContainerBuildError } from '../errors.js';
-import { execDocker } from '../exec.js';
-import type { EcrRegistryConfig, RegistryHandler } from './types.js';
+import { createDockerRegistrySession } from './docker-session.js';
+import type { EcrRegistryConfig, RegistryHandler, RegistrySession } from './types.js';
 
 const logger = getComponentLogger('container-registry-ecr');
 
@@ -29,10 +29,8 @@ export class EcrRegistryHandler implements RegistryHandler {
   private ecrClient: ECRClient;
 
   constructor(private readonly config: EcrRegistryConfig) {
-    this.resolvedRegion = config.region
-      ?? process.env.AWS_REGION
-      ?? process.env.AWS_DEFAULT_REGION
-      ?? 'us-east-1';
+    this.resolvedRegion =
+      config.region ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
     this.credentialProvider = fromNodeProviderChain(config.credentials ?? {});
     this.ecrClient = new ECRClient({
       region: this.resolvedRegion,
@@ -45,7 +43,12 @@ export class EcrRegistryHandler implements RegistryHandler {
     return `${accountId}.dkr.ecr.${this.resolvedRegion}.amazonaws.com/${imageName}:${tag}`;
   }
 
-  async authenticate(): Promise<void> {
+  async prepare(
+    imageName: string,
+    timeout: number,
+    signal?: AbortSignal
+  ): Promise<RegistrySession> {
+    if (this.config.createRepository !== false) await this.ensureRepositoryExists(imageName);
     try {
       const authResponse = await this.ecrClient.send(new GetAuthorizationTokenCommand({}));
       const authData = authResponse.authorizationData?.[0];
@@ -57,38 +60,23 @@ export class EcrRegistryHandler implements RegistryHandler {
       const colonIndex = decoded.indexOf(':');
       if (colonIndex === -1) throw new Error('Failed to decode ECR authorization token');
       const password = decoded.slice(colonIndex + 1);
-
-      await execDocker(['login', '--username', 'AWS', '--password-stdin', authData.proxyEndpoint], {
-        stdin: password,
-        quiet: true,
+      const host = new URL(authData.proxyEndpoint).host;
+      const session = await createDockerRegistrySession({
+        registryHost: host,
+        credentialProvider: async () => ({ username: 'AWS', password }),
+        timeout,
+        ...(signal ? { signal } : {}),
       });
-
       logger.info('Authenticated with ECR', { endpoint: authData.proxyEndpoint });
 
       if (!this.resolvedAccountId) {
         const match = authData.proxyEndpoint.match(/https?:\/\/(\d+)\.dkr\.ecr/);
         if (match?.[1]) this.resolvedAccountId = match[1];
       }
+      return session;
     } catch (error) {
       if (error instanceof ContainerBuildError) throw error;
       throw ContainerBuildError.ecrAuthFailed(
-        error instanceof Error ? error : new Error(String(error))
-      );
-    }
-  }
-
-  async push(imageUri: string, imageName: string): Promise<boolean> {
-    if (this.config.createRepository !== false) {
-      await this.ensureRepositoryExists(imageName);
-    }
-
-    try {
-      await execDocker(['push', imageUri]);
-      logger.info('Image pushed to ECR', { imageUri });
-      return true;
-    } catch (error) {
-      throw ContainerBuildError.pushFailed(
-        imageUri,
         error instanceof Error ? error : new Error(String(error))
       );
     }
@@ -111,7 +99,7 @@ export class EcrRegistryHandler implements RegistryHandler {
       throw ContainerBuildError.ecrAuthFailed(
         new Error(
           `Cannot determine AWS account ID. Provide accountId explicitly or ensure valid AWS credentials.\n` +
-          `Cause: ${error instanceof Error ? error.message : String(error)}`
+            `Cause: ${error instanceof Error ? error.message : String(error)}`
         )
       );
     }

@@ -2216,6 +2216,7 @@ function createTypedResourceGraph<
             statusMappings: directStatusMappings,
             compositionFn: declarativeCompositionFn,
             compositionDefinition: definition,
+            compositionOptions: options,
             ...((
               this as {
                 _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
@@ -2243,6 +2244,7 @@ function createTypedResourceGraph<
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
             compositionAnalysis,
+            compositionOptions: options,
             ...((
               this as {
                 _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[];
@@ -2397,7 +2399,8 @@ function createTypedResourceGraph<
         schemaDefinition,
         graphResources,
         graphStatusMappings,
-        Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined
+        Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined,
+        options?.schemaFieldValidations
       );
 
       if (definition.group) {

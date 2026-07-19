@@ -79,6 +79,69 @@ describe('Helm Readiness Evaluators', () => {
       expect(result.message).toContain('Release is ready');
     });
 
+    it('waits for Flux to observe an updated HelmRelease generation', () => {
+      const resource = {
+        metadata: { name: 'test', generation: 3 },
+        status: {
+          observedGeneration: 2,
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 2,
+              message: 'The preceding release is ready',
+            },
+          ],
+        },
+      };
+
+      expect(helmReleaseReadinessEvaluator(resource)).toMatchObject({
+        ready: false,
+        reason: 'GenerationNotObserved',
+        details: { desiredGeneration: 3, observedGeneration: 2 },
+      });
+    });
+
+    it('accepts Ready only after Flux observes the current generation', () => {
+      const resource = {
+        metadata: { name: 'test', generation: 3 },
+        status: {
+          observedGeneration: 3,
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 3,
+              message: 'Release is ready',
+            },
+          ],
+        },
+      };
+
+      expect(helmReleaseReadinessEvaluator(resource)).toMatchObject({ ready: true });
+    });
+
+    it('rejects a stale Ready condition even when top-level observation is current', () => {
+      const resource = {
+        metadata: { name: 'test', generation: 3 },
+        status: {
+          observedGeneration: 3,
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 2,
+            },
+          ],
+        },
+      };
+
+      expect(helmReleaseReadinessEvaluator(resource)).toMatchObject({
+        ready: false,
+        reason: 'GenerationNotObserved',
+      });
+    });
+
     it('should handle not ready conditions', () => {
       const resource = {
         metadata: { name: 'test' },

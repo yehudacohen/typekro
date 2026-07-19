@@ -61,6 +61,7 @@ export interface KroReadinessOptions {
  * Readiness is determined when:
  * 1. `state === 'ACTIVE'`
  * 2. Either `InstanceSynced` (v0.3.x) or `Ready` (v0.8.x) condition is `True`
+ *    and has observed the current instance generation when KRO reports generations
  * 3. Either custom status fields are populated OR the RGD declares no status schema
  *
  * @throws {CRDInstanceError} if the instance enters a FAILED or ERROR state
@@ -102,11 +103,13 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           phase?: string;
           ready?: boolean;
           message?: string;
+          observedGeneration?: number;
           conditions?: Array<{
             type: string;
             status: string;
             reason?: string;
             message?: string;
+            observedGeneration?: number;
           }>;
         };
       };
@@ -124,6 +127,12 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       // Support both Kro v0.3.x (InstanceSynced) and v0.8.x (Ready) conditions
       const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
       const readyCondition = conditions.find((c) => c.type === 'Ready');
+      const generation = instance.metadata?.generation;
+      const conditionIsCurrent = (condition: (typeof conditions)[number] | undefined) =>
+        condition?.status === 'True' &&
+        (generation === undefined ||
+          condition.observedGeneration === undefined ||
+          condition.observedGeneration >= generation);
 
       // Check if status has fields beyond the basic Kro fields (conditions, state)
       const statusKeys = Object.keys(status);
@@ -131,7 +140,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
 
       const isActive = state === 'ACTIVE';
-      const isSynced = syncedCondition?.status === 'True' || readyCondition?.status === 'True';
+      const isSynced = conditionIsCurrent(syncedCondition) || conditionIsCurrent(readyCondition);
 
       // Check what status fields are expected by looking at the ResourceGraphDefinition
       let expectedCustomStatusFields = false;
@@ -173,6 +182,9 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         expectedCustomStatusFields,
         expectedStatusKeys,
         statusKeys,
+        generation,
+        syncedObservedGeneration: syncedCondition?.observedGeneration,
+        readyObservedGeneration: readyCondition?.observedGeneration,
       });
 
       // Resource is ready only after KRO reports the current instance as synced.
@@ -183,10 +195,21 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       const hasExpectedCustomStatus =
         expectedStatusKeys.length === 0 ||
         expectedStatusKeys.every((key) => Object.hasOwn(status, key));
+      // `observedGeneration` is the conventional contract for a projected
+      // status snapshot. KRO can mark its owner condition current one reconcile
+      // before all custom status expressions have been copied. When a graph
+      // deliberately exposes this field, require it to catch up as well so
+      // deploy() cannot return a mixed-generation status object.
+      const projectedObservedGeneration = status.observedGeneration;
+      const projectedStatusIsCurrent =
+        projectedObservedGeneration === undefined ||
+        generation === undefined ||
+        projectedObservedGeneration >= generation;
       const isReady =
         isActive &&
         isSynced &&
         hasExpectedCustomStatus &&
+        projectedStatusIsCurrent &&
         (!hasReadyField || statusReadyField === true);
 
       if (isReady) {
@@ -218,6 +241,8 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         isSynced,
         hasCustomStatusFields,
         expectedStatusKeys,
+        projectedObservedGeneration,
+        projectedStatusIsCurrent,
       });
     } catch (error: unknown) {
       // Re-throw CRDInstanceError as-is

@@ -42,6 +42,8 @@ export interface KroSimpleSchema {
   group?: string;
   /** Spec fields — nested objects represent KRO SimpleSchema nested types. */
   spec: Record<string, unknown>;
+  /** Reusable KRO SimpleSchema custom types used by validated structured fields. */
+  types?: Record<string, Record<string, unknown>>;
   /** Status fields may be plain CEL expression strings, nested objects, or arrays for status mappings. */
   status?: Record<string, string | Record<string, unknown> | unknown[]>;
 }
@@ -308,6 +310,13 @@ export interface SerializationOptions {
   noRefs?: boolean;
   /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata. @default false */
   allowBreakingChanges?: boolean;
+  /**
+   * Kubernetes CEL admission rules attached to spec fields in the generated CRD.
+   * Keys are dotted paths relative to `spec`; each rule evaluates with `self`
+   * bound to that field. Structured fields are emitted as named SimpleSchema
+   * custom types so their validation markers preserve the nested type surface.
+   */
+  schemaFieldValidations?: Readonly<Record<string, string>>;
 }
 
 export interface SerializationContext {

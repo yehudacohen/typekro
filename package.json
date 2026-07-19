@@ -26,6 +26,10 @@
       "import": "./dist/factories/helm/index.js",
       "types": "./dist/factories/helm/index.d.ts"
     },
+    "./harbor": {
+      "import": "./dist/factories/harbor/index.js",
+      "types": "./dist/factories/harbor/index.d.ts"
+    },
     "./kro": {
       "import": "./dist/factories/kro/index.js",
       "types": "./dist/factories/kro/index.d.ts"
@@ -131,6 +135,7 @@
     "test": "./scripts/run-unit-tests.sh",
     "test:coverage": "rm -rf coverage && bun test --coverage --coverage-reporter=lcov --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
+    "test:containers:node": "bun run build:lib && node scripts/test-container-node-runtime.mjs",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
     "test:integration:dagster": "bun test test/integration/dagster/bootstrap-composition.test.ts --timeout 900000",

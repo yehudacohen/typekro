@@ -22,9 +22,12 @@ const makeFakeBuild =
     calls.push(opts.imageName);
     return {
       imageUri: `123.dkr.ecr.us-east-2.amazonaws.com/${opts.imageName}:${opts.tag}`,
+      taggedImageUri: `123.dkr.ecr.us-east-2.amazonaws.com/${opts.imageName}:${opts.tag}`,
+      repository: `123.dkr.ecr.us-east-2.amazonaws.com/${opts.imageName}`,
       tag: String(opts.tag),
       duration: 1,
       pushed: true,
+      platforms: [],
     };
   };
 
@@ -58,6 +61,7 @@ describe('container()', () => {
     expect(img.imageUri).toBe('123.dkr.ecr.us-east-2.amazonaws.com/app:content-hash');
     expect(img.repository).toBe('123.dkr.ecr.us-east-2.amazonaws.com/app');
     expect(img.tag).toBe('content-hash');
+    expect(img.taggedImageUri).toBe('123.dkr.ecr.us-east-2.amazonaws.com/app:content-hash');
     expect(calls).toEqual(['app']);
   });
 
@@ -96,5 +100,36 @@ describe('container()', () => {
       build
     );
     expect(calls).toEqual(['svc', 'svc']); // two builds (distinct identities)
+  });
+
+  it('does not collide when one image name targets different contexts or registries', async () => {
+    const calls: string[] = [];
+    const build = makeFakeBuild(calls);
+    await container(
+      { context: './a', imageName: 'svc', registry: { type: 'oci', registry: 'one.example.test' } },
+      build
+    );
+    await container(
+      { context: './b', imageName: 'svc', registry: { type: 'oci', registry: 'two.example.test' } },
+      build
+    );
+    expect(calls).toEqual(['svc', 'svc']);
+  });
+
+  it('evicts a failed build so a corrected retry can succeed', async () => {
+    let attempts = 0;
+    const build = async (opts: ContainerBuildOptions): Promise<ContainerBuildResult> => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('temporary registry outage');
+      return makeFakeBuild([])(opts);
+    };
+    const options = {
+      context: './app',
+      imageName: 'retryable',
+      registry: { type: 'ecr' as const },
+    };
+    await expect(container(options, build)).rejects.toThrow('temporary registry outage');
+    await expect(container(options, build)).resolves.toMatchObject({ tag: 'content-hash' });
+    expect(attempts).toBe(2);
   });
 });

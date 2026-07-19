@@ -367,29 +367,29 @@ pruning your namespace. There is no automatic reclaim. Choose one:
 
 ### How teardown deletes (order) and what it leaves behind
 
-Deleting a KRO instance (imperative `deleteInstance`) tears its footprint down in this
-order — the generated CRD is the most foundational type, so it is created first and
-destroyed last:
+Deleting a KRO instance (imperative `deleteInstance`) tears its owned runtime footprint
+down in this order. The generated CRD is a reusable cluster-level API definition and is
+retained Active rather than being placed into a best-effort deletion state:
 
 1. **Instance CR** — deleted and gated to a real `404`, so KRO's `kro.run/finalizer`
    has cleared (KRO graph-deleted every child) **before** the next step. Deleting the
    RGD while KRO is mid-finalizer orphans cleanup, so this gate is load-bearing.
-2. **Owned workload Namespace(s)** — deleted **before** the RGD/CRD, gated to `404`.
+2. **Owned workload Namespace(s)** — deleted **before** the RGD, gated to `404`.
    This ordering is what makes the namespace delete *reliable*: the RGD and generated
    CRD are still **healthy/Active** at this point, so the namespace controller enumerates
    that type's zero instances **instantly** to confirm the namespace is empty. (Only a
    *Terminating* CRD stalls a namespace — the apiextensions `customresourcecleanup`
    finalizer can hang for minutes even with zero instances, [kro#1171]. That is exactly
-   why the CRD is deleted *after* the namespace.) A namespace is deleted **only if** it is
+   why the CRD stays Active.) A namespace is deleted **only if** it is
    both owned by this RGD (carries the `typekro.io/created-by-rgd` record) **and** empty;
    otherwise it is retained.
 3. **RGD** — deleted and gated to `404` (only when no other instance shares it, **and**
    only once owned-namespace cleanup is confirmed — see *retry-safety* below).
-4. **Generated CRD** — deleted **last**, and **best-effort / non-fatal**. KRO never
-   deletes it itself (`allowCRDDeletion=false`), and its apiextensions cleanup finalizer
-   can stall. By this point the namespace is already gone, so a slow CRD teardown blocks
-   nothing: the delete is issued and awaited generously, but a timeout is *logged, not
-   thrown* — it must never undo an otherwise-successful teardown.
+4. **Generated CRD** — deliberately **retained Active** with zero instances. KRO uses
+   `allowCRDDeletion=false` by default, and TypeKro follows the same policy in both the
+   imperative and Alchemy paths. A best-effort delete is unsafe because the
+   apiextensions `customresourcecleanup` finalizer can leave the CRD `Terminating`; that
+   state prevents a later deployment of the same RGD/kind from reusing the API.
 
 **Which namespaces get cleaned (two durable records).** At deploy time TypeKro records
 the concrete names of every hoisted Namespace on the instance CR
@@ -405,17 +405,17 @@ the CR but crashed before cleaning its namespaces, a retry would find the CR `40
 read no names. So the last-instance sweep does **not** depend on the CR: it finds owned
 namespaces via the durable `created-by-rgd` **namespace** annotation (which survives the
 CR), cleans each, and then **preserves the RGD/CRD until owned-namespace cleanup is
-confirmed** — the definitions are not deleted while any `created-by-rgd` namespace still
-exists (or cannot be confirmed gone). A retry after the CR is already gone therefore
-still finds and cleans the leaked namespace, and only then removes the definitions.
+confirmed** — the RGD is not deleted while any `created-by-rgd` namespace still exists
+(or cannot be confirmed gone). A retry after the CR is already gone therefore still
+finds and cleans the leaked namespace, and only then removes the RGD.
 
-**What can be left behind:** if the generated CRD's cleanup finalizer is slow, the CRD
-may linger (Terminating, or occasionally leftover). This is **harmless** — it has zero
-instances and is not referenced by anything — and an operator may garbage-collect it
-out-of-band (`kubectl delete crd <plural>.<group>`). In high-churn ephemeral
-environments that create/destroy many short-lived instances, these dangling CRDs can
-accumulate; sweep them periodically if desired. Likewise, an owned namespace that is
-retained because another stack still has resources in it keeps the RGD/CRD alive
+**What can be left behind:** the generated CRD remains Active with zero instances. This
+is intentional and lets a later deployment of the same composition reuse it. An
+administrator may garbage-collect it out-of-band only after proving that the kind is
+retired, no custom resources exist in any served version, and no RGD needs it
+(`kubectl delete crd <plural>.<group>`). Do not make that delete a normal application
+teardown step: a CRD stuck `Terminating` blocks redeployment. Likewise, an owned
+namespace retained because another stack still has resources in it keeps the RGD alive
 (conservative, by design); remove the other resources (or the namespace) to let a later
 teardown complete.
 

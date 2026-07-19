@@ -296,6 +296,18 @@ export class ResourceRollbackManager {
   }
 
   /**
+   * Gate on an already-requested deletion without issuing a second delete.
+   * KRO clears its owner finalizer after requesting child deletion, so callers
+   * use this to prove every child has actually reached 404.
+   */
+  async waitForResourceGone(
+    target: { apiVersion: string; kind: string; name: string; namespace?: string },
+    options: { timeout?: number } = {}
+  ): Promise<void> {
+    await this.waitForDeletionByHeader(target, options.timeout ?? DEFAULT_DELETE_TIMEOUT);
+  }
+
+  /**
    * Delete a single resource by header and GATE on its real 404, throwing
    * {@link DeploymentTimeoutError} if it does not disappear within `timeout`.
    *

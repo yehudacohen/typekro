@@ -63,7 +63,9 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
     factory: unknown,
     opts: {
       instances: Array<{ metadata?: { annotations?: Record<string, string> }; spec?: unknown }>;
-      ownedNamespaces?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>;
+      ownedNamespaces?: Array<{
+        metadata?: { name?: string; annotations?: Record<string, string> };
+      }>;
     }
   ): void {
     const rec = factory as Rec;
@@ -83,7 +85,10 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
     const factory = makeFactory('v6-legacy', 'app-ns');
     // One instance, no hoisted-namespaces annotation; and the cluster has NO namespace
     // stamped for this RGD → nothing durable resolves it.
-    wire(factory, { instances: [{ spec: { name: 'inst', namespace: 'app-ns' } }], ownedNamespaces: [] });
+    wire(factory, {
+      instances: [{ spec: { name: 'inst', namespace: 'app-ns' } }],
+      ownedNamespaces: [],
+    });
     const fn = priv(factory, 'existingInstancesHoistedNamespaceNames');
     await expect(fn()).rejects.toThrow(
       /PRE_HOIST_LEGACY_INSTANCE_UNRESOLVABLE|no per-instance namespace record/
@@ -98,7 +103,9 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
       ],
       ownedNamespaces: [],
     });
-    const fn = priv(factory, 'existingInstancesHoistedNamespaceNames') as () => Promise<Set<string>>;
+    const fn = priv(factory, 'existingInstancesHoistedNamespaceNames') as () => Promise<
+      Set<string>
+    >;
     const result = await fn();
     expect(result.has('team-a-custom')).toBe(true);
   });
@@ -115,7 +122,14 @@ describe('#1: existingInstancesHoistedNamespaceNames resolves EXACTLY or FAILS C
       // Instance carries NO CR record...
       instances: [{ spec: { name: 'inst', namespace: 'app-ns' } }],
       // ...and a Namespace stamped by THIS RGD exists — but it is NOT per-instance proof.
-      ownedNamespaces: [{ metadata: { name: 'owned-by-rgd', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } }],
+      ownedNamespaces: [
+        {
+          metadata: {
+            name: 'owned-by-rgd',
+            annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName },
+          },
+        },
+      ],
     });
     const fn = priv(factory, 'existingInstancesHoistedNamespaceNames');
     await expect(fn()).rejects.toThrow(
@@ -143,7 +157,9 @@ describe('#2: teardown with the CR ALREADY ABSENT finds + gates on the created-b
    */
   function makeMock(opts: {
     rgdName: string;
-    nsListByCall: Array<Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>>;
+    nsListByCall: Array<
+      Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>
+    >;
   }) {
     const ops: Op[] = [];
     let listCall = 0;
@@ -197,7 +213,9 @@ describe('#2: teardown with the CR ALREADY ABSENT finds + gates on the created-b
   it('finds the owned namespace via created-by-rgd and PRESERVES the RGD/CRD while it remains', async () => {
     const factory = makeFactory('v6-retry-remains', 'app-ns');
     const rgdName = (factory as unknown as Rec).rgdName as string;
-    const owned = [{ metadata: { name: 'leaked-ns', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } }];
+    const owned = [
+      { metadata: { name: 'leaked-ns', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } },
+    ];
     // Both the sweep list AND the confirm list still report the owned namespace present.
     const { api, ops } = makeMock({ rgdName, nsListByCall: [owned, owned] });
     wireTeardown(factory, api);
@@ -211,10 +229,12 @@ describe('#2: teardown with the CR ALREADY ABSENT finds + gates on the created-b
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
   });
 
-  it('deletes the RGD/CRD ONCE no created-by-rgd namespace remains (confirmed clean)', async () => {
+  it('deletes the RGD but retains the CRD once owned namespaces are confirmed clean', async () => {
     const factory = makeFactory('v6-retry-clean', 'app-ns');
     const rgdName = (factory as unknown as Rec).rgdName as string;
-    const owned = [{ metadata: { name: 'leaked-ns', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } }];
+    const owned = [
+      { metadata: { name: 'leaked-ns', annotations: { [NAMESPACE_OWNER_ANNOTATION]: rgdName } } },
+    ];
     // Sweep sees it; the confirm list sees it GONE → cleanup confirmed → tear definitions down.
     const { api, ops } = makeMock({ rgdName, nsListByCall: [owned, []] });
     wireTeardown(factory, api);
@@ -223,7 +243,7 @@ describe('#2: teardown with the CR ALREADY ABSENT finds + gates on the created-b
 
     expect(readName(ops, 'leaked-ns')).toBe(true);
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(true);
-    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(true);
+    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
   });
 });
 

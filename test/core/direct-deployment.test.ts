@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
+import { setMetadataField } from '../../src/core/metadata/index.js';
 import type { ReferenceResolver } from '../../src/core/references/resolver.js';
 import type { DeploymentEvent } from '../../src/core/types/deployment.js';
 import {
@@ -881,7 +882,7 @@ describe('DirectDeploymentEngine', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
     });
 
-    it('falls back to deployed resources when graph IDs do not match runtime IDs', async () => {
+    it('maps generated graph IDs to the deployed Kubernetes identity', async () => {
       const manifest = createMockResource({
         id: 'logical-resource',
         kind: 'ConfigMap',
@@ -915,6 +916,64 @@ describe('DirectDeploymentEngine', () => {
       expect(result.status).toBe('success');
       expect(result.rolledBackResources).toEqual(['ConfigMap/owned-config']);
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves scope filtering when graph and deployed IDs differ', async () => {
+      const sharedManifest = createMockResource({
+        id: 'shared-repository',
+        kind: 'ConfigMap',
+        apiVersion: 'v1',
+        metadata: { name: 'shared-repository', namespace: 'test-namespace' },
+      });
+      setMetadataField(sharedManifest, 'scopes', ['platform']);
+      const appManifest = createMockResource({
+        id: 'application',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'application', namespace: 'test-namespace' },
+      });
+      const dependencyGraph = new DependencyGraph();
+      dependencyGraph.addNode('expanded-resource-0', sharedManifest);
+      dependencyGraph.addNode('expanded-resource-1', appManifest);
+      dependencyGraph.addEdge('expanded-resource-1', 'expanded-resource-0');
+      const deployedResources: DeployedResource[] = [
+        {
+          id: 'shared-repository',
+          kind: 'ConfigMap',
+          name: 'shared-repository',
+          namespace: 'test-namespace',
+          manifest: sharedManifest,
+          status: 'deployed',
+          deployedAt: new Date(),
+        },
+        {
+          id: 'application',
+          kind: 'Deployment',
+          name: 'application',
+          namespace: 'test-namespace',
+          manifest: appManifest,
+          status: 'deployed',
+          deployedAt: new Date(),
+        },
+      ];
+      mockK8sApi.delete.mockResolvedValue({});
+      mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+
+      const result = await engine.rollbackRecord({
+        deploymentId: 'mapped-scope-filter',
+        resources: deployedResources,
+        dependencyGraph,
+        startTime: new Date(),
+        options: defaultOptions,
+        status: 'completed',
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.rolledBackResources).toEqual(['Deployment/application']);
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'Deployment' })
+      );
     });
 
     it('falls back entirely to reverse deployment order when graph IDs only partially match', async () => {
@@ -959,13 +1018,11 @@ describe('DirectDeploymentEngine', () => {
         toDeployedResource('app', appManifest),
       ];
       const deletedNames: string[] = [];
-      const deleteResource = mock(
-        (request: { metadata?: { name?: string } }): Promise<object> => {
-          const name = request.metadata?.name;
-          if (name) deletedNames.push(name);
-          return Promise.resolve({});
-        }
-      );
+      const deleteResource = mock((request: { metadata?: { name?: string } }): Promise<object> => {
+        const name = request.metadata?.name;
+        if (name) deletedNames.push(name);
+        return Promise.resolve({});
+      });
       (
         mockK8sApi as unknown as {
           delete: typeof deleteResource;

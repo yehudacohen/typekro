@@ -46,7 +46,9 @@ function makeMockApi(opts: {
    * The cluster-wide Namespace LIST returned by `k8sApi.list('v1','Namespace')` — the
    * durable `created-by-rgd` sweep + confirm gate (finding #2) read this. Default: none.
    */
-  ownedNamespaceList?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>;
+  ownedNamespaceList?: Array<{
+    metadata?: { name?: string; annotations?: Record<string, string> };
+  }>;
 }) {
   const ops: Op[] = [];
   let crReadCount = 0;
@@ -128,7 +130,9 @@ function wire(
   });
   // Fallback derivation (used only when the CR carries no recorded annotation).
   rec.concreteHoistedNamespaces = () =>
-    new Map((opts.derivedNamespaces ?? []).map((n) => [n, { apiVersion: 'v1', kind: 'Namespace' }]));
+    new Map(
+      (opts.derivedNamespaces ?? []).map((n) => [n, { apiVersion: 'v1', kind: 'Namespace' }])
+    );
 }
 
 const has = (ops: Op[], op: Op['op'], kind: string): boolean =>
@@ -172,7 +176,7 @@ describe('#2: deleting a NON-last instance cleans ITS namespace but NOT the RGD/
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
   });
 
-  it('the LAST instance: namespace step runs AND the RGD + CRD are torn down', async () => {
+  it('the LAST instance: namespace step runs, RGD is torn down, and CRD stays Active', async () => {
     const factory = makeFactory('multi-last', 'app-ns');
     const { api, ops } = makeMockApi({
       crBody: { spec: { name: 'inst', namespace: 'app-ns' } },
@@ -184,7 +188,7 @@ describe('#2: deleting a NON-last instance cleans ITS namespace but NOT the RGD/
 
     expect(has(ops, 'read', 'Namespace')).toBe(true);
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(true);
-    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(true);
+    expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
   });
 });
 
@@ -255,7 +259,9 @@ describe('#3: decideNamespaceOwnershipCreateFirst is atomic (owned IFF we create
       create: async () => {
         throw conflict();
       },
-      read: async () => ({ metadata: { annotations: { [NAMESPACE_OWNER_ANNOTATION]: 'other-rgd' } } }),
+      read: async () => ({
+        metadata: { annotations: { [NAMESPACE_OWNER_ANNOTATION]: 'other-rgd' } },
+      }),
     };
     const decision = await decideNamespaceOwnershipCreateFirst(
       api,
@@ -274,9 +280,9 @@ describe('#3: decideNamespaceOwnershipCreateFirst is atomic (owned IFF we create
       },
       read: async () => ({}),
     };
-    await expect(
-      decideNamespaceOwnershipCreateFirst(api, manifest({}), 'my-rgd')
-    ).rejects.toThrow(/forbidden/);
+    await expect(decideNamespaceOwnershipCreateFirst(api, manifest({}), 'my-rgd')).rejects.toThrow(
+      /forbidden/
+    );
   });
 });
 

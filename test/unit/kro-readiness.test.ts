@@ -47,7 +47,13 @@ function createMockCustomObjectsApi() {
 /** Build a Kro instance response with the given status fields. */
 function kroInstance(status?: {
   state?: string;
-  conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>;
+  conditions?: Array<{
+    type: string;
+    status: string;
+    reason?: string;
+    message?: string;
+    observedGeneration?: number;
+  }>;
   [key: string]: unknown;
 }): k8s.KubernetesObject {
   return {
@@ -157,18 +163,22 @@ describe('waitForKroInstanceReady', () => {
 
     it('does not trust custom status.ready when Kro Ready condition is stale false', async () => {
       mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
-        spec: { schema: { status: { ready: { type: 'boolean' }, supervisorReady: { type: 'boolean' } } } },
+        spec: {
+          schema: { status: { ready: { type: 'boolean' }, supervisorReady: { type: 'boolean' } } },
+        },
       });
 
       mockK8sApi.read.mockResolvedValue(
         kroInstance({
           state: 'ACTIVE',
-          conditions: [{
-            type: 'Ready',
-            status: 'False',
-            reason: 'NotReady',
-            message: 'resource reconciliation failed: cluster mutated',
-          }],
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'False',
+              reason: 'NotReady',
+              message: 'resource reconciliation failed: cluster mutated',
+            },
+          ],
           ready: true,
           supervisorReady: true,
         })
@@ -184,6 +194,75 @@ describe('waitForKroInstanceReady', () => {
           })
         )
       ).rejects.toThrow(DeploymentTimeoutError);
+    });
+
+    it('waits until the Ready condition observes the updated instance generation', async () => {
+      let reads = 0;
+      mockK8sApi.read.mockImplementation(() => {
+        reads += 1;
+        return Promise.resolve({
+          ...kroInstance({
+            state: 'ACTIVE',
+            conditions: [
+              {
+                type: 'Ready',
+                status: 'True',
+                observedGeneration: reads === 1 ? 3 : 4,
+              },
+            ],
+            endpoint: reads === 1 ? 'http://old.example' : 'http://new.example',
+          }),
+          metadata: { name: 'test-instance', namespace: 'default', generation: 4 },
+        });
+      });
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            pollInterval: 0,
+          })
+        )
+      ).resolves.toBeUndefined();
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for a declared projected observedGeneration after the owner condition is current', async () => {
+      mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
+        spec: {
+          schema: {
+            status: {
+              ready: { type: 'boolean' },
+              observedGeneration: { type: 'integer' },
+            },
+          },
+        },
+      });
+      let reads = 0;
+      mockK8sApi.read.mockImplementation(() => {
+        reads += 1;
+        return Promise.resolve({
+          ...kroInstance({
+            state: 'ACTIVE',
+            conditions: [{ type: 'Ready', status: 'True', observedGeneration: 8 }],
+            ready: true,
+            observedGeneration: reads === 1 ? 7 : 8,
+          }),
+          metadata: { name: 'test-instance', namespace: 'default', generation: 8 },
+        });
+      });
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            pollInterval: 0,
+          })
+        )
+      ).resolves.toBeUndefined();
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(2);
     });
   });
 

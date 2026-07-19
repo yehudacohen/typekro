@@ -291,6 +291,23 @@ export function concreteOwnedNamespaceResources<TSpec extends KroCompatibleType>
 }
 
 /**
+ * Concrete active resources owned by one KRO instance, excluding external
+ * observations. This is used after the owner CR disappears to prove that KRO's
+ * asynchronous child deletes have actually reached 404 before shared
+ * definitions are removed or teardown is reported successful.
+ */
+export function concreteActiveOwnedResources<TSpec extends KroCompatibleType>(
+  input: Omit<KroInstanceNamespaceSafetyInput<TSpec>, 'instanceNamespace'>
+): Map<string, KubernetesResource> {
+  const byId = new Map<string, KubernetesResource>();
+  for (const [resourceId, resource] of concreteResources(input)) {
+    if (!isActiveOwnedResource(resource, input.spec)) continue;
+    byId.set(resourceId, resource);
+  }
+  return byId;
+}
+
+/**
  * Select EVERY Namespace to HOIST out of the RGD graph — the new, UNCONDITIONAL
  * model: typekro NEVER emits a Namespace into RGD YAML. Selection is trivially
  * `kind === 'Namespace'` (excluding `__externalRef` observed namespaces, which are
