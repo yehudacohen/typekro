@@ -37,7 +37,7 @@ export function mapHarborProductionInstallationToHelmValues(
     };
   }
 
-  return mergeValuesLast(values, config.values);
+  return mergeProductionValues(values, config.values);
 }
 
 function mapCommonValues(
@@ -354,6 +354,29 @@ function mergeValuesLast(
   }
   if (isPlainObject(overrides)) deepMerge(base, overrides);
   return base;
+}
+
+/**
+ * Preserve production escape-hatch additions without allowing them to weaken
+ * the typed availability, credential, TLS, storage, or network contract.
+ * Local development intentionally retains chart-values-last behavior.
+ */
+function mergeProductionValues(
+  protectedValues: Record<string, unknown>,
+  overrides: unknown
+): HarborMappedHelmValues {
+  if (overrides === undefined) return protectedValues;
+  if (
+    isKubernetesRef(overrides) ||
+    isCelExpression(overrides) ||
+    isValuesMergeExpression(overrides)
+  ) {
+    return mergeValuesExpression(overrides, protectedValues);
+  }
+  if (!isPlainObject(overrides)) return protectedValues;
+  const merged = cloneValue(overrides) as Record<string, unknown>;
+  deepMerge(merged, protectedValues);
+  return merged;
 }
 
 function asObject(value: unknown): Record<string, unknown> {

@@ -47,7 +47,16 @@ export const harborProductionInstallation = kubernetesComposition(
     spec: HarborProductionInstallationConfigSchema,
     status: HarborInstallationStatusSchema,
   },
-  (spec: HarborProductionInstallationConfig) => createHarborInstallation(spec, 'production')
+  (spec: HarborProductionInstallationConfig) => createHarborInstallation(spec, 'production'),
+  {
+    schemaFieldValidations: {
+      exposure:
+        "self.tls.enabled && self.tls.source != 'none' && (self.type != 'ingress' || (has(self.ingress) && size(self.ingress.host) > 0)) && (self.tls.source != 'secret' || has(self.tls.secretName))",
+      storage: 'self.secure && !self.skipVerify',
+      networkPolicy:
+        'self.enabled && size(self.ingressNamespaceLabels) > 0 && (size(self.egressNamespaceLabels) > 0 || (has(self.egressCidrs) && size(self.egressCidrs) > 0))',
+    },
+  }
 );
 
 function createHarborInstallation(
@@ -76,6 +85,11 @@ function createHarborInstallation(
         'has(schema.spec.repositoryUrl) ? schema.spec.repositoryUrl : "https://helm.goharbor.io"'
       )
     : (spec.repositoryUrl ?? DEFAULT_HARBOR_REPOSITORY_URL);
+  const ownsRepositoryNamespace = graphMode
+    ? Cel.expr<boolean>(
+        '!has(schema.spec.repositoryNamespaceOwnership) || schema.spec.repositoryNamespaceOwnership == "owned"'
+      )
+    : spec.repositoryNamespaceOwnership !== 'external';
   const chartVersion = graphMode
     ? Cel.expr<string>('has(schema.spec.chartVersion) ? schema.spec.chartVersion : "1.19.1"')
     : (spec.chartVersion ?? DEFAULT_HARBOR_CHART_VERSION);
@@ -98,6 +112,23 @@ function createHarborInstallation(
       },
     },
   }).withIncludeWhen(ownsTargetNamespace);
+
+  namespace({
+    id: 'harborRepositoryNamespace',
+    metadata: {
+      name: repositoryNamespace,
+      labels: {
+        'app.kubernetes.io/name': 'harbor-helm-source',
+        'app.kubernetes.io/managed-by': 'typekro',
+      },
+    },
+  }).withIncludeWhen(
+    graphMode
+      ? Cel.expr<boolean>(
+          '(!has(schema.spec.repositoryNamespaceOwnership) || schema.spec.repositoryNamespaceOwnership == "owned") && (has(schema.spec.repositoryNamespace) && schema.spec.repositoryNamespace != (has(schema.spec.namespace) ? schema.spec.namespace : "harbor-system"))'
+        )
+      : ownsRepositoryNamespace && repositoryNamespace !== targetNamespace
+  );
 
   const repository = harborHelmRepository({
     id: 'harborRepository',
@@ -389,7 +420,7 @@ function harborIngressRules(
     return Cel.expr<
       NonNullable<NonNullable<import('@kubernetes/client-node').V1NetworkPolicy['spec']>['ingress']>
     >(
-      '[{"from":[{"namespaceSelector":{"matchLabels":schema.spec.networkPolicy.ingressNamespaceLabels}}],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":8443}]}]'
+      'has(schema.spec.networkPolicy.ingressNamespaceLabels) ? [{"from":[{"namespaceSelector":{"matchLabels":schema.spec.networkPolicy.ingressNamespaceLabels}}],"ports":[{"protocol":"TCP","port":8080},{"protocol":"TCP","port":8443}]}] : []'
     );
   }
   const labels = spec.networkPolicy?.ingressNamespaceLabels;
@@ -414,7 +445,7 @@ function harborEgressRules(
     return Cel.expr<
       NonNullable<NonNullable<import('@kubernetes/client-node').V1NetworkPolicy['spec']>['egress']>
     >(
-      '[{"to":[{"podSelector":{}}]},{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}},"podSelector":{"matchLabels":{"k8s-app":"kube-dns"}}}],"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}]}] + schema.spec.networkPolicy.egressNamespaceLabels.map(labels, {"to":[{"namespaceSelector":{"matchLabels":labels}}]}) + (has(schema.spec.networkPolicy.egressCidrs) ? schema.spec.networkPolicy.egressCidrs.map(cidr, {"to":[{"ipBlock":{"cidr":cidr}}]}) : [])'
+      '[{"to":[{"podSelector":{}}]},{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}},"podSelector":{"matchLabels":{"k8s-app":"kube-dns"}}}],"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}]}] + (has(schema.spec.networkPolicy.egressNamespaceLabels) ? schema.spec.networkPolicy.egressNamespaceLabels : []).map(labels, {"to":[{"namespaceSelector":{"matchLabels":labels}}]}) + (has(schema.spec.networkPolicy.egressCidrs) ? schema.spec.networkPolicy.egressCidrs.map(cidr, {"to":[{"ipBlock":{"cidr":cidr}}]}) : [])'
     );
   }
   return [

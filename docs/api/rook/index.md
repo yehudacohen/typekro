@@ -21,6 +21,9 @@ import {
   cephObjectStore,
   rookBucketStorageClass,
   rookCephOperatorBootstrap,
+  rookCephSingleNodePlatform,
+  rookCephProductionPlatform,
+  rookCephExternalOperatorSingleNodePlatform,
   rookObjectStorageClaim,
 } from 'typekro/rook';
 ```
@@ -40,9 +43,11 @@ await operator.deploy({
 });
 ```
 
-The bootstrap installs the official operator and its CRDs. It intentionally
-does **not** create a `CephCluster`; devices, failure domains, replication, and
-the cluster's destruction policy require explicit platform decisions. See the
+The operator-only bootstrap installs the official operator and its CRDs. It
+intentionally does **not** create a `CephCluster`; use one of the complete
+platform compositions below when TypeKro should own the storage platform too.
+Devices, failure domains, replication, and the cluster's destruction policy
+remain explicit platform decisions. See the
 [Rook prerequisites](https://rook.io/docs/rook/latest-release/Getting-Started/Prerequisites/prerequisites/)
 before provisioning a Ceph cluster.
 
@@ -70,6 +75,7 @@ boundary; deleting a consumer then leaves the singleton owner intact.
 | `version` | `string` | `v1.20.2` | Official chart version, including the `v` prefix |
 | `repositoryName` | `string` | `rook-release` | Flux source name |
 | `repositoryNamespace` | `string` | operator namespace | Flux source namespace |
+| `repositoryNamespaceOwnership` | `owned \| external` | `owned` | Whether a distinct custom source Namespace is created and lifecycle-owned |
 | `repositoryUrl` | `string` | official Rook repository | Flux source URL |
 | `logLevel` | enum | chart default | `ERROR`, `WARNING`, `INFO`, or `DEBUG` |
 | `enableOBCWatchOperatorNamespace` | `boolean` | chart default | Controls the operator's OBC watch behavior |
@@ -81,9 +87,142 @@ boundary; deleting a consumer then leaves the singleton owner intact.
 `values` is the passthrough for chart settings not modeled above. It is
 graph-aware in KRO mode and merges after typed fields.
 
-## Platform setup
+## Complete platform compositions
 
-After creating a `CephCluster`, a platform owner can define an RGW object store.
+TypeKro provides three complete cluster-chart compositions in addition to the
+operator-only bootstrap:
+
+| Composition | Intended use | Operator ownership |
+| --- | --- | --- |
+| `rookCephSingleNodePlatform` | Bounded one-node development | Installs and owns the official operator |
+| `rookCephProductionPlatform` | Explicit multi-node production contract | Installs and owns the official operator |
+| `rookCephExternalOperatorSingleNodePlatform` | One-node cluster on a shared operator | Observes an existing operator Deployment; never adopts or deletes it |
+
+The managed variants own the operator and cluster HelmReleases, their
+Namespaces, the `CephObjectStore`, and the bucket `StorageClass`. The cluster
+chart creates the `CephCluster`; TypeKro observes it for readiness and orders
+the object store after it. The external-operator variant omits the operator
+release and Namespace, and requires their names explicitly.
+
+The development profile is intentionally replication-one and is not highly
+available:
+
+```ts
+const local = rookCephSingleNodePlatform.factory('kro', {
+  namespace: 'platform-control',
+  waitForReady: true,
+});
+
+await local.deploy({
+  name: 'rook-local',
+  profile: 'single-node-development',
+  namespace: 'rook-ceph',
+  operatorNamespace: 'rook-ceph-operator',
+  storageClassName: 'local-block',
+  storageSize: '16Gi',
+  objectStoreName: 'application-objects',
+  bucketStorageClassName: 'application-buckets-retain',
+});
+```
+
+The production profile requires the availability and operational decisions
+that the local profile deliberately supplies as unsafe single-node defaults:
+
+```ts
+const resource = {
+  requests: { cpu: '500m', memory: '1Gi' },
+  limits: { memory: '2Gi' },
+};
+
+await rookCephProductionPlatform
+  .factory('kro', { namespace: 'platform-control', waitForReady: true })
+  .deploy({
+    name: 'rook-production',
+    profile: 'production',
+    storageClassName: 'production-block',
+    storageSize: '500Gi',
+    osdCount: 6,
+    monCount: 3,
+    mgrCount: 2,
+    poolReplicas: 3,
+    failureDomain: 'host',
+    portableVolumes: true,
+    resources: {
+      mon: resource,
+      mgr: resource,
+      osd: resource,
+      prepareosd: resource,
+      rgw: resource,
+    },
+    monitoring: { enabled: true, createPrometheusRules: true },
+    disruptionManagement: {
+      managePodBudgets: true,
+      osdMaintenanceTimeoutMinutes: 45,
+    },
+    backup: {
+      strategy: 'ceph-multisite',
+      recoveryPointObjective: '5m',
+      recoveryTimeObjective: '1h',
+    },
+  });
+```
+
+Production singleton booleans such as `monitoring.enabled: true` and
+`managePodBudgets: true` are emitted as Kubernetes booleans with CRD admission
+rules in KRO mode. A GitOps-authored instance cannot replace them with strings
+or disable the mandatory controls.
+
+For a shared operator, use the explicit observer boundary:
+
+```ts
+await rookCephExternalOperatorSingleNodePlatform
+  .factory('kro', { namespace: 'platform-control', waitForReady: true })
+  .deploy({
+    name: 'application-storage',
+    profile: 'single-node-development',
+    namespace: 'application-ceph',
+    operatorNamespace: 'shared-rook-operator',
+    operatorDeploymentName: 'rook-ceph-operator',
+    storageClassName: 'local-block',
+  });
+```
+
+All three compositions create a distinct custom `repositoryNamespace` by
+default. Set `repositoryNamespaceOwnership: 'external'` only when another
+platform owner guarantees that Namespace exists. In KRO mode, owned
+Namespaces are lifecycle-safe siblings: TypeKro creates them before the RGD,
+records ownership on the instance, and deletes them only after the instance
+finalizer has cleared and emptiness/ownership guards pass.
+
+Their public status is:
+
+```ts
+type RookCephPlatformStatus = {
+  ready: boolean;
+  failed: boolean;
+  phase: 'Installing' | 'Ready' | 'Failed';
+  operatorReady: boolean;
+  clusterReady: boolean;
+  objectStoreReady: boolean;
+  storageClassReady: boolean;
+  cephHealth: string;
+  endpoint: string;
+  bucketStorageClassName: string;
+  version: string;
+  cephVersion: string;
+  profile: 'single-node-development' | 'production';
+};
+```
+
+`ready` means complete platform health, not only data-plane health: the
+operator, `CephCluster`, `CephObjectStore`, and bucket `StorageClass` must all
+be available. The external-operator composition derives `operatorReady` from
+the observed Deployment's available replicas.
+
+## Low-level platform setup
+
+For custom cluster topologies, a platform owner can compose the low-level
+resources directly. After creating a `CephCluster`, define an RGW object store.
 The metadata pool must be replicated. The data pool may be replicated or
 erasure-coded.
 
@@ -221,6 +360,7 @@ When `CephObjectStoreUser.spec.keys` is supplied, every entry must contain both
 | Resource | Ready condition |
 | --- | --- |
 | Rook operator bootstrap | Flux HelmRelease has `Ready=True` |
+| Complete Rook platform | Operator, `CephCluster`, `CephObjectStore`, and bucket `StorageClass` are all ready |
 | `CephObjectStore` | `status.phase == "Ready"` |
 | `CephObjectStoreUser` | `status.phase == "Ready"` |
 | `ObjectBucketClaim` | `status.phase == "Bound"` |
@@ -231,12 +371,13 @@ reports only `Ready` or `Installing`.
 
 ## Direct and KRO boundaries
 
-Operator ownership and object-store platform graphs support both factory modes.
+Operator ownership and all three complete platform graphs support both factory modes.
 The application OBC claim is deliberately direct-only:
 
 ```ts
 rookObjectStorageClaim.factory('direct', { namespace: 'my-app' });
 rookCephOperatorBootstrap.factory('kro', { namespace: 'platform-control' });
+rookCephProductionPlatform.factory('kro', { namespace: 'platform-control' });
 ```
 
 This is an explicit controller-ownership boundary, not a missing implementation:
@@ -246,12 +387,14 @@ binds. KRO can safely own the operator, `CephObjectStore`, and bucket
 
 ## Current scope
 
-This object-storage slice does not create `CephCluster`, Rook multisite
-realms/zones, bucket notifications, or experimental COSI resources. Those are
-platform capabilities with materially different lifecycle and security
-decisions. Raw Rook resources can still be composed alongside these factories,
-and future typed slices can be added without changing the application OBC
-contract.
+The complete platform compositions create a `CephCluster` through the official
+cluster chart, but intentionally model only one-node development and an
+explicit replicated production profile. They do not model Rook multisite
+realms/zones, bucket notifications, arbitrary device discovery, or experimental
+COSI resources. Those capabilities have materially different lifecycle and
+security decisions. Raw Rook resources can still be composed alongside these
+factories, and future typed slices can be added without changing the
+application OBC contract.
 
 Upstream references:
 

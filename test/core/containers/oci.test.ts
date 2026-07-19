@@ -138,8 +138,11 @@ process.exit(0);
     ).toThrow('cannot be combined');
   });
 
-  it('publishes through an isolated session and returns a registry-verified immutable URI', async () => {
+  it('publishes with authenticated custom-CA trust without relying on docker login', async () => {
     const password = 'not-on-the-command-line';
+    const caFile = join(directory, 'registry-ca.pem');
+    writeFileSync(caFile, '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n');
+    process.env.FAKE_EXPECT_CONFIG_CONTENT = 'robot$chirp';
     const result = await buildContainer({
       context: contextPath,
       imageName: 'gateway',
@@ -149,7 +152,7 @@ process.exit(0);
         registry: 'https://registry.example.test',
         project: 'chirp',
         credentialProvider: async () => ({ username: 'robot$chirp', password }),
-        tls: { caCertificate: '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----' },
+        tls: { caFile },
       }),
     });
 
@@ -162,10 +165,10 @@ process.exit(0);
       pushed: true,
       platforms: ['linux/amd64', 'linux/arm64'],
     });
-    expect(readFileSync(stdinPath, 'utf8')).toBe(password);
     const log = readFileSync(logPath, 'utf8');
     expect(log).not.toContain(password);
-    expect(log).toContain('"login"');
+    expect(log).not.toContain('"login"');
+    expect(existsSync(stdinPath)).toBe(false);
     expect(log).toContain('"create"');
     expect(log).toContain('"--buildkitd-config"');
     expect(log).toContain('"--push"');

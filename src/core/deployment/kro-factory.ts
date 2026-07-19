@@ -85,6 +85,7 @@ import type {
   MagicAssignableShape,
   SchemaDefinition,
   SchemaProxy,
+  SerializationOptions,
 } from '../types/serialization.js';
 import { validateStatusCelExpressions } from '../validation/cel-validator.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
@@ -2437,7 +2438,9 @@ export class KroResourceFactoryImpl<
       this.schemaDefinition,
       aspectResources,
       statusMappings,
-      nestedCel
+      nestedCel,
+      (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
+        ?.schemaFieldValidations
     );
 
     // Attach nested status CEL mappings as non-enumerable property so

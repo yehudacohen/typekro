@@ -105,8 +105,12 @@ Deployment({ name: 'api', image: image.imageUri });
 
 Without an explicit credential provider, TypeKro copies `DOCKER_CONFIG/config.json` (or
 `~/.docker/config.json`) into the isolated session so native Docker credential helpers continue to
-work. Credentials are passed with `--password-stdin`; the temporary config, custom CA, and temporary
-Buildx builder are removed after success, failure, timeout, or cancellation.
+work. For conventional TLS, explicit credentials are passed to `docker login` with
+`--password-stdin`. For `caFile`, `caCertificate`, `insecure`, or `plainHttp`, Docker has no safe
+per-command trust override, so TypeKro writes the standard auth entry directly into the isolated
+configuration and gives the transport settings to a dedicated BuildKit configuration. It never
+depends on a developer machine's global daemon trust. The temporary config, copied custom CA, and
+temporary Buildx builder are removed after success, failure, timeout, or cancellation.
 
 Plain HTTP and unverified TLS are explicit development-only switches:
 
@@ -214,7 +218,8 @@ conformance test suite exercises this boundary so adding a provider does not req
 ## Security
 
 - Build-arg values are redacted in logs and error messages
-- Docker login uses `--password-stdin` (no credentials in process list)
+- Conventional-TLS Docker login uses `--password-stdin`; custom transports write credentials only
+  into the mode-restricted isolated Docker config (no credentials in process arguments)
 - Docker configuration and custom trust are isolated with mode-restricted temporary files and deleted
 - Kubernetes Secret credentials are resolved only when the registry session opens and are never returned in build results
 - Remote workloads receive only immutable digest references; the human-readable tag is retained separately for inspection and retention

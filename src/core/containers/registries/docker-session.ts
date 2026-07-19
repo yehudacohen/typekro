@@ -172,10 +172,17 @@ export async function createDockerRegistrySession(
           ['Return both username and password from the credential provider.']
         );
       }
-      if (options.tls?.plainHttp) {
-        // Docker login has no transport override and probes HTTPS even when the
-        // BuildKit registry is explicitly configured for plain HTTP. Write the
-        // standard short-lived auth entry directly into this isolated session.
+      if (
+        options.tls?.plainHttp ||
+        options.tls?.insecure ||
+        options.tls?.caCertificate ||
+        options.tls?.caFile
+      ) {
+        // docker login has no per-command transport or CA override. For every
+        // custom transport, write the standard short-lived auth entry directly
+        // into the isolated config and let the dedicated BuildKit configuration
+        // carry HTTP, CA, or insecure-TLS trust. This avoids depending on the
+        // developer machine's global Docker daemon trust store.
         await writeDockerCredential(configPath, options.registryHost, credential);
       } else {
         await execDocker(

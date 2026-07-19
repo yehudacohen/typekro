@@ -16,6 +16,49 @@ import { generateKroSchemaFromArktype } from '../../src/core/serialization/schem
  * that the shipped factory schemas serialize integral fields as KRO `integer`.
  */
 describe('factory integer schema fields (strict-CEL)', () => {
+  it('preserves ArkType singleton literals and bounded arrays in SimpleSchema', () => {
+    const kroSpec = generateKroSchemaFromArktype('literal-contract', {
+      apiVersion: 'v1alpha1',
+      kind: 'LiteralContract',
+      spec: type({
+        requiredTrue: 'true',
+        requiredFalse: 'false',
+        exactNumber: '3',
+        values: 'string[] > 0',
+      }),
+      status: type({ ready: 'boolean' }),
+    }).spec as Record<string, unknown>;
+
+    expect(kroSpec.requiredTrue).toBe('boolean | validation="self == true"');
+    expect(kroSpec.requiredFalse).toBe('boolean | validation="self == false"');
+    expect(kroSpec.exactNumber).toBe('integer | validation="self == 3"');
+    expect(kroSpec.values).toBe('[]string | minItems=1');
+  });
+
+  it('emits structured field rules through named SimpleSchema types', () => {
+    const schema = generateKroSchemaFromArktype(
+      'validated-contract',
+      {
+        apiVersion: 'v1alpha1',
+        kind: 'ValidatedContract',
+        spec: type({ policy: { enabled: 'boolean', destinations: 'string[]' } }),
+        status: type({ ready: 'boolean' }),
+      },
+      undefined,
+      undefined,
+      undefined,
+      { policy: 'self.enabled && size(self.destinations) > 0' }
+    );
+
+    expect(schema.spec.policy).toBe(
+      'ValidatedContractPolicy | validation="self.enabled && size(self.destinations) > 0"'
+    );
+    expect(schema.types?.ValidatedContractPolicy).toEqual({
+      enabled: 'boolean',
+      destinations: '[]string',
+    });
+  });
+
   it('caddy httpPort/httpsPort serialize as KRO integer, not float', () => {
     const yaml = caddyIngress.toYaml();
     expect(yaml).toContain('httpPort: integer');

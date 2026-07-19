@@ -106,6 +106,27 @@ const productionNetworkPolicyShape = {
   'egressCidrs?': 'string[]',
 } as const;
 
+const productionExposureShape = {
+  ...exposureShape,
+  tls: {
+    enabled: 'true',
+    source: '"auto" | "secret" | "cert-manager"',
+    'secretName?': 'string',
+  },
+} as const;
+
+const {
+  'secure?': _optionalSecure,
+  'skipVerify?': _optionalSkipVerify,
+  ...productionS3StorageBaseShape
+} = s3StorageShape;
+
+const productionS3StorageShape = {
+  ...productionS3StorageBaseShape,
+  secure: 'true',
+  skipVerify: 'false',
+} as const;
+
 const harborCommonShape = {
   name: 'string',
   'namespace?': 'string',
@@ -113,6 +134,7 @@ const harborCommonShape = {
   'harborVersion?': 'string',
   'repositoryName?': 'string',
   'repositoryNamespace?': 'string',
+  'repositoryNamespaceOwnership?': '"owned" | "external"',
   'repositoryUrl?': 'string',
   'namespaceOwnership?': '"owned" | "external"',
   exposure: exposureShape,
@@ -143,10 +165,20 @@ export const HarborLocalInstallationConfigSchema = type({
 });
 export type HarborLocalInstallationConfig = typeof HarborLocalInstallationConfigSchema.infer;
 
+const {
+  exposure: _commonExposure,
+  storage: _commonStorage,
+  'certificate?': _optionalCertificate,
+  ...harborProductionCommonShape
+} = harborCommonShape;
+
 /** Production Harbor profile requiring external durable database and cache providers. */
 export const HarborProductionInstallationConfigSchema = type({
-  ...harborCommonShape,
+  ...harborProductionCommonShape,
   profile: '"production"',
+  exposure: productionExposureShape,
+  certificate: certificateShape,
+  storage: productionS3StorageShape,
   database: externalDatabaseShape,
   cache: externalCacheShape,
   networkPolicy: productionNetworkPolicyShape,

@@ -520,10 +520,21 @@ async function reconcileProxyCacheRegistry(
         }
       : {}),
   };
-  await client.request(
-    { method: 'POST', path: '/registries/ping', body: createBody, signal },
-    [200]
-  );
+  const pingBody = {
+    name: policy.name,
+    url: policy.url,
+    type: policy.type,
+    insecure: policy.insecure ?? false,
+    ...(policy.caCertificate ? { ca_certificate: policy.caCertificate } : {}),
+    ...(credential
+      ? {
+          credential_type: 'basic',
+          access_key: credential.username,
+          access_secret: credential.password,
+        }
+      : {}),
+  };
+  await client.request({ method: 'POST', path: '/registries/ping', body: pingBody, signal }, [200]);
   if (existing?.id !== undefined) {
     await client.request(
       {

@@ -85,6 +85,7 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       },
       id: 'platformNamespace',
     });
+    createOwnedRepositoryNamespace(spec, repositoryNamespace, operatorNamespace, profile);
     const repository = rookCephHelmRepository({
       name: repositoryName,
       namespace: repositoryNamespace,
@@ -145,21 +146,25 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
     });
     bucketStorageClass.dependsOn(objectStore);
 
+    const operatorReady = Cel.expr<boolean>(
+      operatorRelease.status.conditions,
+      '.exists(c, c.type == "Ready" && c.status == "True")'
+    );
+    const storageClassReady = Cel.expr<boolean>('bucketStorageClass.metadata.name != ""');
     return {
-      ready: cluster.status.phase === 'Ready' && objectStore.status.phase === 'Ready',
+      ready: Cel.expr<boolean>(
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != ""'
+      ),
       failed: Cel.expr<boolean>(
-        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure"'
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") || cluster.status.phase == "Failure" || objectStore.status.phase == "Failure"'
       ),
       phase: Cel.expr<'Installing' | 'Ready' | 'Failed'>(
-        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" ? "Ready" : "Installing")'
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") || cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != "" ? "Ready" : "Installing")'
       ),
-      operatorReady: Cel.expr<boolean>(
-        operatorRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
+      operatorReady,
       clusterReady: cluster.status.phase === 'Ready',
       objectStoreReady: objectStore.status.phase === 'Ready',
-      storageClassReady: Cel.expr<boolean>('bucketStorageClass.metadata.name != ""'),
+      storageClassReady,
       cephHealth: cluster.status.ceph.health,
       endpoint: objectStoreEndpoint(),
       bucketStorageClassName: Cel.expr<string>('bucketStorageClass.metadata.name'),
@@ -214,6 +219,7 @@ export const rookCephProductionPlatform = kubernetesComposition(
       },
       id: 'platformNamespace',
     });
+    createOwnedRepositoryNamespace(spec, repositoryNamespace, operatorNamespace, profile);
     const repository = rookCephHelmRepository({
       name: repositoryName,
       namespace: repositoryNamespace,
@@ -270,21 +276,25 @@ export const rookCephProductionPlatform = kubernetesComposition(
     });
     bucketStorageClass.dependsOn(objectStore);
 
+    const operatorReady = Cel.expr<boolean>(
+      operatorRelease.status.conditions,
+      '.exists(c, c.type == "Ready" && c.status == "True")'
+    );
+    const storageClassReady = Cel.expr<boolean>('bucketStorageClass.metadata.name != ""');
     return {
-      ready: cluster.status.phase === 'Ready' && objectStore.status.phase === 'Ready',
+      ready: Cel.expr<boolean>(
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != ""'
+      ),
       failed: Cel.expr<boolean>(
-        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure"'
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") || cluster.status.phase == "Failure" || objectStore.status.phase == "Failure"'
       ),
       phase: Cel.expr<'Installing' | 'Ready' | 'Failed'>(
-        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" ? "Ready" : "Installing")'
+        'operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") || cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (operatorRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != "" ? "Ready" : "Installing")'
       ),
-      operatorReady: Cel.expr<boolean>(
-        operatorRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
+      operatorReady,
       clusterReady: cluster.status.phase === 'Ready',
       objectStoreReady: objectStore.status.phase === 'Ready',
-      storageClassReady: Cel.expr<boolean>('bucketStorageClass.metadata.name != ""'),
+      storageClassReady,
       cephHealth: cluster.status.ceph.health,
       endpoint: objectStoreEndpoint(),
       bucketStorageClassName: Cel.expr<string>('bucketStorageClass.metadata.name'),
@@ -332,6 +342,7 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       },
       id: 'platformNamespace',
     });
+    createOwnedRepositoryNamespace(spec, repositoryNamespace, platformNamespace, profile);
 
     const externalOperator = observedResource<
       NonNullable<V1Deployment['spec']>,
@@ -389,20 +400,24 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
     });
     bucketStorageClass.dependsOn(objectStore);
 
+    const operatorReady = Cel.expr<boolean>(
+      'has(externalOperator.status.availableReplicas) && externalOperator.status.availableReplicas > 0'
+    );
+    const storageClassReady = Cel.expr<boolean>('bucketStorageClass.metadata.name != ""');
     return {
-      ready: cluster.status.phase === 'Ready' && objectStore.status.phase === 'Ready',
+      ready: Cel.expr<boolean>(
+        'has(externalOperator.status.availableReplicas) && externalOperator.status.availableReplicas > 0 && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != ""'
+      ),
       failed: Cel.expr<boolean>(
         'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure"'
       ),
       phase: Cel.expr<'Installing' | 'Ready' | 'Failed'>(
-        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" ? "Ready" : "Installing")'
+        'cluster.status.phase == "Failure" || objectStore.status.phase == "Failure" ? "Failed" : (has(externalOperator.status.availableReplicas) && externalOperator.status.availableReplicas > 0 && cluster.status.phase == "Ready" && objectStore.status.phase == "Ready" && bucketStorageClass.metadata.name != "" ? "Ready" : "Installing")'
       ),
-      operatorReady: Cel.expr<boolean>(
-        'has(externalOperator.status.availableReplicas) && externalOperator.status.availableReplicas > 0'
-      ),
+      operatorReady,
       clusterReady: cluster.status.phase === 'Ready',
       objectStoreReady: objectStore.status.phase === 'Ready',
-      storageClassReady: Cel.expr<boolean>('bucketStorageClass.metadata.name != ""'),
+      storageClassReady,
       cephHealth: cluster.status.ceph.health,
       endpoint: objectStoreEndpoint(),
       bucketStorageClassName: Cel.expr<string>('bucketStorageClass.metadata.name'),
@@ -414,6 +429,44 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
     };
   }
 );
+
+function createOwnedRepositoryNamespace(
+  spec:
+    | RookCephSingleNodePlatformConfig
+    | RookCephProductionPlatformConfig
+    | RookCephExternalOperatorSingleNodePlatformConfig,
+  repositoryNamespace: string,
+  existingOwnedNamespace: string,
+  profile: 'single-node-development' | 'production'
+) {
+  const graphMode = isKubernetesRef(spec.name);
+  const ownsRepositoryNamespace = graphMode
+    ? Cel.expr<boolean>(
+        '!has(schema.spec.repositoryNamespaceOwnership) || schema.spec.repositoryNamespaceOwnership == "owned"'
+      )
+    : spec.repositoryNamespaceOwnership !== 'external';
+  return namespace({
+    metadata: {
+      name: repositoryNamespace,
+      labels: {
+        'app.kubernetes.io/name': 'rook-ceph-helm-source',
+        'app.kubernetes.io/managed-by': 'typekro',
+        'typekro.dev/profile': profile,
+      },
+    },
+    id: 'repositoryNamespace',
+  }).withIncludeWhen(
+    graphMode
+      ? Cel.expr<boolean>(
+          ownsRepositoryNamespace,
+          ' && ',
+          repositoryNamespace,
+          ' != ',
+          existingOwnedNamespace
+        )
+      : ownsRepositoryNamespace && repositoryNamespace !== existingOwnedNamespace
+  );
+}
 
 function objectStoreEndpoint() {
   return Cel.expr<string>(

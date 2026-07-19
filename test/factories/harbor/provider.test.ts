@@ -330,6 +330,18 @@ describe('Harbor direct preparation providers', () => {
       name: 'docker-hub',
       url: 'https://registry-1.docker.io',
       type: 'docker-hub',
+      credential_type: 'basic',
+      access_key: 'upstream-reader',
+      access_secret: 'upstream-secret',
+    });
+    expect(
+      transport.requests.find(
+        (request) => request.method === 'POST' && request.path === '/registries'
+      )?.body
+    ).toMatchObject({
+      name: 'docker-hub',
+      url: 'https://registry-1.docker.io',
+      type: 'docker-hub',
       credential: {
         type: 'basic',
         access_key: 'upstream-reader',

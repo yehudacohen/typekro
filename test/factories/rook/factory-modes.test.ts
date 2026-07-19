@@ -103,6 +103,25 @@ describe('Rook operator bootstrap factory modes', () => {
     expectNoInternalMarkers(yaml);
   });
 
+  it('owns a distinct repository namespace unless it is explicitly external', () => {
+    const factory = rookCephOperatorBootstrap.factory('direct', { namespace: 'control' });
+    const owned = factory.toYaml({
+      ...spec,
+      repositoryNamespace: 'rook-sources',
+    } as never);
+    expect(owned.match(/kind: Namespace/g)).toHaveLength(2);
+    expect(owned).toMatch(/kind: Namespace[\s\S]*?name: rook-sources/);
+
+    const external = factory.toYaml({
+      ...spec,
+      repositoryNamespace: 'shared-sources',
+      repositoryNamespaceOwnership: 'external',
+    } as never);
+    expect(external.match(/kind: Namespace/g)).toHaveLength(1);
+    expect(external).not.toMatch(/kind: Namespace[\s\S]*?name: shared-sources/);
+    expect(external).toMatch(/name: rook-release\n {2}namespace: shared-sources/);
+  });
+
   it('renders a KRO operator-owner instance with an explicit lifecycle', () => {
     // The real bootstrap usage: workload namespace == the namespace the
     // composition owns, so the owned Namespace is hoisted out of the graph and
@@ -110,7 +129,9 @@ describe('Rook operator bootstrap factory modes', () => {
     const factory = rookCephOperatorBootstrap.factory('kro', {
       namespace: 'rook-ceph',
     });
-    const documents = splitDocs(factory.toYaml({ name: 'rook-ceph', namespace: 'rook-ceph' } as never));
+    const documents = splitDocs(
+      factory.toYaml({ name: 'rook-ceph', namespace: 'rook-ceph' } as never)
+    );
     const kinds = documents.map(documentKind);
 
     expect(kinds).toContain('RookCephOperatorBootstrap');

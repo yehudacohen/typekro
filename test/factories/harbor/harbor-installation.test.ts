@@ -61,6 +61,21 @@ function productionConfig(): HarborProductionInstallationConfig {
   return {
     ...localConfig(),
     profile: 'production',
+    exposure: {
+      type: 'ingress',
+      externalUrl: 'https://harbor.orb.local',
+      tls: { enabled: true, source: 'secret', secretName: 'harbor-tls' },
+      ingress: { host: 'harbor.orb.local', className: 'nginx' },
+    },
+    certificate: {
+      secretName: 'harbor-tls',
+      issuerRef: { name: 'platform-ca', kind: 'ClusterIssuer' },
+    },
+    storage: {
+      ...localConfig().storage,
+      secure: true,
+      skipVerify: false,
+    },
     database: {
       host: 'harbor-rw.database.svc',
       username: 'harbor',
@@ -211,7 +226,7 @@ describe('official Harbor platform', () => {
           externalUrl: 'http://harbor.harbor-system.svc',
           tls: { enabled: false, source: 'none' },
         },
-      })
+      } as unknown as HarborProductionInstallationConfig)
     ).toThrow('Production Harbor requires TLS exposure');
   });
 
@@ -243,6 +258,26 @@ describe('official Harbor platform', () => {
       },
       core: { replicas: 2, podDisruptionBudget: { enabled: true, minAvailable: 1 } },
       registry: { replicas: 2, podDisruptionBudget: { enabled: true, minAvailable: 1 } },
+    });
+  });
+
+  it('preserves advanced production values without permitting safety overrides', () => {
+    const values = mapHarborProductionInstallationToHelmValues({
+      ...productionConfig(),
+      values: {
+        expose: { tls: { enabled: false }, customAnnotation: 'preserved' },
+        persistence: { imageChartStorage: { s3: { skipverify: true } } },
+        core: { replicas: 1, podLabels: { team: 'platform' } },
+        database: { type: 'internal' },
+        redis: { type: 'internal' },
+      },
+    });
+    expect(values).toMatchObject({
+      expose: { tls: { enabled: true }, customAnnotation: 'preserved' },
+      persistence: { imageChartStorage: { s3: { secure: true, skipverify: false } } },
+      core: { replicas: 2, podLabels: { team: 'platform' } },
+      database: { type: 'external' },
+      redis: { type: 'external' },
     });
   });
 
@@ -318,6 +353,10 @@ describe('official Harbor platform', () => {
     }
     expect(yaml).toContain('has(schema.spec.database) && has(schema.spec.database.port)');
     expect(yaml).toContain('has(schema.spec.cache) && has(schema.spec.cache.tls)');
+    expect(yaml).toContain('has(schema.spec.networkPolicy.ingressNamespaceLabels) ?');
+    expect(yaml).toContain(
+      'has(schema.spec.networkPolicy.egressNamespaceLabels) ? schema.spec.networkPolicy.egressNamespaceLabels : []'
+    );
     expect(yaml).not.toContain('depends-on-harborNetworkPolicy');
     expect(yaml).not.toContain('depends-on-harborIngressNetworkPolicy');
     expectCleanYaml(yaml);
@@ -331,9 +370,65 @@ describe('official Harbor platform', () => {
     expect(yaml).toContain('depends-on-harborNetworkPolicy');
     expect(yaml).toContain('depends-on-harborIngressNetworkPolicy');
     expect(yaml).toContain('networkPolicyReady:');
+    expect(yaml).toContain('enabled: boolean | validation="self == true"');
+    expect(yaml).toContain('skipVerify: boolean | validation="self == false"');
+    expect(yaml).toContain('exposure: HarborProductionInstallationExposure | validation=');
+    expect(yaml).toContain('storage: HarborProductionInstallationStorage | validation=');
+    expect(yaml).toContain(
+      'networkPolicy: HarborProductionInstallationNetworkpolicy | validation='
+    );
+    expect(yaml).toContain(
+      '(has(schema.spec.values) ? json.unmarshal(json.marshal(schema.spec.values)) : {}).merge'
+    );
+    expect(yaml).not.toContain('\\"type\\": \\"type\\" in');
+    expect(yaml).not.toContain('enabled: string');
+    expect(yaml).not.toContain('skipVerify: string');
     expect(yaml).toContain('from:');
     expect(yaml).not.toContain('_from:');
     expectCleanYaml(yaml);
+  });
+
+  it('owns custom repository namespaces unless callers explicitly declare them external', () => {
+    const owned = harborLocalInstallation.factory('direct', { namespace: 'harbor-control' }).toYaml(
+      localConfig({
+        namespace: 'harbor-workloads',
+        repositoryNamespace: 'harbor-sources',
+      })
+    );
+    expect(owned).toMatch(/kind: Namespace[\s\S]*?name: harbor-sources/);
+    expect(owned).toMatch(/name: harbor\n {2}namespace: harbor-sources/);
+
+    const external = harborLocalInstallation
+      .factory('direct', { namespace: 'harbor-control' })
+      .toYaml(
+        localConfig({
+          namespace: 'harbor-workloads',
+          repositoryNamespace: 'shared-sources',
+          repositoryNamespaceOwnership: 'external',
+        })
+      );
+    expect(external).not.toMatch(/kind: Namespace[\s\S]*?name: shared-sources/);
+    expect(external).toMatch(/name: harbor\n {2}namespace: shared-sources/);
+
+    const kroFactory = harborLocalInstallation.factory('kro', { namespace: 'harbor-control' });
+    const kroOwned = kroFactory.toYaml(
+      localConfig({
+        namespace: 'harbor-workloads',
+        repositoryNamespace: 'harbor-sources',
+      })
+    );
+    expect(kroOwned).toContain(
+      'typekro.io/hoisted-namespaces: \'["harbor-workloads","harbor-sources"]\''
+    );
+
+    const kroExternal = kroFactory.toYaml(
+      localConfig({
+        namespace: 'harbor-workloads',
+        repositoryNamespace: 'shared-sources',
+        repositoryNamespaceOwnership: 'external',
+      })
+    );
+    expect(kroExternal).toContain('typekro.io/hoisted-namespaces: \'["harbor-workloads"]\'');
   });
 
   it('hoists same-namespace ownership outside KRO and honors an explicitly external namespace', () => {

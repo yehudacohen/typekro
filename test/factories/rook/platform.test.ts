@@ -130,6 +130,8 @@ describe('official Rook Ceph cluster chart platform', () => {
     });
     expect(yaml).toContain('name: ceph-operator');
     expect(yaml).toContain('name: ceph-data');
+    expect(yaml).toContain('name: ceph-sources');
+    expect(yaml.match(/kind: Namespace/g)).toHaveLength(3);
     expect(yaml).toMatch(/name: rook-release\n {2}namespace: ceph-sources/);
     expect(yaml).toContain('chart: rook-ceph-cluster');
     expect(yaml).toContain('operatorNamespace: ceph-operator');
@@ -168,6 +170,40 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('kind: CephObjectStore');
     expect(yaml).toContain('kind: StorageClass');
     expectCleanYaml(yaml);
+  });
+
+  it('renders production singleton booleans as admission-enforced booleans', () => {
+    const yaml = rookCephProductionPlatform
+      .factory('kro', { namespace: 'typekro-control' })
+      .toYaml();
+    expect(yaml).toContain('enabled: boolean | validation="self == true"');
+    expect(yaml).toContain('managePodBudgets: boolean | validation="self == true"');
+    expect(yaml).not.toContain('enabled: string');
+    expect(yaml).not.toContain('managePodBudgets: string');
+    expectCleanYaml(yaml);
+  });
+
+  it('owns custom repository namespaces by default and supports an explicit external source', () => {
+    const base = {
+      name: 'rook-local',
+      profile: 'single-node-development' as const,
+      namespace: 'ceph-data',
+      operatorNamespace: 'ceph-operator',
+      repositoryNamespace: 'ceph-sources',
+      storageClassName: 'local-path',
+    };
+    const factory = rookCephSingleNodePlatform.factory('kro', { namespace: 'control' });
+    const owned = factory.toYaml(base);
+    expect(owned).toContain(
+      'typekro.io/hoisted-namespaces: \'["ceph-operator","ceph-data","ceph-sources"]\''
+    );
+
+    const external = factory.toYaml({
+      ...base,
+      repositoryNamespaceOwnership: 'external',
+    });
+    expect(external).toContain('typekro.io/hoisted-namespaces: \'["ceph-operator","ceph-data"]\'');
+    expect(external).not.toMatch(/kind: Namespace[\s\S]*?name: ceph-sources/);
   });
 
   it('supports shared operator and cluster namespaces without duplicate emitted siblings', () => {

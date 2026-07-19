@@ -112,11 +112,23 @@ await harborFactory.deploy({
 `harborLocalInstallation` intentionally permits the chart's internal PostgreSQL and Valkey for a
 bounded development platform. It is not the production availability profile.
 
+The installation owns a distinct custom `repositoryNamespace` by default. Set
+`repositoryNamespaceOwnership: 'external'` only when another platform owner creates and retains
+that Namespace. This is separate from `namespaceOwnership`, which controls the Harbor workload
+Namespace. Owned Namespaces are hoisted out of KRO graphs and follow TypeKro's recorded,
+ownership-gated instance lifecycle.
+
 ## Production profile
 
 `harborProductionInstallation` requires TLS, external PostgreSQL, external Valkey, at least two
 replicas of every stateless service, explicit resources, and a NetworkPolicy provider boundary.
-Advanced official-chart values are deep-merged last without mutating the caller's object.
+Advanced official-chart values are deep-merged without mutating the caller's object. Additive
+settings are preserved, while the typed production contract wins conflicts on availability,
+credentials, TLS, storage, database/cache providers, and other modeled paths.
+The production CRD carries the same essential safety contract in KRO mode: required literal
+booleans remain booleans, TLS and ingress relationships are admission-validated, S3 must use
+verified TLS, and the network boundary must declare non-empty ingress plus provider/CIDR egress.
+The production certificate contract is explicit even when an existing TLS Secret is selected.
 
 ```ts
 import { harborProductionInstallation } from 'typekro/harbor';
@@ -257,9 +269,15 @@ RUN_HARBOR_PLATFORM_INTEGRATION=true KEEP_HARBOR_PLATFORM=true \
 
 RUN_HARBOR_PLATFORM_INTEGRATION=true HARBOR_DEPLOYMENT_MODE=direct \
   bun test test/integration/harbor/harbor-platform.test.ts
+
+RUN_PRODUCTION_SCHEMA_ADMISSION=true \
+  bun test test/integration/production-schema-admission.test.ts
 ```
 
 Both paths install and update Harbor, wait for the current generation, restart a component,
 reconcile private project policy and least-privilege robots twice, push a content-addressed image,
 pull its digest from inside Kubernetes, and use TypeKro factory deletion for cleanup. Cleanup
 timeouts fail the suite; the RGD remains available until KRO-owned instances have finished.
+The admission-only suite installs uniquely named production RGDs through a TypeKro direct factory,
+uses server-side dry-run for valid and unsafe Harbor/Rook instances, and then removes the RGDs
+through that factory without deploying either data plane.

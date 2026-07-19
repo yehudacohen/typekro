@@ -2,6 +2,7 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_ROOK_CEPH_REPO_NAME,
@@ -51,6 +52,33 @@ export const rookCephOperatorBootstrap = kubernetesComposition(
       },
       id: 'rookCephNamespace',
     });
+
+    const graphMode = isKubernetesRef(spec.name);
+    const ownsRepositoryNamespace = graphMode
+      ? Cel.expr<boolean>(
+          '!has(schema.spec.repositoryNamespaceOwnership) || schema.spec.repositoryNamespaceOwnership == "owned"'
+        )
+      : spec.repositoryNamespaceOwnership !== 'external';
+    namespace({
+      metadata: {
+        name: repositoryNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'rook-ceph-helm-source',
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      id: 'rookCephRepositoryNamespace',
+    }).withIncludeWhen(
+      graphMode
+        ? Cel.expr<boolean>(
+            ownsRepositoryNamespace,
+            ' && ',
+            repositoryNamespace,
+            ' != ',
+            resolvedNamespace
+          )
+        : ownsRepositoryNamespace && repositoryNamespace !== resolvedNamespace
+    );
 
     const _repository = rookCephHelmRepository({
       name: repositoryName,
