@@ -273,6 +273,16 @@ describeOrSkip('production KRO schema admission', () => {
     };
     emptyTlsExposure.tls.secretName = '';
     expect((await serverDryRun(emptyTlsSecret)).exitCode).not.toBe(0);
+
+    const emptyCertManagerSecret = structuredClone(harborInstance);
+    const certManagerExposure = emptyCertManagerSecret.spec?.exposure as {
+      tls: Record<string, unknown>;
+    };
+    certManagerExposure.tls.source = 'cert-manager';
+    delete certManagerExposure.tls.secretName;
+    const certificate = emptyCertManagerSecret.spec?.certificate as Record<string, unknown>;
+    certificate.secretName = '';
+    expect((await serverDryRun(emptyCertManagerSecret)).exitCode).not.toBe(0);
   });
 
   it('rejects string and false Rook production singleton booleans', async () => {
