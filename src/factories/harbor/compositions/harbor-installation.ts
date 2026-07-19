@@ -51,7 +51,7 @@ export const harborProductionInstallation = kubernetesComposition(
   {
     schemaFieldValidations: {
       exposure:
-        "self.tls.enabled && self.tls.source != 'none' && (self.type != 'ingress' || (has(self.ingress) && size(self.ingress.host) > 0)) && (self.tls.source != 'secret' || has(self.tls.secretName))",
+        "self.tls.enabled && self.tls.source != 'none' && (self.type != 'ingress' || (has(self.ingress) && size(self.ingress.host) > 0)) && (self.tls.source != 'secret' || (has(self.tls.secretName) && size(self.tls.secretName) > 0))",
       storage: 'self.secure && !self.skipVerify',
       networkPolicy:
         'self.enabled && size(self.ingressNamespaceLabels) > 0 && (size(self.egressNamespaceLabels) > 0 || (has(self.egressCidrs) && size(self.egressCidrs) > 0))',

@@ -266,6 +266,13 @@ describeOrSkip('production KRO schema admission', () => {
     const exposure = missingIngress.spec?.exposure as Record<string, unknown>;
     delete exposure.ingress;
     expect((await serverDryRun(missingIngress)).exitCode).not.toBe(0);
+
+    const emptyTlsSecret = structuredClone(harborInstance);
+    const emptyTlsExposure = emptyTlsSecret.spec?.exposure as {
+      tls: Record<string, unknown>;
+    };
+    emptyTlsExposure.tls.secretName = '';
+    expect((await serverDryRun(emptyTlsSecret)).exitCode).not.toBe(0);
   });
 
   it('rejects string and false Rook production singleton booleans', async () => {

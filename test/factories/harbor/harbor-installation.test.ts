@@ -373,6 +373,7 @@ describe('official Harbor platform', () => {
     expect(yaml).toContain('enabled: boolean | validation="self == true"');
     expect(yaml).toContain('skipVerify: boolean | validation="self == false"');
     expect(yaml).toContain('exposure: HarborProductionInstallationExposure | validation=');
+    expect(yaml).toContain('has(self.tls.secretName) && size(self.tls.secretName) > 0');
     expect(yaml).toContain('storage: HarborProductionInstallationStorage | validation=');
     expect(yaml).toContain(
       'networkPolicy: HarborProductionInstallationNetworkpolicy | validation='
