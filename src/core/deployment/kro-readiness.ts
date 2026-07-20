@@ -11,10 +11,15 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { DEFAULT_FAST_POLL_INTERVAL, DEFAULT_POLL_INTERVAL } from '../config/defaults.js';
+import {
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_HTTP_READ_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+} from '../config/defaults.js';
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
+import { callWithTimeout, perCallTimeout } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
 export interface KroReadinessOptions {
@@ -87,14 +92,22 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
 
   while (Date.now() - startTime < timeout) {
     try {
-      const response = await k8sApi.read({
-        apiVersion,
-        kind,
-        metadata: {
-          name: instanceName,
-          namespace,
-        },
-      });
+      // Bound the read so a wedged/expired kubeconfig exec credential rejects (and is re-thrown below)
+      // instead of hanging the poll forever — see poll-timeout.ts.
+      const readTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+      const response = await callWithTimeout(
+        () =>
+          k8sApi.read({
+            apiVersion,
+            kind,
+            metadata: {
+              name: instanceName,
+              namespace,
+            },
+          }),
+        readTimeout,
+        `read ${kind}/${instanceName}`
+      );
 
       // In the new API, methods return objects directly (no .body wrapper)
       const instance = response as k8s.KubernetesObject & {
@@ -146,12 +159,18 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       let expectedCustomStatusFields = false;
       let expectedStatusKeys: string[] = [];
       try {
-        const rgdResponse = await customObjectsApi.getClusterCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          plural: 'resourcegraphdefinitions',
-          name: rgdName,
-        });
+        const rgdReadTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+        const rgdResponse = await callWithTimeout(
+          () =>
+            customObjectsApi.getClusterCustomObject({
+              group: 'kro.run',
+              version: 'v1alpha1',
+              plural: 'resourcegraphdefinitions',
+              name: rgdName,
+            }),
+          rgdReadTimeout,
+          `read ResourceGraphDefinition/${rgdName}`
+        );
         const rgd = rgdResponse as RGDManifest;
         const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
         expectedStatusKeys = Object.keys(rgdStatusSchema).filter(

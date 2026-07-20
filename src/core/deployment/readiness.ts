@@ -8,10 +8,12 @@ import type * as k8s from '@kubernetes/client-node';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_HTTP_READ_TIMEOUT,
   DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_MAX_BACKOFF,
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
+import { callWithTimeout, perCallTimeout } from './poll-timeout.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
 import type {
   DeployedResource,
@@ -81,15 +83,26 @@ export class ResourceReadinessChecker {
       attempt++;
 
       try {
-        // In the new API, methods return objects directly (no .body wrapper)
-        const currentResource = await this.k8sApi.read({
-          apiVersion: deployedResource.manifest.apiVersion,
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
-        });
+        // In the new API, methods return objects directly (no .body wrapper).
+        // Bound the read so a wedged/expired kubeconfig exec credential rejects (→ handled below, retried
+        // within the deadline) instead of hanging the poll forever — see poll-timeout.ts.
+        const readTimeout = perCallTimeout(
+          readinessConfig.timeout - (Date.now() - startTime),
+          DEFAULT_HTTP_READ_TIMEOUT
+        );
+        const currentResource = await callWithTimeout(
+          () =>
+            this.k8sApi.read({
+              apiVersion: deployedResource.manifest.apiVersion,
+              kind: deployedResource.kind,
+              metadata: {
+                name: deployedResource.name,
+                namespace: deployedResource.namespace,
+              },
+            }),
+          readTimeout,
+          `read ${deployedResource.kind}/${deployedResource.name}`
+        );
 
         const isReady = this.isResourceReady(currentResource);
 
