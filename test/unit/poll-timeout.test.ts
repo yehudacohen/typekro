@@ -22,20 +22,6 @@ describe('callWithTimeout', () => {
     expect((err as Error).message).toMatch(/exec credential/);
   });
 
-  it('fails fast without starting the op when there is no budget left', async () => {
-    let started = false;
-    const err = await callWithTimeout(
-      () => {
-        started = true;
-        return Promise.resolve('nope');
-      },
-      0,
-      'read Foo/bar'
-    ).catch((e) => e);
-    expect(err).toBeInstanceOf(PollTimeoutError);
-    expect(started).toBe(false);
-  });
-
   it('propagates the op own rejection (not the timeout) when it fails fast', async () => {
     const boom = () => Promise.reject(new Error('boom'));
     await expect(callWithTimeout(boom, 1_000, 'op')).rejects.toThrow('boom');
@@ -58,7 +44,7 @@ describe('perCallTimeout', () => {
     expect(perCallTimeout(200, 30_000)).toBe(200);
   });
 
-  it('returns a non-positive value once the deadline is spent (then callWithTimeout fails fast)', () => {
+  it('returns a non-positive value once the deadline is spent (callers must break to their overall timeout)', () => {
     expect(perCallTimeout(0, 30_000)).toBe(0);
     expect(perCallTimeout(-500, 30_000)).toBe(-500);
   });

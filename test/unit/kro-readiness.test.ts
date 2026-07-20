@@ -467,6 +467,26 @@ describe('waitForKroInstanceReady', () => {
       ).rejects.toThrow(DeploymentTimeoutError);
     });
 
+    it('an exhausted deadline throws the overall DeploymentTimeoutError, NOT a per-call PollTimeoutError', async () => {
+      // Regression: a ≤0 per-call budget means the overall deadline elapsed — it must not be reported as
+      // a credential-wedge PollTimeoutError. A 1ms timeout with a normal (fast, not-ready) read must
+      // surface DeploymentTimeoutError.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'PENDING', conditions: [{ type: 'Ready', status: 'False' }] })
+      );
+
+      const err = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 1,
+          pollInterval: 0,
+        })
+      ).catch((e) => e);
+      expect(err).toBeInstanceOf(DeploymentTimeoutError);
+      expect((err as Error).message).not.toMatch(/exec credential/);
+    });
+
     it('timeout error includes instance name and timeout info', async () => {
       mockK8sApi.read.mockResolvedValue(
         kroInstance({

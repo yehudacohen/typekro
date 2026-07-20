@@ -71,6 +71,9 @@ export class ResourceReadinessChecker {
   ): Promise<void> {
     const startTime = Date.now();
     let attempt = 0;
+    // The most recent successfully-read resource, reused for the on-timeout debug log so we never issue a
+    // fresh (post-deadline) read that could hang or delay the timeout error.
+    let lastObserved: k8s.KubernetesObject | undefined;
 
     emitEvent({
       type: 'progress',
@@ -90,6 +93,9 @@ export class ResourceReadinessChecker {
           readinessConfig.timeout - (Date.now() - startTime),
           DEFAULT_HTTP_READ_TIMEOUT
         );
+        // Deadline spent: stop and fall through to ResourceReadinessTimeoutError (the poll's own overall
+        // timeout) rather than starting a doomed read.
+        if (readTimeout <= 0) break;
         const currentResource = await callWithTimeout(
           () =>
             this.k8sApi.read({
@@ -103,6 +109,7 @@ export class ResourceReadinessChecker {
           readTimeout,
           `read ${deployedResource.kind}/${deployedResource.name}`
         );
+        lastObserved = currentResource;
 
         const isReady = this.isResourceReady(currentResource);
 
@@ -176,42 +183,34 @@ export class ResourceReadinessChecker {
           });
         }
 
-        // Wait before retry
-        await new Promise((resolve) => setTimeout(resolve, readinessConfig.errorRetryDelay));
+        // Wait before retry — but never past the deadline. If a bounded read consumed the remaining
+        // budget, sleeping the full errorRetryDelay would overshoot the configured timeout; cap it to
+        // what's left (0 → the while re-check exits immediately).
+        const retryDelay = Math.max(
+          0,
+          Math.min(readinessConfig.errorRetryDelay, readinessConfig.timeout - (Date.now() - startTime))
+        );
+        if (retryDelay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        }
       }
     }
 
-    // Debug logging for timeout with final status
+    // Debug logging for timeout with final status. Use the LAST OBSERVED resource rather than issuing a
+    // fresh read: the deadline is already spent, so a new read would either hang (wedged credential — the
+    // very failure mode this fixes) or delay ResourceReadinessTimeoutError past the configured timeout.
     if (this.debugLogger) {
-      try {
-        // In the new API, methods return objects directly (no .body wrapper).
-        // Bound this too — the deadline was just reached, so if the credential is wedged this final
-        // read would otherwise hang forever HERE instead of throwing ResourceReadinessTimeoutError below.
-        const finalResource = await callWithTimeout(
-          () =>
-            this.k8sApi.read({
-              apiVersion: deployedResource.manifest.apiVersion,
-              kind: deployedResource.kind,
-              metadata: {
-                name: deployedResource.name,
-                namespace: deployedResource.namespace,
-              },
-            }),
-          DEFAULT_HTTP_READ_TIMEOUT,
-          `read ${deployedResource.kind}/${deployedResource.name} (final status)`
-        );
-
+      if (lastObserved !== undefined) {
         this.debugLogger.logTimeout(
           deployedResource,
-          (finalResource as { status?: unknown }).status || finalResource,
+          (lastObserved as { status?: unknown }).status || lastObserved,
           Date.now() - startTime,
           attempt
         );
-      } catch (_error: unknown) {
-        // If we can't get final status, log timeout without it
+      } else {
         this.debugLogger.logTimeout(
           deployedResource,
-          { error: 'Could not retrieve final status' },
+          { error: 'No status observed before timeout' },
           Date.now() - startTime,
           attempt
         );

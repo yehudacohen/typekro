@@ -93,8 +93,10 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   while (Date.now() - startTime < timeout) {
     try {
       // Bound the read so a wedged/expired kubeconfig exec credential rejects (and is re-thrown below)
-      // instead of hanging the poll forever — see poll-timeout.ts.
+      // instead of hanging the poll forever — see poll-timeout.ts. A ≤0 budget means the deadline is
+      // spent: break to the overall DeploymentTimeoutError below (NOT a per-call PollTimeoutError).
       const readTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+      if (readTimeout <= 0) break;
       const response = await callWithTimeout(
         () =>
           k8sApi.read({
@@ -160,6 +162,9 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       let expectedStatusKeys: string[] = [];
       try {
         const rgdReadTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+        // Deadline spent mid-iteration: break to the overall DeploymentTimeoutError rather than starting
+        // a doomed read (which would surface a misleading per-call PollTimeoutError).
+        if (rgdReadTimeout <= 0) break;
         const rgdResponse = await callWithTimeout(
           () =>
             customObjectsApi.getClusterCustomObject({

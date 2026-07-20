@@ -34,11 +34,16 @@ export class PollTimeoutError extends Error {
   }
 }
 
+/**
+ * Run `op`, rejecting with {@link PollTimeoutError} if it hasn't settled within `timeoutMs`.
+ *
+ * PRECONDITION: `timeoutMs` must be positive — callers pass a per-call budget derived from the poll's
+ * REMAINING deadline (see {@link perCallTimeout}) and must handle an exhausted (≤0) budget themselves by
+ * exiting their loop and throwing their own overall-timeout error. A `PollTimeoutError` therefore always
+ * means "an operation that actually started did not return in time" (a wedged call), never "the overall
+ * poll deadline had already elapsed" — the two are distinct and must not be conflated.
+ */
 export async function callWithTimeout<T>(op: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  // No budget left: the poll deadline is already spent — fail fast rather than start a doomed call.
-  if (timeoutMs <= 0) {
-    throw new PollTimeoutError(label, timeoutMs);
-  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -54,8 +59,10 @@ export async function callWithTimeout<T>(op: () => Promise<T>, timeoutMs: number
 
 /**
  * The per-call budget: the configured cap (HTTP read timeout), capped STRICTLY by the poll's remaining
- * deadline so one call can never overshoot the overall `timeout`. Returns <= 0 when the deadline is
- * already spent — callers pass that straight to {@link callWithTimeout}, which fails fast.
+ * deadline so one call can never overshoot the overall `timeout`. Returns ≤ 0 when the deadline is
+ * already spent; callers MUST treat a ≤0 budget as "deadline reached" — exit the poll loop and throw the
+ * poll's own overall-timeout error — rather than starting a (doomed) call. Never hand a ≤0 value to
+ * {@link callWithTimeout}.
  */
 export function perCallTimeout(remainingMs: number, capMs: number): number {
   return Math.min(capMs, remainingMs);
