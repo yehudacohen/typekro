@@ -184,15 +184,22 @@ export class ResourceReadinessChecker {
     // Debug logging for timeout with final status
     if (this.debugLogger) {
       try {
-        // In the new API, methods return objects directly (no .body wrapper)
-        const finalResource = await this.k8sApi.read({
-          apiVersion: deployedResource.manifest.apiVersion,
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
-        });
+        // In the new API, methods return objects directly (no .body wrapper).
+        // Bound this too — the deadline was just reached, so if the credential is wedged this final
+        // read would otherwise hang forever HERE instead of throwing ResourceReadinessTimeoutError below.
+        const finalResource = await callWithTimeout(
+          () =>
+            this.k8sApi.read({
+              apiVersion: deployedResource.manifest.apiVersion,
+              kind: deployedResource.kind,
+              metadata: {
+                name: deployedResource.name,
+                namespace: deployedResource.namespace,
+              },
+            }),
+          DEFAULT_HTTP_READ_TIMEOUT,
+          `read ${deployedResource.kind}/${deployedResource.name} (final status)`
+        );
 
         this.debugLogger.logTimeout(
           deployedResource,

@@ -708,6 +708,32 @@ describe('waitForKroInstanceReady', () => {
         )
       ).resolves.toBeUndefined();
     });
+
+    it('does NOT swallow a WEDGED RGD read as readiness — fails fast instead of returning ready late', async () => {
+      // Regression: a per-call timeout on the RGD read must not fall through to the permissive path,
+      // which would declare an ACTIVE/synced instance ready WITHOUT validating expected status fields
+      // (and after the deadline). A wedged RGD read (never settles) must surface as a timeout error.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ACTIVE',
+          conditions: [{ type: 'Ready', status: 'True' }],
+        })
+      );
+      // The RGD fetch never settles — models a wedged/expired kubeconfig exec credential.
+      mockCustomObjectsApi.getClusterCustomObject.mockImplementation(
+        () => new Promise(() => {}) as Promise<object>
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 200,
+          })
+        )
+      ).rejects.toThrow(/did not return|request timeout/);
+    });
   });
 
   // ---------------------------------------------------------------------------

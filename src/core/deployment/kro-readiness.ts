@@ -19,7 +19,7 @@ import {
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
-import { callWithTimeout, perCallTimeout } from './poll-timeout.js';
+import { callWithTimeout, perCallTimeout, PollTimeoutError } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
 export interface KroReadinessOptions {
@@ -184,6 +184,13 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
           expectedCustomStatusFields,
         });
       } catch (error: unknown) {
+        // A per-call TIMEOUT (wedged/expired credential) is NOT a fetchable-RGD failure — do not fall
+        // through to the permissive path, which would let an ACTIVE/synced instance be declared ready
+        // WITHOUT validating expected status fields (and after the deadline). Surface it so the outer
+        // catch re-throws it (fail fast).
+        if (error instanceof PollTimeoutError) {
+          throw error;
+        }
         readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
           rgdName,
           error: ensureError(error).message,
@@ -232,6 +239,12 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         (!hasReadyField || statusReadyField === true);
 
       if (isReady) {
+        // Re-check the deadline: an API call earlier in THIS iteration may have consumed the remaining
+        // budget (e.g. a slow/bounded read), so an "isReady" reached past the deadline must still time
+        // out rather than silently succeed late.
+        if (Date.now() - startTime >= timeout) {
+          break;
+        }
         readinessLogger.info('Kro instance is ready', {
           instanceName,
           hasCustomStatusFields,
