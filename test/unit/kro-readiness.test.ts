@@ -467,6 +467,26 @@ describe('waitForKroInstanceReady', () => {
       ).rejects.toThrow(DeploymentTimeoutError);
     });
 
+    it('an exhausted deadline throws the overall DeploymentTimeoutError, NOT a per-call PollTimeoutError', async () => {
+      // Regression: a ≤0 per-call budget means the overall deadline elapsed — it must not be reported as
+      // a credential-wedge PollTimeoutError. A 1ms timeout with a normal (fast, not-ready) read must
+      // surface DeploymentTimeoutError.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({ state: 'PENDING', conditions: [{ type: 'Ready', status: 'False' }] })
+      );
+
+      const err = await waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 1,
+          pollInterval: 0,
+        })
+      ).catch((e) => e);
+      expect(err).toBeInstanceOf(DeploymentTimeoutError);
+      expect((err as Error).message).not.toMatch(/exec credential/);
+    });
+
     it('timeout error includes instance name and timeout info', async () => {
       mockK8sApi.read.mockResolvedValue(
         kroInstance({
@@ -707,6 +727,32 @@ describe('waitForKroInstanceReady', () => {
           defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
         )
       ).resolves.toBeUndefined();
+    });
+
+    it('does NOT swallow a WEDGED RGD read as readiness — fails fast instead of returning ready late', async () => {
+      // Regression: a per-call timeout on the RGD read must not fall through to the permissive path,
+      // which would declare an ACTIVE/synced instance ready WITHOUT validating expected status fields
+      // (and after the deadline). A wedged RGD read (never settles) must surface as a timeout error.
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ACTIVE',
+          conditions: [{ type: 'Ready', status: 'True' }],
+        })
+      );
+      // The RGD fetch never settles — models a wedged/expired kubeconfig exec credential.
+      mockCustomObjectsApi.getClusterCustomObject.mockImplementation(
+        () => new Promise(() => {}) as Promise<object>
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({
+            k8sApi: mockK8sApi,
+            customObjectsApi: mockCustomObjectsApi,
+            timeout: 200,
+          })
+        )
+      ).rejects.toThrow(/did not return|request timeout/);
     });
   });
 
