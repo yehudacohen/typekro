@@ -59,12 +59,11 @@ function createMockResource(
 // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
 // without a .body wrapper. The mocks must return the resource directly.
 const mockK8sApi = {
-  read: mock((_resource?: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    // Default to resource not found (404) unless specifically mocked otherwise
-    return Promise.reject({ statusCode: 404 });
-  }),
+  read: mock(
+    (_resource?: Record<string, unknown>): Promise<Record<string, unknown>> =>
+      Promise.reject({ statusCode: 404 })
+  ),
   create: mock((resource?: Record<string, unknown>) =>
-    // Returns object directly (no .body wrapper)
     Promise.resolve({
       metadata: {
         name: (resource?.metadata as Record<string, unknown>)?.name || 'test',
@@ -130,6 +129,30 @@ describe('DirectDeploymentEngine Simple', () => {
     mockK8sApi.create.mockClear();
     mockK8sApi.patch.mockClear();
     mockK8sApi.delete.mockClear();
+    mockK8sApi.read.mockImplementation((_resource?: Record<string, unknown>) =>
+      Promise.reject({ statusCode: 404 })
+    );
+    mockK8sApi.create.mockImplementation((resource?: Record<string, unknown>) =>
+      Promise.resolve({
+        metadata: {
+          name: (resource?.metadata as Record<string, unknown>)?.name || 'test',
+          namespace: (resource?.metadata as Record<string, unknown>)?.namespace || 'default',
+        },
+        kind: resource?.kind || 'Deployment',
+        apiVersion: resource?.apiVersion || 'apps/v1',
+      })
+    );
+    mockK8sApi.patch.mockImplementation((resource?: Record<string, unknown>) =>
+      Promise.resolve({
+        metadata: {
+          name: (resource?.metadata as Record<string, unknown>)?.name || 'test',
+          namespace: (resource?.metadata as Record<string, unknown>)?.namespace || 'default',
+        },
+        kind: resource?.kind || 'ConfigMap',
+        apiVersion: resource?.apiVersion || 'v1',
+      })
+    );
+    mockK8sApi.delete.mockImplementation(() => Promise.resolve({}));
     mockReferenceResolver.resolveReferences.mockClear();
     mockReferenceResolver.resolveReferences.mockImplementation(async (resource: any) => resource);
   });

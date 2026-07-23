@@ -873,23 +873,23 @@ describe('EventMonitor', () => {
       // Exact verification depends on implementation details
     });
   });
-});
 
-describe('createEventMonitor', () => {
-  it('should create EventMonitor with default options', () => {
-    const monitor = createEventMonitor(mockKubeConfig, {}, mock(() => mockWatch));
-    expect(monitor).toBeInstanceOf(EventMonitor);
-  });
+  describe('createEventMonitor', () => {
+    it('should create EventMonitor with default options', () => {
+      const monitor = createEventMonitor(mockKubeConfig, {}, mock(() => mockWatch));
+      expect(monitor).toBeInstanceOf(EventMonitor);
+    });
 
-  it('should create EventMonitor with custom options', () => {
-    const options = {
-      namespace: 'custom-namespace',
-      eventTypes: ['Normal', 'Warning', 'Error'] as const,
-      includeChildResources: false,
-      progressCallback: mock(),
-    };
+    it('should create EventMonitor with custom options', () => {
+      const options = {
+        namespace: 'custom-namespace',
+        eventTypes: ['Normal', 'Warning', 'Error'] as const,
+        includeChildResources: false,
+        progressCallback: mock(),
+      };
 
-    const monitor = createEventMonitor(mockKubeConfig, options, mock(() => mockWatch));
-    expect(monitor).toBeInstanceOf(EventMonitor);
+      const monitor = createEventMonitor(mockKubeConfig, options, mock(() => mockWatch));
+      expect(monitor).toBeInstanceOf(EventMonitor);
+    });
   });
 });

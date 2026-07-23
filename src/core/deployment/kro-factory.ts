@@ -73,6 +73,7 @@ import {
   type KroArtifactPlan,
   type KroSupportingArtifact,
   type KroSupportingArtifactCompilerInput,
+  KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
   kroArtifactOutputField,
   kroArtifactPlanToGraphResources,
   kroArtifactPlanToInstanceResource,
@@ -87,6 +88,7 @@ import {
   type PlanEdge,
   planValueSensitiveBindingNames,
   resolveStaticYamlSensitiveBindings,
+  schemaToIR,
   type StaticYamlMaterializationOptions,
 } from '../planning/index.js';
 import {
@@ -588,6 +590,24 @@ export class KroResourceFactoryImpl<
     this.singletonDefinitions = options.singletonDefinitions ?? [];
     this.factoryOptions = options;
     this.clientManager = new KubernetesClientManager(options);
+    const specSchema = schemaToIR(schemaDefinition.spec);
+    if (
+      specSchema.root.kind === 'object' &&
+      specSchema.root.properties.some(
+        (property) => property.name === KRO_ARTIFACT_BINDINGS_SPEC_FIELD
+      )
+    ) {
+      throw new TypeKroError(
+        `Spec field ${KRO_ARTIFACT_BINDINGS_SPEC_FIELD} is reserved for TypeKro KRO provider bindings.`,
+        'KRO_RESERVED_SPEC_FIELD',
+        {
+          field: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
+          surface: 'schema',
+          factory: name,
+          policyVersion: 1,
+        }
+      );
+    }
     // Pass the Arktype JSON so the proxy is shape-aware: spread
     // (`{ ...schema.spec.X }`) enumerates declared fields and
     // `Object.keys(schema.spec.X)` returns them. See the docstring on
@@ -628,6 +648,26 @@ export class KroResourceFactoryImpl<
 
   private getInstanceApiVersion(): string {
     return `${this.getSchemaGroup()}/${this.getSchemaVersion()}`;
+  }
+
+  private assertNoReservedKroSpecField(spec: unknown): void {
+    if (
+      !spec ||
+      typeof spec !== 'object' ||
+      !Object.hasOwn(spec, KRO_ARTIFACT_BINDINGS_SPEC_FIELD)
+    ) {
+      return;
+    }
+    throw new TypeKroError(
+      `Spec field ${KRO_ARTIFACT_BINDINGS_SPEC_FIELD} is reserved for TypeKro KRO provider bindings.`,
+      'KRO_RESERVED_SPEC_FIELD',
+      {
+        field: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
+        surface: 'instance-spec',
+        factory: this.name,
+        policyVersion: 1,
+      }
+    );
   }
 
   /**
@@ -1492,6 +1532,7 @@ export class KroResourceFactoryImpl<
         { targetScopes: opts.targetScopes, mode: 'kro' }
       );
     }
+    this.assertNoReservedKroSpecField(spec);
     // Validate spec against ArkType schema
     validateSpec(spec, this.schemaDefinition, {
       kind: this.schemaDefinition.kind,
@@ -3641,6 +3682,7 @@ export class KroResourceFactoryImpl<
     opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
     this.assertNoKroPrerequisiteHookForDeclarative('toAlchemyResources()');
+    this.assertNoReservedKroSpecField(spec);
     validateSpec(spec, this.schemaDefinition, {
       kind: this.schemaDefinition.kind,
       name: this.name,
@@ -4241,6 +4283,7 @@ export class KroResourceFactoryImpl<
     this.assertNoKroPrerequisiteHookForDeclarative('toYaml()');
 
     if (spec) {
+      this.assertNoReservedKroSpecField(spec);
       validateSpec(spec, this.schemaDefinition, {
         kind: this.schemaDefinition.kind,
         name: this.name,
@@ -4444,7 +4487,7 @@ export class KroResourceFactoryImpl<
         current.push(use);
         byRequirement.set(use.requirementId, current);
       }
-      kroSchema.spec.__typekroArtifacts = Object.fromEntries(
+      kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = Object.fromEntries(
         [...byRequirement.entries()].map(([requirementId, uses]) => [
           kroArtifactRequirementField(requirementId),
           Object.fromEntries(uses.map((use) => [kroArtifactOutputField(use.output), 'string'])),

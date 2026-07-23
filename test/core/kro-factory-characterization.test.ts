@@ -478,6 +478,41 @@ function makeFlexibleFactory(
   return createKroResourceFactory(name, emptyResources, schema, {}, options);
 }
 
+describe('KroResourceFactory: reserved provider bindings', () => {
+  it('rejects schemas that claim TypeKro provider binding storage', () => {
+    const schema = makeSchema({
+      spec: type({
+        name: 'string',
+        replicas: 'number',
+        typekroArtifactBindings: 'string',
+      }) as never,
+    });
+
+    expect(() => makeFactory('reservedSchemaApp', {}, schema)).toThrow(
+      'Spec field typekroArtifactBindings is reserved'
+    );
+  });
+
+  it('rejects concrete reserved fields consistently across KRO entry points', async () => {
+    const factory = makeFactory('reservedInstanceApp');
+    const spec = {
+      name: 'demo',
+      replicas: 1,
+      typekroArtifactBindings: 'user-owned',
+    } as unknown as TestSpec;
+
+    expect(() => factory.toYaml(spec)).toThrow('Spec field typekroArtifactBindings is reserved');
+    await expect(factory.toAlchemyResources(spec)).rejects.toMatchObject({
+      code: 'KRO_RESERVED_SPEC_FIELD',
+      context: expect.objectContaining({ surface: 'instance-spec' }),
+    });
+    await expect(factory.deploy(spec)).rejects.toMatchObject({
+      code: 'KRO_RESERVED_SPEC_FIELD',
+      context: expect.objectContaining({ surface: 'instance-spec' }),
+    });
+  });
+});
+
 /** Create a branded CelExpression object */
 function makeCelExpr(expression: string): { expression: string; [k: symbol]: boolean } {
   return {

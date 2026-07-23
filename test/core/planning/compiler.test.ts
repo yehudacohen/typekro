@@ -3,6 +3,7 @@ import { type } from 'arktype';
 import { getReadinessEvaluator, getResourceId } from '../../../src/core/metadata/index.js';
 import { resolvePortableReadinessStrategy } from '../../../src/core/readiness/index.js';
 import {
+  artifactOutput,
   canonicalDigest,
   compileDirectArtifactPlan,
   compileKroArtifactPlan,
@@ -445,6 +446,117 @@ describe('semantic artifact compilers', () => {
     );
     expect(JSON.parse(JSON.stringify(artifacts))).toEqual(artifacts);
     expect(decodeKroArtifactPlan(encodeArtifactPlan(artifacts))).toEqual(artifacts);
+  });
+
+  it('rejects application ownership of the reserved KRO artifact binding field', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'reserved-kro-artifact-field',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'ReservedKroArtifactField',
+        revision: '1',
+        spec: type({ name: 'string', typekroArtifactBindings: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      () => ({ ready: true })
+    );
+    const plan = composition.plan!({
+      name: 'demo',
+      typekroArtifactBindings: 'user-owned',
+    });
+
+    try {
+      compileKroArtifactPlan(plan, { strict: false });
+      throw new Error('Expected KRO compilation to reject its reserved spec field');
+    } catch (error) {
+      expect(error).toEqual(
+        expect.objectContaining({
+          code: 'ARTIFACT_COMPILATION_FAILED',
+          context: expect.objectContaining({
+            diagnostics: expect.arrayContaining([
+              expect.objectContaining({
+                code: 'KRO_RESERVED_SPEC_FIELD',
+                path: '$.schemas.spec.typekroArtifactBindings',
+                details: expect.objectContaining({ surface: 'schema' }),
+              }),
+              expect.objectContaining({
+                code: 'KRO_RESERVED_SPEC_FIELD',
+                path: '$.spec.typekroArtifactBindings',
+                details: expect.objectContaining({ surface: 'planned-spec' }),
+              }),
+            ]),
+          }),
+        })
+      );
+    }
+  });
+
+  it('rejects a reserved KRO artifact binding supplied only by the concrete instance', () => {
+    const plan = compilerFixture.plan!({ name: 'demo', namespace: 'apps' }, { strict: true });
+
+    expect(() =>
+      compileKroArtifactPlan(plan, {
+        strict: false,
+        instance: {
+          name: lowerPlanValue('demo').value,
+          namespace: lowerPlanValue('apps').value,
+          spec: lowerPlanValue({
+            name: 'demo',
+            namespace: 'apps',
+            typekroArtifactBindings: 'user-owned',
+          }).value,
+        },
+      })
+    ).toThrow('Spec field typekroArtifactBindings is reserved');
+  });
+
+  it('reserves only the KRO root field and preserves same-named nested application data', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'nested-kro-artifact-field',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'NestedKroArtifactField',
+        revision: '1',
+        spec: type({
+          name: 'string',
+          config: type({ typekroArtifactBindings: 'string' }),
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        simple.ConfigMap({
+          id: 'config',
+          name: spec.name,
+          data: {
+            userValue: spec.config.typekroArtifactBindings,
+            image: artifactOutput('build', 'image'),
+          },
+        });
+        return { ready: true };
+      }
+    );
+    const plan = composition.plan!(
+      {
+        name: 'demo',
+        config: { typekroArtifactBindings: 'nested-user-owned' },
+      },
+      {
+        inputs: {
+          image: {
+            kind: 'artifact',
+            requirement: {
+              id: 'build',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['image'],
+            },
+          },
+        },
+      }
+    );
+
+    const artifacts = compileKroArtifactPlan(plan);
+    expect(JSON.stringify(artifacts)).toContain('nested-user-owned');
   });
 
   it('round-trips and topologically orders a complete KRO outer artifact bundle', () => {

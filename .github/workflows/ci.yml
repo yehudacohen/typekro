@@ -48,6 +48,9 @@ jobs:
       - name: Packed artifact budgets and imports
         run: bun run test:packed-imports
 
+      - name: Randomized unit test isolation
+        run: bun run test:randomized
+
       - name: Unit tests with coverage
         run: bun run test:coverage
 

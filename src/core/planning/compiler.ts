@@ -30,6 +30,7 @@ import type {
 } from './types.js';
 import {
   collectArtifactOutputUses,
+  KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
   kroArtifactOutputField,
   kroArtifactRequirementField,
 } from './values.js';
@@ -79,6 +80,47 @@ function withObjectField(value: PlanValue, key: string, fieldValue: PlanValue): 
   };
 }
 
+function schemaHasRootProperty(schema: SchemaIR, propertyName: string): boolean {
+  return (
+    schema.root.kind === 'object' &&
+    schema.root.properties.some((property) => property.name === propertyName)
+  );
+}
+
+function planValueHasRootField(value: PlanValue | undefined, fieldName: string): boolean {
+  return value?.kind === 'object' && value.entries.some((entry) => entry.key === fieldName);
+}
+
+function kroReservedSpecDiagnostics(
+  plan: DesiredStatePlan,
+  options: KroArtifactCompilerOptions
+): PlanDiagnostic[] {
+  const diagnostics: PlanDiagnostic[] = [];
+  const add = (path: string, surface: string) => {
+    diagnostics.push({
+      code: 'KRO_RESERVED_SPEC_FIELD',
+      severity: 'error',
+      message: `Spec field ${KRO_ARTIFACT_BINDINGS_SPEC_FIELD} is reserved for TypeKro KRO provider bindings.`,
+      path,
+      details: {
+        field: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
+        surface,
+        policyVersion: 1,
+      },
+    });
+  };
+  if (schemaHasRootProperty(plan.schemas.spec, KRO_ARTIFACT_BINDINGS_SPEC_FIELD)) {
+    add(`$.schemas.spec.${KRO_ARTIFACT_BINDINGS_SPEC_FIELD}`, 'schema');
+  }
+  if (planValueHasRootField(plan.spec, KRO_ARTIFACT_BINDINGS_SPEC_FIELD)) {
+    add(`$.spec.${KRO_ARTIFACT_BINDINGS_SPEC_FIELD}`, 'planned-spec');
+  }
+  if (planValueHasRootField(options.instance?.spec, KRO_ARTIFACT_BINDINGS_SPEC_FIELD)) {
+    add(`$.instance.spec.${KRO_ARTIFACT_BINDINGS_SPEC_FIELD}`, 'instance-spec');
+  }
+  return diagnostics;
+}
+
 function kroArtifactBindingValue(uses: readonly ArtifactOutputUse[]): PlanValue {
   const byRequirement = new Map<string, ArtifactOutputUse[]>();
   for (const use of uses) {
@@ -122,7 +164,7 @@ function kroSpecSchemaWithArtifactBindings(
     byRequirement.set(use.requirementId, current);
   }
   const bindingProperty = {
-    name: '__typekroArtifacts',
+    name: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
     required: true,
     schema: {
       kind: 'object' as const,
@@ -515,6 +557,10 @@ export function compileKroArtifactPlan(
   plan: DesiredStatePlan,
   options: KroArtifactCompilerOptions = {}
 ): KroArtifactPlan {
+  const reservedSpecDiagnostics = kroReservedSpecDiagnostics(plan, options);
+  if (reservedSpecDiagnostics.length > 0) {
+    throw new ArtifactCompilationError('kro', reservedSpecDiagnostics);
+  }
   const diagnostics = [...compilerDiagnostics(plan, 'kro'), ...kroStatusDiagnostics(plan)];
   const apply = options.outerApplyPolicy ?? DEFAULT_APPLY_POLICY;
   const graphChildren: KroGraphChildArtifact[] = plan.nodes.flatMap((node) => {
@@ -594,7 +640,7 @@ export function compileKroArtifactPlan(
     artifactOutputUses.length > 0
       ? withObjectField(
           options.instance?.spec ?? plan.spec,
-          '__typekroArtifacts',
+          KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
           kroArtifactBindingValue(artifactOutputUses)
         )
       : (options.instance?.spec ?? plan.spec);

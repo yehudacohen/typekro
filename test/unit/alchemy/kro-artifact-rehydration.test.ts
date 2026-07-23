@@ -132,7 +132,7 @@ describe('KRO Alchemy artifact-bundle rehydration', () => {
     );
     expect(rgd).toBeDefined();
     expect(rgd?.artifactOutputUses).toBeUndefined();
-    expect(JSON.stringify(rgd?.props.resource)).toContain('__typekroArtifacts');
+    expect(JSON.stringify(rgd?.props.resource)).toContain('typekroArtifactBindings');
     expect(JSON.stringify(rgd?.props.resource)).not.toContain('registry.example/demo@sha256:abc');
     const byId = new Map(declarations.map((declaration) => [declaration.id, declaration]));
     const restored = JSON.parse(JSON.stringify(target.props)) as TypeKroResourceProps<

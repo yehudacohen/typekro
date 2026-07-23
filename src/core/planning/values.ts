@@ -123,6 +123,15 @@ function artifactBindingKey(prefix: 'r' | 'o', value: string): string {
   return `${prefix}_${canonicalDigest(value).replace(/[^a-zA-Z0-9]/g, '')}`;
 }
 
+/**
+ * KRO root-spec field reserved for TypeKro's per-installation provider bindings.
+ *
+ * This is intentionally stable because persisted Alchemy state and generated
+ * custom resources must agree on the field name. KRO compilation rejects user
+ * schemas and instance specs that claim it.
+ */
+export const KRO_ARTIFACT_BINDINGS_SPEC_FIELD = 'typekroArtifactBindings';
+
 /** Stable KRO instance-spec field for one artifact requirement. */
 export function kroArtifactRequirementField(requirementId: string): string {
   return artifactBindingKey('r', requirementId);
