@@ -5,10 +5,12 @@
  * with TypeKro resources.
  */
 
+import type { ResourceLike } from 'alchemy/Resource';
 import type {
   KubeConfigCredentialBindings,
   KubernetesClientConfig,
 } from '../core/kubernetes/client-provider.js';
+import type { ArtifactOutputUse, ArtifactRequirement } from '../core/planning/types.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import type { KroDeletionOptions } from './kro-delete.js';
@@ -90,6 +92,13 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
    * while materializing the Kubernetes apply operation.
    */
   sensitiveBindings?: Readonly<Record<string, unknown>>;
+
+  /** Artifact declarations and uses needed to materialize this operation. */
+  artifactRequirements?: readonly ArtifactRequirement[];
+  artifactOutputUses?: readonly ArtifactOutputUse[];
+
+  /** Resolved host-provider outputs. Sensitive uses must remain Effect Redacted until apply. */
+  artifactOutputs?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 
   /** Canonical complete KRO outer bundle used by new KRO declarations. */
   kroArtifactBundle?: string;
@@ -191,6 +200,20 @@ export interface AlchemyResourceDeclaration {
    * these into alchemy `Output` dependencies (ordering + direct-mode reference resolution).
    */
   readonly dependsOn: readonly string[];
+  /** External provider requirements consumed by this declaration. */
+  readonly artifactRequirements?: readonly ArtifactRequirement[];
+  /** Exact outputs used by this declaration, including sensitivity taint. */
+  readonly artifactOutputUses?: readonly ArtifactOutputUse[];
+}
+
+/** An external Alchemy resource that satisfies one declared artifact requirement. */
+export interface AlchemyArtifactBinding {
+  readonly resource: ResourceLike;
+  readonly outputs: Readonly<Record<string, unknown>>;
+}
+
+export interface MaterializeAlchemyResourcesOptions {
+  readonly artifacts?: Readonly<Record<string, AlchemyArtifactBinding>>;
 }
 
 /**

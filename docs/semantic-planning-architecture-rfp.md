@@ -1050,15 +1050,29 @@ the KRO controller retains exclusive ownership of graph-child reconciliation.
   `Effect.runPromise` or nest a competing TypeKro managed runtime, durable retry policy, or workflow
   inside Alchemy execution.
 - Adapt provider and container requirements to Alchemy resources when implementations exist.
+- Validate every `artifactOutput(requirementId, output)` against a declared requirement and output,
+  retain requirements and sensitivity-tainted output uses in direct and KRO declarations, and let
+  `materializeAlchemyResources()` bind external Alchemy resource handles. Those handles become
+  dependency edges; resolved values enter provider materialization only after Alchemy resolves the
+  producer, and sensitive outputs remain host-native redacted inputs through durable rehydration.
+- Keep the versioned planning and artifact DTOs experimental until the parity release. Downstream
+  platforms may consume them through pinned internal adapters for diagnostics and evidence, but
+  must not copy, persist, or expose them as a public application contract.
+- Require one Alchemy stack/scope per installation identity. TypeKro documents the namespace-agnostic
+  KRO instance id and detects collisions within one declaration set; application orchestration owns
+  mapping its full installation identity to a distinct stack and enforcing that invariant across calls.
 - Replace the architectural use of `mode: 'alchemy'` with explicit target plus host context. Retain
   compatibility normalization long enough to migrate persisted state and callers.
 - Introduce accurately named aliases for the current generic `KroResource`/`kroProvider` surface,
   which also hosts direct resources, before considering deprecation of the existing names.
 
-Acceptance: Alchemy integrations use public plan/artifact contracts only; canonical JSON state
+Acceptance: Alchemy integrations use stable factory/provider APIs and pinned internal adapters for
+experimental plan/artifact contracts; canonical JSON state
 round trips preserve references, scope, readiness strategy, artifact role, and deletion semantics
-without CEL-string scanning or WeakMap reconstruction; direct and KRO behavior is equivalent under
-standalone and Alchemy hosts; and TypeKro does not duplicate Alchemy state or provider lifecycles.
+without CEL-string scanning or WeakMap reconstruction; external provider handles and their public or
+redacted outputs survive direct and KRO rehydration; direct and KRO behavior is equivalent under
+standalone and Alchemy hosts; and TypeKro does not duplicate Alchemy state, stack identity, or
+provider lifecycles.
 
 ### Workstream 8: Compatibility Closures and External Side Effects
 

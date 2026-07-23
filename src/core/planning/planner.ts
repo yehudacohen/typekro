@@ -23,10 +23,10 @@ import {
   getRuntimeReadinessClassification,
 } from '../readiness/portable-strategies.js';
 import {
+  type FactoryRegistration,
+  type FactoryRepresentationRequirement,
   getFactoryRegistration,
   getFactoryRegistrationsForGVK,
-  type FactoryRepresentationRequirement,
-  type FactoryRegistration,
 } from '../resources/factory-registry.js';
 import type { DeploymentResourceGraph } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
@@ -57,7 +57,7 @@ import type {
   StatusContract,
   StatusProjection,
 } from './types.js';
-import { expressionIR, lowerPlanValue } from './values.js';
+import { collectArtifactOutputUses, expressionIR, lowerPlanValue } from './values.js';
 
 /** Error raised by strict semantic planning. */
 export class SemanticPlanningError extends TypeKroError {
@@ -369,7 +369,9 @@ function statusProjections(
   // The established schema serializer already excludes this `__*` metadata; semantic planning
   // must apply the same boundary so strict value diagnostics do not mistake internal Maps for
   // user-authored status values.
-  for (const key of Object.keys(statusMappings).filter((key) => !key.startsWith('__')).sort()) {
+  for (const key of Object.keys(statusMappings)
+    .filter((key) => !key.startsWith('__'))
+    .sort()) {
     const lowered = lowerPlanValue(statusMappings[key], { specSchema });
     const value = markSensitiveSpecReferences(lowered.value, sensitiveSpecPaths);
     outputs[key] = value;
@@ -491,6 +493,76 @@ function inputManifest(
     }
   }
   return manifest;
+}
+
+function validateArtifactRequirements(
+  inputs: readonly DeclaredInputManifestEntry[],
+  valueSurface: unknown,
+  diagnostics: PlanDiagnostic[]
+): void {
+  const requirements = inputs.filter(
+    (input): input is Extract<DeclaredInputManifestEntry, { kind: 'artifact' }> =>
+      input.kind === 'artifact'
+  );
+  const byId = new Map<string, (typeof requirements)[number]['requirement']>();
+  requirements.forEach((input, index) => {
+    const { requirement } = input;
+    const path = `$.inputs.${input.name}.requirement`;
+    if (requirement.id.length === 0 || requirement.kind.length === 0) {
+      diagnostics.push({
+        code: 'PLAN_ARTIFACT_REQUIREMENT_INVALID',
+        severity: 'error',
+        message: `Artifact requirement ${index} must have non-empty id and kind fields.`,
+        path,
+      });
+    }
+    if (
+      requirement.outputs.length === 0 ||
+      requirement.outputs.some((output) => output.length === 0) ||
+      new Set(requirement.outputs).size !== requirement.outputs.length
+    ) {
+      diagnostics.push({
+        code: 'PLAN_ARTIFACT_REQUIREMENT_OUTPUTS_INVALID',
+        severity: 'error',
+        message: `Artifact requirement ${requirement.id || index} must declare unique, non-empty outputs.`,
+        path: `${path}.outputs`,
+      });
+    }
+    const prior = byId.get(requirement.id);
+    if (prior && canonicalStringify(prior) !== canonicalStringify(requirement)) {
+      diagnostics.push({
+        code: 'PLAN_ARTIFACT_REQUIREMENT_ID_CONFLICT',
+        severity: 'error',
+        message: `Artifact requirement id ${requirement.id} is declared with conflicting definitions.`,
+        path,
+      });
+    } else if (requirement.id.length > 0) {
+      byId.set(requirement.id, requirement);
+    }
+  });
+
+  for (const use of collectArtifactOutputUses(valueSurface)) {
+    const requirement = byId.get(use.requirementId);
+    if (!requirement) {
+      diagnostics.push({
+        code: 'PLAN_ARTIFACT_OUTPUT_REQUIREMENT_UNDECLARED',
+        severity: 'error',
+        message: `Artifact output ${use.requirementId}.${use.output} refers to an undeclared requirement.`,
+        path: '$.artifactOutputs',
+        details: { requirementId: use.requirementId, output: use.output },
+      });
+      continue;
+    }
+    if (!requirement.outputs.includes(use.output)) {
+      diagnostics.push({
+        code: 'PLAN_ARTIFACT_OUTPUT_UNDECLARED',
+        severity: 'error',
+        message: `Artifact requirement ${use.requirementId} does not declare output ${use.output}.`,
+        path: '$.artifactOutputs',
+        details: { requirementId: use.requirementId, output: use.output },
+      });
+    }
+  }
 }
 
 function cloneCanonicalizerInput<T>(value: T, seen = new WeakMap<object, object>()): T {
@@ -1697,6 +1769,16 @@ function buildPlanOnce<TSpec extends KroCompatibleType>(
     canonicalizers,
     requiredCapabilities,
   };
+  validateArtifactRequirements(
+    inputs,
+    {
+      spec: semanticSpec,
+      nodes: semanticPayload.nodes,
+      outputs: status.outputs,
+      representationRequirements,
+    },
+    diagnostics
+  );
   const semanticContentDigest = canonicalDigest(semanticPayload);
   const planIdentityDigest = canonicalDigest({ composition: identity, semanticContentDigest });
   return {

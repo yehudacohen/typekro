@@ -4,8 +4,8 @@ import {
   ARTIFACT_PLAN_VERSION,
   type ArtifactApplyPolicy,
   type ArtifactPlan,
-  type DirectKubernetesArtifactResource,
   type DirectKubernetesArtifactPlan,
+  type DirectKubernetesArtifactResource,
   type KroArtifactPlan,
 } from './artifacts.js';
 import { canonicalDigest, canonicalStringify } from './canonical.js';
@@ -299,6 +299,31 @@ function compiledDigest(plan: UnknownRecord): string {
     planIdentityDigest: plan.planIdentityDigest,
     resources: plan.resources,
     edges: plan.edges,
+    artifactRequirements: plan.artifactRequirements ?? [],
+  });
+}
+
+function artifactRequirements(value: unknown, path: string): void {
+  const ids = new Set<string>();
+  array(value, path).forEach((entry, index) => {
+    const itemPath = `${path}[${index}]`;
+    const item = record(entry, itemPath);
+    const id = nonEmptyString(item.id, `${itemPath}.id`);
+    nonEmptyString(item.kind, `${itemPath}.kind`);
+    planValue(item.descriptor, `${itemPath}.descriptor`);
+    const outputs = array(item.outputs, `${itemPath}.outputs`).map((output, outputIndex) =>
+      nonEmptyString(output, `${itemPath}.outputs[${outputIndex}]`)
+    );
+    if (outputs.length === 0 || new Set(outputs).size !== outputs.length) {
+      throw new ArtifactPlanDecodeError(
+        `Artifact requirement ${id} must declare unique outputs.`,
+        `${itemPath}.outputs`
+      );
+    }
+    if (ids.has(id)) {
+      throw new ArtifactPlanDecodeError(`Artifact requirement id ${id} is duplicated.`, itemPath);
+    }
+    ids.add(id);
   });
 }
 
@@ -347,6 +372,7 @@ function decode(encoded: string, expectedTarget?: 'direct' | 'kro'): ArtifactPla
   });
   array(plan.edges, '$.edges');
   array(plan.requiredCapabilities, '$.requiredCapabilities');
+  artifactRequirements(plan.artifactRequirements ?? [], '$.artifactRequirements');
   array(plan.diagnostics, '$.diagnostics');
   if (compiledDigest(plan) !== expectedCompiledDigest) {
     throw new ArtifactPlanDecodeError(

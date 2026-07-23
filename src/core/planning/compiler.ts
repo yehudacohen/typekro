@@ -18,6 +18,7 @@ import {
 import { canonicalDigest, canonicalStringify } from './canonical.js';
 import { targetCapabilityDiagnostics } from './capabilities.js';
 import type {
+  ArtifactOutputUse,
   DesiredStatePlan,
   KubernetesIdentity,
   LifecyclePolicy,
@@ -25,7 +26,13 @@ import type {
   PlanEdge,
   PlanValue,
   RepresentationRequirement,
+  SchemaIR,
 } from './types.js';
+import {
+  collectArtifactOutputUses,
+  kroArtifactOutputField,
+  kroArtifactRequirementField,
+} from './values.js';
 
 const KRO_RESERVED_STATUS_FIELDS = new Set(['conditions', 'state', 'observedGeneration']);
 
@@ -59,6 +66,88 @@ function objectValue(entries: Readonly<Record<string, PlanValue | undefined>>): 
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => ({ key, value })),
   };
+}
+
+function withObjectField(value: PlanValue, key: string, fieldValue: PlanValue): PlanValue {
+  if (value.kind !== 'object') return value;
+  return {
+    kind: 'object',
+    entries: [
+      ...value.entries.filter((entry) => entry.key !== key),
+      { key, value: fieldValue },
+    ].sort((left, right) => left.key.localeCompare(right.key)),
+  };
+}
+
+function kroArtifactBindingValue(uses: readonly ArtifactOutputUse[]): PlanValue {
+  const byRequirement = new Map<string, ArtifactOutputUse[]>();
+  for (const use of uses) {
+    const current = byRequirement.get(use.requirementId) ?? [];
+    current.push(use);
+    byRequirement.set(use.requirementId, current);
+  }
+  return objectValue(
+    Object.fromEntries(
+      [...byRequirement.entries()].map(([requirementId, requirementUses]) => [
+        kroArtifactRequirementField(requirementId),
+        objectValue(
+          Object.fromEntries(
+            requirementUses.map((use) => {
+              const output: PlanValue = {
+                kind: 'artifact-output',
+                requirementId: use.requirementId,
+                output: use.output,
+              };
+              return [
+                kroArtifactOutputField(use.output),
+                use.sensitive ? { kind: 'sensitive-value', value: output } : output,
+              ];
+            })
+          )
+        ),
+      ])
+    )
+  );
+}
+
+function kroSpecSchemaWithArtifactBindings(
+  schema: SchemaIR,
+  uses: readonly ArtifactOutputUse[]
+): SchemaIR {
+  if (uses.length === 0 || schema.root.kind !== 'object') return schema;
+  const byRequirement = new Map<string, ArtifactOutputUse[]>();
+  for (const use of uses) {
+    const current = byRequirement.get(use.requirementId) ?? [];
+    current.push(use);
+    byRequirement.set(use.requirementId, current);
+  }
+  const bindingProperty = {
+    name: '__typekroArtifacts',
+    required: true,
+    schema: {
+      kind: 'object' as const,
+      properties: [...byRequirement.entries()].map(([requirementId, requirementUses]) => ({
+        name: kroArtifactRequirementField(requirementId),
+        required: true,
+        schema: {
+          kind: 'object' as const,
+          properties: requirementUses.map((use) => ({
+            name: kroArtifactOutputField(use.output),
+            required: true,
+            schema: { kind: 'primitive' as const, type: 'string' as const },
+          })),
+        },
+      })),
+    },
+  };
+  const root = {
+    ...schema.root,
+    properties: [
+      ...schema.root.properties.filter((property) => property.name !== bindingProperty.name),
+      bindingProperty,
+    ].sort((left, right) => left.name.localeCompare(right.name)),
+  };
+  return { ...schema, root, digest: canonicalDigest({ version: schema.version, root }) };
 }
 
 function literal(value: string | number | boolean | null): PlanValue {
@@ -143,7 +232,8 @@ function lifecycleFromPlanValue(value: PlanValue | undefined): LifecyclePolicy |
     instancingKind === 'per-scope'
       ? {
           kind: 'per-scope' as const,
-          key: (instancingValue ? objectField(instancingValue, 'key') : undefined) ??
+          key:
+            (instancingValue ? objectField(instancingValue, 'key') : undefined) ??
             literal('default'),
         }
       : { kind: instancingKind as 'per-instance' | 'per-cluster' };
@@ -375,6 +465,9 @@ export function compileDirectArtifactPlan(
     ) as DirectKubernetesArtifactResource[])
   );
   resources.sort((left, right) => left.id.localeCompare(right.id));
+  const artifactRequirements = plan.inputs
+    .filter((input) => input.kind === 'artifact')
+    .map((input) => input.requirement);
   const compiledArtifactDigest = canonicalDigest({
     version: ARTIFACT_PLAN_VERSION,
     target: 'direct',
@@ -382,6 +475,7 @@ export function compileDirectArtifactPlan(
     planIdentityDigest: plan.planIdentityDigest,
     resources,
     edges: plan.edges,
+    artifactRequirements,
   });
   throwIfStrict('direct', diagnostics, options.strict ?? true);
   return {
@@ -393,6 +487,7 @@ export function compileDirectArtifactPlan(
     resources,
     edges: plan.edges,
     requiredCapabilities: plan.requiredCapabilities,
+    artifactRequirements,
     diagnostics,
   };
 }
@@ -442,6 +537,20 @@ export function compileKroArtifactPlan(
       },
     ];
   });
+  const artifactOutputUses = collectArtifactOutputUses({
+    nodes: plan.nodes,
+    outputs: plan.outputs,
+    representationRequirements: plan.representationRequirements,
+  });
+  if (artifactOutputUses.length > 0 && plan.schemas.spec.root.kind !== 'object') {
+    diagnostics.push({
+      code: 'KRO_ARTIFACT_BINDING_SCHEMA_UNSUPPORTED',
+      severity: 'error',
+      message: 'KRO artifact outputs require an object-shaped root spec schema.',
+      path: '$.schemas.spec',
+      details: { schemaKind: plan.schemas.spec.root.kind },
+    });
+  }
   const rgdName = options.rgdName ?? convertToKubernetesName(plan.composition.name);
   const rgdId = '__typekro_rgd__';
   const instanceId = '__typekro_instance__';
@@ -451,7 +560,7 @@ export function compileKroArtifactPlan(
     root: {
       apiVersion: plan.composition.apiVersion,
       kind: plan.composition.kind,
-      specSchema: plan.schemas.spec,
+      specSchema: kroSpecSchemaWithArtifactBindings(plan.schemas.spec, artifactOutputUses),
       persistedStatusSchema: plan.status.persistedSchema,
     },
     children: graphChildren,
@@ -481,6 +590,14 @@ export function compileKroArtifactPlan(
     ...(namespace ? { namespace } : {}),
     scope: 'namespaced',
   };
+  const instanceSpec =
+    artifactOutputUses.length > 0
+      ? withObjectField(
+          options.instance?.spec ?? plan.spec,
+          '__typekroArtifacts',
+          kroArtifactBindingValue(artifactOutputUses)
+        )
+      : (options.instance?.spec ?? plan.spec);
   const instanceDesired = objectValue({
     apiVersion: literal(instanceApiVersion),
     kind: literal(instanceKind),
@@ -490,7 +607,7 @@ export function compileKroArtifactPlan(
       labels: options.instance?.labels,
       annotations: options.instance?.annotations,
     }),
-    spec: options.instance?.spec ?? plan.spec,
+    spec: instanceSpec,
   });
   const rgdArtifact: KroResourceGraphDefinitionArtifact = {
     id: rgdId,
@@ -564,6 +681,9 @@ export function compileKroArtifactPlan(
   const uniqueEdges = [
     ...new Map(edges.map((edge) => [canonicalStringify(edge), edge])).values(),
   ].sort((left, right) => canonicalStringify(left).localeCompare(canonicalStringify(right)));
+  const artifactRequirements = plan.inputs
+    .filter((input) => input.kind === 'artifact')
+    .map((input) => input.requirement);
   const compiledArtifactDigest = canonicalDigest({
     version: ARTIFACT_PLAN_VERSION,
     target: 'kro',
@@ -571,6 +691,7 @@ export function compileKroArtifactPlan(
     planIdentityDigest: plan.planIdentityDigest,
     resources,
     edges: uniqueEdges,
+    artifactRequirements,
   });
   throwIfStrict('kro', diagnostics, options.strict ?? true);
   return {
@@ -582,6 +703,7 @@ export function compileKroArtifactPlan(
     resources,
     edges: uniqueEdges,
     requiredCapabilities: plan.requiredCapabilities,
+    artifactRequirements,
     diagnostics,
   };
 }

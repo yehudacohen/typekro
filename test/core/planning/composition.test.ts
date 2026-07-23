@@ -3,14 +3,15 @@ import { type } from 'arktype';
 import {
   getMetadataField,
   getTemplateOverrides,
-  setMetadataField,
   setIncludeWhen,
+  setMetadataField,
   setReadyWhen,
   setTemplateOverrides,
 } from '../../../src/core/metadata/index.js';
 import { registerFactory } from '../../../src/core/resources/factory-registry.js';
 import {
   adapterCapabilityDiagnostics,
+  artifactOutput,
   compileDirectArtifactPlan,
   compileKroArtifactPlan,
   decodeDesiredStatePlan,
@@ -677,6 +678,62 @@ describe('captured composition planning prototype', () => {
     );
   });
 
+  it('rejects artifact outputs that are not declared by the input manifest', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'artifact-output-validation',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'ArtifactOutputValidation',
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        createResource({
+          id: 'workload',
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: spec.name },
+          spec: {
+            selector: { matchLabels: { app: spec.name } },
+            template: {
+              metadata: { labels: { app: spec.name } },
+              spec: {
+                containers: [{ name: 'app', image: artifactOutput('build', 'image') }],
+              },
+            },
+          },
+        });
+        return { ready: true };
+      }
+    );
+
+    const undeclaredRequirement = composition.plan!({ name: 'demo' }, { strict: false });
+    expect(undeclaredRequirement.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'PLAN_ARTIFACT_OUTPUT_REQUIREMENT_UNDECLARED' })
+    );
+    const undeclaredOutput = composition.plan!(
+      { name: 'demo' },
+      {
+        strict: false,
+        inputs: {
+          image: {
+            kind: 'artifact',
+            requirement: {
+              kind: 'container-image',
+              id: 'build',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['digest'],
+            },
+          },
+        },
+      }
+    );
+    expect(undeclaredOutput.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'PLAN_ARTIFACT_OUTPUT_UNDECLARED' })
+    );
+  });
+
   it('diagnoses ambient composition effects before strict execution', () => {
     const composition = kubernetesComposition(
       {
@@ -1125,9 +1182,7 @@ describe('captured composition planning prototype', () => {
     );
     expect(
       (kroResources.credentials as { stringData?: { token?: unknown } }).stringData?.token
-    ).toEqual(
-      expect.objectContaining({ resourceId: '__schema__', fieldPath: 'spec.token' })
-    );
+    ).toEqual(expect.objectContaining({ resourceId: '__schema__', fieldPath: 'spec.token' }));
     expect(JSON.stringify(kroResources)).not.toContain(plaintext);
     expect(plan.diagnostics).not.toContainEqual(
       expect.objectContaining({ code: 'PLAN_INLINE_SECRET_REQUIRES_BINDING' })

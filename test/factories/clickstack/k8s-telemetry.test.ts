@@ -7,7 +7,7 @@
  * ClickStack gateway with HYPERDX_API_KEY header auth via env expansion (the
  * key value never lands in Helm values). Runs under TYPEKRO_STRICT_CEL=1.
  */
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 
 import {
   clickstackK8sTelemetry,
@@ -19,8 +19,15 @@ import {
 } from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
+const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
+
 beforeAll(() => {
   process.env.TYPEKRO_STRICT_CEL = '1';
+});
+
+afterAll(() => {
+  if (ORIGINAL_STRICT_ENV === undefined) delete process.env.TYPEKRO_STRICT_CEL;
+  else process.env.TYPEKRO_STRICT_CEL = ORIGINAL_STRICT_ENV;
 });
 
 describe('clickstackK8sTelemetry', () => {
@@ -33,7 +40,12 @@ describe('clickstackK8sTelemetry', () => {
     expect(yaml).toContain('mode: daemonset');
     expect(yaml).toContain('mode: deployment');
     // Daemonset presets (node/pod telemetry)...
-    for (const preset of ['logsCollection', 'hostMetrics', 'kubeletMetrics', 'kubernetesAttributes']) {
+    for (const preset of [
+      'logsCollection',
+      'hostMetrics',
+      'kubeletMetrics',
+      'kubernetesAttributes',
+    ]) {
       expect(yaml).toContain(preset);
     }
     // ...deployment presets (cluster-level).
@@ -82,7 +94,7 @@ describe('clickstackK8sTelemetry', () => {
         daemonset: { values: { mode: ref } } as never,
         name: 'telemetry-ref',
         kind: 'TelemetryRef',
-      }),
+      })
     ).toThrow(/build-time|concrete|runtime spec/i);
   });
 });

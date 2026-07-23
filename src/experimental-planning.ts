@@ -3,6 +3,10 @@
  *
  * These versioned DTOs are preview APIs for Gates A-C of the semantic planning
  * architecture. They carry no compatibility guarantee until the parity release.
+ * Downstream libraries should keep them behind a pinned internal adapter and must not
+ * persist, copy, or re-export these DTOs as their own public application contract. Prefer
+ * compositions, direct/KRO factories, Alchemy declarations, and provider resources as the
+ * stable integration boundary.
  */
 
 export type {
@@ -11,6 +15,7 @@ export type {
   ArtifactCompilerIdentity,
   ArtifactInputBinding,
   ArtifactOutputRef,
+  ArtifactOutputUse,
   ArtifactPlan,
   ArtifactReadinessContract,
   ArtifactRequirement,
@@ -85,6 +90,7 @@ export {
   CanonicalizationError,
   canonicalDigest,
   canonicalStringify,
+  collectArtifactOutputUses,
   collectPlanValueSensitiveBindings,
   compileDirectArtifactPlan,
   compileKroArtifactPlan,

@@ -3,6 +3,7 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.
 import { TypeKroError } from '../errors.js';
 
 import type { ExpressionReferenceIR, PlanValue } from './types.js';
+import { kroArtifactOutputField, kroArtifactRequirementField } from './values.js';
 
 /** Explicit bindings supplied after pure planning and before artifact execution. */
 export interface PlanMaterializationBindings {
@@ -257,13 +258,7 @@ function evaluatePortableExpression(
       /\bhas\(schema\.spec\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)/g,
       (_match, fieldPath: string) => {
         const missing =
-          readPath(
-            bindings.spec,
-            fieldPath,
-            path,
-            true,
-            bindings.iterationItems
-          ) === OMIT;
+          readPath(bindings.spec, fieldPath, path, true, bindings.iterationItems) === OMIT;
         if (missing) missingPresencePaths.add(fieldPath);
         return missing ? 'false' : 'true';
       }
@@ -692,10 +687,9 @@ function materializeKro(value: PlanValue, path: string): unknown | typeof OMIT {
         { input: value.name }
       );
     case 'artifact-output':
-      throw new PlanMaterializationError(
-        `Artifact output ${value.requirementId}.${value.output} cannot be embedded in a shared KRO graph.`,
-        path,
-        { requirementId: value.requirementId, output: value.output }
+      return runtimeReference(
+        '__schema__',
+        `spec.__typekroArtifacts.${kroArtifactRequirementField(value.requirementId)}.${kroArtifactOutputField(value.output)}`
       );
   }
 }

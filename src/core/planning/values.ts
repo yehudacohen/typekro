@@ -1,10 +1,10 @@
+import { parse } from 'cel-js';
 import {
   isCelExpression,
   isKubernetesRef,
   isMixedTemplate,
   isResourceReference,
 } from '../../utils/type-guards.js';
-import { parse } from 'cel-js';
 import {
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_MARKER_SOURCE,
@@ -15,14 +15,15 @@ import { getCelExpressionAnalysis } from '../expressions/analysis/expression-met
 import { CelEvaluator } from '../references/cel-evaluator.js';
 import type { CelEvaluationContext } from '../types/references.js';
 
-import { canonicalStringify } from './canonical.js';
+import { canonicalDigest, canonicalStringify } from './canonical.js';
 import type {
   ArtifactOutputRef,
+  ArtifactOutputUse,
   ExpressionIR,
   ExpressionReferenceIR,
   ExternalInputRef,
-  PlanSourceLocation,
   PlanDiagnostic,
+  PlanSourceLocation,
   PlanTemplateSegment,
   PlanValue,
   PlanValueLoweringResult,
@@ -38,7 +39,7 @@ const PLAN_EXPRESSION_BRAND = Symbol.for('typekro.planning.expression');
 
 type SensitiveValueInput = SensitiveValueRef & { readonly [SENSITIVE_INPUT_BRAND]: true };
 type ExternalInput = ExternalInputRef & { readonly [EXTERNAL_INPUT_BRAND]: true };
-type ArtifactOutput = ArtifactOutputRef & { readonly [ARTIFACT_OUTPUT_BRAND]: true };
+type ArtifactOutput<T> = ArtifactOutputRef & T & { readonly [ARTIFACT_OUTPUT_BRAND]: true };
 type ExpressionValueInput = {
   readonly kind: 'expression';
   readonly expression: ExpressionIR;
@@ -94,8 +95,16 @@ export function externalInput(name: string): ExternalInput {
   });
 }
 
-/** Reference an output of a declared artifact requirement. */
-export function artifactOutput(requirementId: string, output: string): ArtifactOutput {
+/**
+ * Reference an output of a declared artifact requirement.
+ *
+ * Artifact producers most commonly return strings such as image digests, so the authoring value
+ * defaults to `string`. Callers may select another direct-mode value type explicitly.
+ */
+export function artifactOutput<T = string>(
+  requirementId: string,
+  output: string
+): ArtifactOutput<T> {
   if (requirementId.length === 0 || output.length === 0) {
     throw new TypeKroError(
       'Artifact output references require non-empty requirement and output names.',
@@ -107,7 +116,61 @@ export function artifactOutput(requirementId: string, output: string): ArtifactO
     requirementId,
     output,
     [ARTIFACT_OUTPUT_BRAND]: true as const,
-  });
+  }) as ArtifactOutput<T>;
+}
+
+function artifactBindingKey(prefix: 'r' | 'o', value: string): string {
+  return `${prefix}_${canonicalDigest(value).replace(/[^a-zA-Z0-9]/g, '')}`;
+}
+
+/** Stable KRO instance-spec field for one artifact requirement. */
+export function kroArtifactRequirementField(requirementId: string): string {
+  return artifactBindingKey('r', requirementId);
+}
+
+/** Stable KRO instance-spec field for one artifact output. */
+export function kroArtifactOutputField(output: string): string {
+  return artifactBindingKey('o', output);
+}
+
+/**
+ * Find every cross-provider artifact output used by a canonical value or artifact DTO.
+ * Sensitivity follows the nearest `sensitive-value` envelope so durable hosts can redact
+ * only the outputs that actually carry secret material.
+ */
+export function collectArtifactOutputUses(value: unknown): readonly ArtifactOutputUse[] {
+  const uses = new Map<string, ArtifactOutputUse>();
+  const visit = (current: unknown, sensitive: boolean, seen: WeakMap<object, boolean>): void => {
+    if (!current || typeof current !== 'object') return;
+    const priorSensitivity = seen.get(current);
+    if (priorSensitivity === true || priorSensitivity === sensitive) return;
+    seen.set(current, sensitive);
+    if (Array.isArray(current)) {
+      current.forEach((entry) => visit(entry, sensitive, seen));
+      return;
+    }
+    const record = current as Record<string, unknown>;
+    if (
+      record.kind === 'artifact-output' &&
+      typeof record.requirementId === 'string' &&
+      typeof record.output === 'string'
+    ) {
+      const key = `${record.requirementId}\u0000${record.output}`;
+      const prior = uses.get(key);
+      uses.set(key, {
+        requirementId: record.requirementId,
+        output: record.output,
+        sensitive: sensitive || prior?.sensitive === true,
+      });
+      return;
+    }
+    const nestedSensitive = sensitive || record.kind === 'sensitive-value';
+    Object.values(record).forEach((entry) => visit(entry, nestedSensitive, seen));
+  };
+  visit(value, false, new WeakMap());
+  return [...uses.values()].sort((left, right) =>
+    canonicalStringify(left).localeCompare(canonicalStringify(right))
+  );
 }
 
 /** Embed a portable or target-constrained expression in a PlanValue tree. */
@@ -915,11 +978,9 @@ function assertPlanValue(value: unknown, path: string): asserts value is PlanVal
     case 'sensitive-value': {
       const wrapped = Reflect.get(value, 'value');
       if (!wrapped || typeof wrapped !== 'object') {
-        throw new TypeKroError(
-          `Invalid sensitive value at ${path}.`,
-          'PLAN_VALUE_DECODE_FAILED',
-          { path }
-        );
+        throw new TypeKroError(`Invalid sensitive value at ${path}.`, 'PLAN_VALUE_DECODE_FAILED', {
+          path,
+        });
       }
       assertPlanValue(wrapped, `${path}.value`);
       assertSensitiveSourceContainsNoLiteral(wrapped, `${path}.value`);

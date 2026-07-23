@@ -46,12 +46,7 @@ function concretePlanValue(
       ...value,
       entries: value.entries.map((entry) => ({
         ...entry,
-        value: concretePlanValue(
-          entry.value,
-          bindings,
-          `${path}.${entry.key}`,
-          sensitiveBindings
-        ),
+        value: concretePlanValue(entry.value, bindings, `${path}.${entry.key}`, sensitiveBindings),
       })),
     };
   }
@@ -62,18 +57,21 @@ function concretePlanValue(
   if (value.kind === 'sensitive-value') {
     return {
       kind: 'sensitive-value',
-      value: concreteSensitiveSource(
-        value.value,
-        bindings,
-        `${path}.value`,
-        sensitiveBindings
-      ),
+      value: concreteSensitiveSource(value.value, bindings, `${path}.value`, sensitiveBindings),
     };
   }
   if (value.kind === 'sensitive-binding') {
     if (Object.hasOwn(bindings.sensitive ?? {}, value.binding)) {
       sensitiveBindings[value.binding] = bindings.sensitive?.[value.binding];
     }
+    return value;
+  }
+  // Cross-provider outputs are resolved by the execution host. Keep them symbolic in the
+  // durable record when the caller is only constructing Alchemy declarations.
+  if (
+    value.kind === 'artifact-output' &&
+    !Object.hasOwn(bindings.artifactOutputs?.[value.requirementId] ?? {}, value.output)
+  ) {
     return value;
   }
   const materialized = materializePlanValue(value, bindings, path);
@@ -119,12 +117,7 @@ function concreteSensitiveSource(
     case 'sensitive-value':
       return {
         ...value,
-        value: concreteSensitiveSource(
-          value.value,
-          bindings,
-          `${path}.value`,
-          sensitiveBindings
-        ),
+        value: concreteSensitiveSource(value.value, bindings, `${path}.value`, sensitiveBindings),
       };
     case 'reference':
       if (value.source === 'resource' || bindings.spec === undefined) return value;

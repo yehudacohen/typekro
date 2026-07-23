@@ -57,9 +57,12 @@ import {
   setResourceId,
 } from '../metadata/index.js';
 import {
+  type ArtifactOutputUse,
+  type ArtifactRequirement,
   assertAdapterCapabilitiesSupported,
   type CapabilityRequirement,
   canonicalStringify,
+  collectArtifactOutputUses,
   collectPlanValueSensitiveBindings,
   compileKroArtifactPlan,
   createKroArtifactBundle,
@@ -70,9 +73,11 @@ import {
   type KroArtifactPlan,
   type KroSupportingArtifact,
   type KroSupportingArtifactCompilerInput,
+  kroArtifactOutputField,
   kroArtifactPlanToGraphResources,
   kroArtifactPlanToInstanceResource,
   kroArtifactPlanToSupportingResources,
+  kroArtifactRequirementField,
   lowerPlanValue,
   mapPlanValueSensitiveBindings,
   materializeKroArtifactBundleOperation,
@@ -202,9 +207,28 @@ interface MaterializedHoistedNamespace {
 interface KroBundleAssembly {
   readonly operations: readonly KroArtifactBundleOperation[];
   readonly requiredCapabilities: readonly CapabilityRequirement[];
+  readonly artifactRequirements: readonly ArtifactRequirement[];
   readonly rgdOperationId: string;
   readonly instanceOperationId?: string;
   readonly sensitiveBindings: Readonly<Record<string, unknown>>;
+}
+
+function uniqueArtifactRequirements(
+  requirements: readonly ArtifactRequirement[]
+): readonly ArtifactRequirement[] {
+  const byId = new Map<string, ArtifactRequirement>();
+  for (const requirement of requirements) {
+    const prior = byId.get(requirement.id);
+    if (prior && canonicalStringify(prior) !== canonicalStringify(requirement)) {
+      throw new TypeKroError(
+        `Artifact requirement ${requirement.id} has conflicting definitions across KRO bundle members.`,
+        'KRO_ARTIFACT_REQUIREMENT_CONFLICT',
+        { requirementId: requirement.id }
+      );
+    }
+    byId.set(requirement.id, requirement);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function uniqueCapabilityRequirements(
@@ -334,10 +358,7 @@ function recordNamespaceDeletionOutcome(
   if (outcome.status === 'deleted' || outcome.status === 'absent') {
     // A bounded descendant-drain retry may first observe the Namespace as occupied and then
     // confirm it gone. Keep the final DTO truthful by removing interim retention/blocker evidence.
-    const replaceWithFilteredEntries = <T>(
-      entries: T[],
-      keep: (entry: T) => boolean
-    ): void => {
+    const replaceWithFilteredEntries = <T>(entries: T[], keep: (entry: T) => boolean): void => {
       entries.splice(0, entries.length, ...entries.filter(keep));
     };
     replaceWithFilteredEntries(
@@ -845,6 +866,7 @@ export class KroResourceFactoryImpl<
 
     const childOperations: KroArtifactBundleOperation[] = [];
     const requiredCapabilities: CapabilityRequirement[] = [...artifacts.requiredCapabilities];
+    const artifactRequirements: ArtifactRequirement[] = [...artifacts.artifactRequirements];
     const singletonOperationByPhysicalId = new Map<string, string>();
     const definitions =
       spec === undefined ? this.singletonDefinitions : this.discoverSingletonDefinitions(spec);
@@ -882,6 +904,7 @@ export class KroResourceFactoryImpl<
       mergeSensitiveBindingEnvelopes(sensitiveBindings, child.sensitiveBindings);
       childOperations.push(...child.operations);
       requiredCapabilities.push(...child.requiredCapabilities);
+      artifactRequirements.push(...child.artifactRequirements);
       const ownerOperation = child.operations.find(
         (operation) => operation.id === child.instanceOperationId
       );
@@ -1088,6 +1111,7 @@ export class KroResourceFactoryImpl<
         }))
       ),
       requiredCapabilities: uniqueCapabilityRequirements(requiredCapabilities),
+      artifactRequirements: uniqueArtifactRequirements(artifactRequirements),
       rgdOperationId,
       ...(instanceOperationId ? { instanceOperationId } : {}),
       sensitiveBindings,
@@ -1119,6 +1143,7 @@ export class KroResourceFactoryImpl<
       },
       operations: assembly.operations,
       requiredCapabilities: assembly.requiredCapabilities,
+      artifactRequirements: assembly.artifactRequirements,
     });
     return {
       bundle: decodeKroArtifactBundle(encodeKroArtifactBundle(bundle)),
@@ -3132,16 +3157,12 @@ export class KroResourceFactoryImpl<
             `${descendant.kind}/${descendant.name}, owned by ${descendant.owner.kind}/${descendant.owner.name} (${descendant.owner.uid}), did not complete deletion: ${ensureError(error).message}`
           )
         );
-        return finishDeletionResult(
-          deletion,
-          live.deletionTimestamp ? 'progressing' : 'blocked',
-          {
-            safe: true,
-            afterMs: 2_000,
-            guidance:
-              'Retry after the listed controller-owned descendants and finalizers have drained.',
-          }
-        );
+        return finishDeletionResult(deletion, live.deletionTimestamp ? 'progressing' : 'blocked', {
+          safe: true,
+          afterMs: 2_000,
+          guidance:
+            'Retry after the listed controller-owned descendants and finalizers have drained.',
+        });
       }
     }
 
@@ -3904,6 +3925,7 @@ export class KroResourceFactoryImpl<
       (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
     const resources = new Map<string, Enhanced<unknown, unknown>>();
     const operationSensitiveBindings = new Map<string, Readonly<Record<string, unknown>>>();
+    const operationArtifactUses = new Map<string, readonly ArtifactOutputUse[]>();
     const declarationIds = new Map<string, string>();
 
     for (const operation of ordered) {
@@ -3925,8 +3947,22 @@ export class KroResourceFactoryImpl<
             )
           : {};
       operationSensitiveBindings.set(operation.id, redactedBindings);
+      const artifactOutputUses = collectArtifactOutputUses(operation.manifest);
+      operationArtifactUses.set(operation.id, artifactOutputUses);
+      const declarationArtifactOutputs = Object.fromEntries(
+        bundle.artifactRequirements.map((requirement) => [
+          requirement.id,
+          Object.fromEntries(
+            requirement.outputs.map((output) => [
+              output,
+              `__typekro_artifact_${encodeURIComponent(requirement.id)}_${encodeURIComponent(output)}__`,
+            ])
+          ),
+        ])
+      );
       const manifest = materializeKroArtifactBundleOperation(operation, {
         sensitive: redactedBindings,
+        ...(artifactOutputUses.length > 0 ? { artifactOutputs: declarationArtifactOutputs } : {}),
       });
       const artifact = operation.artifact;
       if (artifact.identity?.scope) setMetadataField(manifest, 'scope', artifact.identity.scope);
@@ -3999,6 +4035,11 @@ export class KroResourceFactoryImpl<
       }
       const artifact = operation.artifact;
       const operationBindings = operationSensitiveBindings.get(operation.id);
+      const artifactOutputUses = operationArtifactUses.get(operation.id) ?? [];
+      const artifactRequirementIds = new Set(artifactOutputUses.map((use) => use.requirementId));
+      const artifactRequirements = bundle.artifactRequirements.filter((requirement) =>
+        artifactRequirementIds.has(requirement.id)
+      );
       const manifest = resource as KubernetesResource;
       const direct =
         operation.role === 'kro-prerequisite' || operation.role === 'hoisted-namespace';
@@ -4024,6 +4065,8 @@ export class KroResourceFactoryImpl<
           }
           return declarationId;
         }),
+        ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+        ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
         props: {
           resource,
           resourceId: artifact.id,
@@ -4032,6 +4075,8 @@ export class KroResourceFactoryImpl<
           kubeConfigOptions,
           kroArtifactBundle: encodedBundle,
           kroArtifactOperationId: operation.id,
+          ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+          ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
           ...(operationBindings && Object.keys(operationBindings).length > 0
             ? { sensitiveBindings: operationBindings }
             : {}),
@@ -4391,6 +4436,21 @@ export class KroResourceFactoryImpl<
       (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
         ?.schemaFieldValidations
     );
+    const artifactOutputUses = this.kroArtifactOutputUses();
+    if (artifactOutputUses.length > 0) {
+      const byRequirement = new Map<string, ArtifactOutputUse[]>();
+      for (const use of artifactOutputUses) {
+        const current = byRequirement.get(use.requirementId) ?? [];
+        current.push(use);
+        byRequirement.set(use.requirementId, current);
+      }
+      kroSchema.spec.__typekroArtifacts = Object.fromEntries(
+        [...byRequirement.entries()].map(([requirementId, uses]) => [
+          kroArtifactRequirementField(requirementId),
+          Object.fromEntries(uses.map((use) => [kroArtifactOutputField(use.output), 'string'])),
+        ])
+      );
+    }
 
     // Attach nested status CEL mappings as non-enumerable property so
     // serializeResourceGraphToYaml can inline virtual composition IDs.
@@ -4453,6 +4513,21 @@ export class KroResourceFactoryImpl<
     this.assertNoDanglingHoistedReferences(JSON.stringify(rgdManifest), new Set(hoistIds.keys()));
 
     return rgdManifest;
+  }
+
+  private kroArtifactOutputUses(): readonly ArtifactOutputUse[] {
+    const capture = this.factoryOptions.semanticCapture;
+    if (!capture) return [];
+    const configuredPlan = this.factoryOptions.plan ?? {};
+    const plan = capture.planTemplate({
+      ...configuredPlan,
+      aspects: configuredPlan.aspects ?? this.factoryOptions.aspects ?? [],
+    });
+    return collectArtifactOutputUses({
+      nodes: plan.nodes,
+      outputs: plan.outputs,
+      representationRequirements: plan.representationRequirements,
+    });
   }
 
   private buildRgdYaml(spec?: TSpec): string {

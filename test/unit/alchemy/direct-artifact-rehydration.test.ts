@@ -7,9 +7,10 @@ import {
   resourceFromDirectArtifactRecordForTest,
 } from '../../../src/alchemy/resource-registration.js';
 import type { TypeKroResourceProps } from '../../../src/alchemy/types.js';
-import { Cel, createResource, simple, toResourceGraph } from '../../../src/index.js';
 import { getMetadataField, getReadinessEvaluator } from '../../../src/core/metadata/index.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
+import { artifactOutput } from '../../../src/experimental-planning.js';
+import { Cel, createResource, simple, toResourceGraph } from '../../../src/index.js';
 import { isCelExpression } from '../../../src/utils/type-guards.js';
 
 const specSchema = type({ name: 'string' });
@@ -46,6 +47,131 @@ function fixture() {
 }
 
 describe('direct Alchemy artifact rehydration', () => {
+  it('keeps provider outputs symbolic until Alchemy supplies them', async () => {
+    const composition = toResourceGraph(
+      {
+        name: 'alchemy-direct-provider-artifact',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'AlchemyDirectProviderArtifact',
+        revision: '1',
+        spec: specSchema,
+        status: statusSchema,
+      },
+      (schema) => ({
+        workload: createResource({
+          id: 'workload',
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: schema.spec.name },
+          spec: {
+            selector: { matchLabels: { app: schema.spec.name } },
+            template: {
+              metadata: { labels: { app: schema.spec.name } },
+              spec: {
+                containers: [{ name: 'app', image: artifactOutput('build', 'image') }],
+              },
+            },
+          },
+        }),
+      }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('direct', {
+      namespace: 'apps',
+      plan: {
+        inputs: {
+          build: {
+            kind: 'artifact',
+            requirement: {
+              id: 'build',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['image'],
+            },
+          },
+        },
+      },
+    });
+    const declaration = (await factory.toAlchemyResources({ name: 'demo' }))[0]!;
+    expect(declaration.artifactOutputUses).toEqual([
+      { requirementId: 'build', output: 'image', sensitive: false },
+    ]);
+    const restored = JSON.parse(JSON.stringify(declaration.props)) as TypeKroResourceProps<
+      Enhanced<unknown, unknown>
+    >;
+    restored.artifactOutputs = { build: { image: 'registry.example/demo@sha256:abc' } };
+    const resource = resourceFromDirectArtifactRecordForTest(restored)! as {
+      spec?: { template?: { spec?: { containers?: Array<{ image?: string }> } } };
+    };
+    expect(resource.spec?.template?.spec?.containers?.[0]?.image).toBe(
+      'registry.example/demo@sha256:abc'
+    );
+  });
+
+  it('requires sensitive provider outputs to remain redacted until apply', async () => {
+    const plaintext = 'provider-secret-output';
+    const composition = toResourceGraph(
+      {
+        name: 'alchemy-direct-sensitive-provider-artifact',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'AlchemyDirectSensitiveProviderArtifact',
+        revision: '1',
+        spec: specSchema,
+        status: statusSchema,
+      },
+      (schema) => ({
+        credentials: createResource(
+          {
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+            stringData: { token: artifactOutput('secret-provider', 'token') },
+          },
+          { factoryName: 'secret' }
+        ),
+      }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('direct', {
+      namespace: 'apps',
+      plan: {
+        inputs: {
+          secret: {
+            kind: 'artifact',
+            requirement: {
+              id: 'secret-provider',
+              kind: 'credential',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['token'],
+            },
+          },
+        },
+      },
+    });
+    const declaration = (await factory.toAlchemyResources({ name: 'demo' }))[0]!;
+    expect(declaration.artifactOutputUses?.[0]?.sensitive).toBe(true);
+    const props = {
+      ...declaration.props,
+      artifactOutputs: { 'secret-provider': { token: Redacted.make(plaintext) } },
+    };
+    expect(JSON.stringify(props)).not.toContain(plaintext);
+    const applyResource = resourceFromDirectArtifactRecordForTest(props)! as {
+      stringData?: { token?: unknown };
+    };
+    expect(applyResource.stringData?.token).toBe(plaintext);
+    const stateResource = resourceFromDirectArtifactRecordForTest(props, true)! as {
+      stringData?: { token?: unknown };
+    };
+    expect(Redacted.isRedacted(stateResource.stringData?.token)).toBe(true);
+    expect(() =>
+      resourceFromDirectArtifactRecordForTest({
+        ...declaration.props,
+        artifactOutputs: { 'secret-provider': { token: plaintext } },
+      })
+    ).toThrow('must be supplied as an Alchemy Redacted input');
+  });
+
   it('restores structured runtime semantics from the canonical execution record', async () => {
     const factory = await fixture().factory('direct', { namespace: 'apps' });
     const declarations = await factory.toAlchemyResources({ name: 'demo' });
@@ -156,9 +282,7 @@ describe('direct Alchemy artifact rehydration', () => {
       )
     ).toBe(true);
     expect(
-      Redacted.isRedacted(
-        (derived.props.resource as { data?: { token?: unknown } }).data?.token
-      )
+      Redacted.isRedacted((derived.props.resource as { data?: { token?: unknown } }).data?.token)
     ).toBe(true);
 
     const stateClone = cloneResourceForAlchemyStateForTest(credentials.props.resource);

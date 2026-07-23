@@ -1,28 +1,28 @@
-export { createAspectManifest, type AspectManifestResult } from './aspects.js';
 export {
   ArtifactPlanDecodeError,
   decodeArtifactPlan,
-  decodeDirectArtifactResource,
   decodeDirectArtifactPlan,
-  decodeKroArtifactResource,
+  decodeDirectArtifactResource,
   decodeKroArtifactPlan,
+  decodeKroArtifactResource,
   encodeArtifactPlan,
 } from './artifact-codec.js';
-export { ARTIFACT_PLAN_VERSION } from './artifacts.js';
 export type * from './artifacts.js';
-export { canonicalDigest, CanonicalizationError, canonicalStringify } from './canonical.js';
+export { ARTIFACT_PLAN_VERSION } from './artifacts.js';
+export { type AspectManifestResult, createAspectManifest } from './aspects.js';
+export { CanonicalizationError, canonicalDigest, canonicalStringify } from './canonical.js';
 export {
-  adapterCapabilityDiagnostics,
+  type ArtifactCapabilityContext,
   ArtifactCapabilityError,
+  adapterCapabilityDiagnostics,
   assertAdapterCapabilitiesSupported,
   targetCapabilityDiagnostics,
-  type ArtifactCapabilityContext,
 } from './capabilities.js';
 export {
+  type CapturedCompositionRuntime,
   copyCompositionCapture,
   getCompositionCapture,
   setCompositionCapture,
-  type CapturedCompositionRuntime,
 } from './capture.js';
 export {
   ArtifactCompilationError,
@@ -30,31 +30,19 @@ export {
   compileKroArtifactPlan,
 } from './compiler.js';
 export {
-  directArtifactPlanToResourceGraph,
   DirectArtifactRuntimeAdapterError,
-  materializeDirectArtifactManifest,
   type DirectArtifactRuntimeAdapterOptions,
+  directArtifactPlanToResourceGraph,
+  materializeDirectArtifactManifest,
 } from './direct-runtime-adapter.js';
 export {
   createDirectArtifactExecutionMaterialization,
   createDirectArtifactExecutionRecord,
-  decodeDirectArtifactExecutionRecord,
-  DirectArtifactExecutionRecordError,
-  encodeDirectArtifactExecutionRecord,
   type DirectArtifactExecutionMaterialization,
+  DirectArtifactExecutionRecordError,
+  decodeDirectArtifactExecutionRecord,
+  encodeDirectArtifactExecutionRecord,
 } from './execution-record.js';
-export {
-  collectPlanValueSensitiveBindings,
-  mapPlanValueSensitiveBindings,
-  materializePlanValue,
-  materializePlanValueForKro,
-  planValueContainsSensitiveValue,
-  planValueSensitiveBindingNames,
-  PlanMaterializationError,
-  resolveStaticYamlSensitiveBindings,
-  type PlanMaterializationBindings,
-  type StaticYamlMaterializationOptions,
-} from './materialization.js';
 export {
   createKroArtifactBundle,
   decodeKroArtifactBundle,
@@ -65,13 +53,30 @@ export {
   orderKroArtifactBundleOperations,
 } from './kro-bundle.js';
 export {
-  kroArtifactPlanToInstanceResource,
-  kroArtifactPlanToGraphResources,
-  kroArtifactPlanToSupportingResources,
   KroArtifactRuntimeAdapterError,
   type KroSupportingArtifactMaterializationOptions,
+  kroArtifactPlanToGraphResources,
+  kroArtifactPlanToInstanceResource,
+  kroArtifactPlanToSupportingResources,
   type MaterializedKroSupportingArtifact,
 } from './kro-runtime-adapter.js';
+export {
+  collectPlanValueSensitiveBindings,
+  mapPlanValueSensitiveBindings,
+  materializePlanValue,
+  materializePlanValueForKro,
+  type PlanMaterializationBindings,
+  PlanMaterializationError,
+  planValueContainsSensitiveValue,
+  planValueSensitiveBindingNames,
+  resolveStaticYamlSensitiveBindings,
+  type StaticYamlMaterializationOptions,
+} from './materialization.js';
+export {
+  DesiredStatePlanDecodeError,
+  decodeDesiredStatePlan,
+  encodeDesiredStatePlan,
+} from './plan-codec.js';
 export {
   inspectCapturedComposition,
   planCapturedComposition,
@@ -79,22 +84,20 @@ export {
   planMaterializedComposition,
   SemanticPlanningError,
 } from './planner.js';
-export {
-  decodeDesiredStatePlan,
-  DesiredStatePlanDecodeError,
-  encodeDesiredStatePlan,
-} from './plan-codec.js';
 export { encodeSchemaIR, schemaToIR } from './schema.js';
-export { SEMANTIC_PLAN_VERSION } from './types.js';
 export type * from './types.js';
+export { SEMANTIC_PLAN_VERSION } from './types.js';
 export {
   artifactOutput,
+  collectArtifactOutputUses,
   decodePlanValue,
   emitExpressionCel,
   encodePlanValue,
   evaluateExpressionIR,
   expressionIR,
   externalInput,
+  kroArtifactOutputField,
+  kroArtifactRequirementField,
   lowerPlanValue,
   planExpression,
   sensitiveValue,

@@ -28,24 +28,24 @@ export {
   resolveReferencesWithAlchemy,
   resolveTypeKroReferencesOnly,
 } from './resolver.js';
+export type { KroResourceR } from './resource-registration.js';
 // Alchemy v2 KRO resource (declarative): instantiate `KroResource` in a Stack and merge
 // `kroProvider` into the runtime's providers. Replaces the v1 imperative registration.
 export {
+  buildAlchemyDeploymentOptions,
   KRO_RESOURCE_TYPE,
   KroResource,
   kroProvider,
   materializeAlchemyResources,
-  buildAlchemyDeploymentOptions,
 } from './resource-registration.js';
-export type { KroResourceR } from './resource-registration.js';
-export type { AlchemyResourceDeclaration } from './types.js';
-
 // Type inference
 export { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
-
 // Types
 export type {
+  AlchemyArtifactBinding,
+  AlchemyResourceDeclaration,
   AlchemyResourceState,
+  MaterializeAlchemyResourcesOptions,
   SerializableKubeConfigOptions,
   TypeKroDeployer,
   TypeKroResource,

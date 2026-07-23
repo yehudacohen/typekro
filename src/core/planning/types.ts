@@ -277,6 +277,14 @@ export interface ArtifactRequirement {
   readonly outputs: readonly string[];
 }
 
+/** One artifact output consumed by a compiled operation. */
+export interface ArtifactOutputUse {
+  readonly requirementId: string;
+  readonly output: string;
+  /** The output flows through a sensitive-value boundary and must be redacted in host state. */
+  readonly sensitive: boolean;
+}
+
 export interface RepresentationRequirement {
   readonly target: 'direct' | 'kro';
   readonly kind: string;

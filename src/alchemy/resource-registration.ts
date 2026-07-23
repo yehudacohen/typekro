@@ -33,6 +33,10 @@ import {
 } from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
 import { materializeSerializableKubeConfigOptions } from '../core/deployment/shared-utilities.js';
+import {
+  type DeployedSingletonInstance as LiveSingletonOwner,
+  singletonDriftVerdict,
+} from '../core/deployment/singleton-owner-drift.js';
 import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import {
@@ -50,6 +54,7 @@ import {
   setResourceId,
 } from '../core/metadata/index.js';
 import {
+  collectArtifactOutputUses,
   decodeDirectArtifactExecutionRecord,
   decodeKroArtifactBundle,
   materializeDirectArtifactManifest,
@@ -57,10 +62,6 @@ import {
   planValueSensitiveBindingNames,
 } from '../core/planning/index.js';
 import { resolvePortableReadinessStrategy } from '../core/readiness/portable-strategies.js';
-import {
-  singletonDriftVerdict,
-  type DeployedSingletonInstance as LiveSingletonOwner,
-} from '../core/deployment/singleton-owner-drift.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
@@ -76,6 +77,7 @@ import {
 } from './kro-delete.js';
 import type {
   AlchemyResourceDeclaration,
+  MaterializeAlchemyResourcesOptions,
   SerializableKubeConfigOptions,
   TypeKroDeployer,
   TypeKroResource,
@@ -194,13 +196,19 @@ export const kroProvider = ProviderMod.effect(
  */
 export function materializeAlchemyResources(
   kroResource: typeof KroResource,
-  declarations: readonly AlchemyResourceDeclaration[]
+  declarations: readonly AlchemyResourceDeclaration[],
+  options: MaterializeAlchemyResourcesOptions = {}
 ) {
   return Effect.gen(function* () {
     // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
     // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
     const handles: Record<string, KroResourceR> = {};
     for (const decl of declarations) {
+      if (Object.hasOwn(handles, decl.id)) {
+        throw new Error(
+          `materializeAlchemyResources: duplicate declaration id '${decl.id}' in one materialization call.`
+        );
+      }
       const deps = decl.dependsOn.map((id) => {
         const handle = handles[id];
         if (!handle) {
@@ -214,12 +222,20 @@ export function materializeAlchemyResources(
         }
         return handle;
       });
+      const artifactRequirements =
+        decl.artifactRequirements ?? decl.props.artifactRequirements ?? [];
+      const artifactOutputUses = decl.artifactOutputUses ?? decl.props.artifactOutputUses ?? [];
+      const artifactOutputs =
+        artifactOutputUses.length > 0
+          ? alchemyArtifactOutputs(artifactRequirements, artifactOutputUses, options)
+          : undefined;
       // `Output.all([...Output.of(dep)])` both (a) creates the alchemy dependency edges so these
       // deploy first and (b) resolves to the concrete dependency outputs handed to `reconcile`.
-      const props =
-        deps.length > 0
-          ? { ...decl.props, dependencies: Output.all(...deps.map((d) => Output.of(d))) }
-          : decl.props;
+      const props = {
+        ...decl.props,
+        ...(deps.length > 0 ? { dependencies: Output.all(...deps.map((d) => Output.of(d))) } : {}),
+        ...(artifactOutputs ? { artifactOutputs } : {}),
+      };
       // Cast: `props` carries an `Output` for `dependencies` that the `KroResource` constructor
       // accepts as an `Input<…>` and alchemy resolves before reconcile — the field's static type
       // is the resolved (post-evaluation) shape.
@@ -229,6 +245,64 @@ export function materializeAlchemyResources(
       );
     }
     return handles;
+  });
+}
+
+function alchemyArtifactOutputs(
+  requirements: readonly import('../core/planning/types.js').ArtifactRequirement[],
+  uses: readonly import('../core/planning/types.js').ArtifactOutputUse[],
+  options: MaterializeAlchemyResourcesOptions
+) {
+  const requirementsById = new Map(
+    requirements.map((requirement) => [requirement.id, requirement])
+  );
+  const uniqueUses = new Map<string, (typeof uses)[number]>();
+  for (const use of uses) {
+    const key = `${use.requirementId}\u0000${use.output}`;
+    const prior = uniqueUses.get(key);
+    uniqueUses.set(key, { ...use, sensitive: use.sensitive || prior?.sensitive === true });
+  }
+  const expressions: ReturnType<typeof Output.asOutput>[] = [];
+  const layout: Array<{ requirementId: string; output: string; sensitive: boolean }> = [];
+  const handles = new Set<string>();
+
+  for (const use of uniqueUses.values()) {
+    const requirement = requirementsById.get(use.requirementId);
+    if (!requirement || !requirement.outputs.includes(use.output)) {
+      throw new Error(
+        `materializeAlchemyResources: declaration uses undeclared artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const binding = options.artifacts?.[use.requirementId];
+    if (!binding) {
+      throw new Error(
+        `materializeAlchemyResources: artifact requirement '${use.requirementId}' was not supplied.`
+      );
+    }
+    if (!Object.hasOwn(binding.outputs, use.output)) {
+      throw new Error(
+        `materializeAlchemyResources: artifact binding '${use.requirementId}' has no '${use.output}' output.`
+      );
+    }
+    if (!handles.has(use.requirementId)) {
+      expressions.push(Output.of(binding.resource) as ReturnType<typeof Output.asOutput>);
+      layout.push({ requirementId: use.requirementId, output: '', sensitive: false });
+      handles.add(use.requirementId);
+    }
+    expressions.push(Output.asOutput(binding.outputs[use.output]));
+    layout.push(use);
+  }
+
+  return Output.map(Output.all(...expressions), (resolved) => {
+    const outputs: Record<string, Record<string, unknown>> = {};
+    (resolved as readonly unknown[]).forEach((value, index) => {
+      const item = layout[index];
+      if (!item || item.output.length === 0) return;
+      const requirementOutputs = outputs[item.requirementId] ?? {};
+      requirementOutputs[item.output] = item.sensitive ? Redacted.make(value) : value;
+      outputs[item.requirementId] = requirementOutputs;
+    });
+    return outputs;
   });
 }
 
@@ -762,6 +836,61 @@ function unwrapAlchemyRedactedResource<T extends Enhanced<unknown, unknown>>(res
   return unwrapped;
 }
 
+function artifactOutputsForOperation<T extends Enhanced<unknown, unknown>>(
+  source: unknown,
+  props: TypeKroResourceProps<T>,
+  preserveSensitiveInputs: boolean,
+  operationLabel: string
+): Readonly<Record<string, Readonly<Record<string, unknown>>>> | undefined {
+  const expectedUses = collectArtifactOutputUses(source);
+  if (expectedUses.length === 0) return undefined;
+  const declaredUses = props.artifactOutputUses ?? [];
+  if (
+    canonicalStringArray(expectedUses.map((use) => JSON.stringify(use))) !==
+    canonicalStringArray(declaredUses.map((use) => JSON.stringify(use)))
+  ) {
+    throw new Error(
+      `${operationLabel} artifact-output use metadata does not match its canonical artifact.`
+    );
+  }
+  const requirements = new Map(
+    (props.artifactRequirements ?? []).map((requirement) => [requirement.id, requirement])
+  );
+  const supplied = props.artifactOutputs ?? {};
+  const resolved: Record<string, Record<string, unknown>> = {};
+  for (const use of expectedUses) {
+    const requirement = requirements.get(use.requirementId);
+    if (!requirement || !requirement.outputs.includes(use.output)) {
+      throw new Error(
+        `${operationLabel} is missing declaration metadata for artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const outputs = supplied[use.requirementId];
+    if (!outputs || !Object.hasOwn(outputs, use.output)) {
+      throw new Error(
+        `${operationLabel} is missing resolved artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const value = outputs[use.output];
+    if (use.sensitive && !Redacted.isRedacted(value)) {
+      throw new Error(
+        `${operationLabel} sensitive artifact output ${use.requirementId}.${use.output} must be supplied as an Alchemy Redacted input.`
+      );
+    }
+    const concreteValue = Redacted.isRedacted(value) ? Redacted.value(value) : value;
+    if (props.deploymentStrategy === 'kro' && typeof concreteValue !== 'string') {
+      throw new Error(
+        `${operationLabel} artifact output ${use.requirementId}.${use.output} must be a string in KRO mode.`
+      );
+    }
+    const requirementOutputs = resolved[use.requirementId] ?? {};
+    requirementOutputs[use.output] =
+      Redacted.isRedacted(value) && !preserveSensitiveInputs ? Redacted.value(value) : value;
+    resolved[use.requirementId] = requirementOutputs;
+  }
+  return resolved;
+}
+
 /**
  * Decode one operation from the canonical KRO outer bundle persisted by
  * Alchemy. The operation record, rather than the JSON-flattened resource, is
@@ -832,10 +961,16 @@ function _resourceFromKroArtifactBundle<T extends Enhanced<unknown, unknown>>(
       return [binding, preserveSensitiveInputs ? value : Redacted.value(value)];
     })
   );
-  const resource = materializeKroArtifactBundleOperation(
-    operation,
-    Object.keys(sensitive).length > 0 ? { sensitive } : {}
-  ) as T;
+  const artifactOutputs = artifactOutputsForOperation(
+    operation.manifest,
+    props,
+    preserveSensitiveInputs,
+    `KRO artifact operation ${operationId}`
+  );
+  const resource = materializeKroArtifactBundleOperation(operation, {
+    ...(Object.keys(sensitive).length > 0 ? { sensitive } : {}),
+    ...(artifactOutputs ? { artifactOutputs } : {}),
+  }) as T;
   Object.defineProperty(resource, 'id', {
     value: operation.artifact.id,
     configurable: true,
@@ -918,12 +1053,19 @@ function _resourceFromDirectArtifactRecord<T extends Enhanced<unknown, unknown>>
       return [binding, preserveSensitiveInputs ? value : Redacted.value(value)];
     })
   );
+  const artifactOutputs = artifactOutputsForOperation(
+    record.artifact,
+    props,
+    preserveSensitiveInputs,
+    `Direct artifact ${logicalId}`
+  );
   return materializeDirectArtifactManifest(
     record.artifact,
     {
       instanceName: props.resourceId ?? logicalId,
       runtimeResources: { [logicalId]: props.resource },
       ...(Object.keys(sensitive).length > 0 ? { sensitive } : {}),
+      ...(artifactOutputs ? { artifactOutputs } : {}),
       ...(readinessEvaluators ? { readinessEvaluators } : {}),
       resolveReadinessStrategy: resolvePortableReadinessStrategy,
     },

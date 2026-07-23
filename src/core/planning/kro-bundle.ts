@@ -10,11 +10,8 @@ import {
   type KroExecutableArtifact,
 } from './artifacts.js';
 import { canonicalDigest, canonicalStringify } from './canonical.js';
-import {
-  materializePlanValue,
-  type PlanMaterializationBindings,
-} from './materialization.js';
-import type { CapabilityRequirement } from './types.js';
+import { materializePlanValue, type PlanMaterializationBindings } from './materialization.js';
+import type { ArtifactRequirement, CapabilityRequirement } from './types.js';
 import { decodePlanValue } from './values.js';
 
 type UnknownRecord = Record<string, unknown>;
@@ -148,6 +145,7 @@ function validateTopology(operations: readonly KroArtifactBundleOperation[]): vo
 function unsignedBundle(
   root: KroArtifactBundle['root'],
   requiredCapabilities: readonly CapabilityRequirement[],
+  artifactRequirements: readonly ArtifactRequirement[],
   operations: readonly KroArtifactBundleOperation[]
 ): Omit<KroArtifactBundle, 'bundleDigest'> {
   return {
@@ -155,8 +153,38 @@ function unsignedBundle(
     target: 'kro',
     root,
     requiredCapabilities,
+    artifactRequirements,
     operations,
   };
+}
+
+function normalizedArtifactRequirements(
+  requirements: readonly ArtifactRequirement[]
+): readonly ArtifactRequirement[] {
+  const byId = new Map<string, ArtifactRequirement>();
+  for (const [index, requirement] of requirements.entries()) {
+    if (
+      !requirement.id ||
+      !requirement.kind ||
+      requirement.outputs.length === 0 ||
+      requirement.outputs.some((output) => output.length === 0) ||
+      new Set(requirement.outputs).size !== requirement.outputs.length
+    ) {
+      throw new KroArtifactBundleError(
+        `KRO bundle artifact requirement ${index} is invalid.`,
+        `$.artifactRequirements[${index}]`
+      );
+    }
+    const prior = byId.get(requirement.id);
+    if (prior && canonicalStringify(prior) !== canonicalStringify(requirement)) {
+      throw new KroArtifactBundleError(
+        `KRO bundle artifact requirement ${requirement.id} has conflicting definitions.`,
+        `$.artifactRequirements[${index}]`
+      );
+    }
+    byId.set(requirement.id, requirement);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizedCapabilities(
@@ -228,6 +256,7 @@ export function createKroArtifactBundle(input: {
   readonly root: KroArtifactBundle['root'];
   readonly operations: readonly KroArtifactBundleOperation[];
   readonly requiredCapabilities?: readonly CapabilityRequirement[];
+  readonly artifactRequirements?: readonly ArtifactRequirement[];
 }): KroArtifactBundle {
   const operations = input.operations
     .map(normalizedOperation)
@@ -271,7 +300,13 @@ export function createKroArtifactBundle(input: {
   }
 
   const requiredCapabilities = normalizedCapabilities(input.requiredCapabilities ?? []);
-  const unsigned = unsignedBundle(input.root, requiredCapabilities, operations);
+  const artifactRequirements = normalizedArtifactRequirements(input.artifactRequirements ?? []);
+  const unsigned = unsignedBundle(
+    input.root,
+    requiredCapabilities,
+    artifactRequirements,
+    operations
+  );
   return { ...unsigned, bundleDigest: canonicalDigest(unsigned) };
 }
 
@@ -314,10 +349,14 @@ export function decodeKroArtifactBundle(encoded: string): KroArtifactBundle {
   const requiredCapabilities = Array.isArray(record.requiredCapabilities)
     ? (record.requiredCapabilities as CapabilityRequirement[])
     : [];
+  const artifactRequirements = Array.isArray(record.artifactRequirements)
+    ? (record.artifactRequirements as ArtifactRequirement[])
+    : [];
   const normalized = createKroArtifactBundle({
     root: record.root as KroArtifactBundle['root'],
     operations: record.operations as KroArtifactBundleOperation[],
     requiredCapabilities,
+    artifactRequirements,
   });
   const legacyDigest = canonicalDigest({
     version: KRO_ARTIFACT_BUNDLE_VERSION,
@@ -325,9 +364,24 @@ export function decodeKroArtifactBundle(encoded: string): KroArtifactBundle {
     root: record.root,
     operations: normalized.operations,
   });
+  const preArtifactRequirementsDigest = canonicalDigest({
+    version: KRO_ARTIFACT_BUNDLE_VERSION,
+    target: 'kro',
+    root: record.root,
+    requiredCapabilities: normalized.requiredCapabilities,
+    operations: normalized.operations,
+  });
+  const matchesPreviousBundleShape =
+    record.artifactRequirements === undefined &&
+    preArtifactRequirementsDigest === record.bundleDigest;
+  const matchesLegacyBundleShape =
+    record.requiredCapabilities === undefined &&
+    record.artifactRequirements === undefined &&
+    legacyDigest === record.bundleDigest;
   if (
     normalized.bundleDigest !== record.bundleDigest &&
-    (record.requiredCapabilities !== undefined || legacyDigest !== record.bundleDigest)
+    !matchesPreviousBundleShape &&
+    !matchesLegacyBundleShape
   ) {
     throw new KroArtifactBundleError(
       'KRO artifact bundle digest does not match its canonical content.',

@@ -51,6 +51,42 @@ const outputs = yield* materializeAlchemyResources(KroResource, decls);
 
 Once deployed, each TypeKro resource is a per-resource entry in Alchemy's state: Alchemy reconciles them idempotently and tears them down in reverse-topological order.
 
+### Cross-provider artifact outputs
+
+An experimental semantic plan may reference an output from a non-Kubernetes Alchemy resource with
+`artifactOutput(requirementId, output)`. `toAlchemyResources()` keeps that value symbolic and
+records the exact requirement and output uses on each declaration. Supply the external resource
+handle and its output expressions to `materializeAlchemyResources()`:
+
+```typescript
+const build = yield* ContainerBuild('build', buildProps);
+const declarations = await factory.toAlchemyResources(spec);
+
+const outputs = yield* materializeAlchemyResources(KroResource, declarations, {
+  artifacts: {
+    build: {
+      resource: build,
+      outputs: { image: build.image },
+    },
+  },
+});
+```
+
+The external handle becomes a real Alchemy dependency edge for every consuming TypeKro
+declaration. Missing requirements or output names fail before provider reconciliation. Outputs
+used inside a sensitive value are converted to Effect `Redacted` values before they enter TypeKro
+provider props, remain redacted through Alchemy state rehydration, and are unwrapped only while
+materializing the Kubernetes apply operation. This works for both direct and KRO factories.
+KRO bindings currently accept string outputs because the generated root CRD must declare a stable
+SimpleSchema type; direct-mode bindings may carry any JSON-compatible Kubernetes field value. In
+KRO mode the resolved string is projected through a reserved field in the root custom resource
+spec. Alchemy state remains redacted, but the Kubernetes API object is not a secret store. For
+credential material, have the external provider create or identify a Kubernetes Secret and bind a
+non-sensitive Secret reference instead of placing raw credential bytes in an artifact output.
+
+The planning DTOs and `artifactOutput()` are experimental. Keep them behind a version-pinned
+internal adapter; do not persist or expose `DesiredStatePlan` or artifact DTOs as an application API.
+
 The Alchemy *runtime* itself — how you construct the runtime, which providers and state backend you supply — is part of your own Alchemy v2 setup and is not provided by TypeKro. The only TypeKro requirement is that `kroProvider` is merged into the runtime's providers, and that a state backend is configured. Everything above the `toAlchemyResources` / `materializeAlchemyResources` calls is TypeKro-side and is what this page documents.
 
 ## Direct mode: per-resource fan-out
@@ -136,6 +172,7 @@ const decls = await factory.toAlchemyResources({ name: 'demo', namespace: 'workl
 Three properties matter:
 
 - **The instance stays in the factory namespace; its alchemy id is the namespace-agnostic kind+name.** The CR is placed in the factory namespace, and its alchemy id is derived from kind+name only (reverting the earlier namespace-hashed id, which would have changed every existing instance's id and let alchemy tear the live CR down on upgrade). ⚠️ **A different k8s factory namespace does NOT automatically give a different alchemy scope.** Within one alchemy stack, two instances collide iff they share this kind+name id — regardless of their k8s namespace. So `analytics/dev` and `analytics/prod` factories expose the **same** alchemy id, and if you materialize both in the **same** alchemy stack the second clobbers the first. To keep same-named instances isolated, **you** must put them in **separate alchemy stacks/scopes** (one app/stage per environment) — the factory does not do this for you.
+- **One Alchemy stack per installation is an invariant, not a naming suggestion.** The application layer must map its complete installation identity (for example application, connection, control-plane namespace, instance, and profile) to one distinct Alchemy stack/scope. TypeKro validates declaration identities within one materialization call, but it cannot inspect or allocate the caller's Alchemy stack and therefore cannot enforce isolation across separate calls. Application adapters should reject startup when two installation identities resolve to the same stack key.
 - **A deduped, name-keyed singleton.** The hoisted Namespace's declaration id is keyed to the namespace **name** (not the RGD), so N factories/stacks targeting the same workload namespace converge on **one** state entry rather than N fighting copies.
 - **Ownership-scoped, empty-gated teardown (create-first ownership).** Ownership is decided **create-first**: at deploy the hoisted Namespace is `CREATE`d with a `typekro.io/created-by-rgd=<rgd>` stamp — a `201` means TypeKro created it (owned); a `409 AlreadyExists` means it pre-existed, so TypeKro **adopts** it and strips the stamp before applying (an adopted namespace is never stamped, so it is never deleted). Alchemy's reverse-topological teardown deletes the instance CR and the RGD first (both `dependsOn` this declaration), then runs the Namespace's delete **last** — an **empty-gated** delete that removes the namespace **only if** it is both owned by this RGD (carries the stamp) **and** empty, and **retains** it if another stack/user still has resources inside it. Because each hoisted Namespace is its **own** Alchemy state entry, a delete that fails or a namespace that is retained is reconciled independently on the next run — teardown does not depend on the CR record surviving. The emitted Namespace also carries GitOps prune-protection: **both** `kustomize.toolkit.fluxcd.io/prune: disabled` (Flux) **and** `argocd.argoproj.io/sync-options: Prune=false,Delete=false` (Argo CD; `Delete=false` survives an Argo Application **deletion**, not merely a sync-prune). For any other GitOps tool, pre-create the workload namespace out-of-band.
 - **The generated CRD is LEFT Active for reuse or out-of-band GC.** Both Alchemy and imperative `deleteInstance` retain the composition's generated CRD on normal teardown — the CRD is cluster-scoped, KRO defaults to `allowCRDDeletion=false`, and initiating deletion can leave its apiextensions cleanup finalizer stalled for minutes ([kro#1171](https://github.com/kro-run/kro/issues/1171)). A `Terminating` definition blocks later deployment of the same RGD/kind, whereas an Active definition with zero instances is safely reusable. Garbage-collect a retired kind explicitly only after proving that no RGD or custom resources need it (`kubectl delete crd <plural>.<group>`).

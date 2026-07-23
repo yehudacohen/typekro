@@ -1,15 +1,16 @@
 import type {
+  ArtifactRequirement,
   CapabilityRequirement,
   KubernetesIdentity,
   LifecyclePolicy,
   PlanDiagnostic,
   PlanEdge,
   PlanIterationDimension,
+  PlanTemplateOverride,
   PlanValue,
   ReadinessStrategyIdentity,
   SchemaIR,
   StatusProjection,
-  PlanTemplateOverride,
 } from './types.js';
 
 /** Version of the experimental compiled artifact DTOs. */
@@ -136,6 +137,8 @@ interface ArtifactPlanBase<TResource> {
   readonly resources: readonly TResource[];
   readonly edges: readonly PlanEdge[];
   readonly requiredCapabilities: readonly CapabilityRequirement[];
+  /** Declared cross-provider artifacts whose outputs remain symbolic in compiled resources. */
+  readonly artifactRequirements: readonly ArtifactRequirement[];
   readonly diagnostics: readonly PlanDiagnostic[];
 }
 
@@ -212,6 +215,8 @@ export interface KroArtifactBundle {
   };
   /** Host/output requirements retained even when they do not become Kubernetes operations. */
   readonly requiredCapabilities: readonly CapabilityRequirement[];
+  /** Cross-provider artifacts required while materializing one or more operations. */
+  readonly artifactRequirements: readonly ArtifactRequirement[];
   readonly operations: readonly KroArtifactBundleOperation[];
   readonly bundleDigest: string;
 }

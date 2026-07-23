@@ -14,7 +14,7 @@ import {
   getResourceScope,
 } from '../../../src/core/metadata/index.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
-import { decodeKroArtifactBundle } from '../../../src/experimental-planning.js';
+import { artifactOutput, decodeKroArtifactBundle } from '../../../src/experimental-planning.js';
 import {
   createResource,
   kubernetesComposition,
@@ -78,6 +78,129 @@ async function restoredRootInstance() {
 }
 
 describe('KRO Alchemy artifact-bundle rehydration', () => {
+  it('materializes provider outputs after a KRO bundle state round trip', async () => {
+    const composition = toResourceGraph(
+      {
+        name: 'alchemy-kro-provider-artifact',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'AlchemyKroProviderArtifact',
+        revision: '1',
+        spec: specSchema,
+        status: statusSchema,
+      },
+      (schema) => ({
+        workload: createResource({
+          id: 'workload',
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: schema.spec.name },
+          spec: {
+            selector: { matchLabels: { app: schema.spec.name } },
+            template: {
+              metadata: { labels: { app: schema.spec.name } },
+              spec: {
+                containers: [{ name: 'app', image: artifactOutput('build', 'image') }],
+              },
+            },
+          },
+        }),
+      }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('kro', {
+      namespace: 'apps',
+      plan: {
+        inputs: {
+          build: {
+            kind: 'artifact',
+            requirement: {
+              id: 'build',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['image'],
+            },
+          },
+        },
+      },
+    });
+    const declarations = await factory.toAlchemyResources({ name: 'demo' });
+    const target = declarations.find((declaration) => declaration.artifactOutputUses?.length)!;
+    expect(target).toBeDefined();
+    expect(target.props.resource.kind).toBe('AlchemyKroProviderArtifact');
+    const rgd = declarations.find(
+      (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
+    );
+    expect(rgd).toBeDefined();
+    expect(rgd?.artifactOutputUses).toBeUndefined();
+    expect(JSON.stringify(rgd?.props.resource)).toContain('__typekroArtifacts');
+    expect(JSON.stringify(rgd?.props.resource)).not.toContain('registry.example/demo@sha256:abc');
+    const byId = new Map(declarations.map((declaration) => [declaration.id, declaration]));
+    const restored = JSON.parse(JSON.stringify(target.props)) as TypeKroResourceProps<
+      Enhanced<unknown, unknown>
+    >;
+    restored.dependencies = target.dependsOn.map((id) => outputFor(byId.get(id)!));
+    restored.artifactOutputs = { build: { image: 'registry.example/demo@sha256:abc' } };
+    const resource = resourceFromKroArtifactBundleForTest(restored)!;
+    expect(JSON.stringify(resource)).toContain('registry.example/demo@sha256:abc');
+  });
+
+  it('redacts sensitive provider outputs while rehydrating KRO bundle operations', async () => {
+    const plaintext = 'kro-provider-secret-output';
+    const composition = toResourceGraph(
+      {
+        name: 'alchemy-kro-sensitive-provider-artifact',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'AlchemyKroSensitiveProviderArtifact',
+        revision: '1',
+        spec: specSchema,
+        status: statusSchema,
+      },
+      (schema) => ({
+        credentials: createResource(
+          {
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+            stringData: { token: artifactOutput('secret-provider', 'token') },
+          },
+          { factoryName: 'secret' }
+        ),
+      }),
+      () => ({ ready: true })
+    );
+    const factory = await composition.factory('kro', {
+      namespace: 'apps',
+      plan: {
+        inputs: {
+          secret: {
+            kind: 'artifact',
+            requirement: {
+              id: 'secret-provider',
+              kind: 'credential',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['token'],
+            },
+          },
+        },
+      },
+    });
+    const declarations = await factory.toAlchemyResources({ name: 'demo' });
+    const target = declarations.find((declaration) => declaration.artifactOutputUses?.length)!;
+    expect(target.artifactOutputUses?.[0]?.sensitive).toBe(true);
+    const byId = new Map(declarations.map((declaration) => [declaration.id, declaration]));
+    const props = {
+      ...target.props,
+      dependencies: target.dependsOn.map((id) => outputFor(byId.get(id)!)),
+      artifactOutputs: { 'secret-provider': { token: Redacted.make(plaintext) } },
+    };
+    expect(JSON.stringify(props)).not.toContain(plaintext);
+    expect(JSON.stringify(resourceFromKroArtifactBundleForTest(props))).toContain(plaintext);
+    expect(JSON.stringify(resourceFromKroArtifactBundleForTest(props, true))).not.toContain(
+      plaintext
+    );
+  });
+
   it('restores the exact compiled operation after an Alchemy JSON state round trip', async () => {
     const { instance, restored } = await restoredRootInstance();
     const bundle = decodeKroArtifactBundle(restored.kroArtifactBundle!);

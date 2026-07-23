@@ -12,7 +12,7 @@
  *  - the Mongo mode variants shaping WHICH resources exist,
  *  - the typed status service contract (ui/gateway/app endpoints).
  */
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { load } from 'js-yaml';
 
 import {
@@ -22,8 +22,15 @@ import {
 import { ClickStackBootstrapStatusSchema } from '../../../src/factories/clickstack/types.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
+const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
+
 beforeAll(() => {
   process.env.TYPEKRO_STRICT_CEL = '1';
+});
+
+afterAll(() => {
+  if (ORIGINAL_STRICT_ENV === undefined) delete process.env.TYPEKRO_STRICT_CEL;
+  else process.env.TYPEKRO_STRICT_CEL = ORIGINAL_STRICT_ENV;
 });
 
 /** A fake schema-proxy ref, shaped like the analyzer's KubernetesRef marker. */
@@ -76,7 +83,9 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
       .map((document) => load(document) as Record<string, unknown>);
     const root = documents.find((document) => {
       const spec = document.spec as { schema?: { kind?: string } } | undefined;
-      return document.kind === 'ResourceGraphDefinition' && spec?.schema?.kind === 'ClickStackBootstrap';
+      return (
+        document.kind === 'ResourceGraphDefinition' && spec?.schema?.kind === 'ClickStackBootstrap'
+      );
     }) as { spec: { schema: { status: Record<string, unknown> } } };
     const status = root.spec.schema.status as {
       ui: { url: string };
@@ -151,7 +160,7 @@ describe('makeClickstackBootstrap (build-time variants)', () => {
         values: { hyperdx: { replicas: fakeRef('spec.replicas') } } as never,
         name: 'clickstack-ref-values',
         kind: 'ClickstackRefValues',
-      }),
+      })
     ).toThrow(/build-time|concrete|constructor/i);
   });
 });

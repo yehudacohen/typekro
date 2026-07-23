@@ -3,6 +3,7 @@ import { type } from 'arktype';
 import { getReadinessEvaluator, getResourceId } from '../../../src/core/metadata/index.js';
 import { resolvePortableReadinessStrategy } from '../../../src/core/readiness/index.js';
 import {
+  canonicalDigest,
   compileDirectArtifactPlan,
   compileKroArtifactPlan,
   createDirectArtifactExecutionRecord,
@@ -380,9 +381,7 @@ describe('semantic artifact compilers', () => {
     const spec = { name: 'credentials', token: plaintext };
     const plan = composition.plan!(spec);
     expect(plan.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual([]);
-    const artifacts = decodeDirectArtifactPlan(
-      encodeArtifactPlan(compileDirectArtifactPlan(plan))
-    );
+    const artifacts = decodeDirectArtifactPlan(encodeArtifactPlan(compileDirectArtifactPlan(plan)));
     const encodedArtifact = encodeArtifactPlan(artifacts);
     const graph = directArtifactPlanToResourceGraph(artifacts, {
       instanceName: 'credentials',
@@ -536,6 +535,21 @@ describe('semantic artifact compilers', () => {
     expect(materializeKroArtifactBundleOperation(decodedRgd!)).toEqual(
       expect.objectContaining({ apiVersion: 'kro.run/v1alpha1' })
     );
+
+    const previousBundle = JSON.parse(encodeKroArtifactBundle(bundle)) as Record<string, unknown>;
+    delete previousBundle.artifactRequirements;
+    previousBundle.bundleDigest = canonicalDigest({
+      version: previousBundle.version,
+      target: previousBundle.target,
+      root: previousBundle.root,
+      requiredCapabilities: previousBundle.requiredCapabilities,
+      operations: previousBundle.operations,
+    });
+    expect(decodeKroArtifactBundle(JSON.stringify(previousBundle))).toEqual({
+      ...bundle,
+      artifactRequirements: [],
+      bundleDigest: expect.any(String),
+    });
 
     const corrupted = JSON.parse(encodeKroArtifactBundle(bundle)) as {
       operations: Array<{ dependencies: string[] }>;

@@ -44,6 +44,7 @@ import type {
 } from '../planning/artifacts.js';
 import {
   assertAdapterCapabilitiesSupported,
+  collectArtifactOutputUses,
   collectPlanValueSensitiveBindings,
   compileDirectArtifactPlan,
   createDirectArtifactExecutionMaterialization,
@@ -1234,6 +1235,7 @@ export class DirectResourceFactoryImpl<
     options: {
       readonly sensitiveBindings?: Readonly<Record<string, unknown>>;
       readonly staticYamlOptions?: StaticYamlMaterializationOptions;
+      readonly preserveArtifactOutputs?: boolean;
     } = {}
   ): DirectArtifactExecution {
     const legacyGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
@@ -1263,6 +1265,19 @@ export class DirectResourceFactoryImpl<
       strict: true,
       applyPolicy: this.getArtifactApplyPolicy(),
     });
+    const placeholderArtifactOutputs = options.preserveArtifactOutputs
+      ? Object.fromEntries(
+          artifacts.artifactRequirements.map((requirement) => [
+            requirement.id,
+            Object.fromEntries(
+              requirement.outputs.map((output) => [
+                output,
+                `__typekro_artifact_${encodeURIComponent(requirement.id)}_${encodeURIComponent(output)}__`,
+              ])
+            ),
+          ])
+        )
+      : undefined;
     const runtimeResources = Object.fromEntries(
       legacyGraph.resources.flatMap((resource) => {
         const logicalId = getResourceId(resource.manifest);
@@ -1366,6 +1381,7 @@ export class DirectResourceFactoryImpl<
         ...(Object.keys(effectiveSensitiveBindings).length > 0
           ? { sensitive: effectiveSensitiveBindings }
           : {}),
+        ...(placeholderArtifactOutputs ? { artifactOutputs: placeholderArtifactOutputs } : {}),
         runtimeResources,
         readinessEvaluators,
         resolveReadinessStrategy: resolvePortableReadinessStrategy,
@@ -1496,7 +1512,9 @@ export class DirectResourceFactoryImpl<
     spec: TSpec,
     opts?: { instanceNameOverride?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
-    const execution = this.createArtifactExecutionForInstance(spec, opts?.instanceNameOverride);
+    const execution = this.createArtifactExecutionForInstance(spec, opts?.instanceNameOverride, {
+      preserveArtifactOutputs: true,
+    });
     this.assertExecutionCapabilities(execution, { host: 'alchemy', output: 'live' });
     const graph = execution.graph;
     const persistence =
@@ -1565,6 +1583,25 @@ export class DirectResourceFactoryImpl<
       if (!node) return [];
       const artifact = artifactByLogicalId.get(node.logicalId);
       const materialization = artifact ? materializationByArtifactId.get(artifact.id) : undefined;
+      const artifactOutputUses = materialization
+        ? collectArtifactOutputUses(materialization.record.artifact)
+        : [];
+      const artifactRequirementIds = new Set(artifactOutputUses.map((use) => use.requirementId));
+      const artifactRequirements =
+        executionArtifacts?.artifactRequirements.filter((requirement) =>
+          artifactRequirementIds.has(requirement.id)
+        ) ?? [];
+      const declarationArtifactOutputs = Object.fromEntries(
+        artifactRequirements.map((requirement) => [
+          requirement.id,
+          Object.fromEntries(
+            requirement.outputs.map((output) => [
+              output,
+              `__typekro_artifact_${encodeURIComponent(requirement.id)}_${encodeURIComponent(output)}__`,
+            ])
+          ),
+        ])
+      );
       const sensitiveBindings =
         materialization && Redacted
           ? Object.fromEntries(
@@ -1581,12 +1618,17 @@ export class DirectResourceFactoryImpl<
           ? { [strategy.binding]: evaluator }
           : undefined;
       const declarationResource =
-        materialization && sensitiveBindings && Object.keys(sensitiveBindings).length > 0
+        materialization &&
+        ((sensitiveBindings && Object.keys(sensitiveBindings).length > 0) ||
+          artifactOutputUses.length > 0)
           ? (materializeDirectArtifactManifest(
               materialization.record.artifact,
               {
                 instanceName: opts?.instanceNameOverride ?? this.generateInstanceName(spec),
-                sensitive: sensitiveBindings,
+                ...(sensitiveBindings ? { sensitive: sensitiveBindings } : {}),
+                ...(artifactOutputUses.length > 0
+                  ? { artifactOutputs: declarationArtifactOutputs }
+                  : {}),
                 runtimeResources: { [node.logicalId]: node.resource },
                 ...(readinessEvaluators ? { readinessEvaluators } : {}),
                 resolveReadinessStrategy: resolvePortableReadinessStrategy,
@@ -1628,6 +1670,8 @@ export class DirectResourceFactoryImpl<
       return {
         id: node.alchemyId,
         dependsOn,
+        ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+        ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
         props: {
           resource: declarationResource,
           resourceId: node.logicalId,
@@ -1639,6 +1683,8 @@ export class DirectResourceFactoryImpl<
                 ...(sensitiveBindings && Object.keys(sensitiveBindings).length > 0
                   ? { sensitiveBindings }
                   : {}),
+                ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+                ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
               }
             : {}),
           namespace: this.namespace,
