@@ -34,7 +34,7 @@ import {
 } from './shared-kubeconfig.js';
 
 const BASE_NAMESPACE = 'typekro-e2e-cond';
-const TEST_TIMEOUT = 180_000;
+const TEST_TIMEOUT = 900_000;
 
 const generateNamespace = (suffix: string): string => {
   const ts = Date.now().toString().slice(-6);
@@ -175,9 +175,11 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
       try {
         await factory.deleteInstance('ext');
       } catch {}
-      await deleteNamespaceAndWait(factoryNs, kc);
-      await deleteNamespaceAndWait(appNs1, kc);
-      await deleteNamespaceAndWait(appNs2, kc);
+      await Promise.all([
+        deleteNamespaceAndWait(factoryNs, kc),
+        deleteNamespaceAndWait(appNs1, kc),
+        deleteNamespaceAndWait(appNs2, kc),
+      ]);
     },
     TEST_TIMEOUT
   );
@@ -289,9 +291,11 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
       try {
         await factory.deleteInstance('app-b');
       } catch {}
-      await deleteNamespaceAndWait(factoryNs, kc);
-      await deleteNamespaceAndWait(appNs1, kc);
-      await deleteNamespaceAndWait(appNs2, kc);
+      await Promise.all([
+        deleteNamespaceAndWait(factoryNs, kc),
+        deleteNamespaceAndWait(appNs1, kc),
+        deleteNamespaceAndWait(appNs2, kc),
+      ]);
     },
     TEST_TIMEOUT
   );

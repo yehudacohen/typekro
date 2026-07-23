@@ -9,7 +9,8 @@ import {
 import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
 
 const clusterAvailable = isClusterAvailable();
-const describeOrSkip = clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+const describeOrSkip =
+  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
 async function deleteHelmOwnedClusterResource(
   kubeConfig: any,
@@ -55,7 +56,8 @@ async function restartSharedCnpgOperatorIfPresent(kubeConfig: any): Promise<void
   try {
     const pods = await coreApi.listNamespacedPod({
       namespace,
-      labelSelector: 'app.kubernetes.io/name=cloudnative-pg,app.kubernetes.io/instance=cnpg-operator',
+      labelSelector:
+        'app.kubernetes.io/name=cloudnative-pg,app.kubernetes.io/instance=cnpg-operator',
     });
 
     await Promise.allSettled(
@@ -67,7 +69,10 @@ async function restartSharedCnpgOperatorIfPresent(kubeConfig: any): Promise<void
 
     const start = Date.now();
     while (Date.now() - start < 180000) {
-      const deployment = await appsApi.readNamespacedDeployment({ name: deploymentName, namespace });
+      const deployment = await appsApi.readNamespacedDeployment({
+        name: deploymentName,
+        namespace,
+      });
       const status = deployment.status;
       if ((status?.readyReplicas ?? 0) > 0 && status?.readyReplicas === status?.replicas) {
         return;
@@ -83,6 +88,7 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
   let kubeConfig: any;
   let factory: any;
   let operatorDeployed = false;
+  let reuseExistingOperator = false;
   const testNamespace = 'typekro-test-cnpg-bootstrap';
   const operatorNs = 'cnpg-test-op';
   const clusterNs = 'cnpg-test-db';
@@ -91,6 +97,24 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       await ensureNamespaceExists(testNamespace, kubeConfig);
+
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      try {
+        const existing: any = await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: 'cnpg-system',
+          plural: 'helmreleases',
+          name: 'cnpg-operator',
+        });
+        const live = existing?.body ?? existing;
+        reuseExistingOperator = live.status?.conditions?.some(
+          (condition: { type?: string; status?: string }) =>
+            condition.type === 'Ready' && condition.status === 'True'
+        );
+      } catch {
+        // No ready canonical install; this suite owns a temporary operator.
+      }
 
       // Deploy the operator ONCE and share across all tests.
       // This avoids the test isolation issue where deleteInstance removes
@@ -119,52 +143,73 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
         .catch(() => {});
     }
 
-    await Promise.allSettled([
-      deleteHelmOwnedClusterResource(
-        kubeConfig,
-        'rbac.authorization.k8s.io/v1',
-        'ClusterRoleBinding',
-        'cnpg-operator-cnpg-test-op-cloudnative-pg-typekro-binding',
-        operatorNs
-      ),
-      deleteHelmOwnedClusterResource(
-        kubeConfig,
-        'admissionregistration.k8s.io/v1',
-        'MutatingWebhookConfiguration',
-        'cnpg-mutating-webhook-configuration',
-        operatorNs
-      ),
-      deleteHelmOwnedClusterResource(
-        kubeConfig,
-        'admissionregistration.k8s.io/v1',
-        'ValidatingWebhookConfiguration',
-        'cnpg-validating-webhook-configuration',
-        operatorNs
-      ),
-      deleteHelmOwnedClusterResource(
-        kubeConfig,
-        'rbac.authorization.k8s.io/v1',
-        'ClusterRoleBinding',
-        'cnpg-operator-cloudnative-pg',
-        operatorNs
-      ),
-    ]);
+    if (operatorDeployed) {
+      await Promise.allSettled([
+        deleteHelmOwnedClusterResource(
+          kubeConfig,
+          'rbac.authorization.k8s.io/v1',
+          'ClusterRoleBinding',
+          'cnpg-operator-cnpg-test-op-cloudnative-pg-typekro-binding',
+          operatorNs
+        ),
+        deleteHelmOwnedClusterResource(
+          kubeConfig,
+          'admissionregistration.k8s.io/v1',
+          'MutatingWebhookConfiguration',
+          'cnpg-mutating-webhook-configuration',
+          operatorNs
+        ),
+        deleteHelmOwnedClusterResource(
+          kubeConfig,
+          'admissionregistration.k8s.io/v1',
+          'ValidatingWebhookConfiguration',
+          'cnpg-validating-webhook-configuration',
+          operatorNs
+        ),
+        deleteHelmOwnedClusterResource(
+          kubeConfig,
+          'rbac.authorization.k8s.io/v1',
+          'ClusterRoleBinding',
+          'cnpg-operator-cloudnative-pg',
+          operatorNs
+        ),
+      ]);
 
-    // CNPG webhooks have fixed cluster-scoped names. Removing the dedicated
-    // test operator's Helm-owned webhooks lets Flux recreate shared webhooks,
-    // but CNPG only injects caBundle on startup or periodic PKI maintenance.
-    // Restart the shared operator to avoid later tests racing that maintenance.
-    await restartSharedCnpgOperatorIfPresent(kubeConfig);
+      // CNPG webhooks have fixed cluster-scoped names. Removing the dedicated
+      // test operator's Helm-owned webhooks lets Flux recreate shared webhooks,
+      // but CNPG only injects caBundle on startup or periodic PKI maintenance.
+      // Restart the shared operator to avoid later tests racing that maintenance.
+      await restartSharedCnpgOperatorIfPresent(kubeConfig);
+    }
 
     const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
     await Promise.allSettled(
-      [testNamespace, operatorNs, clusterNs].map((ns) =>
-        deleteNamespaceAndWait(ns, kubeConfig)
-      )
+      [testNamespace, operatorNs, clusterNs].map((ns) => deleteNamespaceAndWait(ns, kubeConfig))
     );
   });
 
   it('should deploy operator and hydrate all status fields', async () => {
+    if (reuseExistingOperator) {
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const existing: any = await customApi.getNamespacedCustomObject({
+        group: 'helm.toolkit.fluxcd.io',
+        version: 'v2',
+        namespace: 'cnpg-system',
+        plural: 'helmreleases',
+        name: 'cnpg-operator',
+      });
+      const live = existing?.body ?? existing;
+      expect(live.metadata?.name).toBe('cnpg-operator');
+      expect(live.metadata?.namespace).toBe('cnpg-system');
+      expect(
+        live.status?.conditions?.some(
+          (condition: { type?: string; status?: string }) =>
+            condition.type === 'Ready' && condition.status === 'True'
+        )
+      ).toBe(true);
+      return;
+    }
+
     const instance = await factory.deploy({
       name: 'cnpg-operator',
       namespace: operatorNs,
@@ -203,9 +248,7 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
   }, 60000);
 
   it('should create a PostgreSQL cluster via typed factory', async () => {
-    const { cluster } = await import(
-      '../../../src/factories/cnpg/resources/cluster.js'
-    );
+    const { cluster } = await import('../../../src/factories/cnpg/resources/cluster.js');
 
     await ensureNamespaceExists(clusterNs, kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
@@ -271,13 +314,15 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
     expect(lastStatus?.reason).toBe('Healthy');
 
     // Cleanup the cluster resource (operator stays for other tests)
-    await customApi.deleteNamespacedCustomObject({
-      group: 'postgresql.cnpg.io',
-      version: 'v1',
-      namespace: clusterNs,
-      plural: 'clusters',
-      name: 'e2e-pg',
-    }).catch(() => {});
+    await customApi
+      .deleteNamespacedCustomObject({
+        group: 'postgresql.cnpg.io',
+        version: 'v1',
+        namespace: clusterNs,
+        plural: 'clusters',
+        name: 'e2e-pg',
+      })
+      .catch(() => {});
   }, 900000);
 
   it('should generate ResourceGraphDefinition YAML with CEL status expressions', async () => {

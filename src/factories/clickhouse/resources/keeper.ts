@@ -8,6 +8,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
@@ -31,6 +32,12 @@ const KEEPER_DATA_VOLUME_TEMPLATE = 'data-volume';
 export function chkReadinessEvaluator(liveResource: unknown): ResourceStatus {
   return chiReadinessEvaluator(liveResource);
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.clickhouse.keeper-installation',
+  '1',
+  chkReadinessEvaluator
+);
 
 /** Compile the high-level config into a CHK spec. */
 function compileKeeperSpec(

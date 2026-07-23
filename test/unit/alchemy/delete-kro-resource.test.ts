@@ -25,17 +25,19 @@ const makeProps = (
 });
 
 describe('deleteKroResource', () => {
-  it('delegates to the deployer with alchemy mode + the resource namespace', async () => {
+  it('delegates to the deployer with the KRO target, namespace, and cancellation signal', async () => {
     const del = mock(() => Promise.resolve());
     const deployer = { deploy: mock(), delete: del } as unknown as TypeKroDeployer;
+    const abortController = new AbortController();
 
-    await deleteKroResourceForTest(makeProps(deployer));
+    await deleteKroResourceForTest(makeProps(deployer), abortController.signal);
 
     expect(del).toHaveBeenCalledTimes(1);
     const [passedResource, opts] = del.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
     expect(passedResource).toBe(resource);
-    expect(opts.mode).toBe('alchemy');
+    expect(opts.mode).toBe('kro');
     expect(opts.namespace).toBe('ns');
+    expect(opts.abortSignal).toBe(abortController.signal);
   });
 
   it('swallows ResourceGraphDefinitionDeletionDeferredError (shared RGD still referenced)', async () => {

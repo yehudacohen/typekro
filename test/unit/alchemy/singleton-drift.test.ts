@@ -10,7 +10,9 @@ import { singletonDriftVerdict } from '../../../src/alchemy/resource-registratio
 const FP = 'fnv64:1111111111111111';
 const OTHER_FP = 'fnv64:2222222222222222';
 const ann = (fingerprint?: string) =>
-  fingerprint ? { metadata: { annotations: { 'typekro.io/singleton-spec-fingerprint': fingerprint } } } : {};
+  fingerprint
+    ? { metadata: { annotations: { 'typekro.io/singleton-spec-fingerprint': fingerprint } } }
+    : {};
 
 describe('singletonDriftVerdict', () => {
   it('no existing owner → no drift', () => {
@@ -36,6 +38,12 @@ describe('singletonDriftVerdict', () => {
     const live = { ...ann(undefined), spec: { name: 'a', replicas: 9 } };
     const v = singletonDriftVerdict(FP, { name: 'a', replicas: 2 }, live);
     expect(v.drift).toBe(true);
-    if (v.drift) expect(v.reason).toContain('unfingerprinted');
+    if (v.drift) {
+      expect(v.reason).toContain('unfingerprinted');
+      expect(v.reason).toContain('$.replicas');
+      expect(v.differences).toEqual([
+        expect.objectContaining({ path: '$.replicas', kind: 'value-mismatch' }),
+      ]);
+    }
   });
 });

@@ -13,6 +13,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as jsYaml from 'js-yaml';
 import * as aspectsEntry from '../../src/aspects.js';
 import type {
   CommonAspectSchemaForTargets,
@@ -47,7 +48,6 @@ import {
   workloads,
 } from '../../src/index.js';
 import { deployment as kubernetesDeployment } from '../../src/factories/kubernetes/workloads/deployment.js';
-import { isCelExpression } from '../../src/utils/type-guards.js';
 
 type DeploymentAspectSchema = ResourceSpecOverrideSchema<{
   replicas: number;
@@ -362,7 +362,14 @@ describe('typed resource aspects', () => {
     });
 
     expect(countOccurrences(yaml, 'environment: test')).toBeGreaterThanOrEqual(2);
-    expect(countOccurrences(yaml, 'typekro.io/aspect-test: "true"')).toBeGreaterThanOrEqual(2);
+    const parsed = jsYaml.load(yaml) as {
+      spec: { resources: Array<{ template: { metadata?: { annotations?: Record<string, string> } } }> };
+    };
+    expect(
+      parsed.spec.resources.filter(
+        (resource) => resource.template.metadata?.annotations?.['typekro.io/aspect-test'] === 'true'
+      )
+    ).toHaveLength(2);
   });
 
   it('replaces metadata maps without preserving prior labels', () => {
@@ -444,7 +451,7 @@ describe('typed resource aspects', () => {
       (resource) => (resource as { manifest?: { kind?: string } }).manifest?.kind === 'Deployment'
     ) as { manifest: { spec: { replicas: unknown } } } | undefined;
 
-    expect(isCelExpression(deployment?.manifest.spec.replicas)).toBe(true);
+    expect(deployment?.manifest.spec.replicas).toBe(2);
   });
 
   it('applies hot-reload container and volume overrides to array fields', () => {
@@ -611,7 +618,18 @@ describe('typed resource aspects', () => {
       ],
     });
 
-    expect(yaml).toContain('typekro.dev/hot-reload: "true"');
+    const parsed = jsYaml.load(yaml) as {
+      spec: {
+        resources: Array<{
+          id: string;
+          template: { spec: { template: { metadata?: { labels?: Record<string, string> } } } };
+        }>;
+      };
+    };
+    expect(
+      parsed.spec.resources.find((resource) => resource.id === 'appDeployment')?.template.spec
+        .template.metadata?.labels?.['typekro.dev/hot-reload']
+    ).toBe('true');
     expect(yaml).toContain('image: oven/bun:1.3.13');
   });
 

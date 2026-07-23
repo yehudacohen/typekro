@@ -17,10 +17,11 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bu
 // and clean up child resources (~30s per resource × 9 resources ≈ 270s).
 // afterAll hooks need headroom beyond this for namespace cleanup.
 setDefaultTimeout(600000);
+
 import type * as k8s from '@kubernetes/client-node';
-import type { Enhanced } from '../../../src/core/types/index.js';
-import type { ResourceFactory } from '../../../src/core/types/deployment.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import type { ResourceFactory } from '../../../src/core/types/deployment.js';
+import type { Enhanced } from '../../../src/core/types/index.js';
 import type {
   WebAppWithProcessingConfig,
   WebAppWithProcessingStatus,
@@ -29,7 +30,7 @@ import { ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
   const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-  await deleteNamespaceAndWait(namespace, kubeConfig, 120000);
+  await deleteNamespaceAndWait(namespace, kubeConfig, 600000);
 }
 
 // ── Shared test spec ─────────────────────────────────────────────────────
@@ -45,7 +46,9 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   database: {
     instances: 1,
     storageSize: '1Gi',
-    storageClass: 'local-path',
+    ...(process.env.TYPEKRO_TEST_STORAGE_CLASS
+      ? { storageClass: process.env.TYPEKRO_TEST_STORAGE_CLASS }
+      : {}),
     database: 'testdb',
     owner: 'app',
   },
@@ -101,10 +104,10 @@ function assertWebAppStatus(
  * status hydration and serves as ground truth for the deployment's health.
  */
 async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
-  const proc = Bun.spawn(
-    ['kubectl', 'get', 'pods', '-n', appNamespace, '-o', 'json'],
-    { stdout: 'pipe', stderr: 'pipe' }
-  );
+  const proc = Bun.spawn(['kubectl', 'get', 'pods', '-n', appNamespace, '-o', 'json'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
   const output = await new Response(proc.stdout).text();
   const exitCode = await proc.exited;
   expect(exitCode).toBe(0);
@@ -149,7 +152,9 @@ async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
 
 describe('WebAppWithProcessing Direct Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let directFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
+  let directFactory:
+    | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
+    | undefined;
   const suffix = Math.random().toString(36).slice(2, 7);
   const factoryNamespace = `typekro-webapp-${suffix}`;
   const appNamespace = `webapp-app-${suffix}`;
@@ -234,7 +239,9 @@ describe('WebAppWithProcessing Direct Mode', () => {
 
 describe('WebAppWithProcessing KRO Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let kroFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
+  let kroFactory:
+    | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
+    | undefined;
   const suffix = Math.random().toString(36).slice(2, 7);
   const kroNamespace = `typekro-kro-${suffix}`;
   const appNamespace = `webapp-kro-${suffix}`;

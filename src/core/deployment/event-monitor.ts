@@ -5,7 +5,7 @@
  * server-side filtering to minimize network traffic and improve performance.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import {
   DEFAULT_FAST_POLL_INTERVAL,
   DEFAULT_MAX_RECONNECT_ATTEMPTS,
@@ -17,6 +17,16 @@ import {
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getKubernetesClientNode } from '../kubernetes/client-node-runtime.js';
+import {
+  createBunCompatibleAppsV1Api,
+  createBunCompatibleCoreV1Api,
+} from '../kubernetes/bun-api-client.js';
+import {
+  createWatchForRuntime,
+  type KubernetesWatch,
+  watchErrorMessage,
+} from '../kubernetes/bun-watch.js';
 import type { DeployedResource, DeploymentEvent } from '../types/deployment.js';
 
 /**
@@ -74,6 +84,10 @@ export interface EventMonitorDebugState {
   eventsProcessed: number;
 }
 
+function isSdkKubeConfig(value: unknown): boolean {
+  return value instanceof getKubernetesClientNode().KubeConfig;
+}
+
 /**
  * Resource identifier for event filtering
  */
@@ -111,7 +125,7 @@ interface WatchConnection {
   kind: string;
   namespace: string;
   fieldSelector: string;
-  watcher: k8s.Watch;
+  watcher: KubernetesWatch;
   request?: { abort(): void }; // The active watch request
   resources: Set<string>; // Resource names being watched
   lastResourceVersion?: string;
@@ -159,16 +173,20 @@ export class EventMonitor {
   private startResourceVersion?: string;
   private eventsProcessed = 0;
   private appsApi: k8s.AppsV1Api;
-  private watchFactory: (config: k8s.KubeConfig) => k8s.Watch;
+  private watchFactory: (config: k8s.KubeConfig) => KubernetesWatch;
 
   constructor(
     private k8sApi: k8s.CoreV1Api,
     private kubeConfig: k8s.KubeConfig,
     options: EventMonitoringOptions = {},
-    watchFactory?: (config: k8s.KubeConfig) => k8s.Watch
+    watchFactory?: (config: k8s.KubeConfig) => KubernetesWatch
   ) {
-    this.appsApi = kubeConfig.makeApiClient(k8s.AppsV1Api);
-    this.watchFactory = watchFactory || ((config: k8s.KubeConfig) => new k8s.Watch(config));
+    const clientNode = getKubernetesClientNode();
+    this.appsApi =
+      isSdkKubeConfig(kubeConfig)
+        ? createBunCompatibleAppsV1Api(kubeConfig)
+        : kubeConfig.makeApiClient(clientNode.AppsV1Api);
+    this.watchFactory = watchFactory ?? createWatchForRuntime;
     this.options = {
       namespace: options.namespace || 'default',
       eventTypes: options.eventTypes || ['Warning', 'Error'],
@@ -748,12 +766,12 @@ export class EventMonitor {
       const watchPromise = connection.watcher.watch(
         `/api/v1/namespaces/${connection.namespace}/events`,
         watchOptions,
-        (type: string, apiObj: k8s.CoreV1Event, watchObj: unknown) => {
+        (type: string, apiObj: unknown, watchObj: unknown) => {
           // Check if monitoring is still active before processing events
           if (!this.isMonitoring) {
             return;
           }
-          this.handleWatchEvent(type, apiObj, watchObj, connection);
+          this.handleWatchEvent(type, apiObj as k8s.CoreV1Event, watchObj, connection);
         },
         (error: unknown) => {
           // Check if monitoring is still active before handling errors
@@ -947,7 +965,7 @@ export class EventMonitor {
     }
 
     this.logger.warn('Watch connection error', {
-      error: ensureError(error).message,
+      error: watchErrorMessage(error),
       kind: connection.kind,
       namespace: connection.namespace,
       reconnectAttempts: connection.reconnectAttempts,
@@ -1276,8 +1294,12 @@ export class EventMonitor {
 export function createEventMonitor(
   kubeConfig: k8s.KubeConfig,
   options: EventMonitoringOptions = {},
-  watchFactory?: (config: k8s.KubeConfig) => k8s.Watch
+  watchFactory?: (config: k8s.KubeConfig) => KubernetesWatch
 ): EventMonitor {
-  const k8sApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
+  const clientNode = getKubernetesClientNode();
+  const k8sApi =
+    isSdkKubeConfig(kubeConfig)
+      ? createBunCompatibleCoreV1Api(kubeConfig)
+      : kubeConfig.makeApiClient(clientNode.CoreV1Api);
   return new EventMonitor(k8sApi, kubeConfig, options, watchFactory);
 }

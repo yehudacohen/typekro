@@ -220,6 +220,11 @@ export type {
 export type * from './core/types/index.js';
 export type { CelEvaluationContext } from './core/types/references.js';
 export { CelEvaluationError } from './core/types/references.js';
+export type {
+  DurableKubeConfigOptions,
+  KubeConfigCredentialBinding,
+  KubeConfigCredentialBindings,
+} from './core/kubernetes/client-provider.js';
 // Factory functions (all ecosystems)
 export * from './factories/index.js';
 // Factory-specific types
@@ -252,9 +257,12 @@ export { createWebService } from './factories/simple/compositions/web-service.js
 export type { DeploymentOptions, DeploymentResourceGraph } from './core/deployment/index.js';
 export {
   DirectDeploymentEngine,
+  ResourceDeletionIncompleteError,
   ResourceDeploymentError,
   ResourceReadinessChecker,
   ResourceReadinessTimeoutError,
+  ResourceReplacementTimeoutError,
+  ServerSideApplyConflictError,
 } from './core/deployment/index.js';
 
 // =============================================================================

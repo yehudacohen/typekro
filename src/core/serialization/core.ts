@@ -14,9 +14,13 @@ import {
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from '../composition/context.js';
+import {
+  copyCompositionAnalysisMetadata,
+  getCompositionAnalysisMetadata,
+} from '../composition/analysis-metadata.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
-import { joinYamlDocuments, singletonRgdYamls } from '../deployment/singleton-gitops.js';
+import { singletonOwnerInstanceManifests } from '../deployment/singleton-gitops.js';
 import { ensureError, ValidationError } from '../errors.js';
 import {
   type ASTAnalysisResult,
@@ -27,6 +31,16 @@ import { remapResourceStatusReferences } from '../expressions/composition/compos
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField, setResourceId } from '../metadata/index.js';
+import {
+  inspectCapturedComposition,
+  lowerPlanValue,
+  planCapturedComposition,
+  planCapturedTemplate,
+  planMaterializedComposition,
+  setCompositionCapture,
+  type StaticYamlMaterializationOptions,
+} from '../planning/index.js';
+import { containsExplicitPlanValue } from '../planning/values.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
 import type {
@@ -37,6 +51,7 @@ import type {
   SingletonDefinitionRecord,
   TypedResourceGraph,
 } from '../types/deployment.js';
+import type { CapturedCompositionRuntime } from '../planning/capture.js';
 import type {
   MagicAssignableShape,
   ResourceGraphDefinition,
@@ -47,23 +62,10 @@ import type {
 } from '../types/serialization.js';
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
+import { validateSpec } from '../deployment/shared-utilities.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
-import {
-  finalizeCelForKro,
-  isStaticExpression,
-  processResourceReferences,
-} from './cel-references.js';
-import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
-import { generateKroSchemaFromArktype } from './schema.js';
+import { finalizeCelForKro, processResourceReferences } from './cel-references.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
-import {
-  assertNoHoistWeakenedStatusFields,
-  findDanglingHoistedReference,
-  rewriteHoistedNamespaceReferences,
-  rewriteHoistedNamespaceRefsInValue,
-  selectHoistedNamespaces,
-} from '../deployment/kro-instance-safety.js';
-import { serializeResourceGraphToYaml } from './yaml.js';
 
 function isToYamlOptions(value: unknown): value is ToYamlOptions {
   if (typeof value !== 'object' || value === null || !Object.hasOwn(value, 'aspects')) {
@@ -80,6 +82,20 @@ function isToYamlOptions(value: unknown): value is ToYamlOptions {
     (entry) =>
       typeof entry === 'object' && entry !== null && (entry as { kind?: unknown }).kind === 'aspect'
   );
+}
+
+function normalizePublicFactoryOptions(
+  options: PublicFactoryOptions | undefined
+): PublicFactoryOptions | undefined {
+  if (!options) return undefined;
+  const aspects = options.plan?.aspects ?? options.aspects;
+  return {
+    ...options,
+    ...(aspects !== undefined ? { aspects } : {}),
+    ...(options.plan !== undefined
+      ? { plan: { ...options.plan, ...(aspects !== undefined ? { aspects } : {}) } }
+      : {}),
+  };
 }
 
 function assertDeploymentModeSupported(
@@ -476,8 +492,8 @@ function processCompositionBodyAnalysis(
   let compositionAnalysis: ASTAnalysisResult | null = null;
   const analysisState = { appliedToResources: false, ternaryAndOmitApplied: false };
 
-  const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
-    ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
+  const originalCompositionFnForAnalysis =
+    getCompositionAnalysisMetadata(statusMappings)?.originalCompositionFn;
 
   if (originalCompositionFnForAnalysis) {
     try {
@@ -709,6 +725,25 @@ function processCompositionBodyAnalysis(
       // required a different condition to be truthy).
       for (const unregistered of compositionAnalysis.unregisteredFactories) {
         if (!resourceIds.has(unregistered.resourceId)) {
+          const controlFlow = compositionAnalysis.resources.get(unregistered.resourceId);
+          const captured =
+            schemaDefinition && controlFlow
+              ? captureAnalyzedBranchResource(
+                  originalCompositionFnForAnalysis,
+                  schemaDefinition as { spec: { json?: unknown }; status?: { json?: unknown } },
+                  unregistered.resourceId,
+                  controlFlow.includeWhen
+                )
+              : undefined;
+          if (captured) {
+            resourcesWithKeys[unregistered.resourceId] = captured;
+            resourceIds.add(unregistered.resourceId);
+            serializationLogger.debug('Captured resource from analyzed branch constraints', {
+              resourceId: unregistered.resourceId,
+              conditions: controlFlow?.includeWhen.map((condition) => condition.expression),
+            });
+            continue;
+          }
           const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
           if (stub) {
             resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
@@ -978,6 +1013,111 @@ function createHybridSpecProxy(
       return Reflect.has(proxyTarget, prop);
     },
   }) as Record<string, unknown>;
+}
+
+function parseBranchConstraintLiteral(source: string): unknown {
+  if (source === 'true') return true;
+  if (source === 'false') return false;
+  if (source === 'null') return null;
+  if (source.startsWith("'") && source.endsWith("'")) {
+    return source.slice(1, -1).replaceAll("\\'", "'").replaceAll('\\\\', '\\');
+  }
+  if (source.startsWith('"')) {
+    try {
+      return JSON.parse(source);
+    } catch {
+      return source.slice(1, -1);
+    }
+  }
+  const numeric = Number(source);
+  return Number.isNaN(numeric) ? source : numeric;
+}
+
+function invertBranchConstraintLiteral(value: unknown): unknown {
+  if (typeof value === 'boolean') return !value;
+  if (typeof value === 'number') return value + 1;
+  if (typeof value === 'string') return `${value}-typekro-alternate`;
+  return value === null;
+}
+
+/**
+ * Derive the concrete values needed to enter a branch while every unrelated
+ * field remains a schema proxy. This deliberately supports the common,
+ * deterministic subset emitted by `conditionToCel`: truthiness, negation,
+ * equality, inequality, and scalar ordering. If the constrained run still
+ * does not create the resource, callers retain the established stub fallback
+ * rather than pretending the branch was captured losslessly.
+ */
+function analyzedBranchOverrides(
+  conditions: readonly { expression: string }[]
+): Map<string, unknown> {
+  const overrides = new Map<string, unknown>();
+  const referencePattern =
+    /schema\.spec\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)(?:\s*(==|!=|>=|<=|>|<)\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|true|false|null|-?\d+(?:\.\d+)?))?/g;
+
+  for (const condition of conditions) {
+    const expression = condition.expression.replace(/^\$\{/, '').replace(/\}$/, '');
+    for (const match of expression.matchAll(referencePattern)) {
+      const path = match[1];
+      if (!path || overrides.has(path)) continue;
+      const operator = match[2];
+      const literalSource = match[3];
+      if (operator && literalSource !== undefined) {
+        const literal = parseBranchConstraintLiteral(literalSource);
+        switch (operator) {
+          case '==':
+            overrides.set(path, literal);
+            break;
+          case '!=':
+            overrides.set(path, invertBranchConstraintLiteral(literal));
+            break;
+          case '>':
+            overrides.set(path, typeof literal === 'number' ? literal + 1 : literal);
+            break;
+          case '>=':
+            overrides.set(path, literal);
+            break;
+          case '<':
+            overrides.set(path, typeof literal === 'number' ? literal - 1 : literal);
+            break;
+          case '<=':
+            overrides.set(path, literal);
+            break;
+        }
+        continue;
+      }
+
+      const prefix = expression.slice(Math.max(0, (match.index ?? 0) - 8), match.index ?? 0);
+      overrides.set(path, !/!\s*(?:has\s*\()?\s*$/.test(prefix));
+    }
+  }
+  return overrides;
+}
+
+function captureAnalyzedBranchResource(
+  compositionFn: (...args: unknown[]) => unknown,
+  schemaDefinition: { spec: { json?: unknown }; status?: { json?: unknown } },
+  resourceId: string,
+  conditions: readonly { expression: string }[]
+): Enhanced<unknown, unknown> | undefined {
+  const overrides = analyzedBranchOverrides(conditions);
+  if (overrides.size === 0) return undefined;
+  try {
+    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+      schemaDefinition.spec.json,
+      schemaDefinition.status?.json
+    );
+    const constrainedSpec = createHybridSpecProxy(
+      realSchema.spec as Record<string, unknown>,
+      new Set(overrides.keys()),
+      overrides
+    );
+    const context = createCompositionContext(`analyzed-branch:${resourceId}`);
+    runWithCompositionContext(context, () => compositionFn(constrainedSpec));
+    return context.resources[resourceId] as Enhanced<unknown, unknown> | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function cloneResourceTree<T>(value: T): T {
@@ -2109,6 +2249,22 @@ function createTypedResourceGraph<
       resourcesWithKeys,
       serializationLogger
     );
+  copyCompositionAnalysisMetadata(statusMappings, analyzedStatusMappings);
+  for (const metadataKey of [
+    '__nestedCompositionFns',
+    '__nestedCompositionDefinitions',
+    '__nestedCompositionResources',
+    '__nestedCompositionSpecMappings',
+    '__nestedStatusCel',
+  ]) {
+    const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
+    if (descriptor && !Object.getOwnPropertyDescriptor(analyzedStatusMappings, metadataKey)) {
+      Object.defineProperty(analyzedStatusMappings, metadataKey, descriptor);
+    }
+  }
+  if (phaseBStatusMappings) {
+    copyCompositionAnalysisMetadata(statusMappings, phaseBStatusMappings);
+  }
 
   // 4. Analyze composition body for control flow patterns (must run before validation)
   const { compositionAnalysis, analysisState } = processCompositionBodyAnalysis(
@@ -2118,6 +2274,16 @@ function createTypedResourceGraph<
     serializationLogger,
     schemaDefinition as unknown as { spec: { json?: unknown } }
   );
+
+  // Control-flow analysis is accepted authoring semantics, so attach it before
+  // semantic capture rather than waiting for the legacy KRO serializer. The
+  // metadata store is non-enumerable and the merge is idempotent, which keeps
+  // the compatibility serializer safe while allowing both target compilers to
+  // consume the same analyzed iteration, activation, and template overrides.
+  if (compositionAnalysis) {
+    applyAnalysisToResources(resourcesWithKeys, compositionAnalysis);
+    analysisState.appliedToResources = true;
+  }
 
   // 5. Validate resource IDs and CEL expressions
   const validation = validateResourceGraphDefinition(resourcesWithKeys, analyzedStatusMappings);
@@ -2133,7 +2299,7 @@ function createTypedResourceGraph<
   }
 
   if (validation.warnings.length > 0) {
-    serializationLogger.warn('ResourceGraphDefinition validation warnings', {
+    serializationLogger.debug('ResourceGraphDefinition validation warnings', {
       warnings: validation.warnings.map((w) => ({
         field: w.field,
         error: w.error,
@@ -2148,12 +2314,13 @@ function createTypedResourceGraph<
     analyzedStatusMappings,
     evaluationContext
   );
+  copyCompositionAnalysisMetadata(statusMappings, optimizedStatusMappings);
   for (const metadataKey of [
-    '__originalCompositionFn',
     '__nestedCompositionFns',
     '__nestedCompositionDefinitions',
     '__nestedCompositionResources',
     '__nestedCompositionSpecMappings',
+    '__nestedStatusCel',
   ]) {
     const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
     if (descriptor) {
@@ -2162,7 +2329,7 @@ function createTypedResourceGraph<
   }
 
   if (optimizations.length > 0) {
-    serializationLogger.info('CEL expression optimizations applied', { optimizations });
+    serializationLogger.debug('CEL expression optimizations applied', { optimizations });
   }
 
   // 6. Build the composition re-execution function for direct factory
@@ -2195,6 +2362,7 @@ function createTypedResourceGraph<
       factoryOptions?: PublicFactoryOptions
     ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus> {
       assertDeploymentModeSupported(options, mode, definition.name);
+      const normalizedFactoryOptions = normalizePublicFactoryOptions(factoryOptions);
 
       if (mode === 'direct') {
         const directStatusMappings = reanalyzeStatusForDirectFactory(
@@ -2211,7 +2379,8 @@ function createTypedResourceGraph<
           schemaDefinition,
           statusBuilder,
           {
-            ...factoryOptions,
+            ...normalizedFactoryOptions,
+            semanticCapture: capture as CapturedCompositionRuntime<KroCompatibleType>,
             closures,
             statusMappings: directStatusMappings,
             compositionFn: declarativeCompositionFn,
@@ -2239,7 +2408,8 @@ function createTypedResourceGraph<
           schemaDefinition,
           analyzedStatusMappings,
           {
-            ...factoryOptions,
+            ...normalizedFactoryOptions,
+            semanticCapture: capture as CapturedCompositionRuntime<KroCompatibleType>,
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
@@ -2271,7 +2441,10 @@ function createTypedResourceGraph<
       }
     },
 
-    toYaml(specOrOptions?: TSpec | ToYamlOptions): string {
+    toYaml(
+      specOrOptions?: TSpec | ToYamlOptions,
+      materializationOptions?: StaticYamlMaterializationOptions
+    ): string {
       // Graph-level YAML is always KRO declarative output: with no argument
       // it emits an RGD, and with a spec it emits a custom-resource instance.
       assertDeploymentModeSupported(options, 'kro', definition.name);
@@ -2281,243 +2454,154 @@ function createTypedResourceGraph<
           const factory = this.factory('kro', specOrOptions) as KroResourceFactory<TSpec, TStatus>;
           return factory.toYaml();
         }
-        return this.factory('kro').toYaml(specOrOptions as TSpec);
+        return this.factory('kro').toYaml(specOrOptions as TSpec, materializationOptions);
       }
 
-      // Apply composition body analysis results (guard: only once)
-      if (compositionAnalysis && !analysisState.appliedToResources) {
-        analysisState.appliedToResources = true;
-        if (
-          compositionAnalysis.resources.size > 0 ||
-          compositionAnalysis.templateOverrides.size > 0
-        ) {
-          applyAnalysisToResources(resourcesWithKeys, compositionAnalysis);
-          serializationLogger.debug('Applied composition body analysis', {
-            analyzedResources: compositionAnalysis.resources.size,
-            templateOverrides: compositionAnalysis.templateOverrides.size,
-            errors: compositionAnalysis.errors.length,
-          });
-        }
-      }
-
-      // Collect nested composition status CEL mappings from the composition context.
-      // These enable inlining the inner composition's real CEL expressions instead
-      // of referencing virtual nested composition IDs.
-      // Extract nested composition status CEL mappings attached by
-      // executeCompositionCore via Reflect.set. Must use
-      // Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's
-      // get handler which would return a KubernetesRef instead of the
-      // actual Record<string, string>.
-      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(
-        statusMappings,
-        '__nestedStatusCel'
-      );
-      const nestedStatusCel: Record<string, string> =
-        (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
-
-      serializationLogger.debug('Nested status CEL extraction', {
-        hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,
-        keys: Object.keys(nestedStatusCel),
-        statusMappingsHasField: '__nestedStatusCel' in (statusMappings as Record<string, unknown>),
-      });
-
-      // HOIST EVERY owned Namespace OUT of the shared RGD graph (the unconditional
-      // model — typekro NEVER emits a Namespace into RGD YAML). Selection is trivially
-      // `kind === 'Namespace'` (see {@link selectHoistedNamespaces}). Leaving a
-      // Namespace a graph CHILD would let deleting the instance garbage-collect the
-      // namespace holding its own finalizer; the factory emits it as a sibling created
-      // deps-first (and torn down after the RGD) instead. This keeps the graph-level
-      // RGD (`graph.toYaml()`) consistent with the factory's RGD
-      // (`factory('kro').toYaml()`), both of which drop it. Any remaining reference to
-      // a hoisted Namespace's `metadata.name` is rewritten to that Namespace's own
-      // concrete name expression (finding #3) so the RGD carries no dangling ref.
-      const hoistedNamespaces = selectHoistedNamespaces(resourcesWithKeys);
-      const hoistedNamespaceIds = new Set(hoistedNamespaces.keys());
-      const graphResources =
-        hoistedNamespaces.size === 0
-          ? resourcesWithKeys
-          : (rewriteHoistedNamespaceReferences(
-              Object.fromEntries(
-                Object.entries(resourcesWithKeys).filter(([id]) => !hoistedNamespaceIds.has(id))
-              ) as Record<string, KubernetesResource>,
-              hoistedNamespaces
-            ) as typeof resourcesWithKeys);
-
-      // BLOCKER #2 — apply the SAME status-reference rewriting the FACTORY path
-      // already does (kro-factory.ts `buildRgdYaml`) to this graph/composition path.
-      // Removing a hoisted Namespace from `graphResources` is not enough: the status
-      // mappings, nested-composition CEL, and status overrides can ALSO reference it
-      // (e.g. `status.nsName: ${ownedNamespace.metadata.name}`), which would emit an
-      // RGD with `resources:[]` for that id and a dangling `${...}` KRO rejects.
-      // Rewrite every such reference to the Namespace's own name expression (finding
-      // #3), preserving the non-enumerable composition metadata on optimizedStatusMappings.
-      let graphStatusMappings = optimizedStatusMappings;
-      if (hoistedNamespaces.size > 0) {
-        const rewritten = rewriteHoistedNamespaceRefsInValue(
-          optimizedStatusMappings,
-          hoistedNamespaces
-        );
-        if (rewritten !== optimizedStatusMappings) {
-          // The rewrite clones via Object.entries, dropping non-enumerable
-          // composition metadata — re-attach it from the original statusMappings.
-          for (const metadataKey of [
-            '__originalCompositionFn',
-            '__nestedCompositionFns',
-            '__nestedCompositionDefinitions',
-            '__nestedCompositionResources',
-            '__nestedCompositionSpecMappings',
-            '__nestedStatusCel',
-          ]) {
-            const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
-            if (descriptor) Object.defineProperty(rewritten, metadataKey, descriptor);
-          }
-        }
-        graphStatusMappings = rewritten;
-
-        // #6 — REJECT (throw) HONESTLY, never silently drop: status fields that resolve
-        // ONLY to a hoisted Namespace become a schema-only expression
-        // (`schema.spec.namespace`), which KRO status CEL cannot evaluate, so they
-        // cannot be represented in the KRO status schema. Fail loudly naming the
-        // field(s) rather than ship a weakened status API. Resource-derived sibling
-        // fields are unaffected.
-        assertNoHoistWeakenedStatusFields(
-          optimizedStatusMappings as Record<string, unknown>,
-          hoistedNamespaces,
-          definition.name
-        );
-      }
-      const graphNestedStatusCel =
-        hoistedNamespaces.size === 0
-          ? nestedStatusCel
-          : (rewriteHoistedNamespaceRefsInValue(nestedStatusCel, hoistedNamespaces) as Record<
-              string,
-              string
-            >);
-
-      const kroSchema = generateKroSchemaFromArktype(
-        definition.name,
-        schemaDefinition,
-        graphResources,
-        graphStatusMappings,
-        Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined,
-        options?.schemaFieldValidations
-      );
-
-      if (definition.group) {
-        kroSchema.group = definition.group;
-      }
-
-      // Attach nested status CEL mappings to the schema as a non-enumerable
-      // property (same pattern as __ternaryConditionals, __omitFields).
-      // Non-enumerable so it doesn't appear in the YAML output, but
-      // accessible via KroSimpleSchemaWithMetadata for the YAML serializer
-      // to resolve virtual composition IDs in resource templates.
-      if (Object.keys(graphNestedStatusCel).length > 0) {
-        Object.defineProperty(kroSchema, '__nestedStatusCel', {
-          value: graphNestedStatusCel,
-          enumerable: false,
-        });
-      }
-
-      // Inject status overrides into schema status section.
-      // Convert "..." to '...' in CEL string literals for YAML compatibility.
-      //
-      // KRO status CEL can only reference resource fields — it has no `schema`
-      // identifier in the status environment (even a bare `${schema.spec.x}`
-      // is rejected with "references unknown identifiers: [schema]"). So a
-      // status override that references ONLY schema.spec (no resource) must be
-      // left out of the KRO schema and instead hydrated client-side by the
-      // factory's inline-CEL evaluator (see `evaluateStaticFieldValue`).
-      const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
-      if (statusOverrides.length > 0) {
-        // Classify against the HOISTED graph's resource ids (the hoisted Namespace
-        // is no longer a graph resource) so an override that referenced only it is
-        // treated correctly after rewriting.
-        const resourceIdList = Object.keys(graphResources);
-        const nestedCelForClassification =
-          Object.keys(graphNestedStatusCel).length > 0 ? graphNestedStatusCel : undefined;
-        for (const override of statusOverrides) {
-          // BLOCKER #2 — rewrite any reference to a hoisted Namespace in the override
-          // expression too (finding #6), so a status override never dangles at the
-          // removed id (mirrors the factory path).
-          const celExpression = rewriteHoistedNamespaceRefsInValue(
-            override.celExpression,
-            hoistedNamespaces
-          );
-          // Schema-only overrides (no resource refs) are hydrated client-side by
-          // the static-field path, like any other static status field — KRO
-          // status CEL cannot reference `schema.spec.*`. Only inject the
-          // resource-referencing (dynamic) overrides into the KRO schema.
-          if (isStaticExpression(celExpression, nestedCelForClassification, resourceIdList))
-            continue;
-          if (!kroSchema.status) {
-            kroSchema.status = {};
-          }
-          const yamlSafe = celExpression.replace(/"([^"\\]*)"/g, "'$1'");
-          kroSchema.status[override.propertyPath] = yamlSafe;
-        }
-      }
-
-      // Apply ternary conditionals (once only — guard prevents
-      // double-processing if toYaml() is called multiple times).
-      // Note: omit() wrapping for optional fields is no longer a
-      // post-processing step — it's applied inline during ref-to-CEL
-      // conversion via `SerializationContext.omitFields`, which reads
-      // from `kroSchema.__omitFields` inside `serializeResourceGraphToYaml`.
-      if (!analysisState.ternaryAndOmitApplied) {
-        analysisState.ternaryAndOmitApplied = true;
-
-        if (kroSchema.__ternaryConditionals?.length) {
-          applyTernaryConditionalsToResources(
-            resourcesWithKeys,
-            kroSchema.__ternaryConditionals,
-            kroSchema.__nestedStatusCel
-          );
-        }
-      }
-
-      const rgdYaml = serializeResourceGraphToYaml(
-        definition.name,
-        graphResources,
-        options,
-        kroSchema
-      );
-
-      // BLOCKER #2 — the SAME post-serialization dangling-reference assertion the
-      // factory path runs (kro-factory.ts `assertNoDanglingHoistedReferences`). After
-      // hoisting an owned Namespace out of the graph, NO reference to it may remain
-      // anywhere in the emitted RGD (resource templates, status CEL, nested CEL,
-      // overrides). If one slipped through a form the rewrite didn't structurally
-      // cover, fail LOUDLY here instead of shipping an RGD KRO rejects at runtime.
-      const dangling = findDanglingHoistedReference(rgdYaml, hoistedNamespaceIds);
-      if (dangling !== undefined) {
-        throw new ValidationError(
-          `Hoisting the owned Namespace left a dangling reference to removed resource "${dangling}" ` +
-            `in the emitted RGD for composition "${definition.name}". This would make KRO reject the ` +
-            `graph. Report this as a typekro bug (the reference form was not structurally rewritten).`,
-          'ResourceGraphDefinition',
-          definition.name,
-          `status/${dangling}`
-        );
-      }
-
-      // Singleton owners are deployed once outside any consuming instance's
-      // ApplySet (see `singleton(...)`). The factory's `deploy()` creates them
-      // imperatively; for the GitOps `toYaml()` path we must emit their RGDs too,
-      // deps-first, or the consuming RGD's externalRef dangles. No-op when the
-      // composition uses no singletons.
-      const singletonDefs =
-        (this as { _singletonDefinitions?: SingletonDefinitionRecord[] })._singletonDefinitions ??
-        [];
-      if (singletonDefs.length === 0) return rgdYaml;
-      return joinYamlDocuments(singletonRgdYamls(singletonDefs), rgdYaml);
+      // The graph facade and explicit factory share one artifact-compiled RGD path.
+      return (this.factory('kro') as KroResourceFactory<TSpec, TStatus>).toYaml();
     },
   };
 
   // 8. Wrap with cross-composition magic proxy
-  return wrapWithResourceGraphProxy(
-    baseResourceGraph as TypedResourceGraph<TSpec, TStatus>,
+  const graph = wrapWithResourceGraphProxy(
+    baseResourceGraph as unknown as TypedResourceGraph<TSpec, TStatus>,
     resourcesWithKeys,
     serializationLogger
   );
+
+  // 9. Capture composition semantics once for inspection and planning. The
+  // executable callbacks remain in a WeakMap-backed internal record and never
+  // enter public DTOs or YAML/JSON serialization.
+  const potentialCapabilities = [
+    ...(Object.keys(closures).length > 0
+      ? [
+          {
+            id: 'typekro.runtime-closure',
+            version: 1,
+            host: 'standalone' as const,
+            output: 'live' as const,
+          },
+        ]
+      : []),
+  ];
+  const rawStatusMappingsByKey = new Map<string, unknown>(Object.entries(statusMappings));
+  const nestedStatusMappings =
+    (Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel')?.value as
+      | Record<string, string>
+      | undefined) ?? {};
+  const capture: CapturedCompositionRuntime<TSpec> = {
+    ir: {
+      version: 1,
+      definition: {
+        name: definition.name,
+        apiVersion: definition.apiVersion ?? 'v1alpha1',
+        kind: definition.kind,
+        ...(definition.group !== undefined ? { group: definition.group } : {}),
+        ...(definition.revision !== undefined ? { revision: definition.revision } : {}),
+        specSchema: definition.spec,
+        statusSchema: definition.status,
+      },
+      resources: resourcesWithKeys,
+      statusMappings: Object.fromEntries(
+        Object.keys(optimizedStatusMappings).map((key) => [
+          key,
+          containsExplicitPlanValue(rawStatusMappingsByKey.get(key))
+            ? rawStatusMappingsByKey.get(key)
+            : optimizedStatusMappings[key],
+        ])
+      ),
+      nestedStatusMappings,
+      compatibilityClosures: Object.keys(closures).sort(),
+      potentialCapabilities,
+      canonicalizers: [],
+    },
+    diagnosticSource:
+      getCompositionAnalysisMetadata(optimizedStatusMappings)?.originalCompositionFn?.toString() ??
+      `${resourceBuilder.toString()}\n${statusBuilder.toString()}`,
+    validate: (spec) =>
+      validateSpec(spec, schemaDefinition, { kind: definition.kind, name: definition.name }),
+    materialize: (spec, planOptions) => {
+      const factory = graph.factory('direct', { plan: planOptions }) as DirectResourceFactory<
+        TSpec,
+        TStatus
+      > & {
+        createLegacyResourceGraphForInstance(
+          spec: TSpec,
+          instanceNameOverride?: string
+        ): import('../types/deployment.js').DeploymentResourceGraph;
+      };
+      return factory.createLegacyResourceGraphForInstance(spec);
+    },
+    representationRequirements: () => {
+      const definitions =
+        (graph as { _singletonDefinitions?: SingletonDefinitionRecord[] })._singletonDefinitions ??
+        [];
+      const uniqueDefinitions = [
+        ...new Map(definitions.map((singleton) => [singleton.key, singleton] as const)).values(),
+      ].sort((left, right) => left.key.localeCompare(right.key));
+      const diagnostics: import('../planning/types.js').PlanDiagnostic[] = [];
+      const requirements = uniqueDefinitions.flatMap((singleton) => {
+        const owner = singletonOwnerInstanceManifests([singleton])[0];
+        const lowered = lowerPlanValue({
+          singletonKey: singleton.key,
+          owner,
+          lifecycle: {
+            creation: 'create',
+            management: 'authoritative',
+            deletion: 'delete-when-unused',
+            instancing: { kind: 'per-cluster' },
+            sharing: 'shareable',
+            unusedEvidence: {
+              provider: 'typekro.singleton-consumer-registry',
+              version: 1,
+              inputs: {
+                singletonKey: singleton.key,
+                registryNamespace: singleton.registryNamespace,
+              },
+            },
+          },
+        });
+        diagnostics.push(
+          ...lowered.diagnostics.map((diagnostic) => ({
+            ...diagnostic,
+            path: `$.representationRequirements.singleton.${singleton.id}${
+              diagnostic.path?.slice(1) ?? ''
+            }`,
+          }))
+        );
+        return (['direct', 'kro'] as const).map((target) => ({
+          target,
+          kind: 'singleton-owner',
+          extension: 'typekro.singleton-owner',
+          version: 1,
+          inputs: lowered.value,
+        }));
+      });
+      return { requirements, diagnostics };
+    },
+    inspect: () => inspectCapturedComposition(capture),
+    plan: (spec, planOptions = {}) => planCapturedComposition(capture, spec, planOptions),
+    planTemplate: (planOptions = {}) =>
+      planCapturedTemplate(capture, schema.spec as TSpec, planOptions),
+    planSymbolic: (spec, planOptions = {}) =>
+      planCapturedTemplate(capture, spec, planOptions),
+    planMaterialized: (spec, materializedGraph, planOptions = {}) =>
+      planMaterializedComposition(capture, spec, materializedGraph, planOptions),
+  };
+  Object.defineProperties(graph, {
+    inspect: {
+      configurable: false,
+      enumerable: false,
+      value: capture.inspect,
+      writable: false,
+    },
+    plan: {
+      configurable: false,
+      enumerable: false,
+      value: capture.plan,
+      writable: false,
+    },
+  });
+  setCompositionCapture(graph, capture);
+  return graph;
 }

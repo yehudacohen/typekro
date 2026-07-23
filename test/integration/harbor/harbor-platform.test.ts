@@ -452,8 +452,8 @@ describeOrSkip(
         cacheReady: true,
         networkPolicyReady: true,
       });
-      expect(installation.status.observedGeneration).toBeGreaterThan(0);
-      expect(installation.status.conditions.length).toBeGreaterThan(0);
+      expect(installation.status.release.observedGeneration).toBeGreaterThan(0);
+      expect(installation.status.release.conditions.length).toBeGreaterThan(0);
       const ping = await fetch(`${apiOrigin}/api/v2.0/ping`);
       expect(await ping.text()).toBe('Pong');
 
@@ -462,8 +462,8 @@ describeOrSkip(
       // HelmRelease generation.
       const updated = await harborFactory.deploy({ ...desired, metricsEnabled: true });
       expect(updated.status).toMatchObject({ ready: true, failed: false, phase: 'Ready' });
-      expect(updated.status.observedGeneration).toBeGreaterThanOrEqual(
-        installation.status.observedGeneration
+      expect(updated.status.release.observedGeneration).toBeGreaterThanOrEqual(
+        installation.status.release.observedGeneration
       );
       if (deploymentMode === 'kro') {
         const owner = JSON.parse(

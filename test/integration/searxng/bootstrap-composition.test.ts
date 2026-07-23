@@ -139,7 +139,9 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     expect(yaml).toContain('kind: Deployment');
     expect(yaml).toContain('kind: Service');
     expect(yaml).toContain('kind: ConfigMap');
-    expect(yaml).toContain('kind: Namespace');
+    // Owned namespaces are TypeKro-managed siblings, not KRO ApplySet
+    // members, so the RGD must not contain a Namespace resource.
+    expect(yaml).not.toContain('kind: Namespace');
 
     // CEL expressions in status (not raw property access)
     expect(yaml).toContain('.exists(c,');

@@ -1,15 +1,9 @@
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import {
-  afterAll,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  setDefaultTimeout,
-} from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { buildContainer } from '../../../src/core/containers/index.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { createBunCompatibleCoreV1Api } from '../../../src/core/kubernetes/index.js';
 import {
   createKubernetesObjectApiClient,
   deleteNamespaceIfExists,
@@ -42,9 +36,7 @@ const liveImagesAvailable =
   (process.env.DAGSTER_TEST_USER_CODE_IMAGE !== undefined &&
     configuredDagsterSystemImage !== undefined);
 const describeLiveOrSkip =
-  (clusterAvailable && liveImagesAvailable) || requireClusterTests
-    ? describe
-    : describe.skip;
+  (clusterAvailable && liveImagesAvailable) || requireClusterTests ? describe : describe.skip;
 
 function splitImage(image: string): { repository: string; tag: string } {
   const separatorIndex = image.lastIndexOf(':');
@@ -93,6 +85,33 @@ async function resolveValidationImage(): Promise<string | undefined> {
   });
 
   return result.imageUri;
+}
+
+function loadLocalImageIntoKindIfNeeded(image: string): void {
+  const inspect = spawnSync('docker', ['image', 'inspect', image], {
+    stdio: 'ignore',
+    timeout: 10000,
+  });
+  if (inspect.status !== 0) return;
+
+  const context = spawnSync('kubectl', ['config', 'current-context'], {
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  const currentContext = context.status === 0 ? context.stdout.trim() : '';
+  if (!currentContext.startsWith('kind-')) return;
+
+  const clusterName = currentContext.slice('kind-'.length);
+  const load = spawnSync('kind', ['load', 'docker-image', image, '--name', clusterName], {
+    encoding: 'utf8',
+    timeout: 300000,
+  });
+  if (load.status !== 0) {
+    throw new Error(
+      `Failed to load local Dagster validation image ${image} into kind cluster ${clusterName}: ` +
+        `${load.stderr || load.stdout}`.trim()
+    );
+  }
 }
 
 async function deleteClusterObjectIfExists(
@@ -144,11 +163,21 @@ async function resetDagsterKroDefinition(kubeConfig: k8s.KubeConfig): Promise<vo
     'ResourceGraphDefinition',
     'dagster-bootstrap'
   );
-  await deleteClusterObjectIfExists(
-    kubeConfig,
-    'apiextensions.k8s.io/v1',
-    'CustomResourceDefinition',
-    'dagsterbootstraps.kro.run'
+  // Generated CRDs are intentionally reusable cluster APIs. Deleting one can
+  // strand it in customresourcecleanup/Terminating and block the next RGD, so
+  // reset only the definition and let KRO reuse the established CRD.
+}
+
+async function deleteDagsterPvcs(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
+  const coreApi = createBunCompatibleCoreV1Api(kubeConfig);
+  const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace }).catch(() => ({
+    items: [],
+  }));
+  await Promise.allSettled(
+    pvcs.items
+      .map((pvc) => pvc.metadata?.name)
+      .filter((name): name is string => Boolean(name))
+      .map((name) => coreApi.deleteNamespacedPersistentVolumeClaim({ name, namespace }))
   );
 }
 
@@ -159,8 +188,8 @@ async function resetDagsterKroDefinition(kubeConfig: k8s.KubeConfig): Promise<vo
 // integration path when live prerequisites are available.
 describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
   let kubeConfig: k8s.KubeConfig;
-  let factory: { deleteInstance(instanceName: string): Promise<void> } | undefined;
-  let kroFactory: { deleteInstance(instanceName: string): Promise<void> } | undefined;
+  let factory: { deleteInstance(instanceName: string): Promise<unknown> } | undefined;
+  let kroFactory: { deleteInstance(instanceName: string): Promise<unknown> } | undefined;
   const suffix = Math.random().toString(36).slice(2, 7);
   const factoryNamespace = `typekro-dagster-${suffix}`;
   const kroFactoryNamespace = `typekro-dagster-kro-${suffix}`;
@@ -186,6 +215,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
 
     const validationImage = await resolveValidationImage();
     if (validationImage) {
+      loadLocalImageIntoKindIfNeeded(validationImage);
       userCodeImage = splitImage(validationImage);
       dagsterSystemImage = splitImage(validationImage);
     }
@@ -197,6 +227,14 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
   });
 
   afterAll(async () => {
+    // The PostgreSQL chart retains its StatefulSet claim independently of the
+    // HelmRelease graph. Start deletion of these test-owned claims before the
+    // factories remove the consuming Pods and their owned namespaces.
+    await Promise.allSettled([
+      deleteDagsterPvcs(dagsterNamespace, kubeConfig),
+      deleteDagsterPvcs(dagsterKroNamespace, kubeConfig),
+    ]);
+
     if (kroFactory) {
       try {
         await kroFactory.deleteInstance('dagster-kro-test');
@@ -245,9 +283,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
   });
 
   it('Deploy Dagster through the direct factory and hydrate HelmRelease status', async () => {
-    const { dagsterBootstrap } = await import(
-      '../../../src/factories/dagster/index.js'
-    );
+    const { dagsterBootstrap } = await import('../../../src/factories/dagster/index.js');
 
     const directFactory = dagsterBootstrap.factory('direct', {
       namespace: factoryNamespace,
@@ -301,9 +337,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
   });
 
   it('Deploy Dagster through KRO and reconcile the HelmRelease to Ready', async () => {
-    const { dagsterBootstrap } = await import(
-      '../../../src/factories/dagster/index.js'
-    );
+    const { dagsterBootstrap } = await import('../../../src/factories/dagster/index.js');
 
     const createdKroFactory = dagsterBootstrap.factory('kro', {
       namespace: kroFactoryNamespace,
@@ -360,9 +394,7 @@ describe('Dagster bootstrap composition integration surfaces', () => {
   const factoryNamespace = 'typekro-dagster-test';
 
   it('Provide an architecture-compatible live validation fixture image path', async () => {
-    const dockerfile = Bun.file(
-      'test/integration/dagster/fixtures/arm64-validation/Dockerfile'
-    );
+    const dockerfile = Bun.file('test/integration/dagster/fixtures/arm64-validation/Dockerfile');
     const definitions = Bun.file(
       'test/integration/dagster/fixtures/arm64-validation/definitions.py'
     );
@@ -382,9 +414,7 @@ describe('Dagster bootstrap composition integration surfaces', () => {
   });
 
   it('Generate ResourceGraphDefinition YAML for KRO mode without cluster reads', async () => {
-    const { dagsterBootstrap } = await import(
-      '../../../src/factories/dagster/index.js'
-    );
+    const { dagsterBootstrap } = await import('../../../src/factories/dagster/index.js');
 
     const yaml = dagsterBootstrap.toYaml();
 
@@ -411,9 +441,7 @@ describe('Dagster bootstrap composition integration surfaces', () => {
   });
 
   it('Support both direct and KRO factory strategies for Dagster bootstrap', async () => {
-    const { dagsterBootstrap } = await import(
-      '../../../src/factories/dagster/index.js'
-    );
+    const { dagsterBootstrap } = await import('../../../src/factories/dagster/index.js');
 
     const directFactory = dagsterBootstrap.factory('direct', {
       namespace: factoryNamespace,

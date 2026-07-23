@@ -31,7 +31,7 @@
  * `createKubernetesClientProviderWithKubeConfig()` instead.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import {
   DEFAULT_BACKOFF_MULTIPLIER,
   DEFAULT_CLUSTER_READY_TIMEOUT,
@@ -49,6 +49,7 @@ import {
   type HttpTimeoutConfig,
   isBunRuntime,
 } from './bun-api-client.js';
+import { getKubernetesClientNode } from './client-node-runtime.js';
 
 export interface KubernetesClientProviderDebugState {
   initialized: boolean;
@@ -160,6 +161,24 @@ export interface KubernetesClientConfig {
    * Configures timeouts for different types of Kubernetes API operations
    */
   httpTimeouts?: HttpTimeoutConfig;
+}
+
+/** A host-provided source for one kubeconfig credential field. */
+export interface KubeConfigCredentialBinding {
+  readonly kind: 'environment';
+  readonly name: string;
+}
+
+/** JSON-pointer path to a credential source available in the operation host. */
+export type KubeConfigCredentialBindings = Readonly<Record<string, KubeConfigCredentialBinding>>;
+
+/**
+ * Durable-host policy for reconstructing Kubernetes credentials without storing plaintext.
+ * When omitted, re-derived auth blocks may be serialized but static credentials fail closed.
+ */
+export interface DurableKubeConfigOptions {
+  readonly source?: { readonly kind: 'default' } | { readonly kind: 'file'; readonly path: string };
+  readonly credentialBindings?: KubeConfigCredentialBindings;
 }
 
 /**
@@ -343,7 +362,7 @@ export class KubernetesClientProvider {
    */
   getCoreV1Api(): k8s.CoreV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('CoreV1Api', k8s.CoreV1Api);
+    return this.getCachedClient('CoreV1Api', getKubernetesClientNode().CoreV1Api);
   }
 
   /**
@@ -355,7 +374,7 @@ export class KubernetesClientProvider {
    */
   getAppsV1Api(): k8s.AppsV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('AppsV1Api', k8s.AppsV1Api);
+    return this.getCachedClient('AppsV1Api', getKubernetesClientNode().AppsV1Api);
   }
 
   /**
@@ -367,7 +386,7 @@ export class KubernetesClientProvider {
    */
   getCustomObjectsApi(): k8s.CustomObjectsApi {
     this.ensureInitialized();
-    return this.getCachedClient('CustomObjectsApi', k8s.CustomObjectsApi);
+    return this.getCachedClient('CustomObjectsApi', getKubernetesClientNode().CustomObjectsApi);
   }
 
   /**
@@ -379,7 +398,7 @@ export class KubernetesClientProvider {
    */
   getBatchV1Api(): k8s.BatchV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('BatchV1Api', k8s.BatchV1Api);
+    return this.getCachedClient('BatchV1Api', getKubernetesClientNode().BatchV1Api);
   }
 
   /**
@@ -391,7 +410,7 @@ export class KubernetesClientProvider {
    */
   getNetworkingV1Api(): k8s.NetworkingV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('NetworkingV1Api', k8s.NetworkingV1Api);
+    return this.getCachedClient('NetworkingV1Api', getKubernetesClientNode().NetworkingV1Api);
   }
 
   /**
@@ -403,7 +422,10 @@ export class KubernetesClientProvider {
    */
   getRbacAuthorizationV1Api(): k8s.RbacAuthorizationV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('RbacAuthorizationV1Api', k8s.RbacAuthorizationV1Api);
+    return this.getCachedClient(
+      'RbacAuthorizationV1Api',
+      getKubernetesClientNode().RbacAuthorizationV1Api
+    );
   }
 
   /**
@@ -415,7 +437,7 @@ export class KubernetesClientProvider {
    */
   getStorageV1Api(): k8s.StorageV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('StorageV1Api', k8s.StorageV1Api);
+    return this.getCachedClient('StorageV1Api', getKubernetesClientNode().StorageV1Api);
   }
 
   /**
@@ -425,7 +447,7 @@ export class KubernetesClientProvider {
    */
   getApiExtensionsV1Api(): k8s.ApiextensionsV1Api {
     this.ensureInitialized();
-    return this.getCachedClient('ApiextensionsV1Api', k8s.ApiextensionsV1Api);
+    return this.getCachedClient('ApiextensionsV1Api', getKubernetesClientNode().ApiextensionsV1Api);
   }
 
   /**
@@ -702,7 +724,7 @@ export class KubernetesClientProvider {
    * Create a new KubeConfig with the provided configuration
    */
   private createKubeConfig(config: KubernetesClientConfig): k8s.KubeConfig {
-    const kc = new k8s.KubeConfig();
+    const kc = new (getKubernetesClientNode().KubeConfig)();
 
     // If complete cluster/user configuration is provided, use it directly
     if (config.cluster && config.user) {

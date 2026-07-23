@@ -18,6 +18,66 @@
  * first-class citizens the same way — no core files need editing.
  */
 
+import type { KubernetesResource } from '../types/kubernetes.js';
+import { TypeKroError } from '../errors.js';
+
+/** Pure desired-state canonicalizer owned by a resource factory. */
+export interface DesiredResourceCanonicalizer {
+  /** Stable canonicalizer identity included in semantic-plan provenance. */
+  readonly id: string;
+  /** Stable canonicalizer revision included in semantic digests. */
+  readonly revision: string;
+  /**
+   * Deterministic, cluster-independent desired-state normalization.
+   *
+   * This function receives no Kubernetes client or environment context by
+   * design. Planning executes it twice in strict mode to detect ambient
+   * nondeterminism.
+   */
+  readonly canonicalize: (resource: KubernetesResource) => KubernetesResource;
+}
+
+/** Which side of a desired/live comparison is being canonicalized. */
+export type ResourceComparisonSide = 'desired' | 'live';
+
+/** Factory-owned normalization used only while comparing desired and live resources. */
+export interface LiveResourceCanonicalizer {
+  /** Stable identity included in comparison evidence and diagnostics. */
+  readonly id: string;
+  /** Stable revision used to distinguish comparison behavior changes. */
+  readonly revision: string;
+  /**
+   * Normalize an API-specific desired or live shape before comparison.
+   *
+   * Unlike desired canonicalization, this hook does not alter semantic plans or
+   * artifact digests. It must still be deterministic and must not mutate its input.
+   */
+  readonly canonicalize: (
+    resource: KubernetesResource,
+    side: ResourceComparisonSide
+  ) => KubernetesResource;
+}
+
+/**
+ * Target-specific representation input declared by the factory that created a
+ * resource. Planning lowers `inputs` into canonical PlanValue data before it
+ * becomes part of a DesiredStatePlan.
+ */
+export interface FactoryRepresentationRequirement {
+  readonly target: 'direct' | 'kro';
+  readonly kind: string;
+  readonly extension: string;
+  readonly version: number;
+  readonly inputs: unknown;
+}
+
+/** Pure producer for factory-owned representation requirements. */
+export interface FactoryRepresentationRequirementProducer {
+  readonly id: string;
+  readonly revision: string;
+  readonly produce: (resource: KubernetesResource) => readonly FactoryRepresentationRequirement[];
+}
+
 /** Metadata for a registered factory. */
 export interface FactoryRegistration {
   /** The factory function name as it appears in source code (e.g. 'Deployment', 'helmRelease'). */
@@ -35,6 +95,15 @@ export interface FactoryRegistration {
    * or `db` will match resources of this kind.
    */
   readonly semanticAliases?: readonly string[];
+
+  /** Optional pure desired-state canonicalizer used before semantic digesting. */
+  readonly desiredCanonicalizer?: DesiredResourceCanonicalizer;
+
+  /** Optional deterministic API-specific canonicalizer used only for live comparison. */
+  readonly liveCanonicalizer?: LiveResourceCanonicalizer;
+
+  /** Optional pure target-representation declarations for resources from this factory. */
+  readonly representationRequirements?: FactoryRepresentationRequirementProducer;
 }
 
 /**
@@ -46,7 +115,12 @@ export interface FactoryRegistration {
  */
 const factoriesByName = new Map<string, FactoryRegistration>();
 const factoriesByKind = new Map<string, FactoryRegistration[]>();
+const factoriesByGvk = new Map<string, FactoryRegistration[]>();
 const semanticAliasIndex = new Map<string, string[]>(); // alias → candidate kind[]
+
+function gvkKey(apiVersion: string, kind: string): string {
+  return `${apiVersion.toLowerCase()}\u0000${kind.toLowerCase()}`;
+}
 
 // ---------- Public API ----------
 
@@ -54,8 +128,10 @@ const semanticAliasIndex = new Map<string, string[]>(); // alias → candidate k
  * Register a factory's metadata. Call this at module scope in your factory
  * file so the registry is populated when the factory is imported.
  *
- * Safe to call multiple times with the same factoryName — subsequent calls
- * overwrite silently (e.g. when a file is re-imported in tests).
+ * Safe to call multiple times with the same factoryName — ordinary metadata
+ * overwrites silently (e.g. when a file is re-imported in tests), while a
+ * registered canonicalizer may only be repeated with the same identity and
+ * revision. Changing or removing canonical semantics fails loudly.
  *
  * @example
  * ```ts
@@ -75,10 +151,16 @@ const semanticAliasIndex = new Map<string, string[]>(); // alias → candidate k
 export function registerFactory(registration: FactoryRegistration): void {
   const { factoryName, kind } = registration;
 
-  // Remove old entry if re-registering (e.g. in tests)
   const old = factoriesByName.get(factoryName);
+  assertCompatibleCanonicalizer(registration, 'desiredCanonicalizer');
+  assertCompatibleCanonicalizer(registration, 'liveCanonicalizer');
+
+  // Re-registration remains compatible for ordinary factory metadata. Exact
+  // canonicalizer identity/revision registration is idempotent; conflicts for
+  // one GVK fail above before any index is mutated.
   if (old) {
     removeFromKindIndex(old);
+    removeFromGvkIndex(old);
     removeFromSemanticIndex(old);
   }
 
@@ -88,6 +170,11 @@ export function registerFactory(registration: FactoryRegistration): void {
   const kindEntries = factoriesByKind.get(kind.toLowerCase()) ?? [];
   kindEntries.push(registration);
   factoriesByKind.set(kind.toLowerCase(), kindEntries);
+
+  const key = gvkKey(registration.apiVersion, kind);
+  const gvkEntries = factoriesByGvk.get(key) ?? [];
+  gvkEntries.push(registration);
+  factoriesByGvk.set(key, gvkEntries);
 
   // Semantic alias index
   if (registration.semanticAliases) {
@@ -147,6 +234,19 @@ export function getFactoryRegistration(factoryName: string): FactoryRegistration
   return factoriesByName.get(factoryName);
 }
 
+/** Get all registrations that produce a Kubernetes kind. */
+export function getFactoryRegistrationsForKind(kind: string): readonly FactoryRegistration[] {
+  return [...(factoriesByKind.get(kind.toLowerCase()) ?? [])];
+}
+
+/** Get all registrations for an exact Kubernetes apiVersion/kind pair. */
+export function getFactoryRegistrationsForGVK(
+  apiVersion: string,
+  kind: string
+): readonly FactoryRegistration[] {
+  return [...(factoriesByGvk.get(gvkKey(apiVersion, kind)) ?? [])];
+}
+
 /**
  * Get all registered factory names. Useful for diagnostics.
  */
@@ -167,10 +267,67 @@ export function getRegisteredFactoryCount(): number {
 export function clearFactoryRegistry(): void {
   factoriesByName.clear();
   factoriesByKind.clear();
+  factoriesByGvk.clear();
   semanticAliasIndex.clear();
 }
 
 // ---------- Internal helpers ----------
+
+function assertCompatibleCanonicalizer(
+  registration: FactoryRegistration,
+  field: 'desiredCanonicalizer' | 'liveCanonicalizer'
+): void {
+  const incoming = registration[field];
+  const previous = factoriesByName.get(registration.factoryName)?.[field];
+  if (
+    previous &&
+    (!incoming || previous.id !== incoming.id || previous.revision !== incoming.revision)
+  ) {
+    throwCanonicalizerConflict(registration, field, registration.factoryName, previous, incoming);
+  }
+  if (!incoming) return;
+
+  const conflicting = (
+    factoriesByGvk.get(gvkKey(registration.apiVersion, registration.kind)) ?? []
+  ).find((candidate) => {
+    const existing = candidate[field];
+    return (
+      candidate.factoryName !== registration.factoryName &&
+      existing !== undefined &&
+      (existing.id !== incoming.id || existing.revision !== incoming.revision)
+    );
+  });
+  const existing = conflicting?.[field];
+  if (!conflicting || !existing) return;
+
+  throwCanonicalizerConflict(registration, field, conflicting.factoryName, existing, incoming);
+}
+
+function throwCanonicalizerConflict(
+  registration: FactoryRegistration,
+  field: 'desiredCanonicalizer' | 'liveCanonicalizer',
+  existingFactory: string,
+  existing: DesiredResourceCanonicalizer | LiveResourceCanonicalizer,
+  incoming: DesiredResourceCanonicalizer | LiveResourceCanonicalizer | undefined
+): never {
+  const stage = field === 'desiredCanonicalizer' ? 'desired' : 'live-comparison';
+  throw new TypeKroError(
+    `Conflicting ${stage} canonicalizers are registered for ${registration.apiVersion}/${registration.kind}: ` +
+      `${existing.id}@${existing.revision} and ${incoming ? `${incoming.id}@${incoming.revision}` : 'none'}.`,
+    field === 'desiredCanonicalizer'
+      ? 'FACTORY_CANONICALIZER_CONFLICT'
+      : 'FACTORY_LIVE_CANONICALIZER_CONFLICT',
+    {
+      apiVersion: registration.apiVersion,
+      kind: registration.kind,
+      existingFactory,
+      incomingFactory: registration.factoryName,
+      existingCanonicalizer: existing.id,
+      incomingCanonicalizer: incoming?.id,
+      stage,
+    }
+  );
+}
 
 function removeFromKindIndex(reg: FactoryRegistration): void {
   const kindKey = reg.kind.toLowerCase();
@@ -180,6 +337,15 @@ function removeFromKindIndex(reg: FactoryRegistration): void {
     if (idx >= 0) entries.splice(idx, 1);
     if (entries.length === 0) factoriesByKind.delete(kindKey);
   }
+}
+
+function removeFromGvkIndex(reg: FactoryRegistration): void {
+  const key = gvkKey(reg.apiVersion, reg.kind);
+  const entries = factoriesByGvk.get(key);
+  if (!entries) return;
+  const index = entries.indexOf(reg);
+  if (index >= 0) entries.splice(index, 1);
+  if (entries.length === 0) factoriesByGvk.delete(key);
 }
 
 function removeFromSemanticIndex(reg: FactoryRegistration): void {

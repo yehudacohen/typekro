@@ -10,6 +10,7 @@
  */
 
 import { ValidationError } from '../../../core/errors.js';
+import { identifyRuntimeReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced, ReadinessEvaluator, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -221,6 +222,12 @@ function createCiliumPolicyReadinessEvaluator(
 export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator<unknown> =
   createCiliumPolicyReadinessEvaluator({ kind: 'CiliumNetworkPolicy' });
 
+identifyRuntimeReadinessEvaluator(ciliumNetworkPolicyReadinessEvaluator, {
+  reason: 'ambient-clock',
+  description:
+    'Cilium policy readiness uses resource age as a fallback when the operator has not reported status.',
+});
+
 /**
  * Factory function for CiliumNetworkPolicy
  *
@@ -393,6 +400,12 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
     kind: 'CiliumClusterwideNetworkPolicy',
     scopeSuffix: ' cluster-wide',
   });
+
+identifyRuntimeReadinessEvaluator(ciliumClusterwideNetworkPolicyReadinessEvaluator, {
+  reason: 'ambient-clock',
+  description:
+    'Cilium policy readiness uses resource age as a fallback when the operator has not reported status.',
+});
 
 /**
  * Factory function for CiliumClusterwideNetworkPolicy

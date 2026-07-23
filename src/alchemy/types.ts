@@ -5,7 +5,10 @@
  * with TypeKro resources.
  */
 
-import type { KubernetesClientConfig } from '../core/kubernetes/client-provider.js';
+import type {
+  KubeConfigCredentialBindings,
+  KubernetesClientConfig,
+} from '../core/kubernetes/client-provider.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import type { KroDeletionOptions } from './kro-delete.js';
@@ -34,11 +37,17 @@ export interface TypeKroDeployer {
   dispose?(): Promise<void>;
 }
 
-/**
- * Serializable kubeConfig options that can be passed through Alchemy
- * This is now a re-export of the centralized KubernetesClientConfig
- */
-export type SerializableKubeConfigOptions = KubernetesClientConfig;
+/** Kubeconfig user fields safe to persist before operation-host binding resolution. */
+type SerializableKubeConfigUser = Omit<
+  NonNullable<KubernetesClientConfig['user']>,
+  'token' | 'certData' | 'keyData'
+>;
+
+/** Durable cluster connection state accepted by the Alchemy provider boundary. */
+export type SerializableKubeConfigOptions = Omit<KubernetesClientConfig, 'user'> & {
+  user?: SerializableKubeConfigUser;
+  credentialBindings?: KubeConfigCredentialBindings;
+};
 
 /**
  * Properties for creating or updating a TypeKro resource through alchemy
@@ -67,14 +76,32 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   resourceId?: string;
 
   /**
-   * Serializable kubeConfig options used to reach the cluster (and to reconnect on a rehydrated
-   * delete). Echoed onto the output so a state-driven delete works.
-   *
-   * ⚠️ SECURITY: alchemy persists props + output to its state store, so these options are written
-   * to state. If they carry static secrets — `user.token` / `user.certData` / `user.keyData` — those
-   * land in state (e.g. plaintext for the local/HTTP stores). Prefer re-derived auth (`user.exec`
-   * such as `aws eks get-token`, or `authProvider`), which is a command spec rather than a secret,
-   * and use a secured state backend. See {@link extractSerializableKubeConfigOptions}.
+   * Canonical encoded per-resource artifact operation for direct fan-out.
+   * Alchemy persists this record and the provider decodes it to restore
+   * structured references, readiness, scope, and apply semantics without
+   * scanning flattened manifest strings or recovering WeakMap metadata.
+   */
+  artifactExecutionRecord?: string;
+
+  /**
+   * Host-native sensitive inputs keyed by bindings in a direct execution record
+   * or KRO artifact bundle. New declarations supply Effect Redacted values here.
+   * This envelope is not part of either canonical artifact and is unwrapped only
+   * while materializing the Kubernetes apply operation.
+   */
+  sensitiveBindings?: Readonly<Record<string, unknown>>;
+
+  /** Canonical complete KRO outer bundle used by new KRO declarations. */
+  kroArtifactBundle?: string;
+
+  /** Operation within {@link kroArtifactBundle} represented by this declaration. */
+  kroArtifactOperationId?: string;
+
+  /**
+   * Serializable kubeConfig options used to reconnect after rehydration. Durable state contains
+   * only a default/file source, re-derived auth configuration, or named host credential bindings.
+   * Inline static credentials are rejected before declarations are created and bindings resolve
+   * only inside the provider operation. See {@link extractSerializableKubeConfigOptions}.
    */
   kubeConfigOptions?: SerializableKubeConfigOptions;
 
@@ -195,6 +222,12 @@ export interface TypeKroResource<T extends Enhanced<any, any>> {
    * direct-mode reference resolution. Undefined for resources not produced via `toAlchemyResources`.
    */
   resourceId?: string;
+  /** Canonical artifact operation persisted for state-driven reconciliation. */
+  artifactExecutionRecord?: string;
+  /** Canonical KRO bundle persisted for state-driven reconciliation. */
+  kroArtifactBundle?: string;
+  /** Operation represented by this persisted state entry. */
+  kroArtifactOperationId?: string;
 
   /**
    * The namespace the resource was deployed to

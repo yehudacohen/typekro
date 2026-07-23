@@ -13,6 +13,7 @@
  *  - the typed status service contract (ui/gateway/app endpoints).
  */
 import { beforeAll, describe, expect, it } from 'bun:test';
+import { load } from 'js-yaml';
 
 import {
   clickstackBootstrap,
@@ -68,6 +69,20 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
 
   it('serializes the connection contract into KRO status as CEL over the owned HelmRelease', () => {
     const yaml = clickstackBootstrap.toYaml();
+    const documents = yaml
+      .split(/^---$/m)
+      .map((document) => document.trim())
+      .filter(Boolean)
+      .map((document) => load(document) as Record<string, unknown>);
+    const root = documents.find((document) => {
+      const spec = document.spec as { schema?: { kind?: string } } | undefined;
+      return document.kind === 'ResourceGraphDefinition' && spec?.schema?.kind === 'ClickStackBootstrap';
+    }) as { spec: { schema: { status: Record<string, unknown> } } };
+    const status = root.spec.schema.status as {
+      ui: { url: string };
+      gateway: { otlpHttpEndpoint: string; otlpGrpcEndpoint: string };
+      app: { host: string };
+    };
     // Resource-derived fields serialize as KRO CEL off the owned HelmRelease...
     expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
     expect(yaml).toContain('phase:');
@@ -77,34 +92,25 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
     // strings), so GitOps/KRO consumers see it on the live KRO CR's status.
     // (Same reachability class as the PR #93 review finding — a spec-derived
     // or metadata-proxy derivation would be client-hydrated and dropped.)
-    const bootstrapDoc = yaml.slice(yaml.indexOf('kind: ClickStackBootstrap'));
-    // Slice the RGD's schema.status block: from the top-level `status:` key to
-    // the top-level `resources:` AFTER it (the runtime spec schema contains
-    // nested `resources` keys of its own before the status block).
-    const statusStart = bootstrapDoc.indexOf('status:');
-    const statusSection = bootstrapDoc.slice(
-      statusStart,
-      bootstrapDoc.indexOf('\n  resources:', statusStart)
+    expect(status.ui.url).toBe(
+      'http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
     );
-    expect(statusSection).toContain(
-      'url: http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
+    expect(status.gateway.otlpHttpEndpoint).toBe(
+      'http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4318'
     );
-    expect(statusSection).toContain(
-      'otlpHttpEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4318'
+    expect(status.gateway.otlpGrpcEndpoint).toBe(
+      'http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4317'
     );
-    expect(statusSection).toContain(
-      'otlpGrpcEndpoint: http://${string(clickstackHelmRelease.metadata.name)}-otel-collector.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:4317'
-    );
-    expect(statusSection).toContain(
-      'host: ${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local'
+    expect(status.app.host).toBe(
+      '${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local'
     );
     // KRO status CEL can never reference schema.spec.*.
-    expect(statusSection).not.toContain('schema.spec');
+    expect(JSON.stringify(status)).not.toContain('schema.spec');
     // BARE constants (app.appPort/apiPort, version) have no resource anchor
     // and stay CLIENT-HYDRATED — absent from KRO status; the ports remain
     // KRO-visible inside the URL fields above.
-    expect(statusSection).not.toContain('appPort');
-    expect(statusSection).not.toContain('apiPort');
+    expect(JSON.stringify(status)).not.toContain('appPort');
+    expect(JSON.stringify(status)).not.toContain('apiPort');
 
     // The typed contract itself is declared on the status schema (client-hydrated fields included).
     const valid = ClickStackBootstrapStatusSchema({

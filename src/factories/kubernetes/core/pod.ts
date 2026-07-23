@@ -1,44 +1,30 @@
 import type { V1Pod } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1PodSpec = NonNullable<V1Pod['spec']>;
 export type V1PodStatus = NonNullable<V1Pod['status']>;
 
-export function pod(resource: V1Pod & { id?: string }): Enhanced<V1PodSpec, V1PodStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: resource.metadata ?? { name: 'unnamed-pod' },
-  }).withReadinessEvaluator((liveResource: V1Pod) => {
+const podReadinessEvaluator = registerPortableReadinessEvaluator(
+  'typekro.readiness.kubernetes.pod',
+  '1',
+  (liveResource: V1Pod) => {
     try {
       const status = liveResource.status;
-
-      if (!status) {
-        return { ready: false, reason: 'No status available' };
-      }
-
-      // Pod must be in Running phase
+      if (!status) return { ready: false, reason: 'No status available' };
       if (status.phase !== 'Running') {
-        return {
-          ready: false,
-          reason: `Pod is in ${status.phase} phase, expected Running`,
-        };
+        return { ready: false, reason: `Pod is in ${status.phase} phase, expected Running` };
       }
 
-      // Check container readiness
       const containerStatuses = status.containerStatuses || [];
       const totalContainers = containerStatuses.length;
-      const readyContainers = containerStatuses.filter((c) => c.ready).length;
-
+      const readyContainers = containerStatuses.filter((container) => container.ready).length;
       if (totalContainers === 0) {
         return { ready: false, reason: 'No container statuses available' };
       }
-
       const ready = readyContainers === totalContainers;
-
       return {
         ready,
         reason: ready
@@ -51,5 +37,14 @@ export function pod(resource: V1Pod & { id?: string }): Enhanced<V1PodSpec, V1Po
         reason: `Error checking Pod status: ${ensureError(error).message}`,
       };
     }
-  });
+  }
+);
+
+export function pod(resource: V1Pod & { id?: string }): Enhanced<V1PodSpec, V1PodStatus> {
+  return createResource({
+    ...resource,
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: resource.metadata ?? { name: 'unnamed-pod' },
+  }).withReadinessEvaluator(podReadinessEvaluator);
 }

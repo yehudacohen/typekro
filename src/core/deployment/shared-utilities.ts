@@ -7,7 +7,12 @@
 
 import type { KubeConfig } from '@kubernetes/client-node';
 import type { SerializableKubeConfigOptions } from '../../alchemy/types.js';
-import { ResourceGraphFactoryError, ValidationError } from '../errors.js';
+import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
+import type {
+  DurableKubeConfigOptions,
+  KubeConfigCredentialBindings,
+  KubernetesClientConfig,
+} from '../kubernetes/client-provider.js';
 import type { DeploymentOptions, FactoryOptions } from '../types/deployment.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../types/serialization.js';
@@ -18,23 +23,54 @@ import type { KroCompatibleType, SchemaDefinition } from '../types/serialization
  * ambient kubeconfig isn't available on a later reconcile). Captures the current cluster + user,
  * including `exec`/`authProvider` blocks (e.g. `aws eks get-token`).
  *
- * ⚠️ SECURITY: when the current user uses STATIC credentials (`token` / `certData` / `keyData`),
- * those are captured verbatim and — because the alchemy resource persists this to state — written
- * to the state store (plaintext for the local/HTTP stores). For untrusted/shared state, prefer a
- * kubeconfig that authenticates via `exec` (e.g. `aws eks get-token`, `gke-gcloud-auth-plugin`) or
- * `authProvider`: those are re-derived at call time, so no long-lived secret is persisted.
+ * Static credentials never cross this boundary as plaintext. Durable hosts must either re-read a
+ * default/file kubeconfig or receive named environment bindings for every detected credential.
  */
 export function extractSerializableKubeConfigOptions(
-  kc: KubeConfig,
-  skipTLSVerifyOverride?: boolean
+  kc: KubeConfig | undefined,
+  options: {
+    readonly skipTLSVerifyOverride?: boolean;
+    readonly persistence?: DurableKubeConfigOptions;
+  } = {}
 ): SerializableKubeConfigOptions {
-  const cluster = kc.getCurrentCluster();
-  const user = typeof kc.getCurrentUser === 'function' ? kc.getCurrentUser() : undefined;
-  const context = typeof kc.getCurrentContext === 'function' ? kc.getCurrentContext() : undefined;
+  const cluster = kc?.getCurrentCluster();
+  const user = kc && typeof kc.getCurrentUser === 'function' ? kc.getCurrentUser() : undefined;
+  const context = kc && typeof kc.getCurrentContext === 'function' ? kc.getCurrentContext() : undefined;
   const finalSkipTLS =
-    skipTLSVerifyOverride === true ? true : (cluster?.skipTLSVerify ?? false);
+    options.skipTLSVerifyOverride === true ? true : (cluster?.skipTLSVerify ?? false);
 
-  return {
+  if (options.persistence?.source) {
+    const source = options.persistence.source;
+    if (Object.keys(options.persistence.credentialBindings ?? {}).length > 0) {
+      throw new TypeKroError(
+        'Durable kubeconfig must use either a re-readable source or credential bindings, not both.',
+        'KUBECONFIG_DURABLE_SOURCE_INVALID',
+        { sourceKind: source.kind }
+      );
+    }
+    if (source.kind === 'file' && source.path.trim().length === 0) {
+      throw new TypeKroError(
+        'Durable kubeconfig file source must provide a non-empty path.',
+        'KUBECONFIG_DURABLE_SOURCE_INVALID',
+        { sourceKind: source.kind }
+      );
+    }
+    return {
+      loadFromDefault: true,
+      ...(source.kind === 'file' ? { kubeconfigPath: source.path } : {}),
+      ...(context ? { context } : {}),
+      skipTLSVerify: finalSkipTLS,
+    };
+  }
+
+  if (!kc) {
+    throw new TypeKroError(
+      'A concrete kubeconfig is required unless durable state uses a default or file source.',
+      'KUBECONFIG_DURABLE_SOURCE_REQUIRED'
+    );
+  }
+
+  const serialized = {
     skipTLSVerify: finalSkipTLS,
     ...(cluster?.server && { server: cluster.server }),
     ...(context && { context }),
@@ -62,6 +98,211 @@ export function extractSerializableKubeConfigOptions(
       },
     }),
   } as SerializableKubeConfigOptions;
+
+  return bindSerializableKubeConfigCredentials(
+    serialized,
+    options.persistence?.credentialBindings ?? {}
+  );
+}
+
+const SENSITIVE_CREDENTIAL_KEY =
+  /(?:token|secret|password|credential|private[-_]?key|client[-_]?key|cert(?:ificate)?[-_]?data|key[-_]?data)$/i;
+const SENSITIVE_ENV_NAME =
+  /(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE_KEY|CLIENT_KEY|ACCESS_KEY|CERT(?:IFICATE)?(?:_DATA)?|KEY_DATA)(?:_|$)/;
+const SENSITIVE_EXEC_ARGUMENT =
+  /^--?(?:token|password|client-secret|client-key|private-key|access-key|credentials?)(?:=|$)/i;
+
+function pointerSegment(value: string): string {
+  return value.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+function pointerParts(pointer: string): string[] {
+  if (!pointer.startsWith('/')) {
+    throw new TypeKroError(
+      `Kubeconfig credential binding path must be a JSON pointer: ${pointer}`,
+      'KUBECONFIG_CREDENTIAL_BINDING_INVALID',
+      { path: pointer }
+    );
+  }
+  return pointer
+    .slice(1)
+    .split('/')
+    .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+function cloneConfig<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function collectSensitiveCredentialPaths(value: unknown, path = ''): string[] {
+  if (Array.isArray(value)) {
+    const paths = value.flatMap((entry, index) =>
+      collectSensitiveCredentialPaths(entry, `${path}/${index}`)
+    );
+    if (path.endsWith('/exec/args')) {
+      for (let index = 0; index < value.length; index++) {
+        const argument = value[index];
+        if (typeof argument !== 'string' || !SENSITIVE_EXEC_ARGUMENT.test(argument)) continue;
+        if (argument.includes('=')) paths.push(`${path}/${index}`);
+        else if (index + 1 < value.length) paths.push(`${path}/${index + 1}`);
+      }
+    }
+    return [...new Set(paths)];
+  }
+  if (!value || typeof value !== 'object') return [];
+
+  const record = value as Record<string, unknown>;
+  return Object.entries(record).flatMap(([key, child]) => {
+    const childPath = `${path}/${pointerSegment(key)}`;
+    const envValue =
+      key === 'value' && typeof record.name === 'string' && SENSITIVE_ENV_NAME.test(record.name);
+    const sensitiveKey = SENSITIVE_CREDENTIAL_KEY.test(key);
+    if ((envValue || sensitiveKey) && child !== undefined && child !== null) {
+      return [childPath];
+    }
+    return collectSensitiveCredentialPaths(child, childPath);
+  });
+}
+
+function deletePointer(root: Record<string, unknown>, pointer: string): void {
+  const parts = pointerParts(pointer);
+  const key = parts.pop();
+  if (key === undefined) return;
+  let current: unknown = root;
+  for (const part of parts) {
+    if (!current || typeof current !== 'object') return;
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (current && typeof current === 'object') {
+    if (Array.isArray(current)) delete current[Number(key)];
+    else delete (current as Record<string, unknown>)[key];
+  }
+}
+
+function setPointer(root: Record<string, unknown>, pointer: string, value: string): void {
+  const parts = pointerParts(pointer);
+  const key = parts.pop();
+  if (key === undefined) return;
+  let current: unknown = root;
+  for (const part of parts) {
+    if (!current || typeof current !== 'object') {
+      throw new TypeKroError(
+        `Kubeconfig credential binding path does not exist: ${pointer}`,
+        'KUBECONFIG_CREDENTIAL_BINDING_INVALID',
+        { path: pointer }
+      );
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (!current || typeof current !== 'object') {
+    throw new TypeKroError(
+      `Kubeconfig credential binding path does not exist: ${pointer}`,
+      'KUBECONFIG_CREDENTIAL_BINDING_INVALID',
+      { path: pointer }
+    );
+  }
+  (current as Record<string, unknown>)[key] = value;
+}
+
+function validateCredentialBinding(
+  path: string,
+  binding: KubeConfigCredentialBindings[string]
+): void {
+  pointerParts(path);
+  if (binding.kind !== 'environment' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.name)) {
+    throw new TypeKroError(
+      `Kubeconfig credential binding for ${path} must name a valid environment variable.`,
+      'KUBECONFIG_CREDENTIAL_BINDING_INVALID',
+      { path, bindingKind: binding.kind }
+    );
+  }
+}
+
+/** Remove detected credentials and retain only host binding identities. */
+export function bindSerializableKubeConfigCredentials(
+  config: SerializableKubeConfigOptions,
+  bindings: KubeConfigCredentialBindings
+): SerializableKubeConfigOptions {
+  const safe = cloneConfig(config) as SerializableKubeConfigOptions & Record<string, unknown>;
+  delete safe.credentialBindings;
+  const sensitivePaths = collectSensitiveCredentialPaths(safe.user, '/user');
+  const missing = sensitivePaths.filter((path) => bindings[path] === undefined);
+  if (missing.length > 0) {
+    throw new TypeKroError(
+      `Durable kubeconfig contains static credentials without host bindings: ${missing.join(', ')}.`,
+      'KUBECONFIG_STATIC_CREDENTIALS_UNBOUND',
+      { paths: missing }
+    );
+  }
+
+  const unused = Object.keys(bindings).filter((path) => !sensitivePaths.includes(path));
+  if (unused.length > 0) {
+    throw new TypeKroError(
+      `Kubeconfig credential bindings do not match detected credential fields: ${unused.join(', ')}.`,
+      'KUBECONFIG_CREDENTIAL_BINDING_UNUSED',
+      { paths: unused }
+    );
+  }
+
+  const selectedBindings: Record<
+    string,
+    NonNullable<KubeConfigCredentialBindings[string]>
+  > = {};
+  for (const path of sensitivePaths) {
+    const binding = bindings[path];
+    if (binding === undefined) {
+      throw new TypeKroError(
+        `Durable kubeconfig contains a static credential without a host binding: ${path}.`,
+        'KUBECONFIG_STATIC_CREDENTIALS_UNBOUND',
+        { paths: [path] }
+      );
+    }
+    validateCredentialBinding(path, binding);
+    selectedBindings[path] = binding;
+    deletePointer(safe, path);
+  }
+  return {
+    ...safe,
+    ...(sensitivePaths.length > 0
+      ? {
+          credentialBindings: selectedBindings,
+        }
+      : {}),
+  };
+}
+
+/** Resolve durable kubeconfig bindings inside the operation host. */
+export function materializeSerializableKubeConfigOptions(
+  config: SerializableKubeConfigOptions
+): KubernetesClientConfig {
+  const materialized = cloneConfig(config) as SerializableKubeConfigOptions &
+    Record<string, unknown>;
+  const bindings = materialized.credentialBindings ?? {};
+  delete materialized.credentialBindings;
+
+  const inline = collectSensitiveCredentialPaths(materialized.user, '/user');
+  if (inline.length > 0) {
+    throw new TypeKroError(
+      `Durable kubeconfig options contain inline credential material: ${inline.join(', ')}.`,
+      'KUBECONFIG_INLINE_CREDENTIALS_FORBIDDEN',
+      { paths: inline }
+    );
+  }
+
+  for (const [path, binding] of Object.entries(bindings)) {
+    validateCredentialBinding(path, binding);
+    const value = process.env[binding.name];
+    if (value === undefined) {
+      throw new TypeKroError(
+        `Kubeconfig credential binding ${path} could not resolve environment variable ${binding.name}.`,
+        'KUBECONFIG_CREDENTIAL_BINDING_UNRESOLVED',
+        { path, environmentVariable: binding.name }
+      );
+    }
+    setPointer(materialized, path, value);
+  }
+
+  return materialized as KubernetesClientConfig;
 }
 
 /**
@@ -79,15 +320,16 @@ export function validateSpec<TSpec extends KroCompatibleType, TStatus extends Kr
   context?: { kind?: string; name?: string }
 ): void {
   const validationResult = schemaDefinition.spec(spec) as unknown;
-  const validationMessage = validationResult instanceof Error
-    ? validationResult.message
-    : validationResult &&
-        typeof validationResult === 'object' &&
-        (validationResult as { ' arkKind'?: unknown })[' arkKind'] === 'errors'
-      ? (validationResult as { summary?: string; message?: string }).message ??
-        (validationResult as { summary?: string; message?: string }).summary ??
-        String(validationResult)
-      : null;
+  const validationMessage =
+    validationResult instanceof Error
+      ? validationResult.message
+      : validationResult &&
+          typeof validationResult === 'object' &&
+          (validationResult as { ' arkKind'?: unknown })[' arkKind'] === 'errors'
+        ? ((validationResult as { summary?: string; message?: string }).message ??
+          (validationResult as { summary?: string; message?: string }).summary ??
+          String(validationResult))
+        : null;
 
   if (validationMessage) {
     throw new ValidationError(

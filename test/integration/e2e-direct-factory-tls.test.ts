@@ -114,5 +114,5 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
 
     // Clean up namespace and wait for full deletion
     await deleteNamespaceAndWait(NAMESPACE, kc);
-  }, 60000);
+  }, 900000);
 });

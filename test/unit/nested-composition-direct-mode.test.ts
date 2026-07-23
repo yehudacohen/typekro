@@ -121,6 +121,7 @@ const outerComposition = kubernetesComposition(
       name: 'string',
       'namespace?': 'string',
       innerImage: 'string',
+      'secretValue?': 'string',
     }),
     status: type({
       ready: 'boolean',
@@ -135,7 +136,7 @@ const outerComposition = kubernetesComposition(
     const inner = innerComposition({
       name: `${spec.name}-inner`,
       namespace: ns,
-      secretValue: 'my-secret',
+      secretValue: spec.secretValue,
     });
 
     // Create a worker deployment that reads the inner composition's

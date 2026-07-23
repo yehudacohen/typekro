@@ -24,6 +24,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getIncludeWhen, setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
+import type { StaticYamlMaterializationOptions } from '../../../core/planning/materialization.js';
 import { Cel } from '../../../core/references/cel.js';
 import type {
   DirectResourceFactory,
@@ -96,10 +97,13 @@ function withKroInstanceValidation(
       }
 
       if (prop === 'toYaml') {
-        return (spec?: SearxngBootstrapConfig) => {
+        return (
+          spec?: SearxngBootstrapConfig,
+          options?: StaticYamlMaterializationOptions
+        ) => {
           if (spec !== undefined) {
             validateKroBootstrapInstanceSpec(spec);
-            return target.toYaml(spec);
+            return target.toYaml(spec, options);
           }
           return target.toYaml();
         };

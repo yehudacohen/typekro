@@ -112,7 +112,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     const WebAppSpecSchema = type({
       name: 'string',
       image: 'string',
-      replicas: 'number',
+      replicas: 'number%1',
       environment: '"development" | "staging" | "production"',
     });
 
@@ -408,5 +408,5 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     } catch (error) {
       console.warn('⚠️ Factory complete cleanup failed:', error);
     }
-  }, 300000); // 5 minute timeout for the test
+  }, 900000); // 15 minute timeout for deployment and namespace cleanup
 });

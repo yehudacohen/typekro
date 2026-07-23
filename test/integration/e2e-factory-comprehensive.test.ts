@@ -436,7 +436,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         }
         console.log('✅ DirectResourceFactory without alchemy test passed!');
       });
-    }, 120000); // 2 minute timeout for deployment + cleanup
+    }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
   });
 
   describe('KroResourceFactory without Alchemy', () => {
@@ -529,7 +529,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         }
         console.log('✅ KroResourceFactory without alchemy test passed!');
       });
-    }, 120000); // 2 minute timeout for deployment + cleanup
+    }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
 
     describe('Cross-Factory Compatibility', () => {
       it('should generate functionally identical resources across factory types', async () => {
@@ -573,7 +573,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Cross-factory compatibility test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
 
     describe('Type Safety and Enhanced Proxy', () => {
@@ -624,7 +624,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Type safety and Enhanced proxy test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
 
     describe('Error Handling and Edge Cases', () => {
@@ -676,7 +676,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Error handling test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
   });
 });

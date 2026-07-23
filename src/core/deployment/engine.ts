@@ -13,10 +13,19 @@ import {
   DEFAULT_READINESS_TIMEOUT,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
-import { CircularDependencyError, ensureError, ResourceGraphFactoryError } from '../errors.js';
+import {
+  CircularDependencyError,
+  DeploymentTimeoutError,
+  ensureError,
+  ResourceGraphFactoryError,
+} from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { copyResourceMetadata, getResourceId as getResourceMetadataId } from '../metadata/index.js';
+import {
+  copyResourceMetadata,
+  getResourceId as getResourceMetadataId,
+  getResourceScope,
+} from '../metadata/index.js';
 import { ensureReadinessEvaluator } from '../readiness/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import { getResourceId } from '../resources/id.js';
@@ -148,7 +157,7 @@ export class DirectDeploymentEngine {
   private abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
-        reject(new DOMException('Delay aborted', 'AbortError'));
+        reject(signal.reason ?? new DOMException('Delay aborted', 'AbortError'));
         return;
       }
 
@@ -160,7 +169,7 @@ export class DirectDeploymentEngine {
         'abort',
         () => {
           clearTimeout(timeoutId);
-          reject(new DOMException('Delay aborted', 'AbortError'));
+          reject(signal.reason ?? new DOMException('Delay aborted', 'AbortError'));
         },
         { once: true }
       );
@@ -182,12 +191,12 @@ export class DirectDeploymentEngine {
     }
 
     if (signal.aborted) {
-      throw new DOMException('Operation aborted', 'AbortError');
+      throw signal.reason ?? new DOMException('Operation aborted', 'AbortError');
     }
 
     return new Promise<T>((resolve, reject) => {
       const abortHandler = () => {
-        reject(new DOMException('Operation aborted', 'AbortError'));
+        reject(signal.reason ?? new DOMException('Operation aborted', 'AbortError'));
       };
 
       signal.addEventListener('abort', abortHandler, { once: true });
@@ -201,7 +210,7 @@ export class DirectDeploymentEngine {
           signal.removeEventListener('abort', abortHandler);
           // If the signal was aborted, throw AbortError instead of the original error
           if (signal.aborted) {
-            reject(new DOMException('Operation aborted', 'AbortError'));
+            reject(signal.reason ?? new DOMException('Operation aborted', 'AbortError'));
           } else {
             reject(error);
           }
@@ -334,11 +343,11 @@ export class DirectDeploymentEngine {
       closureCount: Object.keys(closures).length,
     });
 
-    const { abortController: deploymentAbortController, timeoutId } = this.setupDeploymentTimeout(
-      deploymentId,
-      options,
-      deploymentLogger
-    );
+    const {
+      abortController: deploymentAbortController,
+      timeoutId,
+      detachExternalAbort,
+    } = this.setupDeploymentTimeout(deploymentId, options, deploymentLogger);
     const abortSignal = deploymentAbortController.signal;
 
     deploymentLogger.info(
@@ -367,18 +376,10 @@ export class DirectDeploymentEngine {
         startTime,
         deployedResources,
         deploymentLogger,
-        deploymentId
+        deploymentId,
+        abortSignal,
+        seedResources
       );
-
-      // Seed externally-deployed resources into the resolution mapping ONLY (never into
-      // `deployedResources`, which is the result/rollback set) so this graph's references/CEL
-      // resolve against their live manifests (apiVersion/kind + status). The graph's own resources
-      // keep precedence — only fill keys not already present.
-      for (const seed of seedResources ?? []) {
-        if (!resourceKeyMapping.has(seed.id)) {
-          resourceKeyMapping.set(seed.id, seed.liveManifest ?? seed.manifest);
-        }
-      }
 
       // Deploy resources and closures level by level with proper dependency handling
       for (let levelIndex = 0; levelIndex < enhancedPlan.levels.length; levelIndex++) {
@@ -405,7 +406,12 @@ export class DirectDeploymentEngine {
 
         // If deployLevel returned a result, it means rollback occurred — return immediately
         if (earlyReturn) {
-          await this.cleanupDeployment(deploymentAbortController, timeoutId, deploymentLogger);
+          await this.cleanupDeployment(
+            deploymentAbortController,
+            timeoutId,
+            deploymentLogger,
+            detachExternalAbort
+          );
           return earlyReturn;
         }
       }
@@ -421,7 +427,12 @@ export class DirectDeploymentEngine {
         deploymentLogger
       );
 
-      await this.cleanupDeployment(deploymentAbortController, timeoutId, deploymentLogger);
+      await this.cleanupDeployment(
+        deploymentAbortController,
+        timeoutId,
+        deploymentLogger,
+        detachExternalAbort
+      );
 
       // Store deployment state for rollback
       const successRecord: DeploymentStateRecord = {
@@ -451,12 +462,22 @@ export class DirectDeploymentEngine {
       // Re-throw circular dependency errors immediately - these are configuration errors
       if (error instanceof CircularDependencyError) {
         // Clean up abort controller and timeout before re-throwing
-        await this.cleanupDeployment(deploymentAbortController, timeoutId, deploymentLogger);
+        await this.cleanupDeployment(
+          deploymentAbortController,
+          timeoutId,
+          deploymentLogger,
+          detachExternalAbort
+        );
         throw error;
       }
 
       // Clean up abort controller and timeout
-      await this.cleanupDeployment(deploymentAbortController, timeoutId, deploymentLogger);
+      await this.cleanupDeployment(
+        deploymentAbortController,
+        timeoutId,
+        deploymentLogger,
+        detachExternalAbort
+      );
 
       const duration = Date.now() - startTime;
       this.emitEvent(options, {
@@ -512,9 +533,23 @@ export class DirectDeploymentEngine {
     deploymentId: string,
     options: DeploymentOptions,
     deploymentLogger: ReturnType<typeof this.logger.child>
-  ): { abortController: AbortController; timeoutId: ReturnType<typeof setTimeout> } {
+  ): {
+    abortController: AbortController;
+    timeoutId: ReturnType<typeof setTimeout>;
+    detachExternalAbort: () => void;
+  } {
     const abortController = this.createTrackedAbortController();
     const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
+
+    const externalAbort = options.abortSignal;
+    const forwardExternalAbort = () => abortController.abort(externalAbort?.reason);
+    if (externalAbort?.aborted) {
+      forwardExternalAbort();
+    } else {
+      externalAbort?.addEventListener('abort', forwardExternalAbort, { once: true });
+    }
+    const detachExternalAbort = () =>
+      externalAbort?.removeEventListener('abort', forwardExternalAbort);
 
     const timeoutId = setTimeout(() => {
       deploymentLogger.debug('Deployment timeout reached, aborting operations', {
@@ -532,14 +567,27 @@ export class DirectDeploymentEngine {
         });
       }
 
-      abortController.abort();
+      const resourceName = options.instanceName ?? options.factoryName ?? deploymentId;
+      const factoryContext =
+        options.factoryName || options.instanceName
+          ? ` for ${[options.factoryName, options.instanceName].filter(Boolean).join('/')}`
+          : '';
+      abortController.abort(
+        new DeploymentTimeoutError(
+          `Deployment ${deploymentId}${factoryContext} timed out after ${timeout}ms. Pending resource, readiness, and closure operations were interrupted.`,
+          'Deployment',
+          resourceName,
+          timeout,
+          'deployment'
+        )
+      );
     }, timeout);
 
     // This timeout is only a safety watchdog. It should never keep a
     // short-lived CLI process alive after the deployment work is done.
     timeoutId.unref?.();
 
-    return { abortController, timeoutId };
+    return { abortController, timeoutId, detachExternalAbort };
   }
 
   /**
@@ -563,7 +611,9 @@ export class DirectDeploymentEngine {
     startTime: number,
     deployedResources: DeployedResource[],
     deploymentLogger: ReturnType<typeof this.logger.child>,
-    deploymentId: string
+    deploymentId: string,
+    abortSignal: AbortSignal,
+    seedResources?: DeployedResource[]
   ): Promise<{
     enhancedPlan: EnhancedDeploymentPlan;
     context: ResolutionContext;
@@ -634,6 +684,67 @@ export class DirectDeploymentEngine {
           kind: manifest.kind,
           name: manifest.metadata?.name,
         });
+      }
+    }
+
+    // Seed resources are owned and reconciled outside this deployment (for example singleton
+    // owners), but their live state is part of this graph's reference-resolution context. Seed
+    // them before external-reference validation so a logical dependency does not require the
+    // corresponding API kind to exist in this deployment mode. Managed graph resources retain
+    // precedence when an id is shared.
+    for (const seed of seedResources ?? []) {
+      if (!resourceKeyMapping.has(seed.id)) {
+        resourceKeyMapping.set(seed.id, seed.liveManifest ?? seed.manifest);
+      }
+    }
+
+    for (const reference of graph.externalReferences ?? []) {
+      abortSignal.throwIfAborted();
+      const manifest = reference.manifest as KubernetesResource;
+      const referenceId = getResourceMetadataId(manifest) ?? reference.id;
+      if (resourceKeyMapping.has(referenceId)) {
+        deploymentLogger.debug('Resolved required external resource from deployment seed', {
+          referenceId,
+        });
+        continue;
+      }
+      if (options.dryRun) {
+        resourceKeyMapping.set(referenceId, manifest);
+        continue;
+      }
+
+      const name = manifest.metadata?.name;
+      if (!manifest.apiVersion || !manifest.kind || !name) {
+        throw new ResourceGraphFactoryError(
+          `External reference ${referenceId} is missing apiVersion, kind, or metadata.name.`,
+          graph.name,
+          'deployment'
+        );
+      }
+      try {
+        const live = await this.k8sApi.read({
+          apiVersion: manifest.apiVersion,
+          kind: manifest.kind,
+          metadata: {
+            name,
+            ...(getResourceScope(manifest) !== 'cluster'
+              ? { namespace: manifest.metadata?.namespace ?? options.namespace ?? 'default' }
+              : {}),
+          },
+        });
+        resourceKeyMapping.set(referenceId, live);
+        deploymentLogger.debug('Resolved required external resource', {
+          referenceId,
+          apiVersion: manifest.apiVersion,
+          kind: manifest.kind,
+          name,
+        });
+      } catch (error: unknown) {
+        throw new ResourceGraphFactoryError(
+          `Required external resource ${manifest.kind}/${name} could not be read: ${ensureError(error).message}`,
+          graph.name,
+          'deployment'
+        );
       }
     }
 
@@ -1108,7 +1219,8 @@ export class DirectDeploymentEngine {
   private async cleanupDeployment(
     abortController: AbortController,
     timeoutId: ReturnType<typeof setTimeout>,
-    deploymentLogger: ReturnType<typeof this.logger.child>
+    deploymentLogger: ReturnType<typeof this.logger.child>,
+    detachExternalAbort: () => void
   ): Promise<void> {
     // Stop event monitoring
     if (this.eventMonitor) {
@@ -1124,6 +1236,7 @@ export class DirectDeploymentEngine {
 
     // Clean up abort controller and timeout
     clearTimeout(timeoutId);
+    detachExternalAbort();
     this.removeTrackedAbortController(abortController);
   }
 
@@ -1236,16 +1349,28 @@ export class DirectDeploymentEngine {
       this.resourceApplier.applyOwnershipTags(resolvedResource, options, resourceId, context);
     }
 
+    // Resolve readiness before applying so the legacy single-resource path has the same
+    // fail-before-side-effects contract as graph deployment. Resolution also reattaches a
+    // registered evaluator when reference/namespace materialization produced a fresh object.
+    const resourceWithEvaluator =
+      options.waitForReady === false
+        ? resolvedResource
+        : ensureReadinessEvaluator(resolvedResource as Enhanced<unknown, unknown>);
+
     // 3. Apply the resource to the cluster (or simulate for dry run)
-    await this.resourceApplier.applyResourceToCluster(resolvedResource, options, resourceLogger);
+    await this.resourceApplier.applyResourceToCluster(
+      resourceWithEvaluator,
+      options,
+      resourceLogger
+    );
 
     // 4. Create deployed resource record
     const deployedResource: DeployedResource = {
       id: resourceId,
-      kind: resolvedResource.kind || 'Unknown',
-      name: resolvedResource.metadata?.name || 'unknown',
-      namespace: resolvedResource.metadata?.namespace || 'default',
-      manifest: resolvedResource,
+      kind: resourceWithEvaluator.kind || 'Unknown',
+      name: resourceWithEvaluator.metadata?.name || 'unknown',
+      namespace: resourceWithEvaluator.metadata?.namespace || 'default',
+      manifest: resourceWithEvaluator,
       status: 'deployed',
       applied: true,
       deployedAt: new Date(),
@@ -1288,14 +1413,22 @@ export class DirectDeploymentEngine {
   private async rollbackDeployedResources(
     deployedResources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+  ): Promise<{
+    rolledBackResources: string[];
+    deletedResources: DeployedResource[];
+    errors: DeploymentError[];
+  }> {
     return this.rollbackManager.rollbackDeployedResources(deployedResources, options);
   }
 
   private async rollbackOrderedResources(
     deployedResources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+  ): Promise<{
+    rolledBackResources: string[];
+    deletedResources: DeployedResource[];
+    errors: DeploymentError[];
+  }> {
     return this.rollbackManager.rollbackOrderedResources(deployedResources, options);
   }
 
@@ -1336,8 +1469,15 @@ export class DirectDeploymentEngine {
   /**
    * Delete a resource from the cluster
    */
-  async deleteResource(resource: DeployedResource): Promise<void> {
-    return this.rollbackManager.deleteDeployedResource(resource);
+  async deleteResource(
+    resource: DeployedResource,
+    options: Pick<DeploymentOptions, 'timeout' | 'abortSignal'> = {}
+  ): Promise<void> {
+    return this.rollbackManager.deleteDeployedResource(
+      resource,
+      options.timeout,
+      options.abortSignal
+    );
   }
 
   /**
@@ -1350,7 +1490,12 @@ export class DirectDeploymentEngine {
    */
   async rollback(
     deploymentId: string,
-    opts: { scopes?: string[]; includeUnscopedResources?: boolean; timeout?: number } = {}
+    opts: {
+      scopes?: string[];
+      includeUnscopedResources?: boolean;
+      timeout?: number;
+      abortSignal?: AbortSignal;
+    } = {}
   ): Promise<RollbackResult> {
     const deploymentRecord = this.deploymentState.get(deploymentId);
     if (!deploymentRecord) {
@@ -1387,7 +1532,12 @@ export class DirectDeploymentEngine {
    */
   async rollbackRecord(
     deploymentRecord: DeploymentStateRecord,
-    opts: { scopes?: string[]; includeUnscopedResources?: boolean; timeout?: number } = {}
+    opts: {
+      scopes?: string[];
+      includeUnscopedResources?: boolean;
+      timeout?: number;
+      abortSignal?: AbortSignal;
+    } = {}
   ): Promise<RollbackResult> {
     const startTime = Date.now();
     const deploymentId = deploymentRecord.deploymentId;
@@ -1517,11 +1667,12 @@ export class DirectDeploymentEngine {
         orderedResources = deploymentRecord.resources.filter((r) => !skippedIds.has(r.id));
       }
 
-      const { rolledBackResources, errors } = await this.rollbackOrderedResources(
+      const { rolledBackResources, deletedResources, errors } = await this.rollbackOrderedResources(
         orderedResources,
         {
           ...deploymentRecord.options,
           ...(opts.timeout !== undefined && { timeout: opts.timeout }),
+          ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
         }
       );
 
@@ -1538,15 +1689,24 @@ export class DirectDeploymentEngine {
       return {
         deploymentId,
         rolledBackResources,
+        deletedResources,
+        retainedResources: deploymentRecord.resources.filter((resource) =>
+          skippedIds.has(resource.id)
+        ),
         duration: Date.now() - startTime,
         status,
         errors,
       };
     } catch (error: unknown) {
+      if (opts.abortSignal?.aborted) {
+        throw opts.abortSignal.reason ?? error;
+      }
       // This shouldn't happen now since rollbackDeployedResources handles its own errors
       return {
         deploymentId,
         rolledBackResources: [],
+        deletedResources: [],
+        retainedResources: [],
         duration: Date.now() - startTime,
         status: 'failed',
         errors: [

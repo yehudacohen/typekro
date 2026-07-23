@@ -35,7 +35,12 @@ import {
   setResourceId,
 } from '../metadata/index.js';
 import { ReadinessEvaluatorRegistry } from '../readiness/index.js';
-import { isKnownFactory, registerFactory } from '../resources/factory-registry.js';
+import {
+  getFactoryRegistration,
+  getFactoryRegistrationsForGVK,
+  isKnownFactory,
+  registerFactory,
+} from '../resources/factory-registry.js';
 import { generateDeterministicResourceId } from '../resources/id.js';
 import type { Enhanced, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../types.js';
 import { validateResourceId } from '../validation/cel-validator.js';
@@ -473,9 +478,21 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
  */
 export interface CreateResourceOptions {
   /**
+   * Registration name of the factory creating this resource.
+   *
+   * Factory authors should set this when multiple factories can produce the
+   * same GVK and either factory owns planning canonicalizers or representation
+   * hooks. TypeKro infers the value when the GVK has exactly one registration.
+   */
+  factoryName?: string;
+  /**
    * Kubernetes scope of the resource
    * - 'namespaced': Resource must exist within a namespace
    * - 'cluster': Resource is cluster-scoped and cannot have a namespace
+   * @default 'namespaced'
+   *
+   * Cluster-scoped factories must pass this explicitly. Keeping the scope on
+   * the created resource avoids a centralized Kubernetes-kind inventory.
    */
   scope?: 'namespaced' | 'cluster';
   /**
@@ -519,11 +536,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
   resource: KubernetesResource<TSpec, TStatus>,
   options?: CreateResourceOptions
 ): Enhanced<TSpec, TStatus> {
+  const resourceScope = options?.scope ?? 'namespaced';
   // Validate namespace scope rules
-  if (options?.scope) {
+  {
     const hasNamespace = !!resource.metadata?.namespace;
 
-    if (options.scope === 'cluster' && hasNamespace) {
+    if (resourceScope === 'cluster' && hasNamespace) {
       throw new TypeKroError(
         `${resource.kind} is cluster-scoped and cannot have a namespace. ` +
           `Remove the 'namespace' field from metadata.`,
@@ -532,7 +550,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
       );
     }
 
-    if (options.scope === 'namespaced' && !hasNamespace) {
+    if (options?.scope === 'namespaced' && !hasNamespace) {
       debugLogger.warn(
         `${resource.kind} is namespaced but no namespace specified. Kubernetes will use 'default'.`,
         {
@@ -591,10 +609,42 @@ export function createResource<TSpec extends object, TStatus extends object>(
   // Without this, WeakMap lookups on the proxy return undefined.
   setResourceId(enhanced, resourceId);
 
-  // Store resource scope for readiness polling (cluster-scoped resources skip namespace)
-  if (options?.scope) {
-    setMetadataField(enhanced, 'scope', options.scope);
+  const explicitFactoryName = options?.factoryName;
+  if (explicitFactoryName) {
+    const registration = getFactoryRegistration(explicitFactoryName);
+    if (!registration) {
+      throw new TypeKroError(
+        `Resource factory ${explicitFactoryName} is not registered.`,
+        'UNKNOWN_RESOURCE_FACTORY',
+        { factoryName: explicitFactoryName, apiVersion: resource.apiVersion, kind: resource.kind }
+      );
+    }
+    if (registration.apiVersion !== resource.apiVersion || registration.kind !== resource.kind) {
+      throw new TypeKroError(
+        `Resource factory ${explicitFactoryName} creates ${registration.apiVersion}/${registration.kind}, ` +
+          `not ${resource.apiVersion}/${resource.kind}.`,
+        'RESOURCE_FACTORY_GVK_MISMATCH',
+        {
+          factoryName: explicitFactoryName,
+          expectedApiVersion: registration.apiVersion,
+          expectedKind: registration.kind,
+          actualApiVersion: resource.apiVersion,
+          actualKind: resource.kind,
+        }
+      );
+    }
+    setMetadataField(enhanced, 'factoryName', explicitFactoryName);
+  } else {
+    const registrations = getFactoryRegistrationsForGVK(resource.apiVersion, resource.kind);
+    if (registrations.length === 1) {
+      const [registration] = registrations;
+      if (registration) setMetadataField(enhanced, 'factoryName', registration.factoryName);
+    }
   }
+
+  // Store resource scope for readiness polling (cluster-scoped resources skip namespace)
+  setMetadataField(enhanced, 'scope', resourceScope);
+  setMetadataField(enhanced, 'scopeProvenance', options?.scope ? 'explicit' : 'default');
 
   const targetGroups = WORKLOAD_KINDS.has(resource.kind)
     ? (['resources', 'workloads'] as const)
@@ -707,12 +757,16 @@ export function createResource<TSpec extends object, TStatus extends object>(
       }
 
       // Accumulate dependencies
-      const existing = getMetadataField(this, 'dependsOn') as
+      // The composition registry retains `enhanced`, while `this` may be the
+      // outer conditional-support proxy returned below. Store semantic
+      // metadata on the registered resource so capture, planning, and every
+      // execution adapter observe the same dependency edge.
+      const existing = getMetadataField(enhanced, 'dependsOn') as
         | Array<{ resourceId: string }>
         | undefined;
       const deps = existing ?? [];
       deps.push({ resourceId: depId });
-      setMetadataField(this, 'dependsOn', deps);
+      setMetadataField(enhanced, 'dependsOn', deps);
 
       return this as Enhanced<TSpec, TStatus>;
     },

@@ -675,6 +675,7 @@ function resolveNestedRefMarkers(
  * of the literal's natural CEL type.
  */
 const BARE_LITERAL_PATTERN = /^\s*(-?\d+(?:\.\d+)?|true|false|null)\s*$/;
+const WRAPPED_BARE_LITERAL_PATTERN = /^\$\{\s*(-?\d+(?:\.\d+)?|true|false|null)\s*\}$/;
 
 /**
  * Convert an inner composition's analyzed expression into a YAML-embeddable
@@ -705,6 +706,10 @@ function innerExprToYamlSegment(
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
     return convertKubernetesRefMarkersTocel(resolved, context);
+  }
+  const wrappedLiteral = WRAPPED_BARE_LITERAL_PATTERN.exec(resolved)?.[1];
+  if (wrappedLiteral !== undefined) {
+    return `\${string(${wrappedLiteral})}`;
   }
   if (resolved.includes('${')) {
     // Already a KRO template (from Cel.template) — pass through.
@@ -1419,7 +1424,17 @@ function celValuesMergeExpression(
     needsRuntimeMapMerge(base) ||
     normalizedOverlays.some((overlay) => needsRuntimeMapMerge(overlay))
   ) {
-    return celRuntimeMapMergeExpression(base, normalizedOverlays, context, path || 'spec.values');
+    // json.unmarshal() is necessarily dynamically typed. Once map.merge() is applied, cel-go can
+    // infer the result as map(dyn, dyn), which KRO refuses to assign to structured object fields
+    // such as Flux HelmRelease spec.values (their keys must be statically known as strings).
+    // Erase only the final inferred type; the expression body still performs the same deep merge
+    // and KRO validates the resulting dynamic value against the destination's OpenAPI schema.
+    return `dyn(${celRuntimeMapMergeExpression(
+      base,
+      normalizedOverlays,
+      context,
+      path || 'spec.values'
+    )})`;
   }
 
   let merged = base;

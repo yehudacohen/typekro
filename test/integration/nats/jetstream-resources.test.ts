@@ -106,6 +106,48 @@ function isAlreadyAbsentInstance(error: unknown): boolean {
   return error instanceof Error && error.message.includes('Instance not found:');
 }
 
+async function runNatsDataPlaneProbe(
+  mode: 'direct' | 'kro',
+  namespace: string,
+  endpoint: string
+): Promise<string> {
+  const podName = `nats-box-${mode}`;
+  await kubectl([
+    'run',
+    podName,
+    '--namespace',
+    namespace,
+    '--image=natsio/nats-box:0.19.2',
+    '--restart=Never',
+    '--command',
+    '--',
+    'sh',
+    '-ec',
+    `nats --server ${endpoint} pub applik8s.events.test hello >/dev/null; nats --server ${endpoint} stream info APPLIK8S_EVENTS --json`,
+  ]);
+  try {
+    await kubectl([
+      'wait',
+      '--namespace',
+      namespace,
+      `pod/${podName}`,
+      '--for=jsonpath={.status.phase}=Succeeded',
+      '--timeout=180s',
+    ]);
+    return await kubectl(['logs', '--namespace', namespace, podName]);
+  } finally {
+    await kubectl([
+      'delete',
+      'pod',
+      podName,
+      '--namespace',
+      namespace,
+      '--ignore-not-found=true',
+      '--wait=false',
+    ]).catch(() => undefined);
+  }
+}
+
 async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   const suffix = `${mode}-${runId}`.slice(0, 42);
   const controlNamespace = `tk-nats-control-${suffix}`.slice(0, 63);
@@ -212,21 +254,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     ]);
     expect(generation).toMatch(/^(\d+):\1:updated live proof$/);
 
-    const dataPlane = await kubectl([
-      'run',
-      `nats-box-${mode}`,
-      '--namespace',
-      appNamespace,
-      '--image=natsio/nats-box:0.19.2',
-      '--restart=Never',
-      '--rm',
-      '-i',
-      '--command',
-      '--',
-      'sh',
-      '-ec',
-      `nats --server ${endpoint} pub applik8s.events.test hello >/dev/null; nats --server ${endpoint} stream info APPLIK8S_EVENTS --json`,
-    ]);
+    const dataPlane = await runNatsDataPlaneProbe(mode, appNamespace, endpoint);
     const jsonStart = dataPlane.indexOf('{');
     const jsonEnd = dataPlane.lastIndexOf('}');
     expect(jsonStart).toBeGreaterThanOrEqual(0);
@@ -240,6 +268,27 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   }
 
   const cleanupFailures: Error[] = [];
+  // StatefulSet PVC retention is controller- and timing-dependent even when
+  // persistentVolumeClaimRetentionPolicy requests deletion. These claims are
+  // scoped to this run's owned namespace, so remove them before asking the KRO
+  // factory to prove that its hoisted namespace can be deleted cleanly.
+  try {
+    await kubectl([
+      'delete',
+      'persistentvolumeclaim',
+      '--all',
+      '-n',
+      targetNamespace,
+      '--ignore-not-found=true',
+      '--wait=false',
+    ]);
+  } catch (error: unknown) {
+    cleanupFailures.push(
+      new Error(
+        `${mode} cleanup failed for PVCs in ${targetNamespace}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+  }
   // Delete in dependency order and let each factory enforce its own lifecycle.
   // In KRO mode deleteInstance() waits for kro.run/finalizer and deliberately
   // preserves the RGD when finalization times out, so KRO can keep recovering.

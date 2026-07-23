@@ -4,7 +4,6 @@ import { createCompositionContext, runWithCompositionContext } from '../composit
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { copyResourceMetadata, getIncludeWhen } from '../metadata/index.js';
-import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
 import { evaluateSchemaCelExpression } from './schema-cel-evaluator.js';
@@ -31,12 +30,6 @@ export interface KroInstanceNamespaceSafetyInput<TSpec extends KroCompatibleType
    * EXPLICITLY pinned the instance back into without hoisting) — those still throw.
    */
   readonly hoistedNamespaces?: ReadonlySet<string>;
-}
-
-interface CompositionSafetyMetadata {
-  readonly name?: string;
-  readonly resources?: readonly KubernetesResource[];
-  readonly _compositionFn?: (spec: KroCompatibleType) => unknown;
 }
 
 function resourceEntries(
@@ -767,18 +760,4 @@ export function assertKroInstanceNamespaceOwnershipSafe<TSpec extends KroCompati
       }
     );
   }
-}
-
-/** Validate the fixed registry namespace used by a shared singleton owner. */
-export function assertSingletonOwnerNamespaceOwnershipSafe(
-  definition: SingletonDefinitionRecord
-): void {
-  const composition = definition.composition as unknown as CompositionSafetyMetadata;
-  assertKroInstanceNamespaceOwnershipSafe({
-    compositionName: composition.name ?? 'singleton-owner',
-    instanceNamespace: definition.registryNamespace,
-    spec: definition.spec,
-    ...(composition.resources ? { resources: composition.resources } : {}),
-    ...(composition._compositionFn ? { compositionFn: composition._compositionFn } : {}),
-  });
 }

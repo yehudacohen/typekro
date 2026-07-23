@@ -47,6 +47,18 @@ export interface TypeKroRuntimeConfig {
   fluxVersion?: string;
   kroVersion?: string;
   /**
+   * Who installs the Flux controllers and CRDs.
+   *
+   * `managed` uses the existing runtime YAML deployment closure and therefore
+   * requires live standalone execution. `external` declares that Flux is
+   * already supplied by the environment, allowing static YAML and durable
+   * adapters to emit the remaining TypeKro/KRO resources without silently
+   * omitting an installer.
+   *
+   * @default 'managed'
+   */
+  fluxInstallation?: 'managed' | 'external';
+  /**
    * RBAC mode for Flux controller permissions.
    *
    * @default 'cluster-admin'

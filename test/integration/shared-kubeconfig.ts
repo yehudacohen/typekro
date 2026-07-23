@@ -165,7 +165,7 @@ export async function deleteNamespaceIfExists(
 export async function deleteNamespaceAndWait(
   namespace: string,
   kc?: k8s.KubeConfig,
-  timeoutMs = 60000
+  timeoutMs = 600000
 ): Promise<void> {
   const kubeConfig = kc || getIntegrationTestKubeConfig();
   const coreApi = createCoreV1ApiClient(kubeConfig);
@@ -264,7 +264,7 @@ export async function cleanupTestNamespaces(
 
     // Delete all matching namespaces in parallel
     await Promise.allSettled(
-      testNamespaces.map((ns) => deleteNamespaceAndWait(ns, kubeConfig, 30000))
+      testNamespaces.map((ns) => deleteNamespaceAndWait(ns, kubeConfig, 600000))
     );
 
     console.log(`✅ Cleaned up ${testNamespaces.length} test namespaces`);

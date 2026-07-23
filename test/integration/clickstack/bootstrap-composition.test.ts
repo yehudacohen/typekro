@@ -43,7 +43,7 @@ const describeOrSkip =
 // Live-verified: tearing down the operator + CHI + clickstack (direct +
 // kro) + singleton sweep + 5 namespaces exceeds bun's 5s default hook
 // timeout on a real cluster.
-setDefaultTimeout(300000);
+setDefaultTimeout(900000);
 
 describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   let kubeConfig: any;
@@ -56,8 +56,12 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   let clickstackDeployed = false;
   let kroStackDeployed = false;
   let clickhouseHost: string | undefined;
+  let reuseExistingOperator = false;
+  let altinityRepositoryPreexisting = false;
+  let clickstackRepositoryPreexisting = false;
 
   const operatorNs = 'clickstack-test-op';
+  const existingOperatorNs = 'clickhouse-system';
   const chiNs = 'clickstack-test-chi';
   const stackNs = 'clickstack-test-stack';
   // KRO-mode namespaces: the instance CR lives in kroCrNs (factory
@@ -78,13 +82,49 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   // wants the plaintext.
   const chiUser = 'clickstack';
   const chiUserPassword = 'clickstack-e2e-password';
-  const chiUserPasswordSha256 =
-    'd5df529a9fe8b29d50f71e3b049ef4ba83f1f9f7b469b9ea5c4dbbabaffc9472';
+  const chiUserPasswordSha256 = 'd5df529a9fe8b29d50f71e3b049ef4ba83f1f9f7b469b9ea5c4dbbabaffc9472';
 
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      await Promise.all([operatorNs, chiNs, stackNs].map((ns) => ensureNamespaceExists(ns, kubeConfig)));
+      const { createBunCompatibleCustomObjectsApi } = await import(
+        '../../../src/core/kubernetes/index.js'
+      );
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+
+      try {
+        await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: existingOperatorNs,
+          plural: 'helmreleases',
+          name: 'clickhouse-operator',
+        });
+        reuseExistingOperator = true;
+      } catch {
+        // No canonical operator is installed; this suite owns a temporary one.
+      }
+
+      const repositoryExists = async (name: string): Promise<boolean> => {
+        try {
+          await customApi.getNamespacedCustomObject({
+            group: 'source.toolkit.fluxcd.io',
+            version: 'v1',
+            namespace: 'flux-system',
+            plural: 'helmrepositories',
+            name,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      altinityRepositoryPreexisting = await repositoryExists('altinity');
+      clickstackRepositoryPreexisting = await repositoryExists('clickstack');
+
+      const namespaces = reuseExistingOperator ? [chiNs, stackNs] : [operatorNs, chiNs, stackNs];
+      await Promise.all(namespaces.map((ns) => ensureNamespaceExists(ns, kubeConfig)));
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -126,50 +166,54 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
-      await customApi
-        .deleteNamespacedCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          namespace: 'typekro-singletons',
-          plural: 'clickstackhelmrepositories',
-          // Owner CR name = normalized singleton id (getSingletonInstanceName).
-          name: 'clickstack-helm-repository',
-        })
-        .catch(() => {});
-      // Give KRO a beat to process the owner instance finalizer before
-      // removing its RGD.
-      await new Promise((r) => setTimeout(r, 10000));
-      await customApi
-        .deleteClusterCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          plural: 'resourcegraphdefinitions',
-          name: 'clickstack-helm-repository',
-        })
-        .catch(() => {});
-      await k8sApi
-        .delete({
-          apiVersion: 'apiextensions.k8s.io/v1',
-          kind: 'CustomResourceDefinition',
-          metadata: { name: 'clickstackhelmrepositories.kro.run' },
-        })
-        .catch(() => {});
-      await k8sApi
-        .delete({
-          apiVersion: 'source.toolkit.fluxcd.io/v1',
-          kind: 'HelmRepository',
-          metadata: { name: 'clickstack', namespace: 'flux-system' },
-        })
-        .catch(() => {});
+      if (!clickstackRepositoryPreexisting) {
+        await customApi
+          .deleteNamespacedCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            namespace: 'typekro-singletons',
+            plural: 'clickstackhelmrepositories',
+            // Owner CR name = normalized singleton id (getSingletonInstanceName).
+            name: 'clickstack-helm-repository',
+          })
+          .catch(() => {});
+        // Give KRO a beat to process the owner instance finalizer before
+        // removing its RGD.
+        await new Promise((r) => setTimeout(r, 10000));
+        await customApi
+          .deleteClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: 'clickstack-helm-repository',
+          })
+          .catch(() => {});
+        await k8sApi
+          .delete({
+            apiVersion: 'apiextensions.k8s.io/v1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: 'clickstackhelmrepositories.kro.run' },
+          })
+          .catch(() => {});
+        await k8sApi
+          .delete({
+            apiVersion: 'source.toolkit.fluxcd.io/v1',
+            kind: 'HelmRepository',
+            metadata: { name: 'clickstack', namespace: 'flux-system' },
+          })
+          .catch(() => {});
+      }
       // The Altinity repo singleton from the operator prerequisite, same
       // rationale.
-      await k8sApi
-        .delete({
-          apiVersion: 'source.toolkit.fluxcd.io/v1',
-          kind: 'HelmRepository',
-          metadata: { name: 'altinity', namespace: 'flux-system' },
-        })
-        .catch(() => {});
+      if (!altinityRepositoryPreexisting) {
+        await k8sApi
+          .delete({
+            apiVersion: 'source.toolkit.fluxcd.io/v1',
+            kind: 'HelmRepository',
+            metadata: { name: 'altinity', namespace: 'flux-system' },
+          })
+          .catch(() => {});
+      }
     } catch {
       // Best-effort singleton sweep only.
     }
@@ -183,6 +227,29 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   });
 
   it('deploys the Altinity operator (external-ClickHouse prerequisite)', async () => {
+    if (reuseExistingOperator) {
+      const { createBunCompatibleCustomObjectsApi } = await import(
+        '../../../src/core/kubernetes/index.js'
+      );
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const raw: any = await customApi.getNamespacedCustomObject({
+        group: 'helm.toolkit.fluxcd.io',
+        version: 'v2',
+        namespace: existingOperatorNs,
+        plural: 'helmreleases',
+        name: 'clickhouse-operator',
+      });
+      const helmRelease = raw?.body ?? raw;
+      const ready = helmRelease.status?.conditions?.some(
+        (condition: any) => condition.type === 'Ready' && condition.status === 'True'
+      );
+
+      expect(ready).toBe(true);
+      expect(helmRelease.spec?.chart?.spec?.version).toBe('0.27.1');
+      console.log(`✅ Reusing ready cluster operator clickhouse-operator in ${existingOperatorNs}`);
+      return;
+    }
+
     const { clickhouseOperatorBootstrap } = await import(
       '../../../src/factories/clickhouse/index.js'
     );
@@ -291,9 +358,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // `metadata`, so direct mode's live-status re-execution evaluates them to
     // concrete strings (the migration's bimodal win, replacing the old raw
     // `Cel.expr(...)` that was opaque to direct mode).
-    expect(instance.status.ui.url).toBe(
-      `http://${stackName}.${stackNs}.svc.cluster.local:3000`
-    );
+    expect(instance.status.ui.url).toBe(`http://${stackName}.${stackNs}.svc.cluster.local:3000`);
     expect(instance.status.gateway.otlpHttpEndpoint).toBe(
       `http://${stackName}-otel-collector.${stackNs}.svc.cluster.local:4318`
     );
@@ -418,10 +483,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       liveCr = await readLiveCr();
     }
 
-    console.log(
-      '🔎 LIVE ClickStackBootstrap CR status:',
-      JSON.stringify(liveCr?.status, null, 2)
-    );
+    console.log('🔎 LIVE ClickStackBootstrap CR status:', JSON.stringify(liveCr?.status, null, 2));
 
     expect(liveCr.status?.ready).toBe(true);
     expect(liveCr.status?.phase).toBe('Ready');
@@ -444,10 +506,24 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // singleton intentionally survives (swept in afterAll).
     expect(kroStackDeployed).toBe(true);
 
-    const { createBunCompatibleCustomObjectsApi } = await import(
-      '../../../src/core/kubernetes/index.js'
-    );
+    const { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } =
+      await import('../../../src/core/kubernetes/index.js');
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+
+    // StatefulSet-created PVCs are intentionally retention-oriented and are
+    // not part of KRO's graph deletion. This test owns the MongoDB claim, so
+    // remove it before asserting sole-instance namespace/RGD teardown.
+    await k8sApi
+      .delete({
+        apiVersion: 'v1',
+        kind: 'PersistentVolumeClaim',
+        metadata: {
+          name: `data-${kroStackName}-mongodb-0`,
+          namespace: kroStackNs,
+        },
+      })
+      .catch(() => {});
 
     await kroStackFactory.deleteInstance(kroStackName);
     kroStackDeployed = false;

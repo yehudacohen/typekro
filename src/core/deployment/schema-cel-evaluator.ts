@@ -46,11 +46,76 @@ function createEvaluationScope(spec: KroCompatibleType): Record<string, unknown>
   );
 }
 
+function interpolationEnd(template: string, start: number): number {
+  let depth = 1;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let index = start + 2; index < template.length; index++) {
+    const character = template[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{') depth++;
+    if (character === '}' && --depth === 0) return index;
+  }
+
+  throw new Error(`Unterminated CEL template interpolation at offset ${start}.`);
+}
+
+function evaluateSchemaTemplate(expression: string, spec: KroCompatibleType): string {
+  const scope = createEvaluationScope(spec);
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < expression.length) {
+    let start = expression.indexOf('${', cursor);
+    while (start > cursor) {
+      let backslashes = 0;
+      for (let index = start - 1; index >= cursor && expression[index] === '\\'; index--) {
+        backslashes++;
+      }
+      if (backslashes % 2 === 0) break;
+      result += `${expression.slice(cursor, start - 1)}\${`;
+      cursor = start + 2;
+      start = expression.indexOf('${', cursor);
+    }
+    if (start === -1) {
+      result += expression.slice(cursor);
+      break;
+    }
+    result += expression.slice(cursor, start);
+    const end = interpolationEnd(expression, start);
+    const inner = expression.slice(start + 2, end);
+    const evaluator = compileExpression(prepareSchemaExpression(inner));
+    result += String(evaluator(scope) ?? '');
+    cursor = end + 1;
+  }
+
+  return result;
+}
+
 /** Safely evaluate a schema-only CEL expression against one concrete instance spec. */
 export function evaluateSchemaCelExpression(
   celExpression: CelExpression,
   spec: KroCompatibleType
 ): unknown {
+  if (celExpression.__isTemplate && celExpression.expression.includes('${')) {
+    return evaluateSchemaTemplate(celExpression.expression, spec);
+  }
   const evaluator = compileExpression(prepareSchemaExpression(celExpression.expression));
   return evaluator(createEvaluationScope(spec)) as unknown;
 }

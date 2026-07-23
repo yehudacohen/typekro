@@ -27,6 +27,21 @@ describe('callWithTimeout', () => {
     await expect(callWithTimeout(boom, 1_000, 'op')).rejects.toThrow('boom');
   });
 
+  it('interrupts a wedged call with the caller abort reason', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('stop polling', 'AbortError');
+    const result = callWithTimeout(
+      () => new Promise<string>(() => {}),
+      10_000,
+      'wedged read',
+      controller.signal
+    ).catch((error: unknown) => error);
+
+    controller.abort(reason);
+
+    expect(await result).toBe(reason);
+  });
+
   it('clears its timer so a resolved call does not keep the event loop alive', async () => {
     await expect(callWithTimeout(() => Promise.resolve(1), 50, 'op')).resolves.toBe(1);
     await new Promise((r) => setTimeout(r, 60));

@@ -10,6 +10,7 @@ import {
 } from '../../src/core/deployment/kro-namespace-teardown.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
  * DETERMINISTIC, OFFLINE proof of the PR #113 v6 review round (transition/retry safety):
@@ -42,7 +43,11 @@ function makeFactory(factoryName: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 function priv(target: unknown, method: string): (...args: unknown[]) => unknown {

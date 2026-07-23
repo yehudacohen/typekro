@@ -29,7 +29,7 @@ const testRunId = Date.now().toString().slice(-6);
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-e2e-cluster';
-const TEST_TIMEOUT = 180000; // 3 minutes
+const TEST_TIMEOUT = 900000; // 15 minutes, including namespace cleanup on CRD-heavy clusters
 
 // Generate unique namespace for test isolation
 const generateTestNamespace = (testName: string): string => {

@@ -134,12 +134,17 @@ function listContinuationToken(metadata: unknown): string | undefined {
 export async function listNamespacesOwnedByRgd(
   kubeConfig: k8s.KubeConfig,
   rgdName: string,
-  options: { k8sApi?: NamespaceListApi; logger?: TypeKroLogger } = {}
+  options: {
+    k8sApi?: NamespaceListApi;
+    logger?: TypeKroLogger;
+    abortSignal?: AbortSignal;
+  } = {}
 ): Promise<string[]> {
   const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
   const owned: string[] = [];
   let continueToken: string | undefined;
   do {
+    options.abortSignal?.throwIfAborted();
     const result = (await k8sApi.list(
       'v1',
       'Namespace',
@@ -155,6 +160,7 @@ export async function listNamespacesOwnedByRgd(
       items?: Array<{ metadata?: { name?: unknown; annotations?: Record<string, string> } }>;
       metadata?: { _continue?: unknown; continue?: unknown };
     };
+    options.abortSignal?.throwIfAborted();
     for (const item of result.items ?? []) {
       const name = item.metadata?.name;
       if (
@@ -208,7 +214,21 @@ export interface NamespaceInventory {
  */
 export type NamespaceEmptinessVerdict =
   | { readonly empty: true }
-  | { readonly empty: false; readonly reason: string };
+  | {
+      readonly empty: false;
+      readonly reason: string;
+      readonly cause: 'occupied' | 'discovery-unavailable' | 'list-unavailable';
+    };
+
+/** Observable result of the ownership- and emptiness-gated namespace teardown. */
+export type NamespaceDeletionOutcome =
+  | { readonly status: 'absent' }
+  | { readonly status: 'deleted' }
+  | {
+      readonly status: 'retained';
+      readonly reason: string;
+      readonly cause: 'read-failed' | 'not-owned' | 'occupied' | 'emptiness-unproven';
+    };
 
 /**
  * Whether an object found in a namespace is a k8s AUTO-PROVISIONED default that does
@@ -268,6 +288,7 @@ export async function classifyNamespaceEmptiness(
   } catch (error: unknown) {
     return {
       empty: false,
+      cause: 'discovery-unavailable',
       reason: `API discovery of namespaced types failed (retaining to be safe): ${ensureError(error).message}`,
     };
   }
@@ -282,6 +303,7 @@ export async function classifyNamespaceEmptiness(
       // Fail toward RETAIN: we could not prove this type is absent.
       return {
         empty: false,
+        cause: 'list-unavailable',
         reason: `could not list ${type.apiVersion}/${type.kind} in "${namespace}" (retaining to be safe): ${ensureError(error).message}`,
       };
     }
@@ -289,6 +311,7 @@ export async function classifyNamespaceEmptiness(
       if (!isAutoProvisionedDefault(group, type.kind, name)) {
         return {
           empty: false,
+          cause: 'occupied',
           reason: `namespace "${namespace}" still contains ${type.apiVersion}/${type.kind} "${name}" (another stack or user owns resources here)`,
         };
       }
@@ -346,11 +369,14 @@ export async function deleteNamespaceIfEmpty(
     ownedByRgd?: string;
     /** Bound for the gated delete (poll to a real 404, throw on timeout). */
     timeoutMs?: number;
+    /** Cancel inventory and deletion waits with the parent operation. */
+    abortSignal?: AbortSignal;
   } = {}
-): Promise<void> {
+): Promise<NamespaceDeletionOutcome> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
   const context = options.context ?? {};
   const k8sApi = options.k8sApi ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  options.abortSignal?.throwIfAborted();
 
   // Early existence + OWNERSHIP check FIRST — one read serves both. A 404 means the
   // namespace is already gone (skip discovery entirely). Any OTHER read error →
@@ -372,36 +398,43 @@ export async function deleteNamespaceIfEmpty(
         namespace,
         ...context,
       });
-      return;
+      return { status: 'absent' };
     }
+    const reason = `could not read namespace to prove ownership: ${ensureError(error).message}`;
     logger.info('Retaining namespace after teardown — could not read it (ownership unproven)', {
       namespace,
       error: ensureError(error).message,
       ...context,
     });
-    return;
+    return { status: 'retained', cause: 'read-failed', reason };
   }
 
   if (options.ownedByRgd !== undefined) {
     const owner = live.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION];
     if (owner !== options.ownedByRgd) {
+      const reason = `namespace is not owned by RGD ${options.ownedByRgd}; actual owner is ${owner ?? '(none)'}`;
       logger.info(
         'Retaining namespace after teardown — not owned by this composition (adopted/undeclared)',
         { namespace, expectedOwner: options.ownedByRgd, actualOwner: owner ?? '(none)', ...context }
       );
-      return;
+      return { status: 'retained', cause: 'not-owned', reason };
     }
   }
 
   const inventory = options.inventory ?? createClusterNamespaceInventory(kubeConfig);
   const verdict = await classifyNamespaceEmptiness(inventory, namespace, logger);
+  options.abortSignal?.throwIfAborted();
   if (!verdict.empty) {
     logger.info('Retaining namespace after teardown — not empty (or emptiness unproven)', {
       namespace,
       reason: verdict.reason,
       ...context,
     });
-    return;
+    return {
+      status: 'retained',
+      cause: verdict.cause === 'occupied' ? 'occupied' : 'emptiness-unproven',
+      reason: verdict.reason,
+    };
   }
 
   // GATED delete via the engine's ONE deletion primitive: delete, then poll to a real
@@ -412,9 +445,13 @@ export async function deleteNamespaceIfEmpty(
   const rollback = createRollbackManager(k8sApi as k8s.KubernetesObjectApi);
   await rollback.deleteResourceAndWait(
     { apiVersion: 'v1', kind: 'Namespace', name: namespace },
-    { timeout: options.timeoutMs ?? DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS }
+    {
+      timeout: options.timeoutMs ?? DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS,
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+    }
   );
   logger.debug('Deleted the empty owned namespace after teardown', { namespace, ...context });
+  return { status: 'deleted' };
 }
 
 /**

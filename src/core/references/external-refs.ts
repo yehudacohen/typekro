@@ -42,6 +42,8 @@ registerFactory({
 export interface ExternalRefConfig {
   apiVersion: string;
   kind: string;
+  /** Kubernetes scope of the observed resource. Defaults to namespaced. */
+  scope?: 'namespaced' | 'cluster';
   metadata: {
     /**
      * The referenced resource's name. Accepts a plain string OR a CEL expression / schema ref
@@ -96,6 +98,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   let resolvedKind: string;
   let resolvedName: RefOrValue<string>;
   let resolvedNamespace: RefOrValue<string> | undefined;
+  let resolvedScope: 'namespaced' | 'cluster' = 'namespaced';
 
   if (typeof configOrApiVersion === 'object') {
     // Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace } })
@@ -103,6 +106,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     resolvedKind = configOrApiVersion.kind;
     resolvedName = configOrApiVersion.metadata.name;
     resolvedNamespace = configOrApiVersion.metadata.namespace;
+    resolvedScope = configOrApiVersion.scope ?? 'namespaced';
   } else {
     // Positional form: externalRef(apiVersion, kind, instanceName, namespace?)
     apiVersion = configOrApiVersion;
@@ -136,7 +140,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
 
   // Use existing createResource function to get Enhanced proxy
   // (createResource skips context registration for __externalRef resources)
-  const enhanced = createResource<TSpec, TStatus>(resource);
+  const enhanced = createResource<TSpec, TStatus>(resource, { scope: resolvedScope });
 
   // Explicitly register with composition context so externalRef appears in Kro YAML.
   // This only happens when called directly from user code inside kubernetesComposition.

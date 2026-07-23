@@ -12,7 +12,10 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constant
 import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { ensureError, TypeKroError } from '../errors.js';
-import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
+import {
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+} from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata, getResourceId } from '../metadata/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
@@ -38,6 +41,24 @@ interface ResourceIdentifier {
   readonly apiVersion: string;
   readonly name: string;
   readonly namespace?: string;
+}
+
+interface DiscoveredCustomResource {
+  readonly group: string;
+  readonly version: string;
+  readonly plural: string;
+  readonly namespaced: boolean;
+}
+
+interface CustomResourceDefinitionList {
+  readonly items?: readonly {
+    readonly spec?: {
+      readonly group?: string;
+      readonly names?: { readonly kind?: string; readonly plural?: string };
+      readonly scope?: string;
+      readonly versions?: readonly { readonly name?: string; readonly served?: boolean }[];
+    };
+  }[];
 }
 
 /**
@@ -68,19 +89,30 @@ export class ReferenceResolver {
   private logger = getComponentLogger('reference-resolver');
   private kubeClient: k8s.KubeConfig;
   private k8sApi: k8s.KubernetesObjectApi;
+  private customObjectsApi: k8s.CustomObjectsApi | undefined;
+  private customResourceDiscovery = new Map<string, DiscoveredCustomResource>();
   private deploymentMode: DeploymentMode;
 
   constructor(
     kubeClient: k8s.KubeConfig,
     deploymentMode: DeploymentMode = DeploymentMode.DIRECT,
-    k8sApi?: k8s.KubernetesObjectApi
+    k8sApi?: k8s.KubernetesObjectApi,
+    customObjectsApi?: k8s.CustomObjectsApi
   ) {
     this.kubeClient = kubeClient;
     this.deploymentMode = deploymentMode;
     // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
     // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
     this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient);
+    this.customObjectsApi = customObjectsApi;
     this.celEvaluator = new CelEvaluator();
+  }
+
+  private getCustomObjectsApi(): k8s.CustomObjectsApi {
+    if (!this.customObjectsApi) {
+      this.customObjectsApi = createBunCompatibleCustomObjectsApi(this.kubeClient);
+    }
+    return this.customObjectsApi;
   }
 
   /**
@@ -788,6 +820,114 @@ export class ReferenceResolver {
     return context.deployedResources.find((r) => r.id === resourceId);
   }
 
+  private async discoverCustomResource(
+    apiVersion: string,
+    kind: string
+  ): Promise<DiscoveredCustomResource> {
+    const cacheKey = `${apiVersion}/${kind}`;
+    const cached = this.customResourceDiscovery.get(cacheKey);
+    if (cached) return cached;
+
+    const separator = apiVersion.indexOf('/');
+    if (separator <= 0 || separator === apiVersion.length - 1) {
+      throw new Error(`Cannot discover custom resource ${apiVersion} ${kind}`);
+    }
+    const group = apiVersion.slice(0, separator);
+    const version = apiVersion.slice(separator + 1);
+    const list = await this.getCustomObjectsApi().getAPIResources({ group, version });
+    const resource = list.resources?.find(
+      (candidate) => candidate.kind === kind && !candidate.name.includes('/')
+    );
+    let discovered: DiscoveredCustomResource | undefined = resource
+      ? {
+          group,
+          version,
+          plural: resource.name,
+          namespaced: resource.namespaced,
+        }
+      : undefined;
+
+    // Aggregated API discovery can briefly lag behind a newly established KRO-generated CRD.
+    // The CRD itself is the authoritative source for plural and scope, so consult it before
+    // treating a missing discovery entry as absence.
+    if (!discovered) {
+      const crds = (await this.k8sApi.list(
+        'apiextensions.k8s.io/v1',
+        'CustomResourceDefinition'
+      )) as unknown as CustomResourceDefinitionList;
+      const crd = crds.items?.find(
+        (candidate) =>
+          candidate.spec?.group === group &&
+          candidate.spec.names?.kind === kind &&
+          candidate.spec.versions?.some(
+            (candidateVersion) =>
+              candidateVersion.name === version && candidateVersion.served !== false
+          )
+      );
+      const plural = crd?.spec?.names?.plural;
+      if (plural) {
+        discovered = {
+          group,
+          version,
+          plural,
+          namespaced: crd.spec?.scope !== 'Cluster',
+        };
+      }
+    }
+
+    if (!discovered) {
+      throw new Error(`Kubernetes discovery and CRD registry did not report ${apiVersion} ${kind}`);
+    }
+
+    this.customResourceDiscovery.set(cacheKey, discovered);
+    return discovered;
+  }
+
+  private async readCustomResource(
+    resourceInfo: ResourceIdentifier,
+    fallbackNamespace: string
+  ): Promise<k8s.KubernetesObject> {
+    const discovered = await this.discoverCustomResource(
+      resourceInfo.apiVersion,
+      resourceInfo.kind
+    );
+    const request = {
+      group: discovered.group,
+      version: discovered.version,
+      plural: discovered.plural,
+      name: resourceInfo.name,
+    };
+    const customObjectsApi = this.getCustomObjectsApi();
+    const resource = discovered.namespaced
+      ? await customObjectsApi.getNamespacedCustomObject({
+          ...request,
+          namespace: resourceInfo.namespace || fallbackNamespace,
+        })
+      : await customObjectsApi.getClusterCustomObject(request);
+    return resource as k8s.KubernetesObject;
+  }
+
+  private async readClusterResource(
+    resourceInfo: ResourceIdentifier,
+    resourceRef: k8s.KubernetesObject,
+    fallbackNamespace: string
+  ): Promise<k8s.KubernetesObject> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: client-node read() accepts a broad Kubernetes object shape.
+      return await this.k8sApi.read(resourceRef as any);
+    } catch (error: unknown) {
+      const message = ensureError(error).message;
+      if (
+        !resourceInfo.apiVersion.includes('/') ||
+        !message.includes('Unrecognized API version and kind')
+      ) {
+        throw error;
+      }
+      return this.readCustomResource(resourceInfo, fallbackNamespace);
+    }
+  }
+
   /**
    * Query a resource from the Kubernetes cluster
    */
@@ -832,13 +972,13 @@ export class ReferenceResolver {
 
       queryLogger.debug('Querying cluster resource', { resourceRef });
 
-      // Query the resource from the cluster
-      // In the new API, methods return objects directly (no .body wrapper)
-      // Cast is required: resourceRef.metadata.name is guaranteed non-undefined (set above)
-      // but V1ObjectMeta.name is typed as optional, causing exactOptionalPropertyTypes mismatch.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // biome-ignore lint/suspicious/noExplicitAny: client-node read() accepts a broad Kubernetes object shape.
-      const resource = await this.k8sApi.read(resourceRef as any);
+      // Registered resources use KubernetesObjectApi. Generated or otherwise
+      // unregistered CR kinds fall back to discovery + CustomObjectsApi.
+      const resource = await this.readClusterResource(
+        resourceInfo,
+        resourceRef,
+        context.namespace || 'default'
+      );
 
       queryLogger.debug('Successfully retrieved cluster resource', {
         resourceName: resource.metadata?.name,

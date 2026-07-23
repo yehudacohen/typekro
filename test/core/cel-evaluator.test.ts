@@ -20,6 +20,18 @@ describe('CelEvaluator', () => {
     };
   });
 
+  it('treats dotted URLs in string literals as literal data', async () => {
+    const result = await evaluator.evaluate(
+      {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: "'http://api.example.com'",
+      },
+      context
+    );
+
+    expect(result).toBe('http://api.example.com');
+  });
+
   describe('evaluate', () => {
     it('should evaluate simple arithmetic expressions', async () => {
       const expression = {

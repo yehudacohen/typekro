@@ -256,19 +256,11 @@ describeOrSkip('End-to-End Helm Integration', () => {
       // Step 5: Wait for Flux to reconcile the HelmRelease and nginx to start
       console.log('Step 5: Waiting for nginx deployment to become ready...');
       try {
-        await waitForDeployment(`${nginxReleaseName}-nginx`, testNamespace, 180000);
+        await waitForDeployment(nginxReleaseName, testNamespace, 180000);
         console.log('NGINX deployment is ready');
-      } catch (_error) {
-        // Flux may name the deployment differently — try alternate names
-        try {
-          await waitForDeployment(nginxReleaseName, testNamespace, 30000);
-          console.log('NGINX deployment is ready (alternate name)');
-        } catch {
-          console.warn(
-            'NGINX deployment not ready within timeout (Flux reconciliation may be slow)'
-          );
-          // Don't fail the test — the HelmRelease creation itself is the main assertion
-        }
+      } catch {
+        console.warn('NGINX deployment not ready within timeout (Flux reconciliation may be slow)');
+        // Don't fail the test — the HelmRelease creation itself is the main assertion
       }
 
       // Step 6: Verify YAML generation
@@ -286,7 +278,8 @@ describeOrSkip('End-to-End Helm Integration', () => {
       expect(rgdYaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
       expect(rgdYaml).toContain('name: helm-platform');
-      expect(rgdYaml).toContain('kind: Namespace');
+      // Namespaces are TypeKro-managed siblings, never KRO ApplySet members.
+      expect(rgdYaml).not.toContain('kind: Namespace');
       expect(rgdYaml).toContain('kind: HelmRepository');
       expect(rgdYaml).toContain(bitnamiRepoName);
       expect(rgdYaml).toContain('apiVersion: helm.toolkit.fluxcd.io/v2');

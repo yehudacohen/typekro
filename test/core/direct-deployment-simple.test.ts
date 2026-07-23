@@ -4,12 +4,16 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
+import { DeploymentTimeoutError } from '../../src/core/errors.js';
+import { setMetadataField } from '../../src/core/metadata/index.js';
+import { resourceGraphDefinition } from '../../src/factories/kro/resource-graph-definition.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import {
   type DeployableK8sResource,
   type DeployedResource,
   type DeploymentOptions,
+  type DeploymentResourceGraph,
   DirectDeploymentEngine,
   type Enhanced,
   type KubernetesResource,
@@ -90,7 +94,9 @@ const mockKubeConfig = {
 
 // Mock the ReferenceResolver to avoid infinite loops
 const mockReferenceResolver = {
-  resolveReferences: mock(async (resource: any) => resource), // Just return the resource as-is
+  resolveReferences: mock(
+    async (resource: any, _context?: { resourceKeyMapping?: Map<string, unknown> }) => resource
+  ), // Just return the resource as-is
   clearCache: mock(() => {
     // Mock implementation - no cache to clear
   }),
@@ -125,6 +131,7 @@ describe('DirectDeploymentEngine Simple', () => {
     mockK8sApi.patch.mockClear();
     mockK8sApi.delete.mockClear();
     mockReferenceResolver.resolveReferences.mockClear();
+    mockReferenceResolver.resolveReferences.mockImplementation(async (resource: any) => resource);
   });
 
   describe('deployResource', () => {
@@ -165,6 +172,39 @@ describe('DirectDeploymentEngine Simple', () => {
       expect(result.id).toBe('testResource');
       expect(result.kind).toBe('Deployment');
       expect(result.status).toBe('deployed');
+      expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('reattaches registered readiness before applying a single resource', async () => {
+      const enhanced = resourceGraphDefinition({
+        metadata: { name: 'registered-readiness' },
+        spec: { schema: {}, resources: [] },
+      });
+      const resource = {
+        ...enhanced,
+        id: 'registered-readiness',
+      } as DeployableK8sResource<Enhanced<object, object>>;
+      let readCount = 0;
+      mockK8sApi.read.mockImplementation(() => {
+        readCount += 1;
+        if (readCount === 1) return Promise.reject({ statusCode: 404 });
+        return Promise.resolve({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: 'registered-readiness', generation: 1 },
+          status: {
+            state: 'Active',
+            conditions: [{ type: 'Ready', status: 'True', observedGeneration: 1 }],
+          },
+        });
+      });
+
+      const result = await engine.deployResource(resource, {
+        ...defaultOptions,
+        waitForReady: true,
+      });
+
+      expect(result.status).toBe('ready');
       expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
     });
 
@@ -262,6 +302,51 @@ describe('DirectDeploymentEngine Simple', () => {
   });
 
   describe('deployment timeout watchdog', () => {
+    it('aborts with contextual deployment timeout evidence', async () => {
+      let timeoutHandler: (() => void) | undefined;
+      const fakeTimer = { unref: mock() } as unknown as ReturnType<typeof setTimeout>;
+      const originalSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((handler: TimerHandler) => {
+        timeoutHandler = handler as () => void;
+        return fakeTimer;
+      }) as unknown as typeof setTimeout;
+
+      try {
+        const setupDeploymentTimeout = (
+          engine as unknown as {
+            setupDeploymentTimeout: (
+              deploymentId: string,
+              options: DeploymentOptions,
+              deploymentLogger: { debug: (...args: unknown[]) => void }
+            ) => { abortController: AbortController };
+          }
+        ).setupDeploymentTimeout.bind(engine);
+
+        const { abortController } = setupDeploymentTimeout(
+          'deployment-contextual-timeout',
+          {
+            ...defaultOptions,
+            timeout: 1234,
+            factoryName: 'web-stack',
+            instanceName: 'production',
+          },
+          { debug: mock() }
+        );
+        timeoutHandler?.();
+
+        expect(abortController.signal.aborted).toBe(true);
+        expect(abortController.signal.reason).toBeInstanceOf(DeploymentTimeoutError);
+        const reason = abortController.signal.reason as DeploymentTimeoutError;
+        expect(reason.operation).toBe('deployment');
+        expect(reason.resourceName).toBe('production');
+        expect(reason.timeoutMs).toBe(1234);
+        expect(reason.message).toContain('web-stack/production');
+        expect(reason.message).toContain('Pending resource, readiness, and closure operations');
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+
     it('unrefs the deployment watchdog timer so it cannot keep the process alive', () => {
       const fakeTimer = {
         unref: mock(),
@@ -290,10 +375,64 @@ describe('DirectDeploymentEngine Simple', () => {
         });
 
         expect(timeoutId).toBe(fakeTimer);
-        expect((fakeTimer as unknown as { unref: ReturnType<typeof mock> }).unref).toHaveBeenCalledTimes(1);
+        expect(
+          (fakeTimer as unknown as { unref: ReturnType<typeof mock> }).unref
+        ).toHaveBeenCalledTimes(1);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
       }
+    });
+
+    it('forwards a caller abort signal into the deployment controller', async () => {
+      const external = new AbortController();
+      const setupDeploymentTimeout = (
+        engine as unknown as {
+          setupDeploymentTimeout: (
+            deploymentId: string,
+            options: DeploymentOptions,
+            deploymentLogger: { debug: (...args: unknown[]) => void }
+          ) => {
+            abortController: AbortController;
+            timeoutId: ReturnType<typeof setTimeout>;
+            detachExternalAbort: () => void;
+          };
+          cleanupDeployment: (
+            abortController: AbortController,
+            timeoutId: ReturnType<typeof setTimeout>,
+            deploymentLogger: { debug: (...args: unknown[]) => void },
+            detachExternalAbort: () => void
+          ) => Promise<void>;
+        }
+      ).setupDeploymentTimeout.bind(engine);
+      const cleanupDeployment = (
+        engine as unknown as {
+          cleanupDeployment: (
+            abortController: AbortController,
+            timeoutId: ReturnType<typeof setTimeout>,
+            deploymentLogger: { debug: (...args: unknown[]) => void },
+            detachExternalAbort: () => void
+          ) => Promise<void>;
+        }
+      ).cleanupDeployment.bind(engine);
+      const logger = { debug: mock() };
+
+      const setup = setupDeploymentTimeout(
+        'deployment-external-abort',
+        { ...defaultOptions, abortSignal: external.signal },
+        logger
+      );
+      const reason = new Error('caller cancelled');
+      external.abort(reason);
+
+      expect(setup.abortController.signal.aborted).toBe(true);
+      expect(setup.abortController.signal.reason).toBe(reason);
+
+      await cleanupDeployment(
+        setup.abortController,
+        setup.timeoutId,
+        logger,
+        setup.detachExternalAbort
+      );
     });
   });
 
@@ -329,6 +468,144 @@ describe('DirectDeploymentEngine Simple', () => {
       expect(result.status).toBe('success');
       expect(result.resources).toHaveLength(1);
       expect(result.errors).toHaveLength(0);
+    });
+
+    it('pre-reads external references into resolution context without applying them', async () => {
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'platformConfig',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+      });
+      graph.externalReferences = [{ id: 'platformConfig', manifest: external }];
+      const liveExternal = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+        data: { region: 'us-east-1' },
+      };
+      mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+        if (target?.kind === 'ConfigMap') return Promise.resolve(liveExternal);
+        return Promise.reject({ statusCode: 404 });
+      });
+      mockReferenceResolver.resolveReferences.mockImplementation(
+        async (
+          resource: KubernetesResource,
+          context?: { resourceKeyMapping?: Map<string, unknown> }
+        ) => {
+          expect(context?.resourceKeyMapping?.get('platformConfig')).toBe(liveExternal);
+          return resource;
+        }
+      );
+
+      const result = await engine.deploy(graph, defaultOptions);
+
+      expect(result.status).toBe('success');
+      expect(mockK8sApi.read).toHaveBeenCalledWith({
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+      });
+      expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves external references from seeds before attempting a cluster read', async () => {
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'singletonOwner',
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'SharedPlatform',
+        metadata: { name: 'shared-platform', namespace: 'typekro-singletons' },
+      });
+      graph.externalReferences = [{ id: 'singletonOwner', manifest: external }];
+      const seededManifest = {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'SharedPlatform',
+        metadata: { name: 'shared-platform', namespace: 'typekro-singletons' },
+        status: { ready: true, endpoint: 'http://shared-platform:80' },
+      };
+      const seed: DeployedResource = {
+        id: 'singletonOwner',
+        kind: 'SharedPlatform',
+        name: 'shared-platform',
+        namespace: 'typekro-singletons',
+        manifest: seededManifest,
+        liveManifest: seededManifest,
+        status: 'ready',
+        applied: false,
+        deployedAt: new Date(),
+      };
+      mockReferenceResolver.resolveReferences.mockImplementation(
+        async (
+          resource: KubernetesResource,
+          context?: { resourceKeyMapping?: Map<string, unknown> }
+        ) => {
+          expect(context?.resourceKeyMapping?.get('singletonOwner')).toBe(seededManifest);
+          return resource;
+        }
+      );
+
+      const result = await engine.deploy(graph, defaultOptions, [seed]);
+
+      expect(result.status).toBe('success');
+      expect(mockK8sApi.read).not.toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'SharedPlatform' })
+      );
+      expect(result.resources.some((resource) => resource.id === seed.id)).toBe(false);
+    });
+
+    it('fails before applying managed resources when a required external reference is missing', async () => {
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'platformConfig',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'missing-config', namespace: 'platform-system' },
+      });
+      graph.externalReferences = [{ id: 'platformConfig', manifest: external }];
+      mockK8sApi.read.mockRejectedValue({ statusCode: 404, message: 'Not Found' });
+
+      const result = await engine.deploy(graph, defaultOptions);
+
+      expect(result.status).toBe('failed');
+      expect(result.errors[0]?.error.message).toContain(
+        'Required external resource ConfigMap/missing-config could not be read'
+      );
+      expect(mockK8sApi.create).not.toHaveBeenCalled();
+      expect(mockK8sApi.patch).not.toHaveBeenCalled();
+    });
+
+    it('reads cluster-scoped external references without adding a namespace', async () => {
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'clusterPolicy',
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'platform-reader' },
+      });
+      setMetadataField(external, 'scope', 'cluster');
+      graph.externalReferences = [{ id: 'clusterPolicy', manifest: external }];
+      mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+        if (target?.kind === 'ClusterRole') {
+          return Promise.resolve({
+            apiVersion: 'rbac.authorization.k8s.io/v1',
+            kind: 'ClusterRole',
+            metadata: { name: 'platform-reader' },
+          });
+        }
+        return Promise.reject({ statusCode: 404 });
+      });
+
+      const result = await engine.deploy(graph, defaultOptions);
+
+      expect(result.status).toBe('success');
+      expect(mockK8sApi.read).toHaveBeenCalledWith({
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: 'platform-reader' },
+      });
+      expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
     });
 
     it('should handle deployment failures gracefully', async () => {
@@ -518,7 +795,7 @@ describe('DirectDeploymentEngine Simple', () => {
 });
 
 // Helper functions
-function createSimpleGraph() {
+function createSimpleGraph(): DeploymentResourceGraph {
   const graph = new DependencyGraph();
 
   const manifest = createMockResource({

@@ -209,7 +209,11 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       ? hasDefinitionCredentials
         ? { admin: definitionCredentials.admin, viewer: definitionCredentials.viewer }
         : resolveAdminCredentials(undefined, { allowTestDefaults: false })
-      : resolveAdminCredentials(fullConfig.gateway?.adminCredentials);
+      : resolveAdminCredentials(fullConfig.gateway?.adminCredentials, {
+          // Composition definition capture happens during module import. It must
+          // stay quiet; concrete direct re-execution still emits the safety warning.
+          warnOnTestDefaults: ctx?.isReExecution === true,
+        });
     (helmValues.apisix as Record<string, unknown>).admin = {
       enabled: true,
       type: 'ClusterIP',

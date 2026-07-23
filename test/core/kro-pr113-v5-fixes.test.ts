@@ -11,6 +11,7 @@ import {
 } from '../../src/core/deployment/kro-namespace-teardown.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
  * DETERMINISTIC, OFFLINE proof of the PR #113 v5 review round:
@@ -105,7 +106,11 @@ function makeFactory(factoryName: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 /**
@@ -307,7 +312,7 @@ describe('#4: the instance CR records its hoisted namespaces (arbitrary spec fie
       return { ready: true };
     });
     const yaml = composition
-      .factory('kro', { namespace: 'ctrl' })
+      .factory('kro', { namespace: 'ctrl', kubeConfig: createMockKubeConfig() })
       .toYaml({ name: 'x', targetNamespace: 'team-a-custom' });
 
     // The CR instance doc carries the recorded annotation with the arbitrary-field name.

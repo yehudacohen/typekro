@@ -37,7 +37,29 @@ export interface RollbackConfig {
   timeout?: number | undefined;
   gracePeriod?: number | undefined;
   force?: boolean | undefined;
+  abortSignal?: AbortSignal | undefined;
   emitEvent?: ((event: DeploymentEvent) => void) | undefined;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
@@ -128,6 +150,7 @@ export class ResourceRollbackManager {
     resource: Enhanced<unknown, unknown>,
     config: RollbackConfig
   ): Promise<void> {
+    throwIfAborted(config.abortSignal);
     // Extract string values from metadata
     const name = this.extractStringValue(resource.metadata?.name);
     const namespace = this.extractStringValue(resource.metadata?.namespace);
@@ -160,7 +183,7 @@ export class ResourceRollbackManager {
 
       // Wait for deletion to complete if timeout is specified
       if (config.timeout !== undefined) {
-        await this.waitForResourceDeletion(resource, config.timeout);
+        await this.waitForResourceDeletion(resource, config.timeout, config.abortSignal);
       }
     } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
@@ -223,7 +246,8 @@ export class ResourceRollbackManager {
    */
   private async waitForResourceDeletion(
     resource: Enhanced<unknown, unknown>,
-    timeout: number
+    timeout: number,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const name = this.extractStringValue(resource.metadata?.name);
     if (!name) {
@@ -244,7 +268,8 @@ export class ResourceRollbackManager {
         name,
         ...(namespace ? { namespace } : {}),
       },
-      timeout
+      timeout,
+      abortSignal
     );
   }
 
@@ -259,7 +284,8 @@ export class ResourceRollbackManager {
    */
   private async waitForDeletionByHeader(
     target: { apiVersion: string; kind: string; name: string; namespace?: string },
-    timeout: number
+    timeout: number,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const startTime = Date.now();
     const pollInterval = Math.min(DEFAULT_POLL_INTERVAL, Math.max(1, timeout));
@@ -268,6 +294,7 @@ export class ResourceRollbackManager {
       : { name: target.name };
 
     while (Date.now() - startTime < timeout) {
+      throwIfAborted(abortSignal);
       try {
         await this.k8sApi.read({
           apiVersion: target.apiVersion,
@@ -275,14 +302,14 @@ export class ResourceRollbackManager {
           metadata,
         } as unknown as KubernetesResourceHeader<KubernetesResource>);
         // Resource still exists, wait and try again
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await abortableDelay(pollInterval, abortSignal);
       } catch (error: unknown) {
         if (isNotFoundError(error)) {
           // Resource is gone, deletion successful
           return;
         }
         // Other errors might be transient, continue waiting
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await abortableDelay(pollInterval, abortSignal);
       }
     }
 
@@ -302,9 +329,13 @@ export class ResourceRollbackManager {
    */
   async waitForResourceGone(
     target: { apiVersion: string; kind: string; name: string; namespace?: string },
-    options: { timeout?: number } = {}
+    options: { timeout?: number; abortSignal?: AbortSignal } = {}
   ): Promise<void> {
-    await this.waitForDeletionByHeader(target, options.timeout ?? DEFAULT_DELETE_TIMEOUT);
+    await this.waitForDeletionByHeader(
+      target,
+      options.timeout ?? DEFAULT_DELETE_TIMEOUT,
+      options.abortSignal
+    );
   }
 
   /**
@@ -322,8 +353,9 @@ export class ResourceRollbackManager {
    */
   async deleteResourceAndWait(
     target: { apiVersion: string; kind: string; name: string; namespace?: string },
-    options: { timeout?: number; gracePeriod?: number } = {}
+    options: { timeout?: number; gracePeriod?: number; abortSignal?: AbortSignal } = {}
   ): Promise<void> {
+    throwIfAborted(options.abortSignal);
     const timeout = options.timeout ?? DEFAULT_DELETE_TIMEOUT;
     const metadata = target.namespace
       ? { name: target.name, namespace: target.namespace }
@@ -347,7 +379,7 @@ export class ResourceRollbackManager {
       throw error;
     }
 
-    await this.waitForDeletionByHeader(target, timeout);
+    await this.waitForDeletionByHeader(target, timeout, options.abortSignal);
   }
 
   /**
@@ -380,7 +412,11 @@ export class ResourceRollbackManager {
   async rollbackOrderedResources(
     deployedResources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+  ): Promise<{
+    rolledBackResources: string[];
+    deletedResources: DeployedResource[];
+    errors: DeploymentError[];
+  }> {
     return this.deleteResourceList(deployedResources, options);
   }
 
@@ -393,7 +429,11 @@ export class ResourceRollbackManager {
   async rollbackDeployedResources(
     deployedResources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+  ): Promise<{
+    rolledBackResources: string[];
+    deletedResources: DeployedResource[];
+    errors: DeploymentError[];
+  }> {
     const filtered = [...deployedResources].reverse().filter((r) => {
       const scopes = getEffectiveScopes(r.manifest);
       if (options.targetScopes !== undefined) {
@@ -420,7 +460,11 @@ export class ResourceRollbackManager {
   private async deleteResourceList(
     resources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+  ): Promise<{
+    rolledBackResources: string[];
+    deletedResources: DeployedResource[];
+    errors: DeploymentError[];
+  }> {
     this.emitDeploymentEvent(options, {
       type: 'rollback',
       message: 'Starting rollback of deployed resources',
@@ -428,15 +472,17 @@ export class ResourceRollbackManager {
     });
 
     const rolledBackResources: string[] = [];
+    const deletedResources: DeployedResource[] = [];
     const errors: DeploymentError[] = [];
 
     for (const resource of resources) {
       if (resource.status === 'failed' && resource.applied !== true) continue;
 
       try {
-        await this.deleteDeployedResource(resource, options.timeout);
+        await this.deleteDeployedResource(resource, options.timeout, options.abortSignal);
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
+        deletedResources.push(resource);
       } catch (error: unknown) {
         this.logger.warn('Failed to delete resource during rollback', {
           error: ensureError(error),
@@ -454,7 +500,7 @@ export class ResourceRollbackManager {
       }
     }
 
-    return { rolledBackResources, errors };
+    return { rolledBackResources, deletedResources, errors };
   }
 
   /**
@@ -466,7 +512,12 @@ export class ResourceRollbackManager {
    * should be deleted. Filtering at this level would silently drop
    * resources that the caller explicitly targeted for deletion.
    */
-  async deleteDeployedResource(resource: DeployedResource, timeout?: number): Promise<void> {
+  async deleteDeployedResource(
+    resource: DeployedResource,
+    timeout?: number,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
+    throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,
@@ -509,6 +560,7 @@ export class ResourceRollbackManager {
       const startTime = Date.now();
 
       while (Date.now() - startTime < deleteTimeout) {
+        throwIfAborted(abortSignal);
         try {
           await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
@@ -517,7 +569,7 @@ export class ResourceRollbackManager {
           });
 
           // Resource still exists, wait and try again
-          await new Promise((resolve) => setTimeout(resolve, DEFAULT_FAST_POLL_INTERVAL));
+          await abortableDelay(DEFAULT_FAST_POLL_INTERVAL, abortSignal);
         } catch (error: unknown) {
           // Resource not found, deletion successful
           if (isNotFoundError(error)) {

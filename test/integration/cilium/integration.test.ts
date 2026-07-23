@@ -271,7 +271,7 @@ describeOrSkip('Cilium Integration Tests', () => {
         name: 'string',
         version: 'string',
         clusterName: 'string',
-        clusterId: 'number',
+        clusterId: '0 <= number.integer <= 255',
       });
 
       const CiliumReleaseStatus = type({
@@ -292,7 +292,9 @@ describeOrSkip('Cilium Integration Tests', () => {
             name: spec.name || 'cilium',
             cluster: {
               name: spec.clusterName || 'test',
-              id: Math.min(Math.max(spec.clusterId || 1, 0), 255), // Ensure valid range 0-255
+              // The schema validates the concrete instance value. Keep the symbolic
+              // reference intact so both direct materialization and KRO lowering see it.
+              id: spec.clusterId,
             },
             networking: {
               kubeProxyReplacement: 'strict',
@@ -300,12 +302,6 @@ describeOrSkip('Cilium Integration Tests', () => {
           };
 
           const helmValues = mapCiliumConfigToHelmValues(config);
-          const validation = validateCiliumHelmValues(helmValues);
-
-          if (!validation.valid) {
-            throw new Error(`Invalid Helm values: ${validation.errors.join(', ')}`);
-          }
-
           // WORKAROUND: Since the entire composition runs in status builder context,
           // spec values are KubernetesRef objects. For resource names, we need actual strings.
           // Use a fixed name for the repository to avoid the KubernetesRef issue.

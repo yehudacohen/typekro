@@ -18,6 +18,7 @@
 import { Parser } from 'acorn';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { buildLexicalAliasScope } from '../analysis/alias-inliner.js';
 import {
   getForEach,
   getIncludeWhen,
@@ -223,6 +224,7 @@ export function analyzeCompositionBody(
       forEachStack: [],
       includeWhenStack: [],
       optionalFieldNames: optionalFieldNames ?? new Set(),
+      lexicalAliases: buildLexicalAliasScope(ast, fnSource),
     };
 
     walkBody(functionBody, fnSource, specParamName, ctx, result);

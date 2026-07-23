@@ -17,14 +17,17 @@ import { DependencyGraph } from './graph.js';
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
 
-  private static readonly CLUSTER_SERVICE_SUFFIX_PATTERN = /^([a-z0-9-]+)(?:\.([a-z0-9-]+))?(?:\.svc(?:\.cluster\.local)?|\.cluster\.local)$/i;
-  private static readonly BARE_HOST_KEY_PATTERN = /(?:^|_)(?:DB|DATABASE|REDIS|VALKEY|CACHE|SERVICE|UPSTREAM|POSTGRES|PG)_(?:HOST|SERVER)$/i;
+  private static readonly CLUSTER_SERVICE_SUFFIX_PATTERN =
+    /^([a-z0-9-]+)(?:\.([a-z0-9-]+))?(?:\.svc(?:\.cluster\.local)?|\.cluster\.local)$/i;
+  private static readonly BARE_HOST_KEY_PATTERN =
+    /(?:^|_)(?:DB|DATABASE|REDIS|VALKEY|CACHE|SERVICE|UPSTREAM|POSTGRES|PG)_(?:HOST|SERVER)$/i;
 
   /**
    * Build a dependency graph from a collection of Kubernetes resources
    */
   buildDependencyGraph(
-    resources: DeployableK8sResource<Enhanced<unknown, unknown>>[]
+    resources: DeployableK8sResource<Enhanced<unknown, unknown>>[],
+    options: { readonly knownExternalResourceIds?: ReadonlySet<string> } = {}
   ): DependencyGraph {
     const graph = new DependencyGraph();
 
@@ -48,7 +51,7 @@ export class DependencyResolver {
 
       for (const ref of references) {
         // Skip schema references (these are internal TypeKro references)
-        if (ref.resourceId !== '__schema__') {
+        if (ref.resourceId !== '__schema__' && ref.resourceId !== 'schema') {
           // Resolve the reference ID: try graph ID first, then original ID mapping
           const targetId = graph.hasNode(ref.resourceId)
             ? ref.resourceId
@@ -79,6 +82,13 @@ export class DependencyResolver {
           ? dep.resourceId
           : originalIdToGraphId.get(dep.resourceId);
         if (!targetId) {
+          if (options.knownExternalResourceIds?.has(dep.resourceId)) {
+            this.logger.debug('Skipping apply-order edge to known external resource', {
+              sourceResourceId: resource.id,
+              dependencyResourceId: dep.resourceId,
+            });
+            continue;
+          }
           throw new TypeKroError(
             `dependsOn target '${dep.resourceId}' was not found in resource graph`,
             'INVALID_DEPENDENCY_TARGET',
@@ -98,15 +108,20 @@ export class DependencyResolver {
     // depends on that Namespace being created first.
     const namespaceResources = new Map<string, string>(); // namespace name → resource graph ID
     for (const resource of resources) {
-      if (resource.kind === 'Namespace' && resource.metadata?.name) {
-        namespaceResources.set(resource.metadata.name, resource.id);
+      const namespaceName = resource.metadata?.name;
+      if (
+        resource.kind === 'Namespace' &&
+        typeof namespaceName === 'string' &&
+        namespaceName.length > 0
+      ) {
+        namespaceResources.set(namespaceName, resource.id);
       }
     }
 
     if (namespaceResources.size > 0) {
       for (const resource of resources) {
         const ns = resource.metadata?.namespace;
-        if (ns && namespaceResources.has(ns)) {
+        if (typeof ns === 'string' && namespaceResources.has(ns)) {
           const nsResourceId = namespaceResources.get(ns);
           if (!nsResourceId) continue;
           // Don't add self-dependency
@@ -141,15 +156,21 @@ export class DependencyResolver {
     // like service(), deployment(), valkey(), cluster(), etc.).
     // Precompile regex patterns once per service name to avoid creating
     // a new RegExp on every (resource × stringValue × serviceName) pair.
-    const dnsAddressableResourcesByName = new Map<string, Array<{ id: string; namespace?: string }>>();
+    const dnsAddressableResourcesByName = new Map<
+      string,
+      Array<{ id: string; namespace?: string }>
+    >();
     const serviceResourceIdsByQualifiedHost = new Map<string, Set<string>>();
     for (const resource of resources) {
       const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
-      if (isDnsAddressable && resource.metadata?.name) {
-        const name = String(resource.metadata.name);
+      const resourceName = resource.metadata?.name;
+      if (isDnsAddressable && typeof resourceName === 'string') {
+        const name = resourceName;
         if (name && !name.includes('$')) {
           const normalizedName = name.toLowerCase();
-          const namespace = resource.metadata?.namespace?.toLowerCase();
+          const rawNamespace = resource.metadata?.namespace;
+          const namespace =
+            typeof rawNamespace === 'string' ? rawNamespace.toLowerCase() : undefined;
           const existing = dnsAddressableResourcesByName.get(normalizedName) ?? [];
           existing.push({ id: resource.id, ...(namespace ? { namespace } : {}) });
           dnsAddressableResourcesByName.set(normalizedName, existing);
@@ -175,9 +196,10 @@ export class DependencyResolver {
         const stringValues = this.collectStringValues(resource);
         for (const entry of stringValues) {
           for (const host of this.extractHostCandidates(entry.value, entry.key)) {
+            const rawSourceNamespace = resource.metadata?.namespace;
             const matchedServices = this.resolveDnsAddressableServiceIds(
               host,
-              resource.metadata?.namespace?.toLowerCase(),
+              typeof rawSourceNamespace === 'string' ? rawSourceNamespace.toLowerCase() : undefined,
               dnsAddressableResourcesByName,
               serviceResourceIdsByQualifiedHost
             );
@@ -300,19 +322,25 @@ export class DependencyResolver {
       if (host) hosts.add(host.toLowerCase());
     }
 
-    const userHostMatches = value.matchAll(/(^|[^\w.-])[^\s@/:]+@([a-z0-9.-]+)(?::\d+)?(?=$|[/?\s])/gi);
+    const userHostMatches = value.matchAll(
+      /(^|[^\w.-])[^\s@/:]+@([a-z0-9.-]+)(?::\d+)?(?=$|[/?\s])/gi
+    );
     for (const match of userHostMatches) {
       const host = match[2];
       if (host) hosts.add(host.toLowerCase());
     }
 
-    const hostWithPortMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(:\d+)(?=$|[/?\s])/gi);
+    const hostWithPortMatches = value.matchAll(
+      /(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(:\d+)(?=$|[/?\s])/gi
+    );
     for (const match of hostWithPortMatches) {
       const host = match[2];
       if (host) hosts.add(host.toLowerCase());
     }
 
-    const dottedHostMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?=$|[/?\s])/gi);
+    const dottedHostMatches = value.matchAll(
+      /(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?=$|[/?\s])/gi
+    );
     for (const match of dottedHostMatches) {
       const host = match[2];
       if (host) hosts.add(host.toLowerCase());
@@ -320,7 +348,11 @@ export class DependencyResolver {
 
     // Support env-style host values like `VALKEY_HOST=myapp-cache` without
     // reopening broad bare-token matching for arbitrary string values.
-    if (key && DependencyResolver.BARE_HOST_KEY_PATTERN.test(key) && /^[a-z0-9-]+$/i.test(trimmedValue)) {
+    if (
+      key &&
+      DependencyResolver.BARE_HOST_KEY_PATTERN.test(key) &&
+      /^[a-z0-9-]+$/i.test(trimmedValue)
+    ) {
       hosts.add(trimmedValue.toLowerCase());
     }
 
@@ -340,7 +372,8 @@ export class DependencyResolver {
     };
 
     // Extract env var values from all containers and initContainers
-    const podSpec = (resource as { spec?: { template?: { spec?: Record<string, unknown> } } })?.spec?.template?.spec;
+    const podSpec = (resource as { spec?: { template?: { spec?: Record<string, unknown> } } })?.spec
+      ?.template?.spec;
     const containers = [
       ...(Array.isArray(podSpec?.containers) ? podSpec.containers : []),
       ...(Array.isArray(podSpec?.initContainers) ? podSpec.initContainers : []),
@@ -491,7 +524,8 @@ export class DependencyResolver {
 
     // Simple regex to find resource references in CEL expressions
     // Pattern: resourceId.section.field (e.g., database.status.endpoint)
-    const refPattern = /(\w+)\.(\w+)\.(\w+)/g;
+    const refPattern =
+      /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
     let match: RegExpExecArray | null = refPattern.exec(expression);
 
     while (match !== null) {
@@ -499,7 +533,7 @@ export class DependencyResolver {
 
       refs.push({
         [KUBERNETES_REF_BRAND]: true,
-        resourceId,
+        resourceId: resourceId === 'schema' ? '__schema__' : resourceId,
         fieldPath: `${section}.${field}`,
       } as KubernetesRef);
 
@@ -564,10 +598,7 @@ export class DependencyResolver {
    *
    * Resources with `lifecycle: 'shared'` are excluded from the deletion plan.
    */
-  analyzeDeletionOrder(
-    graph: DependencyGraph,
-    sharedResourceIds?: Set<string>
-  ): DeploymentPlan {
+  analyzeDeletionOrder(graph: DependencyGraph, sharedResourceIds?: Set<string>): DeploymentPlan {
     // Build a subgraph excluding shared resources
     const deletionGraph = sharedResourceIds
       ? this.buildDeletionSubgraph(graph, sharedResourceIds)

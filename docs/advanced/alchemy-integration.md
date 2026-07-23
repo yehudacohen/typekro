@@ -144,12 +144,27 @@ Three properties matter:
 
 ## Security: kubeconfig in Alchemy state
 
-`toAlchemyResources` captures the factory's kubeconfig into each declaration's `kubeConfigOptions`, and Alchemy persists that to its state store — so that a later state-driven delete can reconnect to the cluster to remove the resource.
+`toAlchemyResources` persists enough kubeconfig information for a later state-driven reconcile or delete to reconnect. TypeKro rejects detected static credential bytes in that durable configuration. Ambient factories re-read the default kubeconfig in the operation host, a configured file source persists only its path, and `exec`/`authProvider` configuration can be carried through state when it contains no detected secret-bearing fields, environment values, or common credential arguments.
 
-This means: **if the kubeconfig uses static credentials (`token`, `certData`, `keyData`), those credentials land in Alchemy's state store.** To avoid persisting long-lived secrets:
+An explicit `KubeConfig` containing static fields such as `user.token`, `user.certData`, or `user.keyData` fails before declaration creation unless each field has a named host binding:
 
-- Prefer **re-derived auth** — an `exec` credential plugin (e.g. `aws eks get-token`) or an `authProvider` — so each operation mints fresh, short-lived credentials instead of storing static ones.
-- Use a **secured state backend** for your Alchemy runtime regardless, since the state store may hold connection details.
+```typescript
+const factory = graph.factory('direct', {
+  namespace: 'default',
+  kubeConfig,
+  alchemyKubeConfig: {
+    credentialBindings: {
+      '/user/token': { kind: 'environment', name: 'TYPEKRO_KUBE_TOKEN' },
+    },
+  },
+});
+```
+
+Alchemy persists the JSON-pointer path and environment-variable name, not the resolved value. The provider operation resolves `TYPEKRO_KUBE_TOKEN` immediately before constructing the Kubernetes client and fails closed if it is unavailable. To re-read a known source instead, use `alchemyKubeConfig: { source: { kind: 'default' } }` or `{ source: { kind: 'file', path: '/run/secrets/kubeconfig' } }`.
+
+Use a secured Alchemy state backend regardless: state still contains non-secret cluster connection details and the rest of the deployment plan.
+
+> **Upgrade note:** Alchemy state written by older TypeKro releases may already contain inline static kubeconfig credentials. The current provider rejects that legacy state rather than silently continuing to persist or consume it. Before upgrading, reconcile affected declarations with a default/file source or named bindings while the previous release is still available, or destroy them with the previous release. A state-driven delete that has only rejected legacy credentials fails closed; TypeKro will not guess a cluster or copy those bytes into the new contract.
 
 ## Without Alchemy
 

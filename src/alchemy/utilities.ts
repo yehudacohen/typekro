@@ -6,12 +6,12 @@
  */
 
 import { generateDeterministicResourceId } from '../core/resources/id.js';
-import type { Enhanced } from '../core/types/kubernetes.js';
+import type { KubernetesResource } from '../core/types/kubernetes.js';
 
 /**
  * Utility function to create deterministic resource IDs for alchemy resources
  */
-export function createAlchemyResourceId<T extends Enhanced<any, any>>(
+export function createAlchemyResourceId<T extends KubernetesResource<any, any>>(
   resource: T,
   namespace?: string
 ): string {

@@ -13,7 +13,9 @@ import {
 } from '../../src/shared/brands.js';
 
 function extractYamlResourceBlock(yaml: string, id: string): string {
-  const match = yaml.match(new RegExp(`- id: ${id}[\\s\\S]*?(?=\\n    - id: |\\n$)`));
+  const match = yaml.match(
+    new RegExp(`- id: ${id}[\\s\\S]*?(?=\\n    - id: |\\n  schema:|\\n$)`)
+  );
   expect(match).not.toBeNull();
   return match?.[0] ?? '';
 }
@@ -964,7 +966,10 @@ describe('Schema Nullish Defaults', () => {
         })
       ).not.toThrow();
       expect(() =>
-        factory.toYaml({ name: 'searxng', server: { secret_key: 'test-secret' } })
+        factory.toYaml(
+          { name: 'searxng', server: { secret_key: 'test-secret' } },
+          { allowSensitiveMaterialization: true }
+        )
       ).not.toThrow();
     });
 

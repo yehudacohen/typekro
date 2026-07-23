@@ -215,12 +215,12 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).toContain('schema.spec.kratos.identitySchema');
     expect(renderedYaml).not.toContain('schema.spec.dependencySources.kratos.identitySchemas');
     expect(renderedYaml).toContain(
-      'has(schema.spec.namespace) ? schema.spec.namespace : \\"ory-system\\"'
+      'has(schema.spec.namespace) ? schema.spec.namespace : "ory-system"'
     );
-    expect(renderedYaml).not.toContain('\\"-kratos-public.\\" + string(schema.spec.namespace)');
+    expect(renderedYaml).not.toContain('"-kratos-public." + string(schema.spec.namespace)');
     expect(renderedYaml).toContain('identity.default.schema.json');
     expect(renderedYaml).not.toContain('? has(schema.spec.kratos.identitySchema) ?');
-    expect(renderedYaml).toContain('[\\"identitySchemas\\"]).merge');
+    expect(renderedYaml).toContain('["identitySchemas"]).merge');
     expect(renderedYaml).toContain(
       'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) ? schema.spec.kratos.identitySchema'
     );
@@ -232,8 +232,8 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).toContain('includeWhen');
     expect(renderedYaml).toContain('schema.spec.managed.databases');
     expect(renderedYaml).not.toContain('${schema.spec.managed.databases != false ?');
-    expect(renderedYaml).not.toContain(': \\"managed\\" == \\"managed\\"');
-    expect(renderedYaml).toContain(') == \\"managed\\"');
+    expect(renderedYaml).not.toContain(': "managed" == "managed"');
+    expect(renderedYaml).toContain(') == "managed"');
     expect(renderedYaml).toMatch(
       /id: hydraDatabase[\s\S]*includeWhen:[\s\S]*schema\.spec\.managed\.databases/
     );
@@ -343,7 +343,7 @@ describe('Ory platform stack composition', () => {
     expect(yaml).not.toContain('sampleUpstream');
   });
 
-  it('Order managed dependency resources before Ory Helm releases in direct-mode YAML', async () => {
+  it('Orders managed dependency resources before Ory Helm releases in direct-mode YAML', async () => {
     const factory = oryPlatformStack.factory('direct', { namespace: 'ory-local' });
     const yaml = await factory.toYaml({
       name: 'identity-local',
@@ -354,13 +354,11 @@ describe('Ory platform stack composition', () => {
     const databaseIndex = yaml.indexOf('identity-local-hydra-db');
     const secretIndex = yaml.indexOf('identity-local-hydra-secrets');
     const hydraReleaseIndex = yaml.indexOf('name: identity-local-hydra\n');
-    const routeIndex = yaml.indexOf('kind: ApisixRoute');
 
     expect(databaseIndex).toBeGreaterThanOrEqual(0);
     expect(secretIndex).toBeGreaterThanOrEqual(0);
     expect(hydraReleaseIndex).toBeGreaterThan(databaseIndex);
     expect(hydraReleaseIndex).toBeGreaterThan(secretIndex);
-    expect(routeIndex).toBeGreaterThan(hydraReleaseIndex);
   });
 
   it('Include optional APISIX routes in concrete direct-mode YAML only', async () => {

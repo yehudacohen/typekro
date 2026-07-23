@@ -48,6 +48,9 @@ describe('Caddy ingress integration', () => {
       name: 'caddy',
       namespace: caddyNs,
       caddyfile,
+      ...(process.env.TYPEKRO_TEST_STORAGE_CLASS
+        ? { persistence: { storageClass: process.env.TYPEKRO_TEST_STORAGE_CLASS } }
+        : {}),
     });
 
     expect(instance.spec.name).toBe('caddy');
@@ -55,6 +58,29 @@ describe('Caddy ingress integration', () => {
     // ready === true only if the :443 readiness probe passed → tls internal cert provisioned + https up.
     expect(instance.status.ready).toBe(true);
     expect(instance.status.version).toBe('2.11.2');
+
+    // The static claimName does not create a TypeKro dependency edge, so direct
+    // rollback can otherwise wait on the PVC while the Deployment still uses it.
+    // Both resources are owned by this test: remove the consumer first, then
+    // start claim deletion before asking the factory to clean up the rest.
+    const { createBunCompatibleKubernetesObjectApi } = await import(
+      '../../../src/core/kubernetes/index.js'
+    );
+    const objectApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+    await objectApi
+      .delete({
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'caddy', namespace: caddyNs },
+      })
+      .catch(() => {});
+    await objectApi
+      .delete({
+        apiVersion: 'v1',
+        kind: 'PersistentVolumeClaim',
+        metadata: { name: 'caddy-data', namespace: caddyNs },
+      })
+      .catch(() => {});
 
     await factory.deleteInstance('caddy');
   }, 900000);

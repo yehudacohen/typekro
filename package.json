@@ -121,6 +121,10 @@
     "./advanced": {
       "import": "./dist/advanced/index.js",
       "types": "./dist/advanced/index.d.ts"
+    },
+    "./experimental/planning": {
+      "import": "./dist/experimental-planning.js",
+      "types": "./dist/experimental-planning.d.ts"
     }
   },
   "files": [
@@ -131,11 +135,13 @@
     "build": "bun run clean && bun run lint && bun run typecheck && bun run build:lib && bun run build:examples",
     "build:lib": "bun tsc",
     "build:examples": "bun tsc --project tsconfig.examples.json",
+    "check:effect-cohort": "bun run scripts/check-effect-cohort.ts",
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",
     "test:coverage": "rm -rf coverage && bun test --coverage --coverage-reporter=lcov --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:containers:node": "bun run build:lib && node scripts/test-container-node-runtime.mjs",
+    "test:packed-imports": "node scripts/test-packed-imports.mjs",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
     "test:integration:dagster": "bun test test/integration/dagster/bootstrap-composition.test.ts --timeout 900000",
@@ -216,6 +222,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.1.3",
     "@effect/platform-bun": "4.0.0-beta.75",
+    "@effect/platform-node-shared": "4.0.0-beta.75",
+    "@effect/vitest": "4.0.0-beta.75",
     "@types/bun": "^1.2.19",
     "@types/estraverse": "^5.1.7",
     "@types/js-yaml": "^4.0.9",
@@ -236,5 +244,11 @@
   },
   "peerDependencies": {
     "typescript": ">=5.0.0"
+  },
+  "overrides": {
+    "effect": "4.0.0-beta.75",
+    "@effect/platform-bun": "4.0.0-beta.75",
+    "@effect/platform-node-shared": "4.0.0-beta.75",
+    "@effect/vitest": "4.0.0-beta.75"
   }
 }

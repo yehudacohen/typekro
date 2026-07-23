@@ -1,0 +1,53 @@
+import { describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
+
+import { encodeSchemaIR, schemaToIR } from '../../../src/core/planning/schema.js';
+
+describe('SchemaIR portable profile', () => {
+  it('preserves optionality, defaults, unions, arrays, patterns, lengths, and bounds', () => {
+    const schema = type({
+      count: 'number >= 1',
+      mode: '"safe" | "fast"',
+      name: /^[a-z]+$/,
+      tags: 'string[]',
+      'description?': 'string >= 2',
+      region: type('string').default('us-east-1'),
+    });
+
+    const result = schemaToIR(schema, { strict: true });
+
+    expect(result.root.kind).toBe('object');
+    if (result.root.kind !== 'object') throw new Error('Expected object schema');
+    expect(result.root.properties.map(({ name, required }) => ({ name, required }))).toEqual([
+      { name: 'count', required: true },
+      { name: 'description', required: false },
+      { name: 'mode', required: true },
+      { name: 'name', required: true },
+      { name: 'region', required: false },
+      { name: 'tags', required: true },
+    ]);
+    expect(
+      result.root.properties.find((property) => property.name === 'region')?.defaultValue
+    ).toEqual({ kind: 'literal', value: 'us-east-1' });
+    expect(result.diagnostics).toEqual([]);
+    expect(encodeSchemaIR(result)).toContain(result.digest);
+  });
+
+  it('is stable across equivalent object key order', () => {
+    const left = schemaToIR(type({ b: 'boolean', a: 'string' }));
+    const right = schemaToIR(type({ a: 'string', b: 'boolean' }));
+
+    expect(left.digest).toBe(right.digest);
+  });
+
+  it('diagnoses constructs outside the portable profile before execution', () => {
+    const unsupported = { json: { domain: 'symbol' } };
+
+    expect(schemaToIR(unsupported).diagnostics).toEqual([
+      expect.objectContaining({ code: 'SCHEMA_IR_UNSUPPORTED', severity: 'error', path: '$' }),
+    ]);
+    expect(() => schemaToIR(unsupported, { strict: true })).toThrow(
+      'outside the portable planning profile'
+    );
+  });
+});

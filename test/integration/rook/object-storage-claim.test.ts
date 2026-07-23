@@ -380,8 +380,8 @@ describeOrSkip('Rook/Ceph live KRO platform and direct data-path integration', (
       '--wait=true',
     ]).catch(() => {});
     await Promise.allSettled([
-      deleteNamespaceAndWait(appNamespace, kubeConfig, 180_000),
-      deleteNamespaceAndWait(controlNamespace, kubeConfig, 180_000),
+      deleteNamespaceAndWait(appNamespace, kubeConfig, 600_000),
+      deleteNamespaceAndWait(controlNamespace, kubeConfig, 600_000),
     ]);
   });
 

@@ -1,6 +1,7 @@
 import type { V1ObjectMeta } from '@kubernetes/client-node';
 import { type Type, type } from 'arktype';
 import { formatArktypeError } from '../../../core/errors.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -26,8 +27,10 @@ export function customResource<TSpec extends object, TStatus extends object>(
     metadata: definition.metadata,
     spec: result as TSpec,
     ...(definition.id && { id: definition.id }),
-  }).withReadinessEvaluator(() => ({
-    ready: true,
-    message: `${schema.kind} is ready (custom resource default — override with .withReadinessEvaluator())`,
-  }));
+  }).withReadinessEvaluator(
+    createAlwaysReadyEvaluator(
+      schema.kind,
+      `${schema.kind} is ready (custom resource default — override with .withReadinessEvaluator())`
+    )
+  );
 }

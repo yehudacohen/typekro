@@ -587,7 +587,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(traditionalComposition).toBeDefined();
         }
       });
-    }, 300000);
+    }, 900000);
 
     it('should create Direct factory identical to toResourceGraph', async () => {
       await withTestNamespace('direct-factory-test', async (testNamespace) => {
@@ -759,7 +759,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
         console.log('✅ Direct factory compatibility verified');
       });
-    }, 180000);
+    }, 900000);
 
     it('should support factory status and instance management methods', async () => {
       await withTestNamespace('factory-management-test', async (testNamespace) => {
@@ -851,7 +851,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         expect(directStatus.mode).toBe('direct');
         expect(directStatus.name).toBe(`webapp-factory-test-${testRunId}`);
       });
-    }, 180000);
+    }, 900000);
   });
 
   describe('Alchemy Integration', () => {
@@ -943,7 +943,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(composition).toBeDefined();
         }
       });
-    }, 300000); // 5 minutes - deployment readiness polling + namespace cleanup
+    }, 900000); // 15 minutes - deployment readiness polling + namespace cleanup
 
     it('should preserve readiness evaluators through Alchemy integration', async () => {
       await withTestNamespace('alchemy-readiness-test', async (testNamespace) => {
@@ -1025,7 +1025,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(composition).toBeDefined();
         }
       });
-    }, 300000); // 5 minutes - deployment readiness polling + namespace cleanup
+    }, 900000); // 15 minutes - deployment readiness polling + namespace cleanup
   });
 
   describe('Synchronous Context Management', () => {

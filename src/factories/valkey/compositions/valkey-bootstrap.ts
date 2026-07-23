@@ -110,6 +110,7 @@ export const valkeyBootstrap = kubernetesComposition(
       repositoryUrl,
       id: 'valkeyHelmRelease',
     });
+    _helmRelease.dependsOn(_helmRepository);
 
     // Status derived from HelmRelease conditions.
     return {

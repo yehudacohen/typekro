@@ -32,7 +32,10 @@ export {
   isBunRuntime,
 } from './bun-http-library.js';
 export type {
+  DurableKubeConfigOptions,
   KubeConfigConsumer,
+  KubeConfigCredentialBinding,
+  KubeConfigCredentialBindings,
   KubernetesApiConsumer,
   KubernetesClientConfig,
   RetryOptions,

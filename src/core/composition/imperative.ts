@@ -29,6 +29,7 @@ import {
   setMetadataField,
   setResourceId,
 } from '../metadata/index.js';
+import { copyCompositionCapture } from '../planning/capture.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type {
   CallableComposition,
@@ -53,6 +54,7 @@ import {
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from './context.js';
+import { setCompositionAnalysisMetadata } from './analysis-metadata.js';
 import {
   buildNestedCompositionAliases,
   buildNestedCompositionAliasTargets,
@@ -212,6 +214,47 @@ function remapNestedSpecMappings(
   }
 
   return remapped;
+}
+
+function remapNestedIncludeWhenCondition(
+  condition: unknown,
+  mappings: Record<string, string>
+): unknown {
+  if (typeof condition !== 'string' || !condition.includes('schema.spec.')) return condition;
+
+  const substitutions: string[] = [];
+  const hold = (value: string): string => {
+    const index = substitutions.push(value) - 1;
+    return `__TYPEKRO_NESTED_SCHEMA_${index}__`;
+  };
+  const schemaPath = '[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*';
+
+  let remapped = condition.replace(
+    new RegExp(`has\\(\\s*schema\\.spec\\.(${schemaPath})\\s*\\)`, 'g'),
+    (_match, path: string) => {
+      const outerPath = remapNestedSpecPath(path, mappings);
+      return outerPath === undefined ? 'false' : hold(`has(schema.spec.${outerPath})`);
+    }
+  );
+
+  remapped = remapped.replace(
+    new RegExp(`schema\\.spec\\.(${schemaPath})`, 'g'),
+    (_match, path: string) => {
+      const outerPath = remapNestedSpecPath(path, mappings);
+      if (outerPath === undefined) {
+        throw new TypeKroError(
+          `Nested includeWhen references inner spec field "${path}" that was not supplied by the caller.`,
+          'NESTED_SCHEMA_MAPPING_MISSING',
+          { path, condition }
+        );
+      }
+      return hold(`schema.spec.${outerPath}`);
+    }
+  );
+
+  return remapped.replace(/__TYPEKRO_NESTED_SCHEMA_(\d+)__/g, (_match, index: string) => {
+    return substitutions[Number(index)] ?? _match;
+  });
 }
 
 export function enableCompositionDebugging(): void {
@@ -546,6 +589,17 @@ function executeNestedCompositionWithSpec<
       unknown
     >;
     copyResourceMetadata(resource, mergedResource);
+
+    const includeWhen = getMetadataField(mergedResource, 'includeWhen') as unknown[] | undefined;
+    if (includeWhen?.length) {
+      setMetadataField(
+        mergedResource,
+        'includeWhen',
+        includeWhen.map((condition) =>
+          remapNestedIncludeWhenCondition(condition, nestedSpecMappings)
+        )
+      );
+    }
 
     const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as
       | string[]
@@ -1124,15 +1178,12 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             ? compositionFn(specToUse)
             : runInStatusBuilderContext(() => compositionFn(specToUse));
 
-          // Store the original composition function for later analysis.
-          // These are used by the serialization system to analyze the
-          // original JavaScript expressions for CEL conversion. They're
-          // always set because nested compositions run through
-          // executeCompositionCore with actualSpec even during the
-          // definition pass (the parent passes proxy-traced spec values).
-          // During re-execution they're inert but harmless.
-          Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
-          Reflect.set(capturedStatus, '__originalSchema', schema.spec);
+          // Store source-analysis inputs outside the status value. Status is a
+          // public semantic object and must not double as a private metadata bag.
+          setCompositionAnalysisMetadata(capturedStatus, {
+            originalCompositionFn: compositionFn,
+            originalSchema: schema.spec,
+          });
 
           // Attach nested composition status CEL mappings from the context.
           // These are populated by inner compositions' executeNestedCompositionWithSpec.
@@ -1489,6 +1540,7 @@ export function kubernetesComposition<
           Object.defineProperty(callableComposition, key, descriptor);
         }
       }
+      copyCompositionCapture(nestedResult, callableComposition);
     }
 
     // Add the status proxy for cross-composition references.
@@ -1693,6 +1745,8 @@ export function kubernetesComposition<
     configurable: false,
     writable: false,
   });
+
+  copyCompositionCapture(result, proxiedCallableComposition);
 
   return proxiedCallableComposition;
 }

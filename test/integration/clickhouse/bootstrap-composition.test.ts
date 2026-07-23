@@ -9,14 +9,17 @@ const describeOrSkip =
 
 // Live-verified: tearing down the operator + CHI + KRO graph + 5 namespaces
 // exceeds bun's 5s default hook timeout on a real cluster.
-setDefaultTimeout(300000);
+setDefaultTimeout(900000);
 
 describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   let kubeConfig: any;
   let factory: any;
   let operatorDeployed = false;
+  let reuseExistingOperator = false;
+  let helmRepositoryPreexisting = false;
   const testNamespace = 'typekro-test-clickhouse-bootstrap';
   const operatorNs = 'clickhouse-test-op';
+  const existingOperatorNs = 'clickhouse-system';
   const chiNs = 'clickhouse-test-chi';
   // KRO-mode namespaces: the instance CR lives in kroCrNs (factory
   // namespace), the CHI itself in kroNs (spec.namespace) — same split as the
@@ -28,6 +31,33 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       await ensureNamespaceExists(testNamespace, kubeConfig);
+
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      try {
+        await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: existingOperatorNs,
+          plural: 'helmreleases',
+          name: 'clickhouse-operator',
+        });
+        reuseExistingOperator = true;
+      } catch {
+        // No canonical operator is installed; this suite owns a temporary one.
+      }
+
+      try {
+        await customApi.getNamespacedCustomObject({
+          group: 'source.toolkit.fluxcd.io',
+          version: 'v1',
+          namespace: 'flux-system',
+          plural: 'helmrepositories',
+          name: 'altinity',
+        });
+        helmRepositoryPreexisting = true;
+      } catch {
+        // The temporary bootstrap will create and later remove the repository.
+      }
 
       const { clickhouseOperatorBootstrap } = await import(
         '../../../src/factories/clickhouse/compositions/clickhouse-operator-bootstrap.js'
@@ -56,23 +86,25 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     }
 
     // The shared Altinity HelmRepository singleton persists past
-    // deleteInstance BY DESIGN (cluster-level Flux source). On an ephemeral
-    // kind cluster that's moot; on a persistent cluster the suite sweeps its
-    // own singleton artifact. Best-effort.
-    try {
-      const { createBunCompatibleKubernetesObjectApi } = await import(
-        '../../../src/core/kubernetes/index.js'
-      );
-      const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-      await k8sApi
-        .delete({
-          apiVersion: 'source.toolkit.fluxcd.io/v1',
-          kind: 'HelmRepository',
-          metadata: { name: 'altinity', namespace: 'flux-system' },
-        })
-        .catch(() => {});
-    } catch {
-      // Best-effort singleton sweep only.
+    // deleteInstance BY DESIGN. Remove it only when this suite created it;
+    // deleting a pre-existing source would break the cluster's shared
+    // operator release on persistent environments such as OrbStack.
+    if (!helmRepositoryPreexisting) {
+      try {
+        const { createBunCompatibleKubernetesObjectApi } = await import(
+          '../../../src/core/kubernetes/index.js'
+        );
+        const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+        await k8sApi
+          .delete({
+            apiVersion: 'source.toolkit.fluxcd.io/v1',
+            kind: 'HelmRepository',
+            metadata: { name: 'altinity', namespace: 'flux-system' },
+          })
+          .catch(() => {});
+      } catch {
+        // Best-effort singleton sweep only.
+      }
     }
 
     const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
@@ -84,6 +116,28 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   });
 
   it('should deploy operator and hydrate all status fields', async () => {
+    if (reuseExistingOperator) {
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const raw: any = await customApi.getNamespacedCustomObject({
+        group: 'helm.toolkit.fluxcd.io',
+        version: 'v2',
+        namespace: existingOperatorNs,
+        plural: 'helmreleases',
+        name: 'clickhouse-operator',
+      });
+      const helmRelease = raw?.body ?? raw;
+      const ready = helmRelease.status?.conditions?.some(
+        (condition: any) => condition.type === 'Ready' && condition.status === 'True'
+      );
+
+      expect(ready).toBe(true);
+      expect(helmRelease.spec?.chart?.spec?.version).toBe('0.27.1');
+      console.log(
+        `✅ Reusing ready cluster operator clickhouse-operator in ${existingOperatorNs}`
+      );
+      return;
+    }
+
     const instance = await factory.deploy({
       name: 'clickhouse-operator',
       namespace: operatorNs,

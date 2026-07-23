@@ -284,7 +284,7 @@ describeOrSkip(
       const factory = ownsNamespace(`ns-del-empty-${runToken}`, kind).factory('kro', {
         namespace: emptyNs,
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'ns-del-empty-instance', namespace: emptyNs });
       expect(await readNamespace(objectApi, emptyNs)).toBeDefined();
@@ -354,7 +354,16 @@ describeOrSkip(
       // deleteInstance drains THIS instance (CR → 404), then the empty-gate finds a
       // non-default occupant and RETAINS the namespace rather than deleting it; the RGD
       // (→ 404); the generated CRD remains Active for reuse.
-      await factory.deleteInstance('ns-del-occ-instance');
+      const deletionStartedAt = Date.now();
+      const deletion = await factory.deleteInstance('ns-del-occ-instance');
+      expect(deletion.status).toBe('complete');
+      expect(deletion.retained).toContainEqual(
+        expect.objectContaining({
+          resource: expect.objectContaining({ kind: 'Namespace', name: occupiedNs }),
+          policy: 'occupied-namespace',
+        })
+      );
+      expect(Date.now() - deletionStartedAt).toBeLessThan(30_000);
 
       // The namespace is RETAINED — still present and NOT terminating — because it is
       // occupied by the foreign ConfigMap.
@@ -413,7 +422,7 @@ describeOrSkip(
         namespace: sharedControlNs,
         instanceNamespace: sharedControlNs, // both CRs live here, NOT in the shared workload ns
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'shared-a', namespace: sharedNs });
       await factory.deploy({ name: 'shared-b', namespace: sharedNs });
@@ -443,7 +452,7 @@ describeOrSkip(
       const factory = ownsNamespace(`ns-del-retry-${runToken}`, kind).factory('kro', {
         namespace: retryNs,
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'ns-del-retry-instance', namespace: retryNs });
 

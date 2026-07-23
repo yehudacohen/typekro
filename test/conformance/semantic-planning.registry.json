@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "baseline": {
+    "release": "0.28.1",
+    "commit": "744ba08"
+  },
+  "qualityGates": [
+    {
+      "id": "packed-imports",
+      "gate": "A",
+      "command": "bun run test:packed-imports",
+      "evidence": ["scripts/test-packed-imports.mjs"]
+    },
+    {
+      "id": "bounded-readiness",
+      "gate": "A",
+      "command": "bun test test/unit/kro-readiness.test.ts test/unit/poll-timeout.test.ts --timeout 10000",
+      "evidence": ["test/unit/kro-readiness.test.ts", "test/unit/poll-timeout.test.ts"]
+    },
+    {
+      "id": "idempotent-delete-404",
+      "gate": "A",
+      "command": "bun test test/unit/rollback-manager.test.ts test/unit/alchemy-deployers.test.ts --timeout 10000",
+      "evidence": ["test/unit/rollback-manager.test.ts", "test/unit/alchemy-deployers.test.ts"]
+    },
+    {
+      "id": "dependency-audit",
+      "gate": "A",
+      "command": "bun audit",
+      "evidence": ["docs/semantic-planning-gate-a-dependency-audit.md"]
+    },
+    {
+      "id": "effect-dependency-cohort",
+      "gate": "A",
+      "command": "bun run check:effect-cohort",
+      "evidence": ["scripts/check-effect-cohort.ts", "bun.lock"]
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "ordered-aspects",
+      "gates": ["A", "C"],
+      "evidence": ["test/unit/aspects.test.ts", "test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "nested-defaults",
+      "gates": ["A", "B", "C"],
+      "evidence": [
+        "test/integration/nested-compositions-runtime.test.ts",
+        "test/core/planning/schema.test.ts"
+      ]
+    },
+    {
+      "id": "conditional-readiness",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/unit/kro-v08-features-serialization.test.ts",
+        "test/core/planning/composition.test.ts",
+        "test/core/planning/compiler.test.ts",
+        "test/core/direct-deployment-simple.test.ts"
+      ]
+    },
+    {
+      "id": "singleton-lifecycle",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/unit/singleton-api.test.ts",
+        "test/core/kro-factory-characterization.test.ts",
+        "test/core/planning/composition.test.ts",
+        "test/integration/semantic-planning-live.test.ts"
+      ]
+    },
+    {
+      "id": "kro-representation-requirements",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/core/kro-factory-characterization.test.ts",
+        "test/core/planning/composition.test.ts"
+      ]
+    },
+    {
+      "id": "namespace-artifact-roles",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/core/kro-namespace-hoisting-round5.test.ts",
+        "test/core/planning/composition.test.ts"
+      ]
+    },
+    {
+      "id": "stable-and-preview-identities",
+      "gates": ["C"],
+      "evidence": ["test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "declared-input-manifests",
+      "gates": ["B", "C"],
+      "evidence": ["test/core/planning/composition.test.ts", "test/core/planning/values.test.ts"]
+    },
+    {
+      "id": "persisted-and-hydrated-status",
+      "gates": ["B", "C"],
+      "evidence": ["test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "desired-canonicalizers",
+      "gates": ["C"],
+      "evidence": ["test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "external-references",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/unit/kro-v08-features-serialization.test.ts",
+        "test/core/planning/composition.test.ts"
+      ]
+    },
+    {
+      "id": "runtime-closures",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/unit/deploy-with-closures.test.ts",
+        "test/core/planning/composition.test.ts"
+      ]
+    },
+    {
+      "id": "portable-and-raw-expressions",
+      "gates": ["B", "C"],
+      "evidence": [
+        "test/core/cel-evaluator.test.ts",
+        "test/core/planning/values.test.ts",
+        "test/core/planning/composition.test.ts"
+      ]
+    },
+    {
+      "id": "sensitive-values",
+      "gates": ["B", "C"],
+      "evidence": ["test/core/planning/values.test.ts", "test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "container-requirements",
+      "gates": ["A", "C"],
+      "evidence": ["test/core/containers/image.test.ts", "test/core/planning/composition.test.ts"]
+    },
+    {
+      "id": "harbor-provider-boundary",
+      "gates": ["A", "C"],
+      "evidence": [
+        "test/factories/harbor/provider.test.ts",
+        "docs/semantic-planning-architecture-rfp.md"
+      ]
+    },
+    {
+      "id": "omitted-versus-empty",
+      "gates": ["A", "B"],
+      "evidence": [
+        "test/core/planning/values.test.ts",
+        "test/core/kro-pr113-v8-fixes.test.ts",
+        "test/integration/semantic-planning-live.test.ts"
+      ]
+    },
+    {
+      "id": "current-generation-readiness",
+      "gates": ["A", "C"],
+      "evidence": ["test/unit/kro-readiness.test.ts"]
+    },
+    {
+      "id": "yaml-unresolved-bindings",
+      "gates": ["A", "B", "C"],
+      "evidence": ["test/core/yaml-generation.test.ts", "test/core/planning/values.test.ts"]
+    },
+    {
+      "id": "natural-typescript-analyzer-corpus",
+      "gates": ["A", "B", "C", "D"],
+      "evidence": [
+        "test/core/imperative-analyzer-characterization.test.ts",
+        "test/core/analyze-status-mappings-characterization.test.ts",
+        "test/integration/javascript-to-cel-e2e.test.ts"
+      ]
+    },
+    {
+      "id": "third-party-target-parity",
+      "gates": ["A", "D", "E"],
+      "evidence": [
+        "test/integration/caddy/bootstrap-composition.test.ts",
+        "test/integration/valkey/valkey-resources.test.ts",
+        "test/integration/ory/ory-identity-stack.test.ts"
+      ]
+    },
+    {
+      "id": "artifact-json-roundtrip",
+      "gates": ["C", "D"],
+      "evidence": [
+        "test/core/planning/compiler.test.ts",
+        "test/unit/alchemy/direct-artifact-rehydration.test.ts",
+        "test/unit/alchemy/kro-artifact-rehydration.test.ts",
+        "test/integration/alchemy/kro-persisted-upgrade-e2e.test.ts"
+      ]
+    },
+    {
+      "id": "target-host-apply-matrix",
+      "gates": ["D", "E"],
+      "evidence": [
+        "test/core/planning/compiler.test.ts",
+        "test/core/direct-factory.test.ts",
+        "test/core/kro-artifact-bundle-standalone.test.ts",
+        "test/core/kro-factory-characterization.test.ts",
+        "test/unit/alchemy/direct-artifact-rehydration.test.ts",
+        "test/unit/alchemy/kro-artifact-rehydration.test.ts",
+        "test/integration/alchemy/direct-fan-out-e2e.test.ts",
+        "test/integration/alchemy/kro-persisted-upgrade-e2e.test.ts",
+        "test/integration/semantic-planning-live.test.ts"
+      ]
+    },
+    {
+      "id": "effect-runtime-boundary",
+      "gates": ["D", "E"],
+      "evidence": [
+        "test/core/direct-deployment-simple.test.ts",
+        "test/unit/rollback-manager.test.ts",
+        "test/unit/bun-watch.test.ts",
+        "test/integration/semantic-planning-live.test.ts",
+        "test/unit/alchemy/delete-kro-resource.test.ts",
+        "test/unit/alchemy/materialize-alchemy-resources.test.ts"
+      ]
+    },
+    {
+      "id": "effect-installed-cohort",
+      "gates": ["A", "D"],
+      "evidence": ["scripts/check-effect-cohort.ts", "package.json", "bun.lock"]
+    }
+  ]
+}

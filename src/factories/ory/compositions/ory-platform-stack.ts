@@ -1,5 +1,6 @@
 import { type Type, type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
@@ -23,6 +24,11 @@ import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
 const apisixRouteSpecSchema = type({
   'http?': 'object[]',
 });
+
+function markPublicLocalPlaceholder<T extends object>(resource: T): T {
+  setMetadataField(resource, 'secretMaterial', 'public-placeholder');
+  return resource;
+}
 
 function dependencySources(config: {
   hydraDatabaseSecretName: string;
@@ -445,12 +451,14 @@ export const oryPlatformStack = kubernetesComposition(
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);
       hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
-      secret({
-        id: 'hydraDsnSecret',
-        metadata: { name: `${spec.name}-hydra-db`, namespace: namespaceName },
-        type: 'Opaque',
-        stringData: { dsn: `postgres://hydra@${spec.name}-hydra-db-rw.${namespaceName}.svc.cluster.local:5432/hydra` },
-      }).withIncludeWhen(manageDatabasesIncludeWhen);
+      markPublicLocalPlaceholder(
+        secret({
+          id: 'hydraDsnSecret',
+          metadata: { name: `${spec.name}-hydra-db`, namespace: namespaceName },
+          type: 'Opaque',
+          stringData: { dsn: `postgres://hydra@${spec.name}-hydra-db-rw.${namespaceName}.svc.cluster.local:5432/hydra` },
+        }).withIncludeWhen(manageDatabasesIncludeWhen)
+      );
       cluster({
         id: 'kratosDatabase',
         name: `${spec.name}-kratos-db`,
@@ -462,12 +470,14 @@ export const oryPlatformStack = kubernetesComposition(
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);
       kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
-      secret({
-        id: 'kratosDsnSecret',
-        metadata: { name: `${spec.name}-kratos-db`, namespace: namespaceName },
-        type: 'Opaque',
-        stringData: { dsn: `postgres://kratos@${spec.name}-kratos-db-rw.${namespaceName}.svc.cluster.local:5432/kratos` },
-      }).withIncludeWhen(manageDatabasesIncludeWhen);
+      markPublicLocalPlaceholder(
+        secret({
+          id: 'kratosDsnSecret',
+          metadata: { name: `${spec.name}-kratos-db`, namespace: namespaceName },
+          type: 'Opaque',
+          stringData: { dsn: `postgres://kratos@${spec.name}-kratos-db-rw.${namespaceName}.svc.cluster.local:5432/kratos` },
+        }).withIncludeWhen(manageDatabasesIncludeWhen)
+      );
       cluster({
         id: 'ketoDatabase',
         name: `${spec.name}-keto-db`,
@@ -479,12 +489,14 @@ export const oryPlatformStack = kubernetesComposition(
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);
       ketoDatabaseSecretName = `${spec.name}-keto-db-app`;
-      secret({
-        id: 'ketoDsnSecret',
-        metadata: { name: `${spec.name}-keto-db`, namespace: namespaceName },
-        type: 'Opaque',
-        stringData: { dsn: `postgres://keto@${spec.name}-keto-db-rw.${namespaceName}.svc.cluster.local:5432/keto` },
-      }).withIncludeWhen(manageDatabasesIncludeWhen);
+      markPublicLocalPlaceholder(
+        secret({
+          id: 'ketoDsnSecret',
+          metadata: { name: `${spec.name}-keto-db`, namespace: namespaceName },
+          type: 'Opaque',
+          stringData: { dsn: `postgres://keto@${spec.name}-keto-db-rw.${namespaceName}.svc.cluster.local:5432/keto` },
+        }).withIncludeWhen(manageDatabasesIncludeWhen)
+      );
     }
 
     if (createManagedSecrets) {
@@ -498,6 +510,7 @@ export const oryPlatformStack = kubernetesComposition(
         type: 'Opaque',
         stringData: { system: 'hydra-local-system-secret-000000' },
       }).withIncludeWhen(manageSecrets);
+      markPublicLocalPlaceholder(hydraSystemSecret);
       hydraSystemSecretName = hydraSystemSecret.metadata.name ?? hydraSystemSecretName;
       const kratosSecrets = secret({
         id: 'kratosSecrets',
@@ -512,6 +525,7 @@ export const oryPlatformStack = kubernetesComposition(
           cipher: 'kratos-local-cipher-secret-00010',
         },
       }).withIncludeWhen(manageSecrets);
+      markPublicLocalPlaceholder(kratosSecrets);
       kratosSecretsName = kratosSecrets.metadata.name ?? kratosSecretsName;
       const oathkeeperSecrets = secret({
         id: 'oathkeeperSecrets',
@@ -523,6 +537,7 @@ export const oryPlatformStack = kubernetesComposition(
         type: 'Opaque',
         stringData: { jwks: '{"keys":[]}' },
       }).withIncludeWhen(manageSecrets);
+      markPublicLocalPlaceholder(oathkeeperSecrets);
       oathkeeperSecretsName = oathkeeperSecrets.metadata.name ?? oathkeeperSecretsName;
     }
 

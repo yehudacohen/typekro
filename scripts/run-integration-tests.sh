@@ -10,6 +10,8 @@ SKIP_CLUSTER_TESTS=${SKIP_CLUSTER_TESTS:-false}
 SKIP_CLUSTER_SETUP=${SKIP_CLUSTER_SETUP:-false}
 REQUIRE_CLUSTER_TESTS=${REQUIRE_CLUSTER_TESTS:-false}
 CREATE_CLUSTER=false
+CLUSTER_AVAILABLE=false
+NEEDS_KIND_CLUSTER=false
 
 echo "🚀 Starting Integration Test Suite..."
 echo "====================================="
@@ -35,23 +37,33 @@ if ! command -v kubectl &> /dev/null; then
     SKIP_CLUSTER_TESTS=true
 else
     echo "✅ kubectl found"
+    if kubectl cluster-info &> /dev/null; then
+        CLUSTER_AVAILABLE=true
+    fi
 fi
 
-# Check if kind is available
-if ! command -v kind &> /dev/null; then
-    echo "⚠️  kind not found. E2E cluster tests will be skipped."
-    echo "   Install kind from: https://kind.sigs.k8s.io/docs/user/quick-start/"
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ kind found"
+if [ "${CREATE_KIND_CLUSTER:-false}" = "true" ] || [ "$CLUSTER_AVAILABLE" != "true" ]; then
+    NEEDS_KIND_CLUSTER=true
 fi
 
-# Check if Docker is running
-if ! docker info &> /dev/null; then
-    echo "⚠️  Docker not running. E2E cluster tests will be skipped."
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ Docker is running"
+if [ "$SKIP_CLUSTER_TESTS" != "true" ] && [ "$NEEDS_KIND_CLUSTER" = "true" ]; then
+    # kind and Docker are only prerequisites when the harness must create a cluster.
+    if ! command -v kind &> /dev/null; then
+        echo "⚠️  kind not found and no existing cluster is available."
+        echo "   Install kind from: https://kind.sigs.k8s.io/docs/user/quick-start/"
+        SKIP_CLUSTER_TESTS=true
+    else
+        echo "✅ kind found"
+    fi
+
+    if ! docker info &> /dev/null; then
+        echo "⚠️  Docker not running and a kind cluster is required."
+        SKIP_CLUSTER_TESTS=true
+    else
+        echo "✅ Docker is running"
+    fi
+elif [ "$CLUSTER_AVAILABLE" = "true" ]; then
+    echo "✅ Existing Kubernetes cluster is accessible; kind and Docker are not required"
 fi
 
 if [ "$SKIP_CLUSTER_TESTS" = "true" ] && [ "$REQUIRE_CLUSTER_TESTS" = "true" ]; then
@@ -84,7 +96,7 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   if [ "${CREATE_KIND_CLUSTER:-false}" = "true" ]; then
     echo "🔧 CREATE_KIND_CLUSTER is set, will create new kind cluster..."
     CREATE_CLUSTER=true
-  elif ! kubectl cluster-info &> /dev/null; then
+  elif [ "$CLUSTER_AVAILABLE" != "true" ]; then
     echo "🔧 No accessible Kubernetes cluster found, will create kind cluster..."
     CREATE_CLUSTER=true
   else
@@ -130,6 +142,16 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   export TYPEKRO_NATS_STORAGE_CLASS
   echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
 
+  # Cluster-backed fixtures should share the same discovered RWO class instead
+  # of assuming a provisioner-specific name such as `local-path`.
+  TYPEKRO_TEST_STORAGE_CLASS=${TYPEKRO_TEST_STORAGE_CLASS:-$TYPEKRO_NATS_STORAGE_CLASS}
+  if ! kubectl get storageclass "$TYPEKRO_TEST_STORAGE_CLASS" > /dev/null 2>&1; then
+    echo "❌ TYPEKRO_TEST_STORAGE_CLASS names a missing StorageClass: $TYPEKRO_TEST_STORAGE_CLASS"
+    exit 1
+  fi
+  export TYPEKRO_TEST_STORAGE_CLASS
+  echo "   General test StorageClass: $TYPEKRO_TEST_STORAGE_CLASS"
+
   # Signal tests to skip any per-test cluster setup/teardown
   SKIP_CLUSTER_SETUP=true
   export SKIP_CLUSTER_SETUP
@@ -141,7 +163,22 @@ echo "==============================="
 # NOTE: We still use bun test but with NODE_TLS_REJECT_UNAUTHORIZED=0
 # The client cert auth issue with Bun is being tracked. For now, this allows
 # TLS to work, and we rely on the cluster's default service account for auth.
-NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 1200000 # 20 minutes
+# Cilium bootstrap tests install and then detach a cluster CNI release. Run them
+# last so their teardown cannot prevent later suites from creating pod sandboxes.
+NON_CILIUM_TEST_FILES=()
+while IFS= read -r test_file; do
+  NON_CILIUM_TEST_FILES+=("$test_file")
+done < <(find test/integration -name '*.test.ts' ! -path 'test/integration/cilium/*' | sort)
+CILIUM_TEST_FILES=()
+while IFS= read -r test_file; do
+  CILIUM_TEST_FILES+=("$test_file")
+done < <(find test/integration/cilium -name '*.test.ts' | sort)
+
+# Bun does not guarantee that a single invocation honors command-line file order,
+# even with max concurrency set to one. Use separate invocations so Cilium teardown
+# cannot remove the cluster CNI before a later suite creates pod sandboxes.
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test "${NON_CILIUM_TEST_FILES[@]}" --timeout 1200000 --max-concurrency 1 # 20 minutes
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test "${CILIUM_TEST_FILES[@]}" --timeout 1200000 --max-concurrency 1 # 20 minutes
 
 echo ""
 

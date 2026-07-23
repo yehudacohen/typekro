@@ -61,11 +61,24 @@ export interface ResolvedAdminCredentials {
  */
 export function resolveAdminCredentials(
   specCredentials?: { admin?: string; viewer?: string } | undefined,
-  options?: { allowTestDefaults?: boolean }
+  options?: { allowTestDefaults?: boolean; warnOnTestDefaults?: boolean }
 ): ResolvedAdminCredentials {
   const allowTestDefaults = options?.allowTestDefaults ?? true;
-  const admin = resolveKey(specCredentials?.admin, 'APISIX_ADMIN_KEY', DEV_DEFAULT_ADMIN_KEY, allowTestDefaults);
-  const viewer = resolveKey(specCredentials?.viewer, 'APISIX_VIEWER_KEY', DEV_DEFAULT_VIEWER_KEY, allowTestDefaults);
+  const warnOnTestDefaults = options?.warnOnTestDefaults ?? true;
+  const admin = resolveKey(
+    specCredentials?.admin,
+    'APISIX_ADMIN_KEY',
+    DEV_DEFAULT_ADMIN_KEY,
+    allowTestDefaults,
+    warnOnTestDefaults
+  );
+  const viewer = resolveKey(
+    specCredentials?.viewer,
+    'APISIX_VIEWER_KEY',
+    DEV_DEFAULT_VIEWER_KEY,
+    allowTestDefaults,
+    warnOnTestDefaults
+  );
 
   return { admin, viewer };
 }
@@ -79,7 +92,8 @@ function resolveKey(
   specValue: string | undefined,
   envVarName: string,
   devDefault: string,
-  allowTestDefaults: boolean
+  allowTestDefaults: boolean,
+  warnOnTestDefaults: boolean
 ): string {
   // 1. Explicit spec value takes highest priority
   if (specValue) {
@@ -102,7 +116,7 @@ function resolveKey(
     );
   }
 
-  if (!devDefaultWarningEmitted) {
+  if (warnOnTestDefaults && !devDefaultWarningEmitted) {
     devDefaultWarningEmitted = true;
     const isProduction = !isTestEnvironment();
     logger.warn(

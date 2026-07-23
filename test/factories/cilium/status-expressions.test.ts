@@ -7,7 +7,16 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { load } from 'js-yaml';
 import { ciliumBootstrap } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
+
+function helmValues(yaml: string): Record<string, unknown> {
+  const rgd = load(yaml) as {
+    spec: { resources: Array<{ id: string; template: { spec?: { values?: Record<string, unknown> } } }> };
+  };
+  return rgd.spec.resources.find((resource) => resource.id === 'helmRelease')?.template.spec
+    ?.values ?? {};
+}
 
 describe('Cilium Bootstrap Status Expressions', () => {
   describe('Overall Status Logic', () => {
@@ -139,8 +148,8 @@ describe('Cilium Bootstrap Status Expressions', () => {
       // Verify Gateway API configuration is included in Helm values
       // gatewayAPI is an optional object with an optional enabled field, so
       // both levels must be guarded.
-      expect(yaml).toContain(
-        'enabled: "${has(schema.spec.gatewayAPI) && has(schema.spec.gatewayAPI.enabled) ? schema.spec.gatewayAPI.enabled : omit()}"'
+      expect((helmValues(yaml).gatewayAPI as { enabled?: unknown }).enabled).toBe(
+        '${has(schema.spec.gatewayAPI) && has(schema.spec.gatewayAPI.enabled) ? schema.spec.gatewayAPI.enabled : omit()}'
       );
     });
   });
@@ -161,12 +170,13 @@ describe('Cilium Bootstrap Status Expressions', () => {
       expect(yaml).toContain('hubble:');
       // observability is an optional object with optional subfields, so both
       // levels must be guarded.
-      expect(yaml).toContain(
-        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.hubbleEnabled) ? schema.spec.observability.hubbleEnabled : omit()}"'
+      const values = helmValues(yaml);
+      expect((values.hubble as { enabled?: unknown }).enabled).toBe(
+        '${has(schema.spec.observability) && has(schema.spec.observability.hubbleEnabled) ? schema.spec.observability.hubbleEnabled : omit()}'
       );
       expect(yaml).toContain('prometheus:');
-      expect(yaml).toContain(
-        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.prometheusEnabled) ? schema.spec.observability.prometheusEnabled : omit()}"'
+      expect((values.prometheus as { enabled?: unknown }).enabled).toBe(
+        '${has(schema.spec.observability) && has(schema.spec.observability.prometheusEnabled) ? schema.spec.observability.prometheusEnabled : omit()}'
       );
     });
   });

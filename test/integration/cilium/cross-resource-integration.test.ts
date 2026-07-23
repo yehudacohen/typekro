@@ -51,7 +51,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   // (instance finalizer wait + RGD/namespace deletion), exceed the default 5s
   // timeout. bun:test's hook types take no per-hook timeout arg, so set it for the
   // whole file here; the deploy `it` overrides with its own longer timeout.
-  setDefaultTimeout(180000);
+  setDefaultTimeout(900000);
 
   let kubeConfig: k8s.KubeConfig;
   let _k8sApi: k8s.KubernetesObjectApi;

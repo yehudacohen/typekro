@@ -229,23 +229,24 @@ export function convertMemberExpression(
       _type: undefined,
     } as CelExpression;
   }
+  const canonicalPath = context.type === 'status' ? canonicalMemberPath(path) : path;
 
   // Check if this is a resource reference
   if (context.availableReferences) {
     for (const [resourceKey, resource] of Object.entries(context.availableReferences)) {
       if (
-        path.startsWith(`resources.${resourceKey}.`) ||
-        path.startsWith(`${resourceKey}.`) ||
-        path === resourceKey
+        canonicalPath.startsWith(`resources.${resourceKey}.`) ||
+        canonicalPath.startsWith(`${resourceKey}.`) ||
+        canonicalPath === resourceKey
       ) {
         let fieldPath: string;
-        if (path === resourceKey) {
+        if (canonicalPath === resourceKey) {
           // Direct resource reference
           fieldPath = '';
-        } else if (path.startsWith('resources.')) {
-          fieldPath = path.substring(`resources.${resourceKey}.`.length);
+        } else if (canonicalPath.startsWith('resources.')) {
+          fieldPath = canonicalPath.substring(`resources.${resourceKey}.`.length);
         } else {
-          fieldPath = path.substring(`${resourceKey}.`.length);
+          fieldPath = canonicalPath.substring(`${resourceKey}.`.length);
         }
         return getResourceFieldReference(resource, resourceKey, fieldPath, context);
       }
@@ -253,15 +254,15 @@ export function convertMemberExpression(
   }
 
   // Handle schema references
-  if (path.startsWith('schema.')) {
-    return getSchemaFieldReference(path, context);
+  if (canonicalPath.startsWith('schema.')) {
+    return getSchemaFieldReference(canonicalPath, context);
   }
 
   // Handle unknown resources — an unprovable emission. The resource is not in
   // availableReferences, so the emitted CEL cannot be type-checked here. In
   // strict CEL diagnostics mode this is a hard error; by default we log and
   // emit the placeholder reference (lenient).
-  const parts = path.split('.');
+  const parts = canonicalPath.split('.');
   if (parts.length >= 2) {
     let resourceName: string;
     let fieldPath: string;
@@ -288,7 +289,7 @@ export function convertMemberExpression(
     if (!isSchemaRootIdentifier && !isLocalScopeIdentifier) {
       const knownResources = Object.keys(context.availableReferences ?? {});
       if (isStrictCelDiagnosticsEnabled(context)) {
-        throw ConversionError.forUnknownResource(path, resourceName, knownResources);
+        throw ConversionError.forUnknownResource(canonicalPath, resourceName, knownResources);
       }
 
       // Signal-tiered logging: an explicit `resources.<name>` reference that
@@ -297,7 +298,7 @@ export function convertMemberExpression(
       // see local variables and nested-composition ids here that are resolved
       // or remapped by later stages — so it only gets a debug entry.
       const logPayload = {
-        expression: path,
+        expression: canonicalPath,
         resourceName,
         fieldPath,
         knownResources,
@@ -341,7 +342,11 @@ export function convertMemberExpression(
     } as CelExpression;
   }
 
-  throw new ConversionError(`Unable to resolve member expression: ${path}`, path, 'member-access');
+  throw new ConversionError(
+    `Unable to resolve member expression: ${canonicalPath}`,
+    canonicalPath,
+    'member-access'
+  );
 }
 
 // ── Conditional expression ───────────────────────────────────────────
@@ -542,6 +547,10 @@ export function convertNullishCoalescing(left: CelExpression, right: CelExpressi
 }
 
 // ── Optional chaining ────────────────────────────────────────────────
+
+function canonicalMemberPath(path: string): string {
+  return path.replace(/\?\.\[/g, '[').replace(/\?\./g, '.').replace(/\?\[/g, '[');
+}
 
 /**
  * Convert optional chaining expressions (obj?.prop?.field) to Kro conditional CEL

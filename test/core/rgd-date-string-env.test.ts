@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as yaml from 'js-yaml';
 import { kubernetesComposition, simple, withEnvVars } from '../../src/index.js';
 
 const findEnvValue = (decls: any[], name: string): unknown => {
@@ -67,7 +68,9 @@ describe('RGD date-shaped env value round-trips as a string (alchemy deploy path
     });
     const yamlOut = await f.toYaml();
     // Quoted → a downstream timestamp-aware YAML parser (KRO/kubectl/GitOps) keeps it a string.
-    expect(yamlOut).toContain('value: "2026-06-01"');
+    const parsed = yaml.load(yamlOut) as Record<string, unknown>;
+    expect(parsed).toBeDefined();
+    expect(yamlOut).toMatch(/value: ['"]2026-06-01['"]/);
     expect(yamlOut).not.toContain('value: 2026-06-01\n');
     // A plain (non-ambiguous) value is left unquoted — only date-shaped scalars change.
     expect(yamlOut).toContain('value: prod');

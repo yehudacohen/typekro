@@ -13,6 +13,7 @@ import { getComponentLogger } from '../../src/core/logging/index.js';
 import { Cel } from '../../src/core/references/cel.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
  * DETERMINISTIC, OFFLINE proof of the PR #113 v7 review round — the two multi-instance P1s
@@ -48,7 +49,11 @@ function makeFactory(factoryName: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 function priv(target: unknown, method: string): (...args: unknown[]) => unknown {
@@ -357,7 +362,7 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
       ],
     });
 
-    await factory.deleteInstance('a');
+    const result = await factory.deleteInstance('a');
 
     // The shared namespace was EXCLUDED — never even read for deletion...
     expect(nsRead(ops, 'shared-ns')).toBe(false);
@@ -365,6 +370,11 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
     // ...and the shared RGD/CRD are preserved for the remaining instance B.
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(false);
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
+    expect(result.status).toBe('complete');
+    expect(result.blockers).toEqual([]);
+    expect(result.retained).toEqual(
+      expect.arrayContaining([expect.objectContaining({ policy: 'shared-instance' })])
+    );
   });
 
   it('deleting the LAST instance CLEANS the shared namespace (no remaining instance records it)', async () => {
@@ -383,13 +393,17 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
     // No remaining instances → the exclusion set is empty → the namespace cleanup is reached.
     wire(factory, api, { remaining: [] });
 
-    await factory.deleteInstance('a');
+    const result = await factory.deleteInstance('a');
 
     // The cleanup step WAS reached for the (now-exclusive) namespace...
     expect(nsRead(ops, 'shared-ns')).toBe(true);
     // ...and, being the last instance, the RGD is torn down while the reusable CRD stays Active.
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(true);
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
+    expect(result.status).toBe('complete');
+    expect(result.retained).toEqual(
+      expect.arrayContaining([expect.objectContaining({ policy: 'adopted-resource' })])
+    );
   });
 
   it('FAILS CLOSED: an unreadable remaining-instance list preserves ALL namespaces + the RGD/CRD', async () => {
@@ -406,12 +420,19 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
     // decision → delete NOTHING and preserve the definitions.
     wire(factory, api, { listThrows: true });
 
-    await factory.deleteInstance('a');
+    const result = await factory.deleteInstance('a');
 
     expect(nsRead(ops, 'shared-ns')).toBe(false);
     expect(has(ops, 'delete', 'Namespace')).toBe(false);
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(false);
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'DISCOVERY_FAILED', retryable: true }),
+      ])
+    );
+    expect(result.retry.safe).toBe(true);
   });
 
   it('FAILS CLOSED: a remaining instance with NO resolvable record preserves the namespace', async () => {
@@ -430,12 +451,18 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
       remaining: [{ metadata: { name: 'b', namespace: 'app-ns' } }],
     });
 
-    await factory.deleteInstance('a');
+    const result = await factory.deleteInstance('a');
 
     expect(nsRead(ops, 'shared-ns')).toBe(false);
     expect(has(ops, 'delete', 'Namespace')).toBe(false);
     // RGD/CRD preserved for the remaining instance B.
     expect(has(ops, 'delete', 'ResourceGraphDefinition')).toBe(false);
     expect(has(ops, 'delete', 'CustomResourceDefinition')).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect(result.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'OWNERSHIP_UNPROVEN', retryable: true }),
+      ])
+    );
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as jsYaml from 'js-yaml';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
 import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
 import { mapAPISixConfigToHelmValues, validateAPISixHelmValues } from '../../src/factories/apisix/utils/helm-values-mapper.js';
@@ -223,12 +224,22 @@ describe('APISIX bootstrap credential serialization', () => {
 
     try {
       const yaml = apisixBootstrap.toYaml();
+      const rgd = jsYaml.load(yaml) as {
+        spec: { resources: Array<{ id: string; template?: { spec?: { values?: unknown } } }> };
+      };
+      const values = rgd.spec.resources.find((resource) => resource.id === 'apisixHelmRelease')
+        ?.template?.spec?.values as Record<string, unknown>;
+      const serializedValues = JSON.stringify(values);
 
-      expect(yaml).toContain('apisix:');
-      expect(yaml).toContain('image: "${has(schema.spec.apisix) && has(schema.spec.apisix.image) ? schema.spec.apisix.image : omit()}"');
-      expect(yaml).toContain('dashboard:');
-      expect(yaml).toContain('enabled: "${has(schema.spec.dashboard) && has(schema.spec.dashboard.enabled) ? schema.spec.dashboard.enabled : omit()}"');
-      expect(yaml).toContain('schema.spec.customValues');
+      expect(values).toHaveProperty('apisix');
+      expect(serializedValues).toContain(
+        '${has(schema.spec.apisix) && has(schema.spec.apisix.image) ? schema.spec.apisix.image : omit()}'
+      );
+      expect(values).toHaveProperty('dashboard');
+      expect(serializedValues).toContain(
+        '${has(schema.spec.dashboard) && has(schema.spec.dashboard.enabled) ? schema.spec.dashboard.enabled : omit()}'
+      );
+      expect(serializedValues).toContain('schema.spec.customValues');
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;

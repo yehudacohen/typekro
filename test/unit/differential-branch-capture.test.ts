@@ -614,8 +614,8 @@ describe('Differential Branch Capture', () => {
       const cfgSection = extractResourceSection(yaml, 'cfg');
       const appSection = extractResourceSection(yaml, 'app');
 
-      expect(cfgSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
-      expect(appSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
+      expect(cfgSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : "default"');
+      expect(appSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : "default"');
       expect(cfgSection).not.toContain('has(schema.spec.cache)');
       expect(cfgSection).not.toContain('has(schema.spec.cnpgOperator)');
       expect(cfgSection).not.toContain('has(schema.spec.valkeyOperator)');

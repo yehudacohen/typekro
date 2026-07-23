@@ -11,10 +11,13 @@ import type * as k8s from '@kubernetes/client-node';
 import {
   ResourceConflictError,
   ResourceDeploymentError,
+  ResourceReplacementTimeoutError,
+  type ServerSideApplyConflictError,
   UnsupportedMediaTypeError,
 } from '../../src/core/deployment/errors.js';
 import { ResourceApplier } from '../../src/core/deployment/resource-applier.js';
 import type { TypeKroLogger } from '../../src/core/logging/types.js';
+import type { ArtifactApplyPolicy } from '../../src/core/planning/artifacts.js';
 import {
   getResourceMetadata,
   setMetadataField,
@@ -24,6 +27,7 @@ import {
 import type { ReferenceResolver } from '../../src/core/references/resolver.js';
 import type { DeploymentOptions, ResolutionContext } from '../../src/core/types/deployment.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
+import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
 import { createK8sError, createMockK8sApi } from '../utils/mock-factories.js';
 
 // =============================================================================
@@ -632,6 +636,303 @@ describe('ResourceApplier', () => {
 
       expect(mockApi.create).toHaveBeenCalledTimes(1);
     });
+
+    it('preserves an existing resource when artifact policy selects warn', async () => {
+      const existing = createTestResource();
+      mockApi.read.mockResolvedValue(existing);
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'create-or-patch',
+        existingResource: 'warn',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      const result = await applier.applyResourceToCluster(
+        resource,
+        createTestOptions(),
+        mockLogger
+      );
+
+      expect(result).toBe(existing);
+      expect(mockApi.patch).not.toHaveBeenCalled();
+      expect(mockApi.create).not.toHaveBeenCalled();
+    });
+
+    it('preserves ResourceConflictError identity for create-only artifacts', async () => {
+      mockApi.read.mockResolvedValue(createTestResource());
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'create-only',
+      } satisfies ArtifactApplyPolicy);
+
+      await expect(
+        applier.applyResourceToCluster(resource, createTestOptions(), mockLogger)
+      ).rejects.toBeInstanceOf(ResourceConflictError);
+    });
+
+    it('honors strategic merge selection from artifact policy', async () => {
+      const existing = createTestResource();
+      existing.spec = { ...(existing.spec as Record<string, unknown>), replicas: 2 };
+      mockApi.read.mockResolvedValue(existing);
+      mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'create-or-patch',
+        patchType: 'strategic',
+        existingResource: 'patch',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.patch).toHaveBeenCalledWith(
+        expect.any(Object),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'application/strategic-merge-patch+json'
+      );
+    });
+
+    it('uses field ownership settings for server-side apply', async () => {
+      mockApi.patch.mockImplementation((resource) => Promise.resolve(resource));
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'server-side-apply',
+        fieldManager: 'typekro-test',
+        fieldConflictPolicy: 'force-owned-fields',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.read).not.toHaveBeenCalled();
+      expect(mockApi.patch).toHaveBeenCalledWith(
+        expect.any(Object),
+        undefined,
+        undefined,
+        'typekro-test',
+        true,
+        'application/apply-patch+yaml'
+      );
+    });
+
+    it('retries SSA when create races with another writer', async () => {
+      mockApi.patch
+        .mockImplementationOnce(() => Promise.reject(createK8sError('Not Found', 404)))
+        .mockImplementationOnce((resource) => Promise.resolve(resource));
+      mockApi.create.mockRejectedValue(createK8sError('Already Exists', 409));
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'server-side-apply',
+        fieldManager: 'typekro-test',
+        fieldConflictPolicy: 'fail',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.patch).toHaveBeenCalledTimes(2);
+      expect(mockApi.create).toHaveBeenCalledTimes(1);
+      expect(mockApi.create).toHaveBeenCalledWith(
+        expect.any(Object),
+        undefined,
+        undefined,
+        'typekro-test'
+      );
+    });
+
+    it('never degrades SSA ownership conflicts to legacy warn handling', async () => {
+      mockApi.patch.mockRejectedValue(
+        createK8sError('Apply failed with 1 conflict: conflict with "other-manager"', 409)
+      );
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'server-side-apply',
+        fieldManager: 'typekro-test',
+        fieldConflictPolicy: 'fail',
+        immutableFieldPolicy: 'fail',
+      } satisfies ArtifactApplyPolicy);
+
+      await expect(
+        applier.applyResourceToCluster(
+          resource,
+          createTestOptions({ conflictStrategy: 'warn' }),
+          mockLogger
+        )
+      ).rejects.toMatchObject({
+        name: 'ServerSideApplyConflictError',
+        code: 'SERVER_SIDE_APPLY_CONFLICT',
+      } satisfies Partial<ServerSideApplyConflictError>);
+
+      expect(mockApi.read).not.toHaveBeenCalled();
+      expect(mockApi.create).not.toHaveBeenCalled();
+    });
+
+    it('recreates resources only when immutable-field policy explicitly allows it', async () => {
+      const existing = createTestResource();
+      existing.spec = { ...(existing.spec as Record<string, unknown>), replicas: 2 };
+      mockApi.read.mockResolvedValue(existing);
+      mockApi.patch.mockRejectedValue(createK8sError('spec.selector: field is immutable', 422));
+      mockApi.delete.mockImplementation(() => {
+        mockApi.read.mockRejectedValue(createK8sError('Not Found', 404));
+        return Promise.resolve({});
+      });
+      mockApi.create.mockImplementation((resource) => Promise.resolve(resource));
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'create-or-patch',
+        existingResource: 'patch',
+        immutableFieldPolicy: 'recreate',
+      } satisfies ArtifactApplyPolicy);
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.delete).toHaveBeenCalledTimes(1);
+      expect(mockApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips patching when canonical desired state already matches live state', async () => {
+      const resource = createTestResource();
+      const existing = {
+        ...createTestResource(),
+        metadata: {
+          ...createTestResource().metadata,
+          uid: 'existing-uid',
+          resourceVersion: '42',
+          labels: { 'admission.example.test/injected': 'true' },
+        },
+        status: { readyReplicas: 1 },
+      } as k8s.KubernetesObject;
+      mockApi.read.mockResolvedValue(existing);
+
+      const result = await applier.applyResourceToCluster(
+        resource,
+        createTestOptions(),
+        mockLogger
+      );
+
+      expect(result).toBe(existing);
+      expect(mockApi.patch).not.toHaveBeenCalled();
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        'Existing resource already matches canonical desired state',
+        expect.objectContaining({ kind: 'Deployment' })
+      );
+    });
+
+    it('uses factory-owned normalization before deciding whether to patch', async () => {
+      const resource = networkPolicy({
+        id: 'policy',
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'deny-ingress', namespace: 'apps' },
+        spec: { podSelector: {}, ingress: [] },
+      });
+      const existing: KubernetesResource = {
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: {
+          name: 'deny-ingress',
+          namespace: 'apps',
+          resourceVersion: '42',
+        },
+        spec: { podSelector: {}, policyTypes: ['Ingress'] },
+      };
+      mockApi.read.mockResolvedValue(existing);
+
+      const result = await applier.applyResourceToCluster(
+        resource,
+        createTestOptions(),
+        mockLogger
+      );
+
+      expect(result).toBe(existing);
+      expect(mockApi.patch).not.toHaveBeenCalled();
+      expect(mockLogger.debug).toHaveBeenCalledWith(
+        'Existing resource already matches canonical desired state',
+        expect.objectContaining({
+          canonicalizers: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'kubernetes.networking.k8s.io/network-policy-comparison',
+            }),
+          ]),
+        })
+      );
+    });
+
+    it('continues applying Secrets because stringData cannot be compared to live encoded data', async () => {
+      const resource: KubernetesResource = {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: 'credentials', namespace: 'default' },
+        stringData: { password: 'plaintext-at-apply-boundary' },
+      };
+      mockApi.read.mockResolvedValue({
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: 'credentials', namespace: 'default' },
+        data: { password: 'cGxhaW50ZXh0LWF0LWFwcGx5LWJvdW5kYXJ5' },
+      });
+      mockApi.patch.mockImplementation((manifest) => Promise.resolve(manifest));
+
+      await applier.applyResourceToCluster(resource, createTestOptions(), mockLogger);
+
+      expect(mockApi.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails replacement with typed evidence while the previous object still exists', async () => {
+      mockApi.read.mockResolvedValue(createTestResource());
+      mockApi.delete.mockResolvedValue({});
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'replace',
+      } satisfies ArtifactApplyPolicy);
+
+      await expect(
+        applier.applyResourceToCluster(resource, createTestOptions({ timeout: 1 }), mockLogger)
+      ).rejects.toBeInstanceOf(ResourceReplacementTimeoutError);
+
+      expect(mockApi.delete).toHaveBeenCalledTimes(1);
+      expect(mockApi.create).not.toHaveBeenCalled();
+    });
+
+    it('aborts while waiting for the previous object to disappear', async () => {
+      const controller = new AbortController();
+      mockApi.read.mockResolvedValue(createTestResource());
+      mockApi.delete.mockImplementation(() => {
+        controller.abort(new DOMException('cancelled', 'AbortError'));
+        return Promise.resolve({});
+      });
+      const resource = createTestResource();
+      setMetadataField(resource, 'applyPolicy', {
+        strategy: 'replace',
+      } satisfies ArtifactApplyPolicy);
+
+      await expect(
+        applier.applyResourceToCluster(
+          resource,
+          createTestOptions({ abortSignal: controller.signal }),
+          mockLogger
+        )
+      ).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(mockApi.create).not.toHaveBeenCalled();
+    });
+
+    it('stops before applying when the deployment signal is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort(new DOMException('cancelled', 'AbortError'));
+
+      await expect(
+        applier.applyResourceToCluster(
+          createTestResource(),
+          createTestOptions({ abortSignal: controller.signal }),
+          mockLogger
+        )
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(mockApi.read).not.toHaveBeenCalled();
+    });
   });
 
   // ===========================================================================
@@ -705,7 +1006,10 @@ describe('ResourceApplier', () => {
         kind: 'Deployment',
         metadata: { name: 'test-deployment', namespace: 'default', uid: 'new-uid' },
       };
-      mockApi.delete.mockImplementation(() => Promise.resolve({}));
+      mockApi.delete.mockImplementation(() => {
+        mockApi.read.mockRejectedValue(createK8sError('Not Found', 404));
+        return Promise.resolve({});
+      });
       mockApi.create.mockImplementation(() => Promise.resolve(recreatedResource));
 
       const result = await applier.handleConflictStrategy(resource, 'replace', mockLogger);

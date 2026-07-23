@@ -269,6 +269,7 @@ describe('Three-Composition Demo Integration', () => {
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
       kroVersion: '0.9.2',
+      fluxInstallation: 'external',
     });
 
     expect(bootstrap).toBeDefined();
@@ -279,6 +280,16 @@ describe('Three-Composition Demo Integration', () => {
     expect(bootstrapYaml).toContain('kind: ResourceGraphDefinition');
     expect(bootstrapYaml).toContain('TypeKroRuntime');
     expect(bootstrapYaml).toContain('HelmRelease'); // Should contain Kro HelmRelease
+
+    // Managed Flux installation uses a runtime manifest-fetch/transform closure. Static KRO YAML
+    // has no execution host for that operation and must reject it instead of silently omitting it.
+    expect(() =>
+      typeKroRuntimeBootstrap({
+        namespace: 'flux-system',
+        fluxVersion: 'v2.4.0',
+        kroVersion: '0.9.2',
+      }).toYaml()
+    ).toThrow('Artifact capabilities cannot be satisfied');
 
     // Test factory creation
     const bootstrapFactory = bootstrap.factory('direct', {
@@ -300,6 +311,7 @@ describe('Three-Composition Demo Integration', () => {
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
       kroVersion: '0.9.2',
+      fluxInstallation: 'external',
     });
     const bootstrapYaml = bootstrap.toYaml();
 

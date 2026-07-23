@@ -1,10 +1,34 @@
 import type { V1PersistentVolumeClaim } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1PvcSpec = NonNullable<V1PersistentVolumeClaim['spec']>;
 export type V1PvcStatus = NonNullable<V1PersistentVolumeClaim['status']>;
+
+const persistentVolumeClaimReadinessEvaluator = registerPortableReadinessEvaluator(
+  'typekro.readiness.kubernetes.persistent-volume-claim',
+  '1',
+  (liveResource: V1PersistentVolumeClaim) => {
+    try {
+      const status = liveResource.status;
+      if (!status) return { ready: false, reason: 'No status available' };
+      const ready = status.phase === 'Bound';
+      return {
+        ready,
+        reason: ready
+          ? 'PVC is bound to a volume'
+          : `PVC is in ${status.phase} phase, expected Bound`,
+      };
+    } catch (error: unknown) {
+      return {
+        ready: false,
+        reason: `Error checking PVC status: ${ensureError(error).message}`,
+      };
+    }
+  }
+);
 
 /**
  * Creates a Kubernetes PersistentVolumeClaim resource with binding-based readiness evaluation.
@@ -25,27 +49,5 @@ export function persistentVolumeClaim(
     apiVersion: 'v1',
     kind: 'PersistentVolumeClaim',
     metadata: resource.metadata ?? { name: 'unnamed-pvc' },
-  }).withReadinessEvaluator((liveResource: V1PersistentVolumeClaim) => {
-    try {
-      const status = liveResource.status;
-
-      if (!status) {
-        return { ready: false, reason: 'No status available' };
-      }
-
-      const ready = status.phase === 'Bound';
-
-      return {
-        ready,
-        reason: ready
-          ? 'PVC is bound to a volume'
-          : `PVC is in ${status.phase} phase, expected Bound`,
-      };
-    } catch (error: unknown) {
-      return {
-        ready: false,
-        reason: `Error checking PVC status: ${ensureError(error).message}`,
-      };
-    }
-  });
+  }).withReadinessEvaluator(persistentVolumeClaimReadinessEvaluator);
 }

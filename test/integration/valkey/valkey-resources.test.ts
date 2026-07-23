@@ -186,7 +186,7 @@ describeOrSkip('Valkey live direct and KRO integration', () => {
   const kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
   afterAll(async () => {
-    await deleteNamespaceAndWait(namespace, kubeConfig, 180_000).catch((error: unknown) => {
+    await deleteNamespaceAndWait(namespace, kubeConfig, 600_000).catch((error: unknown) => {
       console.error('Valkey integration cleanup failed:', error);
     });
     await kubectl([

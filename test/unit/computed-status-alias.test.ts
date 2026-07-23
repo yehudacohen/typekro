@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Parser } from 'acorn';
 import { type } from 'arktype';
+import * as jsYaml from 'js-yaml';
 import {
   buildLexicalAliasScope,
   inlineLexicalAliases,
@@ -146,8 +147,9 @@ describe('computed status aliases', () => {
     );
 
     const yaml = composition.toYaml();
-    expect(yaml).toContain(
-      "phase: \"${web.status.availableReplicas >= web.spec.replicas ? 'Ready' : 'Installing'}\""
+    const parsed = jsYaml.load(yaml) as { spec: { schema: { status: { phase: string } } } };
+    expect(parsed.spec.schema.status.phase).toBe(
+      "${web.status.availableReplicas >= web.spec.replicas ? 'Ready' : 'Installing'}"
     );
     expect(yaml).not.toContain('phase: Installing');
   });
@@ -176,8 +178,9 @@ describe('computed status aliases', () => {
 
     const yaml = composition.toYaml();
     expect(yaml).toContain('ready: ${web.status.availableReplicas >= web.spec.replicas}');
-    expect(yaml).toContain(
-      'phase: "${web.status.availableReplicas >= web.spec.replicas ? \\"Ready\\" : \\"Installing\\"}"'
+    const parsed = jsYaml.load(yaml) as { spec: { schema: { status: { phase: string } } } };
+    expect(parsed.spec.schema.status.phase).toBe(
+      '${web.status.availableReplicas >= web.spec.replicas ? "Ready" : "Installing"}'
     );
     expect(yaml).not.toContain('phase: Installing');
   });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import * as jsYaml from 'js-yaml';
 import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
 import { Cel, simple, toResourceGraph } from '../../src/index';
 import { isCelExpression } from '../../src/utils/index.js';
@@ -207,14 +208,27 @@ describe('CEL Expression Serialization Pipeline', () => {
         () => ({ name: 'test-status' })
       );
       const yaml = resourceGraph.toYaml();
+      const parsed = jsYaml.load(yaml) as {
+        spec: {
+          resources: Array<{
+            id: string;
+            template: {
+              spec: { template: { spec: { containers: Array<{ env: Array<{ value: string }> }> } } };
+            };
+          }>;
+        };
+      };
+      const values = parsed.spec.resources
+        .find((resource) => resource.id === 'deploymentWebapp')
+        ?.template.spec.template.spec.containers[0]?.env.map((entry) => entry.value);
 
       // Verify the YAML contains properly serialized CEL expressions
-      expect(yaml).toContain('value: ${string(deploymentPostgres.status.readyReplicas)}');
-      expect(yaml).toContain(
-        "value: \"${deploymentPostgres.status.readyReplicas ? 'ready' : 'not-ready'}\""
-      );
-      expect(yaml).toContain('value: ${string(max(deploymentPostgres.status.readyReplicas, 1))}');
-      expect(yaml).toContain('value: static-env-var');
+      expect(values).toEqual([
+        '${string(deploymentPostgres.status.readyReplicas)}',
+        "${deploymentPostgres.status.readyReplicas ? 'ready' : 'not-ready'}",
+        '${string(max(deploymentPostgres.status.readyReplicas, 1))}',
+        'static-env-var',
+      ]);
 
       // Should not contain CelExpression objects or [object Object]
       expect(yaml).not.toContain('[object Object]');

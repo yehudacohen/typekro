@@ -367,9 +367,6 @@ function createHarborInstallation(
     profile: Cel.expr<'local-development' | 'production'>(
       'harborMetadata.metadata.annotations["typekro.dev/profile"]'
     ),
-    observedGeneration: Cel.expr<number>(
-      'has(harborRelease.status.observedGeneration) ? harborRelease.status.observedGeneration : 0'
-    ),
     tlsEnabled: Cel.expr<boolean>(
       'harborMetadata.metadata.annotations["typekro.dev/tls-enabled"] == "true"'
     ),
@@ -400,7 +397,12 @@ function createHarborInstallation(
             'harborNetworkPolicy.metadata.name != "" && harborIngressNetworkPolicy.metadata.name != ""'
           )
         : true,
-    conditions: release.status.conditions,
+    release: {
+      observedGeneration: Cel.expr<number>(
+        'has(harborRelease.status.observedGeneration) ? harborRelease.status.observedGeneration : 0'
+      ),
+      conditions: release.status.conditions,
+    },
   };
 }
 

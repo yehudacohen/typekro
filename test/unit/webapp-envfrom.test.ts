@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import * as jsYaml from 'js-yaml';
 import { webAppWithProcessing } from '../../src/factories/webapp/compositions/web-app-with-processing.js';
 import { WebAppWithProcessingConfigSchema } from '../../src/factories/webapp/types.js';
 
@@ -232,8 +233,20 @@ describe('webAppWithProcessing envFrom', () => {
 
   it('emits an object-array KRO schema for envFrom entries', () => {
     const yaml = webAppWithProcessing.toYaml();
+    const documents: unknown[] = [];
+    jsYaml.loadAll(yaml, (document) => documents.push(document));
+    const rgd = documents.find(
+      (document) =>
+        document !== null &&
+        typeof document === 'object' &&
+        (document as { kind?: unknown }).kind === 'ResourceGraphDefinition' &&
+        (document as { metadata?: { name?: unknown } }).metadata?.name ===
+          'web-app-with-processing'
+    ) as {
+      spec: { schema: { spec: { app: { envFrom: unknown } } } };
+    };
 
-    expect(yaml).toContain('envFrom: "[]object"');
+    expect(rgd.spec.schema.spec.app.envFrom).toBe('[]object');
     expect(yaml).not.toContain('[object Object]');
     expect(yaml).not.toContain('enum="object,object"');
   });

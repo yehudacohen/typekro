@@ -73,6 +73,14 @@ describe('Dagster bootstrap composition', () => {
 
   it('Generate ResourceGraphDefinition YAML with owned resources and status CEL', () => {
     const yaml = dagsterBootstrap.toYaml();
+    const root = yaml
+      .split(/^---$/m)
+      .map((document) => load(document.trim()) as Record<string, unknown>)
+      .find((document) => {
+        const spec = document.spec as { schema?: { kind?: string } } | undefined;
+        return document.kind === 'ResourceGraphDefinition' && spec?.schema?.kind === 'DagsterBootstrap';
+      }) as { spec: { schema: { status: Record<string, unknown> } } };
+    const status = root.spec.schema.status;
 
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
@@ -96,7 +104,8 @@ describe('Dagster bootstrap composition', () => {
     // workloads before reporting Ready). We do NOT observe individual workloads — no fragile,
     // name-reconstructed Deployment externalRef, and therefore no owned/observed Deployment template.
     expect(yaml).toContain('ready: ${dagsterHelmRelease.status.conditions');
-    expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
+    expect(status.phase).toBeString();
+    expect(status.phase as string).toStartWith('${dagsterHelmRelease.status.conditions');
     expect(yaml).not.toContain('kind: Deployment');
     expect(yaml).not.toContain('kind: Pod');
     expect(yaml).not.toContain('dagsterWebserverDeployment');
@@ -295,8 +304,20 @@ describe('Dagster bootstrap readiness', () => {
 
   it('Keep phase/failed/version unchanged', () => {
     const yaml = dagsterBootstrap.toYaml();
-    expect(yaml).toContain('phase: "${dagsterHelmRelease.status.conditions');
-    expect(yaml).toContain('failed: ${dagsterHelmRelease.status.conditions');
+    const root = yaml
+      .split(/^---$/m)
+      .map((document) => load(document.trim()) as Record<string, unknown>)
+      .find((document) => {
+        const spec = document.spec as { schema?: { kind?: string } } | undefined;
+        return document.kind === 'ResourceGraphDefinition' && spec?.schema?.kind === 'DagsterBootstrap';
+      }) as { spec: { schema: { status: Record<string, unknown> } } };
+    expect(root.spec.schema.status.phase).toBeString();
+    expect(root.spec.schema.status.phase as string).toStartWith(
+      '${dagsterHelmRelease.status.conditions'
+    );
+    expect(root.spec.schema.status.failed as string).toStartWith(
+      '${dagsterHelmRelease.status.conditions'
+    );
     // `version` is a static/client-hydrated status field, so the RGD schema types
     // it (not the literal value); the default value still flows through templates.
     expect(yaml).toContain('version: string');

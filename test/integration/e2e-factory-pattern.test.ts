@@ -104,6 +104,9 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       const WebAppSpecSchema = type({
         name: 'string',
         environment: '"development" | "production" | "staging"',
+        apiKey: 'string',
+        jwtSecret: 'string',
+        databasePassword: 'string',
       });
 
       const WebAppStatusSchema = type({
@@ -120,7 +123,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
           spec: WebAppSpecSchema,
           status: WebAppStatusSchema,
         },
-        (_schema) => ({
+        (schema) => ({
           appConfig: simple.ConfigMap({
             name: 'webapp-factory-config',
             data: {
@@ -135,10 +138,10 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
             Object.assign(
               {
                 metadata: { name: 'webapp-factory-secrets' },
-                data: {
-                  API_KEY: Buffer.from('super-secret-api-key').toString('base64'),
-                  JWT_SECRET: Buffer.from('jwt-signing-secret').toString('base64'),
-                  DATABASE_PASSWORD: Buffer.from('secure-db-password').toString('base64'),
+                stringData: {
+                  API_KEY: schema.spec.apiKey,
+                  JWT_SECRET: schema.spec.jwtSecret,
+                  DATABASE_PASSWORD: schema.spec.databasePassword,
                 },
               },
               { id: 'webappSecrets' }
@@ -196,6 +199,9 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       const deploymentResult = await kroFactory.deploy({
         name: 'test-webapp-factory',
         environment: 'development' as const,
+        apiKey: 'super-secret-api-key',
+        jwtSecret: 'jwt-signing-secret',
+        databasePassword: 'secure-db-password',
       });
 
       // 4. Verify type safety and field separation
@@ -306,5 +312,5 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
         console.warn('⚠️ Factory cleanup failed:', error);
       }
     });
-  }, 180000);
+  }, 900000);
 });

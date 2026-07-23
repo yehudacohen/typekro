@@ -1,5 +1,8 @@
 // Cert-Manager Certificate Resources
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
+import {
+  createConditionBasedReadinessEvaluator,
+  registerPortableReadinessEvaluator,
+} from '../../../core/readiness/index.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { CertificateConfig, CertificateStatus } from '../types.js';
@@ -32,6 +35,12 @@ function certificateReadinessEvaluator(liveResource: unknown): ResourceStatus {
 
   return result;
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cert-manager.certificate',
+  '1',
+  certificateReadinessEvaluator
+);
 
 /**
  * Certificate Factory Function

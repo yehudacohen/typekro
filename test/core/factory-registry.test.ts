@@ -11,11 +11,14 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import {
   clearFactoryRegistry,
   getFactoryRegistration,
+  getFactoryRegistrationsForGVK,
   getKindInfo,
   getRegisteredFactoryCount,
+  getRegisteredFactoryNames,
   getSemanticCandidateKinds,
   isKnownFactory,
   registerFactory,
@@ -84,6 +87,140 @@ describe('FactoryRegistry', () => {
       expect(getKindInfo('OverwriteTest')).toEqual({ apiVersion: 'v2', kind: 'V2Kind' });
     });
 
+    it('indexes registrations by the complete apiVersion and kind', () => {
+      registerFactory({
+        factoryName: 'CoreWidget',
+        kind: 'Widget',
+        apiVersion: 'core.example.dev/v1',
+      });
+      registerFactory({
+        factoryName: 'OtherWidget',
+        kind: 'Widget',
+        apiVersion: 'other.example.dev/v1',
+      });
+
+      expect(getFactoryRegistrationsForGVK('core.example.dev/v1', 'Widget')).toEqual([
+        expect.objectContaining({ factoryName: 'CoreWidget' }),
+      ]);
+      expect(getFactoryRegistrationsForGVK('other.example.dev/v1', 'Widget')).toEqual([
+        expect.objectContaining({ factoryName: 'OtherWidget' }),
+      ]);
+    });
+
+    it('allows identical canonicalizer registration and rejects GVK conflicts', () => {
+      const canonicalize = (resource: KubernetesResource): KubernetesResource => resource;
+      registerFactory({
+        factoryName: 'CanonicalWidgetA',
+        kind: 'CanonicalWidget',
+        apiVersion: 'canonical.example.dev/v1',
+        desiredCanonicalizer: {
+          id: 'canonical.example.dev/widget',
+          revision: '1',
+          canonicalize,
+        },
+      });
+      expect(() =>
+        registerFactory({
+          factoryName: 'CanonicalWidgetAlias',
+          kind: 'CanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+          desiredCanonicalizer: {
+            id: 'canonical.example.dev/widget',
+            revision: '1',
+            canonicalize,
+          },
+        })
+      ).not.toThrow();
+      expect(() =>
+        registerFactory({
+          factoryName: 'CanonicalWidgetConflict',
+          kind: 'CanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+          desiredCanonicalizer: {
+            id: 'canonical.example.dev/widget',
+            revision: '2',
+            canonicalize,
+          },
+        })
+      ).toThrow('Conflicting desired canonicalizers');
+    });
+
+    it('allows identical live canonicalizers and rejects full-GVK conflicts', () => {
+      const canonicalize = (resource: KubernetesResource): KubernetesResource => resource;
+      registerFactory({
+        factoryName: 'LiveCanonicalWidgetA',
+        kind: 'LiveCanonicalWidget',
+        apiVersion: 'canonical.example.dev/v1',
+        liveCanonicalizer: {
+          id: 'canonical.example.dev/live-widget',
+          revision: '1',
+          canonicalize,
+        },
+      });
+      expect(() =>
+        registerFactory({
+          factoryName: 'LiveCanonicalWidgetAlias',
+          kind: 'LiveCanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+          liveCanonicalizer: {
+            id: 'canonical.example.dev/live-widget',
+            revision: '1',
+            canonicalize,
+          },
+        })
+      ).not.toThrow();
+      expect(() =>
+        registerFactory({
+          factoryName: 'LiveCanonicalWidgetConflict',
+          kind: 'LiveCanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+          liveCanonicalizer: {
+            id: 'canonical.example.dev/live-widget',
+            revision: '2',
+            canonicalize,
+          },
+        })
+      ).toThrow('Conflicting live-comparison canonicalizers');
+    });
+
+    it('rejects changing or removing a canonicalizer when the same factory re-registers', () => {
+      const canonicalize = (resource: KubernetesResource): KubernetesResource => resource;
+      registerFactory({
+        factoryName: 'StableCanonicalWidget',
+        kind: 'StableCanonicalWidget',
+        apiVersion: 'canonical.example.dev/v1',
+        desiredCanonicalizer: {
+          id: 'canonical.example.dev/stable-widget',
+          revision: '1',
+          canonicalize,
+        },
+      });
+
+      expect(() =>
+        registerFactory({
+          factoryName: 'StableCanonicalWidget',
+          kind: 'StableCanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+          desiredCanonicalizer: {
+            id: 'canonical.example.dev/stable-widget',
+            revision: '2',
+            canonicalize,
+          },
+        })
+      ).toThrow('Conflicting desired canonicalizers');
+      expect(() =>
+        registerFactory({
+          factoryName: 'StableCanonicalWidget',
+          kind: 'StableCanonicalWidget',
+          apiVersion: 'canonical.example.dev/v1',
+        })
+      ).toThrow('Conflicting desired canonicalizers');
+
+      expect(getFactoryRegistration('StableCanonicalWidget')?.desiredCanonicalizer?.revision).toBe(
+        '1'
+      );
+    });
+
     it('getSemanticCandidateKinds returns undefined for unknown alias', () => {
       expect(getSemanticCandidateKinds('nonexistent-alias-xyz')).toBeUndefined();
     });
@@ -124,53 +261,22 @@ describe('FactoryRegistry', () => {
     it('clearFactoryRegistry empties everything', () => {
       const countBefore = getRegisteredFactoryCount();
       expect(countBefore).toBeGreaterThan(0);
+      const registrations = getRegisteredFactoryNames().flatMap((factoryName) => {
+        const registration = getFactoryRegistration(factoryName);
+        return registration ? [registration] : [];
+      });
 
-      clearFactoryRegistry();
-      expect(getRegisteredFactoryCount()).toBe(0);
-      expect(isKnownFactory('Deployment')).toBe(false);
+      try {
+        clearFactoryRegistry();
+        expect(getRegisteredFactoryCount()).toBe(0);
+        expect(isKnownFactory('Deployment')).toBe(false);
+      } finally {
+        // Factory modules self-register only once per process. Restore the exact
+        // registry snapshot so this test cannot poison later files in a full run.
+        registrations.forEach(registerFactory);
+      }
 
-      // Re-register the ones we need for the rest of the tests
-      registerFactory({
-        factoryName: 'Deployment',
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-        semanticAliases: ['deploy', 'database', 'db', 'cache', 'redis'],
-      });
-      registerFactory({
-        factoryName: 'StatefulSet',
-        kind: 'StatefulSet',
-        apiVersion: 'apps/v1',
-        semanticAliases: ['database', 'db', 'cache', 'redis'],
-      });
-      registerFactory({
-        factoryName: 'Service',
-        kind: 'Service',
-        apiVersion: 'v1',
-        semanticAliases: ['service', 'svc'],
-      });
-      registerFactory({
-        factoryName: 'Ingress',
-        kind: 'Ingress',
-        apiVersion: 'networking.k8s.io/v1',
-        semanticAliases: ['ingress'],
-      });
-      registerFactory({
-        factoryName: 'ConfigMap',
-        kind: 'ConfigMap',
-        apiVersion: 'v1',
-        semanticAliases: ['configmap'],
-      });
-      registerFactory({
-        factoryName: 'Secret',
-        kind: 'Secret',
-        apiVersion: 'v1',
-        semanticAliases: ['secret'],
-      });
-      registerFactory({
-        factoryName: 'externalRef',
-        kind: 'ExternalRef',
-        apiVersion: 'typekro/v1',
-      });
+      expect(getRegisteredFactoryCount()).toBe(countBefore);
     });
   });
 

@@ -183,7 +183,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     await cleanOrphanedApisixResources(kubeConfig);
 
     // Also clean up the APISIX namespace if it exists from a previous run
-    await deleteNamespaceAndWait(apisixNamespace, kubeConfig, 60000);
+    await deleteNamespaceAndWait(apisixNamespace, kubeConfig, 600000);
 
     console.log('SETUP: APISIX integration test environment ready');
   });
@@ -270,7 +270,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     }
 
     // Clean up the APISIX namespace
-    await deleteNamespaceAndWait(apisixNamespace, kubeConfig, 120000);
+    await deleteNamespaceAndWait(apisixNamespace, kubeConfig, 600000);
 
     console.log('APISIX integration test cleanup complete');
   });

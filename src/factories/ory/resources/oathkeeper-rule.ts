@@ -1,3 +1,4 @@
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type {
@@ -6,6 +7,23 @@ import type {
   OathkeeperRuleStatus,
   OryOathkeeperRuleFactory,
 } from '../types.js';
+
+function oathkeeperRuleReadinessEvaluator(resource: unknown) {
+  const validation = (resource as { status?: OathkeeperRuleStatus }).status?.validation;
+
+  return {
+    ready: validation?.valid === true,
+    message:
+      validation?.validationError ??
+      (validation?.valid === true ? 'Oathkeeper Rule is valid' : 'Oathkeeper Rule is not valid'),
+  };
+}
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.ory.oathkeeper-rule',
+  '1',
+  oathkeeperRuleReadinessEvaluator
+);
 
 export const oathkeeperRule: OryOathkeeperRuleFactory = (
   config
@@ -21,15 +39,6 @@ export const oathkeeperRule: OryOathkeeperRuleFactory = (
     spec: Object.fromEntries(
       Object.entries(config.spec).filter(([, value]) => value !== undefined)
     ) as OathkeeperRuleSpec,
-  }).withReadinessEvaluator((resource: unknown) => {
-    const validation = (resource as { status?: OathkeeperRuleStatus }).status?.validation;
-
-    return {
-      ready: validation?.valid === true,
-      message:
-        validation?.validationError ??
-        (validation?.valid === true ? 'Oathkeeper Rule is valid' : 'Oathkeeper Rule is not valid'),
-    };
-  });
+  }).withReadinessEvaluator(oathkeeperRuleReadinessEvaluator);
 
 export type { OathkeeperRuleConfig, OathkeeperRuleSpec, OathkeeperRuleStatus };

@@ -221,6 +221,8 @@ export interface TraversalContext {
    * would make the emitted condition vacuous.
    */
   optionalFieldNames: Set<string>;
+  /** Top-level const aliases available to symbolic expression lowering. */
+  lexicalAliases: Readonly<Record<string, string>>;
 }
 
 /** Tracked collection variable: the result of spec.array.map(cb) that produces factories */

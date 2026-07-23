@@ -354,13 +354,21 @@ pruning your namespace. There is no automatic reclaim. Choose one:
   # 2. Strip KRO's ownership labels so the new RGD's prune no longer enumerates the ns.
   kubectl label namespace <ns> \
     applyset.kubernetes.io/part-of- \
-    kro.run/owned- kro.run/instance-id- \
+    kro.run/instance-group- kro.run/instance-id- \
+    kro.run/instance-kind- kro.run/instance-name- \
+    kro.run/instance-namespace- kro.run/instance-version- \
+    kro.run/kro-version- kro.run/node-id- kro.run/owned- \
     app.kubernetes.io/managed-by- \
     typekro.io/kro-instance-namespace=true --overwrite
 
   # 3. Apply the new (hoisted) RGD, then resume the controller.
   kubectl -n kro-system scale deploy/kro --replicas=1
   ```
+
+  Remove **every** `kro.run/*` label present on the Namespace, not only the
+  currently known keys shown above. The deployment guard intentionally treats
+  any remaining `kro.run/*` label as unresolved ApplySet ownership and continues
+  to fail closed.
 
   The namespace is now a plain, TypeKro-marked sibling that the current empty-gated
   delete path manages. If you cannot quiesce the controller, prefer **Recreate**.

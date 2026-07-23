@@ -36,7 +36,7 @@ import {
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-v08-e2e';
-const TEST_TIMEOUT = 300_000; // 5 minutes per test
+const TEST_TIMEOUT = 900_000; // 15 minutes per test, including namespace cleanup
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {

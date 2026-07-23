@@ -7,6 +7,7 @@
  */
 
 import { getComponentLogger } from '../../../core/logging/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type {
   CelExpression,
   Composable,
@@ -67,6 +68,12 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
     return { ready: false, reason: 'EvaluationError', message: 'Failed to evaluate SearXNG readiness' };
   }
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.searxng.searxng',
+  '1',
+  searxngReadinessEvaluator
+);
 
 /**
  * Create a SearXNG Deployment resource.

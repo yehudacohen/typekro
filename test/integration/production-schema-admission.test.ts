@@ -190,7 +190,7 @@ function rookConfig(): RookCephProductionPlatformConfig {
 }
 
 describeOrSkip('production KRO schema admission', () => {
-  let cleanup: (() => Promise<void>) | undefined;
+  let cleanup: (() => Promise<unknown>) | undefined;
   let harborInstance: Manifest;
   let rookInstance: Manifest;
 

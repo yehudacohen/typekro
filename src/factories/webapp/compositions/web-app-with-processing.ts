@@ -409,8 +409,8 @@ export function makeWebAppWithProcessing(
 
       return {
         ready:
-          app.status.readyReplicas >= appReplicas &&
-          database.status.readyInstances >= (spec.database.instances ?? 1) &&
+          app.status.readyReplicas >= app.spec.replicas &&
+          database.status.readyInstances >= database.spec.instances &&
           cache.status.ready &&
           inngestBootstrapApp.status.ready,
         databaseUrl: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
@@ -422,8 +422,8 @@ export function makeWebAppWithProcessing(
         inngestUrl: `http://${spec.name}-inngest:8288`,
         appUrl: `http://${spec.name}:${appPort}`,
         components: {
-          app: app.status.readyReplicas >= appReplicas,
-          database: database.status.readyInstances >= (spec.database.instances ?? 1),
+          app: app.status.readyReplicas >= app.spec.replicas,
+          database: database.status.readyInstances >= database.spec.instances,
           cache: cache.status.ready,
           inngest: inngestBootstrapApp.status.ready,
         },

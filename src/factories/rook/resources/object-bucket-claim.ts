@@ -1,6 +1,7 @@
 /** Typed `ObjectBucketClaim` factory used by Rook's bucket provisioner. */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { ObjectBucketClaimConfig, ObjectBucketClaimStatus } from '../types.js';
 
@@ -31,6 +32,12 @@ export function objectBucketClaimReadinessEvaluator(liveResource: unknown): Reso
     message: `ObjectBucketClaim phase is ${phase}`,
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.rook.object-bucket-claim',
+  '1',
+  objectBucketClaimReadinessEvaluator
+);
 
 /**
  * Create an `objectbucket.io/v1alpha1` ObjectBucketClaim.

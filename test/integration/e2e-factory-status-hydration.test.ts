@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { load } from 'js-yaml';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
@@ -264,10 +265,19 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(yaml).toContain('name: webapp-with-mixed-status');
 
       // Verify that only dynamic fields are in the Kro schema. The serializer parenthesizes the
-      // ternary condition (`(cond) ? a : b`) — semantically identical, valid CEL.
-      expect(yaml).toContain(
-        'phase: \"${(webapp.status.readyReplicas > 0) ? \\\"running\\\" : \\\"pending\\\"}\"'
+      // ternary condition (`(cond) ? a : b`). Assert the parsed value rather than YAML quote style.
+      const rendered = load(yaml) as {
+        spec: {
+          schema: { status: Record<string, unknown> };
+          resources: Array<{ template?: Record<string, unknown> }>;
+        };
+      };
+      expect(rendered.spec.schema.status.phase).toBe(
+        '${(webapp.status.readyReplicas > 0) ? "running" : "pending"}'
       );
+      expect(
+        rendered.spec.resources.every(({ template }) => !template || !('id' in template))
+      ).toBe(true);
       expect(yaml).toContain('replicas: ${webapp.status.replicas}');
       expect(yaml).toContain('readyReplicas: ${webapp.status.readyReplicas}');
 

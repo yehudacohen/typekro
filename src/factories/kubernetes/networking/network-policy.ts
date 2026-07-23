@@ -1,9 +1,64 @@
 import type { V1NetworkPolicy } from '@kubernetes/client-node';
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { createResource } from '../../shared.js';
 
 export type V1NetworkPolicySpec = NonNullable<V1NetworkPolicy['spec']>;
+
+/**
+ * Emit the API-server-stable form of a NetworkPolicy.
+ *
+ * Kubernetes drops empty rule arrays during wire normalization. Keeping `ingress: []` or
+ * `egress: []` in a KRO template can therefore create perpetual desired/live drift. Explicit
+ * `policyTypes` preserves the policy's isolation semantics while empty arrays are omitted.
+ */
+export function canonicalizeNetworkPolicyDesired(resource: KubernetesResource): KubernetesResource {
+  const rawSpec = resource.spec;
+  if (!rawSpec || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) return resource;
+
+  const spec = { ...(rawSpec as Record<string, unknown>) };
+  const ingress = spec.ingress;
+  const egress = spec.egress;
+  let changed = false;
+
+  const canInferPolicyTypes = egress === undefined || Array.isArray(egress);
+  if (spec.policyTypes === undefined && canInferPolicyTypes) {
+    spec.policyTypes = [
+      'Ingress',
+      ...(Array.isArray(egress) && egress.length > 0 ? ['Egress'] : []),
+    ];
+    changed = true;
+  }
+  if (Array.isArray(ingress) && ingress.length === 0) {
+    delete spec.ingress;
+    changed = true;
+  }
+  if (Array.isArray(egress) && egress.length === 0) {
+    delete spec.egress;
+    changed = true;
+  }
+
+  return changed ? { ...resource, spec } : resource;
+}
+
+registerFactory({
+  factoryName: 'NetworkPolicy',
+  kind: 'NetworkPolicy',
+  apiVersion: 'networking.k8s.io/v1',
+  semanticAliases: ['networkPolicy', 'policy'],
+  desiredCanonicalizer: {
+    id: 'kubernetes.networking.k8s.io/network-policy',
+    revision: '1',
+    canonicalize: canonicalizeNetworkPolicyDesired,
+  },
+  liveCanonicalizer: {
+    id: 'kubernetes.networking.k8s.io/network-policy-comparison',
+    revision: '1',
+    canonicalize: canonicalizeNetworkPolicyDesired,
+  },
+});
 
 export function networkPolicy(
   resource: V1NetworkPolicy & { id?: string }
@@ -15,12 +70,15 @@ export function networkPolicy(
   // invalid. Preserve `_from` as a non-enumerable compatibility alias for typed
   // callers while serializing only the authoritative wire spelling.
   const normalized = normalizeNetworkPolicyIngress(resource);
-  return createResource({
-    ...normalized,
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'NetworkPolicy',
-    metadata: resource.metadata ?? { name: 'unnamed-networkpolicy' },
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator<V1NetworkPolicy>('NetworkPolicy'));
+  return createResource(
+    {
+      ...normalized,
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata: resource.metadata ?? { name: 'unnamed-networkpolicy' },
+    },
+    { factoryName: 'NetworkPolicy' }
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator<V1NetworkPolicy>('NetworkPolicy'));
 }
 
 function normalizeNetworkPolicyIngress(

@@ -259,22 +259,52 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
 
     const yaml = graph.toYaml();
 
-    expect(yaml).toContain('values: "${(has(schema.spec.values)');
+    expect(yaml).toContain("values: '${dyn((has(schema.spec.values)");
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.values)) : {}).merge');
-    expect(yaml).toContain('.merge({\\"deployment\\"');
-    expect(yaml).toContain('\\"config\\"');
+    expect(yaml).toContain('.merge({"config"');
+    expect(yaml).toContain('"deployment"');
     expect(yaml).not.toContain('values:\n            deployment:');
     expect(yaml).toContain('schema.spec.values');
     expect(yaml).toContain('has(schema.spec.values)');
     expect(yaml).toContain('extraEnv');
     expect(yaml).toContain('secretKeyRef');
-    expect(yaml).toContain('\\"host\\" in (');
-    expect(yaml).toContain('\\"config\\" in (has(schema.spec.values)');
+    expect(yaml).toContain('"host" in (');
+    expect(yaml).toContain('"config" in (has(schema.spec.values)');
     expect(yaml).toMatch(
-      /\\"config\\" in \(has\(schema\.spec\.values\)[\s\S]*\\"host\\" in \(\(has\(schema\.spec\.values\)/
+      /"config" in \(has\(schema\.spec\.values\)[\s\S]*"host" in \(\(has\(schema\.spec\.values\)/
     );
     expect(yaml).not.toContain('Kro CEL does not support merging whole-object values refs');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
+  });
+
+  it('type-erases runtime map merges for structured Helm values targets', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-dynamic-map-assignment',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'DynamicMapAssignment',
+        spec: type({ 'legacyValues?': 'object', 'values?': 'object' }),
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'my-app',
+          chart: { repository: 'https://charts.example.com', name: 'my-chart' },
+          values: mergeValuesExpression(schema.spec.legacyValues, schema.spec.values),
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const valuesLine = graph
+      .toYaml()
+      .split('\n')
+      .find((line) => line.includes('values: ') && line.includes('${'));
+
+    expect(valuesLine).toContain('values: \'${dyn(');
+    expect(valuesLine).toContain('schema.spec.legacyValues');
+    expect(valuesLine).toContain('.merge(');
+    expect(valuesLine).toContain('schema.spec.values');
   });
 
   // Regression: KRO rejected a runtime values-merge whose overlay carried an
@@ -328,7 +358,8 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     );
 
     const yaml = graph.toYaml();
-    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+    const valuesLine =
+      yaml.split('\n').find((line) => line.includes('values: ') && line.includes('${')) ?? '';
 
     // It must take the runtime map-merge path.
     expect(valuesLine).toContain('json.unmarshal(json.marshal(schema.spec.values))');
@@ -341,17 +372,17 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     // The optional scalars are emitted INLINE as dyn-wrapped omit ternaries, all in ONE heterogeneous
     // `.merge({...})` (→ map(string,dyn), which merges uniformly). (Inner double-quotes YAML-escaped \".)
     expect(valuesLine).toContain(
-      '\\"nameOverride\\": has(schema.spec.nameOverride) ? dyn(schema.spec.nameOverride) : omit()'
+      '"nameOverride": has(schema.spec.nameOverride) ? dyn(schema.spec.nameOverride) : omit()'
     );
     expect(valuesLine).toContain(
-      '\\"generateCeleryConfigSecret\\": has(schema.spec.generateCeleryConfigSecret) ? dyn(schema.spec.generateCeleryConfigSecret) : omit()'
+      '"generateCeleryConfigSecret": has(schema.spec.generateCeleryConfigSecret) ? dyn(schema.spec.generateCeleryConfigSecret) : omit()'
     );
 
     // Exactly one merge operand (no per-field single-key merge split — that broke map-value uniformity).
     expect(valuesLine.match(/\.merge\(/g)?.length).toBe(1);
 
     // The required field stays in the same inline merge map (no guard needed).
-    expect(valuesLine).toContain('\\"replicaCount\\": schema.spec.replicas');
+    expect(valuesLine).toContain('"replicaCount": schema.spec.replicas');
 
     expect(valuesLine).not.toContain('__KUBERNETES_REF_');
   });
@@ -606,11 +637,12 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     );
 
     const yaml = graph.toYaml();
-    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+    const valuesLine =
+      yaml.split('\n').find((line) => line.includes('values: ') && line.includes('${')) ?? '';
 
     // Guard on the bare path; the dyn-wrapped VALUE preserves the string() conversion. (Quotes \".)
     expect(valuesLine).toContain(
-      '\\"portString\\": has(schema.spec.port) ? dyn(string(schema.spec.port)) : omit()'
+      '"portString": has(schema.spec.port) ? dyn(string(schema.spec.port)) : omit()'
     );
     // Must NOT drop string() and emit the bare ref as the value.
     expect(valuesLine).not.toContain('dyn(schema.spec.port)');
@@ -645,18 +677,19 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     );
 
     const yaml = graph.toYaml();
-    const valuesLine = yaml.split('\n').find((line) => line.includes('values: "${')) ?? '';
+    const valuesLine =
+      yaml.split('\n').find((line) => line.includes('values: ') && line.includes('${')) ?? '';
 
     // No BARE scalar-omit ternary at any depth — every omit() fallback is dyn-guarded.
     expect(valuesLine).not.toMatch(/\? schema\.spec\.\w+ : omit\(\)/);
     // The nested optional scalar is emitted as a dyn-wrapped omit ternary INLINE in BOTH the
     // base-present (`...["global"]).merge({...})`) and base-absent (literal `{...}`) branches.
     expect(valuesLine).toContain(
-      '\\"celeryConfigSecretName\\": has(schema.spec.secretName) ? dyn(schema.spec.secretName) : omit()'
+      '"celeryConfigSecretName": has(schema.spec.secretName) ? dyn(schema.spec.secretName) : omit()'
     );
     // Both branches carry the same dyn-wrapped optional entry (present-branch merge + absent literal).
     expect(
-      valuesLine.match(/\\"celeryConfigSecretName\\": has\(schema\.spec\.secretName\) \? dyn\(schema\.spec\.secretName\) : omit\(\)/g)
+      valuesLine.match(/"celeryConfigSecretName": has\(schema\.spec\.secretName\) \? dyn\(schema\.spec\.secretName\) : omit\(\)/g)
         ?.length
     ).toBe(2);
   });

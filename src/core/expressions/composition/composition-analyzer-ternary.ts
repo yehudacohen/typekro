@@ -8,6 +8,7 @@
  */
 
 import { getComponentLogger } from '../../logging/index.js';
+import type { LexicalAliasScope } from '../analysis/alias-inliner.js';
 import {
   expressionToCel,
   extractResourceStatusRef,
@@ -53,12 +54,22 @@ export function analyzeFactoryArgTernaries(
   fullSource: string,
   specParamName: string,
   result: ASTAnalysisResult,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): void {
   const firstArg = call.arguments[0];
   if (!firstArg || firstArg.type !== 'ObjectExpression') return;
 
-  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result, optionalFieldNames);
+  walkObjectForTernaries(
+    firstArg,
+    '',
+    resourceId,
+    fullSource,
+    specParamName,
+    result,
+    optionalFieldNames,
+    lexicalAliases
+  );
 }
 
 /**
@@ -80,7 +91,8 @@ function walkObjectForTernaries(
   fullSource: string,
   specParamName: string,
   result: ASTAnalysisResult,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): void {
   if (objectNode.type !== 'ObjectExpression') return;
   const properties = (objectNode as ASTNode & { properties: Property[] }).properties;
@@ -213,7 +225,13 @@ function walkObjectForTernaries(
       const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
       if (!fullPath) continue;
 
-      const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
+      const celExpr = expressionToCel(
+        ternary,
+        fullSource,
+        specParamName,
+        optionalFieldNames,
+        lexicalAliases
+      );
 
       let overrides = result.templateOverrides.get(resourceId);
       if (!overrides) {
@@ -243,7 +261,8 @@ function walkObjectForTernaries(
         fullSource,
         specParamName,
         result,
-        optionalFieldNames
+        optionalFieldNames,
+        lexicalAliases
       );
     }
 
@@ -261,7 +280,8 @@ function walkObjectForTernaries(
         fullSource,
         specParamName,
         result,
-        optionalFieldNames
+        optionalFieldNames,
+        lexicalAliases
       );
     }
   }
@@ -274,7 +294,8 @@ function walkArrayForTernaries(
   fullSource: string,
   specParamName: string,
   result: ASTAnalysisResult,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): void {
   const elements = (arrayNode as ASTNode & { elements?: Array<ASTNode | null> }).elements;
   if (!elements) return;
@@ -319,7 +340,13 @@ function walkArrayForTernaries(
         }
         overrides.push({
           propertyPath: elementPath,
-          celExpression: expressionToCel(ternary, fullSource, specParamName, optionalFieldNames),
+          celExpression: expressionToCel(
+            ternary,
+            fullSource,
+            specParamName,
+            optionalFieldNames,
+            lexicalAliases
+          ),
         });
       }
     } else if (element.type === 'ObjectExpression') {
@@ -330,7 +357,8 @@ function walkArrayForTernaries(
         fullSource,
         specParamName,
         result,
-        optionalFieldNames
+        optionalFieldNames,
+        lexicalAliases
       );
     } else if (element.type === 'ArrayExpression') {
       walkArrayForTernaries(
@@ -340,7 +368,8 @@ function walkArrayForTernaries(
         fullSource,
         specParamName,
         result,
-        optionalFieldNames
+        optionalFieldNames,
+        lexicalAliases
       );
     }
   });
@@ -445,7 +474,8 @@ export function analyzeReturnStatementTernaries(
   fullSource: string,
   specParamName: string,
   result: ASTAnalysisResult,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): void {
   const argument = (returnNode as ASTNode & { argument: ASTNode | null }).argument;
   if (!argument || argument.type !== 'ObjectExpression') return;
@@ -478,7 +508,13 @@ export function analyzeReturnStatementTernaries(
     if (!keyName) continue;
 
     // Convert the full ternary expression to CEL
-    const celExpr = expressionToCel(ternary, fullSource, specParamName, optionalFieldNames);
+    const celExpr = expressionToCel(
+      ternary,
+      fullSource,
+      specParamName,
+      optionalFieldNames,
+      lexicalAliases
+    );
 
     result.statusOverrides.push({ propertyPath: keyName, celExpression: celExpr });
 

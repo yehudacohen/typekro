@@ -142,6 +142,7 @@ describe('valkeyBootstrap factory modes', () => {
     const docs = splitDocs(yaml);
     const kinds = docs.map(docKind);
 
+    expect(kinds).toEqual(['Namespace', 'HelmRepository', 'HelmRelease']);
     expect(kinds).toContain('Namespace');
     expect(kinds).toContain('HelmRelease');
     expect(kinds).not.toContain('ClusterRole');
@@ -185,9 +186,7 @@ describe('valkeyBootstrap factory modes', () => {
     // The owned workload Namespace (which carried the version label) is hoisted out
     // of the RGD graph; the chart version still resolves in the HelmRelease.
     expect(yaml).not.toContain('kind: Namespace');
-    expect(yaml).toContain(
-      'version: "${has(schema.spec.version) ? schema.spec.version : \\"v0.0.61-chart\\"}"'
-    );
+    expect(yaml).toContain('${has(schema.spec.version) ? schema.spec.version : "v0.0.61-chart"}');
     expect(yaml).not.toContain('__typekroSchemaKey');
   });
 
@@ -285,7 +284,7 @@ describe('valkeyBootstrap factory modes', () => {
     );
   });
 
-  it('rejects unsafe singleton owners before GitOps or live-cluster side effects', async () => {
+  it('hoists singleton owner namespaces before declarative owner and consumer resources', async () => {
     const consumer = kubernetesComposition(
       {
         name: 'valkey-singleton-consumer',
@@ -307,11 +306,16 @@ describe('valkeyBootstrap factory modes', () => {
     const factory = consumer.factory('kro', { namespace: 'apps' });
     const consumerSpec = { name: 'consumer' };
 
-    expect(() => factory.toYaml(consumerSpec)).toThrow('cannot also be an owned Namespace');
-    await expect(factory.deploy(consumerSpec)).rejects.toThrow('cannot also be an owned Namespace');
-    await expect(factory.toAlchemyResources(consumerSpec)).rejects.toThrow(
-      'cannot also be an owned Namespace'
+    const yaml = factory.toYaml(consumerSpec);
+    expect(yaml.indexOf('kind: Namespace')).toBeLessThan(yaml.indexOf('kind: ValkeyBootstrap'));
+    expect(yaml.indexOf('kind: ValkeyBootstrap')).toBeLessThan(
+      yaml.indexOf('kind: ValkeySingletonConsumer')
     );
+    expect(yaml).toContain('typekro.io/hoisted-namespaces: \'["typekro-singletons"]\'');
+
+    const declarations = await factory.toAlchemyResources(consumerSpec);
+    expect(declarations[0]?.props.resource.kind).toBe('Namespace');
+    expect(declarations[0]?.props.resource.metadata?.name).toBe(DEFAULT_SINGLETON_NAMESPACE);
   });
 });
 
@@ -350,9 +354,9 @@ describe('valkey CRD factory modes', () => {
     const yaml = valkeyCluster.factory('kro', { namespace: 'apps' }).toYaml();
 
     expect(yaml).toContain('kind: ValkeyClusterContract');
-    expect(yaml).toContain('nodes: "${has(schema.spec.valkey.shards)');
-    expect(yaml).toContain('replicas: "${has(schema.spec.valkey.replicas)');
-    expect(yaml).toContain('storage: "${has(schema.spec.valkey.storage)');
+    expect(yaml).toContain('${has(schema.spec.valkey.shards)');
+    expect(yaml).toContain('${has(schema.spec.valkey.replicas)');
+    expect(yaml).toContain('${has(schema.spec.valkey.storage)');
     expect(yaml).toContain('storageClassName: string');
     expect(yaml).toContain('ready: ${cache.status.ready}');
     expect(yaml).not.toContain('__typekroSchemaKey');

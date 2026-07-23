@@ -62,6 +62,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   const kroVersion = config.kroVersion || '0.9.2';
   const targetNamespace = config.namespace || DEFAULT_FLUX_NAMESPACE;
   const rbacMode: RbacMode = config.rbac || 'cluster-admin';
+  const fluxInstallation = config.fluxInstallation ?? 'managed';
 
   return kubernetesComposition(
     {
@@ -102,34 +103,37 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       //
       // forceConflicts: true is needed to take ownership of fields that may have been
       // modified by other field managers (e.g., kubectl-patch for manual CRD fixes)
-      yamlFile({
-        name: 'flux-system-install',
-        path:
-          fluxVersion === 'latest'
-            ? 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml'
-            : `https://github.com/fluxcd/flux2/releases/download/${fluxVersion}/install.yaml`,
-        deploymentStrategy: 'serverSideApply',
-        fieldManager: 'typekro-bootstrap',
-        forceConflicts: true,
-        namespace: runtimeNamespace,
-        manifestTransform: (manifest) => rewriteFluxNamespace(fixCRDSchemaForK8s133(manifest), runtimeNamespace),
-        // Idempotent bootstrap: if the Flux install YAML can't be downloaded (e.g., DNS
-        // failure, air-gapped environment) but Flux is already running on the cluster,
-        // skip the download and proceed. This prevents bootstrap from failing when
-        // re-running against a cluster that already has Flux installed.
-        skipIfFetchFails: async (k8sApi) => {
-          try {
-            await k8sApi.read({
-              apiVersion: 'apiextensions.k8s.io/v1',
-              kind: 'CustomResourceDefinition',
-              metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
-            });
-            return true; // Flux CRDs exist — already installed
-          } catch {
-            return false; // CRDs not found — need the download
-          }
-        },
-      });
+      if (fluxInstallation === 'managed') {
+        yamlFile({
+          name: 'flux-system-install',
+          path:
+            fluxVersion === 'latest'
+              ? 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml'
+              : `https://github.com/fluxcd/flux2/releases/download/${fluxVersion}/install.yaml`,
+          deploymentStrategy: 'serverSideApply',
+          fieldManager: 'typekro-bootstrap',
+          forceConflicts: true,
+          namespace: runtimeNamespace,
+          manifestTransform: (manifest) =>
+            rewriteFluxNamespace(fixCRDSchemaForK8s133(manifest), runtimeNamespace),
+          // Idempotent bootstrap: if the Flux install YAML can't be downloaded (e.g., DNS
+          // failure, air-gapped environment) but Flux is already running on the cluster,
+          // skip the download and proceed. This prevents bootstrap from failing when
+          // re-running against a cluster that already has Flux installed.
+          skipIfFetchFails: async (k8sApi) => {
+            try {
+              await k8sApi.read({
+                apiVersion: 'apiextensions.k8s.io/v1',
+                kind: 'CustomResourceDefinition',
+                metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
+              });
+              return true; // Flux CRDs exist — already installed
+            } catch {
+              return false; // CRDs not found — need the download
+            }
+          },
+        });
+      }
 
       // RBAC for Flux controllers.
       // Configurable via config.rbac: 'cluster-admin' (default), 'scoped', or { clusterRoleRef }.

@@ -30,6 +30,7 @@ export interface DeployStrategyOptions {
   targetScopes?: string[];
   instanceNameOverride?: string;
   singletonSpecFingerprint?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface DeploymentStrategy<
@@ -59,6 +60,27 @@ function addResourceKeyMappingAliases(
   }
 }
 
+export function findDeployedResourceForStatus(
+  originalResource: KubernetesResource,
+  deployedResources: DeploymentResult['resources']
+): DeploymentResult['resources'][number] | undefined {
+  const originalResourceId = getResourceId(originalResource);
+  if (originalResourceId) {
+    const identityMatch = deployedResources.find(
+      (deployedResource) =>
+        deployedResource.id === originalResourceId ||
+        getResourceId(deployedResource.manifest) === originalResourceId
+    );
+    if (identityMatch) return identityMatch;
+  }
+
+  return deployedResources.find(
+    (deployedResource) =>
+      deployedResource.manifest?.kind === originalResource.kind &&
+      deployedResource.manifest?.metadata?.name === originalResource.metadata?.name
+  );
+}
+
 /**
  * Abstract base class for deployment strategies
  */
@@ -82,10 +104,7 @@ export abstract class BaseDeploymentStrategy<
   /**
    * Template method for deployment - defines the common flow
    */
-  async deploy(
-    spec: TSpec,
-    opts?: DeployStrategyOptions
-  ): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(spec: TSpec, opts?: DeployStrategyOptions): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('Base strategy deploy called', {
       factoryName: this.factoryName,
       hasStatusBuilder: !!this.statusBuilder,
@@ -400,10 +419,9 @@ export abstract class BaseDeploymentStrategy<
       // still reference their hydrated live spec/status.
       for (const [originalKey, originalResource] of Object.entries(this.resourceKeys)) {
         // Find deployed resource by matching kind and name
-        const deployedResource = deploymentResult.resources.find(
-          (dr) =>
-            dr.manifest?.kind === originalResource.kind &&
-            dr.manifest?.metadata?.name === originalResource.metadata?.name
+        const deployedResource = findDeployedResourceForStatus(
+          originalResource,
+          deploymentResult.resources
         );
         const isExternalRef = Reflect.get(originalResource, '__externalRef') === true;
 
@@ -418,8 +436,7 @@ export abstract class BaseDeploymentStrategy<
                 kind: actualResource.kind,
                 metadata: {
                   name: actualResource.metadata?.name || '',
-                  namespace:
-                    actualResource.metadata?.namespace || this.namespace || 'default',
+                  namespace: actualResource.metadata?.namespace || this.namespace || 'default',
                 },
               })) as KubernetesResource<unknown, unknown>;
             } catch (error: unknown) {
@@ -495,6 +512,17 @@ export abstract class BaseDeploymentStrategy<
         // REUSE live resources already fetched above instead of re-querying the cluster.
         const resourceKeyMapping = new Map<string, unknown>();
 
+        // Preserve the graph identity as a first-class alias. This is required for hydration-only
+        // external-reference seeds such as direct singleton owners: their synthetic logical CR is
+        // intentionally not readable from the cluster in direct mode, but the owner status is
+        // already present on the seed manifest.
+        for (const deployedResource of deployedResources) {
+          resourceKeyMapping.set(
+            deployedResource.id,
+            deployedResource.liveManifest ?? deployedResource.manifest
+          );
+        }
+
         // Convert instance name to camelCase for pattern matching
         const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) =>
           letter.toUpperCase()
@@ -537,15 +565,19 @@ export abstract class BaseDeploymentStrategy<
                     namespace: deployedResource.namespace || this.namespace || 'default',
                   },
                 });
-              addResourceKeyMappingAliases(resourceKeyMapping, originalKey, actualResource);
-              this.logger.debug('Queried live resource for CEL mapping', {
-                originalKey,
-                resourceKind: deployedResource.kind,
-                resourceName: deployedResource.name,
+                addResourceKeyMappingAliases(resourceKeyMapping, originalKey, actualResource);
+                this.logger.debug('Queried live resource for CEL mapping', {
+                  originalKey,
+                  resourceKind: deployedResource.kind,
+                  resourceName: deployedResource.name,
                 });
               } catch (_error: unknown) {
                 // Fall back to manifest if cluster query fails
-                addResourceKeyMappingAliases(resourceKeyMapping, originalKey, deployedResource.manifest);
+                addResourceKeyMappingAliases(
+                  resourceKeyMapping,
+                  originalKey,
+                  deployedResource.manifest
+                );
                 this.logger.debug('Fallback to manifest for CEL mapping', {
                   originalKey,
                   reason: 'cluster query failed',
@@ -553,7 +585,11 @@ export abstract class BaseDeploymentStrategy<
               }
             } else {
               // No K8s client available — use manifest
-              addResourceKeyMappingAliases(resourceKeyMapping, originalKey, deployedResource.manifest);
+              addResourceKeyMappingAliases(
+                resourceKeyMapping,
+                originalKey,
+                deployedResource.manifest
+              );
               this.logger.debug('Fallback to manifest for CEL mapping', {
                 originalKey,
                 reason: 'no k8sApi available',
@@ -579,9 +615,14 @@ export abstract class BaseDeploymentStrategy<
           timeout: this.factoryOptions.timeout || DEFAULT_READINESS_TIMEOUT,
           resourceKeyMapping,
           schema: { spec, status: {} },
-          ...(((status as Record<string, unknown>).__nestedStatusCel as Record<string, string> | undefined)
+          ...(((status as Record<string, unknown>).__nestedStatusCel as
+            | Record<string, string>
+            | undefined)
             ? {
-                nestedStatusCel: (status as Record<string, unknown>).__nestedStatusCel as Record<string, string>,
+                nestedStatusCel: (status as Record<string, unknown>).__nestedStatusCel as Record<
+                  string,
+                  string
+                >,
               }
             : {}),
         };

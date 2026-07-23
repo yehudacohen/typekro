@@ -22,6 +22,9 @@ describe('WebAppWithProcessing Composition', () => {
     // Status section with component readiness references
     expect(yaml).toContain('status:');
     expect(yaml).toContain('components:');
+    expect(yaml).toContain('app.status.readyReplicas >= app.spec.replicas');
+    expect(yaml).toContain('database.status.readyInstances >= database.spec.instances');
+    expect(yaml).not.toContain('app.spec.replicas != null');
     // Note: static string status fields (databaseUrl, cacheUrl, etc.) are
     // hydrated directly in direct mode, not sent to Kro in the YAML.
   });

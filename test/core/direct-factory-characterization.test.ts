@@ -19,6 +19,8 @@
 
 import { describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
+import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
+import { DependencyResolver } from '../../src/core/dependencies/resolver.js';
 import type { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
 import { createDirectResourceFactory } from '../../src/core/deployment/direct-factory.js';
 import {
@@ -26,22 +28,20 @@ import {
   SINGLETON_SPEC_FINGERPRINT_ANNOTATION,
 } from '../../src/core/deployment/resource-tagging.js';
 import { getSingletonInstanceName } from '../../src/core/deployment/shared-utilities.js';
-import { getSingletonResourceId, singleton } from '../../src/core/singleton/singleton.js';
 import { DirectDeploymentStrategy } from '../../src/core/deployment/strategies/direct-strategy.js';
-import { DependencyResolver } from '../../src/core/dependencies/resolver.js';
-import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import {
   copyResourceMetadata,
   getMetadataField,
   getResourceId,
   setResourceId,
 } from '../../src/core/metadata/index.js';
-import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index.js';
-import type { KroCompatibleType, SchemaDefinition } from '../../src/core/types/serialization.js';
+import { getSingletonResourceId, singleton } from '../../src/core/singleton/singleton.js';
 import type {
   InternalResourceFactoryDeployOptions,
   SingletonDefinitionRecord,
 } from '../../src/core/types/deployment.js';
+import type { KroCompatibleType, SchemaDefinition } from '../../src/core/types/serialization.js';
+import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
 // Schema definitions used across tests
@@ -124,7 +124,7 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     expect(singletonDiscoveryCalls).toBe(0);
   });
 
-  it('throws and preserves tracking when deleteInstance rollback is partial', async () => {
+  it('reports blocked evidence and preserves tracking when deleteInstance rollback is partial', async () => {
     const factory = createDirectResourceFactory(
       'partial-cleanup-test',
       {},
@@ -165,7 +165,16 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
       getKubernetesApi: mock(() => ({})),
     });
 
-    await expect(factory.deleteInstance('my-app')).rejects.toThrow('Cleanup incomplete');
+    const result = await factory.deleteInstance('my-app');
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers).toHaveLength(1);
+    expect(result.blockers[0]).toMatchObject({
+      code: 'CLEANUP_ERROR',
+      retryable: true,
+    });
+    expect(result.blockers[0]?.message).toContain('app: delete failed');
+    expect(result.retry).toMatchObject({ safe: true });
     expect(deployedInstances.has('my-app')).toBe(true);
   });
 
@@ -206,7 +215,9 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
 
     const result = await factory.rollback();
 
-    expect(rollback).toHaveBeenCalledWith('deploy-children', {});
+    expect(rollback).toHaveBeenCalledWith('deploy-children', {
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(result.rolledBackResources).toEqual(['Deployment/my-app', 'Service/my-app']);
     expect(deployedInstances.size).toBe(0);
   });
@@ -250,7 +261,7 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     const result = await factory.rollback();
 
     expect(result.status).toBe('success');
-    expect(completeNamespaceDeletion).toHaveBeenCalledWith(rollbackResult);
+    expect(completeNamespaceDeletion).toHaveBeenCalledWith(rollbackResult, expect.any(AbortSignal));
     expect(deployedInstances.size).toBe(0);
   });
 
@@ -654,6 +665,19 @@ describe('DirectFactory: singleton owner boundaries', () => {
         factory as unknown as { singletonOwnerStatuses: Map<string, Record<string, unknown>> }
       ).singletonOwnerStatuses.get(getSingletonResourceId(singletonKey))
     ).toEqual(deployedOwnerStatus);
+    expect(factory.getExternalReferenceSeeds()).toEqual([
+      expect.objectContaining({
+        id: getSingletonResourceId(singletonKey),
+        kind: 'SingletonBootstrap',
+        name: 'platform-bootstrap',
+        namespace: 'typekro-singletons',
+        status: 'ready',
+        applied: false,
+        liveManifest: expect.objectContaining({
+          status: deployedOwnerStatus,
+        }),
+      }),
+    ]);
   });
 
   it('rejects deployed singleton owner spec drift before reconciling', async () => {

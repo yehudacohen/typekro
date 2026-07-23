@@ -4,6 +4,7 @@
 
 import { ensureError } from '../../core/errors.js';
 import { getComponentLogger } from '../../core/logging/index.js';
+import { registerPortableReadinessEvaluator } from '../../core/readiness/index.js';
 import type {
   Enhanced,
   KubernetesCondition,
@@ -14,6 +15,139 @@ import { createResource } from '../shared.js';
 
 // Logger for RGD readiness evaluation
 const rgdLogger = getComponentLogger('rgd-readiness');
+
+const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvaluator(
+  'typekro.readiness.kro.resource-graph-definition',
+  '1',
+  (liveRGD: RGDManifest): ResourceStatus => {
+    try {
+      if (!liveRGD) {
+        return {
+          ready: false,
+          reason: 'ResourceNotFound',
+          message: 'ResourceGraphDefinition not found in cluster.',
+        };
+      }
+
+      const status = liveRGD.status;
+      const metadata = liveRGD.metadata;
+      if (!status) {
+        if (metadata?.uid) {
+          return {
+            ready: false,
+            reason: 'StatusPending',
+            message:
+              'ResourceGraphDefinition exists but Kro controller has not yet initialized status.',
+          };
+        }
+        return {
+          ready: false,
+          reason: 'StatusMissing',
+          message: 'Waiting for Kro controller to initialize status.',
+        };
+      }
+
+      const conditions = Array.isArray(status.conditions) ? status.conditions : [];
+      const generation = typeof metadata?.generation === 'number' ? metadata.generation : undefined;
+      const hasObservedGeneration = conditions.some(
+        (condition: KubernetesCondition) => typeof condition?.observedGeneration === 'number'
+      );
+      const currentConditions =
+        hasObservedGeneration && generation !== undefined
+          ? conditions.filter(
+              (condition: KubernetesCondition) =>
+                (condition.observedGeneration ?? 0) >= generation
+            )
+          : conditions;
+
+      if (hasObservedGeneration && generation !== undefined && currentConditions.length === 0) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ResourceGraphDefinition generation ${generation}.`,
+          details: { generation, conditions },
+        };
+      }
+
+      const failedCondition = currentConditions.find(
+        (condition: KubernetesCondition) => condition && condition.status === 'False'
+      );
+      if (status.state === 'failed' || failedCondition) {
+        const rejected = currentConditions.find(
+          (condition: KubernetesCondition) =>
+            condition?.status === 'False' && /accepted/i.test(condition?.type ?? '')
+        );
+        const cause = rejected ?? failedCondition;
+        if (rejected) {
+          rgdLogger.warn('ResourceGraphDefinition was rejected by Kro (terminal)', {
+            name: liveRGD?.metadata?.name,
+            type: rejected.type,
+            reason: rejected.reason,
+            message: rejected.message,
+          });
+        }
+        return {
+          ready: false,
+          reason: 'RGDProcessingFailed',
+          message: `RGD processing failed: ${cause?.message || 'Unknown error'}`,
+          ...(rejected ? { terminal: true } : {}),
+          details: { state: status.state, generation, conditions },
+        };
+      }
+
+      const isStateReady = status.state === 'Active';
+      const hasV08Conditions = currentConditions.some(
+        (condition: KubernetesCondition) =>
+          condition?.type === 'Ready' || condition?.type === 'ControllerReady'
+      );
+
+      let allConditionsReady: boolean;
+      if (hasV08Conditions) {
+        allConditionsReady = currentConditions.some(
+          (condition: KubernetesCondition) =>
+            condition?.type === 'Ready' && condition?.status === 'True'
+        );
+      } else {
+        const reconcilerReady = currentConditions.find(
+          (condition: KubernetesCondition) =>
+            condition?.type === 'ReconcilerReady' && condition?.status === 'True'
+        );
+        const graphVerified = currentConditions.find(
+          (condition: KubernetesCondition) =>
+            condition?.type === 'GraphVerified' && condition?.status === 'True'
+        );
+        const crdSynced = currentConditions.find(
+          (condition: KubernetesCondition) =>
+            condition?.type === 'CustomResourceDefinitionSynced' &&
+            condition?.status === 'True'
+        );
+        allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
+      }
+
+      if (isStateReady && allConditionsReady) {
+        return {
+          ready: true,
+          message: 'ResourceGraphDefinition is active and ready.',
+        };
+      }
+
+      return {
+        ready: false,
+        reason: 'ReconciliationPending',
+        message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
+        details: { state: status.state, generation, conditions },
+      };
+    } catch (error: unknown) {
+      rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });
+      return {
+        ready: false,
+        reason: 'EvaluationError',
+        message: `Error evaluating ResourceGraphDefinition readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message, liveRGD },
+      };
+    }
+  }
+);
 
 /**
  * Input type for the {@link resourceGraphDefinition} factory.
@@ -64,148 +198,5 @@ export function resourceGraphDefinition(
 
   return createResource<Record<string, unknown>, Record<string, unknown>>(rgdResource, {
     scope: 'cluster',
-  }).withReadinessEvaluator((liveRGD: RGDManifest): ResourceStatus => {
-    // This robust readiness check ensures the Kro controller has fully processed the RGD.
-    try {
-      // Defensive checks for the live resource
-      if (!liveRGD) {
-        return {
-          ready: false,
-          reason: 'ResourceNotFound',
-          message: 'ResourceGraphDefinition not found in cluster.',
-        };
-      }
-
-      const status = liveRGD.status;
-      const metadata = liveRGD.metadata;
-
-      // 1. If no status exists yet, RGD is still being processed by Kro
-      if (!status) {
-        // Check if the RGD exists (has metadata with uid) but no status yet
-        if (metadata?.uid) {
-          return {
-            ready: false,
-            reason: 'StatusPending',
-            message:
-              'ResourceGraphDefinition exists but Kro controller has not yet initialized status.',
-          };
-        }
-        return {
-          ready: false,
-          reason: 'StatusMissing',
-          message: 'Waiting for Kro controller to initialize status.',
-        };
-      }
-
-      // 2. KRO can leave a previous graph revision active while a newer RGD
-      // generation is still compiling. Only evaluate generated conditions for
-      // the current generation when KRO reports observedGeneration on them.
-      const conditions = Array.isArray(status.conditions) ? status.conditions : [];
-      const generation = typeof metadata?.generation === 'number' ? metadata.generation : undefined;
-      const hasObservedGeneration = conditions.some(
-        (c: KubernetesCondition) => typeof c?.observedGeneration === 'number'
-      );
-      const currentConditions =
-        hasObservedGeneration && generation !== undefined
-          ? conditions.filter((c: KubernetesCondition) => (c.observedGeneration ?? 0) >= generation)
-          : conditions;
-
-      if (hasObservedGeneration && generation !== undefined && currentConditions.length === 0) {
-        return {
-          ready: false,
-          reason: 'GenerationPending',
-          message: `Waiting for Kro controller to process ResourceGraphDefinition generation ${generation}.`,
-          details: { generation, conditions },
-        };
-      }
-
-      // 3. Check for explicit failure conditions first for faster feedback.
-      const failedCondition = currentConditions.find(
-        (c: KubernetesCondition) => c && c.status === 'False'
-      );
-      if (status.state === 'failed' || failedCondition) {
-        // A graph-ACCEPTANCE failure (Kro rejected the RGD spec for THIS generation — e.g. an invalid
-        // resource template like a non-string env value) is TERMINAL: it never flips to accepted without
-        // a spec change. Signal `terminal` so the waiter fails fast with the reason instead of polling to
-        // the deadline (which surfaced an opaque "Delay aborted" that read like a cluster-access outage).
-        // Other transient `status: False` conditions stay retryable (ready:false, no terminal).
-        const rejected = currentConditions.find(
-          (c: KubernetesCondition) => c?.status === 'False' && /accepted/i.test(c?.type ?? '')
-        );
-        const cause = rejected ?? failedCondition;
-        if (rejected) {
-          rgdLogger.warn('ResourceGraphDefinition was rejected by Kro (terminal)', {
-            name: liveRGD?.metadata?.name,
-            type: rejected.type,
-            reason: rejected.reason,
-            message: rejected.message,
-          });
-        }
-        return {
-          ready: false,
-          reason: 'RGDProcessingFailed',
-          message: `RGD processing failed: ${cause?.message || 'Unknown error'}`,
-          ...(rejected ? { terminal: true } : {}),
-          details: { state: status.state, generation, conditions },
-        };
-      }
-
-      // 4. Check if RGD is in Active state with proper conditions
-      const isStateReady = status.state === 'Active';
-
-      // Check for key readiness conditions (be defensive about conditions structure).
-      // Support both Kro v0.3.x condition names (ReconcilerReady, GraphVerified,
-      // CustomResourceDefinitionSynced) and v0.8.x names (Ready, ControllerReady,
-      // KindReady, ResourceGraphAccepted).
-      const hasV08Conditions = currentConditions.some(
-        (c: KubernetesCondition) => c?.type === 'Ready' || c?.type === 'ControllerReady'
-      );
-
-      let allConditionsReady: boolean;
-      if (hasV08Conditions) {
-        // Kro v0.8.x: check Ready condition
-        const readyCondition = currentConditions.find(
-          (c: KubernetesCondition) => c?.type === 'Ready' && c?.status === 'True'
-        );
-        allConditionsReady = !!readyCondition;
-      } else {
-        // Kro v0.3.x: check legacy conditions
-        const reconcilerReady = currentConditions.find(
-          (c: KubernetesCondition) => c?.type === 'ReconcilerReady' && c?.status === 'True'
-        );
-        const graphVerified = currentConditions.find(
-          (c: KubernetesCondition) => c?.type === 'GraphVerified' && c?.status === 'True'
-        );
-        const crdSynced = currentConditions.find(
-          (c: KubernetesCondition) =>
-            c?.type === 'CustomResourceDefinitionSynced' && c?.status === 'True'
-        );
-        allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
-      }
-
-      if (isStateReady && allConditionsReady) {
-        return {
-          ready: true,
-          message: 'ResourceGraphDefinition is active and ready.',
-        };
-      }
-
-      // 5. If none of the above, the RGD is still progressing.
-      return {
-        ready: false,
-        reason: 'ReconciliationPending',
-        message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
-        details: { state: status.state, generation, conditions },
-      };
-    } catch (error: unknown) {
-      // Log the error for debugging but don't let it crash the readiness evaluation
-      rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });
-      return {
-        ready: false,
-        reason: 'EvaluationError',
-        message: `Error evaluating ResourceGraphDefinition readiness: ${ensureError(error).message}`,
-        details: { error: ensureError(error).message, liveRGD: liveRGD },
-      };
-    }
-  });
+  }).withReadinessEvaluator(resourceGraphDefinitionReadinessEvaluator);
 }

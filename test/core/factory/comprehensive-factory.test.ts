@@ -174,18 +174,29 @@ describe('Comprehensive Factory Tests', () => {
       const factory = await graph.factory('direct', {
         namespace: 'test',
       });
+      const subject = factory as unknown as {
+        getDeploymentEngine(): {
+          loadDeploymentByInstance: (...args: unknown[]) => Promise<unknown>;
+        };
+      };
+      const getDeploymentEngine = subject.getDeploymentEngine;
+      subject.getDeploymentEngine = () => ({ loadDeploymentByInstance: async () => null });
 
-      // Test instance listing
-      const instances = await factory.getInstances();
-      expect(Array.isArray(instances)).toBe(true);
-
-      // Test instance deletion (should handle gracefully in test environment)
       try {
-        await factory.deleteInstance('test-instance');
-      } catch (error) {
-        // Expected to fail in test environment
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toContain('Instance not found');
+        // Test instance listing
+        const instances = await factory.getInstances();
+        expect(Array.isArray(instances)).toBe(true);
+
+        // Test instance deletion (should handle gracefully in test environment)
+        try {
+          await factory.deleteInstance('test-instance');
+        } catch (error) {
+          // Expected to fail in test environment
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toContain('Instance not found');
+        }
+      } finally {
+        subject.getDeploymentEngine = getDeploymentEngine;
       }
     });
 

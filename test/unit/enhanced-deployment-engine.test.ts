@@ -122,21 +122,11 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     // Create a plain resource without custom readiness evaluator
     const plainResource = {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: { name: 'test-config', namespace: 'default' },
-      data: { key: 'value' },
+      apiVersion: 'testing.typekro.dev/v1',
+      kind: 'UnregisteredWidget',
+      metadata: { name: 'test-widget', namespace: 'default' },
+      spec: { value: 'test' },
     };
-
-    // Mock the deployment flow (new API returns objects directly, no .body wrapper):
-    // 1. First read call (existence check) - resource doesn't exist (404)
-    mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
-
-    // 2. Create call - resource is created successfully (returns object directly)
-    mockK8sApi.create.mockResolvedValueOnce({
-      ...plainResource,
-      metadata: { ...plainResource.metadata, uid: 'test-uid' },
-    });
 
     const events: DeploymentEvent[] = [];
     const options = {
@@ -151,9 +141,8 @@ describe('Enhanced DirectDeploymentEngine', () => {
         plainResource as unknown as Parameters<typeof engine.deployResource>[0],
         options
       )
-    ).rejects.toThrow(
-      'Resource ConfigMap/test-config does not have a factory-provided readiness evaluator'
-    );
+    ).rejects.toThrow('No readiness evaluator found for UnregisteredWidget/test-widget');
+    expect(mockK8sApi.create).not.toHaveBeenCalled();
   });
 
   it('should handle custom evaluator errors gracefully', async () => {
