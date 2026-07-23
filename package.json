@@ -139,7 +139,7 @@
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",
     "test:coverage": "rm -rf coverage && bun test --randomize --seed=117 --coverage --coverage-reporter=lcov --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
-    "test:randomized": "bun test --randomize --seed=1 --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
+    "test:randomized": "./scripts/run-randomized-unit-tests.sh",
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:containers:node": "bun run build:lib && node scripts/test-container-node-runtime.mjs",
     "test:packed-imports": "node scripts/test-packed-imports.mjs",

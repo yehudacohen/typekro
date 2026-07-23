@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+import { setReadinessEvaluator } from '../../src/core/metadata/index.js';
 import type {
   DeploymentClosure,
   DeploymentContext,
@@ -44,10 +45,12 @@ function createMockResource(
     metadata: { name: overrides.metadata?.name ?? 'test-resource' },
     spec: overrides.spec ?? {},
   };
-  return {
+  const resource = {
     ...base,
     metadata: { ...base.metadata, ...overrides.metadata },
   } as unknown as MockResource;
+  setReadinessEvaluator(resource, () => ({ ready: true }));
+  return resource;
 }
 
 function createMockK8sApi() {
