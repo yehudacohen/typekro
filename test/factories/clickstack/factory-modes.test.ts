@@ -25,10 +25,10 @@
  * the host would otherwise fail with "No active cluster").
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { loadAll } from 'js-yaml';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadAll } from 'js-yaml';
 
 import { clickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { clickstackK8sTelemetry } from '../../../src/factories/clickstack/compositions/k8s-telemetry.js';
@@ -439,8 +439,9 @@ describe('clickstackK8sTelemetry factory modes', () => {
 
       // Status contract: ready/phase over BOTH owned HelmReleases.
       expect(yaml).toContain(
-        'ready: ${clickstackTelemetryDaemonset.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && clickstackTelemetryDeployment.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+        "ready: '${(has(clickstackTelemetryDaemonset.status.observedGeneration)"
       );
+      expect(yaml).toContain('has(clickstackTelemetryDeployment.status.observedGeneration)');
       expect(yaml).toContain('phase:');
 
       // KRO mode emits the env expansion as CEL concat (a literal ${env:…}

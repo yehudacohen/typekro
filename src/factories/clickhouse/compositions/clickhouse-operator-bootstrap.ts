@@ -144,7 +144,7 @@ export const clickhouseOperatorBootstrap = kubernetesComposition(
     // the chart's workloads before reporting Ready (readiness is
     // workload-aware, mirroring the cnpg/dagster bootstraps).
     return {
-      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
+      ...helmReleaseConditionSummary(_helmRelease),
       version: resolvedVersion,
     };
   }

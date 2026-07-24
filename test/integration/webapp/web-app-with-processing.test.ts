@@ -26,11 +26,19 @@ import type {
   WebAppWithProcessingConfig,
   WebAppWithProcessingStatus,
 } from '../../../src/factories/webapp/types.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  assertTestNamespaceAbsent,
+  captureTestNamespaceLease,
+  createTestNamespace,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
-async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
+async function cleanupNamespace(
+  lease: TestNamespaceLease,
+  kubeConfig: k8s.KubeConfig
+): Promise<void> {
   const { deleteTestNamespaceAndWait } = await import('../shared-kubeconfig.js');
-  await deleteTestNamespaceAndWait(namespace, kubeConfig, 600_000);
+  await deleteTestNamespaceAndWait(lease, kubeConfig);
 }
 
 // ── Shared test spec ─────────────────────────────────────────────────────
@@ -155,13 +163,16 @@ describe('WebAppWithProcessing Direct Mode', () => {
   let directFactory:
     | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
     | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let factoryNamespaceLease: TestNamespaceLease | undefined;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const factoryNamespace = `typekro-webapp-${suffix}`;
   const appNamespace = `webapp-app-${suffix}`;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
-    await ensureNamespaceExists(factoryNamespace, kubeConfig);
+    factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
+    await assertTestNamespaceAbsent(appNamespace, kubeConfig);
   });
 
   afterAll(async () => {
@@ -176,9 +187,10 @@ describe('WebAppWithProcessing Direct Mode', () => {
         cleanupErrors.push(e);
       }
     }
-    for (const ns of [factoryNamespace, appNamespace]) {
+    for (const lease of [factoryNamespaceLease, appNamespaceLease]) {
+      if (!lease) continue;
       try {
-        await cleanupNamespace(ns, kubeConfig);
+        await cleanupNamespace(lease, kubeConfig);
       } catch (e) {
         cleanupErrors.push(e);
       }
@@ -201,6 +213,10 @@ describe('WebAppWithProcessing Direct Mode', () => {
     });
 
     const instance = await directFactory.deploy(testSpec(appNamespace));
+    appNamespaceLease = await captureTestNamespaceLease(appNamespace, kubeConfig);
+    if (!appNamespaceLease) {
+      throw new Error(`Composition did not create expected namespace ${appNamespace}`);
+    }
 
     assertWebAppStatus(instance, appNamespace);
 
@@ -246,14 +262,17 @@ describe('WebAppWithProcessing KRO Mode', () => {
   let kroFactory:
     | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
     | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let factoryNamespaceLease: TestNamespaceLease | undefined;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const kroNamespace = `typekro-kro-${suffix}`;
   const appNamespace = `webapp-kro-${suffix}`;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
-    await ensureNamespaceExists(kroNamespace, kubeConfig);
+    factoryNamespaceLease = await createTestNamespace(kroNamespace, kubeConfig);
+    await assertTestNamespaceAbsent(appNamespace, kubeConfig);
   });
 
   afterAll(async () => {
@@ -267,15 +286,13 @@ describe('WebAppWithProcessing KRO Mode', () => {
         cleanupErrors.push(e);
       }
     }
-    try {
-      await cleanupNamespace(appNamespace, kubeConfig);
-    } catch (e) {
-      cleanupErrors.push(e);
-    }
-    try {
-      await cleanupNamespace(kroNamespace, kubeConfig);
-    } catch (e) {
-      cleanupErrors.push(e);
+    for (const lease of [appNamespaceLease, factoryNamespaceLease]) {
+      if (!lease) continue;
+      try {
+        await cleanupNamespace(lease, kubeConfig);
+      } catch (e) {
+        cleanupErrors.push(e);
+      }
     }
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'WebApp KRO-mode cleanup failed');
@@ -298,6 +315,10 @@ describe('WebAppWithProcessing KRO Mode', () => {
     });
 
     const instance = await kroFactory.deploy(testSpec(appNamespace));
+    appNamespaceLease = await captureTestNamespaceLease(appNamespace, kubeConfig);
+    if (!appNamespaceLease) {
+      throw new Error(`Composition did not create expected namespace ${appNamespace}`);
+    }
 
     assertWebAppStatus(instance, appNamespace);
 

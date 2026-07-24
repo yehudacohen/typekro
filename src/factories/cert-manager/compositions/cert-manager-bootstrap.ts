@@ -1,6 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { Cel } from '../../../core/references/cel.js';
 import { ensureVersionPrefix } from '../../../utils/string.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -297,42 +296,18 @@ export const certManagerBootstrap = kubernetesComposition(
       id: 'certManagerHelmRelease',
     });
 
-    // Return status matching the simplified schema structure
-    //
-    // DESIGN NOTE: This is a "bootstrap composition" that deploys cert-manager via Helm.
-    // Status references actual HelmRelease status fields (conditions array).
-    // Flux HelmRelease v2 uses conditions with type='Ready' for readiness, not a phase field.
-    //
-    // Using CEL expressions with .exists() to check conditions array:
-    // - _helmRelease.status.conditions is a KubernetesRef to the conditions array
-    // - CEL's .exists() function evaluates at runtime with actual cluster data
-    // - The reference resolver fetches the real HelmRelease from the cluster
-    // - This is the proper pattern for checking arrays in status builders
-    //
-    // CEL Expression Pattern:
-    // Cel.expr<boolean>(
-    //   resourceRef.status.arrayField,
-    //   '.exists(item, item.property == "value")'
-    // )
-    const releaseStatus = helmReleaseConditionSummary(_helmRelease.status.conditions);
+    // All component fields project the same HelmRelease readiness because this
+    // composition does not observe the chart-created Deployments separately.
+    // The shared summary prevents stale Flux conditions from a prior release
+    // generation from leaking into any of those public status aliases.
+    const releaseStatus = helmReleaseConditionSummary(_helmRelease);
     return {
-      // Reference actual HelmRelease status for proper dependency management
-      // Use CEL .exists() to check if Ready condition exists with status=True
       ready: releaseStatus.ready,
       phase: releaseStatus.phase,
       version: spec.version || '1.19.3',
-      controllerReady: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      webhookReady: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      cainjectorReady: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
+      controllerReady: releaseStatus.ready,
+      webhookReady: releaseStatus.ready,
+      cainjectorReady: releaseStatus.ready,
       crds: {
         // KNOWN ISSUE: Nested CEL expression resolution is broken in direct mode (tracked in TODO).
         // In direct mode, nested CEL expressions referencing resource statuses are not resolved by

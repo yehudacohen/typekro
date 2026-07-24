@@ -114,7 +114,7 @@ export const valkeyBootstrap = kubernetesComposition(
 
     // Status derived from the Flux HelmRelease Ready condition.
     return {
-      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
+      ...helmReleaseConditionSummary(_helmRelease),
       // Static version from deploy-time config, not derived from live HelmRelease
       // status. If the operator is upgraded out-of-band (e.g. Flux automation),
       // this value will not reflect the running version.

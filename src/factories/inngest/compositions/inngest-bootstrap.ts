@@ -108,7 +108,7 @@ export const inngestBootstrap = kubernetesComposition(
     });
 
     return {
-      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
+      ...helmReleaseConditionSummary(_helmRelease),
       // Static — reflects deploy-time version, not runtime.
       version: resolvedVersion,
     };

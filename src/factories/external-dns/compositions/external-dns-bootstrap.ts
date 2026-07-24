@@ -270,7 +270,7 @@ export const externalDnsBootstrap = kubernetesComposition(
     // DESIGN NOTE: This is a "bootstrap composition" that deploys external-dns via Helm.
     // Readiness is derived from the HelmRelease so nested compositions can
     // propagate a real cross-composition status reference to parent RGDs.
-    const releaseStatus = helmReleaseConditionSummary(helmRelease.status.conditions);
+    const releaseStatus = helmReleaseConditionSummary(helmRelease);
     return {
       ready: releaseStatus.ready,
       phase: releaseStatus.phase,

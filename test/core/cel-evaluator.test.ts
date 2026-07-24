@@ -63,6 +63,23 @@ describe('CelEvaluator', () => {
       expect(result).toBe(true);
     });
 
+    it('evaluates has() for optional fields inside collection bindings', async () => {
+      context.variables = {
+        conditions: [
+          { type: 'Ready', status: 'True' },
+          { type: 'Ready', status: 'False', observedGeneration: 1 },
+        ],
+      };
+      const expression = {
+        [CEL_EXPRESSION_BRAND]: true as const,
+        expression:
+          'conditions.exists(c, c.status == "True" && (has(c.observedGeneration) ? c.observedGeneration >= 2 : true))',
+      };
+
+      expect(await evaluator.evaluate(expression, context)).toBe(true);
+      expect(await evaluator.parse(expression)(context)).toBe(true);
+    });
+
     it('should evaluate expressions with variables', async () => {
       context.variables = { x: 10, y: 5 };
 

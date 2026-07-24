@@ -142,7 +142,7 @@ export const cnpgBootstrap = kubernetesComposition(
 
     // Status derived from the Flux HelmRelease Ready condition.
     return {
-      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
+      ...helmReleaseConditionSummary(_helmRelease),
       version: resolvedVersion,
     };
   }

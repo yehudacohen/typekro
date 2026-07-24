@@ -1,25 +1,38 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
+  assertTestNamespaceAbsent,
+  captureTestNamespaceLease,
   cleanupCertManagerWebhooks,
+  createTestNamespace,
   deleteTestNamespaceAndWait,
-  ensureNamespaceExists,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 setDefaultTimeout(900_000);
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
-  const testNamespace = 'typekro-test-cm-bootstrap';
+  let controlNamespaceLease: TestNamespaceLease | undefined;
+  const compositionNamespaceLeases = new Map<string, TestNamespaceLease>();
+  const runId = crypto.randomUUID().slice(0, 8);
+  const testNamespace = `typekro-test-cm-${runId}`;
+  const releaseNames = {
+    bootstrap: `cert-manager-bootstrap-${runId}`,
+    minimal: `cert-manager-minimal-${runId}`,
+    comprehensive: `cert-manager-comprehensive-${runId}`,
+    dualDirect: `cert-manager-dual-${runId}`,
+    readiness: `cert-manager-readiness-${runId}`,
+  } as const;
 
   // All test deployments use unique namespaces prefixed with "cert-manager-test-"
   // to avoid conflicts with the shared "cert-manager" namespace used by other tests.
   // NEVER deploy to or delete the shared "cert-manager" namespace from this test.
-  const testNs1 = 'cert-manager-test-1';
-  const testNs2 = 'cert-manager-test-2';
-  const testNs3 = 'cert-manager-test-3';
-  const testNs4 = 'cert-manager-test-4';
-  const testNs5 = 'cert-manager-test-5';
+  const testNs1 = `cert-manager-${runId}-1`;
+  const testNs2 = `cert-manager-${runId}-2`;
+  const testNs3 = `cert-manager-${runId}-3`;
+  const testNs4 = `cert-manager-${runId}-4`;
+  const testNs5 = `cert-manager-${runId}-5`;
 
   beforeAll(async () => {
     console.log('Setting up cert-manager bootstrap composition tests...');
@@ -30,7 +43,10 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       console.log('✅ Cluster connection established');
 
       // Create test namespace
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      controlNamespaceLease = await createTestNamespace(testNamespace, kubeConfig);
+      for (const namespace of [testNs1, testNs2, testNs3, testNs4, testNs5]) {
+        await assertTestNamespaceAbsent(namespace, kubeConfig);
+      }
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -43,21 +59,17 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     // Clean up cluster-scoped webhook configurations created by test cert-manager
     // installations. These persist after namespace deletion and cause HTTP 500 errors
     // for all subsequent cert-manager resource operations.
-    const releaseNames = [
-      'cert-manager-bootstrap-test',
-      'cert-manager-minimal',
-      'cert-manager-comprehensive',
-      'cert-manager-dual-direct',
-      'cert-manager-readiness-test',
-    ];
     const webhookResults = await Promise.allSettled(
-      releaseNames.map((name) => cleanupCertManagerWebhooks(name, kubeConfig))
+      Object.values(releaseNames).map((name) => cleanupCertManagerWebhooks(name, kubeConfig))
     );
 
     // Clean up the main test namespace and all cert-manager test namespaces
-    const namespacesToClean = [testNamespace, testNs1, testNs2, testNs3, testNs4, testNs5];
+    const namespacesToClean = [
+      controlNamespaceLease,
+      ...compositionNamespaceLeases.values(),
+    ].filter((lease): lease is TestNamespaceLease => lease !== undefined);
     const namespaceResults = await Promise.allSettled(
-      namespacesToClean.map((ns) => deleteTestNamespaceAndWait(ns, kubeConfig))
+      namespacesToClean.map((lease) => deleteTestNamespaceAndWait(lease, kubeConfig))
     );
     const failures = [...webhookResults, ...namespaceResults]
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -66,6 +78,14 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       throw new AggregateError(failures, 'Failed to clean up cert-manager integration resources');
     }
   });
+
+  async function retainCompositionNamespaceLease(namespace: string): Promise<void> {
+    const lease = await captureTestNamespaceLease(namespace, kubeConfig);
+    if (!lease) {
+      throw new Error(`Composition did not create expected namespace ${namespace}`);
+    }
+    compositionNamespaceLeases.set(namespace, lease);
+  }
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {
     // Import cert-manager bootstrap composition
@@ -82,7 +102,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     });
 
     const instance = await directFactory.deploy({
-      name: 'cert-manager-bootstrap-test',
+      name: releaseNames.bootstrap,
       namespace: testNs1,
       version: '1.19.3',
       installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
@@ -105,11 +125,12 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
         servicemonitor: { enabled: false }, // Disable ServiceMonitor since Prometheus Operator is not installed
       },
     });
+    await retainCompositionNamespaceLease(testNs1);
 
     // Validate bootstrap composition deployment
     expect(instance).toBeDefined();
     expect(instance.kind).toBe('EnhancedResource');
-    expect(instance.metadata.name).toBe('cert-manager-bootstrap-test');
+    expect(instance.metadata.name).toBe(releaseNames.bootstrap);
     expect(instance.spec.version).toBe('1.19.3');
     expect(instance.spec.installCRDs).toBe(false);
 
@@ -119,7 +140,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(instance.spec.prometheus?.enabled).toBe(true);
 
     // Clean up - deleteInstance rolls back the deployment including the namespace
-    await directFactory.deleteInstance('cert-manager-bootstrap-test');
+    await directFactory.deleteInstance(releaseNames.bootstrap);
   }, 900000); // 15 minute timeout - first deploy pulls chart from registry
 
   it('should handle different cert-manager configurations', async () => {
@@ -137,22 +158,23 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Test minimal configuration
     const minimalInstance = await directFactory.deploy({
-      name: 'cert-manager-minimal',
+      name: releaseNames.minimal,
       namespace: testNs2,
       installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
+    await retainCompositionNamespaceLease(testNs2);
 
     // The spec only contains explicitly provided values, defaults are applied internally
-    expect(minimalInstance.spec.name).toBe('cert-manager-minimal');
+    expect(minimalInstance.spec.name).toBe(releaseNames.minimal);
     expect(minimalInstance.spec.namespace).toBe(testNs2);
 
     // Clean up minimal before deploying comprehensive to reduce resource pressure
-    await directFactory.deleteInstance('cert-manager-minimal');
+    await directFactory.deleteInstance(releaseNames.minimal);
 
     // Test comprehensive configuration
     const comprehensiveInstance = await directFactory.deploy({
-      name: 'cert-manager-comprehensive',
+      name: releaseNames.comprehensive,
       namespace: testNs3,
       version: '1.19.3', // Use same version as existing to avoid chart pull delays
       installCRDs: false,
@@ -183,6 +205,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
         },
       },
     });
+    await retainCompositionNamespaceLease(testNs3);
 
     expect(comprehensiveInstance.spec.version).toBe('1.19.3');
     expect(comprehensiveInstance.spec.installCRDs).toBe(false);
@@ -191,7 +214,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(comprehensiveInstance.spec.prometheus?.enabled).toBe(true);
 
     // Clean up
-    await directFactory.deleteInstance('cert-manager-comprehensive');
+    await directFactory.deleteInstance(releaseNames.comprehensive);
   }, 1800000); // 30 minute timeout - two sequential deployments each taking 5-10 min
 
   it('should generate proper CEL expressions for status fields', async () => {
@@ -246,21 +269,22 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Test direct deployment to a unique test namespace (NEVER use shared 'cert-manager')
     const directInstance = await directFactory.deploy({
-      name: 'cert-manager-dual-direct',
+      name: releaseNames.dualDirect,
       namespace: testNs4,
       version: '1.19.3',
       installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
+    await retainCompositionNamespaceLease(testNs4);
 
     // Validate direct deployment structure
     expect(directInstance).toBeDefined();
-    expect(directInstance.metadata.name).toBe('cert-manager-dual-direct');
+    expect(directInstance.metadata.name).toBe(releaseNames.dualDirect);
     expect(directInstance.spec.version).toBe('1.19.3');
     expect(directInstance.spec.installCRDs).toBe(false);
 
     // Clean up
-    await directFactory.deleteInstance('cert-manager-dual-direct');
+    await directFactory.deleteInstance(releaseNames.dualDirect);
   }, 600000); // 10 minute timeout
 
   it('should validate schema compatibility with ArkType', async () => {
@@ -344,13 +368,14 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Deploy to a unique test namespace (NEVER use shared 'cert-manager')
     const instance = await directFactory.deploy({
-      name: 'cert-manager-readiness-test',
+      name: releaseNames.readiness,
       namespace: testNs5,
       version: '1.19.3',
       installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       cainjector: { enabled: true },
     });
+    await retainCompositionNamespaceLease(testNs5);
 
     // Validate status structure exists
     expect(instance.status).toBeDefined();
@@ -365,6 +390,6 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(typeof instance.status.crds.version).toBe('string');
 
     // Clean up
-    await directFactory.deleteInstance('cert-manager-readiness-test');
+    await directFactory.deleteInstance(releaseNames.readiness);
   }, 900000); // 15 minute timeout
 });

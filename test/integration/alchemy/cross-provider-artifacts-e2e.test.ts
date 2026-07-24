@@ -16,12 +16,13 @@ import { artifactOutput } from '../../../src/experimental-planning.js';
 import { createResource, toResourceGraph } from '../../../src/index.js';
 import {
   createKubernetesObjectApiClient,
+  createTestNamespace,
   deleteGeneratedCrdAndWait,
   deleteTestNamespaceAndWait,
-  ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
   type ResourceIdentity,
+  type TestNamespaceLease,
   waitForResourceAbsent,
 } from '../shared-kubeconfig.js';
 
@@ -143,6 +144,7 @@ describeOrSkip('Alchemy cross-provider TypeKro artifacts (e2e)', () => {
     kro: `typekro-artifact-kro-${runToken}`,
   };
   const activeDeployments = new Map<Mode, AlchemyRuntime>();
+  const namespaceLeases = new Map<Mode, TestNamespaceLease>();
 
   const destroyDeployment = async (mode: Mode): Promise<void> => {
     const runtime = activeDeployments.get(mode);
@@ -165,9 +167,8 @@ describeOrSkip('Alchemy cross-provider TypeKro artifacts (e2e)', () => {
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
-    await Promise.all(
-      Object.values(namespaces).map((namespace) => ensureNamespaceExists(namespace))
-    );
+    namespaceLeases.set('direct', await createTestNamespace(namespaces.direct));
+    namespaceLeases.set('kro', await createTestNamespace(namespaces.kro));
   });
 
   afterEach(async () => {
@@ -219,9 +220,7 @@ describeOrSkip('Alchemy cross-provider TypeKro artifacts (e2e)', () => {
     await waitForResourceAbsent(rgd, kubeConfig);
 
     const namespaceResults = await Promise.allSettled(
-      Object.values(namespaces).map((namespace) =>
-        deleteTestNamespaceAndWait(namespace, kubeConfig)
-      )
+      [...namespaceLeases.values()].map((lease) => deleteTestNamespaceAndWait(lease, kubeConfig))
     );
     const namespaceFailures = namespaceResults
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')

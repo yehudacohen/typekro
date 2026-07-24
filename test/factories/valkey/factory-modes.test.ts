@@ -182,7 +182,7 @@ describe('valkeyBootstrap factory modes', () => {
     expect(yaml).toContain('kind: HelmRepository');
     expect(yaml).toContain('schema.spec.repositoryNamespace');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.values))');
-    expect(yaml).toContain('ready: ${valkeyHelmRelease.status.conditions.exists');
+    expect(yaml).toContain("ready: '${has(valkeyHelmRelease.status.observedGeneration)");
     // The owned workload Namespace (which carried the version label) is hoisted out
     // of the RGD graph; the chart version still resolves in the HelmRelease.
     expect(yaml).not.toContain('kind: Namespace');

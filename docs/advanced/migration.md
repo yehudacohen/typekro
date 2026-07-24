@@ -498,9 +498,18 @@ The CNPG, Valkey, Inngest, NATS, Rook, ClickHouse operator, ClickStack telemetry
 cert-manager, and external-dns compositions now derive their aggregate status from one
 shared Flux HelmRelease condition policy:
 
-- `ready` is true only when every required HelmRelease has `Ready=True`;
-- where exposed, `failed` is true when any required HelmRelease has `Ready=False`; and
+- integration authors pass whole HelmRelease resources to
+  `helmReleaseConditionSummary(release, ...releases)`, allowing the helper to compare
+  `status.observedGeneration` and condition generations with `metadata.generation`;
+- `ready` is true only when every required HelmRelease has a current-generation
+  `Ready=True`;
+- where exposed, `failed` is true when any required HelmRelease has a
+  current-generation `Ready=False`; and
 - `phase` is now `Ready | Installing | Failed`.
+
+Missing or stale Flux status remains `Installing`; readiness from a previous generation
+is never reused for the new desired state. Concrete condition arrays are no longer a
+supported input to this newly public helper.
 
 This tightens several public status schemas. CNPG, ClickHouse, and ClickStack telemetry
 gain a required `failed` field. Valkey, Inngest, NATS, and Rook already exposed

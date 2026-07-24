@@ -28,10 +28,10 @@
  * the host would otherwise fail with "No active cluster").
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { load } from 'js-yaml';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { load } from 'js-yaml';
 
 import {
   clickhouseOperatorBootstrap,
@@ -229,7 +229,9 @@ describe('clickhouseOperatorBootstrap factory modes', () => {
         yaml.indexOf('name: clickhouse-operator-bootstrap')
       );
 
-      expect(yaml).toContain('ready: ${clickhouseOperatorHelmRelease.status.conditions');
+      expect(yaml).toContain(
+        "ready: '${has(clickhouseOperatorHelmRelease.status.observedGeneration)"
+      );
       expect(yaml).toContain('.exists(c, c.type == "Ready"');
       expect(yaml).toContain('Installing');
     });

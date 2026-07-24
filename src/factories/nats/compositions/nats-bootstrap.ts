@@ -141,7 +141,7 @@ export const natsBootstrap = kubernetesComposition(
       repositoryUrl,
     });
     return {
-      ...helmReleaseConditionSummary(server.status.conditions, controller.status.conditions),
+      ...helmReleaseConditionSummary(server, controller),
       serverVersion: spec.version ?? DEFAULT_NATS_VERSION,
       controllerVersion: spec.nackVersion ?? DEFAULT_NACK_VERSION,
       endpoint,

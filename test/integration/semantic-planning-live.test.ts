@@ -14,12 +14,13 @@ import { yamlFile } from '../../src/factories/kubernetes/yaml/yaml-file.js';
 import {
   createCoreV1ApiClient,
   createKubernetesObjectApiClient,
+  createTestNamespace,
   deleteGeneratedCrdAndWait,
   deleteTestNamespaceAndWait,
-  ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
   isNotFoundError,
+  type TestNamespaceLease,
   waitForResourceAbsent,
 } from './shared-kubeconfig.js';
 
@@ -86,18 +87,19 @@ describeOrSkip('semantic planning live acceptance', () => {
   let kubeConfig: k8s.KubeConfig;
   let coreApi: k8s.CoreV1Api;
   let objectApi: k8s.KubernetesObjectApi;
+  let namespaceLease: TestNamespaceLease | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
     kubeConfig = getIntegrationTestKubeConfig();
     coreApi = createCoreV1ApiClient(kubeConfig);
     objectApi = createKubernetesObjectApiClient(kubeConfig);
-    await ensureNamespaceExists(namespace, kubeConfig);
+    namespaceLease = await createTestNamespace(namespace, kubeConfig);
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    await deleteTestNamespaceAndWait(namespace, kubeConfig);
+    if (namespaceLease) await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   it('authenticates Bun event watches and receives streamed Kubernetes events', async () => {

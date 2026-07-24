@@ -21,7 +21,25 @@ export interface ResourceIdentity {
   };
 }
 
+export interface TestNamespaceLease {
+  name: string;
+  uid: string;
+}
+
 export class ResourceDeletionTimeoutError extends Error {}
+
+export function assertTestNamespaceLease(
+  namespace: { metadata?: { name?: string; uid?: string } },
+  lease: TestNamespaceLease
+): void {
+  const liveName = namespace.metadata?.name;
+  const liveUid = namespace.metadata?.uid;
+  if (liveName !== lease.name || liveUid !== lease.uid) {
+    throw new Error(
+      `Refusing test namespace deletion for ${lease.name}: ownership lease does not match the live namespace`
+    );
+  }
+}
 
 export async function assertTestNamespaceEmpty(
   namespace: string,
@@ -35,11 +53,13 @@ export async function assertTestNamespaceEmpty(
 
 export function isNotFoundError(error: unknown): boolean {
   const candidate = error as {
+    code?: number;
     statusCode?: number;
     body?: { code?: number; reason?: string };
   };
   return (
     candidate.statusCode === 404 ||
+    candidate.code === 404 ||
     candidate.body?.code === 404 ||
     candidate.body?.reason === 'NotFound'
   );
@@ -212,15 +232,26 @@ export async function deleteGeneratedCrdAndWait(
  * Kubernetes finalizer stall observed on persistent OrbStack clusters.
  */
 export async function deleteTestNamespaceAndWait(
-  namespace: string,
+  lease: TestNamespaceLease,
   kc?: k8s.KubeConfig,
   gracefulTimeoutMs = 30_000,
   recoveryTimeoutMs = 60_000,
   inventory?: NamespaceInventory
 ): Promise<void> {
   const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const namespace = lease.name;
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+  let namespaceBeforeDelete: Awaited<ReturnType<typeof coreApi.readNamespace>>;
   try {
-    await deleteNamespaceAndWait(namespace, kubeConfig, gracefulTimeoutMs);
+    namespaceBeforeDelete = await coreApi.readNamespace({ name: namespace });
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+  assertTestNamespaceLease(namespaceBeforeDelete, lease);
+
+  try {
+    await deleteNamespaceAndWait(namespace, kubeConfig, gracefulTimeoutMs, lease.uid);
     return;
   } catch (error: unknown) {
     if (
@@ -231,7 +262,6 @@ export async function deleteTestNamespaceAndWait(
     }
   }
 
-  const coreApi = createCoreV1ApiClient(kubeConfig);
   let liveNamespace: Awaited<ReturnType<typeof coreApi.readNamespace>>;
   try {
     liveNamespace = await coreApi.readNamespace({ name: namespace });
@@ -239,6 +269,7 @@ export async function deleteTestNamespaceAndWait(
     if (isNotFoundError(error)) return;
     throw error;
   }
+  assertTestNamespaceLease(liveNamespace, lease);
   if (!liveNamespace.metadata?.deletionTimestamp) {
     throw new Error(
       `Refusing namespace finalizer recovery for ${namespace}: deletion was not accepted`
@@ -351,6 +382,82 @@ export async function ensureNamespaceExists(
 }
 
 /**
+ * Create a namespace exclusively owned by the current test run.
+ *
+ * Unlike ensureNamespaceExists(), this fails when the name already exists and
+ * returns a UID lease that strict cleanup must present before deleting it.
+ */
+export async function createTestNamespace(
+  namespace: string,
+  kc?: k8s.KubeConfig
+): Promise<TestNamespaceLease> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+
+  try {
+    const created = await coreApi.createNamespace({ body: { metadata: { name: namespace } } });
+    const uid = created.metadata?.uid;
+    if (!uid) {
+      throw new Error(`Created test namespace ${namespace} did not return metadata.uid`);
+    }
+    console.log(`📦 Created test namespace: ${namespace}`);
+    return { name: namespace, uid };
+  } catch (error: unknown) {
+    const candidate = error as {
+      body?: { code?: number; reason?: string };
+      code?: number;
+      statusCode?: number;
+    };
+    const status = candidate.statusCode ?? candidate.code ?? candidate.body?.code;
+    if (candidate.body?.reason === 'AlreadyExists' || status === 409) {
+      throw new Error(
+        `Refusing to adopt existing namespace ${namespace} for an exclusive integration test`
+      );
+    }
+    throw error;
+  }
+}
+
+/** Fail setup if a composition-owned test namespace already exists. */
+export async function assertTestNamespaceAbsent(
+  namespace: string,
+  kc?: k8s.KubeConfig
+): Promise<void> {
+  const coreApi = createCoreV1ApiClient(kc);
+  try {
+    await coreApi.readNamespace({ name: namespace });
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+  throw new Error(
+    `Refusing to run an exclusive integration test because namespace ${namespace} already exists`
+  );
+}
+
+/**
+ * Capture the immutable UID of a namespace whose absence was proven at setup
+ * and which the composition subsequently created. Call this immediately after
+ * successful creation and retain the lease through teardown; never reacquire a
+ * lease during cleanup.
+ */
+export async function captureTestNamespaceLease(
+  namespace: string,
+  kc?: k8s.KubeConfig
+): Promise<TestNamespaceLease | undefined> {
+  const coreApi = createCoreV1ApiClient(kc);
+  try {
+    const live = await coreApi.readNamespace({ name: namespace });
+    const uid = live.metadata?.uid;
+    if (!uid) throw new Error(`Test namespace ${namespace} has no metadata.uid`);
+    return { name: namespace, uid };
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return undefined;
+    throw error;
+  }
+}
+
+/**
  * Delete a namespace if it exists
  */
 export async function deleteNamespaceIfExists(
@@ -369,23 +476,31 @@ export async function deleteNamespaceIfExists(
   }
 }
 
-/**
- * Delete a namespace and wait for it to be fully removed
- * This is important to prevent resource accumulation in the cluster
- */
-export async function deleteNamespaceAndWait(
-  namespace: string,
-  kc?: k8s.KubeConfig,
-  timeoutMs = 600000
-): Promise<void> {
-  const kubeConfig = kc || getIntegrationTestKubeConfig();
-  const coreApi = createCoreV1ApiClient(kubeConfig);
-  const startTime = Date.now();
+export interface NamespaceDeletionClient {
+  listNamespacedPersistentVolumeClaim(request: {
+    namespace: string;
+  }): Promise<{ items: Array<{ metadata?: { name?: string; uid?: string } }> }>;
+  deleteNamespacedPersistentVolumeClaim(request: {
+    name: string;
+    namespace: string;
+    body?: { preconditions?: { uid?: string } };
+  }): Promise<unknown>;
+  deleteNamespace(request: {
+    name: string;
+    body?: { preconditions?: { uid?: string } };
+  }): Promise<unknown>;
+}
 
-  try {
-    // Delete PVCs first — StatefulSet PVCs have finalizers that block
-    // namespace termination until the volume is released. Deleting them
-    // explicitly avoids long waits during test cleanup.
+/**
+ * Initiate namespace deletion while preserving the legacy best-effort path and
+ * making strict test cleanup independently testable.
+ */
+export async function initiateNamespaceDeletion(
+  coreApi: NamespaceDeletionClient,
+  namespace: string,
+  expectedUid?: string
+): Promise<void> {
+  if (!expectedUid) {
     try {
       const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
       for (const pvc of pvcs.items) {
@@ -400,15 +515,68 @@ export async function deleteNamespaceAndWait(
         console.log(`🗑️ Deleted ${pvcs.items.length} PVCs in ${namespace}`);
       }
     } catch {
-      // PVC cleanup is best-effort
+      // Legacy cleanup keeps PVC deletion best-effort.
     }
-
-    // Then delete the namespace
     await coreApi.deleteNamespace({ name: namespace });
     console.log(`🗑️ Initiated deletion of test namespace: ${namespace}`);
+    return;
+  }
+
+  const pvcLeases = (await coreApi.listNamespacedPersistentVolumeClaim({ namespace })).items.map(
+    (pvc) => {
+      const name = pvc.metadata?.name;
+      const uid = pvc.metadata?.uid;
+      if (!name || !uid) {
+        throw new Error(
+          `Refusing strict cleanup for namespace ${namespace}: a PersistentVolumeClaim has no name or UID`
+        );
+      }
+      return { name, uid };
+    }
+  );
+
+  // Kubernetes must atomically accept deletion of the leased namespace before
+  // any child mutation. Each PVC then carries its own immutable UID guard.
+  await coreApi.deleteNamespace({
+    name: namespace,
+    body: { preconditions: { uid: expectedUid } },
+  });
+  console.log(`🗑️ Initiated deletion of test namespace: ${namespace}`);
+  for (const pvc of pvcLeases) {
+    try {
+      await coreApi.deleteNamespacedPersistentVolumeClaim({
+        name: pvc.name,
+        namespace,
+        body: { preconditions: { uid: pvc.uid } },
+      });
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+  if (pvcLeases.length > 0) {
+    console.log(`🗑️ Deleted ${pvcLeases.length} leased PVCs in ${namespace}`);
+  }
+}
+
+/**
+ * Delete a namespace and wait for it to be fully removed
+ * This is important to prevent resource accumulation in the cluster
+ */
+export async function deleteNamespaceAndWait(
+  namespace: string,
+  kc?: k8s.KubeConfig,
+  timeoutMs = 600000,
+  expectedUid?: string
+): Promise<void> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+  const startTime = Date.now();
+
+  try {
+    await initiateNamespaceDeletion(coreApi, namespace, expectedUid);
   } catch (error: any) {
     // If namespace doesn't exist, we're done
-    if (error.statusCode === 404 || error.body?.reason === 'NotFound') {
+    if (isNotFoundError(error)) {
       console.log(`📦 Test namespace ${namespace} already deleted`);
       return;
     }
@@ -430,7 +598,7 @@ export async function deleteNamespaceAndWait(
       await new Promise((resolve) => setTimeout(resolve, 1000));
     } catch (error: any) {
       // 404 means namespace is deleted
-      if (error.statusCode === 404 || error.body?.reason === 'NotFound') {
+      if (isNotFoundError(error)) {
         console.log(`✅ Test namespace ${namespace} fully deleted`);
         return;
       }

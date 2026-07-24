@@ -107,7 +107,7 @@ export const rookCephOperatorBootstrap = kubernetesComposition(
     });
 
     return {
-      ...helmReleaseConditionSummary(release.status.conditions),
+      ...helmReleaseConditionSummary(release),
       version: resolvedVersion,
     };
   }

@@ -13,12 +13,13 @@ import type { AlchemyResourceDeclaration } from '../../../src/alchemy/types.js';
 import { simple, toResourceGraph } from '../../../src/index.js';
 import {
   createKubernetesObjectApiClient,
+  createTestNamespace,
   deleteGeneratedCrdAndWait,
   deleteTestNamespaceAndWait,
-  ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
   isNotFoundError,
+  type TestNamespaceLease,
   waitForResourceAbsent,
 } from '../shared-kubeconfig.js';
 
@@ -138,6 +139,7 @@ function withoutCanonicalBundle(
 
 describeOrSkip('Alchemy KRO persisted-state upgrade (e2e)', () => {
   const activeStacks = new Set<unknown>();
+  let namespaceLease: TestNamespaceLease | undefined;
 
   const destroyActiveStacks = async () => {
     const results = await Promise.allSettled(
@@ -156,7 +158,7 @@ describeOrSkip('Alchemy KRO persisted-state upgrade (e2e)', () => {
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
-    await ensureNamespaceExists(namespace);
+    namespaceLease = await createTestNamespace(namespace);
   });
 
   afterEach(async () => {
@@ -220,9 +222,11 @@ describeOrSkip('Alchemy KRO persisted-state upgrade (e2e)', () => {
         kubeConfig
       ).catch((error) => cleanupErrors.push(error));
     }
-    await deleteTestNamespaceAndWait(namespace, kubeConfig).catch((error) =>
-      cleanupErrors.push(error)
-    );
+    if (namespaceLease) {
+      await deleteTestNamespaceAndWait(namespaceLease, kubeConfig).catch((error) =>
+        cleanupErrors.push(error)
+      );
+    }
 
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'Failed to clean up Alchemy KRO upgrade resources');

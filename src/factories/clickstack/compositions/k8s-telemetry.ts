@@ -145,10 +145,7 @@ export function makeClickstackK8sTelemetry(options: ClickStackK8sTelemetryBuildO
       });
 
       return {
-        ...helmReleaseConditionSummary(
-          _daemonsetRelease.status.conditions,
-          _deploymentRelease.status.conditions
-        ),
+        ...helmReleaseConditionSummary(_daemonsetRelease, _deploymentRelease),
       };
     }
   );
