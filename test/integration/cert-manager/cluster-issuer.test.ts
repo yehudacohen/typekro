@@ -1,15 +1,25 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
-import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestNamespaceAndWait,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test-issuer';
+  const testNamespace = `typekro-test-issuer-${crypto.randomUUID().slice(0, 8)}`;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     console.log('Setting up cert-manager ClusterIssuer real integration tests...');
@@ -21,7 +31,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       console.log('✅ Cluster connection established');
 
       // Create test namespace
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -29,57 +39,12 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up ClusterIssuer test resources...');
-
-      // Delete all ClusterIssuers that start with 'test-' or 'integration-'
-      await customObjectsApi
-        .listClusterCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          plural: 'clusterissuers',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (
-              item.metadata.name.startsWith('test-') ||
-              item.metadata.name.startsWith('integration-')
-            ) {
-              try {
-                await customObjectsApi.deleteClusterCustomObject({
-                  group: 'cert-manager.io',
-                  version: 'v1',
-                  plural: 'clusterissuers',
-                  name: item.metadata.name,
-                });
-                console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
-              } catch (deleteError) {
-                console.warn(
-                  `⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`,
-                  deleteError
-                );
-              }
-            }
-          }
-        })
-        .catch((error) => {
-          console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
-        });
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      console.log('✅ ClusterIssuer test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ ClusterIssuer test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager ClusterIssuer real integration tests...');
-    await deleteNamespaceAndWait(testNamespace, kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   it('should deploy ClusterIssuer resource to Kubernetes using direct factory', async () => {
@@ -138,6 +103,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     });
 
     const uniqueName = `test-self-signed-${Date.now()}`;
+    cleanupRegistry.track(directFactory, uniqueName);
     console.log(`📦 Deploying ClusterIssuer: ${uniqueName}`);
 
     const deploymentResult = await directFactory.deploy({
@@ -261,6 +227,10 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       secretName: secretName,
       commonName: 'test.example.com',
     });
+    cleanupRegistry.trackResult(directFactory, deploymentResult);
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+    );
 
     // Validate deployment result
     expect(deploymentResult).toBeDefined();
@@ -301,20 +271,6 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     console.log('✅ Complete certificate issuance stack deployed to Kubernetes');
     console.log('📋 Both ClusterIssuer and Certificate resources verified in cluster');
     console.log(`🔐 Certificate will be issued to secret: ${secretName}`);
-
-    // Clean up the certificate (ClusterIssuer will be cleaned up by afterEach)
-    try {
-      await customObjectsApi.deleteNamespacedCustomObject({
-        group: 'cert-manager.io',
-        version: 'v1',
-        namespace: testNamespace,
-        plural: 'certificates',
-        name: certName,
-      });
-      console.log(`🗑️ Cleaned up Certificate: ${certName}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to clean up Certificate ${certName}:`, error);
-    }
   }, 120000); // 120 second timeout for real certificate issuance
 
   it('should validate ClusterIssuer factory integration with TypeKro features', async () => {

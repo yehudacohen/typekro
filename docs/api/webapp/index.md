@@ -130,6 +130,7 @@ instance.status.components.inngest   // Inngest ready
 | `cache.replicas` | No | Replicas per shard (default: 0) |
 | `cache.volumePermissions` | No | Enable the Valkey volume permissions init container |
 | `cache.storageSize` | No | Storage size per Valkey shard (default: '1Gi') |
+| `cache.storageClass` | No | Storage class for Valkey PVCs (for example, `gp3` or `local-path`) |
 | `processing.eventKey` | Yes | Inngest event key (hex string); sensitive in KRO custom-resource specs |
 | `processing.signingKey` | Yes | Inngest signing key (hex string); sensitive in KRO custom-resource specs |
 | `processing.sdkUrl` | No | App SDK URLs for function sync |

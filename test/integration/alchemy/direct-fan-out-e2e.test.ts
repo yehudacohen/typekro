@@ -14,7 +14,9 @@
  * Direct mode needs no KRO operator (it applies plain manifests), so this runs on any cluster
  * (e.g. OrbStack). Skipped automatically when no cluster is reachable.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import { Effect } from 'effect';
 import * as Alchemy from 'alchemy';
 import * as Test from 'alchemy/Test/Core';
@@ -26,19 +28,21 @@ import {
   kroProvider,
   materializeAlchemyResources,
 } from '../../../src/alchemy/index.js';
-import { isClusterAvailable } from '../shared-kubeconfig';
+import {
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+  type TestNamespaceLease,
+  waitForResourceAbsent,
+} from '../shared-kubeconfig';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
-const NS = 'tk-alchemy-fanout-e2e';
-
-const kubectl = async (...args: string[]): Promise<string> => {
-  const p = Bun.spawn(['kubectl', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  const out = await new Response(p.stdout).text();
-  await p.exited;
-  return out.trim();
-};
+const NS = `tk-alchemy-fanout-${crypto.randomUUID().slice(0, 8)}`;
 
 const SpecSchema = type({ name: 'string', image: 'string', replicas: 'number%1' });
 const StatusSchema = type({ phase: '"pending" | "running" | "failed"', readyReplicas: 'number%1' });
@@ -46,7 +50,13 @@ type AppSpec = typeof SpecSchema.infer;
 
 const makeGraph = () =>
   toResourceGraph(
-    { name: 'fanoutapp', apiVersion: 'v1alpha1', kind: 'FanoutApp', spec: SpecSchema, status: StatusSchema },
+    {
+      name: 'fanoutapp',
+      apiVersion: 'v1alpha1',
+      kind: 'FanoutApp',
+      spec: SpecSchema,
+      status: StatusSchema,
+    },
     (schema) => {
       const deployment = simple.Deployment({
         name: schema.spec.name,
@@ -72,23 +82,39 @@ const makeGraph = () =>
 
 const makeOptions = { providers: kroProvider, state: StateMod.inMemoryState() };
 const runDeploy = (s: unknown) =>
-  Effect.runPromise(Test.toEffect(Test.deploy(makeOptions, s as never) as never, makeOptions as never));
+  Effect.runPromise(
+    Test.toEffect(Test.deploy(makeOptions, s as never) as never, makeOptions as never)
+  );
 const runDestroy = (s: unknown) =>
-  Effect.runPromise(Test.toEffect(Test.destroy(makeOptions, s as never) as never, makeOptions as never));
+  Effect.runPromise(
+    Test.toEffect(Test.destroy(makeOptions, s as never) as never, makeOptions as never)
+  );
 
 describeOrSkip('Alchemy v2 direct-mode fan-out (e2e)', () => {
+  let kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>;
+  let namespaceLease: TestNamespaceLease | undefined;
+
   beforeAll(async () => {
     if (!clusterAvailable) return;
-    await kubectl('create', 'namespace', NS);
+    kubeConfig = getIntegrationTestKubeConfig();
+    namespaceLease = await createTestNamespace(NS, kubeConfig);
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    await kubectl('delete', 'namespace', NS, '--wait=false', '--ignore-not-found');
+    if (namespaceLease) {
+      await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
+    }
   });
 
   it('deploys per-resource, in dependency order, resolving a cross-resource ref against live state, then tears down', async () => {
-    const factory = await makeGraph().factory('direct', { namespace: NS, waitForReady: true, timeout: 120_000 });
+    const appsApi = createAppsV1ApiClient(kubeConfig);
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const factory = await makeGraph().factory('direct', {
+      namespace: NS,
+      waitForReady: true,
+      timeout: 120_000,
+    });
     const spec: AppSpec = { name: 'fanapp', image: 'nginx:1.27-alpine', replicas: 1 };
 
     // Fan-out: one declaration per resource, topologically ordered, ConfigMap dependsOn Deployment.
@@ -111,11 +137,19 @@ describeOrSkip('Alchemy v2 direct-mode fan-out (e2e)', () => {
       await runDeploy(stack);
 
       // Both resources landed.
-      expect(await kubectl('-n', NS, 'get', 'deployment', 'fanapp', '-o', 'name')).toBe('deployment.apps/fanapp');
+      const deployment = await appsApi.readNamespacedDeployment({
+        namespace: NS,
+        name: 'fanapp',
+      });
+      expect(deployment.metadata?.name).toBe('fanapp');
       // The ConfigMap carries the Deployment's resolved LIVE readyReplicas (not the literal CEL string).
-      const deployReady = await kubectl('-n', NS, 'get', 'deployment', 'fanapp', '-o', 'jsonpath={.status.readyReplicas}');
-      const cfgValue = await kubectl('-n', NS, 'get', 'configmap', 'fanapp-cfg', '-o', 'jsonpath={.data.readyReplicas}');
-      expect(deployReady).toBe('1');
+      const config = await coreApi.readNamespacedConfigMap({
+        namespace: NS,
+        name: 'fanapp-cfg',
+      });
+      const deployReady = deployment.status?.readyReplicas;
+      const cfgValue = config.data?.readyReplicas;
+      expect(deployReady).toBe(1);
       expect(cfgValue).toBe('1');
       expect(cfgValue).not.toContain('${');
     } finally {
@@ -123,7 +157,23 @@ describeOrSkip('Alchemy v2 direct-mode fan-out (e2e)', () => {
     }
 
     // Reverse-topo teardown removed our resources.
-    const remaining = await kubectl('-n', NS, 'get', 'deployment,configmap', '-l', 'app=fanapp', '-o', 'name');
-    expect(remaining).toBe('');
+    await Promise.all([
+      waitForResourceAbsent(
+        {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { namespace: NS, name: 'fanapp' },
+        },
+        kubeConfig
+      ),
+      waitForResourceAbsent(
+        {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { namespace: NS, name: 'fanapp-cfg' },
+        },
+        kubeConfig
+      ),
+    ]);
   }, 180_000);
 });

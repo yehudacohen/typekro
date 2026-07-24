@@ -8,16 +8,25 @@
  * - Deployment reliability and error recovery
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, certManager, kubernetesComposition, simple } from '../../src/index.js';
 import {
   cleanupCertManagerWebhooks,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestCertManagerControllerArtifacts,
+  deleteTestNamespaceAndWait,
   ensureCertManagerInstalled,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  runWithExpectedTestNamespace,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
 } from './shared-kubeconfig.js';
 
 // Test timeout for integration tests — needs to exceed the factory timeout (240s)
@@ -25,18 +34,32 @@ import {
 const TEST_TIMEOUT = 600000; // 10 minutes
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Nested Compositions Runtime Integration', () => {
+  const runId = crypto.randomUUID().slice(0, 8);
+  const controlNamespace = `typekro-nested-runtime-${runId}`;
+  const nestedNamespace = `nested-test-cm-${runId}`;
+  const eventInstanceName = `event-test-${runId}`;
+  const issuerInstanceName = `test-issuer-${runId}`;
+  const mixedInstanceName = `mixed-test-${runId}`;
+  const timeoutInstanceName = `timeout-test-${runId}`;
+  const nestedInstanceName = `nested-test-${runId}`;
+  const crossRefIssuerName = `cross-ref-test-issuer-${runId}`;
+  const crossRefInstanceName = `cross-ref-test-${runId}`;
   let kc: k8s.KubeConfig;
+  let controlNamespaceLease: TestNamespaceLease | undefined;
+  let nestedNamespaceLease: TestNamespaceLease | undefined;
   let unhandledRejectionHandler: ((reason: unknown) => void) | undefined;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
 
     // Configure kubeconfig with TLS skip for integration tests
     kc = getIntegrationTestKubeConfig();
+    controlNamespaceLease = await createTestNamespace(controlNamespace, kc);
 
     // Ensure cert-manager is installed (idempotent - skips if already present)
     console.log('📦 Ensuring cert-manager is available for nested compositions tests...');
@@ -89,84 +112,48 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       unhandledRejectionHandler = undefined;
     }
 
-    // Cleanup test resources
     console.log('Cleaning up nested compositions integration tests...');
-
-    const { createKubernetesObjectApiClient } = await import('./shared-kubeconfig.js');
-    const k8sApi = createKubernetesObjectApiClient(kc);
-
-    // Clean up cluster-scoped ClusterIssuers created by tests.
-    // These persist after namespace deletion and can cause webhook conflicts.
-    const clusterIssuerNames = ['test-issuer', 'cross-ref-test-issuer'];
-    for (const name of clusterIssuerNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'cert-manager.io/v1',
-          kind: 'ClusterIssuer',
-          metadata: { name },
-        });
-        console.log(`🗑️ Deleted ClusterIssuer: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete ClusterIssuer ${name}: ${error.message}`);
-        }
-      }
-    }
-
-    // Clean up Certificates created by the timeout test (in default namespace)
-    const certNames = ['timeout-test-cert'];
-    for (const name of certNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'cert-manager.io/v1',
-          kind: 'Certificate',
-          metadata: { name, namespace: 'default' },
-        });
-        console.log(`🗑️ Deleted Certificate: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete Certificate ${name}: ${error.message}`);
-        }
-      }
-    }
-
-    // Suspend and delete the nested cert-manager HelmRelease before namespace deletion
-    // to prevent Flux from uninstalling cert-manager components during cleanup
+    const cleanupErrors: unknown[] = [];
     try {
-      await k8sApi.patch(
-        {
-          apiVersion: 'helm.toolkit.fluxcd.io/v2',
-          kind: 'HelmRelease',
-          metadata: { name: 'nested-test-cm', namespace: 'nested-test-cm' },
-        },
-        undefined as any,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          headers: { 'Content-Type': 'application/merge-patch+json' },
-          body: { spec: { suspend: true } },
-        } as any
+      await cleanupRegistry.cleanup(kc, 120_000);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await deleteTestCertificateSecrets(
+        controlNamespace,
+        `${crossRefInstanceName}-cert`,
+        [`${crossRefInstanceName}-tls`],
+        kc
       );
-    } catch (_e) {
-      // Ignore — may not exist
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-
-    // Clean up the nested-test-cm namespace created by the nested compositions test.
     try {
-      await deleteNamespaceAndWait('nested-test-cm', kc);
-    } catch (_e) {
-      // Ignore - namespace may not exist if the test didn't run
+      await cleanupCertManagerWebhooks(nestedNamespace, kc);
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-
-    // Clean up cluster-scoped webhook configurations created by the test cert-manager
-    // installation. These are NOT namespace-scoped and persist after namespace deletion,
-    // causing HTTP 500 errors for all subsequent cert-manager resource operations.
-    try {
-      await cleanupCertManagerWebhooks('nested-test-cm', kc);
-    } catch (_e) {
-      // Ignore - webhooks may not exist if the test didn't run
+    if (nestedNamespaceLease) {
+      try {
+        await deleteTestCertManagerControllerArtifacts(nestedNamespace, nestedNamespace, kc);
+        await deleteTestNamespaceAndWait(nestedNamespaceLease, kc);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (controlNamespaceLease) {
+      try {
+        await deleteTestNamespaceAndWait(controlNamespaceLease, kc);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        'Failed to clean up nested composition integration resources'
+      );
     }
   });
 
@@ -206,7 +193,7 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // Deploy with event monitoring enabled
       const factory = testComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 60000, // 1 minute
         waitForReady: true,
         kubeConfig: kc,
@@ -216,14 +203,12 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
           includeChildResources: true,
         },
       });
+      cleanupRegistry.track(factory, eventInstanceName);
 
       // This should complete without ConnResetException errors
-      const result = await factory.deploy({ name: 'event-test' });
+      const result = await factory.deploy({ name: eventInstanceName });
       expect(result).toBeDefined();
       expect(result.status.ready).toBe(true);
-
-      // Cleanup
-      await factory.deleteInstance('event-test');
 
       // LAYER 2: Async Cleanup Delay
       // ============================
@@ -280,17 +265,17 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
     // Deploy using direct factory
     const factory = clusterIssuerComposition.factory('direct', {
-      namespace: 'default',
+      namespace: controlNamespace,
       timeout: 60000,
       waitForReady: true,
       kubeConfig: kc,
     });
+    cleanupRegistry.track(factory, issuerInstanceName);
 
-    const result = await factory.deploy({ name: 'test-issuer' });
+    const result = await factory.deploy({ name: issuerInstanceName });
     expect(result).toBeDefined();
 
     // Cleanup
-    await factory.deleteInstance('test-issuer');
   });
 
   it(
@@ -334,20 +319,20 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // This should not throw errors about status builder analysis
       const factory = mixedStatusComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 60000,
         waitForReady: true,
         kubeConfig: kc,
       });
+      cleanupRegistry.track(factory, mixedInstanceName);
 
-      const result = await factory.deploy({ name: 'mixed-test', replicas: 1 });
+      const result = await factory.deploy({ name: mixedInstanceName, replicas: 1 });
       expect(result).toBeDefined();
       expect(result.status.staticField).toBe('static-value');
       expect(result.status.version).toBe('1.0.0');
       expect(result.status.dynamicField).toBe(true);
 
       // Cleanup
-      await factory.deleteInstance('mixed-test');
     },
     TEST_TIMEOUT
   );
@@ -397,16 +382,17 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       // With AbortController support, the deployment should properly cancel
       // all pending operations when the timeout is reached
       const factory = timeoutComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 10000, // 10 seconds - should timeout
         waitForReady: true, // Now safe to use with AbortController support
         kubeConfig: kc,
       });
+      cleanupRegistry.track(factory, timeoutInstanceName);
 
       // This should handle the timeout gracefully without lingering promises
       let caughtError = false;
       try {
-        await factory.deploy({ name: 'timeout-test' });
+        await factory.deploy({ name: timeoutInstanceName });
       } catch (error) {
         caughtError = true;
         expect(error).toBeDefined();
@@ -423,13 +409,6 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       }
 
       expect(caughtError).toBe(true);
-
-      // Cleanup (best effort)
-      try {
-        await factory.deleteInstance('timeout-test');
-      } catch (_error) {
-        // Ignore cleanup errors
-      }
 
       // Wait for any pending Kubernetes client operations to settle
       // This prevents "Unhandled error between tests" from lingering HTTP requests
@@ -466,8 +445,8 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
           // installation in 'cert-manager' namespace. Disable startupapicheck to avoid
           // post-install hook timeouts.
           const _certManagerInstance = certManager.certManagerBootstrap({
-            name: 'nested-test-cm',
-            namespace: 'nested-test-cm',
+            name: nestedNamespace,
+            namespace: nestedNamespace,
             version: '1.19.3',
             installCRDs: false, // Don't install CRDs - they already exist from the main cert-manager
             startupapicheck: { enabled: false },
@@ -485,26 +464,32 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // Deploy the nested composition
       const factory = nestedComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 240000, // 4 minutes for nested deployment (HelmRelease chart pull + reconciliation)
         waitForReady: true,
         kubeConfig: kc,
       });
+      cleanupRegistry.track(factory, nestedInstanceName);
 
-      const result = await factory.deploy({
-        name: 'nested-test',
-        domain: 'test.typekro-test.funwiththec.cloud',
-      });
+      const result = await runWithExpectedTestNamespace(
+        nestedNamespace,
+        kc,
+        (lease) => {
+          nestedNamespaceLease = lease;
+        },
+        () =>
+          factory.deploy({
+            name: nestedInstanceName,
+            domain: 'test.typekro-test.funwiththec.cloud',
+          })
+      );
+      // The nested cert-manager chart may leave its uniquely named webhook CA Secret
+      // while Flux finishes uninstalling. Run normal factory teardown first, then the
+      // exact UID-guarded fixture recovery in afterAll before releasing the namespace.
 
       expect(result).toBeDefined();
       expect(result.status.ready).toBe(true);
       expect(result.status.issuerReady).toBe(true);
-
-      // NOTE: We intentionally do NOT call factory.deleteInstance('nested-test') here
-      // because it contains a HelmRepository ('cert-manager-repo' in flux-system) that
-      // is shared with the main cert-manager installation. Deleting it via rollback
-      // would remove the shared HelmRepo, breaking subsequent cert-manager tests.
-      // The 'nested-test-cm' namespace is cleaned up in afterAll instead.
     },
     TEST_TIMEOUT
   );
@@ -545,13 +530,14 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       );
 
       const issuerFactory = issuerComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 60000,
         waitForReady: true,
         kubeConfig: kc,
       });
+      cleanupRegistry.track(issuerFactory, crossRefIssuerName);
 
-      await issuerFactory.deploy({ name: 'cross-ref-test-issuer' });
+      await issuerFactory.deploy({ name: crossRefIssuerName });
 
       // Test cross-composition reference patterns
       const CrossRefSpec = type({
@@ -606,15 +592,16 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // Deploy with cross-composition reference pointing to our self-signed issuer
       const factory = crossRefComposition.factory('direct', {
-        namespace: 'default',
+        namespace: controlNamespace,
         timeout: 120000,
         waitForReady: true,
         kubeConfig: kc,
       });
+      cleanupRegistry.track(factory, crossRefInstanceName);
 
       const result = await factory.deploy({
-        name: 'cross-ref-test',
-        issuerName: 'cross-ref-test-issuer', // References the issuer we deployed above
+        name: crossRefInstanceName,
+        issuerName: crossRefIssuerName,
       });
 
       expect(result).toBeDefined();
@@ -623,10 +610,6 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       expect(result.status.ready).toBe(true);
       // The certificate should be ready since we have a self-signed issuer
       expect(result.status.certificateReady).toBe(true);
-
-      // Cleanup
-      await factory.deleteInstance('cross-ref-test');
-      await issuerFactory.deleteInstance('cross-ref-test-issuer');
     },
     TEST_TIMEOUT
   );

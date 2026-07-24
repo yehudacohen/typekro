@@ -4,20 +4,23 @@
  * Simple test to validate basic Kro functionality works
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import {
-  cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from './shared-kubeconfig';
 
 // Test configuration
@@ -34,7 +37,7 @@ const generateTestNamespace = (testName: string): string => {
 };
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
@@ -42,6 +45,9 @@ describeOrSkip('Basic E2E Kro Test', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
+  let factory: any;
+  let namespaceLease: TestNamespaceLease | undefined;
+  let deploymentAttempted = false;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -67,28 +73,25 @@ describeOrSkip('Basic E2E Kro Test', () => {
     // Note: Individual test namespaces will be created per test for better isolation
   });
 
-  // Clean up any leftover test namespaces after all tests complete
   afterAll(async () => {
-    if (kc) {
-      // Clean up the RGD we created
+    if (!kc) return;
+    const cleanupErrors: unknown[] = [];
+    if (factory && deploymentAttempted) {
       try {
-        const customApi = createCustomObjectsApiClient(kc);
-        await customApi.deleteClusterCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          plural: 'resourcegraphdefinitions',
-          name: 'basic-app',
-        });
-        console.log('🗑️ Deleted RGD: basic-app');
-      } catch (error: unknown) {
-        const err = error as { statusCode?: number; body?: { reason?: string } };
-        if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-          console.warn('⚠️ Failed to delete RGD basic-app:', error);
-        }
+        await deleteTestFactoryInstanceAndRecoverNamespaces(factory, 'test-app', [], kc, 60_000);
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-
-      console.log('🧹 Cleaning up any leftover test namespaces...');
-      await cleanupTestNamespaces(/^typekro-e2e-basic-/, kc);
+    }
+    if (namespaceLease) {
+      try {
+        await deleteTestNamespaceAndWait(namespaceLease, kc);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Basic KRO integration cleanup failed');
     }
   });
 
@@ -98,13 +101,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     const startTime = Date.now();
     const testNamespace = generateTestNamespace('basic-rgd-deploy');
 
-    // Create test namespace
-    try {
-      await k8sApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-      console.log(`📦 Created test namespace: ${testNamespace}`);
-    } catch (_error) {
-      console.log(`⚠️ Namespace ${testNamespace} might already exist`);
-    }
+    namespaceLease = await createTestNamespace(testNamespace, kc);
     // Define a very simple schema
     const AppSpecSchema = type({
       name: 'string',
@@ -145,7 +142,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     );
 
     // Create factory with TLS-skip kubeConfig
-    const factory = await resourceGraph.factory('kro', {
+    factory = await resourceGraph.factory('kro', {
       namespace: testNamespace,
       kubeConfig: kc,
     });
@@ -167,6 +164,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
     // Use factory to deploy (this handles RGD deployment and instance creation automatically)
     console.log('🚀 Deploying using factory...');
+    deploymentAttempted = true;
     const instance = await factory.deploy({
       name: 'test-app',
       image: 'nginx:alpine',
@@ -208,17 +206,6 @@ describeOrSkip('Basic E2E Kro Test', () => {
     expect(service.spec?.selector?.app).toBe('test-app');
 
     console.log('✅ Basic E2E test completed successfully');
-
-    // Cleanup using factory
-    try {
-      await factory.deleteInstance('test-app');
-      console.log('✅ Factory cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Factory cleanup failed:', error);
-    }
-
-    // Cleanup test namespace and wait for full deletion
-    await deleteNamespaceAndWait(testNamespace, kc);
   });
 
   // Helper functions

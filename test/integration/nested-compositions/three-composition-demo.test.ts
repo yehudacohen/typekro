@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import {
   certManager,
@@ -10,15 +10,6 @@ import {
 
 describe('Three-Composition Demo Integration', () => {
   const testNamespace = 'typekro-nested-test';
-
-  beforeAll(async () => {
-    console.log('🧪 Setting up three-composition demo integration test...');
-  });
-
-  afterAll(async () => {
-    console.log('🧹 Cleaning up three-composition demo test resources...');
-    // Note: In a real test, we would clean up the deployed resources
-  });
 
   it('should create three compositions with nested composition calls', async () => {
     // Define the same compositions as in the demo

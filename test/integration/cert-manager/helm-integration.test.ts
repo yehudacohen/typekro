@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import {
@@ -6,12 +8,14 @@ import {
   certManagerHelmRepository,
 } from '../../../src/factories/cert-manager';
 import {
-  createCoreV1ApiClient,
   createKubernetesObjectApiClient,
   createResourceWithConflictHandling,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
   deleteResourceIfExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 // Test schemas for integration testing
@@ -27,12 +31,14 @@ const _TestStatusSchema = type({
 });
 
 // Skip tests if no cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Cert-Manager Helm Integration', () => {
   let _kubeConfig: k8s.KubeConfig;
-  const _testNamespace = 'typekro-test';
+  const runId = crypto.randomUUID().slice(0, 8);
+  const _testNamespace = `typekro-cert-manager-helm-${runId}`;
+  let namespaceLease: TestNamespaceLease;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -42,6 +48,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
 
     // Use shared kubeconfig helper for consistent TLS configuration
     _kubeConfig = getIntegrationTestKubeConfig();
+    namespaceLease = await createTestNamespace(_testNamespace, _kubeConfig);
 
     // Verify we have a test cluster available
     console.log('✅ Cluster connection established');
@@ -53,6 +60,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
     // Clean up test resources
     // Leave cluster in clean state
     console.log('Cleaning up cert-manager Helm integration tests...');
+    await deleteTestNamespaceAndWait(namespaceLease, _kubeConfig);
   });
 
   describe('HelmRepository Wrapper', () => {
@@ -64,7 +72,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         id: 'certManagerRepo',
       });
 
-      // Deploy the repository directly using kubectl
+      // Deploy the repository directly through the Kubernetes API.
       const kc = getIntegrationTestKubeConfig();
       const k8sApi = createKubernetesObjectApiClient(kc);
 
@@ -118,17 +126,19 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
 
   describe('HelmRelease Wrapper', () => {
     it('should create HelmRelease for cert-manager successfully', async () => {
+      const repositoryName = `cert-manager-repo-${runId}`;
+      const releaseName = `cert-manager-release-${runId}`;
       // Test cert-manager HelmRelease wrapper directly
       const repository = certManagerHelmRepository({
-        name: 'cert-manager-repo-for-release',
+        name: repositoryName,
         namespace: 'flux-system',
         id: 'certManagerRepo',
       });
 
       const release = certManagerHelmRelease({
-        name: 'cert-manager-test-release',
-        namespace: 'cert-manager',
-        repositoryName: 'cert-manager-repo-for-release',
+        name: releaseName,
+        namespace: _testNamespace,
+        repositoryName,
         values: {
           installCRDs: true, // Install CRDs for comprehensive deployment
           replicaCount: 1,
@@ -136,21 +146,11 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         id: 'certManagerRelease',
       });
 
-      // Deploy using kubectl
+      // Deploy through the Kubernetes API.
       const kc = getIntegrationTestKubeConfig();
       const k8sApi = createKubernetesObjectApiClient(kc);
-      const coreApi = createCoreV1ApiClient(kc);
 
       try {
-        // Create cert-manager namespace if it doesn't exist
-        try {
-          await coreApi.createNamespace({
-            body: { metadata: { name: 'cert-manager' } },
-          });
-        } catch (_error) {
-          // Namespace might already exist
-        }
-
         // Apply the HelmRepository first - use conflict handling to handle existing resources
         const createdRepo = await createResourceWithConflictHandling(k8sApi, repository, {
           conflictStrategy: 'warn',
@@ -185,15 +185,15 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
           apiVersion: 'helm.toolkit.fluxcd.io/v2',
           kind: 'HelmRelease',
           metadata: {
-            name: 'cert-manager-test-release',
-            namespace: 'cert-manager',
+            name: releaseName,
+            namespace: _testNamespace,
           },
         });
         await deleteResourceIfExists(k8sApi, {
           apiVersion: 'source.toolkit.fluxcd.io/v1',
           kind: 'HelmRepository',
           metadata: {
-            name: 'cert-manager-repo-for-release',
+            name: repositoryName,
             namespace: 'flux-system',
           },
         });
@@ -232,12 +232,14 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
       });
 
       // Validate generated Helm values
-      const values = release.spec.values as {
-        installCRDs?: boolean;
-        replicaCount?: number;
-        cainjector?: { enabled?: boolean };
-        prometheus?: { enabled?: boolean };
-      } | undefined;
+      const values = release.spec.values as
+        | {
+            installCRDs?: boolean;
+            replicaCount?: number;
+            cainjector?: { enabled?: boolean };
+            prometheus?: { enabled?: boolean };
+          }
+        | undefined;
       expect(values?.installCRDs).toBe(true);
       expect(values?.replicaCount).toBe(2);
       expect(values?.cainjector?.enabled).toBe(true);
@@ -336,13 +338,15 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
       });
 
       // Validate complex configuration
-      const values = release.spec.values as {
-        global?: { logLevel?: number };
-        controller?: { resources?: { requests?: { cpu?: string } } };
-        webhook?: { replicaCount?: number };
-        cainjector?: { enabled?: boolean };
-        prometheus?: { servicemonitor?: { interval?: string } };
-      } | undefined;
+      const values = release.spec.values as
+        | {
+            global?: { logLevel?: number };
+            controller?: { resources?: { requests?: { cpu?: string } } };
+            webhook?: { replicaCount?: number };
+            cainjector?: { enabled?: boolean };
+            prometheus?: { servicemonitor?: { interval?: string } };
+          }
+        | undefined;
       expect(values?.global?.logLevel).toBe(2);
       expect(values?.controller?.resources?.requests?.cpu).toBe('100m');
       expect(values?.webhook?.replicaCount).toBe(2);

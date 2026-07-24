@@ -1,15 +1,25 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
-import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestNamespaceAndWait,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Certificate Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test-cert';
+  const testNamespace = `typekro-test-cert-${crypto.randomUUID().slice(0, 8)}`;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     console.log('Setting up cert-manager certificate real integration tests...');
@@ -29,7 +39,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       });
 
       // Create test namespace
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -37,85 +47,12 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up Certificate test resources...');
-
-      // Delete all Certificates in test namespace that start with 'test-'
-      await customObjectsApi
-        .listNamespacedCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          namespace: testNamespace,
-          plural: 'certificates',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('test-')) {
-              try {
-                await customObjectsApi.deleteNamespacedCustomObject({
-                  group: 'cert-manager.io',
-                  version: 'v1',
-                  namespace: testNamespace,
-                  plural: 'certificates',
-                  name: item.metadata.name,
-                });
-                console.log(`🗑️ Deleted Certificate: ${item.metadata.name}`);
-              } catch (deleteError) {
-                console.warn(`⚠️ Failed to delete Certificate ${item.metadata.name}:`, deleteError);
-              }
-            }
-          }
-        })
-        .catch((error) => {
-          console.warn('⚠️ Failed to list Certificates for cleanup:', error);
-        });
-
-      // Delete all ClusterIssuers that start with 'test-'
-      await customObjectsApi
-        .listClusterCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          plural: 'clusterissuers',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('test-')) {
-              try {
-                await customObjectsApi.deleteClusterCustomObject({
-                  group: 'cert-manager.io',
-                  version: 'v1',
-                  plural: 'clusterissuers',
-                  name: item.metadata.name,
-                });
-                console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
-              } catch (deleteError) {
-                console.warn(
-                  `⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`,
-                  deleteError
-                );
-              }
-            }
-          }
-        })
-        .catch((error) => {
-          console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
-        });
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      console.log('✅ Certificate test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Certificate test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager certificate real integration tests...');
-    await deleteNamespaceAndWait(testNamespace, kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   it('should deploy Certificate resource to Kubernetes using direct factory', async () => {
@@ -161,6 +98,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
 
     const issuerName = `test-issuer-${Date.now()}`;
+    cleanupRegistry.track(issuerFactory, issuerName);
     console.log(`📦 Creating ClusterIssuer: ${issuerName}`);
 
     await issuerFactory.deploy({
@@ -228,6 +166,10 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
 
     const certName = `test-certificate-${Date.now()}`;
     const secretName = `test-secret-${Date.now()}`;
+    cleanupRegistry.track(directFactory, certName);
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+    );
     console.log(`📦 Deploying Certificate: ${certName}`);
 
     const deploymentResult = await directFactory.deploy({
@@ -236,7 +178,6 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       commonName: 'test.example.com',
       issuerName: issuerName,
     });
-
     // Validate deployment result
     expect(deploymentResult).toBeDefined();
     expect(deploymentResult.metadata.name).toBe(certName);
@@ -366,9 +307,9 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
 
     const uniqueBaseName = `test-lifecycle-${Date.now()}`;
-    const _issuerName = `${uniqueBaseName}-issuer`;
-    const _certName = `${uniqueBaseName}-cert`;
-    const _secretName = `${uniqueBaseName}-secret`;
+    const issuerName = `${uniqueBaseName}-issuer`;
+    const certName = `${uniqueBaseName}-cert`;
+    const secretName = `${uniqueBaseName}-secret`;
 
     console.log(`📦 Deploying certificate lifecycle stack: ${uniqueBaseName}`);
 
@@ -377,6 +318,10 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       commonName: 'lifecycle.example.com',
       dnsNames: ['lifecycle.example.com', 'www.lifecycle.example.com'],
     });
+    cleanupRegistry.trackResult(directFactory, deploymentResult);
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+    );
 
     // Debug: List all ClusterIssuers to see what was actually created
     const allIssuers = await customObjectsApi.listClusterCustomObject({
@@ -417,29 +362,25 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
     const createdIssuer = (
       lifecycleIssuers as unknown as Record<string, Record<string, unknown>[]>
-    ).items!.find((issuer) =>
-      ((issuer.metadata as Record<string, string>).name ?? '').includes('issuer')
-    );
+    ).items!.find((issuer) => (issuer.metadata as Record<string, string>).name === issuerName);
     expect(createdIssuer).toBeDefined();
 
     const issuerBody = createdIssuer as Record<string, unknown>;
     expect(issuerBody.kind).toBe('ClusterIssuer');
-    expect((issuerBody.metadata as Record<string, string>).name).toContain('issuer');
+    expect((issuerBody.metadata as Record<string, string>).name).toBe(issuerName);
     expect((issuerBody.spec as Record<string, unknown>).selfSigned).toEqual({});
 
     // Find the Certificate that was actually created
     const createdCert = (
       allCerts as unknown as Record<string, Record<string, unknown>[]>
-    ).items!.find((cert) =>
-      ((cert.metadata as Record<string, string>).name ?? '').includes('cert')
-    );
+    ).items!.find((cert) => (cert.metadata as Record<string, string>).name === certName);
     expect(createdCert).toBeDefined();
 
     const certBody2 = createdCert as Record<string, unknown>;
     const certBody2Spec = certBody2.spec as Record<string, unknown>;
     const certBody2Meta = certBody2.metadata as Record<string, string>;
     expect(certBody2.kind).toBe('Certificate');
-    expect(certBody2Meta.name).toContain('cert');
+    expect(certBody2Meta.name).toBe(certName);
     expect(certBody2Spec.secretName).toContain('secret');
     expect(certBody2Spec.commonName).toBe('lifecycle.example.com');
     expect(certBody2Spec.dnsNames).toEqual(['lifecycle.example.com', 'www.lifecycle.example.com']);

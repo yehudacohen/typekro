@@ -34,9 +34,18 @@
  */
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteGeneratedCrdAndWait,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
+  isClusterAvailable,
+  runWithExpectedTestNamespaces,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
@@ -60,20 +69,24 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   let altinityRepositoryPreexisting = false;
   let clickstackRepositoryPreexisting = false;
 
-  const operatorNs = 'clickstack-test-op';
+  const runId = crypto.randomUUID().slice(0, 8);
+  const operatorNs = `clickstack-test-op-${runId}`;
   const existingOperatorNs = 'clickhouse-system';
-  const chiNs = 'clickstack-test-chi';
-  const stackNs = 'clickstack-test-stack';
+  const chiNs = `clickstack-test-chi-${runId}`;
+  const stackNs = `clickstack-test-stack-${runId}`;
   // KRO-mode namespaces: the instance CR lives in kroCrNs (factory
   // namespace); the app namespace kroStackNs is OWNED by the composition
   // graph (it declares the Namespace resource), so it is NOT pre-created —
   // same split as the searxng/dagster KRO-mode suites.
-  const kroStackNs = 'clickstack-test-kro';
-  const kroCrNs = 'clickstack-test-kro-cr';
+  const kroStackNs = `clickstack-test-kro-${runId}`;
+  const kroCrNs = `clickstack-test-kro-cr-${runId}`;
+  const namespaceLeases: TestNamespaceLease[] = [];
 
   const chiName = 'clickstack-e2e-ch';
   const stackName = 'clickstack-e2e';
   const kroStackName = 'clickstack-kro-e2e';
+  const kroNamespaceLeases = (): TestNamespaceLease[] =>
+    namespaceLeases.filter((lease) => lease.name === kroStackNs || lease.name === kroCrNs);
 
   // A named ClickHouse user (not the CHI's network-restricted `default`
   // user — see the deploy test's comment) that clickstack's otel-collector
@@ -124,7 +137,11 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       clickstackRepositoryPreexisting = await repositoryExists('clickstack');
 
       const namespaces = reuseExistingOperator ? [chiNs, stackNs] : [operatorNs, chiNs, stackNs];
-      await Promise.all(namespaces.map((ns) => ensureNamespaceExists(ns, kubeConfig)));
+      namespaceLeases.push(
+        ...(await Promise.all(
+          namespaces.map((namespace) => createTestNamespace(namespace, kubeConfig))
+        ))
+      );
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -132,26 +149,50 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   });
 
   afterAll(async () => {
-    // Teardown in reverse dependency order, best-effort: clickstack first
+    const cleanupErrors: unknown[] = [];
+    // Teardown in reverse dependency order: clickstack first
     // (its HelmRelease must uninstall while flux is still healthy), then the
     // CHI (while the operator can still process its finalizer), then the
     // operator, then the namespaces.
     if (kroStackFactory && kroStackDeployed) {
-      await kroStackFactory.deleteInstance(kroStackName).catch(() => {});
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        kroStackFactory,
+        kroStackName,
+        kroNamespaceLeases(),
+        kubeConfig,
+        120_000
+      ).catch((error) => cleanupErrors.push(error));
     }
     if (clickstackFactory && clickstackDeployed) {
-      await clickstackFactory.deleteInstance(stackName).catch(() => {});
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        clickstackFactory,
+        stackName,
+        [],
+        kubeConfig,
+        120_000
+      ).catch((error) => cleanupErrors.push(error));
     }
     if (clickhouseFactory && clickhouseDeployed) {
-      await clickhouseFactory.deleteInstance(chiName).catch(() => {});
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        clickhouseFactory,
+        chiName,
+        [],
+        kubeConfig,
+        120_000
+      ).catch((error) => cleanupErrors.push(error));
     }
     if (operatorFactory && operatorDeployed) {
-      await operatorFactory
-        .deleteInstance('clickhouse-operator', {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        operatorFactory,
+        'clickhouse-operator',
+        [],
+        kubeConfig,
+        120_000,
+        {
           scopes: ['cluster'],
           includeUnscopedResources: true,
-        })
-        .catch(() => {});
+        }
+      ).catch((error) => cleanupErrors.push(error));
     }
 
     // The shared ClickStack HelmRepository singleton persists past
@@ -159,71 +200,77 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // instances). On an ephemeral kind cluster that's moot; on a persistent
     // cluster the suite must sweep its own singleton artifacts: the owner
     // instance (typekro-singletons), its RGD + generated CRD (kro mode), and
-    // the flux-system HelmRepository itself. All best-effort.
+    // the flux-system HelmRepository itself. Every cleanup failure is
+    // aggregated and fails the suite after the remaining steps run.
     try {
-      const { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } =
-        await import('../../../src/core/kubernetes/index.js');
-      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-      const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-
       if (!clickstackRepositoryPreexisting) {
-        await customApi
-          .deleteNamespacedCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            namespace: 'typekro-singletons',
-            plural: 'clickstackhelmrepositories',
-            // Owner CR name = normalized singleton id (getSingletonInstanceName).
-            name: 'clickstack-helm-repository',
-          })
-          .catch(() => {});
-        // Give KRO a beat to process the owner instance finalizer before
-        // removing its RGD.
-        await new Promise((r) => setTimeout(r, 10000));
-        await customApi
-          .deleteClusterCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            plural: 'resourcegraphdefinitions',
-            name: 'clickstack-helm-repository',
-          })
-          .catch(() => {});
-        await k8sApi
-          .delete({
+        await deleteTestResourceAndWait(
+          {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'ClickStackHelmRepository',
+            metadata: {
+              namespace: 'typekro-singletons',
+              name: 'clickstack-helm-repository',
+            },
+          },
+          kubeConfig,
+          60_000
+        ).catch((error) => cleanupErrors.push(error));
+        await deleteTestResourceAndWait(
+          {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'ResourceGraphDefinition',
+            metadata: { name: 'clickstack-helm-repository' },
+          },
+          kubeConfig,
+          60_000
+        ).catch((error) => cleanupErrors.push(error));
+        await deleteGeneratedCrdAndWait(
+          {
             apiVersion: 'apiextensions.k8s.io/v1',
             kind: 'CustomResourceDefinition',
             metadata: { name: 'clickstackhelmrepositories.kro.run' },
-          })
-          .catch(() => {});
-        await k8sApi
-          .delete({
+          },
+          'kro.run/v1alpha1',
+          'ClickStackHelmRepository',
+          kubeConfig
+        ).catch((error) => cleanupErrors.push(error));
+        await deleteTestResourceAndWait(
+          {
             apiVersion: 'source.toolkit.fluxcd.io/v1',
             kind: 'HelmRepository',
             metadata: { name: 'clickstack', namespace: 'flux-system' },
-          })
-          .catch(() => {});
+          },
+          kubeConfig,
+          60_000
+        ).catch((error) => cleanupErrors.push(error));
       }
       // The Altinity repo singleton from the operator prerequisite, same
       // rationale.
       if (!altinityRepositoryPreexisting) {
-        await k8sApi
-          .delete({
+        await deleteTestResourceAndWait(
+          {
             apiVersion: 'source.toolkit.fluxcd.io/v1',
             kind: 'HelmRepository',
             metadata: { name: 'altinity', namespace: 'flux-system' },
-          })
-          .catch(() => {});
+          },
+          kubeConfig,
+          60_000
+        ).catch((error) => cleanupErrors.push(error));
       }
-    } catch {
-      // Best-effort singleton sweep only.
+    } catch (error) {
+      cleanupErrors.push(error);
     }
 
-    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-    await Promise.allSettled(
-      [stackNs, kroStackNs, kroCrNs, chiNs, operatorNs].map((ns) =>
-        deleteNamespaceAndWait(ns, kubeConfig)
-      )
+    const namespaceResults = await Promise.allSettled(
+      namespaceLeases.map((lease) => deleteTestNamespaceAndWait(lease, kubeConfig))
     );
+    cleanupErrors.push(
+      ...namespaceResults.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'ClickStack integration cleanup failed');
+    }
   });
 
   it('deploys the Altinity operator (external-ClickHouse prerequisite)', async () => {
@@ -406,14 +453,20 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       timeout: 900000,
       kubeConfig,
     });
-
-    const instance = await kroStackFactory.deploy({
-      name: kroStackName,
-      namespace: kroStackNs,
-      clickhouse: { host: clickhouseHost!, username: chiUser, password: chiUserPassword },
-      apiKey: 'clickstack-e2e-kro-api-key',
-    });
     kroStackDeployed = true;
+
+    const instance = await runWithExpectedTestNamespaces<any>(
+      [kroStackNs, kroCrNs],
+      kubeConfig,
+      (lease) => namespaceLeases.push(lease),
+      () =>
+        kroStackFactory!.deploy({
+          name: kroStackName,
+          namespace: kroStackNs,
+          clickhouse: { host: clickhouseHost!, username: chiUser, password: chiUserPassword },
+          apiKey: 'clickstack-e2e-kro-api-key',
+        })
+    );
 
     // Proxy-level contract (mixes KRO status + client-hydrated constants).
     expect(instance.status.ready).toBe(true);
@@ -506,26 +559,21 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // singleton intentionally survives (swept in afterAll).
     expect(kroStackDeployed).toBe(true);
 
-    const { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } =
-      await import('../../../src/core/kubernetes/index.js');
+    const { createBunCompatibleCustomObjectsApi } = await import(
+      '../../../src/core/kubernetes/index.js'
+    );
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
-    // StatefulSet-created PVCs are intentionally retention-oriented and are
-    // not part of KRO's graph deletion. This test owns the MongoDB claim, so
-    // remove it before asserting sole-instance namespace/RGD teardown.
-    await k8sApi
-      .delete({
-        apiVersion: 'v1',
-        kind: 'PersistentVolumeClaim',
-        metadata: {
-          name: `data-${kroStackName}-mongodb-0`,
-          namespace: kroStackNs,
-        },
-      })
-      .catch(() => {});
-
-    await kroStackFactory.deleteInstance(kroStackName);
+    // TypeKro must handle retained StatefulSet PVCs as part of normal owned-
+    // namespace teardown. Pre-deleting the MongoDB claim would mask that
+    // lifecycle behavior.
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      kroStackFactory,
+      kroStackName,
+      kroNamespaceLeases(),
+      kubeConfig,
+      120_000
+    );
     kroStackDeployed = false;
 
     await expect(

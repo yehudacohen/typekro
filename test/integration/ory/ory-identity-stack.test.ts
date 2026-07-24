@@ -10,29 +10,42 @@ import {
   oauth2Client,
   oryPlatformStack,
 } from '../../../src/factories/ory/index.js';
-import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestConfigMapAndWait,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestHelmHookResources,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
+  deleteTestSecretAndWait,
+  isClusterAvailable,
+  runTestPodAndReadLogs,
+  type TestDeletableFactory,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
 setDefaultTimeout(1500000);
 
-type OryKroFactory = ReturnType<typeof oryPlatformStack.factory> & {
-  deleteInstance(name: string): Promise<unknown>;
-};
+type OryKroFactory = ReturnType<typeof oryPlatformStack.factory> & TestDeletableFactory;
+type OryFactory = ReturnType<typeof oryPlatformStack.factory> & TestDeletableFactory;
 
-type OryFactory = ReturnType<typeof oryPlatformStack.factory> & {
-  deleteInstance(name: string): Promise<unknown>;
-};
-
-function isApisixRouteCrdAvailable(): boolean {
-  const result = Bun.spawnSync(['kubectl', 'get', 'crd', 'apisixroutes.apisix.apache.org'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  return result.exitCode === 0;
+async function isApisixRouteCrdAvailable(): Promise<boolean> {
+  const objectApi = createBunCompatibleKubernetesObjectApi(getKubeConfig({ skipTLSVerify: true }));
+  try {
+    await objectApi.read({
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: { name: 'apisixroutes.apisix.apache.org' },
+    });
+    return true;
+  } catch (error: unknown) {
+    if (/not found|NotFound/i.test(String(error))) return false;
+    throw error;
+  }
 }
 
 function getItems(result: unknown): unknown[] {
@@ -65,87 +78,100 @@ function podName(pod: unknown): string {
   return (pod as { metadata?: { name?: string } }).metadata?.name ?? '';
 }
 
-async function runKubectl(args: string[], ignoreNotFound = false): Promise<void> {
-  const proc = Bun.spawn(['kubectl', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+async function waitForPodsRunningAndReady(
+  coreApi: ReturnType<typeof createBunCompatibleCoreV1Api>,
+  namespace: string,
+  prefixes: readonly string[],
+  timeoutMs = 120_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let missingPrefixes = [...prefixes];
 
-  if (exitCode === 0) return;
-  if (ignoreNotFound && /not found|NotFound/i.test(`${stdout}\n${stderr}`)) return;
-  throw new Error(`kubectl ${args.join(' ')} failed: ${stderr || stdout}`);
+  while (Date.now() <= deadline) {
+    const pods = getItems(await coreApi.listNamespacedPod({ namespace }));
+    missingPrefixes = prefixes.filter(
+      (prefix) => !pods.some((pod) => podName(pod).startsWith(prefix) && podIsRunningAndReady(pod))
+    );
+    if (missingPrefixes.length === 0) return;
+    await Bun.sleep(1_000);
+  }
+
+  throw new Error(
+    `Timed out waiting for Running/Ready Ory pods in ${namespace}: ${missingPrefixes.join(', ')}`
+  );
 }
 
-async function deleteMaesterResources(namespace: string): Promise<void> {
+async function deleteMaesterResources(
+  namespace: string,
+  kubeConfig: ReturnType<typeof getKubeConfig>
+): Promise<void> {
+  const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
   const resources = [
-    ['oauth2client.hydra.ory.sh', 'console'],
-    ['rule.oathkeeper.ory.sh', 'api-rule'],
+    ['hydra.ory.sh', 'oauth2clients', 'OAuth2Client', 'console'],
+    ['oathkeeper.ory.sh', 'rules', 'Rule', 'api-rule'],
   ] as const;
 
-  for (const [resource, name] of resources) {
-    await runKubectl(
-      ['delete', resource, name, '-n', namespace, '--ignore-not-found=true', '--wait=false'],
-      true
-    );
-
+  for (const [group, plural, kind, name] of resources) {
+    const identity = {
+      apiVersion: `${group}/v1alpha1`,
+      kind,
+      metadata: { name, namespace },
+    };
     try {
-      await runKubectl(
-        ['wait', '--for=delete', `${resource}/${name}`, '-n', namespace, '--timeout=60s'],
-        true
-      );
-    } catch {
-      // The Maester operators may already be gone during failed-run cleanup. In that
-      // case their CR finalizers cannot complete, so release only the exact test CR.
-      await runKubectl(
-        [
-          'patch',
-          resource,
-          name,
-          '-n',
-          namespace,
-          '--type=merge',
-          '-p',
-          '{"metadata":{"finalizers":[]}}',
-        ],
-        true
-      );
+      await deleteTestResourceAndWait(identity, kubeConfig, 60_000);
+    } catch (initialError: unknown) {
+      await customApi.patchNamespacedCustomObject({
+        group,
+        version: 'v1alpha1',
+        namespace,
+        plural,
+        name,
+        body: [{ op: 'add', path: '/metadata/finalizers', value: [] }],
+      });
+      try {
+        await deleteTestResourceAndWait(identity, kubeConfig, 60_000);
+      } catch (recoveryError: unknown) {
+        throw new AggregateError(
+          [initialError, recoveryError],
+          `Maester resource ${kind}/${namespace}/${name} remained after finalizer recovery`
+        );
+      }
     }
   }
 }
 
 async function deleteInstanceIfPresent(
-  factory: OryFactory | undefined,
-  name: string
+  factory: TestDeletableFactory | undefined,
+  name: string,
+  kubeConfig: ReturnType<typeof getKubeConfig>
 ): Promise<void> {
   if (!factory) return;
-  try {
-    await factory.deleteInstance(name);
-  } catch (error) {
-    if (!/not found|NotFound/i.test(String(error))) {
-      throw error;
-    }
-  }
+  await deleteTestFactoryInstanceAndRecoverNamespaces(factory, name, [], kubeConfig, 120_000);
 }
 
-async function deleteResidualJobsAndStorage(namespace: string): Promise<void> {
-  await runKubectl(
-    ['delete', 'jobs.batch', '--all', '-n', namespace, '--ignore-not-found=true', '--wait=false'],
-    true
+async function deleteOryControllerArtifacts(
+  namespace: string,
+  instanceName: string,
+  kubeConfig: ReturnType<typeof getKubeConfig>
+): Promise<void> {
+  const cleanupErrors: unknown[] = [];
+  await deleteTestHelmHookResources(
+    namespace,
+    ['hydra', 'kratos', 'keto', 'oathkeeper'].map((service) => `${instanceName}-${service}`),
+    kubeConfig
+  ).catch((error) => cleanupErrors.push(error));
+  await deleteTestConfigMapAndWait(namespace, 'oathkeeper-rules', kubeConfig).catch((error) =>
+    cleanupErrors.push(error)
   );
-  await runKubectl(
-    [
-      'delete',
-      'persistentvolumeclaims',
-      '--all',
-      '-n',
-      namespace,
-      '--ignore-not-found=true',
-      '--wait=false',
-    ],
-    true
+  await deleteTestSecretAndWait(namespace, 'console-oauth2-client', kubeConfig).catch((error) =>
+    cleanupErrors.push(error)
   );
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      cleanupErrors,
+      `Failed to delete Ory controller artifacts for ${namespace}/${instanceName}`
+    );
+  }
 }
 
 async function waitForCustomObjectStatus(
@@ -185,74 +211,24 @@ async function waitForHydraOAuth2Client(namespace: string, name: string): Promis
   let lastError = '';
 
   while (Date.now() - startedAt < 300000) {
-    const proc = Bun.spawn(
-      [
-        'kubectl',
-        'exec',
-        '-n',
+    try {
+      const stdout = await runTestPodAndReadLogs({
         namespace,
-        'deploy/identity-test-hydra',
-        '--',
-        'hydra',
-        'get',
-        'client',
-        name,
-        '--endpoint',
-        'http://localhost:4445',
-        '--format',
-        'json',
-      ],
-      { stdout: 'pipe', stderr: 'pipe' }
-    );
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-
-    if (exitCode === 0) {
+        name: `hydra-client-probe-${crypto.randomUUID().slice(0, 8)}`,
+        image: 'curlimages/curl:8.12.1',
+        command: ['curl'],
+        args: ['--fail', '--silent', `http://identity-test-hydra-admin:4445/admin/clients/${name}`],
+      });
       const client = JSON.parse(stdout) as { client_id?: string };
       expect(client.client_id).toBe(name);
       return;
+    } catch (error: unknown) {
+      lastError = String(error);
     }
-
-    lastError = stderr;
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 
   throw new Error(`Timed out waiting for Hydra OAuth2 client ${name}: ${lastError}`);
-}
-
-async function waitForNoActivePods(
-  kubeConfig: ReturnType<typeof getKubeConfig>,
-  namespace: string
-): Promise<void> {
-  const coreApi = createBunCompatibleCoreV1Api(kubeConfig);
-  const startedAt = Date.now();
-  let activePods: string[] = [];
-
-  while (Date.now() - startedAt < 180000) {
-    try {
-      const pods = getItems(await coreApi.listNamespacedPod({ namespace }));
-      activePods = pods
-        .filter((pod) => {
-          const phase =
-            pod && typeof pod === 'object'
-              ? (pod as { status?: { phase?: string } }).status?.phase
-              : undefined;
-          return phase !== 'Succeeded' && phase !== 'Failed';
-        })
-        .map(podName);
-      if (activePods.length === 0) return;
-    } catch (error) {
-      if (/not found|NotFound/i.test(String(error))) return;
-      throw error;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-
-  throw new Error(`Timed out waiting for active pods to stop in ${namespace}: ${activePods}`);
 }
 
 describeOrSkip('Ory platform stack Kubernetes integration', () => {
@@ -260,13 +236,17 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
   const namespace = `typekro-test-ory-identity-${suffix}`;
   const kroNamespace = `typekro-test-ory-kro-${suffix}`;
   const kroControlNamespace = `typekro-test-ory-control-${suffix}`;
-  const apisixRoutesAvailable = isApisixRouteCrdAvailable();
+  let apisixRoutesAvailable = false;
   let kubeConfig: ReturnType<typeof getKubeConfig>;
   let directFactory: OryFactory | undefined;
   let kroFactory: OryKroFactory | undefined;
+  let directNamespaceLease: TestNamespaceLease;
+  let kroNamespaceLease: TestNamespaceLease;
+  let kroControlNamespaceLease: TestNamespaceLease;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    apisixRoutesAvailable = await isApisixRouteCrdAvailable();
 
     directFactory = oryPlatformStack.factory('direct', {
       namespace,
@@ -281,35 +261,33 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       kubeConfig,
     }) as OryKroFactory;
 
-    await ensureNamespaceExists(namespace, kubeConfig);
-    await ensureNamespaceExists(kroNamespace, kubeConfig);
-    await ensureNamespaceExists(kroControlNamespace, kubeConfig);
+    [directNamespaceLease, kroNamespaceLease, kroControlNamespaceLease] = await Promise.all([
+      createTestNamespace(namespace, kubeConfig),
+      createTestNamespace(kroNamespace, kubeConfig),
+      createTestNamespace(kroControlNamespace, kubeConfig),
+    ]);
   });
 
   afterAll(async () => {
     if (!kubeConfig) return;
+    const cleanupErrors: unknown[] = [];
 
-    // Delete operator-owned CRs while their controllers are still available.
-    await deleteMaesterResources(namespace);
-    await deleteMaesterResources(kroNamespace);
-    await deleteInstanceIfPresent(kroFactory, 'identity-kro');
-    await deleteInstanceIfPresent(directFactory, 'identity-test');
-    await deleteResidualJobsAndStorage(namespace);
-    await deleteResidualJobsAndStorage(kroNamespace);
-    await runKubectl(
-      ['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false'],
-      true
-    );
-    await runKubectl(
-      ['delete', 'namespace', kroNamespace, '--ignore-not-found=true', '--wait=false'],
-      true
-    );
-    await runKubectl(
-      ['delete', 'namespace', kroControlNamespace, '--ignore-not-found=true', '--wait=false'],
-      true
-    );
-    await deleteMaesterResources(namespace);
-    await deleteMaesterResources(kroNamespace);
+    for (const cleanup of [
+      () => deleteInstanceIfPresent(kroFactory, 'identity-kro', kubeConfig),
+      () => deleteInstanceIfPresent(directFactory, 'identity-test', kubeConfig),
+      () => deleteMaesterResources(kroNamespace, kubeConfig),
+      () => deleteMaesterResources(namespace, kubeConfig),
+      () => deleteOryControllerArtifacts(kroNamespace, 'identity-kro', kubeConfig),
+      () => deleteOryControllerArtifacts(namespace, 'identity-test', kubeConfig),
+      () => deleteTestNamespaceAndWait(directNamespaceLease, kubeConfig),
+      () => deleteTestNamespaceAndWait(kroNamespaceLease, kubeConfig),
+      () => deleteTestNamespaceAndWait(kroControlNamespaceLease, kubeConfig),
+    ]) {
+      await cleanup().catch((error) => cleanupErrors.push(error));
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Ory integration cleanup failed');
+    }
   });
 
   it('E2E tests deploy the Ory platform stack to a real Kubernetes cluster', async () => {
@@ -405,10 +383,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
     });
     expect(hydraDatabase).toBeDefined();
 
-    const pods = await coreApi.listNamespacedPod({ namespace });
-    const podItems = getItems(pods);
-    expect(podItems.length).toBeGreaterThan(0);
-    for (const prefix of [
+    await waitForPodsRunningAndReady(coreApi, namespace, [
       'identity-test-hydra-',
       'identity-test-hydra-hydra-maester-',
       'identity-test-kratos-',
@@ -416,11 +391,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       'identity-test-keto-',
       'identity-test-oathkeeper-',
       'identity-test-oathkeeper-oathkeeper-maester-',
-    ]) {
-      expect(
-        podItems.some((pod) => podName(pod).startsWith(prefix) && podIsRunningAndReady(pod))
-      ).toBe(true);
-    }
+    ]);
 
     const oauth2Clients = await customApi.listNamespacedCustomObject({
       group: 'hydra.ory.sh',
@@ -531,15 +502,11 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
 
     // This suite runs both full representations on a single-node development cluster.
     // Retire the already-verified direct stack so the KRO stack does not exceed maxPods.
-    await deleteMaesterResources(namespace);
-    await deleteInstanceIfPresent(directFactory, 'identity-test');
+    await deleteInstanceIfPresent(directFactory, 'identity-test', kubeConfig);
     directFactory = undefined;
-    await deleteResidualJobsAndStorage(namespace);
-    await waitForNoActivePods(kubeConfig, namespace);
-    await runKubectl(
-      ['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false'],
-      true
-    );
+    await deleteMaesterResources(namespace, kubeConfig);
+    await deleteOryControllerArtifacts(namespace, 'identity-test', kubeConfig);
+    await deleteTestNamespaceAndWait(directNamespaceLease, kubeConfig);
 
     const instance = await kroFactory.deploy({
       name: 'identity-kro',

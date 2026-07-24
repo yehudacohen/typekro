@@ -145,29 +145,34 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
         annotations: { 'typekro.io/deployment-id': 'deploy-1' },
       },
     });
+    const rollback = mock(() =>
+      Promise.resolve({
+        deploymentId: 'deploy-1',
+        rolledBackResources: ['ConfigMap/app-config'],
+        duration: 10,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'app',
+            phase: 'rollback',
+            error: new Error('delete failed'),
+            timestamp: new Date(),
+          },
+        ],
+      })
+    );
     (factory as unknown as Record<string, unknown>).getDeploymentEngine = () => ({
-      rollback: mock(() =>
-        Promise.resolve({
-          deploymentId: 'deploy-1',
-          rolledBackResources: ['ConfigMap/app-config'],
-          duration: 10,
-          status: 'partial',
-          errors: [
-            {
-              resourceId: 'app',
-              phase: 'rollback',
-              error: new Error('delete failed'),
-              timestamp: new Date(),
-            },
-          ],
-        })
-      ),
+      rollback,
       getKubernetesApi: mock(() => ({})),
     });
 
-    const result = await factory.deleteInstance('my-app');
+    const result = await factory.deleteInstance('my-app', { timeout: 1_234 });
 
     expect(result.status).toBe('blocked');
+    expect(rollback).toHaveBeenCalledWith('deploy-1', {
+      abortSignal: expect.any(AbortSignal),
+      timeout: 1_234,
+    });
     expect(result.blockers).toHaveLength(1);
     expect(result.blockers[0]).toMatchObject({
       code: 'CLEANUP_ERROR',
@@ -261,7 +266,11 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     const result = await factory.rollback();
 
     expect(result.status).toBe('success');
-    expect(completeNamespaceDeletion).toHaveBeenCalledWith(rollbackResult, expect.any(AbortSignal));
+    expect(completeNamespaceDeletion).toHaveBeenCalledWith(
+      rollbackResult,
+      undefined,
+      expect.any(AbortSignal)
+    );
     expect(deployedInstances.size).toBe(0);
   });
 

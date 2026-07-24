@@ -1,4 +1,6 @@
-import { describe, it, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 
 describe('Cert-Manager CRD Resources Integration', () => {
   beforeAll(async () => {

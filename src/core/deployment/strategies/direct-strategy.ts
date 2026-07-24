@@ -136,16 +136,20 @@ export class DirectDeploymentStrategy<
         );
       }
 
-      if (deploymentResult.status === 'failed') {
-        const firstError = deploymentResult.errors[0]?.error;
+      const blockingErrors =
+        deploymentResult.status === 'partial'
+          ? deploymentResult.errors.filter((error) => !error.resourceId.startsWith('closure-'))
+          : deploymentResult.errors;
+      if (deploymentResult.status === 'failed' || blockingErrors.length > 0) {
+        const firstError = blockingErrors[0]?.error;
         const deploymentError = new ResourceDeploymentError(
           'resource-graph',
           'ResourceGraph',
           firstError || new Error('Unknown deployment error')
         );
         // Add additional context from all errors
-        if (deploymentResult.errors.length > 1) {
-          deploymentError.message += ` (and ${deploymentResult.errors.length - 1} other errors)`;
+        if (blockingErrors.length > 1) {
+          deploymentError.message += ` (and ${blockingErrors.length - 1} other errors)`;
         }
         throw deploymentError;
       }

@@ -16,15 +16,15 @@ import {
   createKubernetesObjectApiClient,
   createTestNamespace,
   deleteGeneratedCrdAndWait,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
-  isNotFoundError,
   type TestNamespaceLease,
-  waitForResourceAbsent,
 } from './shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 const runToken = Math.random().toString(36).slice(2, 8);
 const namespace = `typekro-semantic-live-${runToken}`;
@@ -142,7 +142,14 @@ describeOrSkip('semantic planning live acceptance', () => {
       );
     } finally {
       await monitor.stopMonitoring();
-      await coreApi.deleteNamespacedEvent({ name: eventName, namespace }).catch(() => undefined);
+      await deleteTestResourceAndWait(
+        {
+          apiVersion: 'v1',
+          kind: 'Event',
+          metadata: { name: eventName, namespace },
+        },
+        kubeConfig
+      );
     }
   });
 
@@ -196,7 +203,13 @@ describeOrSkip('semantic planning live acceptance', () => {
       });
       expect(stable.metadata?.generation).toBe(liveGeneration!);
     } finally {
-      await factory.deleteInstance(`normalization-${runToken}`).catch(() => undefined);
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        `normalization-${runToken}`,
+        [],
+        kubeConfig,
+        60_000
+      );
     }
   });
 
@@ -292,12 +305,15 @@ describeOrSkip('semantic planning live acceptance', () => {
     }
 
     const cleanupErrors: unknown[] = [];
-    await upgradedFactory.deleteInstance(instanceName).catch((error) => cleanupErrors.push(error));
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      upgradedFactory,
+      instanceName,
+      [],
+      kubeConfig,
+      60_000
+    ).catch((error) => cleanupErrors.push(error));
 
-    await objectApi.delete(rgd).catch((error: unknown) => {
-      if (!isNotFoundError(error)) cleanupErrors.push(error);
-    });
-    await waitForResourceAbsent(rgd, kubeConfig, 60_000).catch((error) =>
+    await deleteTestResourceAndWait(rgd, kubeConfig, 60_000).catch((error) =>
       cleanupErrors.push(error)
     );
 
@@ -381,32 +397,42 @@ describeOrSkip('semantic planning live acceptance', () => {
       waitForReady: true,
     });
 
-    await factory.deploy({ name: instanceName });
-    await waitUntil('the Job to complete', async () => {
-      const live = await coreApi
-        .listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}` })
-        .catch(() => ({ items: [] }));
-      return live.items.some((pod) => pod.status?.phase === 'Succeeded');
-    });
-
-    const deletion = (await factory.deleteInstance(instanceName)) as ResourceDeletionResult;
-    expect(deletion.status).toBe('complete');
-    expect(deletion.retained).toEqual(
-      expect.arrayContaining([expect.objectContaining({ policy: 'generated-crd' })])
-    );
-    await waitUntil('the completed Job Pod to be deleted', async () => {
-      const pods = await coreApi.listNamespacedPod({
-        namespace,
-        labelSelector: `job-name=${jobName}`,
+    try {
+      await factory.deploy({ name: instanceName });
+      await waitUntil('the Job to complete', async () => {
+        const live = await coreApi
+          .listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}` })
+          .catch(() => ({ items: [] }));
+        return live.items.some((pod) => pod.status?.phase === 'Succeeded');
       });
-      return pods.items.length === 0;
-    });
 
-    const crd = await findGeneratedCrd(objectApi, group, kind);
-    expect(crd.metadata?.deletionTimestamp).toBeUndefined();
-    expect(crd.status?.conditions).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: 'Established', status: 'True' })])
-    );
+      const deletion = (await factory.deleteInstance(instanceName)) as ResourceDeletionResult;
+      expect(deletion.status).toBe('complete');
+      expect(deletion.retained).toEqual(
+        expect.arrayContaining([expect.objectContaining({ policy: 'generated-crd' })])
+      );
+      await waitUntil('the completed Job Pod to be deleted', async () => {
+        const pods = await coreApi.listNamespacedPod({
+          namespace,
+          labelSelector: `job-name=${jobName}`,
+        });
+        return pods.items.length === 0;
+      });
+
+      const crd = await findGeneratedCrd(objectApi, group, kind);
+      expect(crd.metadata?.deletionTimestamp).toBeUndefined();
+      expect(crd.status?.conditions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'Established', status: 'True' })])
+      );
+    } finally {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        instanceName,
+        [],
+        kubeConfig,
+        120_000
+      );
+    }
   }, 600_000);
 
   it('preserves direct and YAML SSA field ownership semantics', async () => {
@@ -544,20 +570,22 @@ describeOrSkip('semantic planning live acceptance', () => {
       expect(managerOwnsConfigMapKey(yamlLive, yamlManager, 'owned')).toBe(true);
     } finally {
       rmSync(yamlDirectory, { recursive: true, force: true });
-      await objectApi
-        .delete({
+      await deleteTestResourceAndWait(
+        {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: directName, namespace },
-        })
-        .catch(() => undefined);
-      await objectApi
-        .delete({
+        },
+        kubeConfig
+      );
+      await deleteTestResourceAndWait(
+        {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: yamlName, namespace },
-        })
-        .catch(() => undefined);
+        },
+        kubeConfig
+      );
     }
   }, 180_000);
 });

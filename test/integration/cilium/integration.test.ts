@@ -9,7 +9,9 @@
  * to be run with the integration test harness using scripts/e2e-setup.sh.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import {
@@ -21,16 +23,18 @@ import {
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 import { kubernetesComposition } from '../../../src/index.js';
 import {
-  createCoreV1ApiClient,
-  createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
-const NAMESPACE = 'typekro-test-integration'; // Use unique namespace for this test file
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-integration-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 // Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
@@ -55,9 +59,9 @@ const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe
 describeOrSkip('Cilium Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let _k8sApi: k8s.KubernetesObjectApi;
-  let customObjectsApi: k8s.CustomObjectsApi;
-  let coreApi: k8s.CoreV1Api;
   let testNamespace: string;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -67,135 +71,20 @@ describeOrSkip('Cilium Integration Tests', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
     _k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    customObjectsApi = createCustomObjectsApiClient(kubeConfig);
-    coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE; // Use the standard test namespace
-
-    // Create test namespace if it doesn't exist
-    try {
-      await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-      console.log(`📦 Created test namespace: ${testNamespace}`);
-    } catch (error: any) {
-      if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-        console.log(`📦 Test namespace ${testNamespace} already exists`);
-      } else {
-        throw error;
-      }
-    }
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     console.log('✅ Cilium integration test environment ready!');
   });
 
   afterAll(async () => {
-    if (!clusterAvailable || !coreApi) return;
-
-    // Suspend and delete test HelmReleases in kube-system to prevent Flux from uninstalling
-    const helmReleaseNames = ['cilium-test'];
-    for (const name of helmReleaseNames) {
-      try {
-        await customObjectsApi.patchNamespacedCustomObject({
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2',
-          namespace: 'kube-system',
-          plural: 'helmreleases',
-          name,
-          body: { spec: { suspend: true } },
-        });
-      } catch (_e: any) {
-        // Ignore — may not exist
-      }
-      try {
-        await customObjectsApi.deleteNamespacedCustomObject({
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2',
-          namespace: 'kube-system',
-          plural: 'helmreleases',
-          name,
-        });
-        console.log(`🗑️ Deleted HelmRelease: ${name} from kube-system`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete HelmRelease ${name}: ${error.message}`);
-        }
-      }
-    }
-
-    // Clean up test namespace
-    try {
-      await coreApi.deleteNamespace({ name: testNamespace });
-      console.log(`🗑️ Deleted test namespace: ${testNamespace}`);
-    } catch (error: any) {
-      // Ignore errors during cleanup
-      console.log(`⚠️ Could not delete test namespace: ${error.message}`);
-    }
+    if (!clusterAvailable || !kubeConfig) return;
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   afterEach(async () => {
     if (!clusterAvailable) return;
-
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up test resources...');
-
-      // Delete all HelmReleases in kube-system namespace that start with 'cilium-test-direct'
-      await customObjectsApi
-        .listNamespacedCustomObject({
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2beta1',
-          namespace: 'kube-system',
-          plural: 'helmreleases',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('cilium-test-direct')) {
-              await customObjectsApi.deleteNamespacedCustomObject({
-                group: 'helm.toolkit.fluxcd.io',
-                version: 'v2beta1',
-                namespace: 'kube-system',
-                plural: 'helmreleases',
-                name: item.metadata.name,
-              });
-            }
-          }
-        })
-        .catch(() => {
-          // Ignore errors - resources might not exist
-        });
-
-      // Delete all HelmRepositories in test namespace that start with 'cilium-test-direct'
-      await customObjectsApi
-        .listNamespacedCustomObject({
-          group: 'source.toolkit.fluxcd.io',
-          version: 'v1beta2',
-          namespace: testNamespace,
-          plural: 'helmrepositories',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('cilium-test-direct')) {
-              await customObjectsApi.deleteNamespacedCustomObject({
-                group: 'source.toolkit.fluxcd.io',
-                version: 'v1beta2',
-                namespace: testNamespace,
-                plural: 'helmrepositories',
-                name: item.metadata.name,
-              });
-            }
-          }
-        })
-        .catch(() => {
-          // Ignore errors - resources might not exist
-        });
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      console.log('✅ Test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   describe('Helm Repository Integration', () => {
@@ -249,6 +138,7 @@ describeOrSkip('Cilium Integration Tests', () => {
       });
 
       const uniqueName = `cilium-test-direct-${Date.now()}`;
+      cleanupRegistry.track(directFactory, uniqueName);
       const deploymentResult = await directFactory.deploy({
         name: uniqueName, // Use unique name to avoid conflicts
         interval: '1m',
@@ -343,6 +233,7 @@ describeOrSkip('Cilium Integration Tests', () => {
       });
 
       const uniqueName = `cilium-test-direct-${Date.now()}`;
+      cleanupRegistry.track(directFactory, uniqueName);
       const deploymentResult = await directFactory.deploy({
         name: uniqueName,
         version: '1.18.1',

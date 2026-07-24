@@ -3,11 +3,12 @@ import type * as k8s from '@kubernetes/client-node';
 import { ensureError } from '../errors.js';
 import {
   createBunCompatibleApiClient,
+  createBunCompatibleCoreV1Api,
   createBunCompatibleKubernetesObjectApi,
 } from '../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { TypeKroLogger } from '../logging/types.js';
-import { isConflictError } from './k8s-helpers.js';
+import { isConflictError, isNotFoundError } from './k8s-helpers.js';
 import { createRollbackManager } from './rollback-manager.js';
 
 /**
@@ -218,9 +219,18 @@ export type NamespaceEmptinessVerdict =
       readonly empty: false;
       readonly reason: string;
       readonly cause: 'occupied' | 'discovery-unavailable' | 'list-unavailable';
+      readonly resource?: {
+        readonly apiVersion: string;
+        readonly kind: string;
+        readonly name: string;
+      };
     };
 
-/** Observable result of the ownership- and emptiness-gated namespace teardown. */
+/**
+ * Observable result of ownership-gated namespace teardown. An owned namespace
+ * is deletable when empty, or when its only remaining non-default resources are
+ * residual PVCs that can be captured and deleted with UID preconditions.
+ */
 export type NamespaceDeletionOutcome =
   | { readonly status: 'absent' }
   | { readonly status: 'deleted' }
@@ -313,6 +323,7 @@ export async function classifyNamespaceEmptiness(
           empty: false,
           cause: 'occupied',
           reason: `namespace "${namespace}" still contains ${type.apiVersion}/${type.kind} "${name}" (another stack or user owns resources here)`,
+          resource: { apiVersion: type.apiVersion, kind: type.kind, name },
         };
       }
     }
@@ -325,8 +336,40 @@ export async function classifyNamespaceEmptiness(
   return { empty: true };
 }
 
+export interface NamespacePersistentVolumeCleanupApi {
+  listNamespacedPersistentVolumeClaim(request: {
+    namespace: string;
+  }): Promise<{ items: Array<{ metadata?: { name?: string; uid?: string } }> }>;
+  deleteNamespacedPersistentVolumeClaim(request: {
+    name: string;
+    namespace: string;
+    body?: { preconditions?: { uid?: string } };
+  }): Promise<unknown>;
+  deleteNamespace(request: {
+    name: string;
+    body?: { preconditions?: { uid?: string } };
+  }): Promise<unknown>;
+}
+
+async function classifyNamespaceIgnoringPersistentVolumeClaims(
+  inventory: NamespaceInventory,
+  namespace: string,
+  logger: TypeKroLogger
+): Promise<NamespaceEmptinessVerdict> {
+  const withoutPvcs: NamespaceInventory = {
+    discoverNamespacedTypes: () => inventory.discoverNamespacedTypes(),
+    listObjectNames: (type, targetNamespace) => {
+      if (type.apiVersion === 'v1' && type.kind === 'PersistentVolumeClaim') {
+        return Promise.resolve([]);
+      }
+      return inventory.listObjectNames(type, targetNamespace);
+    },
+  };
+  return classifyNamespaceEmptiness(withoutPvcs, namespace, logger);
+}
+
 /**
- * The OWNERSHIP-gated + EMPTY-gated delete (findings #3 + #4), shared by BOTH the
+ * The OWNERSHIP-gated + OCCUPANCY-gated delete (findings #3 + #4), shared by BOTH the
  * imperative `deleteInstance` path and the Alchemy teardown handler.
  *
  * ORDER: this runs AFTER the instance CR is gone (KRO has graph-deleted every child)
@@ -340,9 +383,13 @@ export async function classifyNamespaceEmptiness(
  *
  * TWO GATES, ownership PRIMARY: with `ownedByRgd` set (both callers pass it), the
  * namespace is deleted ONLY if it carries {@link NAMESPACE_OWNER_ANNOTATION} equal to
- * this RGD (typekro CREATED it) AND is empty. An ADOPTED/undeclared namespace (no
- * matching stamp) is RETAINED — never deleted — as is one another stack/user still
- * OCCUPIES (non-empty) or one that cannot be read (fail-safe retain).
+ * this RGD (typekro CREATED it) AND has no non-default occupants after graph teardown.
+ * StatefulSet PVCs are the sole bounded exception: when they are the only occupants,
+ * TypeKro first submits a UID-preconditioned Namespace deletion, then deletes only the
+ * snapshotted PVC UIDs. This matches the owned-Namespace lifecycle contract without
+ * letting residual chart storage mask teardown regressions. An ADOPTED/undeclared
+ * namespace (no matching stamp) is RETAINED — never deleted — as is one another
+ * stack/user still OCCUPIES or one that cannot be read (fail-safe retain).
  *
  * GATED (not best-effort): a pre-delete 404 is benign (already gone), but the delete
  * itself polls to a real 404 and THROWS {@link DeploymentTimeoutError} on timeout — a
@@ -371,6 +418,8 @@ export async function deleteNamespaceIfEmpty(
     timeoutMs?: number;
     /** Cancel inventory and deletion waits with the parent operation. */
     abortSignal?: AbortSignal;
+    /** Injectable CoreV1 surface for ownership-safe residual PVC cleanup. */
+    persistentVolumeCleanupApi?: NamespacePersistentVolumeCleanupApi;
   } = {}
 ): Promise<NamespaceDeletionOutcome> {
   const logger = options.logger ?? getComponentLogger('kro-namespace-teardown');
@@ -383,13 +432,13 @@ export async function deleteNamespaceIfEmpty(
   // fail-safe RETAIN. When `ownedByRgd` is set, the same read proves ownership: only a
   // namespace typekro created for THIS RGD (matching annotation) is a candidate; an
   // adopted/undeclared namespace is retained (finding #3/#4).
-  let live: { metadata?: { annotations?: Record<string, string> } };
+  let live: { metadata?: { annotations?: Record<string, string>; uid?: string } };
   try {
     live = (await k8sApi.read({
       apiVersion: 'v1',
       kind: 'Namespace',
       metadata: { name: namespace },
-    })) as { metadata?: { annotations?: Record<string, string> } };
+    })) as { metadata?: { annotations?: Record<string, string>; uid?: string } };
   } catch (error: unknown) {
     const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
     const code = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
@@ -422,8 +471,18 @@ export async function deleteNamespaceIfEmpty(
   }
 
   const inventory = options.inventory ?? createClusterNamespaceInventory(kubeConfig);
-  const verdict = await classifyNamespaceEmptiness(inventory, namespace, logger);
+  let verdict = await classifyNamespaceEmptiness(inventory, namespace, logger);
   options.abortSignal?.throwIfAborted();
+  const pvcIsOnlyKnownOccupant =
+    options.ownedByRgd !== undefined &&
+    !verdict.empty &&
+    verdict.cause === 'occupied' &&
+    verdict.resource?.apiVersion === 'v1' &&
+    verdict.resource.kind === 'PersistentVolumeClaim';
+  if (pvcIsOnlyKnownOccupant) {
+    verdict = await classifyNamespaceIgnoringPersistentVolumeClaims(inventory, namespace, logger);
+    options.abortSignal?.throwIfAborted();
+  }
   if (!verdict.empty) {
     logger.info('Retaining namespace after teardown — not empty (or emptiness unproven)', {
       namespace,
@@ -435,6 +494,76 @@ export async function deleteNamespaceIfEmpty(
       cause: verdict.cause === 'occupied' ? 'occupied' : 'emptiness-unproven',
       reason: verdict.reason,
     };
+  }
+
+  if (pvcIsOnlyKnownOccupant) {
+    const namespaceUid = live.metadata?.uid;
+    if (!namespaceUid) {
+      return {
+        status: 'retained',
+        cause: 'emptiness-unproven',
+        reason: `namespace "${namespace}" has no metadata.uid, so residual PVC cleanup cannot be ownership-preconditioned`,
+      };
+    }
+    const coreApi = options.persistentVolumeCleanupApi ?? createBunCompatibleCoreV1Api(kubeConfig);
+    let pvcLeases: Array<{ name: string; uid: string }>;
+    try {
+      const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
+      pvcLeases = pvcs.items.map((pvc) => {
+        const name = pvc.metadata?.name;
+        const uid = pvc.metadata?.uid;
+        if (!name || !uid) {
+          throw new Error('a PersistentVolumeClaim has no metadata.name or metadata.uid');
+        }
+        return { name, uid };
+      });
+    } catch (error: unknown) {
+      return {
+        status: 'retained',
+        cause: 'emptiness-unproven',
+        reason: `could not capture residual PVC ownership in "${namespace}": ${ensureError(error).message}`,
+      };
+    }
+
+    // Atomically bind cleanup to the namespace we proved was ours. Once
+    // Kubernetes accepts namespace deletion, no new PVC can be created there;
+    // each snapshotted PVC then carries its own immutable UID precondition.
+    try {
+      await coreApi.deleteNamespace({
+        name: namespace,
+        body: { preconditions: { uid: namespaceUid } },
+      });
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return { status: 'absent' };
+      throw error;
+    }
+    for (const pvc of pvcLeases) {
+      options.abortSignal?.throwIfAborted();
+      try {
+        await coreApi.deleteNamespacedPersistentVolumeClaim({
+          name: pvc.name,
+          namespace,
+          body: { preconditions: { uid: pvc.uid } },
+        });
+      } catch (error: unknown) {
+        if (!isNotFoundError(error)) throw error;
+      }
+    }
+
+    const rollback = createRollbackManager(k8sApi as k8s.KubernetesObjectApi);
+    await rollback.waitForResourceGone(
+      { apiVersion: 'v1', kind: 'Namespace', name: namespace },
+      {
+        timeout: options.timeoutMs ?? DEFAULT_NAMESPACE_DELETE_TIMEOUT_MS,
+        ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+      }
+    );
+    logger.debug('Deleted owned namespace after draining residual PVCs', {
+      namespace,
+      pvcCount: pvcLeases.length,
+      ...context,
+    });
+    return { status: 'deleted' };
   }
 
   // GATED delete via the engine's ONE deletion primitive: delete, then poll to a real

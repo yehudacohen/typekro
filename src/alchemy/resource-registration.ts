@@ -136,29 +136,27 @@ export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE)
  */
 export const kroProvider = ProviderMod.effect(
   KroResource,
-  Effect.succeed({
+  // Typed so the service literal is checked directly against `ProviderService` (methods bivariant) —
+  // avoids the exactOptionalPropertyTypes friction of an inferred literal while keeping the effect-hosted
+  // registration the conformance boundary requires.
+  Effect.succeed<ProviderMod.ProviderService<KroResourceR>>({
     // `namespace` is identity-stable: a namespace change is a replacement, not an in-place update.
-    stables: ['namespace'] as const,
-    reconcile: Effect.fn(function* ({
-      news,
-    }: {
-      news: TypeKroResourceProps<Enhanced<unknown, unknown>>;
-    }) {
+    stables: ['namespace'],
+    // Account-wide enumeration (powers `alchemy nuke`). A generic KRO resource isn't discoverable
+    // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
+    // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
+    list: () => Effect.succeed([]),
+    reconcile: Effect.fn(function* ({ news }) {
       return yield* Effect.tryPromise({
         try: (abortSignal) => deployKroResource(news, abortSignal),
         catch: ensureError,
       });
     }),
-    delete: Effect.fn(function* ({
-      output,
-      news,
-    }: {
-      output?: TypeKroResource<Enhanced<unknown, unknown>>;
-      news?: TypeKroResourceProps<Enhanced<unknown, unknown>>;
-    }) {
-      // Prefer the live spec; fall back to reconstructing minimal props from persisted output
-      // (a delete after the spec is gone — e.g. resource removed from the stack).
-      const props = news ?? propsFromOutput(output);
+    delete: Effect.fn(function* ({ output, olds }) {
+      // Prefer the live spec (`olds` — the last-applied props; alchemy beta.58 renamed the delete
+      // input's spec field from `news` to `olds`); fall back to reconstructing minimal props from
+      // persisted output (a delete after the spec is gone — e.g. resource removed from the stack).
+      const props = olds ?? propsFromOutput(output);
       if (props) {
         yield* Effect.tryPromise({
           try: (abortSignal) => deleteKroResource(props, abortSignal),

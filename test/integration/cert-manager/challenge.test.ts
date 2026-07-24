@@ -6,21 +6,26 @@
  * It ensures cert-manager is properly bootstrapped before testing Challenge resources.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../../src/index.js';
 import {
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
-  ensureNamespaceExists,
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
-const NAMESPACE = 'typekro-test-challenge'; // Use unique namespace for this test file
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-challenge-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 // Check if cluster is available
 if (!clusterAvailable) {
@@ -52,6 +57,8 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
   let _k8sApi: k8s.KubernetesObjectApi;
   let customObjectsApi: k8s.CustomObjectsApi;
   let testNamespace: string;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -65,7 +72,7 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
     testNamespace = NAMESPACE; // Use the standard test namespace
 
     // Create test namespace
-    await ensureNamespaceExists(testNamespace, kubeConfig);
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     // Ensure cert-manager is deployed and ready
     const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
@@ -81,74 +88,13 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
 
   afterEach(async () => {
     if (!clusterAvailable) return;
-
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up test resources...');
-
-      // Delete all Challenges in test namespace that start with 'challenge-test-'
-      await customObjectsApi
-        .listNamespacedCustomObject({
-          group: 'acme.cert-manager.io',
-          version: 'v1',
-          namespace: testNamespace,
-          plural: 'challenges',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('challenge-test-')) {
-              await customObjectsApi.deleteNamespacedCustomObject({
-                group: 'acme.cert-manager.io',
-                version: 'v1',
-                namespace: testNamespace,
-                plural: 'challenges',
-                name: item.metadata.name,
-              });
-            }
-          }
-        })
-        .catch(() => {
-          // Ignore errors - resources might not exist
-        });
-
-      // Delete all ClusterIssuers that start with 'challenge-test-'
-      await customObjectsApi
-        .listClusterCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          plural: 'clusterissuers',
-        })
-        .then(async (response: any) => {
-          const items = response.items || [];
-          for (const item of items) {
-            if (item.metadata.name.startsWith('challenge-test-')) {
-              await customObjectsApi.deleteClusterCustomObject({
-                group: 'cert-manager.io',
-                version: 'v1',
-                plural: 'clusterissuers',
-                name: item.metadata.name,
-              });
-            }
-          }
-        })
-        .catch(() => {
-          // Ignore errors - resources might not exist
-        });
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      console.log('✅ Test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('Cleaning up cert-manager Challenge integration tests...');
-    await deleteNamespaceAndWait(testNamespace, kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   describe('Challenge Factory Integration', () => {
@@ -322,6 +268,10 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
         secretName: secretName,
         dnsName: 'acme-test.example.com',
       });
+      cleanupRegistry.trackResult(directFactory, deploymentResult);
+      cleanupRegistry.trackPostFactoryCleanup(() =>
+        deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+      );
 
       // Validate deployment result
       expect(deploymentResult).toBeDefined();

@@ -6,11 +6,9 @@
  */
 
 import { execSync } from 'node:child_process';
-import * as k8s from '@kubernetes/client-node';
 
 // Test configuration
 const CLUSTER_NAME = 'typekro-e2e-test';
-const NAMESPACE = 'typekro-test';
 
 async function setupE2EEnvironment() {
   console.log('🚀 Setting up end-to-end test environment...');
@@ -77,19 +75,6 @@ async function setupE2EEnvironment() {
     enableCertManager: true,
     enableExternalDns: true,
   });
-
-  // Create test namespace
-  const { getKubeConfig } = await import('../src/core/kubernetes/client-provider.js');
-  const kc = getKubeConfig({ skipTLSVerify: true });
-  const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-
-  try {
-    await k8sApi.createNamespace({
-      metadata: { name: NAMESPACE },
-    });
-  } catch {
-    // Namespace might already exist
-  }
 
   // Install Cilium for networking tests
   console.log('🌐 Setting up Cilium for networking tests...');

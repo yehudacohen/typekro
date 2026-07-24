@@ -35,7 +35,6 @@ import {
   kubernetesSecretRegistryCredentials,
 } from '../../../src/core/containers/index.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCoreV1Api } from '../../../src/core/kubernetes/index.js';
 import {
   createHarborKubernetesStore,
   deleteHarborProject,
@@ -50,13 +49,21 @@ import {
   rookObjectStorageClaim,
 } from '../../../src/factories/rook/index.js';
 import {
-  deleteNamespaceAndWait,
-  ensureNamespaceExists,
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  createKubernetesObjectApiClient,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  ensureSharedPrerequisiteNamespace,
   isClusterAvailable,
+  runTestPodAndReadLogs,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 const requested = process.env.RUN_HARBOR_PLATFORM_INTEGRATION === 'true';
-const describeOrSkip = requested && isClusterAvailable() ? describe : describe.skip;
+const describeOrSkip = requested && (await isClusterAvailable()) ? describe : describe.skip;
 const retainPlatform = process.env.KEEP_HARBOR_PLATFORM === 'true';
 const deploymentMode = process.env.HARBOR_DEPLOYMENT_MODE === 'direct' ? 'direct' : 'kro';
 const runId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
@@ -131,22 +138,6 @@ function activeTestSecrets(): HarborTestSecrets {
 }
 
 setDefaultTimeout(1_800_000);
-
-async function kubectlRead(args: string[], timeout = 60_000): Promise<string> {
-  const proc = Bun.spawn(['kubectl', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  const timer = setTimeout(() => proc.kill(), timeout);
-  try {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (exitCode !== 0) throw new Error(stderr || stdout);
-    return stdout.trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 async function ensureSecret(
   name: string,
@@ -282,29 +273,33 @@ describeOrSkip(
     let claimDeployed = false;
     let projectReconciled = false;
     let bucketClassDeployed = false;
+    const namespaceLeases: TestNamespaceLease[] = [];
 
     beforeAll(async () => {
-      const prerequisite = await kubectlRead([
-        'get',
-        'storageclass',
-        storageClassName,
-        '-o',
-        'jsonpath={.provisioner}',
-      ]).catch(() => '');
-      if (prerequisite !== 'typekro-harbor-ceph.ceph.rook.io/bucket') {
+      const objectApi = createKubernetesObjectApiClient(kubeConfig);
+      const storageClass = await objectApi
+        .read({
+          apiVersion: 'storage.k8s.io/v1',
+          kind: 'StorageClass',
+          metadata: { name: storageClassName },
+        })
+        .catch(() => undefined);
+      if (
+        !storageClass ||
+        (storageClass as { provisioner?: string }).provisioner !==
+          'typekro-harbor-ceph.ceph.rook.io/bucket'
+      ) {
         throw new Error(
           `Harbor integration requires the retained Rook platform StorageClass ${storageClassName}; ` +
             'run the Rook platform integration with KEEP_ROOK_PLATFORM=true first.'
         );
       }
       if (!retainPlatform) {
-        await ensureNamespaceExists(controlNamespace, kubeConfig);
+        namespaceLeases.push(await createTestNamespace(controlNamespace, kubeConfig));
         await bucketClassFactory.deploy({ name: 'bucket-class' });
         bucketClassDeployed = true;
       }
-      const nodes = JSON.parse(await kubectlRead(['get', 'nodes', '-o', 'json'])) as {
-        items?: Array<{ status?: { addresses?: Array<{ type?: string; address?: string }> } }>;
-      };
+      const nodes = await createCoreV1ApiClient(kubeConfig).listNode();
       const nodeAddress = nodes.items
         ?.flatMap((node) => node.status?.addresses ?? [])
         .find(
@@ -317,8 +312,17 @@ describeOrSkip(
       registryHost = `${nodeAddress}:${port}`;
       registryOrigin = `http://${registryHost}`;
       apiOrigin = registryOrigin;
-      await ensureNamespaceExists(harborNamespace, kubeConfig);
-      await ensureNamespaceExists(clientNamespace, kubeConfig);
+      if (retainPlatform) {
+        await ensureSharedPrerequisiteNamespace(harborNamespace, kubeConfig);
+        await ensureSharedPrerequisiteNamespace(clientNamespace, kubeConfig);
+      } else {
+        namespaceLeases.push(
+          ...(await Promise.all([
+            createTestNamespace(harborNamespace, kubeConfig),
+            createTestNamespace(clientNamespace, kubeConfig),
+          ]))
+        );
+      }
       testSecrets = await loadOrCreateHarborTestSecrets(store);
       const claim = await claimFactory.deploy({
         name: claimName,
@@ -362,26 +366,35 @@ describeOrSkip(
         }).catch((error) => cleanupErrors.push(error));
       }
       if (harborDeployed) {
-        await harborFactory
-          .deleteInstance(installationName)
-          .catch((error) => cleanupErrors.push(error));
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          harborFactory,
+          installationName,
+          [],
+          kubeConfig,
+          180_000
+        ).catch((error) => cleanupErrors.push(error));
       }
       if (claimDeployed) {
-        await claimFactory.deleteInstance(claimName).catch((error) => cleanupErrors.push(error));
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          claimFactory,
+          claimName,
+          [],
+          kubeConfig,
+          120_000
+        ).catch((error) => cleanupErrors.push(error));
       }
       if (bucketClassDeployed) {
-        await bucketClassFactory
-          .deleteInstance('bucket-class', { scopes: ['cluster'], includeUnscopedResources: true })
-          .catch((error) => cleanupErrors.push(error));
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          bucketClassFactory,
+          'bucket-class',
+          [],
+          kubeConfig,
+          120_000,
+          { scopes: ['cluster'], includeUnscopedResources: true }
+        ).catch((error) => cleanupErrors.push(error));
       }
-      await deleteNamespaceAndWait(harborNamespace, kubeConfig, 600_000).catch((error) =>
-        cleanupErrors.push(error)
-      );
-      await deleteNamespaceAndWait(clientNamespace, kubeConfig, 600_000).catch((error) =>
-        cleanupErrors.push(error)
-      );
-      if (!retainPlatform) {
-        await deleteNamespaceAndWait(controlNamespace, kubeConfig, 600_000).catch((error) =>
+      for (const lease of namespaceLeases) {
+        await deleteTestNamespaceAndWait(lease, kubeConfig).catch((error) =>
           cleanupErrors.push(error)
         );
       }
@@ -466,17 +479,13 @@ describeOrSkip(
         installation.status.release.observedGeneration
       );
       if (deploymentMode === 'kro') {
-        const owner = JSON.parse(
-          await kubectlRead([
-            'get',
-            'harborlocalinstallation',
-            installationName,
-            '-n',
-            controlNamespace,
-            '-o',
-            'json',
-          ])
-        ) as {
+        const owner = (await createCustomObjectsApiClient(kubeConfig).getNamespacedCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          namespace: controlNamespace,
+          plural: 'harborlocalinstallations',
+          name: installationName,
+        })) as {
           metadata?: { generation?: number };
           status?: {
             conditions?: Array<{ type?: string; status?: string; observedGeneration?: number }>;
@@ -490,37 +499,48 @@ describeOrSkip(
         expect(readyCondition).toMatchObject({ status: 'True' });
         expect(readyCondition?.observedGeneration).toBeGreaterThanOrEqual(generation);
       }
-      expect(
-        await kubectlRead([
-          'get',
-          'helmrelease',
-          installationName,
-          '-n',
-          harborNamespace,
-          '-o',
-          'jsonpath={.spec.values.metrics.enabled}',
-        ])
-      ).toBe('true');
+      const helmRelease = (await createKubernetesObjectApiClient(kubeConfig).read({
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        kind: 'HelmRelease',
+        metadata: { name: installationName, namespace: harborNamespace },
+      })) as unknown as { spec?: { values?: { metrics?: { enabled?: boolean } } } };
+      expect(helmRelease.spec?.values?.metrics?.enabled).toBe(true);
 
       // Restart one official Harbor component and prove bounded recovery.
-      await kubectlRead([
-        'rollout',
-        'restart',
-        `deployment/${installationName}-core`,
-        '-n',
-        harborNamespace,
-      ]);
-      await kubectlRead(
-        [
-          'rollout',
-          'status',
-          `deployment/${installationName}-core`,
-          '-n',
-          harborNamespace,
-          '--timeout=300s',
-        ],
-        330_000
-      );
+      const appsApi = createAppsV1ApiClient(kubeConfig);
+      const deploymentName = `${installationName}-core`;
+      await appsApi.patchNamespacedDeployment({
+        name: deploymentName,
+        namespace: harborNamespace,
+        body: {
+          spec: {
+            template: {
+              metadata: {
+                annotations: { 'typekro.io/restarted-at': new Date().toISOString() },
+              },
+            },
+          },
+        },
+      });
+      const restartDeadline = Date.now() + 300_000;
+      let deploymentReady = false;
+      while (Date.now() < restartDeadline) {
+        const deployment = await appsApi.readNamespacedDeployment({
+          name: deploymentName,
+          namespace: harborNamespace,
+        });
+        const desired = deployment.spec?.replicas ?? 1;
+        if (
+          (deployment.status?.observedGeneration ?? 0) >= (deployment.metadata?.generation ?? 0) &&
+          (deployment.status?.updatedReplicas ?? 0) >= desired &&
+          (deployment.status?.readyReplicas ?? 0) >= desired
+        ) {
+          deploymentReady = true;
+          break;
+        }
+        await Bun.sleep(2_000);
+      }
+      expect(deploymentReady).toBe(true);
       expect(await (await fetch(`${apiOrigin}/api/v2.0/ping`)).text()).toBe('Pong');
     });
 
@@ -603,55 +623,31 @@ describeOrSkip(
         `${registryHost}/${projectName}/typekro-oci-smoke:sha-`
       );
 
-      const coreApi = createBunCompatibleCoreV1Api(kubeConfig);
       const pullPod = `harbor-pull-${runId}`.slice(0, 63);
-      await coreApi.createNamespacedPod({
-        namespace: clientNamespace,
-        body: {
-          metadata: { name: pullPod },
-          spec: {
-            restartPolicy: 'Never',
-            containers: [
-              {
-                name: 'proof',
-                image:
-                  'gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252',
-                command: ['/ko-app/crane'],
-                args: ['digest', '--insecure', first.imageUri],
-                env: [{ name: 'DOCKER_CONFIG', value: '/docker' }],
-                volumeMounts: [{ name: 'registry-auth', mountPath: '/docker', readOnly: true }],
+      const pulledDigest = await runTestPodAndReadLogs(
+        {
+          namespace: clientNamespace,
+          name: pullPod,
+          image:
+            'gcr.io/go-containerregistry/crane@sha256:1b1fb24d2b1bb27a9daf81a588157e68463876904e8e537a812edba6284fb252',
+          command: ['/ko-app/crane'],
+          args: ['digest', '--insecure', first.imageUri],
+          env: [{ name: 'DOCKER_CONFIG', value: '/docker' }],
+          volumeMounts: [{ name: 'registry-auth', mountPath: '/docker', readOnly: true }],
+          volumes: [
+            {
+              name: 'registry-auth',
+              secret: {
+                secretName: secretNames.robotPull,
+                items: [{ key: '.dockerconfigjson', path: 'config.json' }],
               },
-            ],
-            volumes: [
-              {
-                name: 'registry-auth',
-                secret: {
-                  secretName: secretNames.robotPull,
-                  items: [{ key: '.dockerconfigjson', path: 'config.json' }],
-                },
-              },
-            ],
-          },
-        },
-      });
-      try {
-        await kubectlRead(
-          [
-            'wait',
-            '--for=jsonpath={.status.phase}=Succeeded',
-            `pod/${pullPod}`,
-            '-n',
-            clientNamespace,
-            '--timeout=300s',
+            },
           ],
-          330_000
-        );
-        expect(await kubectlRead(['logs', pullPod, '-n', clientNamespace])).toBe(digest);
-      } finally {
-        await coreApi
-          .deleteNamespacedPod({ namespace: clientNamespace, name: pullPod })
-          .catch(() => undefined);
-      }
+          timeoutMs: 300_000,
+        },
+        kubeConfig
+      );
+      expect(pulledDigest.trim()).toBe(digest);
 
       const secrets = activeTestSecrets();
       const client = new HarborApiClient({

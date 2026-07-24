@@ -16,14 +16,13 @@ import {
   createTestNamespace,
   deleteGeneratedCrdAndWait,
   deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
-  isNotFoundError,
   type TestNamespaceLease,
-  waitForResourceAbsent,
 } from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 const runToken = Math.random().toString(36).slice(2, 8);
 const namespace = `typekro-alchemy-kro-${runToken}`;
@@ -186,10 +185,7 @@ describeOrSkip('Alchemy KRO persisted-state upgrade (e2e)', () => {
     ];
     const cleanupErrors: unknown[] = [];
     for (const definition of definitions) {
-      await objectApi.delete(definition).catch((error: unknown) => {
-        if (!isNotFoundError(error)) cleanupErrors.push(error);
-      });
-      await waitForResourceAbsent(definition, kubeConfig, 60_000).catch((error) =>
+      await deleteTestResourceAndWait(definition, kubeConfig, 60_000).catch((error) =>
         cleanupErrors.push(error)
       );
     }

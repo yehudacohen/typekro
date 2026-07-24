@@ -2864,7 +2864,7 @@ export class KroResourceFactoryImpl<
     // and THROWS DeploymentTimeoutError on timeout — never a silent return that lets a
     // later step run behind a still-Terminating resource.
     const rollback = createRollbackManager(k8sApi);
-    const timeout = this.factoryOptions.timeout ?? 300000;
+    const timeout = opts?.timeout ?? this.factoryOptions.timeout ?? 300000;
 
     const apiVersion = this.getInstanceApiVersion();
     let definitionsAlreadyAbsent = false;

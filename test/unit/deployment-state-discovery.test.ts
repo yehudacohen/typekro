@@ -4,11 +4,11 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import type { GvkTarget } from '../../src/core/deployment/deployment-state-discovery.js';
 // We can't import the private functions directly, so we test through
 // the public API by constructing fake resources and calling
 // discoverDeployedResourcesByInstance with a mock k8sApi.
 import { discoverDeployedResourcesByInstance } from '../../src/core/deployment/deployment-state-discovery.js';
-import type { GvkTarget } from '../../src/core/deployment/deployment-state-discovery.js';
 import {
   DEPENDS_ON_ANNOTATION,
   DEPLOYMENT_ID_ANNOTATION,
@@ -34,6 +34,15 @@ function makeTaggedResource(opts: {
   instanceName: string;
   deploymentId: string;
   resourceId: string;
+  factoryNamespace?: string;
+  uid?: string;
+  ownerReferences?: Array<{
+    apiVersion: string;
+    kind: string;
+    name: string;
+    uid: string;
+    controller?: boolean;
+  }>;
   scopes?: string[];
   dependencies?: string[];
   creationTimestamp?: Date;
@@ -44,6 +53,8 @@ function makeTaggedResource(opts: {
     metadata: {
       name: opts.name,
       namespace: opts.namespace ?? 'default',
+      ...(opts.uid ? { uid: opts.uid } : {}),
+      ...(opts.ownerReferences ? { ownerReferences: opts.ownerReferences } : {}),
       creationTimestamp: opts.creationTimestamp ?? new Date('2026-04-05T00:00:00Z'),
       labels: {
         [MANAGED_BY_LABEL]: MANAGED_BY_VALUE,
@@ -55,9 +66,11 @@ function makeTaggedResource(opts: {
         [INSTANCE_NAME_ANNOTATION]: opts.instanceName,
         [DEPLOYMENT_ID_ANNOTATION]: opts.deploymentId,
         [RESOURCE_ID_ANNOTATION]: opts.resourceId,
-        [FACTORY_NAMESPACE_ANNOTATION]: 'factory-ns',
+        [FACTORY_NAMESPACE_ANNOTATION]: opts.factoryNamespace ?? 'factory-ns',
         ...(opts.scopes?.length && { [SCOPES_ANNOTATION]: JSON.stringify(opts.scopes) }),
-        ...(opts.dependencies?.length && { [DEPENDS_ON_ANNOTATION]: JSON.stringify(opts.dependencies) }),
+        ...(opts.dependencies?.length && {
+          [DEPENDS_ON_ANNOTATION]: JSON.stringify(opts.dependencies),
+        }),
       },
     },
   };
@@ -82,9 +95,7 @@ function makeFakeK8sApi(resources: ReturnType<typeof makeTaggedResource>[]) {
       // Only return resources when the selector matches our factory
       if (labelSelector?.includes('my-factory')) {
         // Filter by kind to simulate per-GVK list calls
-        const matching = resources.filter(
-          (r) => r.apiVersion === _apiVersion && r.kind === _kind
-        );
+        const matching = resources.filter((r) => r.apiVersion === _apiVersion && r.kind === _kind);
         return { items: matching };
       }
       return { items: [] };
@@ -140,6 +151,100 @@ describe('discoverDeployedResourcesByInstance', () => {
     expect(result!.resources).toHaveLength(2);
     expect(result!.resources.map((r) => r.id).sort()).toEqual(['app', 'database']);
     expect(result!.deploymentId).toBe('dep-1');
+  });
+
+  it('keeps distinct controller children that copy a parent resource id', async () => {
+    const certificate = makeTaggedResource({
+      apiVersion: 'cert-manager.io/v1',
+      kind: 'Certificate',
+      name: 'app-cert',
+      namespace: 'apps',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'certificate',
+      uid: 'certificate-uid',
+    });
+    const generatedSecret = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: 'app-cert-next-key',
+      namespace: 'apps',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'certificate',
+      uid: 'secret-uid',
+      ownerReferences: [
+        {
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'Certificate',
+          name: 'app-cert',
+          uid: 'certificate-uid',
+          controller: true,
+        },
+      ],
+    });
+
+    const result = await discoverDeployedResourcesByInstance(
+      makeFakeK8sApi([certificate, generatedSecret]),
+      {
+        factoryName: 'my-factory',
+        instanceName: 'my-instance',
+        knownGvks: [
+          { apiVersion: 'cert-manager.io/v1', kind: 'Certificate', namespaced: true },
+          { apiVersion: 'v1', kind: 'Secret', namespaced: true },
+        ],
+      }
+    );
+
+    expect(result?.resources).toHaveLength(2);
+    expect(new Set(result?.resources.map((resource) => resource.id)).size).toBe(2);
+    expect(result?.resources.map((resource) => resource.name).sort()).toEqual([
+      'app-cert',
+      'app-cert-next-key',
+    ]);
+    expect(result?.dependencyGraph.getNodes().size).toBe(2);
+    const certificateId = result?.resources.find((resource) => resource.name === 'app-cert')?.id;
+    const generatedSecretId = result?.resources.find(
+      (resource) => resource.name === 'app-cert-next-key'
+    )?.id;
+    expect(certificateId).toBeDefined();
+    expect(generatedSecretId).toBeDefined();
+    expect(result?.dependencyGraph.getDependencies(certificateId!)).toContain(generatedSecretId!);
+  });
+
+  it('isolates identical factory instances by factory namespace', async () => {
+    const mine = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      name: 'mine',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      factoryNamespace: 'installation-a',
+      deploymentId: 'dep-a',
+      resourceId: 'mine',
+    });
+    const other = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      name: 'other',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      factoryNamespace: 'installation-b',
+      deploymentId: 'dep-b',
+      resourceId: 'other',
+    });
+
+    const result = await discoverDeployedResourcesByInstance(makeFakeK8sApi([mine, other]), {
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      factoryNamespace: 'installation-a',
+      knownGvks: [{ apiVersion: 'v1', kind: 'ConfigMap', namespaced: true }],
+    });
+
+    expect(result?.resources.map((resource) => resource.name)).toEqual(['mine']);
+    expect(result?.deploymentId).toBe('dep-a');
   });
 
   it('reconstructs dependency graph from annotations', async () => {
@@ -329,7 +434,11 @@ describe('discoverDeployedResourcesByInstance', () => {
             ],
           };
         }
-        if (apiVersion === 'example.io/v1' && kind === 'Widget' && labelSelector?.includes('my-factory')) {
+        if (
+          apiVersion === 'example.io/v1' &&
+          kind === 'Widget' &&
+          labelSelector?.includes('my-factory')
+        ) {
           return { items: [widget] };
         }
         return { items: [] };
@@ -370,6 +479,60 @@ describe('discoverDeployedResourcesByInstance', () => {
 
     expect(result).toBeDefined();
     expect(result!.resources).toHaveLength(1);
+  });
+
+  it('deduplicates one live custom resource exposed through multiple served versions', async () => {
+    const makeVersion = (apiVersion: string) =>
+      makeTaggedResource({
+        apiVersion,
+        kind: 'HelmRelease',
+        name: 'release',
+        namespace: 'apps',
+        factoryName: 'my-factory',
+        instanceName: 'my-instance',
+        deploymentId: 'dep-1',
+        resourceId: 'release',
+        uid: 'shared-live-uid',
+      });
+    const api = {
+      list: async (
+        apiVersion: string,
+        kind: string,
+        _namespace?: string,
+        _pretty?: string,
+        _exact?: boolean,
+        _exportt?: boolean,
+        _fieldSelector?: string,
+        labelSelector?: string
+      ) => {
+        if (apiVersion === 'apiextensions.k8s.io/v1') return { items: [] };
+        if (
+          kind === 'HelmRelease' &&
+          labelSelector?.includes('my-factory') &&
+          (apiVersion === 'helm.toolkit.fluxcd.io/v2' ||
+            apiVersion === 'helm.toolkit.fluxcd.io/v2beta2')
+        ) {
+          return { items: [makeVersion(apiVersion)] };
+        }
+        return { items: [] };
+      },
+    } as any;
+
+    const result = await discoverDeployedResourcesByInstance(api, {
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      knownGvks: [
+        { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', namespaced: true },
+        {
+          apiVersion: 'helm.toolkit.fluxcd.io/v2beta2',
+          kind: 'HelmRelease',
+          namespaced: true,
+        },
+      ],
+    });
+
+    expect(result?.resources).toHaveLength(1);
+    expect(result?.resources[0]?.manifest.apiVersion).toBe('helm.toolkit.fluxcd.io/v2');
   });
 
   it('keeps resources with same kind+name but different apiVersion', async () => {

@@ -7,18 +7,21 @@
  * Requirements tested: 6.1, 6.2, 6.3, 6.4, 6.5
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index';
 import {
-  cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestDeletableFactory,
 } from './shared-kubeconfig';
 
 // Test configuration
@@ -35,7 +38,7 @@ const generateTestNamespace = (testName: string): string => {
 };
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
@@ -79,51 +82,64 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       process.removeListener('unhandledRejection', unhandledRejectionHandler);
       unhandledRejectionHandler = undefined;
     }
-    if (kc) {
-      console.log('Cleaning up any leftover test namespaces...');
-      await cleanupTestNamespaces(/^typekro-imperative-e2e-/, kc);
-
-      // Clean up RGDs created by this test run to avoid CRD ownership conflicts
-      const customApi = createCustomObjectsApiClient(kc);
-      for (const rgdName of [
-        `webapp-factory-test-${testRunId}`,
-        `webapp-factory-traditional-${testRunId}`,
-      ]) {
-        try {
-          await customApi.deleteClusterCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            plural: 'resourcegraphdefinitions',
-            name: rgdName,
-          });
-          console.log(`🗑️ Deleted RGD: ${rgdName}`);
-        } catch {
-          // RGD may not exist, ignore
-        }
-      }
-    }
   });
 
   // Helper function to create and cleanup test namespace
   const withTestNamespace = async <T>(
     testName: string,
-    testFn: (namespace: string) => Promise<T>
+    testFn: (
+      namespace: string,
+      registerFactory: (factory: TestDeletableFactory, instanceName: string) => void
+    ) => Promise<T>
   ): Promise<T> => {
     const namespace = generateTestNamespace(testName);
+    const namespaceLease = await createTestNamespace(namespace, kc);
+    const deployments: Array<{ factory: TestDeletableFactory; instanceName: string }> = [];
+    let result: T | undefined;
+    let operationError: unknown;
 
     try {
-      // Create namespace
-      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
-      console.log(`📦 Created test namespace: ${namespace}`);
-
-      // Run test
-      const result = await testFn(namespace);
-
-      return result;
-    } finally {
-      // Cleanup namespace and wait for full deletion
-      await deleteNamespaceAndWait(namespace, kc);
+      result = await testFn(namespace, (factory, instanceName) => {
+        deployments.push({ factory, instanceName });
+      });
+    } catch (error) {
+      operationError = error;
     }
+
+    const cleanupErrors: unknown[] = [];
+    for (const deployment of deployments.reverse()) {
+      try {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          deployment.factory,
+          deployment.instanceName,
+          [],
+          kc,
+          60_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      await deleteTestNamespaceAndWait(namespaceLease, kc);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+
+    if (operationError !== undefined && cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        `Imperative integration failed and could not clean up namespace ${namespace}`
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        `Failed to clean up imperative integration namespace ${namespace}`
+      );
+    }
+    return result as T;
   };
 
   // Test schemas - using the exact same structure as the working e2e-factory-pattern.test.ts
@@ -415,7 +431,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
   describe('Factory Methods Work Identically', () => {
     it('should create Kro factory identical to toResourceGraph', async () => {
-      await withTestNamespace('kro-factory-test', async (testNamespace) => {
+      await withTestNamespace('kro-factory-test', async (testNamespace, registerFactory) => {
         console.log('🚀 Testing Kro factory compatibility...');
 
         // Create imperative composition using proven patterns
@@ -515,6 +531,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             waitForReady: true,
             kubeConfig: kc,
           });
+          registerFactory(imperativeKroFactory, 'imperative-test-app');
+          registerFactory(traditionalKroFactory, 'traditional-test-app');
           console.log('✅ Both factories created');
 
           // Both factories should have identical properties (except name)
@@ -564,33 +582,15 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(imperativeInstances.length).toBeGreaterThan(0);
           expect(traditionalInstances.length).toBeGreaterThan(0);
 
-          // Cleanup
-          try {
-            await imperativeKroFactory.deleteInstance('imperative-test-app');
-            await traditionalKroFactory.deleteInstance('traditional-test-app');
-
-            // LAYER 2: Async Cleanup Delay
-            // Wait for any async watch cleanup errors to settle (Bun-specific issue)
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          } catch (error) {
-            console.warn('⚠️ Cleanup failed:', error);
-          }
-
           console.log('✅ Kro factory compatibility verified');
         } catch (error) {
-          // Kro controller might not be available in all test environments
-          console.log('⚠️ Kro factory test skipped - Kro controller not available:', error);
-
-          // This is not a failure - just means Kro controller is not installed
-          // The imperative composition should still work with direct deployment
-          expect(imperativeComposition).toBeDefined();
-          expect(traditionalComposition).toBeDefined();
+          throw new Error('KRO factory compatibility integration failed', { cause: error });
         }
       });
     }, 900000);
 
     it('should create Direct factory identical to toResourceGraph', async () => {
-      await withTestNamespace('direct-factory-test', async (testNamespace) => {
+      await withTestNamespace('direct-factory-test', async (testNamespace, registerFactory) => {
         console.log('🚀 Testing Direct factory compatibility...');
 
         // Create imperative composition using proven patterns
@@ -687,6 +687,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           waitForReady: true,
           kubeConfig: kc,
         });
+        registerFactory(imperativeDirectFactory, 'imperative-direct-app');
+        registerFactory(traditionalDirectFactory, 'traditional-direct-app');
 
         // Both factories should have identical properties (except name)
         expect(imperativeDirectFactory.mode).toBe('direct');
@@ -762,7 +764,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     }, 900000);
 
     it('should support factory status and instance management methods', async () => {
-      await withTestNamespace('factory-management-test', async (testNamespace) => {
+      await withTestNamespace('factory-management-test', async (testNamespace, registerFactory) => {
         console.log('🚀 Testing factory management methods...');
 
         const composition = kubernetesComposition(definition, (spec) => {
@@ -792,6 +794,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             waitForReady: true,
             kubeConfig: kc,
           });
+          registerFactory(kroFactory, 'management-test-app');
 
           // Deploy an instance
           await kroFactory.deploy({
@@ -818,25 +821,9 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           );
           expect(ourInstance).toBeDefined();
 
-          // Cleanup
-          try {
-            await kroFactory.deleteInstance('management-test-app');
-
-            // LAYER 2: Async Cleanup Delay
-            // Wait for any async watch cleanup errors to settle (Bun-specific issue)
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          } catch (error) {
-            console.warn('⚠️ Cleanup failed:', error);
-          }
-
           console.log('✅ Factory management methods verified');
         } catch (error) {
-          // Kro controller might not be available in all test environments
-          console.log('⚠️ Factory management test skipped - Kro controller not available:', error);
-
-          // This is not a failure - just means Kro controller is not installed
-          // The imperative composition should still work with direct deployment
-          expect(composition).toBeDefined();
+          throw new Error('KRO factory management integration failed', { cause: error });
         }
 
         // Test Direct factory management (this should always work)
@@ -856,97 +843,101 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
   describe('Alchemy Integration', () => {
     it('should work with Alchemy deployment strategy if available', async () => {
-      await withTestNamespace('alchemy-integration-test', async (testNamespace) => {
-        console.log('🚀 Testing Alchemy integration...');
+      await withTestNamespace(
+        'alchemy-integration-test',
+        async (testNamespace, registerFactory) => {
+          console.log('🚀 Testing Alchemy integration...');
 
-        const composition = kubernetesComposition(definition, (_spec) => {
-          const webapp = simple.Deployment({
-            name: 'webapp-factory',
-            image: 'nginx:alpine',
-            replicas: 1, // Use 1 replica for faster testing
-            env: {
-              LOG_LEVEL: 'info',
-            },
-            ports: [{ containerPort: 80, name: 'http' }],
-            id: 'webapp',
+          const composition = kubernetesComposition(definition, (_spec) => {
+            const webapp = simple.Deployment({
+              name: 'webapp-factory',
+              image: 'nginx:alpine',
+              replicas: 1, // Use 1 replica for faster testing
+              env: {
+                LOG_LEVEL: 'info',
+              },
+              ports: [{ containerPort: 80, name: 'http' }],
+              id: 'webapp',
+            });
+
+            const _webappService = simple.Service({
+              name: 'webapp-factory-service',
+              selector: { app: 'webapp-factory' },
+              ports: [{ port: 80, targetPort: 80, name: 'http' }],
+              id: 'webappService',
+            });
+
+            return {
+              // Dynamic field - resolved by Kro
+              phase: Cel.conditional(
+                Cel.expr(webapp.status.readyReplicas, ' > 0'),
+                '"running"',
+                '"pending"'
+              ) as 'pending' | 'running' | 'failed',
+
+              // Static field - hydrated directly by TypeKro
+              url: 'http://webapp-factory-service',
+
+              // Dynamic field - resolved by Kro
+              readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+
+              // Static field for compatibility
+              ready: true,
+            };
           });
 
-          const _webappService = simple.Service({
-            name: 'webapp-factory-service',
-            selector: { app: 'webapp-factory' },
-            ports: [{ port: 80, targetPort: 80, name: 'http' }],
-            id: 'webappService',
-          });
+          try {
+            // Try to create a direct factory with Alchemy integration
+            const directFactory = await composition.factory('direct', {
+              namespace: testNamespace,
+              waitForReady: true,
+              kubeConfig: kc,
+            });
+            registerFactory(directFactory, 'alchemy-test-app');
 
-          return {
-            // Dynamic field - resolved by Kro
-            phase: Cel.conditional(
-              Cel.expr(webapp.status.readyReplicas, ' > 0'),
-              '"running"',
-              '"pending"'
-            ) as 'pending' | 'running' | 'failed',
+            // Deploy using the factory
+            const result = await directFactory.deploy({
+              name: 'alchemy-test-app',
+              environment: 'development',
+              image: 'nginx:alpine',
+              replicas: 1,
+              hostname: 'alchemy.example.com',
+            });
 
-            // Static field - hydrated directly by TypeKro
-            url: 'http://webapp-factory-service',
+            // Verify the deployment result
+            expect(result.metadata.name).toBeDefined();
+            expect(result.spec.name).toBe('alchemy-test-app');
+            expect(typeof result.status.ready).toBe('boolean');
+            expect(typeof result.status.readyReplicas).toBe('number');
 
-            // Dynamic field - resolved by Kro
-            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+            // Verify underlying resources were created through Alchemy
+            const deployment = await appsApi.readNamespacedDeployment({
+              name: 'webapp-factory',
+              namespace: testNamespace,
+            });
+            expect(deployment.spec?.replicas).toBe(1);
 
-            // Static field for compatibility
-            ready: true,
-          };
-        });
+            const service = await k8sApi.readNamespacedService({
+              name: 'webapp-factory-service',
+              namespace: testNamespace,
+            });
+            expect(service.spec?.ports?.[0]?.port).toBe(80);
 
-        try {
-          // Try to create a direct factory with Alchemy integration
-          const directFactory = await composition.factory('direct', {
-            namespace: testNamespace,
-            waitForReady: true,
-            kubeConfig: kc,
-          });
+            console.log('✅ Alchemy integration verified');
+          } catch (error) {
+            // Alchemy integration might not be available in all test environments
+            console.log('⚠️ Alchemy integration test skipped - Alchemy not available:', error);
 
-          // Deploy using the factory
-          const result = await directFactory.deploy({
-            name: 'alchemy-test-app',
-            environment: 'development',
-            image: 'nginx:alpine',
-            replicas: 1,
-            hostname: 'alchemy.example.com',
-          });
-
-          // Verify the deployment result
-          expect(result.metadata.name).toBeDefined();
-          expect(result.spec.name).toBe('alchemy-test-app');
-          expect(typeof result.status.ready).toBe('boolean');
-          expect(typeof result.status.readyReplicas).toBe('number');
-
-          // Verify underlying resources were created through Alchemy
-          const deployment = await appsApi.readNamespacedDeployment({
-            name: 'webapp-factory',
-            namespace: testNamespace,
-          });
-          expect(deployment.spec?.replicas).toBe(1);
-
-          const service = await k8sApi.readNamespacedService({
-            name: 'webapp-factory-service',
-            namespace: testNamespace,
-          });
-          expect(service.spec?.ports?.[0]?.port).toBe(80);
-
-          console.log('✅ Alchemy integration verified');
-        } catch (error) {
-          // Alchemy integration might not be available in all test environments
-          console.log('⚠️ Alchemy integration test skipped - Alchemy not available:', error);
-
-          // This is not a failure - just means Alchemy is not configured
-          // The imperative composition should still work with direct deployment
-          expect(composition).toBeDefined();
+            // This is not a failure - just means Alchemy is not configured
+            // The imperative composition should still work with direct deployment
+            expect(composition).toBeDefined();
+          }
         }
-      });
+      );
     }, 900000); // 15 minutes - deployment readiness polling + namespace cleanup
 
     it('should preserve readiness evaluators through Alchemy integration', async () => {
-      await withTestNamespace('alchemy-readiness-test', async (testNamespace) => {
+      await withTestNamespace('alchemy-readiness-test', async (testNamespace, registerFactory) => {
         console.log('🚀 Testing readiness evaluator preservation with Alchemy...');
 
         const composition = kubernetesComposition(definition, (_spec) => {
@@ -1003,6 +994,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
               statusPolling: true,
             },
           });
+          registerFactory(directFactory, 'readiness-test-app');
 
           // Deploy and wait for readiness
           const result = await directFactory.deploy({

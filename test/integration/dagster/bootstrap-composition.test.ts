@@ -2,18 +2,23 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bu
 import { spawnSync } from 'node:child_process';
 import type * as k8s from '@kubernetes/client-node';
 import { buildContainer } from '../../../src/core/containers/index.js';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCoreV1Api } from '../../../src/core/kubernetes/index.js';
 import {
-  createKubernetesObjectApiClient,
-  deleteNamespaceIfExists,
-  ensureNamespaceExists,
+  assertTestNamespaceAbsent,
+  assertTestResourceAbsent,
+  captureTestNamespaceLease,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
+  getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestDeletableFactory,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 setDefaultTimeout(900000);
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const requireClusterTests = process.env.REQUIRE_CLUSTER_TESTS === 'true';
 const defaultValidationImageName = 'typekro-dagster-validation';
 const defaultValidationImageTag = '1.13.8';
@@ -87,18 +92,14 @@ async function resolveValidationImage(): Promise<string | undefined> {
   return result.imageUri;
 }
 
-function loadLocalImageIntoKindIfNeeded(image: string): void {
+function loadLocalImageIntoKindIfNeeded(image: string, kubeConfig: k8s.KubeConfig): void {
   const inspect = spawnSync('docker', ['image', 'inspect', image], {
     stdio: 'ignore',
     timeout: 10000,
   });
   if (inspect.status !== 0) return;
 
-  const context = spawnSync('kubectl', ['config', 'current-context'], {
-    encoding: 'utf8',
-    timeout: 10000,
-  });
-  const currentContext = context.status === 0 ? context.stdout.trim() : '';
+  const currentContext = kubeConfig.getCurrentContext();
   if (!currentContext.startsWith('kind-')) return;
 
   const clusterName = currentContext.slice('kind-'.length);
@@ -114,71 +115,58 @@ function loadLocalImageIntoKindIfNeeded(image: string): void {
   }
 }
 
-async function deleteClusterObjectIfExists(
-  kubeConfig: k8s.KubeConfig,
-  apiVersion: string,
-  kind: string,
-  name: string
-): Promise<void> {
-  const objectApi = createKubernetesObjectApiClient(kubeConfig);
-  try {
-    await objectApi.delete({ apiVersion, kind, metadata: { name } });
-    await waitForClusterObjectDeleted(kubeConfig, apiVersion, kind, name);
-  } catch (error: unknown) {
-    const statusCode = (error as { statusCode?: number; body?: { reason?: string } }).statusCode;
-    const reason = (error as { body?: { reason?: string } }).body?.reason;
-    if (statusCode !== 404 && reason !== 'NotFound') {
-      throw error;
-    }
-  }
-}
-
-async function waitForClusterObjectDeleted(
-  kubeConfig: k8s.KubeConfig,
-  apiVersion: string,
-  kind: string,
-  name: string
-): Promise<void> {
-  const objectApi = createKubernetesObjectApiClient(kubeConfig);
-  const deadline = Date.now() + 60000;
-  while (Date.now() < deadline) {
-    try {
-      await objectApi.read({ apiVersion, kind, metadata: { name } });
-    } catch (error: unknown) {
-      const statusCode = (error as { statusCode?: number; body?: { reason?: string } }).statusCode;
-      const reason = (error as { body?: { reason?: string } }).body?.reason;
-      if (statusCode === 404 || reason === 'NotFound') return;
-      throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  throw new Error(`${kind} ${name} was not deleted within 60000ms.`);
-}
-
 async function resetDagsterKroDefinition(kubeConfig: k8s.KubeConfig): Promise<void> {
-  await deleteClusterObjectIfExists(
+  await deleteTestResourceAndWait(
+    {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'dagster-bootstrap' },
+    },
     kubeConfig,
-    'kro.run/v1alpha1',
-    'ResourceGraphDefinition',
-    'dagster-bootstrap'
+    60_000
   );
   // Generated CRDs are intentionally reusable cluster APIs. Deleting one can
   // strand it in customresourcecleanup/Terminating and block the next RGD, so
   // reset only the definition and let KRO reuse the established CRD.
 }
 
-async function deleteDagsterPvcs(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
-  const coreApi = createBunCompatibleCoreV1Api(kubeConfig);
-  const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace }).catch(() => ({
-    items: [],
-  }));
-  await Promise.allSettled(
-    pvcs.items
-      .map((pvc) => pvc.metadata?.name)
-      .filter((name): name is string => Boolean(name))
-      .map((name) => coreApi.deleteNamespacedPersistentVolumeClaim({ name, namespace }))
-  );
+async function deployWithNamespaceLease<T>(
+  namespace: string,
+  kubeConfig: k8s.KubeConfig,
+  deploy: () => Promise<T>,
+  retainLease: (lease: TestNamespaceLease) => void
+): Promise<T> {
+  let result: T | undefined;
+  let deploymentError: unknown;
+  try {
+    result = await deploy();
+  } catch (error) {
+    deploymentError = error;
+  }
+
+  let lease: TestNamespaceLease | undefined;
+  let leaseError: unknown;
+  try {
+    lease = await captureTestNamespaceLease(namespace, kubeConfig);
+    if (lease) retainLease(lease);
+  } catch (error) {
+    leaseError = error;
+  }
+
+  if (deploymentError !== undefined) {
+    if (leaseError !== undefined) {
+      throw new AggregateError(
+        [deploymentError, leaseError],
+        `Dagster deployment failed and ownership of ${namespace} could not be retained`
+      );
+    }
+    throw deploymentError;
+  }
+  if (leaseError !== undefined) throw leaseError;
+  if (!lease) {
+    throw new Error(`Dagster deployment did not create expected namespace ${namespace}`);
+  }
+  return result as T;
 }
 
 // Test decision: keep the live deploy path gated by real cluster and image
@@ -188,9 +176,13 @@ async function deleteDagsterPvcs(namespace: string, kubeConfig: k8s.KubeConfig):
 // integration path when live prerequisites are available.
 describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
   let kubeConfig: k8s.KubeConfig;
-  let factory: { deleteInstance(instanceName: string): Promise<unknown> } | undefined;
-  let kroFactory: { deleteInstance(instanceName: string): Promise<unknown> } | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let factory: TestDeletableFactory | undefined;
+  let kroFactory: TestDeletableFactory | undefined;
+  let factoryNamespaceLease: TestNamespaceLease | undefined;
+  let kroFactoryNamespaceLease: TestNamespaceLease | undefined;
+  let dagsterNamespaceLease: TestNamespaceLease | undefined;
+  let dagsterKroNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const factoryNamespace = `typekro-dagster-${suffix}`;
   const kroFactoryNamespace = `typekro-dagster-kro-${suffix}`;
   const dagsterNamespace = `dagster-${suffix}`;
@@ -213,72 +205,84 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
       );
     }
 
+    kubeConfig = getIntegrationTestKubeConfig();
     const validationImage = await resolveValidationImage();
     if (validationImage) {
-      loadLocalImageIntoKindIfNeeded(validationImage);
+      loadLocalImageIntoKindIfNeeded(validationImage, kubeConfig);
       userCodeImage = splitImage(validationImage);
       dagsterSystemImage = splitImage(validationImage);
     }
 
-    kubeConfig = getKubeConfig({ skipTLSVerify: true });
-    await resetDagsterKroDefinition(kubeConfig);
-    await ensureNamespaceExists(factoryNamespace, kubeConfig);
-    await ensureNamespaceExists(kroFactoryNamespace, kubeConfig);
+    await assertTestResourceAbsent(
+      {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'dagster-bootstrap' },
+      },
+      kubeConfig
+    );
+    factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
+    kroFactoryNamespaceLease = await createTestNamespace(kroFactoryNamespace, kubeConfig);
+    await assertTestNamespaceAbsent(dagsterNamespace, kubeConfig);
+    await assertTestNamespaceAbsent(dagsterKroNamespace, kubeConfig);
   });
 
   afterAll(async () => {
-    // The PostgreSQL chart retains its StatefulSet claim independently of the
-    // HelmRelease graph. Start deletion of these test-owned claims before the
-    // factories remove the consuming Pods and their owned namespaces.
-    await Promise.allSettled([
-      deleteDagsterPvcs(dagsterNamespace, kubeConfig),
-      deleteDagsterPvcs(dagsterKroNamespace, kubeConfig),
-    ]);
+    const cleanupErrors: unknown[] = [];
 
     if (kroFactory) {
       try {
-        await kroFactory.deleteInstance('dagster-kro-test');
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          'dagster-kro-test',
+          dagsterKroNamespaceLease ? [dagsterKroNamespaceLease] : [],
+          kubeConfig,
+          120_000
+        );
       } catch (error) {
-        console.error('Dagster KRO deleteInstance failed:', (error as Error).message);
+        cleanupErrors.push(error);
       }
     }
 
     if (factory) {
       try {
-        await factory.deleteInstance('dagster-test');
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          factory,
+          'dagster-test',
+          dagsterNamespaceLease ? [dagsterNamespaceLease] : [],
+          kubeConfig,
+          120_000
+        );
       } catch (error) {
-        console.error('Dagster deleteInstance failed:', (error as Error).message);
+        cleanupErrors.push(error);
       }
     }
 
-    try {
-      await deleteNamespaceIfExists(factoryNamespace, kubeConfig);
-    } catch (error) {
-      console.error('Dagster factory namespace cleanup failed:', (error as Error).message);
-    }
-
-    try {
-      await deleteNamespaceIfExists(kroFactoryNamespace, kubeConfig);
-    } catch (error) {
-      console.error('Dagster KRO factory namespace cleanup failed:', (error as Error).message);
-    }
-
-    try {
-      await deleteNamespaceIfExists(dagsterNamespace, kubeConfig);
-    } catch (error) {
-      console.error('Dagster app namespace cleanup failed:', (error as Error).message);
-    }
-
-    try {
-      await deleteNamespaceIfExists(dagsterKroNamespace, kubeConfig);
-    } catch (error) {
-      console.error('Dagster KRO app namespace cleanup failed:', (error as Error).message);
+    for (const lease of [
+      dagsterNamespaceLease,
+      dagsterKroNamespaceLease,
+      factoryNamespaceLease,
+      kroFactoryNamespaceLease,
+    ]) {
+      if (!lease) continue;
+      try {
+        await deleteTestNamespaceAndWait(lease, kubeConfig);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
 
     try {
       await resetDagsterKroDefinition(kubeConfig);
     } catch (error) {
-      console.error('Dagster KRO definition cleanup failed:', (error as Error).message);
+      cleanupErrors.push(error);
+    }
+
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        'Dagster integration cleanup did not complete safely'
+      );
     }
   });
 
@@ -293,35 +297,43 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
     });
     factory = directFactory;
 
-    const instance = await directFactory.deploy({
-      name: 'dagster-test',
-      namespace: dagsterNamespace,
-      userDeployments: {
-        enabled: true,
-        deployments: [
-          {
-            name: 'example-repo',
-            image: { ...userCodeImage, pullPolicy: 'IfNotPresent' },
-            codeServerArgs: ['-f', '/opt/dagster/app/definitions.py'],
-            port: 3030,
+    const instance = await deployWithNamespaceLease(
+      dagsterNamespace,
+      kubeConfig,
+      () =>
+        directFactory.deploy({
+          name: 'dagster-test',
+          namespace: dagsterNamespace,
+          userDeployments: {
+            enabled: true,
+            deployments: [
+              {
+                name: 'example-repo',
+                image: { ...userCodeImage, pullPolicy: 'IfNotPresent' },
+                codeServerArgs: ['-f', '/opt/dagster/app/definitions.py'],
+                port: 3030,
+              },
+            ],
           },
-        ],
-      },
-      postgresql: { enabled: true },
-      ...(dagsterSystemImage && {
-        webserver: {
-          image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
-        },
-        daemon: {
-          image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
-        },
-      }),
-      runLauncher: {
-        type: 'K8sRunLauncher',
-        k8sRunLauncher: { jobNamespace: dagsterNamespace },
-      },
-      values: { dagsterWebserver: { service: { type: 'ClusterIP' } } },
-    });
+          postgresql: { enabled: true },
+          ...(dagsterSystemImage && {
+            webserver: {
+              image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
+            },
+            daemon: {
+              image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
+            },
+          }),
+          runLauncher: {
+            type: 'K8sRunLauncher',
+            k8sRunLauncher: { jobNamespace: dagsterNamespace },
+          },
+          values: { dagsterWebserver: { service: { type: 'ClusterIP' } } },
+        }),
+      (lease) => {
+        dagsterNamespaceLease = lease;
+      }
+    );
 
     expect(instance.spec.name).toBe('dagster-test');
     expect(instance.spec.namespace).toBe(dagsterNamespace);
@@ -347,35 +359,43 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
     });
     kroFactory = createdKroFactory;
 
-    const instance = await createdKroFactory.deploy({
-      name: 'dagster-kro-test',
-      namespace: dagsterKroNamespace,
-      userDeployments: {
-        enabled: true,
-        deployments: [
-          {
-            name: 'example-repo',
-            image: { ...userCodeImage, pullPolicy: 'IfNotPresent' },
-            codeServerArgs: ['-f', '/opt/dagster/app/definitions.py'],
-            port: 3030,
+    const instance = await deployWithNamespaceLease(
+      dagsterKroNamespace,
+      kubeConfig,
+      () =>
+        createdKroFactory.deploy({
+          name: 'dagster-kro-test',
+          namespace: dagsterKroNamespace,
+          userDeployments: {
+            enabled: true,
+            deployments: [
+              {
+                name: 'example-repo',
+                image: { ...userCodeImage, pullPolicy: 'IfNotPresent' },
+                codeServerArgs: ['-f', '/opt/dagster/app/definitions.py'],
+                port: 3030,
+              },
+            ],
           },
-        ],
-      },
-      postgresql: { enabled: true },
-      ...(dagsterSystemImage && {
-        webserver: {
-          image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
-        },
-        daemon: {
-          image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
-        },
-      }),
-      runLauncher: {
-        type: 'K8sRunLauncher',
-        k8sRunLauncher: { jobNamespace: dagsterKroNamespace },
-      },
-      values: { dagsterWebserver: { service: { type: 'ClusterIP' } } },
-    });
+          postgresql: { enabled: true },
+          ...(dagsterSystemImage && {
+            webserver: {
+              image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
+            },
+            daemon: {
+              image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
+            },
+          }),
+          runLauncher: {
+            type: 'K8sRunLauncher',
+            k8sRunLauncher: { jobNamespace: dagsterKroNamespace },
+          },
+          values: { dagsterWebserver: { service: { type: 'ClusterIP' } } },
+        }),
+      (lease) => {
+        dagsterKroNamespaceLease = lease;
+      }
+    );
 
     expect(instance.spec.name).toBe('dagster-kro-test');
     expect(instance.spec.namespace).toBe(dagsterKroNamespace);

@@ -1,6 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import type * as k8s from '@kubernetes/client-node';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import { execSync } from 'node:child_process';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import {
   externalDnsHelmRelease,
@@ -8,10 +11,13 @@ import {
 } from '../../../src/factories/external-dns';
 import {
   createCoreV1ApiClient,
-  deleteNamespaceIfExists,
-  ensureNamespaceExists,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestDeletableFactory,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 interface ResourceGraphInspectable {
@@ -39,10 +45,13 @@ function loadAwsCredentials(): AwsCredentials | undefined {
       timeout: 10000,
     });
     const envMap = Object.fromEntries(
-      envOutput.trim().split('\n').map((line: string) => {
-        const eq = line.indexOf('=');
-        return [line.slice(0, eq), line.slice(eq + 1)];
-      })
+      envOutput
+        .trim()
+        .split('\n')
+        .map((line: string) => {
+          const eq = line.indexOf('=');
+          return [line.slice(0, eq), line.slice(eq + 1)];
+        })
     );
     const accessKeyId = envMap.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '';
     const secretAccessKey = envMap.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '';
@@ -73,17 +82,7 @@ async function installAwsCredentialsSecret(
   namespace: string,
   credentials: AwsCredentials
 ): Promise<void> {
-  await ensureNamespaceExists(namespace, kubeConfig);
   const coreApi = createCoreV1ApiClient(kubeConfig);
-
-  try {
-    await coreApi.deleteNamespacedSecret({
-      name: 'aws-route53-credentials',
-      namespace,
-    });
-  } catch (_e) {
-    // Secret may not exist from a prior run.
-  }
 
   await coreApi.createNamespacedSecret({
     namespace,
@@ -113,12 +112,17 @@ const _ExternalDnsTestStatusSchema = type({
 });
 
 // Skip tests if no cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('External-DNS Integration Tests', () => {
-  const testNamespace = 'typekro-test-external-dns';
+  const runId = crypto.randomUUID().slice(0, 8);
+  const testNamespace = `typekro-test-external-dns-${runId}`;
+  const directAppNamespace = `external-dns-${runId}`;
   let kubeConfig: k8s.KubeConfig;
+  let testNamespaceLease: TestNamespaceLease;
+  let directAppNamespaceLease: TestNamespaceLease;
+  const deployedInstances: Array<{ factory: TestDeletableFactory; name: string }> = [];
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -128,13 +132,42 @@ describeOrSkip('External-DNS Integration Tests', () => {
     console.log('✅ Cluster connection established');
 
     // Create test namespace
-    await ensureNamespaceExists(testNamespace, kubeConfig);
+    [testNamespaceLease, directAppNamespaceLease] = await Promise.all([
+      createTestNamespace(testNamespace, kubeConfig),
+      createTestNamespace(directAppNamespace, kubeConfig),
+    ]);
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('Cleaning up external-dns integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    const cleanupErrors: unknown[] = [];
+    for (const deployment of deployedInstances.reverse()) {
+      try {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          deployment.factory,
+          deployment.name,
+          [],
+          kubeConfig,
+          60_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    for (const lease of [directAppNamespaceLease, testNamespaceLease]) {
+      try {
+        await deleteTestNamespaceAndWait(lease, kubeConfig);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        'Failed to clean up external-dns integration resources'
+      );
+    }
   });
 
   it('should deploy external-dns ecosystem successfully', async () => {
@@ -147,7 +180,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
       return;
     }
 
-    await installAwsCredentialsSecret(kubeConfig, 'external-dns', credentials);
+    await installAwsCredentialsSecret(kubeConfig, directAppNamespace, credentials);
 
     const directFactory = externalDnsBootstrap.factory('direct', {
       namespace: testNamespace,
@@ -155,10 +188,11 @@ describeOrSkip('External-DNS Integration Tests', () => {
       timeout: 180000, // 3 minutes for Helm installation
       kubeConfig: kubeConfig,
     });
+    deployedInstances.push({ factory: directFactory, name: 'external-dns-ecosystem-test' });
 
     const instance = await directFactory.deploy({
       name: 'external-dns-ecosystem-test',
-      namespace: 'external-dns',
+      namespace: directAppNamespace,
       provider: 'aws',
       domainFilters: ['test.example.com'],
       policy: 'upsert-only',
@@ -235,7 +269,9 @@ describeOrSkip('External-DNS Integration Tests', () => {
       waitForReady: false,
       kubeConfig,
     });
-    const graph = (directFactory as unknown as ResourceGraphInspectable).createResourceGraphForInstance({
+    const graph = (
+      directFactory as unknown as ResourceGraphInspectable
+    ).createResourceGraphForInstance({
       name: 'external-dns-cloudflare-bootstrap',
       namespace: 'external-dns',
       provider: 'cloudflare',
@@ -247,8 +283,9 @@ describeOrSkip('External-DNS Integration Tests', () => {
       logLevel: 'debug',
     });
 
-    const helmRelease = graph.resources.find((resource) => resource.manifest.kind === 'HelmRelease')
-      ?.manifest;
+    const helmRelease = graph.resources.find(
+      (resource) => resource.manifest.kind === 'HelmRelease'
+    )?.manifest;
     const values = helmRelease?.spec?.values as Record<string, unknown> | undefined;
 
     expect(values?.provider).toBe('cloudflare');
@@ -283,10 +320,13 @@ describeOrSkip('External-DNS Integration Tests', () => {
     const kroNamespace = `${testNamespace}-kro`;
     const appNamespace = `${testNamespace}-runtime`;
     const instanceName = 'external-dns-kro-values';
-    let deleteInstance: (() => Promise<unknown>) | undefined;
+    let cleanupFactory: TestDeletableFactory | undefined;
+    const [kroNamespaceLease, appNamespaceLease] = await Promise.all([
+      createTestNamespace(kroNamespace, kubeConfig),
+      createTestNamespace(appNamespace, kubeConfig),
+    ]);
 
     try {
-      await ensureNamespaceExists(kroNamespace, kubeConfig);
       await installAwsCredentialsSecret(kubeConfig, appNamespace, credentials);
 
       const kroFactory = externalDnsBootstrap.factory('kro', {
@@ -295,7 +335,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
         timeout: 300000,
         kubeConfig,
       });
-      deleteInstance = () => kroFactory.deleteInstance(instanceName);
+      cleanupFactory = kroFactory;
 
       const instance = await kroFactory.deploy({
         name: instanceName,
@@ -316,23 +356,17 @@ describeOrSkip('External-DNS Integration Tests', () => {
       expect(instance.status.dnsProvider).toBe('aws');
       expect(instance.status.policy).toBe('upsert-only');
     } finally {
-      if (deleteInstance) {
-        try {
-          await deleteInstance();
-        } catch (e) {
-          console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
-        }
+      if (cleanupFactory) {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          cleanupFactory,
+          instanceName,
+          [],
+          kubeConfig,
+          60_000
+        );
       }
-      try {
-        await deleteNamespaceIfExists(appNamespace, kubeConfig);
-      } catch (_e) {
-        // Namespace cleanup is best-effort after failed deploys.
-      }
-      try {
-        await deleteNamespaceIfExists(kroNamespace, kubeConfig);
-      } catch (_e) {
-        // Namespace cleanup is best-effort after failed deploys.
-      }
+      await deleteTestNamespaceAndWait(appNamespaceLease, kubeConfig);
+      await deleteTestNamespaceAndWait(kroNamespaceLease, kubeConfig);
     }
   }, 420000);
 
@@ -377,10 +411,11 @@ describeOrSkip('External-DNS Integration Tests', () => {
       timeout: 180000, // 3 minutes
       kubeConfig: kubeConfig,
     });
+    deployedInstances.push({ factory: directFactory, name: 'external-dns-dns-test' });
 
     const instance = await directFactory.deploy({
       name: 'external-dns-dns-test',
-      namespace: 'external-dns',
+      namespace: directAppNamespace,
       provider: 'aws',
       domainFilters: ['test.example.com', 'example.org'],
       policy: 'sync',
@@ -442,13 +477,15 @@ describeOrSkip('External-DNS Integration Tests', () => {
     });
 
     // Validate AWS configuration
-    const awsValues = awsRelease.spec.values as {
-      provider?: string;
-      aws?: { region?: string; zoneType?: string; credentials?: Record<string, string> };
-      domainFilters?: string[];
-      policy?: string;
-      dryRun?: boolean;
-    } | undefined;
+    const awsValues = awsRelease.spec.values as
+      | {
+          provider?: string;
+          aws?: { region?: string; zoneType?: string; credentials?: Record<string, string> };
+          domainFilters?: string[];
+          policy?: string;
+          dryRun?: boolean;
+        }
+      | undefined;
     expect(awsValues?.provider).toBe('aws');
     expect(awsValues?.aws?.region).toBe('us-east-1');
     expect(awsValues?.aws?.zoneType).toBe('public');
@@ -456,13 +493,15 @@ describeOrSkip('External-DNS Integration Tests', () => {
     expect(awsValues?.policy).toBe('sync');
 
     // Validate Cloudflare configuration
-    const cloudflareValues = cloudflareRelease.spec.values as {
-      provider?: string;
-      cloudflare?: { proxied?: boolean };
-      domainFilters?: string[];
-      policy?: string;
-      dryRun?: boolean;
-    } | undefined;
+    const cloudflareValues = cloudflareRelease.spec.values as
+      | {
+          provider?: string;
+          cloudflare?: { proxied?: boolean };
+          domainFilters?: string[];
+          policy?: string;
+          dryRun?: boolean;
+        }
+      | undefined;
     expect(cloudflareValues?.provider).toBe('cloudflare');
     expect(cloudflareValues?.cloudflare?.proxied).toBe(true);
     expect(cloudflareValues?.domainFilters).toEqual(['cloudflare.example.com']);
@@ -497,16 +536,20 @@ describeOrSkip('External-DNS Integration Tests', () => {
     });
 
     // Validate credential configuration
-    const secureValues = secureRelease.spec.values as {
-      aws?: { credentials?: { secretName?: string; accessKeyIdKey?: string; secretAccessKeyKey?: string } };
-    } | undefined;
-    expect(secureValues?.aws?.credentials?.secretName).toBe(
-      'aws-external-dns-credentials'
-    );
+    const secureValues = secureRelease.spec.values as
+      | {
+          aws?: {
+            credentials?: {
+              secretName?: string;
+              accessKeyIdKey?: string;
+              secretAccessKeyKey?: string;
+            };
+          };
+        }
+      | undefined;
+    expect(secureValues?.aws?.credentials?.secretName).toBe('aws-external-dns-credentials');
     expect(secureValues?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
-    expect(secureValues?.aws?.credentials?.secretAccessKeyKey).toBe(
-      'secret-access-key'
-    );
+    expect(secureValues?.aws?.credentials?.secretAccessKeyKey).toBe('secret-access-key');
 
     // Ensure dry-run is enabled for security
     expect(secureRelease.spec.values?.dryRun).toBe(true);

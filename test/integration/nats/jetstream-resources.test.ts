@@ -1,7 +1,7 @@
 /**
- * Opt-in live NATS JetStream proof against a real cluster.
+ * Live NATS JetStream proof against a real cluster.
  *
- * RUN_NATS_INTEGRATION=true bun test test/integration/nats/jetstream-resources.test.ts
+ * bun test test/integration/nats/jetstream-resources.test.ts
  *
  * Requires Flux, KRO, and a default ReadWriteOnce StorageClass. Each mode
  * installs the official NATS and NACK charts, then reconciles a real Stream
@@ -22,15 +22,24 @@ import {
   jetStreamStream,
 } from '../../../src/factories/nats/resources/jetstream.js';
 import {
-  ensureNamespaceExists,
+  assertTestNamespaceAbsent,
+  captureTestNamespaceLease,
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
-const runId = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+const runId = crypto.randomUUID().slice(0, 12);
 
 setDefaultTimeout(1_200_000);
 
@@ -84,68 +93,142 @@ const liveResources = kubernetesComposition(
   }
 );
 
-async function kubectl(args: string[], timeout = 300_000): Promise<string> {
-  const proc = Bun.spawn(['kubectl', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  const timer = setTimeout(() => proc.kill(), timeout);
-  try {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (exitCode !== 0) {
-      throw new Error(`kubectl ${args.join(' ')} failed (${exitCode}): ${stderr || stdout}`);
+async function waitForPodCompletion(
+  namespace: string,
+  name: string,
+  timeoutMs: number,
+  kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>
+): Promise<void> {
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const pod = await coreApi.readNamespacedPod({ namespace, name });
+    if (pod.status?.phase === 'Succeeded') return;
+    if (pod.status?.phase === 'Failed') {
+      const logs = await coreApi
+        .readNamespacedPodLog({ namespace, name, container: 'probe' })
+        .catch(() => '');
+      throw new Error(`NATS data-plane probe ${namespace}/${name} failed: ${logs}`);
     }
-    return stdout.trim();
-  } finally {
-    clearTimeout(timer);
+    await Bun.sleep(1_000);
   }
-}
-
-function isAlreadyAbsentInstance(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('Instance not found:');
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for NATS data-plane probe ${namespace}/${name}`
+  );
 }
 
 async function runNatsDataPlaneProbe(
   mode: 'direct' | 'kro',
   namespace: string,
-  endpoint: string
+  endpoint: string,
+  kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>
 ): Promise<string> {
+  const coreApi = createCoreV1ApiClient(kubeConfig);
   const podName = `nats-box-${mode}`;
-  await kubectl([
-    'run',
-    podName,
-    '--namespace',
+  const pod = await coreApi.createNamespacedPod({
     namespace,
-    '--image=natsio/nats-box:0.19.2',
-    '--restart=Never',
-    '--command',
-    '--',
-    'sh',
-    '-ec',
-    `nats --server ${endpoint} pub applik8s.events.test hello >/dev/null; nats --server ${endpoint} stream info APPLIK8S_EVENTS --json`,
-  ]);
-  try {
-    await kubectl([
-      'wait',
-      '--namespace',
-      namespace,
-      `pod/${podName}`,
-      '--for=jsonpath={.status.phase}=Succeeded',
-      '--timeout=180s',
-    ]);
-    return await kubectl(['logs', '--namespace', namespace, podName]);
-  } finally {
-    await kubectl([
-      'delete',
-      'pod',
-      podName,
-      '--namespace',
-      namespace,
-      '--ignore-not-found=true',
-      '--wait=false',
-    ]).catch(() => undefined);
+    body: {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: podName },
+      spec: {
+        restartPolicy: 'Never',
+        containers: [
+          {
+            name: 'probe',
+            image: 'natsio/nats-box:0.19.2',
+            command: [
+              'sh',
+              '-ec',
+              `nats --server ${endpoint} pub applik8s.events.test hello >/dev/null; nats --server ${endpoint} stream info APPLIK8S_EVENTS --json`,
+            ],
+          },
+        ],
+      },
+    },
+  });
+  const podUid = pod.metadata?.uid;
+  if (!podUid) {
+    throw new Error(`Created NATS data-plane probe ${namespace}/${podName} has no metadata.uid`);
   }
+  try {
+    await waitForPodCompletion(namespace, podName, 180_000, kubeConfig);
+    return await coreApi.readNamespacedPodLog({
+      namespace,
+      name: podName,
+      container: 'probe',
+    });
+  } finally {
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { namespace, name: podName, uid: podUid },
+      },
+      kubeConfig
+    );
+  }
+}
+
+async function waitForStatefulSetReady(
+  namespace: string,
+  name: string,
+  replicas: number,
+  timeoutMs: number,
+  kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>
+): Promise<void> {
+  const appsApi = createAppsV1ApiClient(kubeConfig);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const statefulSet = await appsApi.readNamespacedStatefulSet({ namespace, name });
+    const generation = statefulSet.metadata?.generation ?? 0;
+    const status = statefulSet.status;
+    if (
+      (status?.observedGeneration ?? 0) >= generation &&
+      status?.readyReplicas === replicas &&
+      status?.updatedReplicas === replicas
+    ) {
+      return;
+    }
+    await Bun.sleep(2_000);
+  }
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for StatefulSet ${namespace}/${name} to have ${replicas} ready replicas`
+  );
+}
+
+interface JetStreamResourceState {
+  metadata?: { generation?: number };
+  spec?: { description?: string };
+  status?: {
+    observedGeneration?: number;
+    conditions?: Array<{ type?: string; status?: string }>;
+  };
+}
+
+async function readJetStreamResource(
+  kind: 'Stream' | 'Consumer',
+  name: string,
+  namespace: string,
+  kubeConfig: ReturnType<typeof getIntegrationTestKubeConfig>
+): Promise<JetStreamResourceState> {
+  const objectApi = createKubernetesObjectApiClient(kubeConfig);
+  return (await objectApi.read({
+    apiVersion: 'jetstream.nats.io/v1beta2',
+    kind,
+    metadata: { name, namespace },
+  })) as JetStreamResourceState;
+}
+
+function expectCurrentJetStreamReadiness(resource: JetStreamResourceState): void {
+  expect(resource.status?.conditions).toContainEqual(
+    expect.objectContaining({ type: 'Ready', status: 'True' })
+  );
+  const generation = resource.metadata?.generation;
+  if (generation === undefined) {
+    throw new Error('JetStream resource has no metadata.generation');
+  }
+  expect(resource.status?.observedGeneration).toBe(generation);
 }
 
 async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
@@ -154,8 +237,6 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   const targetNamespace = `tk-nats-${suffix}`.slice(0, 63);
   const appNamespace = `tk-nats-app-${suffix}`.slice(0, 63);
   const kubeConfig = getIntegrationTestKubeConfig();
-  await ensureNamespaceExists(controlNamespace, kubeConfig);
-  await ensureNamespaceExists(appNamespace, kubeConfig);
 
   const platformFactory = natsBootstrap.factory(mode, {
     namespace: controlNamespace,
@@ -170,21 +251,42 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     kubeConfig,
   });
   let testFailure: Error | undefined;
-  let platformDeployed = false;
-  let resourcesDeployed = false;
+  let controlNamespaceLease: TestNamespaceLease | undefined;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  let targetNamespaceLease: TestNamespaceLease | undefined;
 
   try {
-    const platform = await platformFactory.deploy({
-      name: 'nats',
-      namespace: targetNamespace,
-      replicas: mode === 'kro' ? 3 : 1,
-      storageSize: '1Gi',
-      pvcRetentionPolicy: 'delete',
-      ...(process.env.TYPEKRO_NATS_STORAGE_CLASS
-        ? { storageClassName: process.env.TYPEKRO_NATS_STORAGE_CLASS }
-        : {}),
-    });
-    platformDeployed = true;
+    controlNamespaceLease = await createTestNamespace(controlNamespace, kubeConfig);
+    appNamespaceLease = await createTestNamespace(appNamespace, kubeConfig);
+    await assertTestNamespaceAbsent(targetNamespace, kubeConfig);
+
+    let platform: Awaited<ReturnType<typeof platformFactory.deploy>>;
+    try {
+      platform = await platformFactory.deploy({
+        name: 'nats',
+        namespace: targetNamespace,
+        replicas: mode === 'kro' ? 3 : 1,
+        storageSize: '1Gi',
+        pvcRetentionPolicy: 'delete',
+        ...(process.env.TYPEKRO_NATS_STORAGE_CLASS
+          ? { storageClassName: process.env.TYPEKRO_NATS_STORAGE_CLASS }
+          : {}),
+      });
+    } catch (deploymentError: unknown) {
+      try {
+        targetNamespaceLease = await captureTestNamespaceLease(targetNamespace, kubeConfig);
+      } catch (leaseError: unknown) {
+        throw new AggregateError(
+          [deploymentError, leaseError],
+          `NATS platform deployment failed and ownership of ${targetNamespace} could not be retained`
+        );
+      }
+      throw deploymentError;
+    }
+    targetNamespaceLease = await captureTestNamespaceLease(targetNamespace, kubeConfig);
+    if (!targetNamespaceLease) {
+      throw new Error(`NATS platform did not create expected namespace ${targetNamespace}`);
+    }
 
     expect(platform.status).toMatchObject({
       ready: true,
@@ -196,23 +298,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     });
 
     if (mode === 'kro') {
-      await kubectl([
-        'rollout',
-        'status',
-        'statefulset/nats',
-        '-n',
-        targetNamespace,
-        '--timeout=600s',
-      ]);
-      const readyReplicas = await kubectl([
-        'get',
-        'statefulset/nats',
-        '-n',
-        targetNamespace,
-        '-o',
-        'jsonpath={.status.readyReplicas}',
-      ]);
-      expect(readyReplicas).toBe('3');
+      await waitForStatefulSetReady(targetNamespace, 'nats', 3, 600_000, kubeConfig);
     }
 
     const endpoint = `nats://nats.${targetNamespace}.svc:4222`;
@@ -222,20 +308,15 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       endpoint,
       description: 'initial live proof',
     });
-    resourcesDeployed = true;
 
     expect(resources.status).toMatchObject({ ready: true });
 
-    const ready = await kubectl([
-      'get',
-      'streams.jetstream.nats.io/application-events',
-      'consumers.jetstream.nats.io/account-commands',
-      '-n',
-      appNamespace,
-      '-o',
-      'jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\\n"}{end}',
+    const [stream, consumer] = await Promise.all([
+      readJetStreamResource('Stream', 'application-events', appNamespace, kubeConfig),
+      readJetStreamResource('Consumer', 'account-commands', appNamespace, kubeConfig),
     ]);
-    expect(ready.split('\n')).toEqual(['True', 'True']);
+    expectCurrentJetStreamReadiness(stream);
+    expectCurrentJetStreamReadiness(consumer);
 
     const updatedResources = await resourcesFactory.deploy({
       name: 'resources',
@@ -244,17 +325,16 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       description: 'updated live proof',
     });
     expect(updatedResources.status).toMatchObject({ ready: true });
-    const generation = await kubectl([
-      'get',
-      'streams.jetstream.nats.io/application-events',
-      '-n',
+    const updatedStream = await readJetStreamResource(
+      'Stream',
+      'application-events',
       appNamespace,
-      '-o',
-      'jsonpath={.metadata.generation}:{.status.observedGeneration}:{.spec.description}',
-    ]);
-    expect(generation).toMatch(/^(\d+):\1:updated live proof$/);
+      kubeConfig
+    );
+    expectCurrentJetStreamReadiness(updatedStream);
+    expect(updatedStream.spec?.description).toBe('updated live proof');
 
-    const dataPlane = await runNatsDataPlaneProbe(mode, appNamespace, endpoint);
+    const dataPlane = await runNatsDataPlaneProbe(mode, appNamespace, endpoint, kubeConfig);
     const jsonStart = dataPlane.indexOf('{');
     const jsonEnd = dataPlane.lastIndexOf('}');
     expect(jsonStart).toBeGreaterThanOrEqual(0);
@@ -268,89 +348,48 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   }
 
   const cleanupFailures: Error[] = [];
-  // StatefulSet PVC retention is controller- and timing-dependent even when
-  // persistentVolumeClaimRetentionPolicy requests deletion. These claims are
-  // scoped to this run's owned namespace, so remove them before asking the KRO
-  // factory to prove that its hoisted namespace can be deleted cleanly.
+  // Delete in dependency order. Factory teardown owns normal graph deletion;
+  // the harness recovers only a leased, empty Namespace stuck on Kubernetes'
+  // standard finalizer, then retries the factory to prove definitions are gone.
   try {
-    await kubectl([
-      'delete',
-      'persistentvolumeclaim',
-      '--all',
-      '-n',
-      targetNamespace,
-      '--ignore-not-found=true',
-      '--wait=false',
-    ]);
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      resourcesFactory,
+      'resources',
+      [],
+      kubeConfig
+    );
   } catch (error: unknown) {
     cleanupFailures.push(
       new Error(
-        `${mode} cleanup failed for PVCs in ${targetNamespace}: ${error instanceof Error ? error.message : String(error)}`
+        `${mode} cleanup failed for JetStream resources: ${error instanceof Error ? error.message : String(error)}`
       )
     );
   }
-  // Delete in dependency order and let each factory enforce its own lifecycle.
-  // In KRO mode deleteInstance() waits for kro.run/finalizer and deliberately
-  // preserves the RGD when finalization times out, so KRO can keep recovering.
-  for (const [label, wasDeployed, cleanup] of [
-    ['JetStream resources', resourcesDeployed, () => resourcesFactory.deleteInstance('resources')],
-    [
-      'NATS platform',
-      platformDeployed,
-      () =>
-        platformFactory.deleteInstance(
-          'nats',
-          mode === 'direct' ? { scopes: ['cluster'] } : undefined
-        ),
-    ],
-  ] as const) {
-    try {
-      await cleanup();
-    } catch (error: unknown) {
-      if (wasDeployed || !isAlreadyAbsentInstance(error)) {
-        cleanupFailures.push(
-          new Error(
-            `${mode} cleanup failed for ${label}: ${error instanceof Error ? error.message : String(error)}`
-          )
-        );
-      }
-    }
-  }
   try {
-    const remainingTargetNamespace = await kubectl([
-      'get',
-      'namespace',
-      targetNamespace,
-      '--ignore-not-found=true',
-      '-o',
-      'name',
-    ]);
-    if (remainingTargetNamespace) {
-      cleanupFailures.push(
-        new Error(`${mode} cleanup left the factory-owned namespace ${targetNamespace} behind`)
-      );
-    }
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      platformFactory,
+      'nats',
+      targetNamespaceLease ? [targetNamespaceLease] : [],
+      kubeConfig,
+      30_000,
+      mode === 'direct' ? { scopes: ['cluster'] } : {}
+    );
   } catch (error: unknown) {
     cleanupFailures.push(
       new Error(
-        `${mode} cleanup could not verify namespace ${targetNamespace}: ${error instanceof Error ? error.message : String(error)}`
+        `${mode} cleanup failed for NATS platform: ${error instanceof Error ? error.message : String(error)}`
       )
     );
   }
-  for (const namespace of [appNamespace, controlNamespace]) {
+
+  for (const lease of [appNamespaceLease, controlNamespaceLease]) {
+    if (!lease) continue;
     try {
-      await kubectl([
-        'delete',
-        'namespace',
-        namespace,
-        '--ignore-not-found=true',
-        '--wait=true',
-        '--timeout=300s',
-      ]);
+      await deleteTestNamespaceAndWait(lease, kubeConfig);
     } catch (error: unknown) {
       cleanupFailures.push(
         new Error(
-          `${mode} cleanup failed for namespace ${namespace}: ${error instanceof Error ? error.message : String(error)}`
+          `${mode} cleanup failed for namespace ${lease.name}: ${error instanceof Error ? error.message : String(error)}`
         )
       );
     }

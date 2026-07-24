@@ -17,42 +17,63 @@ import type {
   SearxngBootstrapConfig,
   SearxngBootstrapStatus,
 } from '../../../src/factories/searxng/types.js';
-import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
+import {
+  createCoreV1ApiClient,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  isClusterAvailable,
+  runWithExpectedTestNamespace,
+  runTestPodAndReadLogs,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 setDefaultTimeout(120000);
 
-const clusterAvailable = isClusterAvailable();
-const describeOrSkip = clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+const clusterAvailable = await isClusterAvailable();
+const describeOrSkip =
+  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
 describeOrSkip('SearXNG Bootstrap Composition', () => {
   let kubeConfig: k8s.KubeConfig;
   let factory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let factoryNamespaceLease: TestNamespaceLease;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const factoryNamespace = `typekro-searxng-${suffix}`;
+  const appNamespace = `searxng-test-${suffix}`;
+  const directInstanceName = `searxng-test-${suffix}`;
+  const kroInstanceName = `searxng-kro-${suffix}`;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
-    await ensureNamespaceExists(factoryNamespace, kubeConfig);
+    factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
   });
 
   afterAll(async () => {
+    const failures: unknown[] = [];
     if (factory) {
       try {
-        await factory.deleteInstance('searxng-test');
-      } catch (e) {
-        console.error('⚠️ SearXNG deleteInstance failed:', (e as Error).message);
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          factory,
+          directInstanceName,
+          appNamespaceLease ? [appNamespaceLease] : [],
+          kubeConfig,
+          30_000,
+          { scopes: ['cluster'] }
+        );
+      } catch (error) {
+        failures.push(error);
       }
     }
-    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     try {
-      await deleteNamespaceIfExists(factoryNamespace, kubeConfig);
-    } catch (e) {
-      console.error(`⚠️ Namespace cleanup failed:`, (e as Error).message);
+      await deleteTestNamespaceAndWait(factoryNamespaceLease, kubeConfig);
+    } catch (error) {
+      failures.push(error);
     }
-    // Also clean the app namespace created by the composition
-    try {
-      await deleteNamespaceIfExists(`searxng-test-${suffix}`, kubeConfig);
-    } catch {}
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'SearXNG direct cleanup did not complete safely');
+    }
   });
 
   it('should deploy SearXNG and verify health endpoint', async () => {
@@ -67,39 +88,32 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       kubeConfig,
     });
 
-    const instance = await factory.deploy({
-      name: 'searxng-test',
-      namespace: `searxng-test-${suffix}`,
-      server: {
-        secret_key: 'test-integration-key-not-for-production',
-        limiter: false,
+    const instance = await runWithExpectedTestNamespace(
+      appNamespace,
+      kubeConfig,
+      (lease) => {
+        appNamespaceLease = lease;
       },
-    });
+      () =>
+        factory!.deploy({
+          name: directInstanceName,
+          namespace: appNamespace,
+          server: {
+            secret_key: 'test-integration-key-not-for-production',
+            limiter: false,
+          },
+        })
+    );
 
     // Status assertions
-    expect(instance.spec.name).toBe('searxng-test');
+    expect(instance.spec.name).toBe(directInstanceName);
     expect(instance.status.ready).toBe(true);
     expect(instance.status.phase).toBe('Ready');
     expect(instance.status.failed).toBe(false);
-    expect(instance.status.url).toContain('searxng-test');
+    expect(instance.status.url).toContain(directInstanceName);
 
-    // Verify pods are actually running via kubectl
-    const proc = Bun.spawn(
-      ['kubectl', 'get', 'pods', '-n', `searxng-test-${suffix}`, '-o', 'json'],
-      { stdout: 'pipe', stderr: 'pipe' }
-    );
-    const output = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
-
-    const podList = JSON.parse(output);
-    const pods = podList.items as Array<{
-      metadata?: { name?: string };
-      status?: {
-        phase?: string;
-        containerStatuses?: Array<{ ready?: boolean; restartCount?: number }>;
-      };
-    }>;
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const pods = (await coreApi.listNamespacedPod({ namespace: appNamespace })).items;
 
     expect(pods.length).toBeGreaterThan(0);
     for (const pod of pods) {
@@ -109,18 +123,15 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       }
     }
 
-    // Verify the health endpoint responds via port-forward
-    // Use kubectl exec to curl from inside the cluster
-    const healthProc = Bun.spawn(
-      ['kubectl', 'exec', '-n', `searxng-test-${suffix}`,
-       `deploy/searxng-test`, '--',
-       'wget', '-q', '-O-', 'http://localhost:8080/healthz'],
-      { stdout: 'pipe', stderr: 'pipe' }
+    await runTestPodAndReadLogs(
+      {
+        namespace: appNamespace,
+        name: 'searxng-health-probe',
+        image: 'busybox:1.37',
+        command: ['wget', '-q', '-O-', `http://${directInstanceName}:8080/healthz`],
+      },
+      kubeConfig
     );
-    await new Response(healthProc.stdout).text(); // drain stdout
-    const healthExit = await healthProc.exited;
-    // healthz returns empty 200 or a small response
-    expect(healthExit).toBe(0);
   }, 90000);
 
   it('should generate valid KRO YAML with CEL expressions', async () => {
@@ -168,11 +179,12 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     );
 
     const kroNamespace = `typekro-kro-searxng-${suffix}`;
-    const appNamespace = `searxng-kro-${suffix}`;
-
-    await ensureNamespaceExists(kroNamespace, kubeConfig);
+    const kroAppNamespace = `searxng-kro-${suffix}`;
+    const kroNamespaceLease = await createTestNamespace(kroNamespace, kubeConfig);
 
     let kroFactory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
+    let kroAppNamespaceLease: TestNamespaceLease | undefined;
+    let testError: unknown;
     try {
       kroFactory = searxngBootstrap.factory('kro', {
         namespace: kroNamespace,
@@ -181,37 +193,57 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
         kubeConfig,
       });
 
-      const instance = await kroFactory.deploy({
-        name: 'searxng-kro',
-        namespace: appNamespace,
-        server: { secret_key: 'kro-test-key', limiter: false },
-      });
+      const instance = await runWithExpectedTestNamespace(
+        kroAppNamespace,
+        kubeConfig,
+        (lease) => {
+          kroAppNamespaceLease = lease;
+        },
+        () =>
+          kroFactory!.deploy({
+            name: kroInstanceName,
+            namespace: kroAppNamespace,
+            server: { secret_key: 'kro-test-key', limiter: false },
+          })
+      );
 
-      expect(instance.spec.name).toBe('searxng-kro');
+      expect(instance.spec.name).toBe(kroInstanceName);
       expect(instance.status.ready).toBe(true);
 
-      // Verify pod health
-      const proc = Bun.spawn(
-        ['kubectl', 'get', 'pods', '-n', appNamespace, '-o', 'json'],
-        { stdout: 'pipe', stderr: 'pipe' }
-      );
-      const output = await new Response(proc.stdout).text();
-      const exitCode = await proc.exited;
-      if (exitCode === 0) {
-        const podList = JSON.parse(output);
-        for (const pod of podList.items) {
-          expect(pod.status?.phase).toBe('Running');
-        }
+      const pods = (
+        await createCoreV1ApiClient(kubeConfig).listNamespacedPod({
+          namespace: kroAppNamespace,
+        })
+      ).items;
+      expect(pods.length).toBeGreaterThan(0);
+      for (const pod of pods) {
+        expect(pod.status?.phase).toBe('Running');
       }
-    } finally {
+    } catch (error) {
+      testError = error;
+    }
+
+    const cleanupErrors: unknown[] = [];
+    if (testError !== undefined) cleanupErrors.push(testError);
+    try {
       if (kroFactory) {
-        try { await kroFactory.deleteInstance('searxng-kro'); } catch (e) {
-          console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
-        }
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          kroInstanceName,
+          kroAppNamespaceLease ? [kroAppNamespaceLease] : [],
+          kubeConfig
+        );
       }
-      const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
-      try { await deleteNamespaceIfExists(kroNamespace, kubeConfig); } catch {}
-      try { await deleteNamespaceIfExists(appNamespace, kubeConfig); } catch {}
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await deleteTestNamespaceAndWait(kroNamespaceLease, kubeConfig);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'SearXNG KRO integration did not complete safely');
     }
   }, 180000);
 });

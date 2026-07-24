@@ -1,16 +1,34 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import type { ResourceFactory } from '../../../src/core/types/deployment.js';
+import type {
+  InngestBootstrapConfig,
+  InngestBootstrapStatus,
+} from '../../../src/factories/inngest/types.js';
+import {
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  runWithExpectedTestNamespace,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 describe('Inngest Bootstrap Composition Tests', () => {
-  let kubeConfig: any;
-  const testNamespace = 'typekro-test-inngest-bootstrap';
-  const inngestNs = 'inngest-test';
+  let kubeConfig: ReturnType<typeof getKubeConfig>;
+  let factory: ResourceFactory<InngestBootstrapConfig, InngestBootstrapStatus> | undefined;
+  let testNamespaceLease: TestNamespaceLease;
+  let inngestNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const testNamespace = `typekro-test-inngest-${suffix}`;
+  const inngestNs = `inngest-test-${suffix}`;
 
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      testNamespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -18,12 +36,29 @@ describe('Inngest Bootstrap Composition Tests', () => {
   });
 
   afterAll(async () => {
-    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-    await Promise.allSettled(
-      [testNamespace, inngestNs].map((ns) =>
-        deleteNamespaceAndWait(ns, kubeConfig)
-      )
-    );
+    const failures: unknown[] = [];
+    if (factory) {
+      try {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          factory,
+          'inngest',
+          inngestNamespaceLease ? [inngestNamespaceLease] : [],
+          kubeConfig,
+          120_000,
+          { scopes: ['cluster'] }
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await deleteTestNamespaceAndWait(testNamespaceLease, kubeConfig);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Inngest integration cleanup did not complete safely');
+    }
   });
 
   it('should deploy Inngest and hydrate all status fields', async () => {
@@ -31,21 +66,29 @@ describe('Inngest Bootstrap Composition Tests', () => {
       '../../../src/factories/inngest/compositions/inngest-bootstrap.js'
     );
 
-    const factory = inngestBootstrap.factory('direct', {
+    factory = inngestBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true,
       timeout: 600000,
       kubeConfig,
     });
 
-    const instance = await factory.deploy({
-      name: 'inngest',
-      namespace: inngestNs,
-      inngest: {
-        eventKey: 'deadbeef0123456789abcdef01234567',
-        signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
+    const instance = await runWithExpectedTestNamespace(
+      inngestNs,
+      kubeConfig,
+      (lease) => {
+        inngestNamespaceLease = lease;
       },
-    });
+      () =>
+        factory!.deploy({
+          name: 'inngest',
+          namespace: inngestNs,
+          inngest: {
+            eventKey: 'deadbeef0123456789abcdef01234567',
+            signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
+          },
+        })
+    );
 
     // Spec fields
     expect(instance.spec.name).toBe('inngest');
@@ -57,8 +100,6 @@ describe('Inngest Bootstrap Composition Tests', () => {
     expect(instance.status.phase).toBe('Ready');
     expect(instance.status.failed).toBe(false);
     expect(instance.status.version).toBe('0.3.1');
-
-    await factory.deleteInstance('inngest');
   }, 900000);
 
   it('should generate ResourceGraphDefinition YAML with CEL expressions', async () => {

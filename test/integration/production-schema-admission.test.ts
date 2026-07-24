@@ -26,7 +26,12 @@ import {
   rookCephProductionPlatform,
   type RookCephProductionPlatformConfig,
 } from '../../src/factories/rook/index.js';
-import { isClusterAvailable } from './shared-kubeconfig.js';
+import {
+  createCustomObjectsApiClient,
+  createKubernetesObjectApiClient,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  isClusterAvailable,
+} from './shared-kubeconfig.js';
 
 type Manifest = {
   apiVersion?: string;
@@ -37,7 +42,7 @@ type Manifest = {
 };
 
 const requested = process.env.RUN_PRODUCTION_SCHEMA_ADMISSION === 'true';
-const describeOrSkip = requested && isClusterAvailable() ? describe : describe.skip;
+const describeOrSkip = requested && (await isClusterAvailable()) ? describe : describe.skip;
 const runToken = `${Date.now().toString(36)}${process.pid.toString(36)}`.slice(-10);
 const group = `admission-${runToken}.typekro.dev`;
 const harborKind = `HarborProductionAdmission${runToken}`;
@@ -82,18 +87,51 @@ function renderedInstance(serialized: string, originalKind: string, kind: string
 }
 
 async function serverDryRun(manifest: Manifest): Promise<{ exitCode: number; output: string }> {
-  const proc = Bun.spawn(
-    ['kubectl', 'create', '--dry-run=server', '--validate=strict', '-f', '-', '-o', 'name'],
-    { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }
-  );
-  proc.stdin.write(JSON.stringify(manifest));
-  proc.stdin.end();
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { exitCode, output: `${stdout}\n${stderr}`.trim() };
+  const [group, version] = (manifest.apiVersion ?? '').split('/');
+  const namespace = manifest.metadata?.namespace;
+  if (!group || !version || !manifest.kind || !namespace) {
+    throw new Error(`Invalid namespaced custom resource manifest: ${JSON.stringify(manifest)}`);
+  }
+
+  const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const objectApi = createKubernetesObjectApiClient(kubeConfig);
+  const crds = (await objectApi.list(
+    'apiextensions.k8s.io/v1',
+    'CustomResourceDefinition'
+  )) as unknown as {
+    items?: Array<{
+      spec?: { group?: string; names?: { kind?: string; plural?: string } };
+    }>;
+  };
+  const plural = crds.items?.find(
+    (crd) => crd.spec?.group === group && crd.spec?.names?.kind === manifest.kind
+  )?.spec?.names?.plural;
+  if (!plural) {
+    throw new Error(`Could not discover generated CRD for ${group}/${manifest.kind}`);
+  }
+
+  try {
+    await createCustomObjectsApiClient(kubeConfig).createNamespacedCustomObject({
+      group,
+      version,
+      namespace,
+      plural,
+      body: manifest,
+      dryRun: 'All',
+      fieldManager: 'typekro-schema-admission-test',
+      fieldValidation: 'Strict',
+    });
+    return { exitCode: 0, output: `${manifest.kind}/${manifest.metadata?.name ?? ''}` };
+  } catch (error: unknown) {
+    const candidate = error as { body?: unknown; message?: string };
+    return {
+      exitCode: 1,
+      output:
+        typeof candidate.body === 'string'
+          ? candidate.body
+          : JSON.stringify(candidate.body ?? candidate.message ?? error),
+    };
+  }
 }
 
 function harborConfig(): HarborProductionInstallationConfig {
@@ -223,18 +261,26 @@ describeOrSkip('production KRO schema admission', () => {
         return { ready: true };
       }
     );
+    const kubeConfig = getKubeConfig({ skipTLSVerify: true });
     const installerFactory = installer.factory('direct', {
       namespace: 'default',
-      kubeConfig: getKubeConfig({ skipTLSVerify: true }),
+      kubeConfig,
       waitForReady: true,
       timeout: 180_000,
     });
     await installerFactory.deploy({ name: `admission-${runToken}` });
     cleanup = () =>
-      installerFactory.deleteInstance(`admission-${runToken}`, {
-        scopes: ['cluster'],
-        includeUnscopedResources: true,
-      });
+      deleteTestFactoryInstanceAndRecoverNamespaces(
+        installerFactory,
+        `admission-${runToken}`,
+        [],
+        kubeConfig,
+        60_000,
+        {
+          scopes: ['cluster'],
+          includeUnscopedResources: true,
+        }
+      );
   });
 
   afterAll(async () => {

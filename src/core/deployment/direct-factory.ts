@@ -517,9 +517,11 @@ export class DirectResourceFactoryImpl<
           return await engine.rollback(deploymentId, {
             ...(opts?.scopes && { scopes: opts.scopes }),
             ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-            ...(this.factoryOptions.timeout !== undefined && {
-              timeout: this.factoryOptions.timeout,
-            }),
+            ...(opts?.timeout !== undefined || this.factoryOptions.timeout !== undefined
+              ? {
+                  timeout: opts?.timeout ?? this.factoryOptions.timeout,
+                }
+              : {}),
             ...(abortSignal ? { abortSignal } : {}),
           });
         } catch (error: unknown) {
@@ -535,6 +537,7 @@ export class DirectResourceFactoryImpl<
     const record = await engine.loadDeploymentByInstance({
       factoryName: this.name,
       instanceName: name,
+      factoryNamespace: this.namespace,
       knownGvks: this.buildKnownGvks(),
     });
     if (!record) {
@@ -553,7 +556,9 @@ export class DirectResourceFactoryImpl<
     return engine.rollbackRecord(record, {
       ...(opts?.scopes && { scopes: opts.scopes }),
       ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-      ...(this.factoryOptions.timeout !== undefined && { timeout: this.factoryOptions.timeout }),
+      ...(opts?.timeout !== undefined || this.factoryOptions.timeout !== undefined
+        ? { timeout: opts?.timeout ?? this.factoryOptions.timeout }
+        : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
   }
@@ -570,17 +575,14 @@ export class DirectResourceFactoryImpl<
   ): Promise<RollbackResult> {
     const rollbackResult = await this.rollbackInstanceResources(name, opts, abortSignal);
     if (rollbackResult.status === 'success' && rollbackResult.errors.length === 0) {
-      if (abortSignal) {
-        await this.completeNamespaceDeletion(rollbackResult, abortSignal);
-      } else {
-        await this.completeNamespaceDeletion(rollbackResult);
-      }
+      await this.completeNamespaceDeletion(rollbackResult, opts?.timeout, abortSignal);
     }
     return rollbackResult;
   }
 
   private async completeNamespaceDeletion(
     rollbackResult: RollbackResult,
+    timeout?: number,
     abortSignal?: AbortSignal
   ): Promise<void> {
     const deletedNamespaces = rollbackResult.rolledBackResources
@@ -624,7 +626,7 @@ export class DirectResourceFactoryImpl<
       }
     }
 
-    const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
+    const deleteTimeout = timeout ?? this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
     await this.waitForNamespaceDeletion(
       this.getDeploymentEngine().getKubernetesApi(),
       deletedNamespaces,

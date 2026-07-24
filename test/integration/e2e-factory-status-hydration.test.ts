@@ -7,7 +7,7 @@ import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
 import { isClusterAvailable } from './shared-kubeconfig';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Factory Pattern Status Hydration', () => {

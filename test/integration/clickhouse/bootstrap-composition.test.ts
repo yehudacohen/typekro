@@ -1,15 +1,22 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
-import { ensureNamespaceExists, isClusterAvailable } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
+  isClusterAvailable,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
 // Live-verified: tearing down the operator + CHI + KRO graph + 5 namespaces
 // exceeds bun's 5s default hook timeout on a real cluster.
-setDefaultTimeout(900000);
+setDefaultTimeout(1500000);
 
 describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   let kubeConfig: any;
@@ -17,20 +24,28 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   let operatorDeployed = false;
   let reuseExistingOperator = false;
   let helmRepositoryPreexisting = false;
-  const testNamespace = 'typekro-test-clickhouse-bootstrap';
-  const operatorNs = 'clickhouse-test-op';
+  const runId = crypto.randomUUID().slice(0, 8);
+  const testNamespace = `typekro-test-clickhouse-${runId}`;
+  const operatorNs = `clickhouse-test-op-${runId}`;
   const existingOperatorNs = 'clickhouse-system';
-  const chiNs = 'clickhouse-test-chi';
+  const chiNs = `clickhouse-test-chi-${runId}`;
   // KRO-mode namespaces: the instance CR lives in kroCrNs (factory
   // namespace), the CHI itself in kroNs (spec.namespace) — same split as the
   // searxng/dagster KRO-mode suites.
-  const kroNs = 'clickhouse-test-kro';
-  const kroCrNs = 'clickhouse-test-kro-cr';
+  const kroNs = `clickhouse-test-kro-${runId}`;
+  const kroCrNs = `clickhouse-test-kro-cr-${runId}`;
+  const namespaceLeases: TestNamespaceLease[] = [];
 
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      namespaceLeases.push(
+        ...(await Promise.all(
+          [testNamespace, operatorNs, chiNs, kroNs, kroCrNs].map((namespace) =>
+            createTestNamespace(namespace, kubeConfig)
+          )
+        ))
+      );
 
       const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       try {
@@ -76,13 +91,19 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   });
 
   afterAll(async () => {
+    const cleanupErrors: unknown[] = [];
     if (factory && operatorDeployed) {
-      await factory
-        .deleteInstance('clickhouse-operator', {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        'clickhouse-operator',
+        [],
+        kubeConfig,
+        60_000,
+        {
           scopes: ['cluster'],
           includeUnscopedResources: true,
-        })
-        .catch(() => {});
+        }
+      ).catch((error) => cleanupErrors.push(error));
     }
 
     // The shared Altinity HelmRepository singleton persists past
@@ -90,29 +111,25 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     // deleting a pre-existing source would break the cluster's shared
     // operator release on persistent environments such as OrbStack.
     if (!helmRepositoryPreexisting) {
-      try {
-        const { createBunCompatibleKubernetesObjectApi } = await import(
-          '../../../src/core/kubernetes/index.js'
-        );
-        const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-        await k8sApi
-          .delete({
-            apiVersion: 'source.toolkit.fluxcd.io/v1',
-            kind: 'HelmRepository',
-            metadata: { name: 'altinity', namespace: 'flux-system' },
-          })
-          .catch(() => {});
-      } catch {
-        // Best-effort singleton sweep only.
-      }
+      await deleteTestResourceAndWait(
+        {
+          apiVersion: 'source.toolkit.fluxcd.io/v1',
+          kind: 'HelmRepository',
+          metadata: { name: 'altinity', namespace: 'flux-system' },
+        },
+        kubeConfig
+      ).catch((error) => cleanupErrors.push(error));
     }
 
-    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-    await Promise.allSettled(
-      [testNamespace, operatorNs, chiNs, kroNs, kroCrNs].map((ns) =>
-        deleteNamespaceAndWait(ns, kubeConfig)
-      )
+    const namespaceResults = await Promise.allSettled(
+      namespaceLeases.map((lease) => deleteTestNamespaceAndWait(lease, kubeConfig))
     );
+    cleanupErrors.push(
+      ...namespaceResults.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'ClickHouse integration cleanup failed');
+    }
   });
 
   it('should deploy operator and hydrate all status fields', async () => {
@@ -132,9 +149,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
 
       expect(ready).toBe(true);
       expect(helmRelease.spec?.chart?.spec?.version).toBe('0.27.1');
-      console.log(
-        `✅ Reusing ready cluster operator clickhouse-operator in ${existingOperatorNs}`
-      );
+      console.log(`✅ Reusing ready cluster operator clickhouse-operator in ${existingOperatorNs}`);
       return;
     }
 
@@ -174,8 +189,6 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
 
   it('should make ClickHouse CRDs available after operator deploy', async () => {
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-    await ensureNamespaceExists(chiNs, kubeConfig);
-
     const result: any = await customApi.listNamespacedCustomObject({
       group: 'clickhouse.altinity.com',
       version: 'v1',
@@ -192,7 +205,6 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       '../../../src/factories/clickhouse/resources/installation.js'
     );
 
-    await ensureNamespaceExists(chiNs, kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
 
     const chi = clickHouseInstallation({
@@ -228,7 +240,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     });
 
     // Poll readiness using the typed evaluator (status.status == 'Completed').
-    const maxWait = 300000;
+    const maxWait = 600000;
     const start = Date.now();
     let lastStatus: any = null;
 
@@ -251,17 +263,17 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     expect(lastStatus?.ready).toBe(true);
     expect(lastStatus?.reason).toBe('Completed');
 
-    // Cleanup the installation (operator stays for other tests)
-    await customApi
-      .deleteNamespacedCustomObject({
-        group: 'clickhouse.altinity.com',
-        version: 'v1',
-        namespace: chiNs,
-        plural: 'clickhouseinstallations',
-        name: 'e2e-ch',
-      })
-      .catch(() => {});
-  }, 900000);
+    // Cleanup the exact fixture resource (operator stays for other tests).
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'clickhouse.altinity.com/v1',
+        kind: 'ClickHouseInstallation',
+        metadata: { name: 'e2e-ch', namespace: chiNs },
+      },
+      kubeConfig,
+      180_000
+    );
+  }, 1200000);
 
   it('should deploy a cluster via the CURRENT public API (makeClickHouseCluster) and hydrate the connection contract', async () => {
     // The raw clickHouseInstallation() test above predates the
@@ -285,12 +297,10 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
     // (typekro#94), where these came back as unresolved CelExpression markers.
     const { makeClickHouseCluster } = await import('../../../src/factories/clickhouse/index.js');
 
-    await ensureNamespaceExists(chiNs, kubeConfig);
-
     const clusterFactory = makeClickHouseCluster().factory('direct', {
       namespace: chiNs,
       waitForReady: true,
-      timeout: 600000,
+      timeout: 900000,
       kubeConfig,
     });
 
@@ -329,9 +339,15 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       expect(instance.status.installation.namespace).toBe(chiNs);
     } finally {
       // Cleanup the cluster instance (operator stays for other tests).
-      await clusterFactory.deleteInstance('e2e-cluster').catch(() => {});
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        clusterFactory,
+        'e2e-cluster',
+        [],
+        kubeConfig,
+        60_000
+      );
     }
-  }, 900000);
+  }, 1200000);
 
   it('should deploy a cluster via factory("kro") — RGD Active, KRO reconciles the CHI, LIVE CR status carries the connection contract', async () => {
     // KRO-mode counterpart of the direct-mode makeClickHouseCluster test:
@@ -345,20 +361,20 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
 
     // The CHI's namespace must pre-exist: KRO applies children into
     // spec.namespace but the composition graph doesn't own a Namespace.
-    await ensureNamespaceExists(kroNs, kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
 
     const kroFactory = makeClickHouseCluster().factory('kro', {
       namespace: kroCrNs,
       waitForReady: true,
-      timeout: 600000,
+      timeout: 900000,
       kubeConfig,
     });
 
     const instanceName = 'kro-cluster';
-    let deployed = false;
+    let deploymentAttempted = false;
 
     try {
+      deploymentAttempted = true;
       const instance = await kroFactory.deploy({
         name: instanceName,
         namespace: kroNs,
@@ -369,8 +385,6 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
           limits: { memory: '1Gi' },
         },
       });
-      deployed = true;
-
       // Proxy-level contract (mixes KRO status + client-hydrated constants).
       expect(instance.status.ready).toBe(true);
       expect(instance.status.phase).toBe('Ready');
@@ -423,10 +437,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         liveCr = await readLiveCr();
       }
 
-      console.log(
-        '🔎 LIVE ClickHouseCluster CR status:',
-        JSON.stringify(liveCr?.status, null, 2)
-      );
+      console.log('🔎 LIVE ClickHouseCluster CR status:', JSON.stringify(liveCr?.status, null, 2));
 
       expect(liveCr.status?.ready).toBe(true);
       expect(liveCr.status?.phase).toBe('Ready');
@@ -443,15 +454,22 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       expect(liveCr.status?.installation?.name).toBe(instanceName);
       expect(liveCr.status?.installation?.namespace).toBe(kroNs);
     } finally {
-      if (deployed) {
+      if (deploymentAttempted) {
         // Self-cleaning: deleteInstance removes the CR (waits for KRO's
         // finalizer), then — as the only instance — the RGD and the
         // generated CRD.
-        await kroFactory.deleteInstance(instanceName);
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          instanceName,
+          [],
+          kubeConfig,
+          120_000
+        );
       }
     }
 
-    // Teardown assertions: instance CR, RGD, and generated CRD are gone.
+    // Teardown assertions: instance CR, RGD, and CHI child are gone. TypeKro
+    // intentionally retains the generated CRD in an Active, reusable state.
     // Each of these deletions is processed asynchronously by KRO/the operator
     // via finalizers and can lag a beat after `deleteInstance` returns — poll
     // each to a short deadline rather than asserting immediate absence.

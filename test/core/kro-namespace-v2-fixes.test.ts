@@ -116,7 +116,9 @@ describe('#2: assertNoPreHoistNamespaceConflict fails closed on a KRO-owned name
       err.statusCode = 500;
       throw err;
     });
-    await expect(assertFn(['app'])).rejects.toThrow(/PRE_HOIST_NAMESPACE_CHECK_FAILED|could not read/);
+    await expect(assertFn(['app'])).rejects.toThrow(
+      /PRE_HOIST_NAMESPACE_CHECK_FAILED|could not read/
+    );
   });
 
   it('FAILS CLOSED on a CRD-discovery error while enumerating instances (finding #3)', async () => {
@@ -221,7 +223,9 @@ describe('#5: metadata values with non-DNS shapes survive into the emitted Names
 // ---------------------------------------------------------------------------
 describe('#6: hoistWeakenedStatusFields rejects BOTH schema-named and literal-named owned-ns status', () => {
   it('flags a status field that rewrites to a schema-only expression', () => {
-    const hoisted = new Map<string, unknown>([['ownedNamespace', kref('__schema__', 'spec.namespace')]]);
+    const hoisted = new Map<string, unknown>([
+      ['ownedNamespace', kref('__schema__', 'spec.namespace')],
+    ]);
     const status = { ready: true, nsName: kref('ownedNamespace', 'metadata.name') };
     expect(hoistWeakenedStatusFields(status, hoisted)).toEqual(['nsName']);
   });
@@ -246,7 +250,9 @@ describe('#6: hoistWeakenedStatusFields rejects BOTH schema-named and literal-na
   });
 
   it('does NOT flag a field that never referenced the hoisted namespace', () => {
-    const hoisted = new Map<string, unknown>([['ownedNamespace', kref('__schema__', 'spec.namespace')]]);
+    const hoisted = new Map<string, unknown>([
+      ['ownedNamespace', kref('__schema__', 'spec.namespace')],
+    ]);
     const status = { ready: true, host: cel('service.status.loadBalancer') };
     expect(hoistWeakenedStatusFields(status, hoisted)).toEqual([]);
   });
@@ -266,6 +272,7 @@ describe('#6: hoistWeakenedStatusFields rejects BOTH schema-named and literal-na
 const SA: NamespacedResourceType = { apiVersion: 'v1', kind: 'ServiceAccount' };
 const CM: NamespacedResourceType = { apiVersion: 'v1', kind: 'ConfigMap' };
 const SECRET: NamespacedResourceType = { apiVersion: 'v1', kind: 'Secret' };
+const PVC: NamespacedResourceType = { apiVersion: 'v1', kind: 'PersistentVolumeClaim' };
 const DEPLOY: NamespacedResourceType = { apiVersion: 'apps/v1', kind: 'Deployment' };
 
 /** Inventory backed by a fixed map of type-key → object names. */
@@ -337,7 +344,11 @@ describe('#3+#4: classifyNamespaceEmptiness', () => {
   });
 
   it('FAIL-SAFE (retain) when a per-type list throws', async () => {
-    const inv = fakeInventory([SA, DEPLOY], { ServiceAccount: ['default'] }, { listThrowsFor: 'Deployment' });
+    const inv = fakeInventory(
+      [SA, DEPLOY],
+      { ServiceAccount: ['default'] },
+      { listThrowsFor: 'Deployment' }
+    );
     const verdict = await classifyNamespaceEmptiness(inv, 'ns');
     expect(verdict.empty).toBe(false);
     if (!verdict.empty) expect(verdict.reason).toMatch(/could not list/i);
@@ -412,6 +423,127 @@ describe('#3+#4: deleteNamespaceIfEmpty gates the actual delete', () => {
     });
     expect(deletes).toEqual([]);
   });
+
+  it('deletes residual PVCs only after accepting deletion of the owned namespace', async () => {
+    const operations: string[] = [];
+    let gone = false;
+    const api = {
+      read: async () => {
+        if (gone) {
+          const error = new Error('not found') as Error & { statusCode?: number };
+          error.statusCode = 404;
+          throw error;
+        }
+        return {
+          metadata: {
+            name: 'ns',
+            uid: 'namespace-uid',
+            annotations: { 'typekro.io/created-by-rgd': 'my-rgd' },
+          },
+        };
+      },
+      delete: async () => {
+        throw new Error('generic namespace delete must not bypass UID preconditions');
+      },
+    };
+    const cleanupApi = {
+      listNamespacedPersistentVolumeClaim: async () => ({
+        items: [{ metadata: { name: 'data-0', uid: 'pvc-uid' } }],
+      }),
+      deleteNamespace: async (request: {
+        name: string;
+        body?: { preconditions?: { uid?: string } };
+      }) => {
+        operations.push(`namespace:${request.body?.preconditions?.uid}`);
+        return {};
+      },
+      deleteNamespacedPersistentVolumeClaim: async (request: {
+        name: string;
+        namespace: string;
+        body?: { preconditions?: { uid?: string } };
+      }) => {
+        operations.push(`pvc:${request.name}:${request.body?.preconditions?.uid}`);
+        gone = true;
+        return {};
+      },
+    };
+
+    const outcome = await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([PVC, SA, CM], {
+        PersistentVolumeClaim: ['data-0'],
+        ServiceAccount: ['default'],
+        ConfigMap: ['kube-root-ca.crt'],
+      }),
+      persistentVolumeCleanupApi: cleanupApi,
+    });
+
+    expect(outcome).toEqual({ status: 'deleted' });
+    expect(operations).toEqual(['namespace:namespace-uid', 'pvc:data-0:pvc-uid']);
+  });
+
+  it('retains an owned namespace when a non-PVC occupant remains', async () => {
+    const deletes: string[] = [];
+    const api = {
+      read: async () => ({
+        metadata: {
+          name: 'ns',
+          uid: 'namespace-uid',
+          annotations: { 'typekro.io/created-by-rgd': 'my-rgd' },
+        },
+      }),
+      delete: async (resource: { metadata?: { name?: string } }) => {
+        deletes.push(resource.metadata?.name ?? '');
+        return {};
+      },
+    };
+    const outcome = await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([PVC, DEPLOY], {
+        PersistentVolumeClaim: ['data-0'],
+        Deployment: ['foreign-workload'],
+      }),
+    });
+    expect(outcome.status).toBe('retained');
+    expect(deletes).toEqual([]);
+  });
+
+  it('retains when a residual PVC has no immutable UID evidence', async () => {
+    const api = {
+      read: async () => ({
+        metadata: {
+          name: 'ns',
+          uid: 'namespace-uid',
+          annotations: { 'typekro.io/created-by-rgd': 'my-rgd' },
+        },
+      }),
+      delete: async () => {
+        throw new Error('must not delete without PVC ownership evidence');
+      },
+    };
+    const outcome = await deleteNamespaceIfEmpty({} as never, 'ns', {
+      k8sApi: api as never,
+      ownedByRgd: 'my-rgd',
+      inventory: fakeInventory([PVC], { PersistentVolumeClaim: ['data-0'] }),
+      persistentVolumeCleanupApi: {
+        listNamespacedPersistentVolumeClaim: async () => ({
+          items: [{ metadata: { name: 'data-0' } }],
+        }),
+        deleteNamespace: async () => {
+          throw new Error('must not delete namespace without PVC ownership evidence');
+        },
+        deleteNamespacedPersistentVolumeClaim: async () => {
+          throw new Error('must not delete PVC without UID evidence');
+        },
+      },
+    });
+    expect(outcome).toMatchObject({
+      status: 'retained',
+      cause: 'emptiness-unproven',
+    });
+  });
 });
 
 describe('#4: deleteNamespaceIfEmpty ownership record (ownedByRgd)', () => {
@@ -463,7 +595,7 @@ describe('#4: deleteNamespaceIfEmpty ownership record (ownedByRgd)', () => {
     expect(deletes).toEqual([]);
   });
 
-  it("RETAINS a namespace owned by a DIFFERENT rgd (annotation mismatch)", async () => {
+  it('RETAINS a namespace owned by a DIFFERENT rgd (annotation mismatch)', async () => {
     const { api, deletes } = makeOwnedApi({ 'typekro.io/created-by-rgd': 'other-rgd' });
     await deleteNamespaceIfEmpty({} as never, 'ns', {
       k8sApi: api as never,

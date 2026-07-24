@@ -20,17 +20,17 @@
  * framework's JS-to-CEL conversion actually matters.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { ConfigMap, Deployment } from '../../src/factories/simple/index.js';
 import {
-  cleanupTestNamespaces,
   createCoreV1ApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  TestFactoryCleanupRegistry,
 } from './shared-kubeconfig.js';
 
 const BASE_NAMESPACE = 'typekro-e2e-cond';
@@ -41,7 +41,7 @@ const generateNamespace = (suffix: string): string => {
   return `${BASE_NAMESPACE}-${suffix}-${ts}`;
 };
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
@@ -52,11 +52,6 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
     if (!clusterAvailable) return;
     kc = getIntegrationTestKubeConfig();
     k8sApi = createCoreV1ApiClient(kc);
-  });
-
-  afterAll(async () => {
-    if (!kc) return;
-    await cleanupTestNamespaces(new RegExp(`^${BASE_NAMESPACE}-`), kc);
   });
 
   // =========================================================================
@@ -117,12 +112,9 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
       expect(yaml).toContain('id: sidecarCfg');
       expect(yaml).toContain('!has(schema.spec.externalSidecarUrl)');
 
-      // Pre-create the factory namespace and target application namespaces.
-      for (const ns of [factoryNs, appNs1, appNs2]) {
-        try {
-          await k8sApi.createNamespace({ body: { metadata: { name: ns } } });
-        } catch {}
-      }
+      const namespaceLeases = await Promise.all(
+        [factoryNs, appNs1, appNs2].map((namespace) => createTestNamespace(namespace, kc))
+      );
 
       const factory = composition.factory('kro', {
         namespace: factoryNs,
@@ -130,56 +122,50 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
         waitForReady: true,
         timeout: 60_000,
       });
+      const cleanupRegistry = new TestFactoryCleanupRegistry();
+      cleanupRegistry.track(factory, 'no-ext', namespaceLeases);
+      cleanupRegistry.track(factory, 'ext');
 
-      // Deployment A: no externalSidecarUrl → sidecar SHOULD be created.
-      const instanceA = await factory.deploy({
-        name: 'no-ext',
-        appNamespace: appNs1,
-      });
-      expect(instanceA.status.ready).toBe(true);
-
-      // Verify mainCfg + sidecarCfg both exist in appNs1.
-      const mainA = await k8sApi.readNamespacedConfigMap({
-        name: 'no-ext-main',
-        namespace: appNs1,
-      });
-      expect(mainA.data?.role).toBe('main');
-      const sidecarA = await k8sApi.readNamespacedConfigMap({
-        name: 'no-ext-sidecar',
-        namespace: appNs1,
-      });
-      expect(sidecarA.data?.role).toBe('sidecar-auto');
-
-      // Deployment B: externalSidecarUrl provided → sidecar should NOT be created.
-      const instanceB = await factory.deploy({
-        name: 'ext',
-        appNamespace: appNs2,
-        externalSidecarUrl: 'http://external-sidecar.example.com',
-      });
-      expect(instanceB.status.ready).toBe(true);
-
-      // Verify main exists but sidecar does NOT.
-      const mainB = await k8sApi.readNamespacedConfigMap({
-        name: 'ext-main',
-        namespace: appNs2,
-      });
-      expect(mainB.data?.role).toBe('main');
-      await expect(
-        k8sApi.readNamespacedConfigMap({ name: 'ext-sidecar', namespace: appNs2 })
-      ).rejects.toThrow();
-
-      // Cleanup
       try {
-        await factory.deleteInstance('no-ext');
-      } catch {}
-      try {
-        await factory.deleteInstance('ext');
-      } catch {}
-      await Promise.all([
-        deleteNamespaceAndWait(factoryNs, kc),
-        deleteNamespaceAndWait(appNs1, kc),
-        deleteNamespaceAndWait(appNs2, kc),
-      ]);
+        // Deployment A: no externalSidecarUrl → sidecar SHOULD be created.
+        const instanceA = await factory.deploy({
+          name: 'no-ext',
+          appNamespace: appNs1,
+        });
+        expect(instanceA.status.ready).toBe(true);
+
+        // Verify mainCfg + sidecarCfg both exist in appNs1.
+        const mainA = await k8sApi.readNamespacedConfigMap({
+          name: 'no-ext-main',
+          namespace: appNs1,
+        });
+        expect(mainA.data?.role).toBe('main');
+        const sidecarA = await k8sApi.readNamespacedConfigMap({
+          name: 'no-ext-sidecar',
+          namespace: appNs1,
+        });
+        expect(sidecarA.data?.role).toBe('sidecar-auto');
+
+        // Deployment B: externalSidecarUrl provided → sidecar should NOT be created.
+        const instanceB = await factory.deploy({
+          name: 'ext',
+          appNamespace: appNs2,
+          externalSidecarUrl: 'http://external-sidecar.example.com',
+        });
+        expect(instanceB.status.ready).toBe(true);
+
+        // Verify main exists but sidecar does NOT.
+        const mainB = await k8sApi.readNamespacedConfigMap({
+          name: 'ext-main',
+          namespace: appNs2,
+        });
+        expect(mainB.data?.role).toBe('main');
+        await expect(
+          k8sApi.readNamespacedConfigMap({ name: 'ext-sidecar', namespace: appNs2 })
+        ).rejects.toThrow();
+      } finally {
+        await cleanupRegistry.cleanup(kc, 120_000);
+      }
     },
     TEST_TIMEOUT
   );
@@ -235,11 +221,9 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
       expect(yaml).toContain('id: stockDeploy');
       expect(yaml).toContain('has(schema.spec.useCustomImage)');
 
-      for (const ns of [factoryNs, appNs1, appNs2]) {
-        try {
-          await k8sApi.createNamespace({ body: { metadata: { name: ns } } });
-        } catch {}
-      }
+      const namespaceLeases = await Promise.all(
+        [factoryNs, appNs1, appNs2].map((namespace) => createTestNamespace(namespace, kc))
+      );
 
       const factory = composition.factory('kro', {
         namespace: factoryNs,
@@ -247,55 +231,49 @@ describeOrSkip('Conditional Resources E2E (if/else → includeWhen)', () => {
         waitForReady: true,
         timeout: 60_000,
       });
+      const cleanupRegistry = new TestFactoryCleanupRegistry();
+      cleanupRegistry.track(factory, 'app-a', namespaceLeases);
+      cleanupRegistry.track(factory, 'app-b');
 
-      // Deployment A: no useCustomImage → stock branch should run.
-      const instanceA = await factory.deploy({
-        name: 'app-a',
-        appNamespace: appNs1,
-      });
-      expect(instanceA.status.ready).toBe(true);
-
-      // Verify stock deployment exists, custom does not.
-      const { createAppsV1ApiClient } = await import('./shared-kubeconfig.js');
-      const appsApi = createAppsV1ApiClient(kc);
-      const stockA = await appsApi.readNamespacedDeployment({
-        name: 'app-a-stock',
-        namespace: appNs1,
-      });
-      expect(stockA.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:stable-alpine');
-      await expect(
-        appsApi.readNamespacedDeployment({ name: 'app-a-custom', namespace: appNs1 })
-      ).rejects.toThrow();
-
-      // Deployment B: useCustomImage=true → custom branch should run.
-      const instanceB = await factory.deploy({
-        name: 'app-b',
-        appNamespace: appNs2,
-        useCustomImage: true,
-      });
-      expect(instanceB.status.ready).toBe(true);
-
-      const customB = await appsApi.readNamespacedDeployment({
-        name: 'app-b-custom',
-        namespace: appNs2,
-      });
-      expect(customB.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:1.25-alpine');
-      await expect(
-        appsApi.readNamespacedDeployment({ name: 'app-b-stock', namespace: appNs2 })
-      ).rejects.toThrow();
-
-      // Cleanup
       try {
-        await factory.deleteInstance('app-a');
-      } catch {}
-      try {
-        await factory.deleteInstance('app-b');
-      } catch {}
-      await Promise.all([
-        deleteNamespaceAndWait(factoryNs, kc),
-        deleteNamespaceAndWait(appNs1, kc),
-        deleteNamespaceAndWait(appNs2, kc),
-      ]);
+        // Deployment A: no useCustomImage → stock branch should run.
+        const instanceA = await factory.deploy({
+          name: 'app-a',
+          appNamespace: appNs1,
+        });
+        expect(instanceA.status.ready).toBe(true);
+
+        // Verify stock deployment exists, custom does not.
+        const { createAppsV1ApiClient } = await import('./shared-kubeconfig.js');
+        const appsApi = createAppsV1ApiClient(kc);
+        const stockA = await appsApi.readNamespacedDeployment({
+          name: 'app-a-stock',
+          namespace: appNs1,
+        });
+        expect(stockA.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:stable-alpine');
+        await expect(
+          appsApi.readNamespacedDeployment({ name: 'app-a-custom', namespace: appNs1 })
+        ).rejects.toThrow();
+
+        // Deployment B: useCustomImage=true → custom branch should run.
+        const instanceB = await factory.deploy({
+          name: 'app-b',
+          appNamespace: appNs2,
+          useCustomImage: true,
+        });
+        expect(instanceB.status.ready).toBe(true);
+
+        const customB = await appsApi.readNamespacedDeployment({
+          name: 'app-b-custom',
+          namespace: appNs2,
+        });
+        expect(customB.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:1.25-alpine');
+        await expect(
+          appsApi.readNamespacedDeployment({ name: 'app-b-stock', namespace: appNs2 })
+        ).rejects.toThrow();
+      } finally {
+        await cleanupRegistry.cleanup(kc, 120_000);
+      }
     },
     TEST_TIMEOUT
   );

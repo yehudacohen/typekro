@@ -7,14 +7,13 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-
+import { DependencyGraph } from '../../src/core/dependencies/graph.js';
+import { withExternalReferenceSeeds } from '../../src/core/deployment/strategies/direct-strategy.js';
 import {
   DirectDeploymentStrategy,
   findDeployedResourceForStatus,
   KroDeploymentStrategy,
 } from '../../src/core/deployment/strategies/index.js';
-import { withExternalReferenceSeeds } from '../../src/core/deployment/strategies/direct-strategy.js';
-import { DependencyGraph } from '../../src/core/dependencies/graph.js';
 
 describe('status resource matching', () => {
   it('matches the materialized resource by captured identity before its symbolic name', () => {
@@ -236,6 +235,96 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
       await strategy.deploy({ name: 'signal-app' }, { abortSignal: controller.signal });
 
       expect(receivedSignal).toBe(controller.signal);
+    });
+
+    it('rejects partial resource deployments even when status hydration is disabled', async () => {
+      mockDeploymentEngine.deploy = async (resourceGraph: any, options: any) => ({
+        deploymentId: 'partial-deployment',
+        resources: resourceGraph.resources.map((resource: any) => ({
+          id: resource.id,
+          kind: resource.manifest.kind,
+          name: resource.manifest.metadata?.name,
+          namespace: options.namespace,
+          manifest: resource.manifest,
+          status: 'failed',
+          deployedAt: new Date(),
+        })),
+        dependencyGraph: resourceGraph.dependencyGraph,
+        duration: 1,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'test-resource',
+            phase: 'readiness',
+            error: new Error('resource did not become ready'),
+            timestamp: new Date(),
+          },
+        ],
+      });
+      const strategy = new DirectDeploymentStrategy(
+        'test-factory',
+        'test-namespace',
+        {
+          apiVersion: 'v1alpha1',
+          kind: 'TestApp',
+          spec: type({ name: 'string' }),
+          status: type({ status: 'string' }),
+        },
+        undefined,
+        undefined,
+        { hydrateStatus: false },
+        mockDeploymentEngine,
+        mockResourceResolver
+      );
+
+      await expect(strategy.deploy({ name: 'partial-app' })).rejects.toThrow(
+        'resource did not become ready'
+      );
+    });
+
+    it('allows closure-only partial results to continue without status hydration', async () => {
+      mockDeploymentEngine.deploy = async (resourceGraph: any, options: any) => ({
+        deploymentId: 'closure-partial',
+        resources: resourceGraph.resources.map((resource: any) => ({
+          id: resource.id,
+          kind: resource.manifest.kind,
+          name: resource.manifest.metadata?.name,
+          namespace: options.namespace,
+          manifest: resource.manifest,
+          status: 'deployed',
+          deployedAt: new Date(),
+        })),
+        dependencyGraph: resourceGraph.dependencyGraph,
+        duration: 1,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'closure-download',
+            phase: 'deployment',
+            error: new Error('optional artifact unavailable'),
+            timestamp: new Date(),
+          },
+        ],
+      });
+      const strategy = new DirectDeploymentStrategy(
+        'test-factory',
+        'test-namespace',
+        {
+          apiVersion: 'v1alpha1',
+          kind: 'TestApp',
+          spec: type({ name: 'string' }),
+          status: type({ status: 'string' }),
+        },
+        undefined,
+        undefined,
+        { hydrateStatus: false },
+        mockDeploymentEngine,
+        mockResourceResolver
+      );
+
+      const instance = await strategy.deploy({ name: 'closure-partial-app' });
+
+      expect(instance.metadata.annotations?.['typekro.io/deployment-status']).toBe('partial');
     });
   });
 

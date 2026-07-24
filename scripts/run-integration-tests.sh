@@ -31,15 +31,9 @@ if ! command -v bun &> /dev/null; then
     exit 1
 fi
 
-# Check if kubectl is available
-if ! command -v kubectl &> /dev/null; then
-    echo "⚠️  kubectl not found. E2E cluster tests will be skipped."
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ kubectl found"
-    if kubectl cluster-info &> /dev/null; then
-        CLUSTER_AVAILABLE=true
-    fi
+# Probe Kubernetes through the same Bun-compatible client used by the tests.
+if bun scripts/integration-cluster-harness.ts cluster-ready; then
+    CLUSTER_AVAILABLE=true
 fi
 
 if [ "${CREATE_KIND_CLUSTER:-false}" = "true" ] || [ "$CLUSTER_AVAILABLE" != "true" ]; then
@@ -68,7 +62,7 @@ fi
 
 if [ "$SKIP_CLUSTER_TESTS" = "true" ] && [ "$REQUIRE_CLUSTER_TESTS" = "true" ]; then
     echo "❌ Cluster integration tests are required, but prerequisites are missing."
-    echo "   Install kubectl/kind and start Docker, or unset REQUIRE_CLUSTER_TESTS."
+    echo "   Install kind and start Docker, or unset REQUIRE_CLUSTER_TESTS."
     exit 1
 fi
 
@@ -101,7 +95,7 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
     CREATE_CLUSTER=true
   else
     echo "✅ Using existing Kubernetes cluster"
-    CURRENT_CONTEXT=$(kubectl config current-context)
+    CURRENT_CONTEXT=$(bun scripts/integration-cluster-harness.ts current-context)
     echo "   Current context: $CURRENT_CONTEXT"
   fi
 
@@ -118,37 +112,14 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   # NATS JetStream file storage requires a real RWO StorageClass. An explicit
   # class wins; otherwise use only the cluster's annotated default. Never
   # mutate a caller-owned cluster by installing storage infrastructure.
-  if [ -n "${TYPEKRO_NATS_STORAGE_CLASS:-}" ]; then
-    if ! kubectl get storageclass "$TYPEKRO_NATS_STORAGE_CLASS" > /dev/null 2>&1; then
-      echo "❌ TYPEKRO_NATS_STORAGE_CLASS names a missing StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
-      exit 1
-    fi
-  else
-    TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
-    if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
-      TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.beta\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
-    fi
-  fi
-  if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ] && [ "$CREATE_CLUSTER" = "true" ]; then
-    echo "🔧 Installing local-path StorageClass in the harness-created cluster..."
-    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
-    kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=180s
-    TYPEKRO_NATS_STORAGE_CLASS=local-path
-  elif [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
-    echo "❌ Existing cluster has no default StorageClass for JetStream integration."
-    echo "   Set TYPEKRO_NATS_STORAGE_CLASS to an existing RWO-capable StorageClass."
-    exit 1
-  fi
+  TYPEKRO_NATS_STORAGE_CLASS=$(CREATE_CLUSTER="$CREATE_CLUSTER" bun scripts/integration-cluster-harness.ts storage-class "${TYPEKRO_NATS_STORAGE_CLASS:-}")
   export TYPEKRO_NATS_STORAGE_CLASS
   echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
 
   # Cluster-backed fixtures should share the same discovered RWO class instead
   # of assuming a provisioner-specific name such as `local-path`.
   TYPEKRO_TEST_STORAGE_CLASS=${TYPEKRO_TEST_STORAGE_CLASS:-$TYPEKRO_NATS_STORAGE_CLASS}
-  if ! kubectl get storageclass "$TYPEKRO_TEST_STORAGE_CLASS" > /dev/null 2>&1; then
-    echo "❌ TYPEKRO_TEST_STORAGE_CLASS names a missing StorageClass: $TYPEKRO_TEST_STORAGE_CLASS"
-    exit 1
-  fi
+  TYPEKRO_TEST_STORAGE_CLASS=$(CREATE_CLUSTER=false bun scripts/integration-cluster-harness.ts storage-class "$TYPEKRO_TEST_STORAGE_CLASS")
   export TYPEKRO_TEST_STORAGE_CLASS
   echo "   General test StorageClass: $TYPEKRO_TEST_STORAGE_CLASS"
 
@@ -205,7 +176,7 @@ echo "📊 Test Summary:"
 if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
     echo "✅ E2E Cluster: Full deployment to Kubernetes with Kro"
 else
-    echo "⏭️  E2E Cluster: Skipped (install kubectl, kind, and Docker to enable)"
+    echo "⏭️  E2E Cluster: Skipped (install kind and Docker to enable)"
 fi
 
 echo ""

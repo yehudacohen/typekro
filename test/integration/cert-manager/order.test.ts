@@ -1,15 +1,24 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
-import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Order Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test-order';
+  const testNamespace = `typekro-test-order-${crypto.randomUUID().slice(0, 8)}`;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     console.log('Setting up cert-manager Order real integration tests...');
@@ -29,7 +38,7 @@ describe('Cert-Manager Order Real Integration Tests', () => {
       });
 
       // Create test namespace
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -37,54 +46,12 @@ describe('Cert-Manager Order Real Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up Order test resources...');
-
-      // Delete all Orders in test namespace that start with 'test-'
-      await customObjectsApi
-        .listNamespacedCustomObject({
-          group: 'acme.cert-manager.io',
-          version: 'v1',
-          namespace: testNamespace,
-          plural: 'orders',
-        })
-        .then(async (response: Record<string, unknown>) => {
-          const items = (response.items as Record<string, unknown>[]) || [];
-          for (const item of items) {
-            const itemMeta = item.metadata as Record<string, unknown>;
-            if ((itemMeta.name as string).startsWith('test-')) {
-              try {
-                await customObjectsApi.deleteNamespacedCustomObject({
-                  group: 'acme.cert-manager.io',
-                  version: 'v1',
-                  namespace: testNamespace,
-                  plural: 'orders',
-                  name: itemMeta.name as string,
-                });
-                console.log(`🗑️ Deleted Order: ${itemMeta.name}`);
-              } catch (deleteError) {
-                console.warn(`⚠️ Failed to delete Order ${itemMeta.name}:`, deleteError);
-              }
-            }
-          }
-        })
-        .catch((error) => {
-          console.warn('⚠️ Failed to list Orders for cleanup:', error);
-        });
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      console.log('✅ Order test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Order test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager Order real integration tests...');
-    await deleteNamespaceAndWait(testNamespace, kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   it('should deploy Order resource to Kubernetes using direct factory', async () => {
@@ -164,6 +131,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     });
 
     const orderName = `test-order-${Date.now()}`;
+    cleanupRegistry.track(directFactory, orderName);
     console.log(`📦 Deploying Order: ${orderName}`);
 
     const deploymentResult = await directFactory.deploy({
@@ -287,6 +255,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     });
 
     const orderName = `test-comprehensive-order-${Date.now()}`;
+    cleanupRegistry.track(directFactory, orderName);
     console.log(`📦 Deploying comprehensive Order: ${orderName}`);
 
     const deploymentResult = await directFactory.deploy({

@@ -829,6 +829,8 @@ export interface ResourceFactoryDeployOptions extends ResourceFactoryOperationOp
 
 /** Options exposed to library consumers for deleting one factory instance. */
 export interface ResourceFactoryDeleteOptions extends ResourceFactoryOperationOptions {
+  /** Bound this deletion independently from the factory's deployment timeout. */
+  timeout?: number;
   scopes?: string[];
   includeUnscopedResources?: boolean;
 }

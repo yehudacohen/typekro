@@ -26,7 +26,7 @@ import {
   waitForResourceAbsent,
 } from '../shared-kubeconfig.js';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 const runToken = Math.random().toString(36).slice(2, 8);
 
@@ -59,6 +59,7 @@ const ImageArtifact = Resource<ImageArtifactResource>('TypeKro.Test.ImageArtifac
 const imageArtifactProvider = (events: ProviderEvent[]) =>
   Provider.succeed(ImageArtifact, {
     read: ({ output }) => Effect.succeed(output),
+    list: () => Effect.succeed([]),
     reconcile: ({ news }) =>
       Effect.sync(() => {
         events.push({ action: 'reconcile', digest: news.digest });

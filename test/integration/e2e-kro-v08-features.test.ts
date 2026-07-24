@@ -12,7 +12,10 @@
  * - Kro 0.9.2+ bootstrap and controller upgrade
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { ConfigMap, Deployment } from '../../src/factories/simple/index.js';
@@ -24,14 +27,17 @@ import {
   toResourceGraph,
 } from '../../src/index.js';
 import {
-  cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
   isKroControllerHealthy,
+  type TestDeletableFactory,
 } from './shared-kubeconfig.js';
 
 // Test configuration
@@ -55,7 +61,7 @@ const testRunId = Date.now().toString().slice(-6);
 const kindSuffix = `R${testRunId}`; // e.g. "R486940" → valid PascalCase identifier suffix
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
@@ -100,25 +106,78 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
       process.removeListener('unhandledRejection', unhandledRejectionHandler);
       unhandledRejectionHandler = undefined;
     }
-    if (kc) {
-      console.log('Cleaning up Kro v0.8.x test namespaces...');
-      await cleanupTestNamespaces(new RegExp(`^${BASE_NAMESPACE}-`), kc);
-    }
   });
 
   // Helper: create namespace, run test, cleanup
   const withTestNamespace = async <T>(
     testName: string,
-    testFn: (namespace: string) => Promise<T>
+    testFn: (
+      namespace: string,
+      registerFactory: (factory: TestDeletableFactory, instanceName: string) => void,
+      registerFixtureCleanup: (cleanup: () => Promise<void>) => void
+    ) => Promise<T>
   ): Promise<T> => {
     const namespace = generateTestNamespace(testName);
+    const namespaceLease = await createTestNamespace(namespace, kc);
+    const deployments: Array<{ factory: TestDeletableFactory; instanceName: string }> = [];
+    const fixtureCleanups: Array<() => Promise<void>> = [];
+    let result: T | undefined;
+    let operationError: unknown;
     try {
-      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
-      console.log(`Created test namespace: ${namespace}`);
-      return await testFn(namespace);
-    } finally {
-      await deleteNamespaceAndWait(namespace, kc);
+      result = await testFn(
+        namespace,
+        (factory, instanceName) => {
+          deployments.push({ factory, instanceName });
+        },
+        (cleanup) => {
+          fixtureCleanups.push(cleanup);
+        }
+      );
+    } catch (error) {
+      operationError = error;
     }
+
+    const cleanupErrors: unknown[] = [];
+    for (const deployment of deployments.reverse()) {
+      try {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          deployment.factory,
+          deployment.instanceName,
+          [],
+          kc,
+          60_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    for (const cleanup of fixtureCleanups.reverse()) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      await deleteTestNamespaceAndWait(namespaceLease, kc);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+
+    if (operationError !== undefined && cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        `Kro v0.8 test failed and could not clean up namespace ${namespace}`
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        `Failed to clean up Kro v0.8 test namespace ${namespace}`
+      );
+    }
+    return result as T;
   };
 
   // Helper: wait for a Deployment to have ready replicas
@@ -183,24 +242,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
     throw new Error(`Timeout waiting for Service ${name} in ${namespace}`);
   };
 
-  // Helper: clean up an RGD (cluster-scoped)
-  const cleanupRGD = async (name: string): Promise<void> => {
-    try {
-      await customApi.deleteClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
-        name,
-      });
-      console.log(`Deleted RGD: ${name}`);
-    } catch (error: unknown) {
-      const err = error as { statusCode?: number; body?: { reason?: string } };
-      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-        console.warn(`Failed to delete RGD ${name}:`, error);
-      }
-    }
-  };
-
   // =========================================================================
   // 1. Kro 0.9.2+ Bootstrap Verification
   // =========================================================================
@@ -235,12 +276,8 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('includeWhen — Conditional Resources', () => {
     const includeWhenRGDName = `v08-includewhen-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(includeWhenRGDName);
-    });
-
     it('should conditionally create resources based on spec.monitoring flag', async () => {
-      await withTestNamespace('includewhen', async (namespace) => {
+      await withTestNamespace('includewhen', async (namespace, registerFactory) => {
         // Define composition with conditional resources
         const graph = kubernetesComposition(
           {
@@ -291,6 +328,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           timeout: TEST_TIMEOUT,
           waitForReady: true,
         });
+        registerFactory(factory, 'test-include');
 
         const instance = await factory.deploy({
           name: 'test-include',
@@ -311,9 +349,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
         expect(monitoringCM.data?.endpoint).toBe('/metrics');
 
         console.log('includeWhen with monitoring=true: all resources created');
-
-        // Clean up instance
-        await factory.deleteInstance('test-include');
       });
     });
   });
@@ -325,12 +360,8 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('readyWhen — Readiness Detection', () => {
     const readyWhenRGDName = `v08-readywhen-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(readyWhenRGDName);
-    });
-
     it('should deploy and wait for readiness using readyWhen expression', async () => {
-      await withTestNamespace('readywhen', async (namespace) => {
+      await withTestNamespace('readywhen', async (namespace, registerFactory) => {
         // Define composition with readyWhen
         const graph = kubernetesComposition(
           {
@@ -372,6 +403,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           timeout: TEST_TIMEOUT,
           waitForReady: true,
         });
+        registerFactory(factory, 'test-ready');
 
         const instance = await factory.deploy({
           name: 'test-ready',
@@ -388,8 +420,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
         });
         expect(deployment.status?.readyReplicas).toBeGreaterThan(0);
         console.log('readyWhen: deployment is ready as expected');
-
-        await factory.deleteInstance('test-ready');
       });
     });
   });
@@ -401,12 +431,8 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('forEach — Collection Resources', () => {
     const forEachRGDName = `v08-foreach-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(forEachRGDName);
-    });
-
     it('should create multiple ConfigMaps from a spec array using forEach', async () => {
-      await withTestNamespace('foreach', async (namespace) => {
+      await withTestNamespace('foreach', async (namespace, registerFactory) => {
         // Define composition with forEach over a string array
         const graph = kubernetesComposition(
           {
@@ -447,6 +473,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           timeout: TEST_TIMEOUT,
           waitForReady: true,
         });
+        registerFactory(factory, 'test-foreach');
 
         const instance = await factory.deploy({
           name: 'test-foreach',
@@ -466,8 +493,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
         }
 
         console.log('forEach: all 3 ConfigMaps created from spec.environments array');
-
-        await factory.deleteInstance('test-foreach');
       });
     });
   });
@@ -479,84 +504,89 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('externalRef — External Resource References', () => {
     const extRefRGDName = `v08-extref-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(extRefRGDName);
-    });
-
     it('should reference a pre-existing ConfigMap via externalRef', async () => {
-      await withTestNamespace('extref', async (namespace) => {
-        // Pre-create an external ConfigMap that the composition will reference
-        await k8sApi.createNamespacedConfigMap({
-          namespace,
-          body: {
-            metadata: { name: 'platform-config' },
-            data: { region: 'us-east-1', tier: 'production' },
-          },
-        });
-        console.log('Created external ConfigMap: platform-config');
-
-        // Define composition that references the external ConfigMap
-        const graph = kubernetesComposition(
-          {
-            name: extRefRGDName,
-            apiVersion: 'v1alpha1',
-            kind: `ExtRefApp${kindSuffix}`,
-            spec: type({
-              name: 'string',
-              image: 'string',
-            }),
-            status: type({
-              ready: 'boolean',
-            }),
-          },
-          (spec) => {
-            // Reference the pre-existing ConfigMap
-            // The externalRef call registers the reference in the composition context
-            externalRef({
+      await withTestNamespace(
+        'extref',
+        async (namespace, registerFactory, registerFixtureCleanup) => {
+          // Pre-create an external ConfigMap that the composition will reference
+          await k8sApi.createNamespacedConfigMap({
+            namespace,
+            body: {
+              metadata: { name: 'platform-config' },
+              data: { region: 'us-east-1', tier: 'production' },
+            },
+          });
+          registerFixtureCleanup(() =>
+            deleteTestResourceAndWait({
               apiVersion: 'v1',
               kind: 'ConfigMap',
               metadata: { name: 'platform-config', namespace },
-            });
+            })
+          );
+          console.log('Created external ConfigMap: platform-config');
 
-            // Create a Deployment
-            Deployment({
-              name: spec.name,
-              image: spec.image,
-              replicas: 1,
-              id: 'app',
-            });
+          // Define composition that references the external ConfigMap
+          const graph = kubernetesComposition(
+            {
+              name: extRefRGDName,
+              apiVersion: 'v1alpha1',
+              kind: `ExtRefApp${kindSuffix}`,
+              spec: type({
+                name: 'string',
+                image: 'string',
+              }),
+              status: type({
+                ready: 'boolean',
+              }),
+            },
+            (spec) => {
+              // Reference the pre-existing ConfigMap
+              // The externalRef call registers the reference in the composition context
+              externalRef({
+                apiVersion: 'v1',
+                kind: 'ConfigMap',
+                metadata: { name: 'platform-config', namespace },
+              });
 
-            return { ready: true };
-          }
-        );
+              // Create a Deployment
+              Deployment({
+                name: spec.name,
+                image: spec.image,
+                replicas: 1,
+                id: 'app',
+              });
 
-        // Verify YAML contains externalRef
-        const yaml = graph.toYaml();
-        expect(yaml).toContain('externalRef');
-        expect(yaml).toContain('platform-config');
-        console.log('externalRef YAML generated correctly');
+              return { ready: true };
+            }
+          );
 
-        // Deploy
-        const factory = await graph.factory('kro', {
-          namespace,
-          kubeConfig: kc,
-          timeout: TEST_TIMEOUT,
-          waitForReady: true,
-        });
+          // Verify YAML contains externalRef
+          const yaml = graph.toYaml();
+          expect(yaml).toContain('externalRef');
+          expect(yaml).toContain('platform-config');
+          console.log('externalRef YAML generated correctly');
 
-        const instance = await factory.deploy({
-          name: 'test-extref',
-          image: 'nginx:alpine',
-        });
+          // Deploy
+          const factory = await graph.factory('kro', {
+            namespace,
+            kubeConfig: kc,
+            timeout: TEST_TIMEOUT,
+            waitForReady: true,
+          });
+          registerFactory(factory, 'test-extref');
 
-        expect(instance).toBeDefined();
+          const instance = await factory.deploy({
+            name: 'test-extref',
+            image: 'nginx:alpine',
+          });
 
-        // Verify the Deployment was created
-        await waitForDeployment('test-extref', namespace);
-        console.log('externalRef: deployment created alongside external reference');
+          expect(instance).toBeDefined();
 
-        await factory.deleteInstance('test-extref');
-      });
+          // Verify the Deployment was created
+          await waitForDeployment('test-extref', namespace);
+          console.log('externalRef: deployment created alongside external reference');
+        }
+      );
     });
   });
 
@@ -567,12 +597,8 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('Combined Features — Multi-Feature Composition', () => {
     const combinedRGDName = `v08-combined-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(combinedRGDName);
-    });
-
     it('should combine includeWhen + readyWhen in a single composition', async () => {
-      await withTestNamespace('combined', async (namespace) => {
+      await withTestNamespace('combined', async (namespace, registerFactory) => {
         const graph = kubernetesComposition(
           {
             name: combinedRGDName,
@@ -624,6 +650,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           timeout: TEST_TIMEOUT,
           waitForReady: true,
         });
+        registerFactory(factory, 'test-combined');
 
         const instance = await factory.deploy({
           name: 'test-combined',
@@ -646,8 +673,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
         expect(cacheCM.data?.cacheEnabled).toBe('true');
 
         console.log('Combined: readyWhen + includeWhen both working');
-
-        await factory.deleteInstance('test-combined');
       });
     });
   });
@@ -659,12 +684,8 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   describe('toResourceGraph — Declarative Style', () => {
     const declarativeRGDName = `v08-declarative-${testRunId}`;
 
-    afterAll(async () => {
-      await cleanupRGD(declarativeRGDName);
-    });
-
     it('should deploy a toResourceGraph-based composition with CEL status expressions', async () => {
-      await withTestNamespace('declarative', async (namespace) => {
+      await withTestNamespace('declarative', async (namespace, registerFactory) => {
         const graph = toResourceGraph(
           {
             name: declarativeRGDName,
@@ -706,6 +727,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           timeout: TEST_TIMEOUT,
           waitForReady: true,
         });
+        registerFactory(factory, 'test-decl');
 
         const instance = await factory.deploy({
           name: 'test-decl',
@@ -726,8 +748,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
         expect(deployment.status?.readyReplicas).toBeGreaterThan(0);
 
         console.log('Declarative toResourceGraph: deployment + service created with CEL status');
-
-        await factory.deleteInstance('test-decl');
       });
     }, 600000); // 10 minutes - Kro reconciliation + deployment readiness under contention
   });

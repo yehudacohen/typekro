@@ -10,18 +10,21 @@
  * Requires: Kro 0.9.2+ installed in the cluster (via Flux/Helm or manual install)
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index';
 import {
-  cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from './shared-kubeconfig';
 
 // Generate unique test run ID to avoid CRD ownership conflicts
@@ -44,14 +47,16 @@ const generateTestNamespace = (testName: string): string => {
 const RGD_NAME = `webapp-stack-${testRunId}`;
 const KIND_NAME = `WebappStack${testRunId}`;
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
-  let customApi: k8s.CustomObjectsApi;
+  let factory: any;
+  let namespaceLease: TestNamespaceLease | undefined;
+  let deploymentAttempted = false;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -59,7 +64,6 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     kc = getIntegrationTestKubeConfig();
     k8sApi = createCoreV1ApiClient(kc);
     appsApi = createAppsV1ApiClient(kc);
-    customApi = createCustomObjectsApiClient(kc);
 
     console.log(`Test run ID: ${testRunId}`);
     console.log(`RGD name: ${RGD_NAME}, Kind: ${KIND_NAME}`);
@@ -67,25 +71,20 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
   afterAll(async () => {
     if (!kc) return;
-
-    // Clean up the RGD (cluster-scoped)
-    try {
-      await customApi.deleteClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
-        name: RGD_NAME,
-      });
-      console.log(`Deleted RGD: ${RGD_NAME}`);
-    } catch (error: unknown) {
-      const err = error as { statusCode?: number; body?: { reason?: string } };
-      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-        console.warn(`Failed to delete RGD ${RGD_NAME}:`, error);
-      }
+    const cleanupErrors: unknown[] = [];
+    if (factory && deploymentAttempted) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(factory, 'myapp', [], kc, 60_000).catch(
+        (error) => cleanupErrors.push(error)
+      );
     }
-
-    // Clean up any leftover test namespaces
-    await cleanupTestNamespaces(new RegExp(`^${BASE_NAMESPACE}-`), kc);
+    if (namespaceLease) {
+      await deleteTestNamespaceAndWait(namespaceLease, kc).catch((error) =>
+        cleanupErrors.push(error)
+      );
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'E2E cluster cleanup failed');
+    }
   });
 
   it(
@@ -93,13 +92,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     async () => {
       const NAMESPACE = generateTestNamespace('full-deploy');
 
-      // Create test namespace
-      try {
-        await k8sApi.createNamespace({ body: { metadata: { name: NAMESPACE } } });
-        console.log(`Created test namespace: ${NAMESPACE}`);
-      } catch (_error) {
-        console.log(`Namespace ${NAMESPACE} might already exist`);
-      }
+      namespaceLease = await createTestNamespace(NAMESPACE, kc);
 
       // Step 1: Define a resource graph with multiple resources and CEL-based cross-resource refs
       // Uses: ConfigMap, Deployment, Service with schema-driven names and env vars
@@ -180,13 +173,14 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       // This handles: RGD creation -> CRD registration -> instance creation -> readiness wait
       console.log('Step 3: Deploying via factory.deploy()...');
 
-      const factory = await resourceGraph.factory('kro', {
+      factory = await resourceGraph.factory('kro', {
         namespace: NAMESPACE,
         kubeConfig: kc,
         waitForReady: true,
         timeout: TEST_TIMEOUT,
       });
 
+      deploymentAttempted = true;
       const instance = await factory.deploy({
         appName: 'myapp',
         environment: 'development',
@@ -258,16 +252,6 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       console.log('All 3 resources verified — Kro created them from the ResourceGraphDefinition');
 
-      // Step 5: Cleanup — delete instance via factory, then namespace
-      console.log('Step 5: Cleaning up...');
-      try {
-        await factory.deleteInstance('myapp');
-        console.log('Instance deleted via factory');
-      } catch (error) {
-        console.warn('Instance cleanup failed:', error);
-      }
-
-      await deleteNamespaceAndWait(NAMESPACE, kc);
       console.log('E2E cluster test completed successfully');
     },
     TEST_TIMEOUT

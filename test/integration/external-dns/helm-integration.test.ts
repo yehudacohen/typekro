@@ -1,27 +1,30 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import {
   externalDnsHelmRelease,
   externalDnsHelmRepository,
 } from '../../../src/factories/external-dns';
 import {
-  createCoreV1ApiClient,
   createKubernetesObjectApiClient,
   createResourceWithConflictHandling,
-  deleteNamespaceIfExists,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
   deleteResourceIfExists,
-  ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 // Skip tests if no cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('External-DNS Helm Integration', () => {
-  const _testNamespace = 'typekro-test-external-dns-helm';
+  const _testNamespace = `typekro-test-external-dns-helm-${crypto.randomUUID().slice(0, 8)}`;
   let _kubeConfig: k8s.KubeConfig;
+  let namespaceLease: TestNamespaceLease;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -33,7 +36,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
     _kubeConfig = getIntegrationTestKubeConfig();
 
     // Create test namespace
-    await ensureNamespaceExists(_testNamespace, _kubeConfig);
+    namespaceLease = await createTestNamespace(_testNamespace, _kubeConfig);
 
     // Verify we have a test cluster available
     console.log('✅ Cluster connection established');
@@ -44,7 +47,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
 
     // Clean up test resources
     console.log('Cleaning up external-dns Helm integration tests...');
-    await deleteNamespaceIfExists(_testNamespace, _kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, _kubeConfig);
   });
 
   describe('HelmRepository Wrapper', () => {
@@ -56,7 +59,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
         id: 'externalDnsRepo',
       });
 
-      // Deploy the repository directly using kubectl
+      // Deploy the repository directly through the Kubernetes API.
       const kc = getIntegrationTestKubeConfig();
       const k8sApi = createKubernetesObjectApiClient(kc);
 
@@ -116,7 +119,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
 
       const release = externalDnsHelmRelease({
         name: 'external-dns-test-release',
-        namespace: 'external-dns',
+        namespace: _testNamespace,
         repositoryName: 'external-dns-repo-for-release',
         values: {
           provider: 'aws',
@@ -129,21 +132,11 @@ describeOrSkip('External-DNS Helm Integration', () => {
         id: 'externalDnsRelease',
       });
 
-      // Deploy using kubectl
+      // Deploy through the Kubernetes API.
       const kc = getIntegrationTestKubeConfig();
       const k8sApi = createKubernetesObjectApiClient(kc);
-      const coreApi = createCoreV1ApiClient(kc);
 
       try {
-        // Create external-dns namespace if it doesn't exist
-        try {
-          await coreApi.createNamespace({
-            body: { metadata: { name: 'external-dns' } },
-          });
-        } catch (_error) {
-          // Namespace might already exist
-        }
-
         // Apply the HelmRepository first - use conflict handling
         const createdRepo = await createResourceWithConflictHandling(k8sApi, repository, {
           conflictStrategy: 'warn',
@@ -177,7 +170,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
           kind: 'HelmRelease',
           metadata: {
             name: 'external-dns-test-release',
-            namespace: 'external-dns',
+            namespace: _testNamespace,
           },
         });
         await deleteResourceIfExists(k8sApi, {
@@ -216,11 +209,13 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate AWS configuration
-      const awsValues = awsRelease.spec.values as {
-        provider?: string;
-        aws?: { region?: string };
-        domainFilters?: string[];
-      } | undefined;
+      const awsValues = awsRelease.spec.values as
+        | {
+            provider?: string;
+            aws?: { region?: string };
+            domainFilters?: string[];
+          }
+        | undefined;
       expect(awsValues?.provider).toBe('aws');
       expect(awsValues?.aws?.region).toBe('us-east-1');
       expect(awsValues?.domainFilters).toEqual(['example.com']);
@@ -241,11 +236,13 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate Cloudflare configuration
-      const cloudflareValues = cloudflareRelease.spec.values as {
-        provider?: string;
-        cloudflare?: { proxied?: boolean };
-        domainFilters?: string[];
-      } | undefined;
+      const cloudflareValues = cloudflareRelease.spec.values as
+        | {
+            provider?: string;
+            cloudflare?: { proxied?: boolean };
+            domainFilters?: string[];
+          }
+        | undefined;
       expect(cloudflareValues?.provider).toBe('cloudflare');
       expect(cloudflareValues?.cloudflare?.proxied).toBe(true);
       expect(cloudflareValues?.domainFilters).toEqual(['example.org']);
@@ -390,9 +387,17 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate that credentials are referenced via secrets
-      const values = release.spec.values as {
-        aws?: { credentials?: { secretName?: string; accessKeyIdKey?: string; secretAccessKeyKey?: string } };
-      } | undefined;
+      const values = release.spec.values as
+        | {
+            aws?: {
+              credentials?: {
+                secretName?: string;
+                accessKeyIdKey?: string;
+                secretAccessKeyKey?: string;
+              };
+            };
+          }
+        | undefined;
       expect(values?.aws?.credentials?.secretName).toBe('aws-credentials');
       expect(values?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
       expect(values?.aws?.credentials?.secretAccessKeyKey).toBe('secret-access-key');

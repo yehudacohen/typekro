@@ -63,6 +63,13 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('-inngest');
   });
 
+  it('should wire the optional cache storage class into Valkey PVCs', () => {
+    const yaml = webAppWithProcessing.toYaml();
+
+    expect(yaml).toContain('storageClassName:');
+    expect(yaml).toContain('schema.spec.cache.storageClass');
+  });
+
   it('should generate YAML with Inngest using external databases', () => {
     const yaml = webAppWithProcessing.toYaml();
 
