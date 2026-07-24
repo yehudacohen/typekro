@@ -4,11 +4,9 @@ import { Cel } from '../../../core/references/cel.js';
 import { getInnerCelPath } from '../../../core/serialization/cel-references.js';
 import type { CelExpression } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
-import {
-  externalDnsHelmRelease,
-  externalDnsHelmRepository,
-} from '../resources/helm.js';
+import { externalDnsHelmRelease, externalDnsHelmRepository } from '../resources/helm.js';
 import {
   ExternalDnsBootstrapConfigSchema,
   ExternalDnsBootstrapStatusSchema,
@@ -247,8 +245,13 @@ export const externalDnsBootstrap = kubernetesComposition(
     }
 
     // Only add domainFilters if it's defined and non-empty
-    const domainFilters = fullConfig.domainFilters as ExternalDnsHelmValues['domainFilters'] | undefined;
-    if (domainFilters !== undefined && (!Array.isArray(domainFilters) || domainFilters.length > 0)) {
+    const domainFilters = fullConfig.domainFilters as
+      | ExternalDnsHelmValues['domainFilters']
+      | undefined;
+    if (
+      domainFilters !== undefined &&
+      (!Array.isArray(domainFilters) || domainFilters.length > 0)
+    ) {
       helmValuesConfig.domainFilters = domainFilters;
     }
 
@@ -267,15 +270,10 @@ export const externalDnsBootstrap = kubernetesComposition(
     // DESIGN NOTE: This is a "bootstrap composition" that deploys external-dns via Helm.
     // Readiness is derived from the HelmRelease so nested compositions can
     // propagate a real cross-composition status reference to parent RGDs.
+    const releaseStatus = helmReleaseConditionSummary(helmRelease.status.conditions);
     return {
-      ready: Cel.expr<boolean>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      phase: Cel.expr<'Ready' | 'Pending' | 'Installing' | 'Failed' | 'Upgrading'>(
-        helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
+      ready: releaseStatus.ready,
+      phase: releaseStatus.phase,
 
       // DNS management status - derived from configuration
       dnsProvider: fullConfig.provider,

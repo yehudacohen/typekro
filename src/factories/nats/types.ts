@@ -29,7 +29,7 @@ export type NatsBootstrapConfig = Omit<
 export const NatsBootstrapStatusSchema = type({
   ready: 'boolean',
   failed: 'boolean',
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   serverVersion: 'string',
   controllerVersion: 'string',
   endpoint: 'string',

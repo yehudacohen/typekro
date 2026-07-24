@@ -30,8 +30,14 @@ export * as externalDns from './external-dns/index.js';
 // FLUX CD ECOSYSTEM
 // =============================================================================
 export * from './flux/index.js';
+// =============================================================================
+// HARBOR REGISTRY ECOSYSTEM
+// =============================================================================
+export * as harbor from './harbor/index.js';
 export type {
+  HelmReleaseConditionSummary,
   HelmReleaseConfig,
+  HelmReleasePhase,
   HelmReleaseSpec,
   HelmReleaseStatus,
   HelmRepositoryConfig,
@@ -48,14 +54,11 @@ export {
   createHelmTimeoutReadinessEvaluator,
   createLabeledHelmReleaseEvaluator,
   helmRelease,
+  helmReleaseConditionSummary,
   helmReleaseReadinessEvaluator,
   helmRepository,
   simpleHelmChart,
 } from './helm/index.js';
-// =============================================================================
-// HARBOR REGISTRY ECOSYSTEM
-// =============================================================================
-export * as harbor from './harbor/index.js';
 // =============================================================================
 // KRO ECOSYSTEM
 // =============================================================================

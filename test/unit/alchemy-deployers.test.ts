@@ -20,9 +20,10 @@ import {
   inferKroDeletionOptionsForTest,
 } from '../../src/alchemy/resource-registration.js';
 import { ResourceDeletionIncompleteError } from '../../src/core/deployment/errors.js';
-import type { ResourceDeletionResult } from '../../src/core/types/deployment.js';
-import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { getMetadataField } from '../../src/core/metadata/index.js';
+import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
+import type { ResourceDeletionResult } from '../../src/core/types/deployment.js';
+import { kroCustomResource } from '../../src/factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../src/factories/kro/resource-graph-definition.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 import { ingressClass } from '../../src/factories/kubernetes/networking/ingress-class.js';
@@ -618,6 +619,73 @@ describe('KroTypeKroDeployer', () => {
     expect(graph.resources).toHaveLength(1);
     expect(graph.dependencyGraph.getNodes().size).toBe(1);
     expect(graph.dependencyGraph.hasNode(graph.resources[0].id)).toBe(true);
+  });
+
+  it('validates the admitted KRO instance without changing the provider output contract', async () => {
+    const desired = kroCustomResource({
+      apiVersion: 'example.com/v1alpha1',
+      kind: 'Example',
+      metadata: { name: 'example', namespace: 'default' },
+      spec: { nested: { retained: 'yes' } },
+    });
+    const mockEngine = createMockEngine() as any;
+    mockEngine.deploy.mockImplementation(() =>
+      Promise.resolve({
+        status: 'success',
+        resources: [
+          {
+            id: 'exampleExample',
+            kind: 'Example',
+            name: 'example',
+            namespace: 'default',
+            manifest: desired,
+            liveManifest: {
+              ...desired,
+              metadata: { ...desired.metadata, uid: 'live-uid' },
+            },
+            status: 'deployed',
+            deployedAt: new Date(),
+          },
+        ],
+        errors: [],
+        duration: 1,
+      })
+    );
+    const deployer = new KroTypeKroDeployer(mockEngine, { validateInstanceSpec: true });
+
+    const admitted = await deployer.deploy(desired, {
+      mode: 'kro',
+      namespace: 'default',
+    });
+    expect(admitted).toBe(desired);
+    expect(Object.hasOwn(admitted.metadata, 'uid')).toBe(false);
+
+    mockEngine.deploy.mockImplementation(() =>
+      Promise.resolve({
+        status: 'success',
+        resources: [
+          {
+            id: 'exampleExample',
+            kind: 'Example',
+            name: 'example',
+            namespace: 'default',
+            manifest: desired,
+            liveManifest: { ...desired, spec: { nested: {} } },
+            status: 'deployed',
+            deployedAt: new Date(),
+          },
+        ],
+        errors: [],
+        duration: 1,
+      })
+    );
+
+    await expect(
+      deployer.deploy(desired, {
+        mode: 'kro',
+        namespace: 'default',
+      })
+    ).rejects.toThrow('$.spec.nested.retained');
   });
 
   it('rehydrates serialized factory scope before KRO deploy', async () => {

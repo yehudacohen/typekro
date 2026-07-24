@@ -1,19 +1,15 @@
-import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import { EventEmitter } from 'node:events';
+import type { ClientRequest, IncomingMessage } from 'node:http';
+import { PassThrough } from 'node:stream';
 import type * as k8s from '@kubernetes/client-node';
-import { BunCompatibleWatch, watchErrorMessage } from '../../src/core/kubernetes/bun-watch.js';
+import {
+  BunCompatibleWatch,
+  type BunWatchRequestFactory,
+  watchErrorMessage,
+} from '../../src/core/kubernetes/bun-watch.js';
 
-const servers = new Set<Server>();
-
-async function listen(server: Server): Promise<number> {
-  servers.add(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Expected an IP server address');
-  return address.port;
-}
-
-function kubeConfigFor(server: string, token = 'test-token'): k8s.KubeConfig {
+function kubeConfigFor(server = 'http://kubernetes.test', token = 'test-token'): k8s.KubeConfig {
   return {
     getCurrentCluster: () => ({ name: 'test', server, skipTLSVerify: false }),
     applyToHTTPSOptions: async (options: { headers?: Record<string, string> }) => {
@@ -22,33 +18,44 @@ function kubeConfigFor(server: string, token = 'test-token'): k8s.KubeConfig {
   } as unknown as k8s.KubeConfig;
 }
 
-afterEach(async () => {
-  await Promise.all(
-    [...servers].map(
-      (server) =>
-        new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        })
-    )
-  );
-  servers.clear();
-});
+function requestFactory(
+  statusCode: number,
+  body: string,
+  inspectOptions?: (options: Record<string, unknown>) => void
+): BunWatchRequestFactory {
+  return (_protocol, options, callback) => {
+    const request = new EventEmitter() as ClientRequest;
+    request.end = (() => {
+      inspectOptions?.(options as Record<string, unknown>);
+      const response = new PassThrough();
+      Object.assign(response, { statusCode });
+      callback(response as unknown as IncomingMessage);
+      response.end(body);
+    }) as ClientRequest['end'];
+    request.destroy = ((error?: Error) => {
+      if (error) queueMicrotask(() => request.emit('error', error));
+      return request;
+    }) as ClientRequest['destroy'];
+    return request;
+  };
+}
 
 describe('BunCompatibleWatch', () => {
   it('applies kubeconfig authentication and parses streaming events', async () => {
     let authorization: string | undefined;
-    const server = createServer((request, response) => {
-      authorization = request.headers.authorization;
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(
+    const watch = new BunCompatibleWatch(
+      kubeConfigFor(),
+      requestFactory(
+        200,
         `${JSON.stringify({
           type: 'ADDED',
           object: { kind: 'Event', metadata: { name: 'scheduled' } },
-        })}\n`
-      );
-    });
-    const port = await listen(server);
-    const watch = new BunCompatibleWatch(kubeConfigFor(`http://127.0.0.1:${port}`));
+        })}\n`,
+        (options) => {
+          authorization = (options.headers as Record<string, string> | undefined)?.authorization;
+        }
+      )
+    );
     const events: Array<{ phase: string; object: unknown }> = [];
 
     const completion = new Promise<unknown>((resolve) => {
@@ -73,12 +80,13 @@ describe('BunCompatibleWatch', () => {
   });
 
   it('preserves API-server status and response diagnostics', async () => {
-    const server = createServer((_request, response) => {
-      response.writeHead(403, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ kind: 'Status', reason: 'Forbidden', message: 'denied' }));
-    });
-    const port = await listen(server);
-    const watch = new BunCompatibleWatch(kubeConfigFor(`http://127.0.0.1:${port}`));
+    const watch = new BunCompatibleWatch(
+      kubeConfigFor(),
+      requestFactory(
+        403,
+        JSON.stringify({ kind: 'Status', reason: 'Forbidden', message: 'denied' })
+      )
+    );
 
     const completion = new Promise<unknown>((resolve) => {
       void watch.watch('/api/v1/namespaces/default/events', {}, () => {}, resolve);

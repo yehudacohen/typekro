@@ -458,7 +458,9 @@ export type ClickStackK8sTelemetryConfig = typeof ClickStackK8sTelemetryConfigSc
 export const ClickStackK8sTelemetryStatusSchema = type({
   /** Both collector HelmReleases report Ready. */
   ready: 'boolean',
-  phase: '"Ready" | "Installing"',
+  /** Either collector HelmRelease reports Ready=False. */
+  failed: 'boolean',
+  phase: '"Ready" | "Installing" | "Failed"',
 });
 
 // ============================================================================

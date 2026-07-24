@@ -312,6 +312,20 @@ await factory.deploy({ name: 'app', image: 'nginx' });
 4. **Week 4**: Add status expressions for runtime state
 5. **Ongoing**: Migrate remaining resources as needed
 
+## KRO schema-changing upgrades
+
+TypeKro waits for an updated `ResourceGraphDefinition` to report the current
+`metadata.generation` in `status.observedGeneration` before applying its custom
+resource instance. This prevents the API server from admitting an instance
+against the previous generated CRD schema and silently pruning newly added
+nested fields.
+
+TypeKro also compares the API server's immediate apply response with the desired
+instance spec. If structural-schema pruning still removes a desired path, the
+deployment fails with `KRO_INSTANCE_SPEC_PRUNED` and lists only the omitted
+paths, never their values. Do not retry around this error blindly: inspect the
+RGD and generated CRD status, then resolve the schema or reconciliation problem.
+
 ## Upgrading from a pre-hoist TypeKro release (KRO)
 
 TypeKro **never emits a `Namespace` into RGD YAML**. Every Namespace a composition
@@ -477,6 +491,24 @@ the KRO status once the Namespace leaves the RGD — in **either** shape:
 TypeKro **rejects** such a composition at serialization (naming the field) in both
 cases — one consistent behavior — rather than silently shipping a weaker status API.
 Derive the value from a managed resource, or drop the field.
+
+### Helm-backed integration status now reports failures consistently
+
+The CNPG, Valkey, Inngest, NATS, Rook, ClickHouse operator, ClickStack telemetry,
+cert-manager, and external-dns compositions now derive their aggregate status from one
+shared Flux HelmRelease condition policy:
+
+- `ready` is true only when every required HelmRelease has `Ready=True`;
+- where exposed, `failed` is true when any required HelmRelease has `Ready=False`; and
+- `phase` is now `Ready | Installing | Failed`.
+
+This tightens several public status schemas. CNPG, ClickHouse, and ClickStack telemetry
+gain a required `failed` field. Valkey, Inngest, NATS, and Rook already exposed
+`failed`, but their `phase` unions gain `Failed`. cert-manager and external-dns keep
+their existing status fields while their `phase` can now emit `Failed`. Update
+exhaustive `phase` switches, typed fixtures, and hand-written status mocks before
+upgrading. This is a public API compatibility change and should be consumed as a
+pre-1.0 minor release rather than a patch release.
 
 ## Next Steps
 

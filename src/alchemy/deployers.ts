@@ -11,6 +11,7 @@ import {
   ResourceDeletionIncompleteError,
   ResourceDeploymentError,
 } from '../core/deployment/errors.js';
+import { assertKroInstanceSpecPreserved } from '../core/deployment/kro-instance-admission.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import {
   applyResourceScopeMetadata,
@@ -39,6 +40,8 @@ export class ResourceGraphDefinitionDeletionDeferredError extends Error {
 }
 
 interface KroTypeKroDeployerOptions {
+  /** Validate that the API server preserved the desired KRO instance spec. */
+  validateInstanceSpec?: boolean;
   /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
   deleteInstance?: (name: string, abortSignal?: AbortSignal) => Promise<ResourceDeletionResult>;
   /** True when an RGD still has live instances and must be preserved. */
@@ -272,7 +275,13 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       throw deploymentError;
     }
 
-    // Return the original resource (DirectDeploymentEngine doesn't modify the input)
+    const deployedId = getResourceId(resource, resourceId);
+    const live =
+      result.resources?.find((candidate) => candidate.id === deployedId)?.liveManifest ??
+      result.resources?.[0]?.liveManifest;
+    if (live && this.deployerOptions.validateInstanceSpec === true) {
+      assertKroInstanceSpecPreserved(resource, live);
+    }
     return resource;
   }
 

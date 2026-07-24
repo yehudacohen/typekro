@@ -48,6 +48,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_OTEL_COLLECTOR_VERSION,
@@ -144,14 +145,9 @@ export function makeClickstackK8sTelemetry(options: ClickStackK8sTelemetryBuildO
       });
 
       return {
-        ready: Cel.expr<boolean>(
-          'clickstackTelemetryDaemonset.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && ' +
-            'clickstackTelemetryDeployment.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
-        ),
-        phase: Cel.expr<'Ready' | 'Installing'>(
-          'clickstackTelemetryDaemonset.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && ' +
-            'clickstackTelemetryDeployment.status.conditions.exists(c, c.type == "Ready" && c.status == "True") ' +
-            '? "Ready" : "Installing"'
+        ...helmReleaseConditionSummary(
+          _daemonsetRelease.status.conditions,
+          _deploymentRelease.status.conditions
         ),
       };
     }

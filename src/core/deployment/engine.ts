@@ -1358,7 +1358,7 @@ export class DirectDeploymentEngine {
         : ensureReadinessEvaluator(resolvedResource as Enhanced<unknown, unknown>);
 
     // 3. Apply the resource to the cluster (or simulate for dry run)
-    await this.resourceApplier.applyResourceToCluster(
+    const appliedResource = await this.resourceApplier.applyResourceToCluster(
       resourceWithEvaluator,
       options,
       resourceLogger
@@ -1371,6 +1371,7 @@ export class DirectDeploymentEngine {
       name: resourceWithEvaluator.metadata?.name || 'unknown',
       namespace: resourceWithEvaluator.metadata?.namespace || 'default',
       manifest: resourceWithEvaluator,
+      liveManifest: appliedResource as KubernetesResource,
       status: 'deployed',
       applied: true,
       deployedAt: new Date(),

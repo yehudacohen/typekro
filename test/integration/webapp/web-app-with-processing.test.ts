@@ -29,8 +29,8 @@ import type {
 import { ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
-  const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-  await deleteNamespaceAndWait(namespace, kubeConfig, 600000);
+  const { deleteTestNamespaceAndWait } = await import('../shared-kubeconfig.js');
+  await deleteTestNamespaceAndWait(namespace, kubeConfig, 600_000);
 }
 
 // ── Shared test spec ─────────────────────────────────────────────────────
@@ -165,6 +165,7 @@ describe('WebAppWithProcessing Direct Mode', () => {
   });
 
   afterAll(async () => {
+    const cleanupErrors: unknown[] = [];
     // Delete instance-scoped resources only. Shared operator resources
     // (cnpg-system, valkey-operator-system) must persist for the KRO mode
     // test — it needs the operator CRDs and webhook services.
@@ -172,15 +173,18 @@ describe('WebAppWithProcessing Direct Mode', () => {
       try {
         await directFactory.deleteInstance('testapp');
       } catch (e) {
-        console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
+        cleanupErrors.push(e);
       }
     }
     for (const ns of [factoryNamespace, appNamespace]) {
       try {
         await cleanupNamespace(ns, kubeConfig);
       } catch (e) {
-        console.error(`⚠️ Namespace ${ns} cleanup failed:`, (e as Error).message);
+        cleanupErrors.push(e);
       }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'WebApp direct-mode cleanup failed');
     }
   });
 
@@ -253,24 +257,28 @@ describe('WebAppWithProcessing KRO Mode', () => {
   });
 
   afterAll(async () => {
+    const cleanupErrors: unknown[] = [];
     // Delete the KRO instance first so the controller follows the graph and
     // removes child resources before namespace teardown.
     if (kroFactory) {
       try {
         await kroFactory.deleteInstance('testapp');
       } catch (e) {
-        console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+        cleanupErrors.push(e);
       }
     }
     try {
       await cleanupNamespace(appNamespace, kubeConfig);
     } catch (e) {
-      console.error(`⚠️ Namespace ${appNamespace} cleanup failed:`, (e as Error).message);
+      cleanupErrors.push(e);
     }
     try {
       await cleanupNamespace(kroNamespace, kubeConfig);
     } catch (e) {
-      console.error(`⚠️ Namespace ${kroNamespace} cleanup failed:`, (e as Error).message);
+      cleanupErrors.push(e);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'WebApp KRO-mode cleanup failed');
     }
   });
 

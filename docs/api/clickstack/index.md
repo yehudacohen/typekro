@@ -139,3 +139,17 @@ TWO instances of the **stock** `opentelemetry-collector` chart — a daemonset (
 `kubernetesEvents`, `clusterMetrics`) — both exporting `otlphttp` to the ClickStack gateway. The
 HyperDX API key is wired via `secretKeyRef` + OTel `${env:…}` expansion, so the key value never lands
 in Helm values.
+
+Its aggregate status waits for both collector releases and distinguishes a definite Flux failure
+from an in-progress install:
+
+```typescript
+status: {
+  ready: boolean;
+  failed: boolean;
+  phase: 'Ready' | 'Installing' | 'Failed';
+}
+```
+
+`ready` is true only when both releases report `Ready=True`; `failed` is true when either reports
+`Ready=False`.

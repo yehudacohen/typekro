@@ -1,5 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { Cel } from '../../../core/references/cel.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_VALKEY_REPO_NAME,
@@ -112,24 +112,9 @@ export const valkeyBootstrap = kubernetesComposition(
     });
     _helmRelease.dependsOn(_helmRepository);
 
-    // Status derived from HelmRelease conditions.
+    // Status derived from the Flux HelmRelease Ready condition.
     return {
-      ready: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      // Phase cannot distinguish Failed from Installing due to a CEL evaluator
-      // limitation (#48). Use the `failed` field for failure detection.
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
-      // Separate failed boolean — workaround for the nested CEL ternary limitation.
-      // True when the Ready condition is explicitly False (not just absent/Unknown).
-      failed: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "False")'
-      ),
+      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
       // Static version from deploy-time config, not derived from live HelmRelease
       // status. If the operator is upgraded out-of-band (e.g. Flux automation),
       // this value will not reflect the running version.

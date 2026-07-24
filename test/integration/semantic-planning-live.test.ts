@@ -4,20 +4,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { createEventMonitor } from '../../src/core/deployment/event-monitor.js';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
-import { yamlFile } from '../../src/factories/kubernetes/yaml/yaml-file.js';
-import { job } from '../../src/factories/kubernetes/workloads/job.js';
-import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
+import { createEventMonitor } from '../../src/core/deployment/event-monitor.js';
 import type { ResourceDeletionResult } from '../../src/core/types/deployment.js';
+import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
+import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
+import { job } from '../../src/factories/kubernetes/workloads/job.js';
+import { yamlFile } from '../../src/factories/kubernetes/yaml/yaml-file.js';
 import {
   createCoreV1ApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  deleteGeneratedCrdAndWait,
+  deleteTestNamespaceAndWait,
   ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  isNotFoundError,
+  waitForResourceAbsent,
 } from './shared-kubeconfig.js';
 
 const clusterAvailable = isClusterAvailable();
@@ -94,7 +97,7 @@ describeOrSkip('semantic planning live acceptance', () => {
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    await deleteNamespaceAndWait(namespace, kubeConfig).catch(() => {});
+    await deleteTestNamespaceAndWait(namespace, kubeConfig);
   });
 
   it('authenticates Bun event watches and receives streamed Kubernetes events', async () => {
@@ -137,9 +140,7 @@ describeOrSkip('semantic planning live acceptance', () => {
       );
     } finally {
       await monitor.stopMonitoring();
-      await coreApi
-        .deleteNamespacedEvent({ name: eventName, namespace })
-        .catch(() => undefined);
+      await coreApi.deleteNamespacedEvent({ name: eventName, namespace }).catch(() => undefined);
     }
   });
 
@@ -196,6 +197,142 @@ describeOrSkip('semantic planning live acceptance', () => {
       await factory.deleteInstance(`normalization-${runToken}`).catch(() => undefined);
     }
   });
+
+  it('waits for an upgraded RGD schema before applying newly nested instance fields', async () => {
+    const group = `schema-upgrade-${runToken}.typekro.dev`;
+    const apiVersion = `${group}/v1alpha1`;
+    const kind = `SchemaUpgrade${runToken}`;
+    const rgdName = `schema-upgrade-${runToken}`;
+    const instanceName = `schema-upgrade-${runToken}`;
+
+    const originalGraph = kubernetesComposition(
+      {
+        name: rgdName,
+        apiVersion,
+        kind,
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        configMap({
+          id: 'schemaUpgradeConfig',
+          metadata: { name: spec.name, namespace },
+          data: { nested: 'not-yet-declared' },
+        });
+        return { ready: true };
+      }
+    );
+    const upgradedGraph = kubernetesComposition(
+      {
+        name: rgdName,
+        apiVersion,
+        kind,
+        revision: '2',
+        spec: type({
+          name: 'string',
+          settings: {
+            nested: 'string',
+          },
+        }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        configMap({
+          id: 'schemaUpgradeConfig',
+          metadata: { name: spec.name, namespace },
+          data: { nested: spec.settings.nested },
+        });
+        return { ready: true };
+      }
+    );
+    const originalFactory = originalGraph.factory('kro', {
+      namespace,
+      kubeConfig,
+      timeout: 180_000,
+      waitForReady: true,
+    });
+    const upgradedFactory = upgradedGraph.factory('kro', {
+      namespace,
+      kubeConfig,
+      timeout: 180_000,
+      waitForReady: true,
+    });
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: rgdName },
+    };
+
+    let testError: unknown;
+    try {
+      await originalFactory.deploy({ name: instanceName });
+      await upgradedFactory.deploy({
+        name: instanceName,
+        settings: { nested: 'preserved-after-upgrade' },
+      });
+
+      const admitted = (await objectApi.read({
+        apiVersion,
+        kind,
+        metadata: { name: instanceName, namespace },
+      })) as { spec?: { settings?: { nested?: string } } };
+      expect(admitted.spec?.settings?.nested).toBe('preserved-after-upgrade');
+
+      const child = (await objectApi.read({
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: instanceName, namespace },
+      })) as { data?: { nested?: string } };
+      expect(child.data?.nested).toBe('preserved-after-upgrade');
+    } catch (error: unknown) {
+      testError = error;
+    }
+
+    const cleanupErrors: unknown[] = [];
+    await upgradedFactory.deleteInstance(instanceName).catch((error) => cleanupErrors.push(error));
+
+    await objectApi.delete(rgd).catch((error: unknown) => {
+      if (!isNotFoundError(error)) cleanupErrors.push(error);
+    });
+    await waitForResourceAbsent(rgd, kubeConfig, 60_000).catch((error) =>
+      cleanupErrors.push(error)
+    );
+
+    const crds = await objectApi
+      .list('apiextensions.k8s.io/v1', 'CustomResourceDefinition')
+      .catch((error) => {
+        cleanupErrors.push(error);
+        return { items: [] };
+      });
+    for (const crd of crds.items) {
+      if ((crd as { spec?: { group?: string } }).spec?.group !== group) continue;
+      const crdName = crd.metadata?.name;
+      if (!crdName) {
+        cleanupErrors.push(new Error(`Generated CRD for ${group} has no metadata.name`));
+        continue;
+      }
+      await deleteGeneratedCrdAndWait(
+        {
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: crdName },
+        },
+        apiVersion,
+        kind,
+        kubeConfig
+      ).catch((error) => cleanupErrors.push(error));
+    }
+
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        testError === undefined ? cleanupErrors : [testError, ...cleanupErrors],
+        'KRO schema-upgrade test or cleanup failed'
+      );
+    }
+
+    if (testError !== undefined) throw testError;
+  }, 300_000);
 
   it('removes a completed Job and Pod while retaining its generated CRD Active', async () => {
     const group = `completed-${runToken}.typekro.dev`;

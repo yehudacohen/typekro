@@ -174,12 +174,8 @@ export type InngestBootstrapConfig = typeof InngestBootstrapConfigSchema.infer;
 
 /** Observed status of an Inngest deployment. */
 export interface InngestBootstrapStatus {
-  /**
-   * Overall deployment phase (derived from HelmRelease Ready condition).
-   * Note: cannot distinguish Failed from Installing due to CEL limitation (#48).
-   * Use the `failed` field for failure detection.
-   */
-  phase: 'Ready' | 'Installing';
+  /** Overall deployment phase (derived from HelmRelease Ready condition). */
+  phase: 'Ready' | 'Installing' | 'Failed';
   /** Whether Inngest is ready to process events. */
   ready: boolean;
   /** Whether the HelmRelease Ready condition is explicitly False. */
@@ -190,7 +186,7 @@ export interface InngestBootstrapStatus {
 
 /** ArkType schema for InngestBootstrapStatus. */
 export const InngestBootstrapStatusSchema = type({
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   ready: 'boolean',
   failed: 'boolean',
   'version?': 'string',

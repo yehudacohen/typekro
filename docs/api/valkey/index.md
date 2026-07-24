@@ -194,15 +194,13 @@ removes only the singleton reference, not the operator owner.
 
 ```typescript
 instance.status.ready    // boolean — operator is running
-instance.status.phase    // 'Ready' | 'Installing'
+instance.status.phase    // 'Ready' | 'Installing' | 'Failed'
 instance.status.failed   // boolean — true if Ready condition is explicitly False
 instance.status.version  // deployment-time version; default is normalized to v0.0.61
 ```
 
-> **Note:** `phase` cannot distinguish `'Failed'` from `'Installing'` due to a
-> [CEL evaluator limitation](https://github.com/yehudacohen/typekro/issues/48).
-> Use the `failed` field to detect deployment failures. If `failed` is `true`,
-> check the HelmRelease conditions directly for failure details.
+If `failed` is `true`, check the HelmRelease conditions directly for
+controller-specific failure details.
 
 ## Usage in Compositions
 

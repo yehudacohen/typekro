@@ -68,12 +68,12 @@ import {
   createKroArtifactBundle,
   decodeKroArtifactBundle,
   encodeKroArtifactBundle,
+  KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
   type KroArtifactBundle,
   type KroArtifactBundleOperation,
   type KroArtifactPlan,
   type KroSupportingArtifact,
   type KroSupportingArtifactCompilerInput,
-  KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
   kroArtifactOutputField,
   kroArtifactPlanToGraphResources,
   kroArtifactPlanToInstanceResource,
@@ -88,8 +88,8 @@ import {
   type PlanEdge,
   planValueSensitiveBindingNames,
   resolveStaticYamlSensitiveBindings,
-  schemaToIR,
   type StaticYamlMaterializationOptions,
+  schemaToIR,
 } from '../planning/index.js';
 import {
   createAlwaysReadyEvaluator,
@@ -150,6 +150,7 @@ import {
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
+import { assertKroInstanceSpecPreserved } from './kro-instance-admission.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
   assertNoHoistWeakenedStatusFields,
@@ -2154,13 +2155,14 @@ export class KroResourceFactoryImpl<
           spec: resource.spec,
         } as DeployableK8sResource<typeof enhanced>;
         copyResourceMetadata(enhanced, deployable);
-        await deploymentEngine.deployResource(deployable, {
+        const deployed = await deploymentEngine.deployResource(deployable, {
           mode: 'kro',
           namespace,
           waitForReady: false,
           timeout: member.factory.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
           ...(abortSignal ? { abortSignal } : {}),
         });
+        assertKroInstanceSpecPreserved(deployable, deployed.liveManifest ?? deployed.manifest);
 
         const shouldWait =
           operation.role === 'singleton-owner-instance' ||
@@ -2297,13 +2299,17 @@ export class KroResourceFactoryImpl<
     // Deploy without waiting for readiness - we'll handle that ourselves
     this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
     try {
-      await deploymentEngine.deployResource(deployableResource, {
+      const deployed = await deploymentEngine.deployResource(deployableResource, {
         mode: 'kro',
         namespace: instanceNamespace,
         waitForReady: false, // We'll handle Kro-specific readiness ourselves
         timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
         ...(abortSignal ? { abortSignal } : {}),
       });
+      assertKroInstanceSpecPreserved(
+        deployableResource,
+        deployed.liveManifest ?? deployed.manifest
+      );
       this.logger.info('Instance deployed, checking readiness', {
         instanceName,
         rgdName: this.rgdName,

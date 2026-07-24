@@ -2,6 +2,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { ensureVersionPrefix } from '../../../utils/string.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { certManagerHelmRelease, certManagerHelmRepository } from '../resources/helm.js';
 import {
@@ -313,17 +314,12 @@ export const certManagerBootstrap = kubernetesComposition(
     //   resourceRef.status.arrayField,
     //   '.exists(item, item.property == "value")'
     // )
+    const releaseStatus = helmReleaseConditionSummary(_helmRelease.status.conditions);
     return {
       // Reference actual HelmRelease status for proper dependency management
       // Use CEL .exists() to check if Ready condition exists with status=True
-      ready: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      phase: Cel.expr<'Ready' | 'Pending' | 'Installing' | 'Failed' | 'Upgrading'>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
+      ready: releaseStatus.ready,
+      phase: releaseStatus.phase,
       version: spec.version || '1.19.3',
       controllerReady: Cel.expr<boolean>(
         _helmRelease.status.conditions,

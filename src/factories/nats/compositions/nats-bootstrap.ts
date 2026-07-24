@@ -2,6 +2,7 @@ import { mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_NACK_VERSION,
@@ -140,25 +141,7 @@ export const natsBootstrap = kubernetesComposition(
       repositoryUrl,
     });
     return {
-      ready: Cel.expr<boolean>(
-        server.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") && ',
-        controller.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      failed: Cel.expr<boolean>(
-        server.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "False") || ',
-        controller.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "False")'
-      ),
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        server.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") && ',
-        controller.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")',
-        ' ? "Ready" : "Installing"'
-      ),
+      ...helmReleaseConditionSummary(server.status.conditions, controller.status.conditions),
       serverVersion: spec.version ?? DEFAULT_NATS_VERSION,
       controllerVersion: spec.nackVersion ?? DEFAULT_NACK_VERSION,
       endpoint,

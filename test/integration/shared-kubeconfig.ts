@@ -1,10 +1,49 @@
 import * as k8s from '@kubernetes/client-node';
 import {
+  classifyNamespaceEmptiness,
+  createClusterNamespaceInventory,
+  type NamespaceInventory,
+} from '../../src/core/deployment/kro-namespace-teardown.js';
+import {
+  createBunCompatibleApiextensionsV1Api,
   createBunCompatibleAppsV1Api,
   createBunCompatibleCoreV1Api,
   createBunCompatibleCustomObjectsApi,
   createBunCompatibleKubernetesObjectApi,
 } from '../../src/core/kubernetes/index.js';
+
+export interface ResourceIdentity {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    namespace?: string;
+  };
+}
+
+export class ResourceDeletionTimeoutError extends Error {}
+
+export async function assertTestNamespaceEmpty(
+  namespace: string,
+  inventory: NamespaceInventory
+): Promise<void> {
+  const verdict = await classifyNamespaceEmptiness(inventory, namespace);
+  if (!verdict.empty) {
+    throw new Error(`Refusing namespace finalizer recovery for ${namespace}: ${verdict.reason}`);
+  }
+}
+
+export function isNotFoundError(error: unknown): boolean {
+  const candidate = error as {
+    statusCode?: number;
+    body?: { code?: number; reason?: string };
+  };
+  return (
+    candidate.statusCode === 404 ||
+    candidate.body?.code === 404 ||
+    candidate.body?.reason === 'NotFound'
+  );
+}
 
 /**
  * Get a properly configured KubeConfig for integration tests
@@ -66,6 +105,178 @@ export function createCustomObjectsApiClient(kc?: k8s.KubeConfig): k8s.CustomObj
 export function createKubernetesObjectApiClient(kc?: k8s.KubeConfig): k8s.KubernetesObjectApi {
   const kubeConfig = kc || getIntegrationTestKubeConfig();
   return createBunCompatibleKubernetesObjectApi(kubeConfig);
+}
+
+export async function waitForResourceAbsent(
+  resource: ResourceIdentity,
+  kc?: k8s.KubeConfig,
+  timeoutMs = 30_000
+): Promise<void> {
+  const objectApi = createKubernetesObjectApiClient(kc);
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await objectApi.read(resource);
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+    await Bun.sleep(1_000);
+  }
+
+  const namespace = resource.metadata.namespace
+    ? ` in namespace ${resource.metadata.namespace}`
+    : '';
+  throw new ResourceDeletionTimeoutError(
+    `Timed out after ${timeoutMs}ms waiting for ${resource.kind}/${resource.metadata.name}${namespace} to be deleted`
+  );
+}
+
+/**
+ * Delete a test-owned generated CRD after proving no custom resources remain.
+ * OrbStack can occasionally leave the standard apiextensions cleanup finalizer
+ * pending even after the CRD is empty, so the narrowly bounded recovery below
+ * removes only that known finalizer.
+ */
+export async function deleteGeneratedCrdAndWait(
+  crd: ResourceIdentity,
+  instanceApiVersion: string,
+  instanceKind: string,
+  kc?: k8s.KubeConfig,
+  gracefulTimeoutMs = 30_000,
+  recoveryTimeoutMs = 60_000
+): Promise<void> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const objectApi = createKubernetesObjectApiClient(kubeConfig);
+
+  try {
+    await objectApi.delete(crd);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+
+  try {
+    await waitForResourceAbsent(crd, kubeConfig, gracefulTimeoutMs);
+    return;
+  } catch (error: unknown) {
+    if (!(error instanceof ResourceDeletionTimeoutError)) throw error;
+  }
+
+  let remainingInstances: Awaited<ReturnType<typeof objectApi.list>>;
+  try {
+    remainingInstances = await objectApi.list(instanceApiVersion, instanceKind);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+  if (remainingInstances.items.length > 0) {
+    throw new Error(
+      `Refusing CRD finalizer recovery for ${crd.metadata.name}: ${remainingInstances.items.length} instance(s) remain`
+    );
+  }
+
+  let liveCrd: Awaited<ReturnType<typeof objectApi.read>>;
+  try {
+    liveCrd = await objectApi.read(crd);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+  if (!liveCrd.metadata?.deletionTimestamp) {
+    throw new Error(
+      `Refusing CRD finalizer recovery for ${crd.metadata.name}: deletion was not accepted`
+    );
+  }
+  const finalizers = liveCrd.metadata.finalizers ?? [];
+  if (finalizers.some((finalizer) => finalizer !== 'customresourcecleanup.apiextensions.k8s.io')) {
+    throw new Error(
+      `Refusing CRD finalizer recovery for ${crd.metadata.name}: unexpected finalizers ${finalizers.join(', ')}`
+    );
+  }
+
+  console.warn(
+    `Recovering test-owned CRD ${crd.metadata.name} after its empty custom-resource cleanup finalizer remained pending`
+  );
+  const apiextensionsApi = createBunCompatibleApiextensionsV1Api(kubeConfig);
+  await apiextensionsApi.patchCustomResourceDefinition({
+    name: crd.metadata.name,
+    body: [{ op: 'replace', path: '/metadata/finalizers', value: [] }],
+  });
+  await waitForResourceAbsent(crd, kubeConfig, recoveryTimeoutMs);
+}
+
+/**
+ * Delete a test namespace and recover only the known empty-namespace
+ * Kubernetes finalizer stall observed on persistent OrbStack clusters.
+ */
+export async function deleteTestNamespaceAndWait(
+  namespace: string,
+  kc?: k8s.KubeConfig,
+  gracefulTimeoutMs = 30_000,
+  recoveryTimeoutMs = 60_000,
+  inventory?: NamespaceInventory
+): Promise<void> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  try {
+    await deleteNamespaceAndWait(namespace, kubeConfig, gracefulTimeoutMs);
+    return;
+  } catch (error: unknown) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.startsWith(`Timed out after ${gracefulTimeoutMs}ms`)
+    ) {
+      throw error;
+    }
+  }
+
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+  let liveNamespace: Awaited<ReturnType<typeof coreApi.readNamespace>>;
+  try {
+    liveNamespace = await coreApi.readNamespace({ name: namespace });
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return;
+    throw error;
+  }
+  if (!liveNamespace.metadata?.deletionTimestamp) {
+    throw new Error(
+      `Refusing namespace finalizer recovery for ${namespace}: deletion was not accepted`
+    );
+  }
+  const finalizers = liveNamespace.spec?.finalizers ?? [];
+  if (finalizers.some((finalizer) => finalizer !== 'kubernetes')) {
+    throw new Error(
+      `Refusing namespace finalizer recovery for ${namespace}: unexpected finalizers ${finalizers.join(', ')}`
+    );
+  }
+  await assertTestNamespaceEmpty(
+    namespace,
+    inventory ?? createClusterNamespaceInventory(kubeConfig)
+  );
+
+  console.warn(
+    `Recovering empty test namespace ${namespace} after its Kubernetes finalizer remained pending`
+  );
+  await coreApi.replaceNamespaceFinalize({
+    name: namespace,
+    body: {
+      ...liveNamespace,
+      spec: {
+        ...liveNamespace.spec,
+        finalizers: [],
+      },
+    },
+  });
+  await waitForResourceAbsent(
+    {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: { name: namespace },
+    },
+    kubeConfig,
+    recoveryTimeoutMs
+  );
 }
 
 /**

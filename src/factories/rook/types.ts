@@ -85,7 +85,7 @@ export type RookCephOperatorBootstrapConfig = typeof RookCephOperatorBootstrapCo
 /** Observable Rook operator bootstrap status. */
 export const RookCephOperatorBootstrapStatusSchema = type({
   ready: 'boolean',
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   failed: 'boolean',
   'version?': 'string',
 });

@@ -232,8 +232,48 @@ describe('ResourceGraphDefinition Factory', () => {
         status: {
           state: 'Active',
           conditions: [
-            { type: 'Ready', status: 'True', observedGeneration: 2, message: 'Current graph ready' },
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 2,
+              message: 'Current graph ready',
+            },
           ],
+        },
+      });
+
+      expect(currentReady.ready).toBe(true);
+    });
+
+    it('should wait for the top-level observed generation before accepting stale ready conditions', () => {
+      const rgdConfig = createTestRGD();
+      const enhanced = resourceGraphDefinition(rgdConfig);
+      const evaluator = requireReadinessEvaluator(enhanced);
+
+      const staleReady = evaluator({
+        metadata: { name: 'testRgd', uid: '12345', generation: 3 },
+        spec: {},
+        status: {
+          state: 'Active',
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'True', message: 'Previous graph ready' }],
+        },
+      });
+
+      expect(staleReady.ready).toBe(false);
+      expect(staleReady.reason).toBe('GenerationPending');
+      expect(staleReady.details).toMatchObject({
+        generation: 3,
+        observedGeneration: 2,
+      });
+
+      const currentReady = evaluator({
+        metadata: { name: 'testRgd', uid: '12345', generation: 3 },
+        spec: {},
+        status: {
+          state: 'Active',
+          observedGeneration: 3,
+          conditions: [{ type: 'Ready', status: 'True', message: 'Current graph ready' }],
         },
       });
 

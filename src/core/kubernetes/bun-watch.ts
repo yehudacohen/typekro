@@ -19,6 +19,17 @@ interface WatchError extends Error {
   responseBody?: string;
 }
 
+export type BunWatchRequestFactory = (
+  protocol: 'http:' | 'https:',
+  options: https.RequestOptions,
+  callback: (response: http.IncomingMessage) => void
+) => http.ClientRequest;
+
+const defaultRequestFactory: BunWatchRequestFactory = (protocol, options, callback) => {
+  const client = protocol === 'https:' ? https : http;
+  return client.request(options, callback);
+};
+
 function watchCompletionError(message: string, name: 'AbortError' | 'TimeoutError'): Error {
   return new DOMException(message, name);
 }
@@ -34,7 +45,10 @@ function watchCompletionError(message: string, name: 'AbortError' | 'TimeoutErro
  * transport.
  */
 export class BunCompatibleWatch implements KubernetesWatch {
-  constructor(private readonly kubeConfig: k8s.KubeConfig) {}
+  constructor(
+    private readonly kubeConfig: k8s.KubeConfig,
+    private readonly requestFactory: BunWatchRequestFactory = defaultRequestFactory
+  ) {}
 
   async watch(
     path: string,
@@ -54,7 +68,6 @@ export class BunCompatibleWatch implements KubernetesWatch {
     const authenticatedOptions: https.RequestOptions = { headers: {} };
     await this.kubeConfig.applyToHTTPSOptions(authenticatedOptions);
     const tls = extractAgentTlsOptions(authenticatedOptions.agent);
-    const client = url.protocol === 'https:' ? https : http;
     let completed = false;
     let aborted = false;
     const doneOnce = (error: unknown) => {
@@ -63,7 +76,8 @@ export class BunCompatibleWatch implements KubernetesWatch {
       done(error);
     };
 
-    const request = client.request(
+    const request = this.requestFactory(
+      url.protocol as 'http:' | 'https:',
       {
         hostname: url.hostname,
         port: url.port || (url.protocol === 'https:' ? 443 : 80),

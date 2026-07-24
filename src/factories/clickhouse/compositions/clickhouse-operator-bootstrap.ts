@@ -1,8 +1,8 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
-import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   clickhouseOperatorHelmRelease,
@@ -144,17 +144,7 @@ export const clickhouseOperatorBootstrap = kubernetesComposition(
     // the chart's workloads before reporting Ready (readiness is
     // workload-aware, mirroring the cnpg/dagster bootstraps).
     return {
-      ready: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      // Two-state phase: nested ternaries with .exists() require repeating the
-      // full resource path in CEL, which Cel.expr(ref, operator) cannot
-      // express (same constraint as the cnpg bootstrap).
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
+      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
       version: resolvedVersion,
     };
   }

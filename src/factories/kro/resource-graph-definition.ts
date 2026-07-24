@@ -49,23 +49,49 @@ const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvalu
 
       const conditions = Array.isArray(status.conditions) ? status.conditions : [];
       const generation = typeof metadata?.generation === 'number' ? metadata.generation : undefined;
-      const hasObservedGeneration = conditions.some(
+      const statusObservedGeneration =
+        typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined;
+      const hasConditionObservedGeneration = conditions.some(
         (condition: KubernetesCondition) => typeof condition?.observedGeneration === 'number'
       );
       const currentConditions =
-        hasObservedGeneration && generation !== undefined
+        hasConditionObservedGeneration && generation !== undefined
           ? conditions.filter(
-              (condition: KubernetesCondition) =>
-                (condition.observedGeneration ?? 0) >= generation
+              (condition: KubernetesCondition) => (condition.observedGeneration ?? 0) >= generation
             )
           : conditions;
 
-      if (hasObservedGeneration && generation !== undefined && currentConditions.length === 0) {
+      if (
+        generation !== undefined &&
+        statusObservedGeneration !== undefined &&
+        statusObservedGeneration < generation
+      ) {
         return {
           ready: false,
           reason: 'GenerationPending',
           message: `Waiting for Kro controller to process ResourceGraphDefinition generation ${generation}.`,
-          details: { generation, conditions },
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
+        };
+      }
+
+      if (
+        hasConditionObservedGeneration &&
+        generation !== undefined &&
+        currentConditions.length === 0
+      ) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ResourceGraphDefinition generation ${generation}.`,
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
         };
       }
 
@@ -91,7 +117,12 @@ const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvalu
           reason: 'RGDProcessingFailed',
           message: `RGD processing failed: ${cause?.message || 'Unknown error'}`,
           ...(rejected ? { terminal: true } : {}),
-          details: { state: status.state, generation, conditions },
+          details: {
+            state: status.state,
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
         };
       }
 
@@ -118,8 +149,7 @@ const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvalu
         );
         const crdSynced = currentConditions.find(
           (condition: KubernetesCondition) =>
-            condition?.type === 'CustomResourceDefinitionSynced' &&
-            condition?.status === 'True'
+            condition?.type === 'CustomResourceDefinitionSynced' && condition?.status === 'True'
         );
         allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
       }
@@ -135,7 +165,12 @@ const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvalu
         ready: false,
         reason: 'ReconciliationPending',
         message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
-        details: { state: status.state, generation, conditions },
+        details: {
+          state: status.state,
+          generation,
+          observedGeneration: statusObservedGeneration,
+          conditions,
+        },
       };
     } catch (error: unknown) {
       rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });

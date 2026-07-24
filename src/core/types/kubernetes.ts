@@ -338,6 +338,7 @@ export interface KroStatusFields {
     lastTransitionTime?: string;
     reason?: string;
     message?: string;
+    observedGeneration?: number;
   }>;
   observedGeneration?: number;
 }
@@ -424,12 +425,14 @@ export interface RGDManifest {
   };
   status?: {
     state?: string;
+    observedGeneration?: number;
     conditions?: Array<{
       type: string;
       status: string;
       reason?: string;
       message?: string;
       lastTransitionTime?: string;
+      observedGeneration?: number;
     }>;
     [key: string]: unknown;
   };

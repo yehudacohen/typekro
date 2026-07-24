@@ -1,6 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { cleanupCertManagerWebhooks, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  cleanupCertManagerWebhooks,
+  deleteTestNamespaceAndWait,
+  ensureNamespaceExists,
+} from '../shared-kubeconfig.js';
+
+setDefaultTimeout(900_000);
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
@@ -33,7 +39,6 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager bootstrap composition tests...');
-    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
 
     // Clean up cluster-scoped webhook configurations created by test cert-manager
     // installations. These persist after namespace deletion and cause HTTP 500 errors
@@ -45,13 +50,21 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       'cert-manager-dual-direct',
       'cert-manager-readiness-test',
     ];
-    await Promise.allSettled(
+    const webhookResults = await Promise.allSettled(
       releaseNames.map((name) => cleanupCertManagerWebhooks(name, kubeConfig))
     );
 
     // Clean up the main test namespace and all cert-manager test namespaces
     const namespacesToClean = [testNamespace, testNs1, testNs2, testNs3, testNs4, testNs5];
-    await Promise.allSettled(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
+    const namespaceResults = await Promise.allSettled(
+      namespacesToClean.map((ns) => deleteTestNamespaceAndWait(ns, kubeConfig))
+    );
+    const failures = [...webhookResults, ...namespaceResults]
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Failed to clean up cert-manager integration resources');
+    }
   });
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {

@@ -1204,9 +1204,10 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   }
 
   const kroDeletion = props.kroDeletion ?? inferKroDeletionOptions(props);
-  return new KroTypeKroDeployer(
-    engine,
-    kroDeletion
+  const validateInstanceSpec = shouldValidateKroInstanceAdmission(props);
+  return new KroTypeKroDeployer(engine, {
+    ...(validateInstanceSpec ? { validateInstanceSpec: true } : {}),
+    ...(kroDeletion
       ? {
           deleteInstance: (name: string, abortSignal?: AbortSignal) =>
             deleteKroInstanceFinalizerSafe(kc, name, kroDeletion, abortSignal),
@@ -1215,8 +1216,29 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
           deleteResourceGraphDefinition: (_rgdName: string, abortSignal?: AbortSignal) =>
             deleteKroDefinition(kc, kroDeletion, undefined, abortSignal),
         }
-      : {}
-  );
+      : {}),
+  });
+}
+
+function shouldValidateKroInstanceAdmission<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): boolean {
+  if (props.deploymentStrategy !== 'kro') return false;
+
+  if (props.kroArtifactBundle !== undefined || props.kroArtifactOperationId !== undefined) {
+    if (props.kroArtifactBundle === undefined || props.kroArtifactOperationId === undefined) {
+      return false;
+    }
+    const bundle = decodeKroArtifactBundle(props.kroArtifactBundle);
+    const operation = bundle.operations.find(
+      (candidate) => candidate.id === props.kroArtifactOperationId
+    );
+    return operation?.role === 'instance' || operation?.role === 'singleton-owner-instance';
+  }
+
+  // Legacy Alchemy declarations predate operation roles. Their KRO resources are
+  // either the RGD itself or its root custom resource instance.
+  return props.resource.kind !== 'ResourceGraphDefinition';
 }
 
 function fullApiVersion(apiVersion: unknown, group: unknown): string | undefined {

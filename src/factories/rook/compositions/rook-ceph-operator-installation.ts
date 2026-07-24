@@ -3,6 +3,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_ROOK_CEPH_REPO_NAME,
@@ -106,18 +107,7 @@ export const rookCephOperatorBootstrap = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(
-        release.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        release.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
-      failed: Cel.expr<boolean>(
-        release.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "False")'
-      ),
+      ...helmReleaseConditionSummary(release.status.conditions),
       version: resolvedVersion,
     };
   }

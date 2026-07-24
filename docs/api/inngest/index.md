@@ -114,14 +114,14 @@ await factory.deploy({
 
 ```typescript
 instance.status.ready    // boolean — Inngest is processing events
-instance.status.phase    // 'Ready' | 'Installing'
+instance.status.phase    // 'Ready' | 'Installing' | 'Failed'
 instance.status.failed   // boolean — true if HelmRelease Ready=False
 instance.status.version  // deployed chart version (static, deploy-time)
 ```
 
-> **Note:** `phase` cannot distinguish `'Failed'` from `'Installing'` due to a
-> [CEL evaluator limitation](https://github.com/yehudacohen/typekro/issues/48).
-> Use the `failed` field to detect deployment failures.
+`phase` and `failed` are both derived from the Flux HelmRelease `Ready`
+condition. Inspect the HelmRelease conditions for controller-specific failure
+details.
 
 ## Key Configuration
 

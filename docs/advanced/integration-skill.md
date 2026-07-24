@@ -119,11 +119,10 @@ export const MyBootstrapConfigSchema = type({
 export type MyBootstrapConfig = typeof MyBootstrapConfigSchema.infer;
 
 // 3. Bootstrap Status — hand-written interface (represents K8s API response):
-//    ⚠️ ALWAYS include: ready, phase, failed, version
-//    ⚠️ phase is two-state only — nested CEL ternaries break (#48)
+//    ALWAYS include: ready, phase, failed, version
 export const MyBootstrapStatusSchema = type({
   ready: 'boolean',
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   failed: 'boolean',
   'version?': 'string',
 });
@@ -389,6 +388,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { DEFAULT_MY_REPO_NAME, DEFAULT_MY_VERSION, myHelmRelease, myHelmRepository } from '../resources/helm.js';
 import { mapMyConfigToHelmValues } from '../utils/helm-values-mapper.js';
@@ -427,22 +427,9 @@ export const myBootstrap = kubernetesComposition(
 // ⚠️ If referencing operator-generated secrets by name convention, document the
 //    operator version: `const secretName = \`${name}-${owner}\`; // CNPG v1.25`
 
-// Status pattern — ALWAYS include all three fields:
+// Status pattern — the shared helper safely repeats resource references:
 return {
-  ready: Cel.expr<boolean>(
-    _helmRelease.status.conditions,
-    '.exists(c, c.type == "Ready" && c.status == "True")'
-  ),
-  // ⚠️ Phase is two-state only — nested CEL ternaries break (#48)
-  phase: Cel.expr<'Ready' | 'Installing'>(
-    _helmRelease.status.conditions,
-    '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-  ),
-  // ⚠️ Use separate failed boolean for failure detection
-  failed: Cel.expr<boolean>(
-    _helmRelease.status.conditions,
-    '.exists(c, c.type == "Ready" && c.status == "False")'
-  ),
+  ...helmReleaseConditionSummary(_helmRelease.status.conditions),
   // ⚠️ Static — reflects deploy-time version, not runtime.
   // Document this limitation.
   version: appVersion,
@@ -551,7 +538,7 @@ because it passes when invoked directly. It must participate in the repository h
 - Factory reference with all options
 - Readiness state table
 - Bootstrap composition with status field docs
-- Note about `phase` limitation and `failed` field for failure detection
+- Document synchronized `ready`, `failed`, and `phase: 'Ready' | 'Installing' | 'Failed'` semantics
 - Note about `'kro'` vs `'direct'` factory modes
 - Prerequisites (operator install, cert-manager for TLS, etc.)
 - Links to upstream docs
@@ -595,9 +582,9 @@ Then verify each item:
 - [ ] CRD API group/version and Helm values schema were verified against current upstream docs or CRDs, not copied from stale examples
 
 **Status & CEL:**
-- [ ] Bootstrap status has: `ready`, `phase` ('Ready' | 'Installing'), `failed`, `version?`; platform status has all declared infrastructure/dependency/component fields asserted in tests
-- [ ] Phase uses simple two-state ternary (no nested `.exists()`)
-- [ ] `failed` uses separate single `.exists()` expression
+- [ ] Bootstrap status has: `ready`, `phase` ('Ready' | 'Installing' | 'Failed'), `failed`, `version?`; platform status has all declared infrastructure/dependency/component fields asserted in tests
+- [ ] Flux HelmRelease status uses `helmReleaseConditionSummary(...)`
+- [ ] Multi-release bootstraps pass every HelmRelease condition list to the shared helper
 - [ ] Status type exactly matches what the CEL actually produces
 - [ ] KRO status references only resources that exist for every schema-valid KRO instance; direct-only disabled/no-op paths are documented or rejected in KRO mode
 - [ ] `version` is documented as deploy-time, not runtime
@@ -713,7 +700,7 @@ git diff master...HEAD -- src/ # review all source changes
 10. **Missing `conditions` on status types** — If using condition-based evaluator, status needs `conditions?`.
 11. **Sanitizer logic drops graph-aware values** — Document the intended behavior. Some integrations need to strip proxy markers before concrete YAML; HelmRelease values generally need to preserve refs/CEL so KRO can resolve them at reconcile time.
 12. **Incomplete nested schemas** — Each nested schema reference is independent.
-13. **Nested CEL ternaries** — Only simple two-state ternaries work. Use `failed` boolean for failure detection. See [#48](https://github.com/yehudacohen/typekro/issues/48).
+13. **Hand-written Helm status CEL** — Prefer `helmReleaseConditionSummary(...)`; it safely emits repeated resource references and keeps `ready`, `failed`, and three-state `phase` consistent.
 14. **OCI Helm repositories** — Need `type: 'oci'`, have no status field, version tag format varies per operator.
 15. **String literal coupling** — After writing, grep for any string that appears in both a factory default and a composition. Extract as a constant.
 16. **Chart version in labels** — `app.kubernetes.io/version` should be the app version, not the chart tag. Strip `-chart` suffix.

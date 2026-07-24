@@ -20,9 +20,14 @@ const KRO_CUSTOM_RESOURCE_READINESS_STRATEGY = 'typekro.readiness.kro.custom-res
 function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
   const evaluator = (liveResource: unknown): ResourceStatus => {
     try {
-      const status = (
-        liveResource as { status?: WithKroStatusFields<Record<string, unknown>> } | null | undefined
-      )?.status;
+      const typedLiveResource = liveResource as
+        | {
+            metadata?: { generation?: number };
+            status?: WithKroStatusFields<Record<string, unknown>>;
+          }
+        | null
+        | undefined;
+      const status = typedLiveResource?.status;
       if (!status) {
         return {
           ready: false,
@@ -34,6 +39,54 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
 
       const state = status.state;
       const conditions = status.conditions || [];
+      const generation =
+        typeof typedLiveResource?.metadata?.generation === 'number'
+          ? typedLiveResource.metadata.generation
+          : undefined;
+      const statusObservedGeneration =
+        typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined;
+      const hasConditionObservedGeneration = conditions.some(
+        (condition) => typeof condition.observedGeneration === 'number'
+      );
+      const currentConditions =
+        hasConditionObservedGeneration && generation !== undefined
+          ? conditions.filter((condition) => (condition.observedGeneration ?? 0) >= generation)
+          : conditions;
+
+      if (
+        generation !== undefined &&
+        statusObservedGeneration !== undefined &&
+        statusObservedGeneration < generation
+      ) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ${resourceKind} generation ${generation}.`,
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
+        };
+      }
+
+      if (
+        generation !== undefined &&
+        hasConditionObservedGeneration &&
+        currentConditions.length === 0
+      ) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ${resourceKind} generation ${generation}.`,
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
+        };
+      }
+
       if (state === undefined) {
         return {
           ready: false,
@@ -42,17 +95,17 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
           details: {
             statusExists: true,
             stateExists: false,
-            conditions: conditions.length > 0 ? conditions : undefined,
+            conditions: currentConditions.length > 0 ? currentConditions : undefined,
           },
         };
       }
       if (state === 'FAILED') {
-        const failedCondition = conditions.find((condition) => condition.status === 'False');
+        const failedCondition = currentConditions.find((condition) => condition.status === 'False');
         return {
           ready: false,
           reason: 'KroInstanceFailed',
           message: `${resourceKind} instance failed: ${failedCondition?.message || 'Unknown error'}`,
-          details: { state, conditions, observedGeneration: status.observedGeneration },
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
         };
       }
       if (state === 'PROGRESSING') {
@@ -60,7 +113,7 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
           ready: false,
           reason: 'KroInstanceProgressing',
           message: `${resourceKind} instance progressing - State: ${state}`,
-          details: { state, conditions, observedGeneration: status.observedGeneration },
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
         };
       }
       if (state !== 'ACTIVE') {
@@ -68,12 +121,14 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
           ready: false,
           reason: 'StateNotActive',
           message: `${resourceKind} state is '${state}', waiting for 'ACTIVE'`,
-          details: { state, conditions, observedGeneration: status.observedGeneration },
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
         };
       }
 
-      const readyCondition = conditions.find((condition) => condition.type === 'Ready');
-      const syncedCondition = conditions.find((condition) => condition.type === 'InstanceSynced');
+      const readyCondition = currentConditions.find((condition) => condition.type === 'Ready');
+      const syncedCondition = currentConditions.find(
+        (condition) => condition.type === 'InstanceSynced'
+      );
       if (readyCondition?.status === 'True') {
         return { ready: true, message: `${resourceKind} instance is active and ready` };
       }
@@ -82,7 +137,7 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
           ready: false,
           reason: 'ReadyConditionFalse',
           message: `${resourceKind} Ready condition is '${readyCondition.status}': ${readyCondition.message || 'No message'}`,
-          details: { state, conditions, observedGeneration: status.observedGeneration },
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
         };
       }
       if (syncedCondition?.status === 'True') {
@@ -93,14 +148,14 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
           ready: false,
           reason: 'NotSynced',
           message: `${resourceKind} InstanceSynced condition is '${syncedCondition.status}': ${syncedCondition.message || 'No message'}`,
-          details: { state, conditions, observedGeneration: status.observedGeneration },
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
         };
       }
       return {
         ready: false,
         reason: 'ReadinessConditionMissing',
         message: `${resourceKind} Ready or InstanceSynced condition not yet available`,
-        details: { state, conditions, observedGeneration: status.observedGeneration },
+        details: { state, conditions, observedGeneration: statusObservedGeneration },
       };
     } catch (error: unknown) {
       return {
@@ -121,9 +176,7 @@ function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
 }
 
 registerPortableReadinessStrategy(KRO_CUSTOM_RESOURCE_READINESS_STRATEGY, '1', (configuration) =>
-  createKroCustomResourceReadinessEvaluator(
-    requiredReadinessString(configuration, 'resourceKind')
-  )
+  createKroCustomResourceReadinessEvaluator(requiredReadinessString(configuration, 'resourceKind'))
 );
 
 /**

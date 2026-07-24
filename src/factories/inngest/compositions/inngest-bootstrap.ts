@@ -1,6 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { Cel } from '../../../core/references/cel.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   DEFAULT_INNGEST_VERSION,
@@ -108,18 +108,7 @@ export const inngestBootstrap = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
-      failed: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "False")'
-      ),
+      ...helmReleaseConditionSummary(_helmRelease.status.conditions),
       // Static — reflects deploy-time version, not runtime.
       version: resolvedVersion,
     };

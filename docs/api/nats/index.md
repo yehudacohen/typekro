@@ -55,6 +55,22 @@ In direct mode, complete owned-Namespace teardown is explicit:
 Set `pvcRetentionPolicy: 'delete'` for explicitly ephemeral installations, such as disposable
 integration environments. Scaling retains PVCs in both modes.
 
+The bootstrap status distinguishes an explicit Flux failure from an in-progress reconciliation:
+
+```typescript
+status: {
+  ready: boolean;       // both NATS and NACK HelmReleases report Ready=True
+  failed: boolean;      // either HelmRelease reports Ready=False
+  phase: 'Ready' | 'Installing' | 'Failed';
+  serverVersion: string;
+  controllerVersion: string;
+  endpoint: string;
+}
+```
+
+`Installing` includes the interval before either release has reported a definitive `Ready`
+condition. The aggregate never reports `Ready` unless both releases are ready.
+
 ## Streams and consumers
 
 ```ts
