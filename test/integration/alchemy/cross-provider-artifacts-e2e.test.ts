@@ -59,6 +59,7 @@ const ImageArtifact = Resource<ImageArtifactResource>('TypeKro.Test.ImageArtifac
 const imageArtifactProvider = (events: ProviderEvent[]) =>
   Provider.succeed(ImageArtifact, {
     read: ({ output }) => Effect.succeed(output),
+    list: () => Effect.succeed([]),
     reconcile: ({ news }) =>
       Effect.sync(() => {
         events.push({ action: 'reconcile', digest: news.digest });
