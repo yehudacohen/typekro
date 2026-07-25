@@ -1,4 +1,4 @@
-const EXPECTED_EFFECT_VERSION = '4.0.0-beta.75';
+const EXPECTED_EFFECT_VERSION = '4.0.0-beta.84';
 const COHORT_PACKAGES = [
   'effect',
   '@effect/platform-bun',
@@ -28,9 +28,7 @@ for (const packageName of COHORT_PACKAGES) {
 
   const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const resolvedVersions = new Set(
-    [...lockfile.matchAll(new RegExp(`"${escapedName}@([^"]+)"`, 'g'))].map(
-      (match) => match[1]
-    )
+    [...lockfile.matchAll(new RegExp(`"${escapedName}@([^"]+)"`, 'g'))].map((match) => match[1])
   );
   if (resolvedVersions.size !== 1 || !resolvedVersions.has(EXPECTED_EFFECT_VERSION)) {
     failures.push(

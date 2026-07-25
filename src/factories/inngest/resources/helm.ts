@@ -10,15 +10,15 @@
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
+import { helmRelease } from '../../helm/helm-release.js';
 import {
   createHelmRepositoryReadinessEvaluator,
-  helmRepository,
   type HelmRepositorySpec,
   type HelmRepositoryStatus,
+  helmRepository,
 } from '../../helm/helm-repository.js';
 import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import { helmRelease } from '../../helm/helm-release.js';
 import type { InngestHelmReleaseConfig, InngestHelmRepositoryConfig } from '../types.js';
 
 /** Default OCI registry URL for the Inngest Helm chart. */
@@ -54,9 +54,10 @@ export function inngestHelmRepository(
     type: 'oci',
     interval: config.interval || '5m',
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator(
-    createHelmRepositoryReadinessEvaluator('Inngest')
-  ) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
+  }).withReadinessEvaluator(createHelmRepositoryReadinessEvaluator('Inngest')) as Enhanced<
+    HelmRepositorySpec,
+    HelmRepositoryStatus
+  >;
 
   // HelmRepositories in flux-system are shared cluster-level resources.
   // They should survive instance deletion — multiple compositions can
@@ -87,12 +88,14 @@ export function inngestHelmRepository(
 export function inngestHelmRelease(
   config: Composable<InngestHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+  const targetNamespace = config.namespace || 'inngest';
+
   // Pass values directly to helmRelease — the core proxy system handles
   // serialization of KubernetesRef and CelExpression objects correctly.
   // Do NOT sanitize/strip proxy references here.
   return helmRelease({
     name: config.name,
-    namespace: config.namespace || 'inngest',
+    namespace: targetNamespace,
     chart: {
       repository: DEFAULT_INNGEST_REPO_URL,
       name: 'inngest',
@@ -103,9 +106,18 @@ export function inngestHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    values: config.values || {},
+    values: {
+      ...(config.values || {}),
+      // TypeKro owns the Namespace resource. The upstream chart otherwise
+      // creates and targets a hard-coded "inngest" namespace.
+      namespace: {
+        create: false,
+        name: targetNamespace,
+      },
+    },
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator(
-    createLabeledHelmReleaseEvaluator('Inngest')
-  ) as Enhanced<HelmReleaseSpec, HelmReleaseStatus>;
+  }).withReadinessEvaluator(createLabeledHelmReleaseEvaluator('Inngest')) as Enhanced<
+    HelmReleaseSpec,
+    HelmReleaseStatus
+  >;
 }

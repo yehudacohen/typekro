@@ -1,13 +1,21 @@
 import { describe, expect, it } from 'bun:test';
+import { inngestBootstrap } from '../../../src/factories/inngest/compositions/inngest-bootstrap.js';
 import {
-  inngestHelmRepository,
-  inngestHelmRelease,
-  DEFAULT_INNGEST_REPO_URL,
   DEFAULT_INNGEST_REPO_NAME,
+  DEFAULT_INNGEST_REPO_URL,
+  inngestHelmRelease,
+  inngestHelmRepository,
 } from '../../../src/factories/inngest/resources/helm.js';
 import { mapInngestConfigToHelmValues } from '../../../src/factories/inngest/utils/helm-values-mapper.js';
 
 describe('Inngest Helm Resources', () => {
+  it('should target the instance namespace in KRO mode without chart ownership', () => {
+    const yaml = inngestBootstrap.toYaml();
+
+    expect(yaml).toContain('create: false');
+    expect(yaml).toContain("name: '${has(schema.spec.namespace) ? schema.spec.namespace :");
+  });
+
   describe('inngestHelmRepository', () => {
     it('should create HelmRepository with OCI registry defaults', () => {
       const repo = inngestHelmRepository({ id: 'inngestRepo' });
@@ -48,6 +56,10 @@ describe('Inngest Helm Resources', () => {
       expect(release.apiVersion).toBe('helm.toolkit.fluxcd.io/v2');
       expect(release.metadata.name).toBe('inngest');
       expect(release.metadata.namespace).toBe('inngest');
+      expect(release.spec.values?.namespace).toEqual({
+        create: false,
+        name: 'inngest',
+      });
     });
 
     it('should pass through sanitized values', () => {
@@ -76,8 +88,30 @@ describe('Inngest Helm Resources', () => {
       });
 
       expect(release.metadata.namespace).toBe('custom-ns');
+      expect(release.spec.values?.namespace).toEqual({
+        create: false,
+        name: 'custom-ns',
+      });
       // Version is embedded in the chart spec
       expect(release.spec.chart?.spec?.version).toBe('0.4.0');
+    });
+
+    it('should keep TypeKro ownership of the target namespace', () => {
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        namespace: 'custom-ns',
+        values: {
+          namespace: {
+            create: true,
+            name: 'wrong-ns',
+          },
+        },
+      });
+
+      expect(release.spec.values?.namespace).toEqual({
+        create: false,
+        name: 'custom-ns',
+      });
     });
   });
 
@@ -179,9 +213,7 @@ describe('Inngest Helm Resources', () => {
     it('should resolve externalRef metadata.name in Helm values', async () => {
       // This tests the real use case: referencing a CNPG-generated Secret
       // name inside Inngest Helm values via the magic proxy system.
-      const { externalRef } = await import(
-        '../../../src/core/references/external-refs.js'
-      );
+      const { externalRef } = await import('../../../src/core/references/external-refs.js');
 
       const dbSecret = externalRef({
         apiVersion: 'v1',

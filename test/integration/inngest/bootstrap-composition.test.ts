@@ -19,7 +19,7 @@ import {
 describe('Inngest Bootstrap Composition Tests', () => {
   let kubeConfig: ReturnType<typeof getKubeConfig>;
   let factory: ResourceFactory<InngestBootstrapConfig, InngestBootstrapStatus> | undefined;
-  let testNamespaceLease: TestNamespaceLease;
+  let testNamespaceLease: TestNamespaceLease | undefined;
   let inngestNamespaceLease: TestNamespaceLease | undefined;
   const suffix = crypto.randomUUID().slice(0, 8);
   const testNamespace = `typekro-test-inngest-${suffix}`;
@@ -51,10 +51,12 @@ describe('Inngest Bootstrap Composition Tests', () => {
         failures.push(error);
       }
     }
-    try {
-      await deleteTestNamespaceAndWait(testNamespaceLease, kubeConfig);
-    } catch (error) {
-      failures.push(error);
+    if (testNamespaceLease) {
+      try {
+        await deleteTestNamespaceAndWait(testNamespaceLease, kubeConfig);
+      } catch (error) {
+        failures.push(error);
+      }
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, 'Inngest integration cleanup did not complete safely');
@@ -73,6 +75,7 @@ describe('Inngest Bootstrap Composition Tests', () => {
       kubeConfig,
     });
 
+    const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
     const instance = await runWithExpectedTestNamespace(
       inngestNs,
       kubeConfig,
@@ -87,6 +90,14 @@ describe('Inngest Bootstrap Composition Tests', () => {
             eventKey: 'deadbeef0123456789abcdef01234567',
             signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
           },
+          ...(storageClass && {
+            postgresql: {
+              persistence: { storageClass },
+            },
+            redis: {
+              persistence: { storageClass },
+            },
+          }),
         })
     );
 
@@ -116,6 +127,8 @@ describe('Inngest Bootstrap Composition Tests', () => {
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
     expect(yaml).toContain('Ready');
     expect(yaml).toContain('Installing');
+    expect(yaml).toContain('create: false');
+    expect(yaml).toContain("name: '${has(schema.spec.namespace) ? schema.spec.namespace :");
   });
 
   it('should support both kro and direct deployment strategies', async () => {
