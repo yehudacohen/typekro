@@ -48,6 +48,13 @@ const BUILT_IN_API_GROUPS = [
   'scheduling.k8s.io/v1',
 ];
 
+type FluxCRDPatcher = (kubeClient: k8s.KubeConfig) => Promise<unknown>;
+
+async function patchFluxCRDs(kubeClient: k8s.KubeConfig): Promise<void> {
+  const { patchFluxCRDSchemas } = await import('../runtime-patches/crd-patcher.js');
+  await patchFluxCRDSchemas(kubeClient);
+}
+
 export class CRDManager {
   private fluxCRDsPatchPromise: Promise<void> | null = null;
   private logger = getComponentLogger('crd-manager');
@@ -56,7 +63,8 @@ export class CRDManager {
     private k8sApi: k8s.KubernetesObjectApi,
     private kubeClient: k8s.KubeConfig,
     private abortableDelay: (ms: number, signal?: AbortSignal) => Promise<void>,
-    private withAbortSignal: <T>(operation: Promise<T>, signal?: AbortSignal) => Promise<T>
+    private withAbortSignal: <T>(operation: Promise<T>, signal?: AbortSignal) => Promise<T>,
+    private fluxCRDPatcher: FluxCRDPatcher = patchFluxCRDs
   ) {}
 
   /**
@@ -141,8 +149,7 @@ export class CRDManager {
       logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
 
       try {
-        const { patchFluxCRDSchemas } = await import('../runtime-patches/crd-patcher.js');
-        await patchFluxCRDSchemas(this.kubeClient);
+        await this.fluxCRDPatcher(this.kubeClient);
         logger[logLevel]('Flux CRDs patched successfully');
       } catch (error: unknown) {
         this.fluxCRDsPatchPromise = null;
@@ -364,7 +371,9 @@ export class CRDManager {
         const crdList = crds as unknown as CustomResourceDefinitionList;
         const match = crdList?.items?.find((crd: CustomResourceDefinitionItem) => {
           const spec = crd.spec;
-          return spec?.group === group && spec?.names?.kind === kind && !crd.metadata?.deletionTimestamp;
+          return (
+            spec?.group === group && spec?.names?.kind === kind && !crd.metadata?.deletionTimestamp
+          );
         });
         if (match?.metadata?.name && match.spec?.names?.plural) {
           crdName = match.metadata.name;

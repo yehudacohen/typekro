@@ -238,6 +238,22 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(rgdYaml).toContain('resources:');
     expect(rgdYaml).toContain('osd:');
     expect(rgdYaml).toContain('rgw:');
+    const expectedFallbacks = {
+      mon: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+      mgr: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+      osd: '{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}',
+      prepareosd: '{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"1Gi"}}',
+      rgw: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+    };
+    for (const [daemon, fallback] of Object.entries(expectedFallbacks)) {
+      const path = `schema.spec.resources.${daemon}`;
+      expect(rgdYaml).toContain(
+        `has(schema.spec.resources) && has(${path}) ? ${path} : ${fallback}`
+      );
+      expect(rgdYaml).not.toContain(
+        `has(schema.spec.resources) && has(${path}) ? ${path} : omit()`
+      );
+    }
     expectCleanYaml(rgdYaml);
   });
 

@@ -598,26 +598,54 @@ describe('CRDManager', () => {
 
   describe('ensureFluxCRDsPatched', () => {
     it('should only patch once (caches the promise)', async () => {
-      // ensureFluxCRDsPatched lazy-imports crd-patcher. We can't easily mock that,
-      // but we can verify it caches by calling twice and checking the promise identity.
-      // The import will fail in unit test context (no real cluster), but the error
-      // should be caught and logged as a warning.
+      const fluxCRDPatcher = mock(() => Promise.resolve());
+      crdManager = new CRDManager(
+        mockApi,
+        mockKubeConfig,
+        abortableDelay,
+        withAbortSignal,
+        fluxCRDPatcher
+      );
 
       const options: DeploymentOptions = {
         mode: 'direct',
         autoFix: { logLevel: 'debug' },
       };
 
-      // First call — will fail on dynamic import but catch the error
+      await Promise.all([
+        crdManager.ensureFluxCRDsPatched(options, mockLogger),
+        crdManager.ensureFluxCRDsPatched(options, mockLogger),
+      ]);
       await crdManager.ensureFluxCRDsPatched(options, mockLogger);
 
-      // Second call — should reuse or re-attempt (depending on whether first failed)
+      expect(fluxCRDPatcher).toHaveBeenCalledTimes(1);
+      expect(fluxCRDPatcher).toHaveBeenCalledWith(mockKubeConfig);
+      expect(mockLogger.debug).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it('should retry after a patch failure', async () => {
+      const fluxCRDPatcher = mock()
+        .mockRejectedValueOnce(new Error('temporary patch failure'))
+        .mockResolvedValueOnce(undefined);
+      crdManager = new CRDManager(
+        mockApi,
+        mockKubeConfig,
+        abortableDelay,
+        withAbortSignal,
+        fluxCRDPatcher
+      );
+
+      const options: DeploymentOptions = {
+        mode: 'direct',
+        autoFix: { logLevel: 'info' },
+      };
+
+      await crdManager.ensureFluxCRDsPatched(options, mockLogger);
       await crdManager.ensureFluxCRDsPatched(options, mockLogger);
 
-      // The logger should have been called (either success or warning)
-      const debugCalls = (mockLogger.debug as MockFn).mock.calls;
-      const warnCalls = (mockLogger.warn as MockFn).mock.calls;
-      expect(debugCalls.length + warnCalls.length).toBeGreaterThan(0);
+      expect(fluxCRDPatcher).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
     });
   });
 
