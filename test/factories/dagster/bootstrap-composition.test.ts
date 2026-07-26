@@ -170,6 +170,7 @@ describe('Dagster bootstrap composition', () => {
       'has(schema.spec.postgresql) && has(schema.spec.postgresql.passwordSecretName) ? dyn(schema.spec.postgresql.passwordSecretName) : has(schema.spec.global) && has(schema.spec.global.postgresqlSecretName) ? dyn(schema.spec.global.postgresqlSecretName) : omit()'
     );
     expect(yaml).toContain('schema.spec.postgresql.values');
+    expect(yaml).toContain('schema.spec.postgresql.storageClass');
     expect(yaml).toContain('schema.spec.rabbitmq.values');
     expect(yaml).toContain('schema.spec.redis.values');
     expect(yaml).toContain('postgresqlHost');

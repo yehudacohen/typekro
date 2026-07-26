@@ -19,6 +19,7 @@ describe('Ory platform stack composition', () => {
       namespace: 'ory-local',
       managed: {
         databases: true,
+        databaseStorageClass: 'local-path',
         secrets: true,
         routes: true,
         sampleUpstream: true,
@@ -231,6 +232,10 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).toContain('default_browser_return_url');
     expect(renderedYaml).toContain('includeWhen');
     expect(renderedYaml).toContain('schema.spec.managed.databases');
+    expect(renderedYaml).toContain('schema.spec.managed.databaseStorageClass');
+    expect(renderedYaml).toContain(
+      'has(schema.spec.managed) && has(schema.spec.managed.databaseStorageClass)'
+    );
     expect(renderedYaml).not.toContain('${schema.spec.managed.databases != false ?');
     expect(renderedYaml).not.toContain(': "managed" == "managed"');
     expect(renderedYaml).toContain(') == "managed"');
@@ -348,7 +353,13 @@ describe('Ory platform stack composition', () => {
     const yaml = await factory.toYaml({
       name: 'identity-local',
       namespace: 'ory-local',
-      managed: { databases: true, secrets: true, routes: true, sampleUpstream: true },
+      managed: {
+        databases: true,
+        databaseStorageClass: 'local-path',
+        secrets: true,
+        routes: true,
+        sampleUpstream: true,
+      },
     });
 
     const databaseIndex = yaml.indexOf('identity-local-hydra-db');
@@ -356,6 +367,7 @@ describe('Ory platform stack composition', () => {
     const hydraReleaseIndex = yaml.indexOf('name: identity-local-hydra\n');
 
     expect(databaseIndex).toBeGreaterThanOrEqual(0);
+    expect(yaml).toContain('storageClass: local-path');
     expect(secretIndex).toBeGreaterThanOrEqual(0);
     expect(hydraReleaseIndex).toBeGreaterThan(databaseIndex);
     expect(hydraReleaseIndex).toBeGreaterThan(secretIndex);

@@ -23,6 +23,7 @@ const requireClusterTests = process.env.REQUIRE_CLUSTER_TESTS === 'true';
 const defaultValidationImageName = 'typekro-dagster-validation';
 const defaultValidationImageTag = '1.13.8';
 const defaultLocalValidationImage = `${defaultValidationImageName}:${defaultValidationImageTag}`;
+const configuredStorageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
 const envConfiguredValidationImage = process.env.DAGSTER_TEST_VALIDATION_IMAGE;
 const configuredValidationImage =
   envConfiguredValidationImage ??
@@ -315,7 +316,10 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
               },
             ],
           },
-          postgresql: { enabled: true },
+          postgresql: {
+            enabled: true,
+            ...(configuredStorageClass && { storageClass: configuredStorageClass }),
+          },
           ...(dagsterSystemImage && {
             webserver: {
               image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },
@@ -377,7 +381,10 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
               },
             ],
           },
-          postgresql: { enabled: true },
+          postgresql: {
+            enabled: true,
+            ...(configuredStorageClass && { storageClass: configuredStorageClass }),
+          },
           ...(dagsterSystemImage && {
             webserver: {
               image: { ...dagsterSystemImage, pullPolicy: 'IfNotPresent' },

@@ -391,6 +391,11 @@ export const oryPlatformStack = kubernetesComposition(
     const createManagedSecrets = !concreteSpec || manageSecrets;
     const createManagedSampleUpstream = !concreteSpec || manageSampleUpstream;
     const emitRouteResources = manageRoutes && concreteSpec;
+    const managedDatabaseStorageClass = concreteSpec
+      ? spec.managed?.databaseStorageClass
+      : Cel.expr<string>(
+          'has(schema.spec.managed) && has(schema.spec.managed.databaseStorageClass) ? schema.spec.managed.databaseStorageClass : omit()'
+        );
     let hydraDatabaseSecretName = `${spec.name}-hydra-db-app`;
     let kratosDatabaseSecretName = `${spec.name}-kratos-db-app`;
     let ketoDatabaseSecretName = `${spec.name}-keto-db-app`;
@@ -446,7 +451,12 @@ export const oryPlatformStack = kubernetesComposition(
         namespace: namespaceName,
         spec: {
           instances: 1,
-          storage: { size: '1Gi' },
+          storage: {
+            size: '1Gi',
+            ...(managedDatabaseStorageClass !== undefined && {
+              storageClass: managedDatabaseStorageClass,
+            }),
+          },
           bootstrap: { initdb: { database: 'hydra', owner: 'hydra' } },
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);
@@ -465,7 +475,12 @@ export const oryPlatformStack = kubernetesComposition(
         namespace: namespaceName,
         spec: {
           instances: 1,
-          storage: { size: '1Gi' },
+          storage: {
+            size: '1Gi',
+            ...(managedDatabaseStorageClass !== undefined && {
+              storageClass: managedDatabaseStorageClass,
+            }),
+          },
           bootstrap: { initdb: { database: 'kratos', owner: 'kratos' } },
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);
@@ -484,7 +499,12 @@ export const oryPlatformStack = kubernetesComposition(
         namespace: namespaceName,
         spec: {
           instances: 1,
-          storage: { size: '1Gi' },
+          storage: {
+            size: '1Gi',
+            ...(managedDatabaseStorageClass !== undefined && {
+              storageClass: managedDatabaseStorageClass,
+            }),
+          },
           bootstrap: { initdb: { database: 'keto', owner: 'keto' } },
         },
       }).withIncludeWhen(manageDatabasesIncludeWhen);

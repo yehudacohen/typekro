@@ -27,6 +27,7 @@ import {
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+const configuredStorageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
 
 setDefaultTimeout(1500000);
 
@@ -298,6 +299,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       namespace,
       managed: {
         databases: true,
+        ...(configuredStorageClass && { databaseStorageClass: configuredStorageClass }),
         secrets: true,
         routes: apisixRoutesAvailable,
         sampleUpstream: true,
@@ -513,6 +515,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       namespace: kroNamespace,
       managed: {
         databases: true,
+        ...(configuredStorageClass && { databaseStorageClass: configuredStorageClass }),
         secrets: true,
         routes: apisixRoutesAvailable,
         sampleUpstream: true,

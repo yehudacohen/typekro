@@ -293,6 +293,16 @@ This maps to chart PostgreSQL values such as `postgresql.postgresqlHost`,
 `global.postgresqlSecretName`. When `passwordSecretName` is set, the mapper sets
 `generatePostgresqlPasswordSecret: false`.
 
+For the bundled PostgreSQL dependency, set `postgresql.storageClass`; TypeKro maps it to the
+`postgresql.persistence.storageClass` path used by Dagster's pinned PostgreSQL chart:
+
+```ts
+postgresql: {
+  enabled: true,
+  storageClass: 'local-path',
+}
+```
+
 Literal passwords are accepted only when explicitly supplied by the caller and are intended for
 local development. Production configs should reference Secrets through chart-supported Secret
 fields, `envSecrets`, `imagePullSecrets`, or raw `values`.

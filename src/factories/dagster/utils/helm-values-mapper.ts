@@ -363,6 +363,10 @@ function mapPostgresql(values: DagsterHelmValues, config: DagsterBootstrapConfig
   setIfDefined(mapped, 'postgresqlScheme', postgresql.scheme);
   setIfDefined(mapped, 'authProvider', copyDefinedObject(postgresql.authProvider));
 
+  if (postgresql.storageClass !== undefined) {
+    mapped.persistence = { storageClass: postgresql.storageClass };
+  }
+
   if (postgresql.servicePort !== undefined) {
     mapped.service = { port: postgresql.servicePort };
   }

@@ -9,6 +9,11 @@ const integrationRoot = new URL('../integration/', import.meta.url);
 const cleanupScript = new URL('../../scripts/cleanup-test-namespaces.ts', import.meta.url);
 const integrationRunner = new URL('../../scripts/run-integration-tests.sh', import.meta.url);
 const sharedHarness = new URL('../integration/shared-kubeconfig.ts', import.meta.url);
+const dagsterIntegration = new URL(
+  '../integration/dagster/bootstrap-composition.test.ts',
+  import.meta.url
+);
+const oryIntegration = new URL('../integration/ory/ory-identity-stack.test.ts', import.meta.url);
 const directDeletionEvidenceFiles = new Set([
   'kro-namespace-sibling-lifecycle.test.ts',
   'rook/object-storage-claim.test.ts',
@@ -147,6 +152,16 @@ describe('integration harness conformance', () => {
     expect(source).toContain('integration-cluster-harness.ts cluster-ready');
     expect(source).toContain('integration-cluster-harness.ts storage-class');
     expect(source).not.toMatch(/^\s*(?:if\s+!?\s*)?kubectl\b|=\$\(kubectl\b/m);
+  });
+
+  it('passes explicit storage evidence into storage-backed integration stacks', async () => {
+    const dagsterSource = await Bun.file(dagsterIntegration).text();
+    const orySource = await Bun.file(oryIntegration).text();
+
+    expect(dagsterSource).toContain('process.env.TYPEKRO_TEST_STORAGE_CLASS');
+    expect(dagsterSource.match(/storageClass: configuredStorageClass/g)).toHaveLength(2);
+    expect(orySource).toContain('process.env.TYPEKRO_TEST_STORAGE_CLASS');
+    expect(orySource.match(/databaseStorageClass: configuredStorageClass/g)).toHaveLength(2);
   });
 
   it('keeps namespace cleanup from mutating graph-owned child resources', async () => {
