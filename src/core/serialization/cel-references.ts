@@ -968,7 +968,7 @@ function finalizeValueTreeCelForKro(
   return `\${${resolved}}`;
 }
 
-function celLiteralForValueTree(
+export function celLiteralForValueTree(
   value: unknown,
   context: SerializationContext | undefined,
   path: string

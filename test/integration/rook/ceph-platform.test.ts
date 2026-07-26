@@ -52,6 +52,22 @@ const osdResources = {
   requests: { cpu: '500m', memory: '1Gi' },
   limits: { memory: '4Gi' },
 };
+const monResources = {
+  requests: { cpu: '100m', memory: '256Mi' },
+  limits: { memory: '1Gi' },
+};
+const mgrResources = {
+  requests: { cpu: '100m', memory: '256Mi' },
+  limits: { memory: '1Gi' },
+};
+const prepareOsdResources = {
+  requests: { cpu: '100m', memory: '128Mi' },
+  limits: { memory: '1Gi' },
+};
+const rgwResources = {
+  requests: { cpu: '100m', memory: '256Mi' },
+  limits: { memory: '1Gi' },
+};
 const localBlock = createOrbStackLocalBlockFixture({
   name: `typekro-${suffix}-ceph-block`.slice(0, 48),
   namespace: controlNamespace,
@@ -283,12 +299,28 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
       metadata: { name: clusterName, namespace: platformNamespace },
     })) as {
       spec?: {
-        resources?: { osd?: typeof osdResources };
+        resources?: {
+          mon?: typeof monResources;
+          mgr?: typeof mgrResources;
+          osd?: typeof osdResources;
+          prepareosd?: typeof prepareOsdResources;
+        };
         storage?: { storageClassDeviceSets?: Array<{ resources?: typeof osdResources }> };
       };
     };
+    expect(cluster.spec?.resources?.mon).toEqual(monResources);
+    expect(cluster.spec?.resources?.mgr).toEqual(mgrResources);
     expect(cluster.spec?.resources?.osd).toEqual(osdResources);
+    expect(cluster.spec?.resources?.prepareosd).toEqual(prepareOsdResources);
     expect(cluster.spec?.storage?.storageClassDeviceSets?.[0]?.resources).toEqual(osdResources);
+    const objectStore = (await objectApi.read({
+      apiVersion: 'ceph.rook.io/v1',
+      kind: 'CephObjectStore',
+      metadata: { name: objectStoreName, namespace: platformNamespace },
+    })) as {
+      spec?: { gateway?: { resources?: typeof rgwResources } };
+    };
+    expect(objectStore.spec?.gateway?.resources).toEqual(rgwResources);
   });
 
   it('binds an application claim and performs S3 put/get/delete', async () => {

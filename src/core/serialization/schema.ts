@@ -11,6 +11,7 @@ import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { pascalCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
@@ -22,7 +23,7 @@ import type {
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
-import { serializeStatusMappingsToCel } from './cel-references.js';
+import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
 const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
@@ -312,6 +313,13 @@ interface ReExecutionResult {
    * multi-field `has(...) ? ... : ...` chains it cannot express.
    */
   crossFieldOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
+  /**
+   * Structured single-field fallbacks (`spec.resources?.osd ?? DEFAULT_OSD`)
+   * captured by executing the real composition/helper graph with optionals absent.
+   * KRO SimpleSchema cannot represent object-valued defaults, so these are
+   * lowered into presence-guarded CEL at the exact resource template path.
+   */
+  structuredFallbackOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
 }
 
 /**
@@ -400,12 +408,20 @@ function resolveDefaultsByReExecution(
     }
 
     const crossFieldOverrides: ReExecutionResult['crossFieldOverrides'] = [];
+    const structuredFallbackOverrides: ReExecutionResult['structuredFallbackOverrides'] = [];
     for (const [id, proxyRes] of proxyEntries) {
       const defaultsRes = defaultsMap.get(id);
       // Literal-default + ternary extraction need the defaults-run counterpart;
       // skip them when it's absent (only in the proxy run, or the defaults run threw).
       if (defaultsRes) {
         extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
+        extractStructuredFallbacksByComparison(
+          proxyRes,
+          defaultsRes,
+          id,
+          [],
+          structuredFallbackOverrides
+        );
         extractTernaryConditionals(
           proxyRes,
           defaultsRes,
@@ -429,8 +445,11 @@ function resolveDefaultsByReExecution(
     const hasResults =
       Object.keys(defaults).length > 0 ||
       ternaryConditionals.length > 0 ||
-      crossFieldOverrides.length > 0;
-    return hasResults ? { defaults, ternaryConditionals, crossFieldOverrides } : undefined;
+      crossFieldOverrides.length > 0 ||
+      structuredFallbackOverrides.length > 0;
+    return hasResults
+      ? { defaults, ternaryConditionals, crossFieldOverrides, structuredFallbackOverrides }
+      : undefined;
   } catch (err) {
     // Best-effort: composition functions with undefined spec fields may throw
     // (e.g., accessing spec.nested.field without optional chaining). Log at
@@ -583,6 +602,99 @@ const celField = (field: string): string => `schema.spec.${field}`;
 function presenceGuard(field: string): string {
   const segs = field.split('.');
   return segs.map((_, i) => `has(schema.spec.${segs.slice(0, i + 1).join('.')})`).join(' && ');
+}
+
+/**
+ * Capture object/array-valued `??` fallbacks without teaching integrations
+ * about schema proxies. The proxy run contributes the exact `spec.X` marker;
+ * the optionals-absent run contributes the concrete structured fallback.
+ * Choosing the whole object preserves JavaScript replacement semantics.
+ */
+function extractStructuredFallbacksByComparison(
+  proxyValue: unknown,
+  fallbackValue: unknown,
+  resourceId: string,
+  path: string[],
+  out: ReExecutionResult['structuredFallbackOverrides']
+): void {
+  // A graph-aware optional `values` overlay can make the proxy run a
+  // ValuesMergeExpression while the optionals-absent run remains the plain
+  // base object. Compare the authored base against that concrete fallback so
+  // defaults nested inside helpers are captured before runtime merge lowering.
+  if (isValuesMergeExpression(proxyValue) && !isValuesMergeExpression(fallbackValue)) {
+    extractStructuredFallbacksByComparison(
+      proxyValue.base,
+      fallbackValue,
+      resourceId,
+      [...path, 'base'],
+      out
+    );
+    return;
+  }
+
+  const proxyString =
+    typeof proxyValue === 'function' || typeof proxyValue === 'string'
+      ? String(proxyValue)
+      : undefined;
+  const exactMarker = proxyString?.match(FULL_MARKER_RE)?.[1];
+
+  if (exactMarker?.startsWith('spec.')) {
+    if (
+      Array.isArray(fallbackValue) ||
+      (fallbackValue !== null && typeof fallbackValue === 'object')
+    ) {
+      try {
+        const field = exactMarker.slice('spec.'.length);
+        const fallbackCel = celLiteralForValueTree(
+          fallbackValue,
+          undefined,
+          `structured-default.${resourceId}.${path.join('.')}`
+        );
+        out.push({
+          resourceId,
+          path: [...path],
+          cel: `\${${presenceGuard(field)} ? ${celField(field)} : (${fallbackCel})}`,
+        });
+      } catch (error) {
+        logger.debug('Skipping non-serializable structured fallback', {
+          resourceId,
+          path: path.join('.'),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return;
+  }
+
+  if (Array.isArray(proxyValue) && Array.isArray(fallbackValue)) {
+    for (let index = 0; index < Math.min(proxyValue.length, fallbackValue.length); index++) {
+      extractStructuredFallbacksByComparison(
+        proxyValue[index],
+        fallbackValue[index],
+        resourceId,
+        [...path, String(index)],
+        out
+      );
+    }
+    return;
+  }
+
+  if (
+    proxyValue !== null &&
+    typeof proxyValue === 'object' &&
+    fallbackValue !== null &&
+    typeof fallbackValue === 'object'
+  ) {
+    for (const key of Object.keys(proxyValue as Record<string, unknown>)) {
+      extractStructuredFallbacksByComparison(
+        (proxyValue as Record<string, unknown>)[key],
+        (fallbackValue as Record<string, unknown>)[key],
+        resourceId,
+        [...path, key],
+        out
+      );
+    }
+  }
 }
 
 /** Render the chain's CEL: <guard(a)> ? a : (<guard(b)> ? b : <tail>). */
@@ -1338,6 +1450,9 @@ export function arktypeToKroSchema(
     if (reExecutionResult) {
       applyNullishDefaults(specFields, reExecutionResult.defaults, true);
       ternaryConditionals.push(...reExecutionResult.ternaryConditionals);
+      for (const override of reExecutionResult.structuredFallbackOverrides) {
+        setAtResourcePath(resources[override.resourceId], override.path, override.cel);
+      }
       // Cross-field `??` chains reconstructed by probing: write each CEL conditional
       // directly at its resource path (overwriting the bare head-field marker).
       for (const ov of reExecutionResult.crossFieldOverrides) {

@@ -5,7 +5,6 @@ import {
   mergeValuesExpression,
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
-import { Cel } from '../../../core/references/cel.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   CephObjectStoreConfig,
@@ -152,36 +151,13 @@ const singleNodeResources = {
   rgw: { requests: { cpu: '100m', memory: '256Mi' }, limits: { memory: '1Gi' } },
 };
 
-type SingleNodeResourceMap = NonNullable<RookCephSingleNodePlatformConfig['resources']>;
-type SingleNodeDaemon = keyof SingleNodeResourceMap;
-type SingleNodeResourceRequirements = NonNullable<SingleNodeResourceMap[SingleNodeDaemon]>;
-
-function resolveSingleNodeDaemonResources(
-  config: RookCephSingleNodePlatformConfig,
-  daemon: SingleNodeDaemon,
-  fallback: SingleNodeResourceRequirements
-): SingleNodeResourceRequirements {
-  if (!isKubernetesRef(config.name)) {
-    return config.resources?.[daemon] ?? fallback;
-  }
-
-  const path = `schema.spec.resources.${daemon}`;
-  return Cel.expr<SingleNodeResourceRequirements>(
-    `has(schema.spec.resources) && has(${path}) ? ${path} : ${JSON.stringify(fallback)}`
-  );
-}
-
 function resolveSingleNodeResources(config: RookCephSingleNodePlatformConfig) {
   return {
-    mon: resolveSingleNodeDaemonResources(config, 'mon', singleNodeResources.mon),
-    mgr: resolveSingleNodeDaemonResources(config, 'mgr', singleNodeResources.mgr),
-    osd: resolveSingleNodeDaemonResources(config, 'osd', singleNodeResources.osd),
-    prepareosd: resolveSingleNodeDaemonResources(
-      config,
-      'prepareosd',
-      singleNodeResources.prepareosd
-    ),
-    rgw: resolveSingleNodeDaemonResources(config, 'rgw', singleNodeResources.rgw),
+    mon: config.resources?.mon ?? singleNodeResources.mon,
+    mgr: config.resources?.mgr ?? singleNodeResources.mgr,
+    osd: config.resources?.osd ?? singleNodeResources.osd,
+    prepareosd: config.resources?.prepareosd ?? singleNodeResources.prepareosd,
+    rgw: config.resources?.rgw ?? singleNodeResources.rgw,
   };
 }
 

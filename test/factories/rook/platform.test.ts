@@ -245,14 +245,11 @@ describe('official Rook Ceph cluster chart platform', () => {
       prepareosd: '{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"1Gi"}}',
       rgw: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
     };
+    const compactRgd = rgdYaml.replaceAll(' ', '');
     for (const [daemon, fallback] of Object.entries(expectedFallbacks)) {
       const path = `schema.spec.resources.${daemon}`;
-      expect(rgdYaml).toContain(
-        `has(schema.spec.resources) && has(${path}) ? ${path} : ${fallback}`
-      );
-      expect(rgdYaml).not.toContain(
-        `has(schema.spec.resources) && has(${path}) ? ${path} : omit()`
-      );
+      const guard = `has(schema.spec.resources)&&has(${path})?${path}:`;
+      expect(compactRgd).toContain(`${guard}(${fallback})`);
     }
     expectCleanYaml(rgdYaml);
   });
