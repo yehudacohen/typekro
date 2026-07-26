@@ -22,6 +22,9 @@ describe('WebAppWithProcessing Composition', () => {
     // Status section with component readiness references
     expect(yaml).toContain('status:');
     expect(yaml).toContain('components:');
+    expect(yaml).toContain('app.status.readyReplicas >= app.spec.replicas');
+    expect(yaml).toContain('database.status.readyInstances >= database.spec.instances');
+    expect(yaml).not.toContain('app.spec.replicas != null');
     // Note: static string status fields (databaseUrl, cacheUrl, etc.) are
     // hydrated directly in direct mode, not sent to Kro in the YAML.
   });
@@ -58,6 +61,13 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('-db-pooler');
     expect(yaml).toContain('-cache');
     expect(yaml).toContain('-inngest');
+  });
+
+  it('should wire the optional cache storage class into Valkey PVCs', () => {
+    const yaml = webAppWithProcessing.toYaml();
+
+    expect(yaml).toContain('storageClassName:');
+    expect(yaml).toContain('schema.spec.cache.storageClass');
   });
 
   it('should generate YAML with Inngest using external databases', () => {

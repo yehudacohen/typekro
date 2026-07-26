@@ -1,23 +1,23 @@
 import type { V1EnvFromSource } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { singleton } from '../../../core/singleton/singleton.js';
+import type { CallableComposition } from '../../../core/types/deployment.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
-import { secret } from '../../kubernetes/config/secret.js';
 import { pooler } from '../../cnpg/resources/pooler.js';
 import { inngestBootstrap } from '../../inngest/compositions/inngest-bootstrap.js';
+import { secret } from '../../kubernetes/config/secret.js';
 import { simple } from '../../simple/index.js';
 import { valkeyBootstrap } from '../../valkey/compositions/valkey-bootstrap.js';
 import { valkey } from '../../valkey/resources/valkey.js';
 import {
-  type WebAppWithProcessingConfig,
   type WebAppWithProcessingBuildOptions,
+  type WebAppWithProcessingConfig,
   WebAppWithProcessingConfigSchema,
   type WebAppWithProcessingStatus,
   WebAppWithProcessingStatusSchema,
 } from '../types.js';
-import type { CallableComposition } from '../../../core/types/deployment.js';
 
 /**
  * Full-Stack Web Application with Background Processing
@@ -87,7 +87,7 @@ import type { CallableComposition } from '../../../core/types/deployment.js';
  *     storageClass: 'gp3',
  *     database: 'myapp',
  *   },
- *   cache: { shards: 3, replicas: 1 },
+ *   cache: { shards: 3, replicas: 1, storageClass: 'gp3' },
  *   processing: {
  *     eventKey: 'deadbeef0123456789abcdef01234567',
  *     signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
@@ -226,6 +226,7 @@ export function makeWebAppWithProcessing(
             spec: {
               accessModes: ['ReadWriteOnce'],
               resources: { requests: { storage: spec.cache?.storageSize ?? '1Gi' } },
+              ...(spec.cache?.storageClass ? { storageClassName: spec.cache.storageClass } : {}),
             },
           },
         },
@@ -409,8 +410,8 @@ export function makeWebAppWithProcessing(
 
       return {
         ready:
-          app.status.readyReplicas >= appReplicas &&
-          database.status.readyInstances >= (spec.database.instances ?? 1) &&
+          app.status.readyReplicas >= app.spec.replicas &&
+          database.status.readyInstances >= database.spec.instances &&
           cache.status.ready &&
           inngestBootstrapApp.status.ready,
         databaseUrl: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
@@ -422,8 +423,8 @@ export function makeWebAppWithProcessing(
         inngestUrl: `http://${spec.name}-inngest:8288`,
         appUrl: `http://${spec.name}:${appPort}`,
         components: {
-          app: app.status.readyReplicas >= appReplicas,
-          database: database.status.readyInstances >= (spec.database.instances ?? 1),
+          app: app.status.readyReplicas >= app.spec.replicas,
+          database: database.status.readyInstances >= database.spec.instances,
           cache: cache.status.ready,
           inngest: inngestBootstrapApp.status.ready,
         },

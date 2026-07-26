@@ -1,6 +1,7 @@
 /** Typed `CephObjectStore` factory for Rook's S3-compatible RGW service. */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { CephObjectStoreConfig, CephObjectStoreStatus } from '../types.js';
 
@@ -23,6 +24,12 @@ export function cephObjectStoreReadinessEvaluator(liveResource: unknown): Resour
     message: status.message ?? `CephObjectStore phase is ${status.phase ?? 'unknown'}`,
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.rook.ceph-object-store',
+  '1',
+  cephObjectStoreReadinessEvaluator
+);
 
 /**
  * Create a Rook `ceph.rook.io/v1` CephObjectStore.

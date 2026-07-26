@@ -370,6 +370,8 @@ export interface OryIdentityStackConfig {
 export interface OryManagedPlatformConfig {
   /** Enables CNPG-backed managed PostgreSQL resources when database sources are omitted. */
   databases?: boolean;
+  /** StorageClass used by managed CNPG PostgreSQL clusters. */
+  databaseStorageClass?: string;
   /** Enables graph-created Kubernetes Secrets when secret sources are omitted. */
   secrets?: boolean;
   /** Enables local APISIX routing when route sources are omitted. */
@@ -991,6 +993,7 @@ const oryDependencySourceConfigSchema = type({
 /** ArkType schema for managed platform infrastructure toggles. */
 const oryManagedPlatformConfigSchema = type({
   'databases?': 'boolean',
+  'databaseStorageClass?': 'string',
   'secrets?': 'boolean',
   'routes?': 'boolean',
   'sampleUpstream?': 'boolean',

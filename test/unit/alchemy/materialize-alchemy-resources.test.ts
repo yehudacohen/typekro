@@ -6,8 +6,9 @@
  * `test/integration/alchemy/direct-fan-out-e2e.test.ts`.)
  */
 import { describe, expect, it } from 'bun:test';
+import * as Output from 'alchemy/Output';
 import { Effect } from 'effect';
-import { materializeAlchemyResources, type KroResource } from '../../../src/alchemy/index.js';
+import { type KroResource, materializeAlchemyResources } from '../../../src/alchemy/index.js';
 import type { AlchemyResourceDeclaration } from '../../../src/alchemy/types.js';
 
 // A fake KroResource constructor: records call order, returns a minimal handle (an FQN is enough
@@ -21,10 +22,7 @@ const makeFakeKroResource = () => {
   return { fake: fake as unknown as typeof KroResource, calls };
 };
 
-const decl = (
-  id: string,
-  dependsOn: string[] = []
-): AlchemyResourceDeclaration => ({
+const decl = (id: string, dependsOn: string[] = []): AlchemyResourceDeclaration => ({
   id,
   dependsOn,
   props: {
@@ -50,7 +48,9 @@ describe('materializeAlchemyResources', () => {
 
   it('does not add a `dependencies` prop for declarations with no dependsOn', async () => {
     const { fake, calls } = makeFakeKroResource();
-    await Effect.runPromise(materializeAlchemyResources(fake, [decl('solo')]) as Effect.Effect<unknown>);
+    await Effect.runPromise(
+      materializeAlchemyResources(fake, [decl('solo')]) as Effect.Effect<unknown>
+    );
     expect('dependencies' in calls[0]!.props).toBe(false);
   });
 
@@ -71,6 +71,51 @@ describe('materializeAlchemyResources', () => {
     const promise = Effect.runPromise(
       materializeAlchemyResources(fake, [decl('b', ['a']), decl('a')]) as Effect.Effect<unknown>
     );
-    await expect(promise).rejects.toThrow(/dependsOn 'a'.*not \(yet\) instantiated|topologically ordered/);
+    await expect(promise).rejects.toThrow(
+      /dependsOn 'a'.*not \(yet\) instantiated|topologically ordered/
+    );
+  });
+
+  it('rejects duplicate declaration ids within one Alchemy stack materialization', async () => {
+    const { fake } = makeFakeKroResource();
+    const promise = Effect.runPromise(
+      materializeAlchemyResources(fake, [decl('same'), decl('same')]) as Effect.Effect<unknown>
+    );
+
+    await expect(promise).rejects.toThrow("duplicate declaration id 'same'");
+  });
+
+  it('requires external artifact handles and wires their outputs into provider props', async () => {
+    const declaration: AlchemyResourceDeclaration = {
+      ...decl('consumer'),
+      artifactRequirements: [
+        {
+          id: 'build',
+          kind: 'container-image',
+          descriptor: { kind: 'literal', value: 'demo' },
+          outputs: ['image'],
+        },
+      ],
+      artifactOutputUses: [{ requirementId: 'build', output: 'image', sensitive: false }],
+    };
+    const missing = Effect.runPromise(
+      materializeAlchemyResources(makeFakeKroResource().fake, [
+        declaration,
+      ]) as Effect.Effect<unknown>
+    );
+    await expect(missing).rejects.toThrow("artifact requirement 'build' was not supplied");
+
+    const { fake, calls } = makeFakeKroResource();
+    await Effect.runPromise(
+      materializeAlchemyResources(fake, [declaration], {
+        artifacts: {
+          build: {
+            resource: { FQN: 'build', LogicalId: 'build' } as never,
+            outputs: { image: 'registry.example/demo@sha256:abc' },
+          },
+        },
+      }) as Effect.Effect<unknown>
+    );
+    expect(Output.isOutput(calls[0]?.props.artifactOutputs)).toBe(true);
   });
 });

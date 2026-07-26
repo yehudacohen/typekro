@@ -10,7 +10,7 @@
  *
  * Pipeline stages:
  *   1. executeStatusBuilder — run the status builder in KubernetesRef context
- *   2. detectCompositionMode — check for __originalCompositionFn (imperative vs declarative)
+ *   2. detectCompositionMode — read internal source metadata (imperative vs declarative)
  *   3. analyzeStatusMappingsForMode — route to imperative or declarative analysis
  *   4. categorizeFields — run analyzeStatusMappingTypes on the result
  *   5. detectExistingCel — detect and preserve backward-compat CEL expressions
@@ -44,6 +44,7 @@ import type {
   ResourceGraphDefinition,
   SchemaProxy,
 } from '../types/serialization.js';
+import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import type { Enhanced, KroCompatibleType } from '../types.js';
 import {
   analyzeStatusMappingTypes,
@@ -118,14 +119,14 @@ interface CompositionMode {
 }
 
 /**
- * Check if the status mappings contain `__originalCompositionFn` which signals
- * an imperative composition (kubernetesComposition) vs. a declarative one.
+ * Check whether internal capture metadata marks an imperative composition
+ * (`kubernetesComposition`) rather than a declarative one.
  */
 function detectCompositionMode<TStatus extends KroCompatibleType>(
   statusMappings: MagicAssignableShape<TStatus>
 ): CompositionMode {
-  const originalCompositionFn = (statusMappings as Record<string, unknown>)
-    .__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
+  const originalCompositionFn =
+    getCompositionAnalysisMetadata(statusMappings)?.originalCompositionFn;
 
   return {
     isImperative: !!originalCompositionFn,
@@ -396,13 +397,16 @@ function analyzeDeclarativeStatusMappingsStage<
       hasJavaScriptExpressions: statusBuilderAnalysis.dependencies.length > 0,
     });
 
-    if (statusBuilderAnalysis.dependencies.length > 0) {
+    if (statusBuilderAnalysis.requiresConversion && statusBuilderAnalysis.valid) {
       logger.debug('Using analyzed status mappings with CEL expressions', {
         fieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
       });
       return success({
         analyzedStatusMappings: statusBuilderAnalysis.statusMappings,
-        imperativeAnalysisSucceeded: false,
+        // This flag means the analyzed mapping is authoritative for the merge
+        // stage, despite its historical name. Otherwise Stage 7 replaces the
+        // recovered CEL with the executed comparison artifact (`false`).
+        imperativeAnalysisSucceeded: true,
       });
     }
 
@@ -566,7 +570,7 @@ function mergeAnalysisResults<TStatus extends KroCompatibleType>(
       preservedFields: Object.keys(celDetection.preservedMappings).length,
       staticFields: mappingAnalysis.staticValueFields.length,
     });
-    return currentMappings;
+    return mergePreservedCelExpressions(currentMappings, celDetection.preservedMappings);
   }
 
   if (celDetection.hasExistingCel) {
@@ -587,7 +591,7 @@ function mergeAnalysisResults<TStatus extends KroCompatibleType>(
       staticFields: mappingAnalysis.staticValueFields.length,
       complexFields: mappingAnalysis.complexExpressionFields.length,
     });
-    return currentMappings;
+    return mergePreservedCelExpressions(currentMappings, celDetection.preservedMappings);
   }
 
   // Neither conversions nor existing CEL
@@ -632,7 +636,7 @@ function logCelMigrationOpportunities<TStatus extends KroCompatibleType>(
     );
 
     if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
-      logger.info('Migration opportunities detected for CEL expressions', {
+      logger.debug('Migration opportunities detected for CEL expressions', {
         totalExpressions: migrationAnalysis.migrationFeasibility.totalExpressions,
         migratableExpressions: migrationAnalysis.migrationFeasibility.migratableExpressions,
         overallConfidence: Math.round(
@@ -644,7 +648,7 @@ function logCelMigrationOpportunities<TStatus extends KroCompatibleType>(
         (s) => s.confidence >= 0.8 && s.isSafe
       );
       if (highConfidenceSuggestions.length > 0) {
-        logger.info('High-confidence migration suggestions available', {
+        logger.debug('High-confidence migration suggestions available', {
           suggestions: highConfidenceSuggestions.map((s) => ({
             original: s.originalCel,
             suggested: s.suggestedJavaScript,

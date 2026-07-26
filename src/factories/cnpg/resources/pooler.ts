@@ -5,6 +5,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { PoolerConfig, PoolerStatus } from '../types.js';
 
@@ -53,6 +54,12 @@ function poolerReadinessEvaluator(liveResource: unknown): ResourceStatus {
 
   return { ready: false, message: 'Pooler status incomplete', reason: 'Unknown' };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cnpg.pooler',
+  '1',
+  poolerReadinessEvaluator
+);
 
 /**
  * CloudNativePG Pooler Factory

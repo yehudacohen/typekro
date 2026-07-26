@@ -6,7 +6,7 @@
  */
 
 // Object utilities (canonical location: utils/helpers.ts)
-export { escapeRegExp, preserveNonEnumerableProperties, removeUndefinedValues } from './helpers';
+export { escapeRegExp, preserveNonEnumerableProperties, removeUndefinedValues } from './helpers.js';
 // String utilities (canonical location: utils/string.ts)
 export {
   calculateSimilarity,
@@ -14,7 +14,7 @@ export {
   levenshteinDistance,
   pascalCase,
   toCamelCase,
-} from './string';
+} from './string.js';
 
 // Type guard functions
 export {
@@ -24,4 +24,4 @@ export {
   isKubernetesRef,
   isMixedTemplate,
   isResourceReference,
-} from './type-guards';
+} from './type-guards.js';

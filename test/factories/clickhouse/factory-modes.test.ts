@@ -31,6 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { load } from 'js-yaml';
 
 import {
   clickhouseOperatorBootstrap,
@@ -228,7 +229,9 @@ describe('clickhouseOperatorBootstrap factory modes', () => {
         yaml.indexOf('name: clickhouse-operator-bootstrap')
       );
 
-      expect(yaml).toContain('ready: ${clickhouseOperatorHelmRelease.status.conditions');
+      expect(yaml).toContain(
+        "ready: '${has(clickhouseOperatorHelmRelease.status.observedGeneration)"
+      );
       expect(yaml).toContain('.exists(c, c.type == "Ready"');
       expect(yaml).toContain('Installing');
     });
@@ -360,22 +363,32 @@ describe('makeClickHouseCluster factory modes', () => {
       // The reworked #93 status contract: host/nativeUrl/httpUrl/clusterName
       // anchored on the OWNED CHI resource (never schema.spec.*), so they
       // land on the live KRO CR's status.
-      const statusSection = yaml.slice(yaml.indexOf('status:'), yaml.indexOf('\n  resources:'));
-      expect(statusSection).toContain(
-        'host: clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
+      const rgd = load(yaml) as {
+        spec: {
+          schema: {
+            status: {
+              clickhouse: Record<string, unknown>;
+              ready: unknown;
+            };
+          };
+        };
+      };
+      const status = rgd.spec.schema.status;
+      expect(status.clickhouse.host).toBe(
+        'clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
       );
-      expect(statusSection).toContain(
-        'nativeUrl: clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
+      expect(status.clickhouse.nativeUrl).toBe(
+        'clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
       );
-      expect(statusSection).toContain(
-        'httpUrl: http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
+      expect(status.clickhouse.httpUrl).toBe(
+        'http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
       );
-      expect(statusSection).toContain(
-        'clusterName: ${clickhouse.spec.configuration.clusters[0].name}'
+      expect(status.clickhouse.clusterName).toBe(
+        '${clickhouse.spec.configuration.clusters[0].name}'
       );
-      expect(statusSection).toContain('ready: ${clickhouse.status.status == "Completed"}');
+      expect(status.ready).toBe('${clickhouse.status.status == "Completed"}');
       // KRO status CEL can never reference schema.spec.*.
-      expect(statusSection).not.toContain('schema.spec');
+      expect(JSON.stringify(status)).not.toContain('schema.spec');
 
       // Zone-pinned build-time topology compiled concrete into the RGD.
       expect(yaml).toContain('podTemplate: clickhouse-us-east-2a');

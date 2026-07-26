@@ -15,21 +15,14 @@
  */
 
 import type { KubeConfig } from '@kubernetes/client-node';
-import { Effect } from 'effect';
 import * as Output from 'alchemy/Output';
 import * as ProviderMod from 'alchemy/Provider';
-import * as ResourceMod from 'alchemy/Resource';
 import type { Resource as ResourceT } from 'alchemy/Resource';
+import * as ResourceMod from 'alchemy/Resource';
+import { Effect } from 'effect';
+import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
-import { ensureError } from '../core/errors.js';
-import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
-import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
-import {
-  createBunCompatibleCustomObjectsApi,
-  createBunCompatibleKubernetesObjectApi,
-} from '../core/kubernetes/index.js';
-import { getResourceScope, type ResourceScope } from '../core/metadata/index.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -39,7 +32,36 @@ import {
   readHoistedNamespacesRecord,
 } from '../core/deployment/kro-namespace-teardown.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from '../core/deployment/resource-tagging.js';
-import { stableSerialize } from '../core/singleton/singleton.js';
+import { materializeSerializableKubeConfigOptions } from '../core/deployment/shared-utilities.js';
+import {
+  type DeployedSingletonInstance as LiveSingletonOwner,
+  singletonDriftVerdict,
+} from '../core/deployment/singleton-owner-drift.js';
+import { ensureError } from '../core/errors.js';
+import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
+import {
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+} from '../core/kubernetes/index.js';
+import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
+import {
+  copyResourceMetadata,
+  getReadinessEvaluator,
+  getResourceScope,
+  type ResourceScope,
+  setMetadataField,
+  setReadinessEvaluator,
+  setResourceId,
+} from '../core/metadata/index.js';
+import {
+  collectArtifactOutputUses,
+  decodeDirectArtifactExecutionRecord,
+  decodeKroArtifactBundle,
+  materializeDirectArtifactManifest,
+  materializeKroArtifactBundleOperation,
+  planValueSensitiveBindingNames,
+} from '../core/planning/index.js';
+import { resolvePortableReadinessStrategy } from '../core/readiness/portable-strategies.js';
 import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
@@ -47,10 +69,15 @@ import {
   KroTypeKroDeployer,
   ResourceGraphDefinitionDeletionDeferredError,
 } from './deployers.js';
-import { deleteKroDefinition, deleteKroInstanceFinalizerSafe, hasKroInstances } from './kro-delete.js';
 import type { KroDeletionOptions } from './kro-delete.js';
+import {
+  deleteKroDefinition,
+  deleteKroInstanceFinalizerSafe,
+  hasKroInstances,
+} from './kro-delete.js';
 import type {
   AlchemyResourceDeclaration,
+  MaterializeAlchemyResourcesOptions,
   SerializableKubeConfigOptions,
   TypeKroDeployer,
   TypeKroResource,
@@ -64,6 +91,9 @@ import type {
 interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
   resource: T;
   resourceId?: string;
+  artifactExecutionRecord?: string;
+  kroArtifactBundle?: string;
+  kroArtifactOperationId?: string;
   namespace: string;
   // Persisted so `delete` can reconstruct how to reach + tear down the resource after a fresh
   // process rehydrates only the output (alchemy passes no `news` on a state-driven destroy).
@@ -106,24 +136,32 @@ export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE)
  */
 export const kroProvider = ProviderMod.effect(
   KroResource,
-  Effect.succeed({
+  // Typed so the service literal is checked directly against `ProviderService` (methods bivariant) —
+  // avoids the exactOptionalPropertyTypes friction of an inferred literal while keeping the effect-hosted
+  // registration the conformance boundary requires.
+  Effect.succeed<ProviderMod.ProviderService<KroResourceR>>({
     // `namespace` is identity-stable: a namespace change is a replacement, not an in-place update.
-    stables: ['namespace'] as const,
-    reconcile: Effect.fn(function* ({ news }: { news: TypeKroResourceProps<Enhanced<unknown, unknown>> }) {
-      return yield* Effect.promise(() => deployKroResource(news));
+    stables: ['namespace'],
+    // Account-wide enumeration (powers `alchemy nuke`). A generic KRO resource isn't discoverable
+    // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
+    // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
+    list: () => Effect.succeed([]),
+    reconcile: Effect.fn(function* ({ news }) {
+      return yield* Effect.tryPromise({
+        try: (abortSignal) => deployKroResource(news, abortSignal),
+        catch: ensureError,
+      });
     }),
-    delete: Effect.fn(function* ({
-      output,
-      news,
-    }: {
-      output?: TypeKroResource<Enhanced<unknown, unknown>>;
-      news?: TypeKroResourceProps<Enhanced<unknown, unknown>>;
-    }) {
-      // Prefer the live spec; fall back to reconstructing minimal props from persisted output
-      // (a delete after the spec is gone — e.g. resource removed from the stack).
-      const props = news ?? propsFromOutput(output);
+    delete: Effect.fn(function* ({ output, olds }) {
+      // Prefer the live spec (`olds` — the last-applied props; alchemy beta.58 renamed the delete
+      // input's spec field from `news` to `olds`); fall back to reconstructing minimal props from
+      // persisted output (a delete after the spec is gone — e.g. resource removed from the stack).
+      const props = olds ?? propsFromOutput(output);
       if (props) {
-        yield* Effect.promise(() => deleteKroResource(props));
+        yield* Effect.tryPromise({
+          try: (abortSignal) => deleteKroResource(props, abortSignal),
+          catch: ensureError,
+        });
       } else {
         // Neither a live spec nor a usable output (e.g. a create that failed before persisting a
         // complete output). Warn rather than silently no-op so a possible leaked cluster object is
@@ -156,13 +194,19 @@ export const kroProvider = ProviderMod.effect(
  */
 export function materializeAlchemyResources(
   kroResource: typeof KroResource,
-  declarations: readonly AlchemyResourceDeclaration[]
+  declarations: readonly AlchemyResourceDeclaration[],
+  options: MaterializeAlchemyResourcesOptions = {}
 ) {
   return Effect.gen(function* () {
     // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
     // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
     const handles: Record<string, KroResourceR> = {};
     for (const decl of declarations) {
+      if (Object.hasOwn(handles, decl.id)) {
+        throw new Error(
+          `materializeAlchemyResources: duplicate declaration id '${decl.id}' in one materialization call.`
+        );
+      }
       const deps = decl.dependsOn.map((id) => {
         const handle = handles[id];
         if (!handle) {
@@ -176,12 +220,20 @@ export function materializeAlchemyResources(
         }
         return handle;
       });
+      const artifactRequirements =
+        decl.artifactRequirements ?? decl.props.artifactRequirements ?? [];
+      const artifactOutputUses = decl.artifactOutputUses ?? decl.props.artifactOutputUses ?? [];
+      const artifactOutputs =
+        artifactOutputUses.length > 0
+          ? alchemyArtifactOutputs(artifactRequirements, artifactOutputUses, options)
+          : undefined;
       // `Output.all([...Output.of(dep)])` both (a) creates the alchemy dependency edges so these
       // deploy first and (b) resolves to the concrete dependency outputs handed to `reconcile`.
-      const props =
-        deps.length > 0
-          ? { ...decl.props, dependencies: Output.all(...deps.map((d) => Output.of(d))) }
-          : decl.props;
+      const props = {
+        ...decl.props,
+        ...(deps.length > 0 ? { dependencies: Output.all(...deps.map((d) => Output.of(d))) } : {}),
+        ...(artifactOutputs ? { artifactOutputs } : {}),
+      };
       // Cast: `props` carries an `Output` for `dependencies` that the `KroResource` constructor
       // accepts as an `Input<…>` and alchemy resolves before reconcile — the field's static type
       // is the resolved (post-evaluation) shape.
@@ -194,48 +246,130 @@ export function materializeAlchemyResources(
   });
 }
 
+function alchemyArtifactOutputs(
+  requirements: readonly import('../core/planning/types.js').ArtifactRequirement[],
+  uses: readonly import('../core/planning/types.js').ArtifactOutputUse[],
+  options: MaterializeAlchemyResourcesOptions
+) {
+  const requirementsById = new Map(
+    requirements.map((requirement) => [requirement.id, requirement])
+  );
+  const uniqueUses = new Map<string, (typeof uses)[number]>();
+  for (const use of uses) {
+    const key = `${use.requirementId}\u0000${use.output}`;
+    const prior = uniqueUses.get(key);
+    uniqueUses.set(key, { ...use, sensitive: use.sensitive || prior?.sensitive === true });
+  }
+  const expressions: ReturnType<typeof Output.asOutput>[] = [];
+  const layout: Array<{ requirementId: string; output: string; sensitive: boolean }> = [];
+  const handles = new Set<string>();
+
+  for (const use of uniqueUses.values()) {
+    const requirement = requirementsById.get(use.requirementId);
+    if (!requirement || !requirement.outputs.includes(use.output)) {
+      throw new Error(
+        `materializeAlchemyResources: declaration uses undeclared artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const binding = options.artifacts?.[use.requirementId];
+    if (!binding) {
+      throw new Error(
+        `materializeAlchemyResources: artifact requirement '${use.requirementId}' was not supplied.`
+      );
+    }
+    if (!Object.hasOwn(binding.outputs, use.output)) {
+      throw new Error(
+        `materializeAlchemyResources: artifact binding '${use.requirementId}' has no '${use.output}' output.`
+      );
+    }
+    if (!handles.has(use.requirementId)) {
+      expressions.push(Output.of(binding.resource) as ReturnType<typeof Output.asOutput>);
+      layout.push({ requirementId: use.requirementId, output: '', sensitive: false });
+      handles.add(use.requirementId);
+    }
+    expressions.push(Output.asOutput(binding.outputs[use.output]));
+    layout.push(use);
+  }
+
+  return Output.map(Output.all(...expressions), (resolved) => {
+    const outputs: Record<string, Record<string, unknown>> = {};
+    (resolved as readonly unknown[]).forEach((value, index) => {
+      const item = layout[index];
+      if (!item || item.output.length === 0) return;
+      const requirementOutputs = outputs[item.requirementId] ?? {};
+      requirementOutputs[item.output] = item.sensitive ? Redacted.make(value) : value;
+      outputs[item.requirementId] = requirementOutputs;
+    });
+    return outputs;
+  });
+}
+
 /**
  * Reconcile: deploy a single KRO resource (RGD or CR instance) and return its persisted state.
  * Convergent — alchemy calls this for both create and update; the deployer is idempotent apply.
  */
 async function deployKroResource<T extends Enhanced<unknown, unknown>>(
-  props: TypeKroResourceProps<T>
+  props: TypeKroResourceProps<T>,
+  abortSignal?: AbortSignal
 ): Promise<TypeKroResource<T>> {
+  abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
   // Fail-closed PRE-HOIST guard on the ALCHEMY path (finding #7): before applying a
   // typekro-hoisted workload Namespace, refuse to proceed if it is still a KRO ApplySet
   // member from a pre-hoist RGD — rolling the new hoisted RGD over the old one would let
   // KRO's prune delete it. Cluster-checked here since `toAlchemyResources` is cluster-free.
   await _assertNoPreHoistNamespaceConflictAlchemy(props, logger);
+  abortSignal?.throwIfAborted();
   // Singleton-owner spec-drift protection (the declarative analog of `assertNoDeployedSingletonSpecDrift`
   // in the imperative deploy path): refuse to clobber a shared singleton that already exists with a
   // different spec. Cluster-checked here since `toAlchemyResources` is intentionally cluster-free.
   await _assertNoSingletonDrift(props, logger);
+  abortSignal?.throwIfAborted();
   // finding #2 (adopted-namespace): the hoisted workload Namespace is stamped
   // owned-by-this-RGD at BUILD time (cluster-free). READ the live namespace here and
   // KEEP that stamp ONLY when typekro actually creates it (404) or already owns it;
   // otherwise strip it so teardown never deletes a namespace typekro merely adopted.
   const effectiveProps = await _preserveHoistedNamespaceAdoption(props, logger);
+  abortSignal?.throwIfAborted();
   const { deployer, dispose } = await _resolveDeployer(effectiveProps, 'deployment');
   try {
     // Direct mode: hand the deployer the live state of this resource's dependencies so the engine
     // resolves its cross-resource references + CEL expressions against them (the deps deployed
     // first via alchemy ordering). KRO docs are self-contained, so the seed is irrelevant there.
     const seedResources = _seedFromDependencies(effectiveProps);
-    // alchemy serializes props to state, flattening this resource's CEL refs to `${…}` STRINGS.
-    // The engine resolver only evaluates CEL OBJECTS, so (direct mode, with dependency state to
-    // resolve against) re-hydrate those strings into template CEL objects before deploying — but
-    // ONLY strings that reference a known dependency id, so genuine `${…}` literals (e.g. a shell
-    // `${HOME}` in an env var) are left untouched.
-    let resourceForDeploy: T = effectiveProps.resource;
-    if (seedResources && effectiveProps.deploymentStrategy === 'direct') {
+    // New direct declarations carry a canonical per-resource execution record. Decode that record
+    // to restore structured references and runtime metadata without interpreting flattened YAML or
+    // JSON strings. The scanner branch remains only for legacy Alchemy state created before these
+    // records existed.
+    let resourceForDeploy: T =
+      _resourceFromKroArtifactBundle(effectiveProps) ??
+      _resourceFromDirectArtifactRecord(effectiveProps) ??
+      unwrapAlchemyRedactedResource(effectiveProps.resource);
+    if (
+      resourceForDeploy === effectiveProps.resource &&
+      seedResources &&
+      effectiveProps.deploymentStrategy === 'direct'
+    ) {
       resourceForDeploy = _rehydrateCelStrings(
         effectiveProps.resource,
         new Set(seedResources.map((s) => s.id))
       ) as T;
     } else if (
       effectiveProps.deploymentStrategy === 'kro' &&
-      (effectiveProps.resource as { kind?: string }).kind !== 'ResourceGraphDefinition'
+      (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition' &&
+      !getReadinessEvaluator(resourceForDeploy)
+    ) {
+      const { resourceGraphDefinition } = await import(
+        '../factories/kro/resource-graph-definition.js'
+      );
+      const wrapped = resourceGraphDefinition(
+        resourceForDeploy as unknown as Record<string, unknown>
+      ) as unknown as T;
+      copyResourceMetadata(resourceForDeploy, wrapped);
+      resourceForDeploy = wrapped;
+    } else if (
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (resourceForDeploy as { kind?: string }).kind !== 'ResourceGraphDefinition'
     ) {
       // KRO CR instance (the custom resource an RGD defines — not the RGD itself). After alchemy
       // serializes props to state, the resource is a plain manifest with no readiness evaluator, so a
@@ -244,24 +378,31 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       // InstanceSynced) — the same KRO-instance readiness the imperative deploy path waits on. The RGD
       // is excluded (it carries its own evaluator via the resourceGraphDefinition factory).
       const { kroCustomResource } = await import('../factories/kro/kro-custom-resource.js');
-      const r = effectiveProps.resource as {
+      const r = resourceForDeploy as {
         apiVersion?: string;
         kind?: string;
         metadata?: { name: string; namespace?: string };
         spec?: unknown;
       };
-      resourceForDeploy = kroCustomResource({
+      const wrapped = kroCustomResource({
         apiVersion: r.apiVersion ?? '',
         kind: r.kind ?? '',
         metadata: { ...(r.metadata ?? { name: '' }) },
         spec: (r.spec ?? {}) as Record<string, unknown>,
       }) as unknown as T;
+      copyResourceMetadata(resourceForDeploy, wrapped);
+      resourceForDeploy = wrapped;
     }
     const deployProps =
       resourceForDeploy === effectiveProps.resource
         ? effectiveProps
         : { ...effectiveProps, resource: resourceForDeploy };
-    const { resourceProperties } = await _deployAndCreateResult(deployProps, deployer, seedResources);
+    const { resourceProperties } = await _deployAndCreateResult(
+      deployProps,
+      deployer,
+      seedResources,
+      abortSignal
+    );
     _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, effectiveProps, resourceProperties);
     return resourceProperties as unknown as TypeKroResource<T>;
   } catch (error: unknown) {
@@ -272,39 +413,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   }
 }
 
-/** The live singleton owner as seen for a drift check. */
-interface LiveSingletonOwner {
-  metadata?: { annotations?: Record<string, string> };
-  spec?: unknown;
-}
-
-/**
- * Pure drift verdict (no I/O) for a singleton instance being deployed, given:
- *  - `expectedFingerprint`: the spec-fingerprint annotation on the resource being deployed,
- *  - `deployingSpec`: that resource's spec,
- *  - `live`: the existing same-named owner on the cluster (or undefined if none).
- *
- * Mirrors the imperative `assertNoDeployedSingletonSpecDrift`, INCLUDING its fallback: an existing
- * owner with NO fingerprint annotation (a legacy/unfingerprinted owner) is still verified by
- * comparing serialized specs — so a different-spec legacy owner is NOT silently accepted.
- */
-export function singletonDriftVerdict(
-  expectedFingerprint: string,
-  deployingSpec: unknown,
-  live: LiveSingletonOwner | undefined
-): { drift: false } | { drift: true; reason: string } {
-  if (!live) return { drift: false };
-  const actual = live.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
-  if (actual === expectedFingerprint) return { drift: false };
-  if (actual) {
-    return { drift: true, reason: `existing fingerprint ${actual} does not match ${expectedFingerprint}` };
-  }
-  // Unfingerprinted (legacy) owner — fall back to comparing serialized specs.
-  if (stableSerialize(live.spec) !== stableSerialize(deployingSpec)) {
-    return { drift: true, reason: 'an existing unfingerprinted singleton owner has a different spec' };
-  }
-  return { drift: false };
-}
+export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 
 /**
  * Refuse to deploy a singleton owner whose identity already exists on the cluster with a DIFFERENT
@@ -407,11 +516,7 @@ interface AlchemyPreHoistDeps {
     list(apiVersion: string, kind: string): Promise<unknown>;
   };
   customApi?: {
-    listClusterCustomObject(request: {
-      group: string;
-      version: string;
-      plural: string;
-    }): Promise<{
+    listClusterCustomObject(request: { group: string; version: string; plural: string }): Promise<{
       items?: Array<{
         metadata?: { namespace?: unknown; annotations?: Record<string, string> };
         spec?: unknown;
@@ -679,9 +784,14 @@ function _seedFromDependencies<T extends Enhanced<unknown, unknown>>(
   if (props.deploymentStrategy !== 'direct' || !deps || deps.length === 0) return undefined;
 
   const seed = deps
-    .filter((d): d is TypeKroResource<Enhanced<unknown, unknown>> => !!d?.deployedResource && !!d.resourceId)
+    .filter(
+      (d): d is TypeKroResource<Enhanced<unknown, unknown>> =>
+        !!d?.deployedResource && !!d.resourceId
+    )
     .map((d) => {
-      const manifest = d.deployedResource as unknown as KubernetesResource;
+      const manifest = unwrapAlchemyRedactedResource(
+        d.deployedResource
+      ) as unknown as KubernetesResource;
       return {
         id: d.resourceId as string,
         kind: manifest.kind ?? 'Unknown',
@@ -694,6 +804,278 @@ function _seedFromDependencies<T extends Enhanced<unknown, unknown>>(
       } satisfies DeployedResource;
     });
   return seed.length > 0 ? seed : undefined;
+}
+
+function unwrapAlchemyRedactedValue(
+  value: unknown,
+  seen = new WeakMap<object, unknown>()
+): unknown {
+  if (Redacted.isRedacted(value)) return Redacted.value(value);
+  if (!value || typeof value !== 'object') return value;
+  const prior = seen.get(value);
+  if (prior !== undefined) return prior;
+  if (Array.isArray(value)) {
+    const clone: unknown[] = [];
+    seen.set(value, clone);
+    value.forEach((entry) => clone.push(unwrapAlchemyRedactedValue(entry, seen)));
+    return clone;
+  }
+  const clone: Record<string, unknown> = {};
+  seen.set(value, clone);
+  for (const [key, entry] of Object.entries(value)) {
+    clone[key] = unwrapAlchemyRedactedValue(entry, seen);
+  }
+  return clone;
+}
+
+function unwrapAlchemyRedactedResource<T extends Enhanced<unknown, unknown>>(resource: T): T {
+  const unwrapped = unwrapAlchemyRedactedValue(resource) as T;
+  if (unwrapped !== resource) copyResourceMetadata(resource, unwrapped);
+  return unwrapped;
+}
+
+function artifactOutputsForOperation<T extends Enhanced<unknown, unknown>>(
+  source: unknown,
+  props: TypeKroResourceProps<T>,
+  preserveSensitiveInputs: boolean,
+  operationLabel: string
+): Readonly<Record<string, Readonly<Record<string, unknown>>>> | undefined {
+  const expectedUses = collectArtifactOutputUses(source);
+  if (expectedUses.length === 0) return undefined;
+  const declaredUses = props.artifactOutputUses ?? [];
+  if (
+    canonicalStringArray(expectedUses.map((use) => JSON.stringify(use))) !==
+    canonicalStringArray(declaredUses.map((use) => JSON.stringify(use)))
+  ) {
+    throw new Error(
+      `${operationLabel} artifact-output use metadata does not match its canonical artifact.`
+    );
+  }
+  const requirements = new Map(
+    (props.artifactRequirements ?? []).map((requirement) => [requirement.id, requirement])
+  );
+  const supplied = props.artifactOutputs ?? {};
+  const resolved: Record<string, Record<string, unknown>> = {};
+  for (const use of expectedUses) {
+    const requirement = requirements.get(use.requirementId);
+    if (!requirement || !requirement.outputs.includes(use.output)) {
+      throw new Error(
+        `${operationLabel} is missing declaration metadata for artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const outputs = supplied[use.requirementId];
+    if (!outputs || !Object.hasOwn(outputs, use.output)) {
+      throw new Error(
+        `${operationLabel} is missing resolved artifact output ${use.requirementId}.${use.output}.`
+      );
+    }
+    const value = outputs[use.output];
+    if (use.sensitive && !Redacted.isRedacted(value)) {
+      throw new Error(
+        `${operationLabel} sensitive artifact output ${use.requirementId}.${use.output} must be supplied as an Alchemy Redacted input.`
+      );
+    }
+    const concreteValue = Redacted.isRedacted(value) ? Redacted.value(value) : value;
+    if (props.deploymentStrategy === 'kro' && typeof concreteValue !== 'string') {
+      throw new Error(
+        `${operationLabel} artifact output ${use.requirementId}.${use.output} must be a string in KRO mode.`
+      );
+    }
+    const requirementOutputs = resolved[use.requirementId] ?? {};
+    requirementOutputs[use.output] =
+      Redacted.isRedacted(value) && !preserveSensitiveInputs ? Redacted.value(value) : value;
+    resolved[use.requirementId] = requirementOutputs;
+  }
+  return resolved;
+}
+
+/**
+ * Decode one operation from the canonical KRO outer bundle persisted by
+ * Alchemy. The operation record, rather than the JSON-flattened resource, is
+ * authoritative for desired state and runtime metadata in new declarations.
+ */
+function _resourceFromKroArtifactBundle<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  preserveSensitiveInputs = false
+): T | undefined {
+  const encodedBundle = props.kroArtifactBundle;
+  const operationId = props.kroArtifactOperationId;
+  if (encodedBundle === undefined && operationId === undefined) return undefined;
+  if (encodedBundle === undefined || operationId === undefined) {
+    throw new Error(
+      'KRO artifact state is incomplete: both kroArtifactBundle and kroArtifactOperationId are required.'
+    );
+  }
+
+  const bundle = decodeKroArtifactBundle(encodedBundle);
+  const operation = bundle.operations.find((candidate) => candidate.id === operationId);
+  if (!operation) {
+    throw new Error(`KRO artifact bundle ${bundle.bundleDigest} has no operation ${operationId}.`);
+  }
+  if (props.resourceId !== undefined && props.resourceId !== operation.artifact.id) {
+    throw new Error(
+      `KRO artifact operation ${operationId} belongs to ${operation.artifact.id}, not ${props.resourceId}.`
+    );
+  }
+
+  const dependencyOutputs = props.dependencies ?? [];
+  const missingOperationIds = dependencyOutputs.filter(
+    (dependency) => typeof dependency.kroArtifactOperationId !== 'string'
+  );
+  if (missingOperationIds.length > 0) {
+    throw new Error(
+      `KRO artifact dependency mismatch for ${operationId}: ${missingOperationIds.length} dependency output(s) have no operation identity.`
+    );
+  }
+  const suppliedDependencies = dependencyOutputs.map(
+    (dependency) => dependency.kroArtifactOperationId as string
+  );
+  if (canonicalStringArray(suppliedDependencies) !== canonicalStringArray(operation.dependencies)) {
+    throw new Error(
+      `KRO artifact dependency mismatch for ${operationId}: expected [${operation.dependencies.join(
+        ', '
+      )}], received [${suppliedDependencies.join(', ')}].`
+    );
+  }
+
+  const requiredBindings = planValueSensitiveBindingNames(operation.manifest);
+  const suppliedBindings = props.sensitiveBindings ?? {};
+  const missingBindings = requiredBindings.filter(
+    (binding) => !Object.hasOwn(suppliedBindings, binding)
+  );
+  if (missingBindings.length > 0) {
+    throw new Error(
+      `KRO artifact operation ${operationId} is missing sensitive binding(s): ${missingBindings.join(', ')}.`
+    );
+  }
+  const sensitive = Object.fromEntries(
+    requiredBindings.map((binding) => {
+      const value = suppliedBindings[binding];
+      if (!Redacted.isRedacted(value)) {
+        throw new Error(
+          `KRO artifact sensitive binding ${binding} must be supplied as an Alchemy Redacted input.`
+        );
+      }
+      return [binding, preserveSensitiveInputs ? value : Redacted.value(value)];
+    })
+  );
+  const artifactOutputs = artifactOutputsForOperation(
+    operation.manifest,
+    props,
+    preserveSensitiveInputs,
+    `KRO artifact operation ${operationId}`
+  );
+  const resource = materializeKroArtifactBundleOperation(operation, {
+    ...(Object.keys(sensitive).length > 0 ? { sensitive } : {}),
+    ...(artifactOutputs ? { artifactOutputs } : {}),
+  }) as T;
+  Object.defineProperty(resource, 'id', {
+    value: operation.artifact.id,
+    configurable: true,
+    enumerable: false,
+  });
+  setResourceId(resource, operation.artifact.id);
+  if (operation.artifact.identity?.scope) {
+    setMetadataField(resource, 'scope', operation.artifact.identity.scope);
+  }
+  setMetadataField(resource, 'applyPolicy', operation.artifact.apply);
+
+  const strategy = operation.artifact.readiness.strategy;
+  if (strategy?.kind === 'runtime-binding') {
+    const evaluator = getReadinessEvaluator(props.resource);
+    if (!evaluator) {
+      throw new Error(
+        `KRO readiness binding ${strategy.binding} is unavailable for operation ${operationId}.`
+      );
+    }
+    setReadinessEvaluator(resource, evaluator);
+  } else if (strategy?.kind === 'registered') {
+    const evaluator = resolvePortableReadinessStrategy(strategy);
+    if (!evaluator) {
+      throw new Error(
+        `Registered readiness strategy ${strategy.id}@${strategy.revision} is unavailable for KRO operation ${operationId}.`
+      );
+    }
+    setReadinessEvaluator(resource, evaluator);
+  }
+  return resource;
+}
+
+/** Internal test hook for canonical KRO-bundle state rehydration. */
+export const resourceFromKroArtifactBundleForTest = _resourceFromKroArtifactBundle;
+
+/**
+ * Decode the canonical direct execution record and reconstruct the exact
+ * runtime manifest contract. This is the authoritative Alchemy path for new
+ * declarations; the string rehydration below remains legacy-state support.
+ */
+function _resourceFromDirectArtifactRecord<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  preserveSensitiveInputs = false
+): T | undefined {
+  if (props.deploymentStrategy !== 'direct' || !props.artifactExecutionRecord) return undefined;
+
+  const record = decodeDirectArtifactExecutionRecord(props.artifactExecutionRecord);
+  const logicalId = record.artifact.sourceNodeId ?? record.artifact.id;
+  if (props.resourceId !== undefined && props.resourceId !== logicalId) {
+    throw new Error(
+      `Direct artifact record ${record.artifact.id} belongs to ${logicalId}, not ${props.resourceId}.`
+    );
+  }
+
+  const suppliedDependencies = (props.dependencies ?? [])
+    .map((dependency) => dependency.resourceId)
+    .filter((resourceId): resourceId is string => typeof resourceId === 'string')
+    .sort();
+  if (canonicalStringArray(suppliedDependencies) !== canonicalStringArray(record.dependencies)) {
+    throw new Error(
+      `Direct artifact dependency mismatch for ${logicalId}: expected [${record.dependencies.join(
+        ', '
+      )}], received [${suppliedDependencies.join(', ')}].`
+    );
+  }
+
+  const evaluator = getReadinessEvaluator(props.resource);
+  const strategy = record.artifact.readiness.strategy;
+  const readinessEvaluators =
+    strategy?.kind === 'runtime-binding' && evaluator
+      ? { [strategy.binding]: evaluator }
+      : undefined;
+  const sensitive = Object.fromEntries(
+    Object.entries(props.sensitiveBindings ?? {}).map(([binding, value]) => {
+      if (!Redacted.isRedacted(value)) {
+        throw new Error(
+          `Direct artifact sensitive binding ${binding} must be supplied as an Alchemy Redacted input.`
+        );
+      }
+      return [binding, preserveSensitiveInputs ? value : Redacted.value(value)];
+    })
+  );
+  const artifactOutputs = artifactOutputsForOperation(
+    record.artifact,
+    props,
+    preserveSensitiveInputs,
+    `Direct artifact ${logicalId}`
+  );
+  return materializeDirectArtifactManifest(
+    record.artifact,
+    {
+      instanceName: props.resourceId ?? logicalId,
+      runtimeResources: { [logicalId]: props.resource },
+      ...(Object.keys(sensitive).length > 0 ? { sensitive } : {}),
+      ...(artifactOutputs ? { artifactOutputs } : {}),
+      ...(readinessEvaluators ? { readinessEvaluators } : {}),
+      resolveReadinessStrategy: resolvePortableReadinessStrategy,
+    },
+    props.resourceId ?? logicalId
+  ) as T;
+}
+
+/** Internal test hook for canonical direct-artifact state rehydration. */
+export const resourceFromDirectArtifactRecordForTest = _resourceFromDirectArtifactRecord;
+
+function canonicalStringArray(values: readonly string[]): string {
+  return JSON.stringify([...new Set(values)].sort());
 }
 
 /**
@@ -749,6 +1131,15 @@ function propsFromOutput<T extends Enhanced<unknown, unknown>>(
   return {
     resource: output.resource,
     ...(output.resourceId !== undefined && { resourceId: output.resourceId }),
+    ...(output.artifactExecutionRecord !== undefined && {
+      artifactExecutionRecord: output.artifactExecutionRecord,
+    }),
+    ...(output.kroArtifactBundle !== undefined && {
+      kroArtifactBundle: output.kroArtifactBundle,
+    }),
+    ...(output.kroArtifactOperationId !== undefined && {
+      kroArtifactOperationId: output.kroArtifactOperationId,
+    }),
     namespace: output.namespace,
     deploymentStrategy: output.deploymentStrategy ?? 'kro',
     ...(output.kubeConfigOptions !== undefined && { kubeConfigOptions: output.kubeConfigOptions }),
@@ -776,8 +1167,12 @@ function _createClientProvider<T extends Enhanced<unknown, unknown>>(
     hasUser: !!props.kubeConfigOptions?.user,
   });
 
-  // Use the centralized KubernetesClientProvider with the provided configuration
-  const clientProvider = createKubernetesClientProvider(props.kubeConfigOptions);
+  // Resolve named host bindings only inside the provider operation. Durable state contains
+  // binding identities, never the credential bytes they produce.
+  const kubeConfigOptions = props.kubeConfigOptions
+    ? materializeSerializableKubeConfigOptions(props.kubeConfigOptions)
+    : undefined;
+  const clientProvider = createKubernetesClientProvider(kubeConfigOptions);
 
   // Get the configured KubeConfig from the provider
   const kubeConfig = clientProvider.getKubeConfig();
@@ -807,11 +1202,41 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
   }
 
   const kroDeletion = props.kroDeletion ?? inferKroDeletionOptions(props);
-  return new KroTypeKroDeployer(engine, kroDeletion ? {
-    deleteInstance: (name: string) => deleteKroInstanceFinalizerSafe(kc, name, kroDeletion),
-    shouldSkipRgdDelete: () => hasKroInstances(kc, kroDeletion),
-    deleteResourceGraphDefinition: () => deleteKroDefinition(kc, kroDeletion),
-  } : {});
+  const validateInstanceSpec = shouldValidateKroInstanceAdmission(props);
+  return new KroTypeKroDeployer(engine, {
+    ...(validateInstanceSpec ? { validateInstanceSpec: true } : {}),
+    ...(kroDeletion
+      ? {
+          deleteInstance: (name: string, abortSignal?: AbortSignal) =>
+            deleteKroInstanceFinalizerSafe(kc, name, kroDeletion, abortSignal),
+          shouldSkipRgdDelete: (_rgdName: string, abortSignal?: AbortSignal) =>
+            hasKroInstances(kc, kroDeletion, abortSignal),
+          deleteResourceGraphDefinition: (_rgdName: string, abortSignal?: AbortSignal) =>
+            deleteKroDefinition(kc, kroDeletion, undefined, abortSignal),
+        }
+      : {}),
+  });
+}
+
+function shouldValidateKroInstanceAdmission<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>
+): boolean {
+  if (props.deploymentStrategy !== 'kro') return false;
+
+  if (props.kroArtifactBundle !== undefined || props.kroArtifactOperationId !== undefined) {
+    if (props.kroArtifactBundle === undefined || props.kroArtifactOperationId === undefined) {
+      return false;
+    }
+    const bundle = decodeKroArtifactBundle(props.kroArtifactBundle);
+    const operation = bundle.operations.find(
+      (candidate) => candidate.id === props.kroArtifactOperationId
+    );
+    return operation?.role === 'instance' || operation?.role === 'singleton-owner-instance';
+  }
+
+  // Legacy Alchemy declarations predate operation roles. Their KRO resources are
+  // either the RGD itself or its root custom resource instance.
+  return props.resource.kind !== 'ResourceGraphDefinition';
 }
 
 function fullApiVersion(apiVersion: unknown, group: unknown): string | undefined {
@@ -857,7 +1282,10 @@ function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
       apiVersion,
       kind: schema.kind,
       ...(typeof schema.group === 'string' && { group: schema.group }),
-      namespace: typeof resource.metadata.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+      namespace:
+        typeof resource.metadata.namespace === 'string'
+          ? resource.metadata.namespace
+          : props.namespace,
       rgdName: resource.metadata.name,
       timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
     };
@@ -877,7 +1305,10 @@ function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
     apiVersion: resource.apiVersion,
     kind: resource.kind,
     ...(group && { group }),
-    namespace: typeof resource.metadata?.namespace === 'string' ? resource.metadata.namespace : props.namespace,
+    namespace:
+      typeof resource.metadata?.namespace === 'string'
+        ? resource.metadata.namespace
+        : props.namespace,
     rgdName,
     timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
   };
@@ -912,8 +1343,10 @@ async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
  * RGD is cluster-scoped and dies with the cluster; it must not wedge the destroy.
  */
 async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
-  props: TypeKroResourceProps<T>
+  props: TypeKroResourceProps<T>,
+  abortSignal?: AbortSignal
 ): Promise<void> {
+  abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
   // Retained (shared) resources — e.g. the KRO instance control-plane Namespace —
   // must survive a single stack's teardown/prune: another stack targeting the same
@@ -945,6 +1378,7 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
       return;
     }
     const kubeConfig = _createClientProvider(props, 'delete');
+    abortSignal?.throwIfAborted();
     await deleteNamespaceIfEmpty(kubeConfig, namespaceName, {
       logger,
       // Ownership record (finding #4) + gated delete (finding #1): only delete a
@@ -953,21 +1387,26 @@ async function deleteKroResource<T extends Enhanced<unknown, unknown>>(
       ...(props.options?.timeout !== undefined && { timeoutMs: props.options.timeout }),
       context: { alchemyType: KRO_RESOURCE_TYPE },
     });
+    abortSignal?.throwIfAborted();
     return;
   }
   const { deployer, dispose } = await _resolveDeployer(props, 'delete');
   try {
     await deployer.delete(props.resource, {
-      mode: 'alchemy' as const,
+      mode: props.deploymentStrategy,
       namespace: props.namespace,
       ...props.options,
+      ...(abortSignal ? { abortSignal } : {}),
     });
   } catch (error: unknown) {
     if (error instanceof ResourceGraphDefinitionDeletionDeferredError) {
-      logger.debug('Deferring ResourceGraphDefinition delete (still referenced); dropping state entry', {
-        resourceName: props.resource.metadata?.name,
-        reason: error.message,
-      });
+      logger.debug(
+        'Deferring ResourceGraphDefinition delete (still referenced); dropping state entry',
+        {
+          resourceName: props.resource.metadata?.name,
+          reason: error.message,
+        }
+      );
       return;
     }
     logger.error('Error deleting resource', ensureError(error));
@@ -986,9 +1425,10 @@ export const deleteKroResourceForTest = deleteKroResource;
 async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   deployer: TypeKroDeployer,
-  seedResources?: DeployedResource[]
+  seedResources?: DeployedResource[],
+  abortSignal?: AbortSignal
 ): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
-  const deploymentOptions = buildAlchemyDeploymentOptions(props);
+  const deploymentOptions = buildAlchemyDeploymentOptions(props, abortSignal);
 
   // Deploy using the created deployer. The deployer/engine resolves references + CEL expressions,
   // seeded (direct mode) with dependencies' live state so cross-resource refs resolve.
@@ -1001,9 +1441,14 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   //    structuredClone to throw "Cannot serialize unique symbol" errors.
   // 2. JSON round-trip strips symbols, functions, and undefined values — which is
   //    exactly the behavior we want for creating clean Alchemy state entries.
-  const cleanResource = cloneResourceForAlchemyState(props.resource);
+  const stateResource =
+    _resourceFromKroArtifactBundle(props, true) ??
+    _resourceFromDirectArtifactRecord(props, true) ??
+    redactSecretResourceForAlchemyState(props.resource);
+  const stateDeployedResource = mergeLiveResourceState(stateResource, deployedResource as T);
+  const cleanResource = cloneResourceForAlchemyState(stateResource);
   const cleanDeployedResource = cloneResourceForAlchemyState(
-    deployedResource as T,
+    stateDeployedResource,
     getResourceScope(cleanResource)
   );
 
@@ -1011,6 +1456,15 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   const resourceProperties: DeployedResourceProperties<T> = {
     resource: cleanResource,
     ...(props.resourceId !== undefined && { resourceId: props.resourceId }),
+    ...(props.artifactExecutionRecord !== undefined && {
+      artifactExecutionRecord: props.artifactExecutionRecord,
+    }),
+    ...(props.kroArtifactBundle !== undefined && {
+      kroArtifactBundle: props.kroArtifactBundle,
+    }),
+    ...(props.kroArtifactOperationId !== undefined && {
+      kroArtifactOperationId: props.kroArtifactOperationId,
+    }),
     namespace: props.namespace,
     deploymentStrategy: props.deploymentStrategy,
     ...(props.kubeConfigOptions !== undefined && { kubeConfigOptions: props.kubeConfigOptions }),
@@ -1030,7 +1484,7 @@ function cloneResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(
   resource: T,
   fallbackScope?: ResourceScope
 ): T {
-  const cleanResource = JSON.parse(JSON.stringify(resource)) as T & { scope?: ResourceScope };
+  const cleanResource = cloneAlchemyStateValue(resource) as T & { scope?: ResourceScope };
   const scope =
     getResourceScope(resource as T & { scope?: ResourceScope }) ??
     fallbackScope ??
@@ -1044,24 +1498,81 @@ function cloneResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(
   return cleanResource as T;
 }
 
+function cloneAlchemyStateValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+  if (Redacted.isRedacted(value)) return value;
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'function' || typeof value === 'symbol' || value === undefined
+      ? undefined
+      : value;
+  }
+  if (value instanceof Date) return value.toJSON();
+  const prior = seen.get(value);
+  if (prior !== undefined) return prior;
+  if (Array.isArray(value)) {
+    const clone: unknown[] = [];
+    seen.set(value, clone);
+    value.forEach((entry) => clone.push(cloneAlchemyStateValue(entry, seen)));
+    return clone;
+  }
+  const clone: Record<string, unknown> = {};
+  seen.set(value, clone);
+  for (const [key, entry] of Object.entries(value)) {
+    const cloned = cloneAlchemyStateValue(entry, seen);
+    if (cloned !== undefined) clone[key] = cloned;
+  }
+  return clone;
+}
+
+function redactSecretResourceForAlchemyState<T extends Enhanced<unknown, unknown>>(resource: T): T {
+  if (resource.kind !== 'Secret') return resource;
+  const redactMap = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        Redacted.isRedacted(entry) ? entry : Redacted.make(entry),
+      ])
+    );
+  };
+  return {
+    ...resource,
+    ...(Reflect.has(resource, 'data') ? { data: redactMap(Reflect.get(resource, 'data')) } : {}),
+    ...(Reflect.has(resource, 'stringData')
+      ? { stringData: redactMap(Reflect.get(resource, 'stringData')) }
+      : {}),
+  } as T;
+}
+
+function mergeLiveResourceState<T extends Enhanced<unknown, unknown>>(desired: T, live: T): T {
+  const liveMetadata = live.metadata as Record<string, unknown> | undefined;
+  const runtimeMetadata = Object.fromEntries(
+    ['uid', 'resourceVersion', 'generation', 'creationTimestamp'].flatMap((key) =>
+      liveMetadata?.[key] === undefined ? [] : [[key, liveMetadata[key]]]
+    )
+  );
+  return {
+    ...desired,
+    metadata: { ...(desired.metadata ?? { name: '' }), ...runtimeMetadata },
+    ...(Reflect.has(live, 'status') ? { status: Reflect.get(live, 'status') } : {}),
+  } as T;
+}
+
 /** Internal test hook for Alchemy state serialization semantics. */
 export const cloneResourceForAlchemyStateForTest = cloneResourceForAlchemyState;
 
 export function buildAlchemyDeploymentOptions<T extends Enhanced<unknown, unknown>>(
-  props: TypeKroResourceProps<T>
+  props: TypeKroResourceProps<T>,
+  abortSignal?: AbortSignal
 ): DeploymentOptions {
-  const {
-    waitForReady,
-    timeout,
-    ...deploymentMetadataOptions
-  } = props.options ?? {};
+  const { waitForReady, timeout, ...deploymentMetadataOptions } = props.options ?? {};
 
   return {
-    mode: 'alchemy' as const,
+    mode: props.deploymentStrategy,
     namespace: props.namespace,
     ...deploymentMetadataOptions,
     waitForReady: waitForReady ?? true,
     timeout: timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+    ...(abortSignal ? { abortSignal } : {}),
   };
 }
 

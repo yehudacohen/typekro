@@ -9,7 +9,9 @@
  * 5. Complete certificate lifecycle verification
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { ingress } from '../../../src/factories/kubernetes/networking/ingress.js';
@@ -18,15 +20,18 @@ import {
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestNamespaceAndWait,
   ensureApisixInstalled,
-  ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
-const NAMESPACE = 'typekro-test-e2e-pebble';
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-e2e-pebble-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 if (!clusterAvailable) {
   console.log('⏭️  Skipping Cert-Manager End-to-End Integration: No cluster available');
@@ -65,6 +70,8 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
   let customObjectsApi: k8s.CustomObjectsApi;
   let coreV1Api: k8s.CoreV1Api;
   let testNamespace: string;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -79,7 +86,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     testNamespace = NAMESPACE;
 
     // Create test namespace
-    await ensureNamespaceExists(testNamespace, kubeConfig);
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     // Install APISIX ingress controller for HTTP-01 challenges
     console.log('📦 Installing APISIX ingress controller...');
@@ -134,167 +141,22 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-
-    // Check if we're in debug mode - if so, skip cleanup to allow inspection
-    const debugMode = process.env.DEBUG_MODE === 'true';
-
-    if (debugMode) {
-      console.log('🔍 Debug mode enabled - skipping resource cleanup');
-      console.log('   Resources left in cluster for inspection:');
-      console.log(
-        '   - Certificates, ClusterIssuers, Challenges, Orders in namespace:',
-        testNamespace
-      );
-      console.log('   - HelmReleases and HelmRepositories');
-      console.log('   Use kubectl to inspect resources manually');
-      console.log('   Run this test without DEBUG_MODE=true to enable cleanup');
-      return;
-    }
-
-    // Comprehensive cleanup of all test resources
+    const cleanupErrors: unknown[] = [];
     try {
-      console.log('🧹 Cleaning up end-to-end test resources...');
-
-      const resourceTypes = [
-        { group: 'cert-manager.io', version: 'v1', plural: 'certificates', namespaced: true },
-        { group: 'cert-manager.io', version: 'v1', plural: 'clusterissuers', namespaced: false },
-        { group: 'acme.cert-manager.io', version: 'v1', plural: 'challenges', namespaced: true },
-        { group: 'acme.cert-manager.io', version: 'v1', plural: 'orders', namespaced: true },
-        {
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2',
-          plural: 'helmreleases',
-          namespaced: true,
-        },
-        {
-          group: 'source.toolkit.fluxcd.io',
-          version: 'v1',
-          plural: 'helmrepositories',
-          namespaced: false,
-        },
-        { group: 'networking.k8s.io', version: 'v1', plural: 'ingresses', namespaced: true },
-        { group: 'networking.k8s.io', version: 'v1', plural: 'ingressclasses', namespaced: false },
-      ];
-
-      for (const resourceType of resourceTypes) {
-        try {
-          let response: any;
-          if (resourceType.namespaced) {
-            response = await customObjectsApi.listNamespacedCustomObject({
-              group: resourceType.group,
-              version: resourceType.version,
-              namespace: testNamespace,
-              plural: resourceType.plural,
-            });
-          } else {
-            response = await customObjectsApi.listClusterCustomObject({
-              group: resourceType.group,
-              version: resourceType.version,
-              plural: resourceType.plural,
-            });
-          }
-
-          const items = response.items || [];
-          for (const item of items) {
-            const itemName = item.metadata?.name;
-            if (
-              itemName &&
-              (itemName.startsWith('e2e-test-') ||
-                itemName.includes('pebble') ||
-                itemName.includes('apisix'))
-            ) {
-              try {
-                if (resourceType.namespaced) {
-                  await customObjectsApi.deleteNamespacedCustomObject({
-                    group: resourceType.group,
-                    version: resourceType.version,
-                    namespace: testNamespace,
-                    plural: resourceType.plural,
-                    name: itemName,
-                  });
-                } else {
-                  await customObjectsApi.deleteClusterCustomObject({
-                    group: resourceType.group,
-                    version: resourceType.version,
-                    plural: resourceType.plural,
-                    name: itemName,
-                  });
-                }
-                console.log(`🗑️ Deleted ${resourceType.plural}: ${itemName}`);
-              } catch (deleteError: any) {
-                // Only warn about non-404 errors - 404 means resource was already deleted
-                if (deleteError.statusCode !== 404) {
-                  console.warn(
-                    `⚠️ Failed to delete ${resourceType.plural} ${itemName}:`,
-                    deleteError
-                  );
-                }
-              }
-            }
-          }
-        } catch (listError: any) {
-          // Only warn about non-404 errors - 404 means resource type doesn't exist
-          if (listError.statusCode !== 404) {
-            console.warn(`⚠️ Failed to list ${resourceType.plural} for cleanup:`, listError);
-          }
-        }
-      }
-
-      // Clean up secrets and services
-      try {
-        const secrets = await coreV1Api.listNamespacedSecret({ namespace: testNamespace });
-        for (const secret of secrets.items) {
-          if (secret.metadata?.name?.startsWith('e2e-test-')) {
-            try {
-              await coreV1Api.deleteNamespacedSecret({
-                name: secret.metadata.name,
-                namespace: testNamespace,
-              });
-              console.log(`🗑️ Deleted Secret: ${secret.metadata.name}`);
-            } catch (deleteError: any) {
-              // Only warn about non-404 errors
-              if (deleteError.statusCode !== 404) {
-                console.warn(`⚠️ Failed to delete Secret ${secret.metadata.name}:`, deleteError);
-              }
-            }
-          }
-        }
-
-        const services = await coreV1Api.listNamespacedService({ namespace: testNamespace });
-        for (const service of services.items) {
-          if (service.metadata?.name?.startsWith('e2e-test-')) {
-            try {
-              await coreV1Api.deleteNamespacedService({
-                name: service.metadata.name,
-                namespace: testNamespace,
-              });
-              console.log(`🗑️ Deleted Service: ${service.metadata.name}`);
-            } catch (deleteError: any) {
-              // Only warn about non-404 errors
-              if (deleteError.statusCode !== 404) {
-                console.warn(`⚠️ Failed to delete Service ${service.metadata.name}:`, deleteError);
-              }
-            }
-          }
-        }
-      } catch (error: any) {
-        // Only warn about non-404 errors
-        if (error.statusCode !== 404) {
-          console.warn('⚠️ Failed to clean up secrets/services:', error);
-        }
-      }
-
-      // Wait for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Note: We don't clean up cert-manager here as it may be used by other tests
-      // In a real CI environment, the entire cluster would be destroyed after all tests
-      console.log('✅ End-to-end test resource cleanup completed');
-
-      // Clean up test namespace
-      await deleteNamespaceAndWait(testNamespace, kubeConfig);
+      await cleanupRegistry.cleanup(kubeConfig, 120_000);
     } catch (error) {
-      console.warn('⚠️ End-to-end test cleanup failed (non-critical):', error);
+      cleanupErrors.push(error);
+    }
+    try {
+      await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        cleanupErrors,
+        'Failed to clean up cert-manager end-to-end resources'
+      );
     }
   });
 
@@ -567,6 +429,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       dnsNames: ['e2e.funwiththe.cloud', 'api.e2e.funwiththe.cloud', 'www.e2e.funwiththe.cloud'],
       email: 'e2e-test@funwiththe.cloud',
     });
+    cleanupRegistry.trackResult(directFactory, deploymentResult);
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+    );
 
     // Validate deployment result
     expect(deploymentResult).toBeDefined();

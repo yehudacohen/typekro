@@ -6,6 +6,18 @@
  */
 
 import { ensureError } from '../../core/errors.js';
+import {
+  identifyPortableReadinessEvaluator,
+  identifyRuntimeReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from '../../core/readiness/portable-strategies.js';
+import {
+  optionalReadinessString,
+  readinessConfiguration,
+  readinessLiteral,
+  requiredReadinessBoolean,
+  requiredReadinessNumber,
+} from '../../core/readiness/strategy-configuration.js';
 import type {
   KubernetesCondition,
   ReadinessEvaluator,
@@ -28,6 +40,11 @@ interface HelmReleaseLike {
   };
 }
 
+const HELM_RELEASE_STRATEGY = 'typekro.readiness.flux.helm-release';
+const HELM_RELEASE_REVISION_STRATEGY = 'typekro.readiness.flux.helm-release-revision';
+const HELM_RELEASE_TEST_STRATEGY = 'typekro.readiness.flux.helm-release-test';
+const HELM_READINESS_REVISION = '1';
+
 /**
  * Create a readiness evaluator for HelmRelease resources.
  *
@@ -45,7 +62,7 @@ interface HelmReleaseLike {
 export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEvaluator<unknown> {
   const prefix = label ? `${label} ` : '';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-  return (liveResource: unknown): ResourceStatus => {
+  const evaluator = (liveResource: unknown): ResourceStatus => {
     try {
       const live = liveResource as HelmReleaseLike;
       const status = live.status;
@@ -155,6 +172,14 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
       };
     }
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: HELM_RELEASE_STRATEGY,
+    revision: HELM_READINESS_REVISION,
+    configuration: readinessConfiguration({
+      label: label === undefined ? undefined : readinessLiteral(label),
+    }),
+  });
 }
 
 /**
@@ -178,7 +203,7 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator<unknown> =
 export function createHelmRevisionReadinessEvaluator(
   expectedRevision: number
 ): ReadinessEvaluator<unknown> {
-  return (liveResource: unknown): ResourceStatus => {
+  const evaluator = (liveResource: unknown): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
@@ -212,6 +237,14 @@ export function createHelmRevisionReadinessEvaluator(
       };
     }
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: HELM_RELEASE_REVISION_STRATEGY,
+    revision: HELM_READINESS_REVISION,
+    configuration: readinessConfiguration({
+      expectedRevision: readinessLiteral(expectedRevision),
+    }),
+  });
 }
 
 /**
@@ -226,7 +259,7 @@ export function createHelmTestReadinessEvaluator(
   requireTests: boolean = false
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
 ): ReadinessEvaluator<unknown> {
-  return (liveResource: unknown): ResourceStatus => {
+  const evaluator = (liveResource: unknown): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
@@ -280,6 +313,14 @@ export function createHelmTestReadinessEvaluator(
       };
     }
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: HELM_RELEASE_TEST_STRATEGY,
+    revision: HELM_READINESS_REVISION,
+    configuration: readinessConfiguration({
+      requireTests: readinessLiteral(requireTests),
+    }),
+  });
 }
 
 /**
@@ -294,51 +335,57 @@ export function createHelmTimeoutReadinessEvaluator(
   timeoutMinutes: number = 10
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
 ): ReadinessEvaluator<unknown> {
-  return (liveResource: unknown): ResourceStatus => {
-    try {
-      const baseStatus = helmReleaseReadinessEvaluator(liveResource);
+  return identifyRuntimeReadinessEvaluator(
+    (liveResource: unknown): ResourceStatus => {
+      try {
+        const baseStatus = helmReleaseReadinessEvaluator(liveResource);
 
-      // If already ready or failed, return that status
-      if (baseStatus.ready || baseStatus.reason === 'InstallationFailed') {
-        return baseStatus;
-      }
-
-      // Check if we have timing information
-      const live = liveResource as HelmReleaseLike;
-      const status = live.status;
-      const metadata = live.metadata;
-
-      // Use lastDeployed time or creation time as reference
-      let startTime: Date | null = null;
-
-      if (status?.lastDeployed) {
-        startTime = new Date(status.lastDeployed);
-      } else if (metadata?.creationTimestamp) {
-        startTime = new Date(metadata.creationTimestamp);
-      }
-
-      if (startTime) {
-        const now = new Date();
-        const elapsedMinutes = (now.getTime() - startTime.getTime()) / (1000 * 60);
-
-        if (elapsedMinutes > timeoutMinutes) {
-          return {
-            ready: false,
-            reason: 'Timeout',
-            message: `HelmRelease operation timed out after ${Math.round(elapsedMinutes)} minutes (limit: ${timeoutMinutes} minutes)`,
-          };
+        // If already ready or failed, return that status
+        if (baseStatus.ready || baseStatus.reason === 'InstallationFailed') {
+          return baseStatus;
         }
-      }
 
-      return baseStatus;
-    } catch (error: unknown) {
-      return {
-        ready: false,
-        reason: 'EvaluationError',
-        message: `Error evaluating Helm timeout readiness: ${ensureError(error).message}`,
-      };
+        // Check if we have timing information
+        const live = liveResource as HelmReleaseLike;
+        const status = live.status;
+        const metadata = live.metadata;
+
+        // Use lastDeployed time or creation time as reference
+        let startTime: Date | null = null;
+
+        if (status?.lastDeployed) {
+          startTime = new Date(status.lastDeployed);
+        } else if (metadata?.creationTimestamp) {
+          startTime = new Date(metadata.creationTimestamp);
+        }
+
+        if (startTime) {
+          const now = new Date();
+          const elapsedMinutes = (now.getTime() - startTime.getTime()) / (1000 * 60);
+
+          if (elapsedMinutes > timeoutMinutes) {
+            return {
+              ready: false,
+              reason: 'Timeout',
+              message: `HelmRelease operation timed out after ${Math.round(elapsedMinutes)} minutes (limit: ${timeoutMinutes} minutes)`,
+            };
+          }
+        }
+
+        return baseStatus;
+      } catch (error: unknown) {
+        return {
+          ready: false,
+          reason: 'EvaluationError',
+          message: `Error evaluating Helm timeout readiness: ${ensureError(error).message}`,
+        };
+      }
+    },
+    {
+      reason: 'ambient-clock',
+      description: `Helm timeout readiness compares resource timestamps with the host clock (${timeoutMinutes} minute limit).`,
     }
-  };
+  );
 }
 
 /**
@@ -354,53 +401,75 @@ export function createComprehensiveHelmReadinessEvaluator(
 ): ReadinessEvaluator<unknown> {
   const { expectedRevision, requireTests = false, timeoutMinutes = 10 } = options;
 
-  return (liveResource: unknown): ResourceStatus => {
-    try {
-      // First check timeout
-      const timeoutEvaluator = createHelmTimeoutReadinessEvaluator(timeoutMinutes);
-      const timeoutStatus = timeoutEvaluator(liveResource);
+  return identifyRuntimeReadinessEvaluator(
+    (liveResource: unknown): ResourceStatus => {
+      try {
+        // First check timeout
+        const timeoutEvaluator = createHelmTimeoutReadinessEvaluator(timeoutMinutes);
+        const timeoutStatus = timeoutEvaluator(liveResource);
 
-      if (timeoutStatus.reason === 'Timeout') {
-        return timeoutStatus;
-      }
-
-      // Then check basic readiness
-      const baseStatus = helmReleaseReadinessEvaluator(liveResource);
-      if (!baseStatus.ready) {
-        return baseStatus;
-      }
-
-      // Check revision if specified
-      if (expectedRevision !== undefined) {
-        const revisionEvaluator = createHelmRevisionReadinessEvaluator(expectedRevision);
-        const revisionStatus = revisionEvaluator(liveResource);
-        if (!revisionStatus.ready) {
-          return revisionStatus;
+        if (timeoutStatus.reason === 'Timeout') {
+          return timeoutStatus;
         }
-      }
 
-      // Check tests if required
-      if (requireTests) {
-        const testEvaluator = createHelmTestReadinessEvaluator(true);
-        const testStatus = testEvaluator(liveResource);
-        if (!testStatus.ready) {
-          return testStatus;
+        // Then check basic readiness
+        const baseStatus = helmReleaseReadinessEvaluator(liveResource);
+        if (!baseStatus.ready) {
+          return baseStatus;
         }
-      }
 
-      // All checks passed
-      const live = liveResource as HelmReleaseLike;
-      const status = live.status;
-      return {
-        ready: true,
-        message: `HelmRelease is fully ready (revision ${status?.revision || 'unknown'})${requireTests ? ' with tests passed' : ''}`,
-      };
-    } catch (error: unknown) {
-      return {
-        ready: false,
-        reason: 'EvaluationError',
-        message: `Error in comprehensive Helm readiness evaluation: ${ensureError(error).message}`,
-      };
+        // Check revision if specified
+        if (expectedRevision !== undefined) {
+          const revisionEvaluator = createHelmRevisionReadinessEvaluator(expectedRevision);
+          const revisionStatus = revisionEvaluator(liveResource);
+          if (!revisionStatus.ready) {
+            return revisionStatus;
+          }
+        }
+
+        // Check tests if required
+        if (requireTests) {
+          const testEvaluator = createHelmTestReadinessEvaluator(true);
+          const testStatus = testEvaluator(liveResource);
+          if (!testStatus.ready) {
+            return testStatus;
+          }
+        }
+
+        // All checks passed
+        const live = liveResource as HelmReleaseLike;
+        const status = live.status;
+        return {
+          ready: true,
+          message: `HelmRelease is fully ready (revision ${status?.revision || 'unknown'})${requireTests ? ' with tests passed' : ''}`,
+        };
+      } catch (error: unknown) {
+        return {
+          ready: false,
+          reason: 'EvaluationError',
+          message: `Error in comprehensive Helm readiness evaluation: ${ensureError(error).message}`,
+        };
+      }
+    },
+    {
+      reason: 'ambient-clock',
+      description: `Comprehensive Helm readiness includes a host-clock timeout (${timeoutMinutes} minute limit).`,
     }
-  };
+  );
 }
+
+registerPortableReadinessStrategy(HELM_RELEASE_STRATEGY, HELM_READINESS_REVISION, (configuration) =>
+  createLabeledHelmReleaseEvaluator(optionalReadinessString(configuration, 'label'))
+);
+registerPortableReadinessStrategy(
+  HELM_RELEASE_REVISION_STRATEGY,
+  HELM_READINESS_REVISION,
+  (configuration) =>
+    createHelmRevisionReadinessEvaluator(requiredReadinessNumber(configuration, 'expectedRevision'))
+);
+registerPortableReadinessStrategy(
+  HELM_RELEASE_TEST_STRATEGY,
+  HELM_READINESS_REVISION,
+  (configuration) =>
+    createHelmTestReadinessEvaluator(requiredReadinessBoolean(configuration, 'requireTests'))
+);

@@ -196,7 +196,11 @@ describe('KRO instance namespace ownership: hoisting keeps the instance in its n
     // It is the instance's OWN (1:1) namespace (name == instance ns 'app'), so it is
     // NOT retained: reverse-topo teardown deletes it AFTER the RGD + instance.
     expect(nsDecl?.props.retain).toBeUndefined();
-    expect(decls.at(-1)?.dependsOn).toContain(nsDecl?.id);
+    const rgdDecl = decls.find(
+      (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
+    );
+    expect(rgdDecl?.dependsOn).toContain(nsDecl?.id);
+    expect(decls.at(-1)?.dependsOn).toContain(rgdDecl?.id);
     // The instance CR declaration stays in the workload namespace.
     expect(decls.at(-1)?.props.namespace).toBe('app');
   });

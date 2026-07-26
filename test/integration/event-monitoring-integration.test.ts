@@ -9,7 +9,7 @@ import type { DeployedResource, DeploymentEvent } from '../../src/core/types/dep
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig.js';
 
 // Skip all tests if no cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 
 describe('Event Monitoring Integration', () => {
   let capturedEvents: DeploymentEvent[] = [];

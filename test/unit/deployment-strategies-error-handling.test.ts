@@ -7,11 +7,88 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-
+import { DependencyGraph } from '../../src/core/dependencies/graph.js';
+import { withExternalReferenceSeeds } from '../../src/core/deployment/strategies/direct-strategy.js';
 import {
   DirectDeploymentStrategy,
+  findDeployedResourceForStatus,
   KroDeploymentStrategy,
 } from '../../src/core/deployment/strategies/index.js';
+
+describe('status resource matching', () => {
+  it('matches the materialized resource by captured identity before its symbolic name', () => {
+    const original = {
+      apiVersion: 'cert-manager.io/v1',
+      kind: 'ClusterIssuer',
+      metadata: { name: '__KUBERNETES_REF___schema___spec.baseName__-issuer' },
+      __resourceId: 'lifecycleIssuer',
+    };
+    const materialized = {
+      id: 'certificateLifecycleResource0Issuer',
+      kind: 'ClusterIssuer',
+      name: 'test-lifecycle-issuer',
+      namespace: 'cert-manager-test',
+      manifest: {
+        apiVersion: 'cert-manager.io/v1',
+        kind: 'ClusterIssuer',
+        metadata: { name: 'test-lifecycle-issuer' },
+        __resourceId: 'lifecycleIssuer',
+      },
+      status: 'deployed' as const,
+      deployedAt: new Date(),
+    };
+
+    expect(findDeployedResourceForStatus(original, [materialized])).toBe(materialized);
+  });
+
+  it('adds non-owned external reference seeds only to the status hydration view', () => {
+    const managed = {
+      id: 'managed',
+      kind: 'Deployment',
+      name: 'managed',
+      namespace: 'apps',
+      manifest: {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'managed', namespace: 'apps' },
+      },
+      status: 'ready' as const,
+      deployedAt: new Date(),
+    };
+    const ownerSeed = {
+      id: 'singletonKroRunV1alpha1OwnerOwner',
+      kind: 'Owner',
+      name: 'owner',
+      namespace: 'typekro-singletons',
+      manifest: {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'Owner',
+        metadata: { name: 'owner', namespace: 'typekro-singletons' },
+        status: { ready: true },
+      },
+      status: 'ready' as const,
+      applied: false,
+      deployedAt: new Date(),
+    };
+    const deploymentResult = {
+      deploymentId: 'deployment',
+      resources: [managed],
+      dependencyGraph: new DependencyGraph(),
+      duration: 1,
+      status: 'success' as const,
+      errors: [],
+    };
+
+    const hydrationResult = withExternalReferenceSeeds(deploymentResult, [ownerSeed, managed]);
+
+    expect(hydrationResult.resources.map((resource) => resource.id)).toEqual([
+      'managed',
+      'singletonKroRunV1alpha1OwnerOwner',
+    ]);
+    expect(deploymentResult.resources).toEqual([managed]);
+    expect(hydrationResult.resources[1]?.applied).toBe(false);
+  });
+});
 
 describe('Deployment Strategy Error Handling (Unit Tests)', () => {
   let mockDeploymentEngine: any;
@@ -116,6 +193,139 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
         'Mock deployment failure'
       );
     });
+
+    it('forwards the standalone operation signal to the direct engine', async () => {
+      const controller = new AbortController();
+      let receivedSignal: AbortSignal | undefined;
+      mockDeploymentEngine.deploy = async (resourceGraph: any, options: any) => {
+        receivedSignal = options.abortSignal;
+        return {
+          deploymentId: 'signal-deployment',
+          resources: resourceGraph.resources.map((resource: any) => ({
+            id: resource.id,
+            kind: resource.manifest.kind,
+            name: resource.manifest.metadata?.name,
+            namespace: options.namespace,
+            manifest: resource.manifest,
+            status: 'deployed',
+            deployedAt: new Date(),
+          })),
+          dependencyGraph: resourceGraph.dependencyGraph,
+          duration: 1,
+          status: 'success',
+          errors: [],
+        };
+      };
+      const strategy = new DirectDeploymentStrategy(
+        'test-factory',
+        'test-namespace',
+        {
+          apiVersion: 'v1alpha1',
+          kind: 'TestApp',
+          spec: type({ name: 'string' }),
+          status: type({ status: 'string' }),
+        },
+        undefined,
+        undefined,
+        {},
+        mockDeploymentEngine,
+        mockResourceResolver
+      );
+
+      await strategy.deploy({ name: 'signal-app' }, { abortSignal: controller.signal });
+
+      expect(receivedSignal).toBe(controller.signal);
+    });
+
+    it('rejects partial resource deployments even when status hydration is disabled', async () => {
+      mockDeploymentEngine.deploy = async (resourceGraph: any, options: any) => ({
+        deploymentId: 'partial-deployment',
+        resources: resourceGraph.resources.map((resource: any) => ({
+          id: resource.id,
+          kind: resource.manifest.kind,
+          name: resource.manifest.metadata?.name,
+          namespace: options.namespace,
+          manifest: resource.manifest,
+          status: 'failed',
+          deployedAt: new Date(),
+        })),
+        dependencyGraph: resourceGraph.dependencyGraph,
+        duration: 1,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'test-resource',
+            phase: 'readiness',
+            error: new Error('resource did not become ready'),
+            timestamp: new Date(),
+          },
+        ],
+      });
+      const strategy = new DirectDeploymentStrategy(
+        'test-factory',
+        'test-namespace',
+        {
+          apiVersion: 'v1alpha1',
+          kind: 'TestApp',
+          spec: type({ name: 'string' }),
+          status: type({ status: 'string' }),
+        },
+        undefined,
+        undefined,
+        { hydrateStatus: false },
+        mockDeploymentEngine,
+        mockResourceResolver
+      );
+
+      await expect(strategy.deploy({ name: 'partial-app' })).rejects.toThrow(
+        'resource did not become ready'
+      );
+    });
+
+    it('allows closure-only partial results to continue without status hydration', async () => {
+      mockDeploymentEngine.deploy = async (resourceGraph: any, options: any) => ({
+        deploymentId: 'closure-partial',
+        resources: resourceGraph.resources.map((resource: any) => ({
+          id: resource.id,
+          kind: resource.manifest.kind,
+          name: resource.manifest.metadata?.name,
+          namespace: options.namespace,
+          manifest: resource.manifest,
+          status: 'deployed',
+          deployedAt: new Date(),
+        })),
+        dependencyGraph: resourceGraph.dependencyGraph,
+        duration: 1,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'closure-download',
+            phase: 'deployment',
+            error: new Error('optional artifact unavailable'),
+            timestamp: new Date(),
+          },
+        ],
+      });
+      const strategy = new DirectDeploymentStrategy(
+        'test-factory',
+        'test-namespace',
+        {
+          apiVersion: 'v1alpha1',
+          kind: 'TestApp',
+          spec: type({ name: 'string' }),
+          status: type({ status: 'string' }),
+        },
+        undefined,
+        undefined,
+        { hydrateStatus: false },
+        mockDeploymentEngine,
+        mockResourceResolver
+      );
+
+      const instance = await strategy.deploy({ name: 'closure-partial-app' });
+
+      expect(instance.metadata.annotations?.['typekro.io/deployment-status']).toBe('partial');
+    });
   });
 
   describe('KroDeploymentStrategy', () => {
@@ -179,7 +389,12 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
         {}, // factoryOptions
         mockKroEngine,
         {}, // resources
-        {} // statusMappings
+        {}, // statusMappings
+        {
+          getClusterCustomObject: async () => ({
+            spec: { schema: { status: { customField: 'string', url: 'string' } } },
+          }),
+        } as never
       );
 
       // Test that the strategy properly handles the two-step deployment

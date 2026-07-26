@@ -18,6 +18,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { createResource } from '../../shared.js';
 import type {
@@ -104,6 +105,12 @@ export function chiReadinessEvaluator(liveResource: unknown): ResourceStatus {
     reason: 'UnknownStatus',
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.clickhouse.installation',
+  '1',
+  chiReadinessEvaluator
+);
 
 /** Default ClickHouse server image repository. */
 const DEFAULT_CLICKHOUSE_IMAGE_REPOSITORY = 'clickhouse/clickhouse-server';

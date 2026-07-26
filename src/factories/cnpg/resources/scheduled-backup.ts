@@ -4,7 +4,10 @@
  * Creates a CNPG ScheduledBackup resource for cron-based automated backups.
  */
 
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
+import {
+  createConditionBasedReadinessEvaluator,
+  registerPortableReadinessEvaluator,
+} from '../../../core/readiness/index.js';
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ScheduledBackupConfig, ScheduledBackupStatus } from '../types.js';
@@ -35,6 +38,12 @@ function scheduledBackupReadinessEvaluator(liveResource: unknown): ResourceStatu
 
   return result;
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cnpg.scheduled-backup',
+  '1',
+  scheduledBackupReadinessEvaluator
+);
 
 /**
  * CloudNativePG ScheduledBackup Factory

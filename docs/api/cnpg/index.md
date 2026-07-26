@@ -276,7 +276,8 @@ only if you deliberately want the CR in a *different* namespace.)
 
 ```typescript
 instance.status.ready    // boolean — operator is running
-instance.status.phase    // 'Ready' | 'Installing' (derived from HelmRelease condition)
+instance.status.phase    // 'Ready' | 'Installing' | 'Failed'
+instance.status.failed   // boolean — true if HelmRelease Ready=False
 instance.status.version  // deployed chart version
 ```
 

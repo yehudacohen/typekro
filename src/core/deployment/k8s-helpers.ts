@@ -21,7 +21,13 @@ export function isNotFoundError(error: unknown): boolean {
     // bare `code` some code paths set — the KRO teardown reads all three, so the
     // engine's shared 404 check must too or a gate would miss a real 404.
     const k8sError = error as KubernetesApiError & { code?: number };
-    return k8sError.statusCode === 404 || k8sError.body?.code === 404 || k8sError.code === 404;
+    return (
+      k8sError.statusCode === 404 ||
+      k8sError.response?.statusCode === 404 ||
+      k8sError.body?.code === 404 ||
+      k8sError.code === 404 ||
+      (typeof k8sError.message === 'string' && k8sError.message.includes('HTTP-Code: 404'))
+    );
   }
   return false;
 }
@@ -44,7 +50,8 @@ export function isConflictError(error: unknown): boolean {
       k8sError.statusCode === 409 ||
       k8sError.response?.statusCode === 409 ||
       k8sError.body?.code === 409 ||
-      k8sError.code === 409
+      k8sError.code === 409 ||
+      (typeof k8sError.message === 'string' && k8sError.message.includes('HTTP-Code: 409'))
     );
   }
   return false;
@@ -96,7 +103,8 @@ export function extractAcceptedMediaTypes(error: unknown): string[] {
  */
 export async function patchResourceWithCorrectContentType(
   k8sApi: k8s.KubernetesObjectApi,
-  resource: k8s.KubernetesObject
+  resource: k8s.KubernetesObject,
+  patchType: 'merge' | 'strategic' = 'merge'
 ): Promise<k8s.KubernetesObject> {
   // Log Secret resource metadata (sensitive fields redacted)
   if (resource.kind === 'Secret') {
@@ -117,7 +125,9 @@ export async function patchResourceWithCorrectContentType(
     undefined, // dryRun
     undefined, // fieldManager
     undefined, // force
-    'application/merge-patch+json' // patchStrategy
+    patchType === 'strategic'
+      ? 'application/strategic-merge-patch+json'
+      : 'application/merge-patch+json'
   );
 }
 

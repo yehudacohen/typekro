@@ -34,11 +34,9 @@
  * ```
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import type { AuthMethodsConfiguration } from '@kubernetes/client-node/dist/gen/auth/auth.js';
 import type { Configuration } from '@kubernetes/client-node/dist/gen/configuration.js';
-import { createConfiguration } from '@kubernetes/client-node/dist/gen/configuration.js';
-import { ServerConfiguration } from '@kubernetes/client-node/dist/gen/servers.js';
 import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
@@ -46,6 +44,7 @@ import {
   type HttpTimeoutConfig,
   isBunRuntime,
 } from './bun-http-library.js';
+import { getKubernetesClientNode } from './client-node-runtime.js';
 
 const logger = getComponentLogger('bun-api-client');
 
@@ -94,9 +93,13 @@ export function createBunCompatibleApiClient<T extends k8s.ApiType>(
     default: kubeConfig,
   };
 
-  const baseServerConfig = new ServerConfiguration<Record<string, never>>(cluster.server, {});
+  const clientNode = getKubernetesClientNode();
+  const baseServerConfig = new clientNode.ServerConfiguration<Record<string, never>>(
+    cluster.server,
+    {}
+  );
 
-  const config = createConfiguration({
+  const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
     httpApi: new BunCompatibleHttpLibrary(timeoutConfig),
@@ -121,7 +124,11 @@ export function createBunCompatibleCoreV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.CoreV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.CoreV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().CoreV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -133,7 +140,11 @@ export function createBunCompatibleAppsV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.AppsV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.AppsV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().AppsV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -145,7 +156,11 @@ export function createBunCompatibleCustomObjectsApi(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.CustomObjectsApi {
-  return createBunCompatibleApiClient(kubeConfig, k8s.CustomObjectsApi, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().CustomObjectsApi,
+    timeoutConfig
+  );
 }
 
 /**
@@ -157,7 +172,11 @@ export function createBunCompatibleBatchV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.BatchV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.BatchV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().BatchV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -169,7 +188,11 @@ export function createBunCompatibleNetworkingV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.NetworkingV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.NetworkingV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().NetworkingV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -181,7 +204,11 @@ export function createBunCompatibleRbacAuthorizationV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.RbacAuthorizationV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.RbacAuthorizationV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().RbacAuthorizationV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -193,7 +220,11 @@ export function createBunCompatibleStorageV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.StorageV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.StorageV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().StorageV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -205,7 +236,11 @@ export function createBunCompatibleApiextensionsV1Api(
   kubeConfig: k8s.KubeConfig,
   timeoutConfig?: HttpTimeoutConfig
 ): k8s.ApiextensionsV1Api {
-  return createBunCompatibleApiClient(kubeConfig, k8s.ApiextensionsV1Api, timeoutConfig);
+  return createBunCompatibleApiClient(
+    kubeConfig,
+    getKubernetesClientNode().ApiextensionsV1Api,
+    timeoutConfig
+  );
 }
 
 /**
@@ -224,7 +259,7 @@ export function createBunCompatibleKubernetesObjectApi(
 ): k8s.KubernetesObjectApi {
   // If not running in Bun, use standard method
   if (!isBunRuntime()) {
-    return k8s.KubernetesObjectApi.makeApiClient(kubeConfig);
+    return getKubernetesClientNode().KubernetesObjectApi.makeApiClient(kubeConfig);
   }
 
   const cluster = kubeConfig.getCurrentCluster();
@@ -237,13 +272,17 @@ export function createBunCompatibleKubernetesObjectApi(
     default: kubeConfig,
   };
 
-  const baseServerConfig = new ServerConfiguration<Record<string, never>>(cluster.server, {});
+  const clientNode = getKubernetesClientNode();
+  const baseServerConfig = new clientNode.ServerConfiguration<Record<string, never>>(
+    cluster.server,
+    {}
+  );
 
-  const config = createConfiguration({
+  const config = clientNode.createConfiguration({
     baseServer: baseServerConfig,
     authMethods: authConfig,
     httpApi: new BunCompatibleHttpLibrary(timeoutConfig),
   });
 
-  return new k8s.KubernetesObjectApi(config);
+  return new (getKubernetesClientNode().KubernetesObjectApi)(config);
 }

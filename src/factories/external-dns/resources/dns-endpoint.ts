@@ -5,8 +5,36 @@
  * instead of relying on annotations.
  */
 
-import { createResource } from '../../shared.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { createResource } from '../../shared.js';
+
+function dnsEndpointReadinessEvaluator(resource: unknown) {
+  const status = (resource as { status?: { observedGeneration?: unknown } } | null | undefined)
+    ?.status;
+
+  if (!status) {
+    return {
+      ready: false,
+      message: 'DNSEndpoint status not available yet',
+    };
+  }
+
+  const hasObservedGeneration = status.observedGeneration !== undefined;
+
+  return {
+    ready: hasObservedGeneration,
+    message: hasObservedGeneration
+      ? 'DNSEndpoint has been processed by external-dns'
+      : 'DNSEndpoint waiting to be processed by external-dns',
+  };
+}
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.external-dns.dns-endpoint',
+  '1',
+  dnsEndpointReadinessEvaluator
+);
 
 /**
  * DNSEndpoint spec configuration
@@ -76,25 +104,5 @@ export function dnsEndpoint(config: DNSEndpointConfig): Enhanced<DNSEndpointSpec
       }]
     },
     ...(config.id && { id: config.id }),
-  }).withReadinessEvaluator((resource: unknown) => {
-    // DNSEndpoint is ready when it exists and has been processed
-    const status = (resource as { status?: { observedGeneration?: unknown } } | null | undefined)?.status;
-    
-    if (!status) {
-      return {
-        ready: false,
-        message: 'DNSEndpoint status not available yet',
-      };
-    }
-
-    // DNSEndpoint is considered ready when it has been observed
-    const hasObservedGeneration = status.observedGeneration !== undefined;
-    
-    return {
-      ready: hasObservedGeneration,
-      message: hasObservedGeneration 
-        ? 'DNSEndpoint has been processed by external-dns'
-        : 'DNSEndpoint waiting to be processed by external-dns',
-    };
-  });
+  }).withReadinessEvaluator(dnsEndpointReadinessEvaluator);
 }

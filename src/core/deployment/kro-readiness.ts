@@ -19,7 +19,7 @@ import {
 import { CRDInstanceError, DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { RGDManifest } from '../types/kubernetes.js';
-import { callWithTimeout, perCallTimeout, PollTimeoutError } from './poll-timeout.js';
+import { callWithTimeout, PollTimeoutError, perCallTimeout } from './poll-timeout.js';
 
 /** Options for Kro instance readiness polling. */
 export interface KroReadinessOptions {
@@ -58,6 +58,25 @@ export interface KroReadinessOptions {
 
   /** Optional context for error messages (e.g. factory name). */
   factoryContext?: string;
+
+  /** Signal for cancelling the readiness operation. */
+  abortSignal?: AbortSignal;
+}
+
+function abortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  abortSignal?.throwIfAborted();
+  if (!abortSignal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(abortSignal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    const timeout = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
@@ -84,6 +103,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
     rgdName,
     pollInterval = DEFAULT_FAST_POLL_INTERVAL,
     factoryContext,
+    abortSignal,
   } = options;
 
   const logger = getComponentLogger('kro-readiness');
@@ -91,11 +111,15 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout) {
+    abortSignal?.throwIfAborted();
     try {
       // Bound the read so a wedged/expired kubeconfig exec credential rejects (and is re-thrown below)
       // instead of hanging the poll forever — see poll-timeout.ts. A ≤0 budget means the deadline is
       // spent: break to the overall DeploymentTimeoutError below (NOT a per-call PollTimeoutError).
-      const readTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+      const readTimeout = perCallTimeout(
+        timeout - (Date.now() - startTime),
+        DEFAULT_HTTP_READ_TIMEOUT
+      );
       if (readTimeout <= 0) break;
       const response = await callWithTimeout(
         () =>
@@ -108,7 +132,8 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
             },
           }),
         readTimeout,
-        `read ${kind}/${instanceName}`
+        `read ${kind}/${instanceName}`,
+        abortSignal
       );
 
       // In the new API, methods return objects directly (no .body wrapper)
@@ -133,7 +158,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       const status = instance.status;
       if (!status) {
         readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
-        await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_INTERVAL));
+        await abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
         continue;
       }
 
@@ -161,7 +186,10 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       let expectedCustomStatusFields = false;
       let expectedStatusKeys: string[] = [];
       try {
-        const rgdReadTimeout = perCallTimeout(timeout - (Date.now() - startTime), DEFAULT_HTTP_READ_TIMEOUT);
+        const rgdReadTimeout = perCallTimeout(
+          timeout - (Date.now() - startTime),
+          DEFAULT_HTTP_READ_TIMEOUT
+        );
         // Deadline spent mid-iteration: break to the overall DeploymentTimeoutError rather than starting
         // a doomed read (which would surface a misleading per-call PollTimeoutError).
         if (rgdReadTimeout <= 0) break;
@@ -174,7 +202,8 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
               name: rgdName,
             }),
           rgdReadTimeout,
-          `read ResourceGraphDefinition/${rgdName}`
+          `read ResourceGraphDefinition/${rgdName}`,
+          abortSignal
         );
         const rgd = rgdResponse as RGDManifest;
         const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
@@ -309,7 +338,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
     }
 
     // Wait before checking again
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    await abortableDelay(pollInterval, abortSignal);
   }
 
   const elapsed = Date.now() - startTime;

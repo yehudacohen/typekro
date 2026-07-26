@@ -174,7 +174,7 @@ describe('Resource Metadata Handling', () => {
           image: 'nginx',
           port: 9000,
           replicas: 2,
-        });
+        }, { allowSensitiveMaterialization: true });
 
         expect(yaml).toBeDefined();
         expect(yaml).toContain('complex-app'); // Resolved KubernetesRef

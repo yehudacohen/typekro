@@ -178,6 +178,12 @@ export interface APISixBootstrapConfig {
     enabled?: boolean;
     /** Number of etcd replicas. Defaults to 1 for single-node clusters. */
     replicaCount?: number;
+    persistence?: {
+      enabled?: boolean;
+      storageClass?: string;
+      size?: string;
+      accessModes?: string[];
+    };
     image?: {
       repository?: string;
       tag?: string;
@@ -327,6 +333,12 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   'etcd?': {
     'enabled?': 'boolean',
     'replicaCount?': 'number.integer',
+    'persistence?': {
+      'enabled?': 'boolean',
+      'storageClass?': 'string',
+      'size?': 'string',
+      'accessModes?': 'string[]',
+    },
     'image?': imageSchemaShape,
     'resources?': resourceRequirementsSchemaShape,
     'auth?': {
@@ -390,6 +402,18 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
     name: 'string',
     controller: 'string',
   },
+});
+
+/** Spec accepted by the shared APISIX HelmRepository singleton. */
+export const APISixHelmRepositorySingletonSpecSchema = type({
+  name: 'string',
+  namespace: 'string',
+  url: 'string',
+});
+
+/** Status surfaced by the shared APISIX HelmRepository singleton. */
+export const APISixHelmRepositorySingletonStatusSchema = type({
+  ready: 'boolean',
 });
 
 // APISix Bootstrap Status
@@ -565,6 +589,12 @@ export interface APISixHelmValues {
     enabled?: boolean;
     /** Number of etcd replicas. */
     replicaCount?: number;
+    persistence?: {
+      enabled?: boolean;
+      storageClass?: string;
+      size?: string;
+      accessModes?: string[];
+    };
     image?: {
       repository?: string;
       tag?: string;

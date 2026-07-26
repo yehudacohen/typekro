@@ -7,7 +7,10 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1Ingress, V1NetworkPolicy } from '@kubernetes/client-node';
 import { ingress } from '../../src/factories/kubernetes/networking/ingress.js';
-import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
+import {
+  canonicalizeNetworkPolicyDesired,
+  networkPolicy,
+} from '../../src/factories/kubernetes/networking/network-policy.js';
 import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Networking Factories', () => {
@@ -533,6 +536,58 @@ describe('Networking Factories', () => {
       const enhanced = networkPolicy(minimalPolicy);
       expect(enhanced.spec?.podSelector as unknown).toEqual({});
       expect(enhanced.metadata!.name).toBe('minimal-policy');
+    });
+
+    it('canonicalizes API-server-normalized empty rule arrays without changing isolation', () => {
+      const canonical = canonicalizeNetworkPolicyDesired({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'deny-ingress' },
+        spec: { podSelector: {}, ingress: [], egress: [] },
+      });
+
+      expect(canonical.spec).toEqual({ podSelector: {}, policyTypes: ['Ingress'] });
+    });
+
+    it('infers Egress only from concrete non-empty egress rules', () => {
+      const canonical = canonicalizeNetworkPolicyDesired({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'allow-dns' },
+        spec: {
+          podSelector: {},
+          egress: [{ ports: [{ protocol: 'UDP', port: 53 }] }],
+        },
+      });
+
+      expect(canonical.spec).toEqual({
+        podSelector: {},
+        policyTypes: ['Ingress', 'Egress'],
+        egress: [{ ports: [{ protocol: 'UDP', port: 53 }] }],
+      });
+    });
+
+    it('preserves explicit Egress deny-all while omitting its empty rule array', () => {
+      const canonical = canonicalizeNetworkPolicyDesired({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'deny-egress' },
+        spec: { podSelector: {}, policyTypes: ['Egress'], egress: [] },
+      });
+
+      expect(canonical.spec).toEqual({ podSelector: {}, policyTypes: ['Egress'] });
+    });
+
+    it('does not guess policyTypes when egress is symbolic', () => {
+      const egress = { expression: 'schema.spec.egress' };
+      const canonical = canonicalizeNetworkPolicyDesired({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'dynamic-egress' },
+        spec: { podSelector: {}, egress },
+      });
+
+      expect(canonical.spec).toEqual({ podSelector: {}, egress });
     });
 
     it('should maintain resource structure for various policy types', () => {

@@ -25,7 +25,9 @@ import {
   getMetadataField,
   getReadinessEvaluator,
 } from '../metadata/index.js';
+import type { ArtifactApplyPolicy } from '../planning/artifacts.js';
 import type { ReferenceResolver } from '../references/index.js';
+import { compareKubernetesResources, formatCanonicalDrift } from '../resources/live-comparison.js';
 import type { DeploymentOptions, ResolutionContext } from '../types/deployment.js';
 import type {
   DeployableK8sResource,
@@ -36,19 +38,33 @@ import type {
 import {
   ResourceConflictError,
   ResourceDeploymentError,
+  ResourceReplacementTimeoutError,
+  ServerSideApplyConflictError,
   UnsupportedMediaTypeError,
 } from './errors.js';
 import {
   extractAcceptedMediaTypes,
+  isConflictError,
+  isNotFoundError,
   isUnsupportedMediaTypeError,
   patchResourceWithCorrectContentType,
 } from './k8s-helpers.js';
 import { applyTypekroTags, getEffectiveScopes } from './resource-tagging.js';
 
-export class ResourceApplier {
+/** Host-neutral contract for applying one compiled Kubernetes artifact operation. */
+export interface ArtifactResourceApplier {
+  applyArtifactResource(
+    resource: KubernetesResource,
+    policy: ArtifactApplyPolicy | undefined,
+    options: DeploymentOptions,
+    resourceLogger: TypeKroLogger
+  ): Promise<k8s.KubernetesObject>;
+}
+
+export class ResourceApplier implements ArtifactResourceApplier {
   constructor(
     private k8sApi: k8s.KubernetesObjectApi,
-    private referenceResolver: ReferenceResolver,
+    private referenceResolver: ReferenceResolver | undefined,
     _logger: TypeKroLogger
   ) {}
 
@@ -61,6 +77,40 @@ export class ResourceApplier {
       return { name };
     }
     return { name, namespace: resource.metadata?.namespace || 'default' };
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+  }
+
+  private async abortableDelay(delay: number, signal?: AbortSignal): Promise<void> {
+    this.throwIfAborted(signal);
+    if (!signal) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, delay);
+      const onAbort = () => {
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', onAbort);
+        reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private isImmutableFieldError(error: unknown): boolean {
+    const apiError = error as KubernetesApiError & { code?: number };
+    const statusCode =
+      apiError.statusCode ?? apiError.response?.statusCode ?? apiError.body?.code ?? apiError.code;
+    if (statusCode !== 422) return false;
+    const message = `${apiError.body?.message ?? ''} ${ensureError(error).message}`;
+    return /\bimmutable\b|may not be changed|may not change once set/i.test(message);
   }
 
   /**
@@ -96,6 +146,10 @@ export class ResourceApplier {
     options: DeploymentOptions,
     resourceLogger: TypeKroLogger
   ): Promise<KubernetesResource> {
+    if (!this.referenceResolver) {
+      resourceLogger.debug('Reference resolution is unavailable for this artifact applier');
+      return resource;
+    }
     try {
       resourceLogger.debug('Resolving resource references', {
         originalMetadata: resource.metadata,
@@ -285,7 +339,9 @@ export class ResourceApplier {
   async handleConflictStrategy(
     resolvedResource: KubernetesResource,
     conflictStrategy: NonNullable<DeploymentOptions['conflictStrategy']>,
-    resourceLogger: TypeKroLogger
+    resourceLogger: TypeKroLogger,
+    abortSignal?: AbortSignal,
+    timeout = DEFAULT_READINESS_TIMEOUT
   ): Promise<k8s.KubernetesObject | undefined> {
     const resourceName = resolvedResource.metadata?.name || 'unknown';
     const resourceKind = resolvedResource.kind || 'Unknown';
@@ -358,19 +414,300 @@ export class ResourceApplier {
             metadata: this.buildResourceIdentityMetadata(resolvedResource),
           });
 
-          // Wait a moment for deletion to propagate
-          await new Promise((resolve) => setTimeout(resolve, DEFAULT_CONFLICT_RETRY_DELAY));
+          await this.waitForResourceDeletion(
+            resolvedResource,
+            resourceLogger,
+            abortSignal,
+            timeout
+          );
 
           const cleanResource = this.serializeResourceForK8s(resolvedResource);
           const result = await this.k8sApi.create(cleanResource);
           resourceLogger.debug('Resource replaced successfully after 409 conflict');
           return result;
         } catch (replaceError: unknown) {
+          if (replaceError instanceof ResourceReplacementTimeoutError || abortSignal?.aborted) {
+            throw replaceError;
+          }
           resourceLogger.warn('Failed to replace resource after 409 conflict', {
             error: ensureError(replaceError).message,
           });
         }
         return undefined;
+      }
+    }
+  }
+
+  private async createResource(
+    resource: KubernetesResource,
+    resourceLogger: TypeKroLogger,
+    fieldManager?: string
+  ): Promise<k8s.KubernetesObject> {
+    if (resource.kind === 'Secret') {
+      resourceLogger.debug('Creating Secret resource', {
+        name: resource.metadata?.name,
+        namespace: resource.metadata?.namespace,
+        hasData: 'data' in resource,
+        hasStringData: 'stringData' in resource,
+        dataKeyCount: resource.data ? Object.keys(resource.data).length : 0,
+      });
+    }
+    const manifest = this.serializeResourceForK8s(resource);
+    return fieldManager
+      ? await this.k8sApi.create(manifest, undefined, undefined, fieldManager)
+      : await this.k8sApi.create(manifest);
+  }
+
+  private async patchResource(
+    resource: KubernetesResource,
+    resourceLogger: TypeKroLogger,
+    patchType: 'merge' | 'strategic' = 'merge'
+  ): Promise<k8s.KubernetesObject> {
+    const cleanPayload = this.buildPatchPayload(resource);
+    if (cleanPayload.kind === 'Secret') {
+      const { data: _data, stringData: _stringData, ...safePayload } = cleanPayload;
+      resourceLogger.debug('Resource exists, patching', {
+        patchPayload: safePayload,
+        redacted: ['data', 'stringData'],
+      });
+    } else {
+      resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
+    }
+    return await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload, patchType);
+  }
+
+  private async replaceResource(
+    resource: KubernetesResource,
+    exists: boolean,
+    resourceLogger: TypeKroLogger,
+    abortSignal?: AbortSignal,
+    timeout = DEFAULT_READINESS_TIMEOUT,
+    fieldManager?: string
+  ): Promise<k8s.KubernetesObject> {
+    if (exists) {
+      resourceLogger.debug('Deleting existing resource for replace policy');
+      await this.k8sApi.delete({
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        metadata: this.buildResourceIdentityMetadata(resource),
+      });
+      await this.waitForResourceDeletion(resource, resourceLogger, abortSignal, timeout);
+    }
+    return await this.createResource(resource, resourceLogger, fieldManager);
+  }
+
+  private async waitForResourceDeletion(
+    resource: KubernetesResource,
+    resourceLogger: TypeKroLogger,
+    abortSignal?: AbortSignal,
+    timeout = DEFAULT_READINESS_TIMEOUT
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const identity = {
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      metadata: this.buildResourceIdentityMetadata(resource),
+    };
+
+    while (true) {
+      this.throwIfAborted(abortSignal);
+      try {
+        await this.k8sApi.read(identity);
+      } catch (error: unknown) {
+        if (isNotFoundError(error)) return;
+        throw error;
+      }
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= timeout) {
+        throw new ResourceReplacementTimeoutError(
+          resource.metadata?.name || 'unknown',
+          resource.kind || 'Unknown',
+          timeout
+        );
+      }
+      const delay = Math.min(DEFAULT_CONFLICT_RETRY_DELAY, Math.max(1, timeout - elapsed));
+      resourceLogger.debug('Waiting for previous resource object to finish deleting', {
+        name: resource.metadata?.name,
+        kind: resource.kind,
+        elapsed,
+        timeout,
+      });
+      await this.abortableDelay(delay, abortSignal);
+    }
+  }
+
+  private async serverSideApply(
+    resource: KubernetesResource,
+    policy: Extract<ArtifactApplyPolicy, { strategy: 'server-side-apply' }>,
+    resourceLogger: TypeKroLogger
+  ): Promise<k8s.KubernetesObject> {
+    const manifest = this.serializeResourceForK8s(resource) as k8s.KubernetesObject;
+    const apply = () =>
+      this.k8sApi.patch(
+        manifest,
+        undefined,
+        undefined,
+        policy.fieldManager,
+        policy.fieldConflictPolicy === 'force-owned-fields',
+        'application/apply-patch+yaml'
+      );
+
+    try {
+      return await apply();
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+      resourceLogger.debug('SSA target is absent; creating resource');
+      try {
+        return await this.createResource(resource, resourceLogger, policy.fieldManager);
+      } catch (createError: unknown) {
+        if (!isConflictError(createError)) throw createError;
+        resourceLogger.debug('SSA create raced with another writer; retrying apply');
+        return await apply();
+      }
+    }
+  }
+
+  private async applyWithPolicy(
+    resource: KubernetesResource,
+    policy: ArtifactApplyPolicy | undefined,
+    resourceLogger: TypeKroLogger,
+    abortSignal?: AbortSignal,
+    timeout = DEFAULT_READINESS_TIMEOUT
+  ): Promise<{ resource: k8s.KubernetesObject; operation: string }> {
+    const effectivePolicy: ArtifactApplyPolicy = policy ?? {
+      strategy: 'create-or-patch',
+      existingResource: 'patch',
+      immutableFieldPolicy: 'fail',
+    };
+    if (effectivePolicy.strategy === 'server-side-apply') {
+      try {
+        return {
+          resource: await this.serverSideApply(resource, effectivePolicy, resourceLogger),
+          operation: 'server-side-applied',
+        };
+      } catch (error: unknown) {
+        if (
+          effectivePolicy.immutableFieldPolicy === 'recreate' &&
+          this.isImmutableFieldError(error)
+        ) {
+          return {
+            resource: await this.replaceResource(
+              resource,
+              true,
+              resourceLogger,
+              abortSignal,
+              timeout,
+              effectivePolicy.fieldManager
+            ),
+            operation: 'recreated',
+          };
+        }
+        throw error;
+      }
+    }
+
+    const existing = await this.checkResourceExists(resource, resourceLogger);
+    if (effectivePolicy.strategy === 'create-only') {
+      if (existing) {
+        throw new ResourceConflictError(
+          resource.metadata?.name || 'unknown',
+          resource.kind || 'Unknown',
+          resource.metadata?.namespace
+        );
+      }
+      return {
+        resource: await this.createResource(resource, resourceLogger),
+        operation: 'created',
+      };
+    }
+    if (effectivePolicy.strategy === 'replace') {
+      return {
+        resource: await this.replaceResource(
+          resource,
+          existing !== undefined,
+          resourceLogger,
+          abortSignal,
+          timeout
+        ),
+        operation: existing ? 'replaced' : 'created',
+      };
+    }
+    if (!existing) {
+      return {
+        resource: await this.createResource(resource, resourceLogger),
+        operation: 'created',
+      };
+    }
+    switch (effectivePolicy.existingResource) {
+      case 'fail':
+        throw new ResourceConflictError(
+          resource.metadata?.name || 'unknown',
+          resource.kind || 'Unknown',
+          resource.metadata?.namespace
+        );
+      case 'warn':
+        resourceLogger.warn('Resource already exists; preserving it by artifact policy', {
+          name: resource.metadata?.name,
+          kind: resource.kind,
+          namespace: resource.metadata?.namespace,
+        });
+        return { resource: existing, operation: 'preserved' };
+      case 'replace':
+        return {
+          resource: await this.replaceResource(
+            resource,
+            true,
+            resourceLogger,
+            abortSignal,
+            timeout
+          ),
+          operation: 'replaced',
+        };
+      case 'patch': {
+        if (resource.kind !== 'Secret') {
+          const comparison = compareKubernetesResources(resource, existing as KubernetesResource);
+          if (comparison.equal) {
+            resourceLogger.debug('Existing resource already matches canonical desired state', {
+              name: resource.metadata?.name,
+              kind: resource.kind,
+              namespace: resource.metadata?.namespace,
+              canonicalizers: comparison.canonicalizers,
+            });
+            return { resource: existing, operation: 'unchanged' };
+          }
+          resourceLogger.debug('Canonical desired/live drift requires patching', {
+            name: resource.metadata?.name,
+            kind: resource.kind,
+            namespace: resource.metadata?.namespace,
+            drift: formatCanonicalDrift(comparison.differences),
+            differences: comparison.differences,
+            canonicalizers: comparison.canonicalizers,
+          });
+        }
+        try {
+          return {
+            resource: await this.patchResource(resource, resourceLogger, effectivePolicy.patchType),
+            operation: 'patched',
+          };
+        } catch (error: unknown) {
+          if (
+            effectivePolicy.immutableFieldPolicy === 'recreate' &&
+            this.isImmutableFieldError(error)
+          ) {
+            return {
+              resource: await this.replaceResource(
+                resource,
+                true,
+                resourceLogger,
+                abortSignal,
+                timeout
+              ),
+              operation: 'recreated',
+            };
+          }
+          throw error;
+        }
       }
     }
   }
@@ -381,6 +718,21 @@ export class ResourceApplier {
    */
   async applyResourceToCluster(
     resolvedResource: KubernetesResource,
+    options: DeploymentOptions,
+    resourceLogger: TypeKroLogger
+  ): Promise<k8s.KubernetesObject> {
+    return this.applyArtifactResource(
+      resolvedResource,
+      getMetadataField(resolvedResource as object, 'applyPolicy'),
+      options,
+      resourceLogger
+    );
+  }
+
+  /** Apply one compiled artifact operation through the canonical policy executor. */
+  async applyArtifactResource(
+    resolvedResource: KubernetesResource,
+    applyPolicy: ArtifactApplyPolicy | undefined,
     options: DeploymentOptions,
     resourceLogger: TypeKroLogger
   ): Promise<k8s.KubernetesObject> {
@@ -404,57 +756,37 @@ export class ResourceApplier {
 
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
+      this.throwIfAborted(options.abortSignal);
       try {
         resourceLogger.debug('Applying resource to cluster', { attempt });
 
-        // Check if resource already exists
-        const existing = await this.checkResourceExists(resolvedResource, resourceLogger);
-
-        let appliedResource: k8s.KubernetesObject;
-        if (existing) {
-          // Resource exists, use patch for safer updates
-          const cleanPayload = this.buildPatchPayload(resolvedResource);
-
-          // Redact sensitive fields from Secret resources before logging
-          if (cleanPayload.kind === 'Secret') {
-            const { data: _data, stringData: _stringData, ...safePayload } = cleanPayload;
-            resourceLogger.debug('Resource exists, patching', {
-              patchPayload: safePayload,
-              redacted: ['data', 'stringData'],
-            });
-          } else {
-            resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
-          }
-
-          appliedResource = await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload);
-        } else {
-          // Resource does not exist, create it
-          resourceLogger.debug('Resource does not exist, creating');
-
-          // Log Secret resource metadata (sensitive fields redacted)
-          if (resolvedResource.kind === 'Secret') {
-            resourceLogger.debug('Creating Secret resource', {
-              name: resolvedResource.metadata?.name,
-              namespace: resolvedResource.metadata?.namespace,
-              hasData: 'data' in resolvedResource,
-              hasStringData: 'stringData' in resolvedResource,
-              dataKeyCount: resolvedResource.data ? Object.keys(resolvedResource.data).length : 0,
-            });
-          }
-
-          const cleanResource = this.serializeResourceForK8s(resolvedResource);
-          appliedResource = await this.k8sApi.create(cleanResource);
-        }
+        const { resource: appliedResource, operation } = await this.applyWithPolicy(
+          resolvedResource,
+          applyPolicy,
+          resourceLogger,
+          options.abortSignal,
+          options.timeout ?? DEFAULT_READINESS_TIMEOUT
+        );
 
         resourceLogger.debug('Resource applied successfully', {
           appliedName: appliedResource.metadata?.name,
           appliedNamespace: appliedResource.metadata?.namespace,
-          operation: existing ? 'patched' : 'created',
+          operation,
           attempt,
         });
 
         return appliedResource;
       } catch (error: unknown) {
+        if (options.abortSignal?.aborted) {
+          throw options.abortSignal.reason ?? error;
+        }
+        if (
+          error instanceof ResourceConflictError ||
+          error instanceof ResourceReplacementTimeoutError ||
+          error instanceof ServerSideApplyConflictError
+        ) {
+          throw error;
+        }
         lastError = ensureError(error);
 
         // Check for 409 Conflict errors - resource already exists
@@ -466,11 +798,29 @@ export class ResourceApplier {
           (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 409'));
 
         if (is409) {
-          const conflictStrategy = options.conflictStrategy || 'warn';
+          if (applyPolicy?.strategy === 'server-side-apply') {
+            throw new ServerSideApplyConflictError(
+              resolvedResource.metadata?.name || 'unknown',
+              resolvedResource.kind || 'Unknown',
+              applyPolicy.fieldManager,
+              applyPolicy.fieldConflictPolicy,
+              ensureError(error)
+            );
+          }
+          const conflictStrategy =
+            applyPolicy?.strategy === 'create-or-patch'
+              ? applyPolicy.existingResource
+              : applyPolicy?.strategy === 'replace'
+                ? 'replace'
+                : applyPolicy?.strategy === 'create-only'
+                  ? 'fail'
+                  : options.conflictStrategy || 'warn';
           const result = await this.handleConflictStrategy(
             resolvedResource,
             conflictStrategy,
-            resourceLogger
+            resourceLogger,
+            options.abortSignal,
+            options.timeout ?? DEFAULT_READINESS_TIMEOUT
           );
           if (result) {
             return result;
@@ -512,7 +862,7 @@ export class ResourceApplier {
         });
 
         // Wait before retrying
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await this.abortableDelay(delay, options.abortSignal);
       }
     }
 

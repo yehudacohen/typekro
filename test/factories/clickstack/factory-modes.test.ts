@@ -28,6 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadAll } from 'js-yaml';
 
 import { clickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { clickstackK8sTelemetry } from '../../../src/factories/clickstack/compositions/k8s-telemetry.js';
@@ -99,6 +100,22 @@ function splitDocs(yaml: string): string[] {
 /** Top-level `kind:` of a single YAML document. */
 function docKind(doc: string): string | undefined {
   return doc.match(/^kind: (.+)$/m)?.[1];
+}
+
+function findSecretKeyRefs(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(findSecretKeyRefs);
+  }
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const object = value as Record<string, unknown>;
+  const own =
+    object.secretKeyRef && typeof object.secretKeyRef === 'object'
+      ? [object.secretKeyRef as Record<string, unknown>]
+      : [];
+  return own.concat(Object.values(object).flatMap(findSecretKeyRefs));
 }
 
 const BOOTSTRAP_SPEC = {
@@ -267,8 +284,8 @@ describe('clickstackBootstrap factory modes', () => {
       );
 
       // Secret wiring reaches the RGD values as guarded schema CEL.
-      expect(yaml).toContain(
-        'HYPERDX_API_KEY: "${has(schema.spec.apiKey) ? dyn(schema.spec.apiKey) : omit()}"'
+      expect(JSON.stringify(loadAll(yaml))).toContain(
+        '${has(schema.spec.apiKey) ? dyn(schema.spec.apiKey) : omit()}'
       );
     });
   });
@@ -343,10 +360,11 @@ describe('clickstackK8sTelemetry factory modes', () => {
       });
       const yaml = factory.toYaml(TELEMETRY_SPEC as never);
 
-      const secretRefs = yaml.match(
-        /secretKeyRef:\s*\n\s+name: hyperdx-api-key\s*\n\s+key: HYPERDX_API_KEY\s*\n\s+optional: false/g
+      const secretRefs = findSecretKeyRefs(loadAll(yaml)).filter(
+        (ref) => ref.name === 'hyperdx-api-key' && ref.key === 'HYPERDX_API_KEY'
       );
-      expect(secretRefs?.length).toBe(2);
+      expect(secretRefs).toHaveLength(2);
+      expect(secretRefs.every((ref) => ref.optional === false)).toBe(true);
       expect(yaml).not.toContain('optional: true');
     });
 
@@ -409,15 +427,21 @@ describe('clickstackK8sTelemetry factory modes', () => {
 
       // REQUIRED secretKeyRef preserved as schema CEL with the key default —
       // and still optional: false (a missing Secret fails the pod loudly).
-      const secretRefs = yaml.match(
-        /secretKeyRef:\s*\n\s+name: \$\{schema\.spec\.apiKeySecret\.name\}\s*\n\s+key: "\$\{has\(schema\.spec\.apiKeySecret\) && has\(schema\.spec\.apiKeySecret\.key\) \? schema\.spec\.apiKeySecret\.key : \\"HYPERDX_API_KEY\\"\}"\s*\n\s+optional: false/g
+      const secretRefs = findSecretKeyRefs(loadAll(yaml)).filter(
+        (ref) => ref.name === '${schema.spec.apiKeySecret.name}'
       );
-      expect(secretRefs?.length).toBe(2);
+      expect(secretRefs).toHaveLength(2);
+      expect(secretRefs.every((ref) => ref.optional === false)).toBe(true);
+      expect(secretRefs.map((ref) => ref.key)).toEqual([
+        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
+        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
+      ]);
 
       // Status contract: ready/phase over BOTH owned HelmReleases.
       expect(yaml).toContain(
-        'ready: ${clickstackTelemetryDaemonset.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && clickstackTelemetryDeployment.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+        "ready: '${(has(clickstackTelemetryDaemonset.status.observedGeneration)"
       );
+      expect(yaml).toContain('has(clickstackTelemetryDeployment.status.observedGeneration)');
       expect(yaml).toContain('phase:');
 
       // KRO mode emits the env expansion as CEL concat (a literal ${env:…}

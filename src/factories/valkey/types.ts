@@ -220,12 +220,8 @@ export interface ValkeyStatus {
  * Observed status of a Valkey operator deployment.
  */
 export interface ValkeyBootstrapStatus {
-  /**
-   * Overall deployment phase (derived from HelmRelease Ready condition).
-   * Note: cannot distinguish Failed from Installing due to CEL limitation (#48).
-   * Use the `failed` field for failure detection.
-   */
-  phase: 'Ready' | 'Installing';
+  /** Overall deployment phase (derived from HelmRelease Ready condition). */
+  phase: 'Ready' | 'Installing' | 'Failed';
   /** Whether the operator is ready to manage Valkey clusters. */
   ready: boolean;
   /** Whether the HelmRelease Ready condition is explicitly False. */
@@ -236,7 +232,7 @@ export interface ValkeyBootstrapStatus {
 
 /** ArkType schema for ValkeyBootstrapStatus. */
 export const ValkeyBootstrapStatusSchema = type({
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   ready: 'boolean',
   failed: 'boolean',
   'version?': 'string',

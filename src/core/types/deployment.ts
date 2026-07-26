@@ -11,11 +11,17 @@ import {
 } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { ASTAnalysisResult } from '../expressions/composition/composition-analyzer-types.js';
-import type { HttpTimeoutConfig } from '../kubernetes/index.js';
+import type { DurableKubeConfigOptions, HttpTimeoutConfig } from '../kubernetes/index.js';
+import type { ArtifactApplyPolicy } from '../planning/artifacts.js';
+import type { CapturedCompositionRuntime } from '../planning/capture.js';
+import type { StaticYamlMaterializationOptions } from '../planning/materialization.js';
+import type { CompositionInspection, DesiredStatePlan, PlanOptions } from '../planning/types.js';
 import type { KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { InferType, KroCompatibleType, SchemaProxy } from './schema.js';
+
+export type { StaticYamlMaterializationOptions } from '../planning/materialization.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status.
@@ -171,6 +177,11 @@ export interface AutoFixConfig {
 export interface BaseDeploymentConfig {
   /** Kubernetes namespace for deployment */
   namespace?: string;
+  /**
+   * Cancels the current in-process operation. Standalone facades and hosted runtimes such as
+   * Alchemy use this to propagate interruption into Kubernetes waits and deployment closures.
+   */
+  abortSignal?: AbortSignal;
   /** Timeout in milliseconds for readiness waits */
   timeout?: number;
   /** Wait for resources to become ready after deployment */
@@ -445,6 +456,8 @@ export interface ResourceGraphResource {
 export interface DeploymentResourceGraph {
   name: string;
   resources: ResourceGraphResource[];
+  /** Required live resources read before deployment but never applied or rolled back. */
+  externalReferences?: ResourceGraphResource[];
   dependencyGraph: DependencyGraph;
 }
 
@@ -467,7 +480,11 @@ export interface TypedResourceGraph<
 
   // Utility methods
   toYaml(): string;
-  toYaml(spec: TSpec): string;
+  toYaml(spec: TSpec, options?: StaticYamlMaterializationOptions): string;
+  /** Experimental semantic inspection, present on graphs created by TypeKro. */
+  inspect?(): CompositionInspection;
+  /** Experimental semantic planning, present on graphs created by TypeKro. */
+  plan?(spec: TSpec, options?: PlanOptions): DesiredStatePlan;
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
 }
 
@@ -564,6 +581,8 @@ export interface KroPrerequisiteContext {
   readonly namespace: string;
   /** Timeout budget in milliseconds for prerequisite deployment operations. */
   readonly timeout: number;
+  /** Signal for cancelling this prerequisite hook with its parent deployment operation. */
+  readonly abortSignal?: AbortSignal;
   /** Apply a prerequisite resource through TypeKro's deployment engine. */
   deployResource(
     resource: PrerequisiteResource,
@@ -610,6 +629,23 @@ export interface KroPrerequisiteOptions {
  * `graph.factory('kro', options)`.
  */
 export interface PublicFactoryOptions extends BaseDeploymentConfig {
+  /**
+   * Planning inputs bound to this factory facade.
+   *
+   * Top-level `aspects` remains a compatibility alias and is normalized into
+   * this namespace by composition factories.
+   */
+  plan?: PlanOptions;
+
+  /**
+   * API-server write policy for artifacts TypeKro applies itself.
+   *
+   * In direct mode this applies to application resources. In KRO mode it
+   * applies only to outer prerequisites/RGD/instance artifacts; KRO retains
+   * ownership of graph-child server-side apply behavior.
+   */
+  applyPolicy?: ArtifactApplyPolicy;
+
   /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
@@ -636,6 +672,13 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
 
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
+
+  /**
+   * Controls how Alchemy and other durable hosts reconnect without persisting static kubeconfig
+   * credential bytes. Default/file sources are re-read in the operation host. Static credentials
+   * require JSON-pointer environment bindings.
+   */
+  alchemyKubeConfig?: DurableKubeConfigOptions;
 
   /** Deployment closures for direct-mode factories */
   closures?: Record<string, DeploymentClosure>;
@@ -748,6 +791,8 @@ export interface InternalFactoryOptions {
   compositionDefinition?: unknown;
   /** Original composition options (internal use) */
   compositionOptions?: unknown;
+  /** Semantic capture shared by planning and target compilers (internal use). */
+  semanticCapture?: CapturedCompositionRuntime<KroCompatibleType>;
 
   /** Factory type for expression analysis and conversion (internal use) */
   factoryType?: 'direct' | 'kro';
@@ -771,15 +816,40 @@ export interface InternalFactoryOptions {
  */
 export interface FactoryOptions extends PublicFactoryOptions, InternalFactoryOptions {}
 
+/** Cancellation shared by standalone factory operations. */
+export interface ResourceFactoryOperationOptions {
+  /** Cancel this standalone operation. */
+  abortSignal?: AbortSignal;
+}
+
 /** Options exposed to library consumers for per-deploy behavior. */
-export interface ResourceFactoryDeployOptions {
+export interface ResourceFactoryDeployOptions extends ResourceFactoryOperationOptions {
   targetScopes?: string[];
 }
+
+/** Options exposed to library consumers for deleting one factory instance. */
+export interface ResourceFactoryDeleteOptions extends ResourceFactoryOperationOptions {
+  /** Bound this deletion independently from the factory's deployment timeout. */
+  timeout?: number;
+  scopes?: string[];
+  includeUnscopedResources?: boolean;
+}
+
+/** Options exposed to library consumers for cluster-backed factory reads. */
+export interface ResourceFactoryReadOptions extends ResourceFactoryOperationOptions {}
 
 /** @internal Options used by singleton ownership plumbing during recursive deploys. */
 export interface InternalResourceFactoryDeployOptions extends ResourceFactoryDeployOptions {
   instanceNameOverride?: string;
   singletonSpecFingerprint?: string;
+  /** Join an already-running standalone Effect operation instead of starting a nested runtime. */
+  operationSignal?: AbortSignal;
+}
+
+/** @internal Options used when a read joins an already-running Effect operation. */
+export interface InternalResourceFactoryReadOptions extends ResourceFactoryReadOptions {
+  /** Join an already-running standalone Effect operation instead of starting a nested runtime. */
+  operationSignal?: AbortSignal;
 }
 
 // Type mapping for factory selection
@@ -802,12 +872,12 @@ export interface ResourceFactory<
   deploy(spec: TSpec, opts?: ResourceFactoryDeployOptions): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management
-  getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
+  getInstances(opts?: ResourceFactoryReadOptions): Promise<Enhanced<TSpec, TStatus>[]>;
   deleteInstance(
     name: string,
-    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
-  ): Promise<void>;
-  getStatus(): Promise<FactoryStatus>;
+    opts?: ResourceFactoryDeleteOptions
+  ): Promise<ResourceDeletionResult>;
+  getStatus(opts?: ResourceFactoryReadOptions): Promise<FactoryStatus>;
   dispose(): Promise<void>;
 
   // Metadata
@@ -824,9 +894,9 @@ export interface DirectResourceFactory<
   mode: 'direct';
 
   // Direct-specific features
-  rollback(): Promise<RollbackResult>;
-  toDryRun(spec: TSpec): Promise<DeploymentResult>;
-  toYaml(spec: TSpec): string;
+  rollback(opts?: ResourceFactoryOperationOptions): Promise<RollbackResult>;
+  toDryRun(spec: TSpec, opts?: ResourceFactoryOperationOptions): Promise<DeploymentResult>;
+  toYaml(spec: TSpec, options?: StaticYamlMaterializationOptions): string;
   /** Build the resolved resource graph for an instance spec. */
   createResourceGraphForInstance(
     spec: TSpec,
@@ -853,9 +923,9 @@ export interface KroResourceFactory<
 
   // Kro-specific features
   readonly rgdName: string;
-  getRGDStatus(): Promise<RGDStatus>;
+  getRGDStatus(opts?: ResourceFactoryReadOptions): Promise<RGDStatus>;
   toYaml(): string; // Generate RGD YAML (no args needed)
-  toYaml(spec: TSpec): string; // Generate CRD instance YAML
+  toYaml(spec: TSpec, options?: StaticYamlMaterializationOptions): string; // Generate CRD instance YAML
 
   /**
    * Emit this factory's deployment as declarative alchemy v2 resources (the RGD + the CR
@@ -904,9 +974,86 @@ export interface ReadinessConfig {
 export interface RollbackResult {
   deploymentId: string;
   rolledBackResources: string[];
+  /** Exact identities of resources confirmed gone when available. */
+  deletedResources?: DeployedResource[];
+  /** Resources deliberately preserved by scope/lifecycle policy. */
+  retainedResources?: DeployedResource[];
   duration: number;
   status: 'success' | 'partial' | 'failed';
   errors: DeploymentError[];
+}
+
+/** Serializable Kubernetes identity reported by lifecycle operations. */
+export interface DeletionResourceIdentity {
+  apiVersion: string;
+  kind: string;
+  name: string;
+  namespace?: string;
+  uid?: string;
+  deletionTimestamp?: string;
+  finalizers?: string[];
+  owners?: Array<{
+    apiVersion: string;
+    kind: string;
+    name: string;
+    uid?: string;
+    controller?: boolean;
+  }>;
+}
+
+/** A resource intentionally retained by a documented lifecycle policy. */
+export interface DeletionRetention {
+  resource: DeletionResourceIdentity;
+  policy:
+    | 'shared-instance'
+    | 'scope-filter'
+    | 'adopted-resource'
+    | 'occupied-namespace'
+    | 'generated-crd'
+    | 'safety-proof-unavailable';
+  reason: string;
+}
+
+/** One concrete reason a deletion operation cannot yet report completion. */
+export interface DeletionBlocker {
+  code:
+    | 'RESOURCE_REMAINS'
+    | 'FINALIZERS_REMAIN'
+    | 'DISCOVERY_FAILED'
+    | 'OWNERSHIP_UNPROVEN'
+    | 'NAMESPACE_OCCUPIED'
+    | 'CLEANUP_ERROR';
+  message: string;
+  resource?: DeletionResourceIdentity;
+  retryable: boolean;
+  retryGuidance: string;
+}
+
+/**
+ * Complete lifecycle result returned by factory instance deletion.
+ *
+ * `complete` means the requested instance graph is gone or every surviving object is explicitly
+ * listed in `retained` under a documented policy. `progressing` means Kubernetes has accepted
+ * deletion but finalizers or dependent controllers are still draining. `blocked` means TypeKro
+ * cannot currently prove safe completion and names every blocker it could observe.
+ */
+export interface ResourceDeletionResult {
+  status: 'complete' | 'progressing' | 'blocked';
+  mode: 'direct' | 'kro';
+  factoryName: string;
+  instanceName: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  deleted: DeletionResourceIdentity[];
+  retained: DeletionRetention[];
+  remaining: DeletionResourceIdentity[];
+  blockers: DeletionBlocker[];
+  retry: {
+    safe: boolean;
+    afterMs?: number;
+    guidance: string;
+  };
 }
 
 export interface DeploymentOperationStatus {

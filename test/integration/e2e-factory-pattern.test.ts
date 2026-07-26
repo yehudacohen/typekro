@@ -1,14 +1,18 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, secret, simple, toResourceGraph } from '../../src/index';
 import {
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from './shared-kubeconfig';
 
 // Test configuration
@@ -26,7 +30,7 @@ const generateTestNamespace = (testName: string): string => {
 };
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
@@ -34,6 +38,8 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
+  let kroFactory: any;
+  let namespaceLease: TestNamespaceLease | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -53,22 +59,23 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
 
   afterAll(async () => {
     if (!clusterAvailable || !kc) return;
-
-    // Clean up the RGD we created
-    try {
-      const customApi = createCustomObjectsApiClient(kc);
-      await customApi.deleteClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
-        name: 'webapp-factory-test',
-      });
-      console.log('🗑️ Deleted RGD: webapp-factory-test');
-    } catch (error: unknown) {
-      const err = error as { statusCode?: number; body?: { reason?: string } };
-      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-        console.warn('⚠️ Failed to delete RGD webapp-factory-test:', error);
-      }
+    const cleanupErrors: unknown[] = [];
+    if (kroFactory) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        kroFactory,
+        'test-webapp-factory',
+        [],
+        kc,
+        60_000
+      ).catch((error) => cleanupErrors.push(error));
+    }
+    if (namespaceLease) {
+      await deleteTestNamespaceAndWait(namespaceLease, kc).catch((error) =>
+        cleanupErrors.push(error)
+      );
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Factory-pattern integration cleanup failed');
     }
   });
 
@@ -78,19 +85,24 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
     testFn: (namespace: string) => Promise<T>
   ): Promise<T> => {
     const namespace = generateTestNamespace(testName);
+    namespaceLease = await createTestNamespace(namespace, kc);
 
     try {
-      // Create namespace
-      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
-      console.log(`📦 Created test namespace: ${namespace}`);
-
       // Run test
       const result = await testFn(namespace);
 
       return result;
     } finally {
-      // Cleanup namespace and wait for full deletion
-      await deleteNamespaceAndWait(namespace, kc);
+      if (kroFactory) {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          'test-webapp-factory',
+          [],
+          kc,
+          60_000
+        );
+      }
+      await deleteTestNamespaceAndWait(namespaceLease, kc);
     }
   };
 
@@ -104,6 +116,9 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       const WebAppSpecSchema = type({
         name: 'string',
         environment: '"development" | "production" | "staging"',
+        apiKey: 'string',
+        jwtSecret: 'string',
+        databasePassword: 'string',
       });
 
       const WebAppStatusSchema = type({
@@ -120,7 +135,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
           spec: WebAppSpecSchema,
           status: WebAppStatusSchema,
         },
-        (_schema) => ({
+        (schema) => ({
           appConfig: simple.ConfigMap({
             name: 'webapp-factory-config',
             data: {
@@ -135,10 +150,10 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
             Object.assign(
               {
                 metadata: { name: 'webapp-factory-secrets' },
-                data: {
-                  API_KEY: Buffer.from('super-secret-api-key').toString('base64'),
-                  JWT_SECRET: Buffer.from('jwt-signing-secret').toString('base64'),
-                  DATABASE_PASSWORD: Buffer.from('secure-db-password').toString('base64'),
+                stringData: {
+                  API_KEY: schema.spec.apiKey,
+                  JWT_SECRET: schema.spec.jwtSecret,
+                  DATABASE_PASSWORD: schema.spec.databasePassword,
                 },
               },
               { id: 'webappSecrets' }
@@ -184,7 +199,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       // 2. Create Kro factory with proper kubeConfig
       console.log('📝 STEP 2: Creating Kro factory...');
 
-      const kroFactory = await resourceGraph.factory('kro', {
+      kroFactory = await resourceGraph.factory('kro', {
         namespace: testNamespace,
         waitForReady: true,
         kubeConfig: kc, // Pass the configured kubeConfig with TLS settings
@@ -196,6 +211,9 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       const deploymentResult = await kroFactory.deploy({
         name: 'test-webapp-factory',
         environment: 'development' as const,
+        apiKey: 'super-secret-api-key',
+        jwtSecret: 'jwt-signing-secret',
+        databasePassword: 'secure-db-password',
       });
 
       // 4. Verify type safety and field separation
@@ -296,15 +314,6 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       console.log('✅ Dynamic fields are resolved by Kro');
       console.log('✅ Instance management methods work correctly');
       console.log('✅ All underlying Kubernetes resources were created');
-
-      // Cleanup using factory-based resource destruction
-      console.log('🧹 Cleaning up deployed resources...');
-      try {
-        await kroFactory.deleteInstance('test-webapp-factory');
-        console.log('✅ Factory cleanup completed');
-      } catch (error) {
-        console.warn('⚠️ Factory cleanup failed:', error);
-      }
     });
-  }, 180000);
+  }, 900000);
 });

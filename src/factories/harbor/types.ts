@@ -213,20 +213,22 @@ export const HarborInstallationStatusSchema = type({
   chartVersion: 'string',
   harborVersion: 'string',
   profile: '"local-development" | "production"',
-  /** Flux HelmRelease generation whose integration status is projected below. */
-  observedGeneration: 'number.integer >= 0',
   tlsEnabled: 'boolean',
   storageReady: 'boolean',
   databaseReady: 'boolean',
   cacheReady: 'boolean',
   networkPolicyReady: 'boolean',
-  conditions: type({
-    type: 'string',
-    status: 'string',
-    'reason?': 'string',
-    'message?': 'string',
-    'observedGeneration?': 'number.integer >= 0',
-  }).array(),
+  /** Flux-owned status is nested because KRO owns the root status envelope. */
+  release: {
+    observedGeneration: 'number.integer >= 0',
+    conditions: type({
+      type: 'string',
+      status: 'string',
+      'reason?': 'string',
+      'message?': 'string',
+      'observedGeneration?': 'number.integer >= 0',
+    }).array(),
+  },
 });
 export type HarborInstallationStatus = typeof HarborInstallationStatusSchema.infer;
 

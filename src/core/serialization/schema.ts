@@ -19,6 +19,7 @@ import type {
   SchemaDefinition,
   TernaryConditional,
 } from '../types/serialization.js';
+import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
 import { serializeStatusMappingsToCel } from './cel-references.js';
@@ -1235,8 +1236,7 @@ export function arktypeToKroSchema(
   //   undefined for optional fields, triggering ?? and resolving imported
   //   constants from the closure. Compares resolved resources with the
   //   proxy-run resources (markers) to extract field → default mappings.
-  const statusMeta = statusMappings as Record<string, unknown> | undefined;
-  const compositionFn = statusMeta?.__originalCompositionFn;
+  const compositionFn = getCompositionAnalysisMetadata(statusMappings)?.originalCompositionFn;
 
   // Phase 1a: regex extraction for the outer composition's own defaults.
   if (typeof compositionFn === 'function') {
@@ -1355,7 +1355,7 @@ export function arktypeToKroSchema(
   );
 
   // Filter internal fields (prefixed with __) before classification.
-  // These are TypeKro metadata (e.g., __nestedStatusCel, __originalCompositionFn)
+  // These are TypeKro metadata (for example, __nestedStatusCel).
   // that should never appear in the KRO schema.
   const userStatusMappings: Record<string, unknown> = {};
   if (statusMappings) {

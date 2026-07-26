@@ -8,6 +8,7 @@ import {
 } from '../../src/core/deployment/kro-namespace-teardown.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
  * DETERMINISTIC, OFFLINE proof of the PR #113 "empty-record" P1: the v7 tightened pre-hoist
@@ -37,7 +38,11 @@ function makeNoNsFactory(name: string) {
     { name, kind: 'NoNsGate', spec: Spec, status: Status },
     (_spec) => ({ ready: true })
   );
-  return composition.factory('kro', { namespace: 'app-ns', timeout: 250 });
+  return composition.factory('kro', {
+    namespace: 'app-ns',
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 /** A self-owning composition (creates + owns a Namespace named after spec.namespace). */
@@ -49,7 +54,11 @@ function makeNsFactory(name: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 describe('readHoistedNamespacesRecord distinguishes present / missing / malformed', () => {

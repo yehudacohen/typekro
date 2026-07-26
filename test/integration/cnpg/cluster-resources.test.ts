@@ -1,32 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists, deleteNamespaceAndWait } from '../shared-kubeconfig.js';
+import { describe, expect, it } from 'bun:test';
 import { cluster } from '../../../src/factories/cnpg/resources/cluster.js';
 import { backup } from '../../../src/factories/cnpg/resources/backup.js';
 import { scheduledBackup } from '../../../src/factories/cnpg/resources/scheduled-backup.js';
 import { pooler } from '../../../src/factories/cnpg/resources/pooler.js';
 
 describe('CNPG Cluster Resource Integration Tests', () => {
-  let kubeConfig: any;
   const testNs = 'cnpg-resource-test';
-
-  beforeAll(async () => {
-    console.log('Setting up CNPG cluster resource tests...');
-
-    try {
-      kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      console.log('✅ Cluster connection established');
-      await ensureNamespaceExists(testNs, kubeConfig);
-    } catch (error) {
-      console.error('❌ Failed to connect to cluster:', error);
-      throw error;
-    }
-  });
-
-  afterAll(async () => {
-    console.log('Cleaning up CNPG cluster resource tests...');
-    await deleteNamespaceAndWait(testNs, kubeConfig).catch(() => {});
-  });
 
   // ── Cluster Factory ─────────────────────────────────────────────────
 
@@ -280,9 +259,7 @@ describe('CNPG Cluster Resource Integration Tests', () => {
       const status = pool.readinessEvaluator?.({
         status: {
           instances: 1,
-          conditions: [
-            { type: 'Ready', status: 'True', message: 'Pooler is ready' },
-          ],
+          conditions: [{ type: 'Ready', status: 'True', message: 'Pooler is ready' }],
         },
       });
 

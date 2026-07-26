@@ -6,7 +6,10 @@
  * and focuses on testing HelmRepository + HelmRelease deployment via Direct Factory.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/index.js';
@@ -15,17 +18,22 @@ import { namespace } from '../../src/factories/kubernetes/index.js';
 import {
   createAppsV1ApiClient,
   createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   ensureFluxInstalled,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  runWithExpectedTestNamespace,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
 } from './shared-kubeconfig.js';
 
 // Test configuration
 const TEST_TIMEOUT = 660000; // 11 minutes — must exceed factory timeout (10 min) to see actual errors
 
 // Check if cluster is available
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 // Generate unique test namespace per run
@@ -36,6 +44,8 @@ describeOrSkip('End-to-End Helm Integration', () => {
   let kc: k8s.KubeConfig;
   let appsApi: k8s.AppsV1Api;
   let customApi: k8s.CustomObjectsApi;
+  let testNamespaceLease: TestNamespaceLease | undefined;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -54,26 +64,29 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
   afterAll(async () => {
     if (!clusterAvailable || !kc) return;
+    const cleanupErrors: unknown[] = [];
 
-    // Clean up test namespace
-    try {
-      await deleteNamespaceAndWait(testNamespace, kc);
-    } catch {
-      // Ignore cleanup errors
+    await cleanupRegistry.cleanup(kc, 120_000).catch((error) => cleanupErrors.push(error));
+
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'source.toolkit.fluxcd.io/v1',
+        kind: 'HelmRepository',
+        metadata: { name: `bitnami-${testRunId}`, namespace: 'flux-system' },
+      },
+      kc,
+      60_000
+    ).catch((error) => cleanupErrors.push(error));
+
+    if (testNamespaceLease) {
+      await deleteTestNamespaceAndWait(testNamespaceLease, kc).catch((error) =>
+        cleanupErrors.push(error)
+      );
+      testNamespaceLease = undefined;
     }
 
-    // Clean up the bitnami HelmRepository we created in flux-system
-    try {
-      await customApi.deleteNamespacedCustomObject({
-        group: 'source.toolkit.fluxcd.io',
-        version: 'v1',
-        namespace: 'flux-system',
-        plural: 'helmrepositories',
-        name: `bitnami-${testRunId}`,
-      });
-      console.log(`Deleted HelmRepository bitnami-${testRunId}`);
-    } catch {
-      // May not exist
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Helm integration cleanup failed');
     }
   });
 
@@ -214,13 +227,22 @@ describeOrSkip('End-to-End Helm Integration', () => {
         kubeConfig: kc,
         timeout: 180000, // 3 minutes — OCI chart pull + Flux reconciliation + nginx pod startup
       });
+      cleanupRegistry.track(factory, 'helm-platform-instance');
 
-      const platformInstance = await factory.deploy({
-        name: 'helm-platform-instance',
-        environment: 'development',
-        nginxReplicas: 1,
-        enableRedis: false,
-      });
+      const platformInstance = await runWithExpectedTestNamespace(
+        testNamespace,
+        kc,
+        (lease) => {
+          testNamespaceLease = lease;
+        },
+        () =>
+          factory.deploy({
+            name: 'helm-platform-instance',
+            environment: 'development',
+            nginxReplicas: 1,
+            enableRedis: false,
+          })
+      );
 
       expect(platformInstance).toBeDefined();
       expect(platformInstance.spec.environment).toBe('development');
@@ -256,19 +278,11 @@ describeOrSkip('End-to-End Helm Integration', () => {
       // Step 5: Wait for Flux to reconcile the HelmRelease and nginx to start
       console.log('Step 5: Waiting for nginx deployment to become ready...');
       try {
-        await waitForDeployment(`${nginxReleaseName}-nginx`, testNamespace, 180000);
+        await waitForDeployment(nginxReleaseName, testNamespace, 180000);
         console.log('NGINX deployment is ready');
-      } catch (_error) {
-        // Flux may name the deployment differently — try alternate names
-        try {
-          await waitForDeployment(nginxReleaseName, testNamespace, 30000);
-          console.log('NGINX deployment is ready (alternate name)');
-        } catch {
-          console.warn(
-            'NGINX deployment not ready within timeout (Flux reconciliation may be slow)'
-          );
-          // Don't fail the test — the HelmRelease creation itself is the main assertion
-        }
+      } catch {
+        console.warn('NGINX deployment not ready within timeout (Flux reconciliation may be slow)');
+        // Don't fail the test — the HelmRelease creation itself is the main assertion
       }
 
       // Step 6: Verify YAML generation
@@ -286,7 +300,8 @@ describeOrSkip('End-to-End Helm Integration', () => {
       expect(rgdYaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
       expect(rgdYaml).toContain('name: helm-platform');
-      expect(rgdYaml).toContain('kind: Namespace');
+      // Namespaces are TypeKro-managed siblings, never KRO ApplySet members.
+      expect(rgdYaml).not.toContain('kind: Namespace');
       expect(rgdYaml).toContain('kind: HelmRepository');
       expect(rgdYaml).toContain(bitnamiRepoName);
       expect(rgdYaml).toContain('apiVersion: helm.toolkit.fluxcd.io/v2');
@@ -306,11 +321,17 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
       // Cleanup
       console.log('Cleaning up...');
-      try {
-        await factory.deleteInstance('helm-platform-instance');
-      } catch {
-        // Best effort
+      if (!testNamespaceLease) {
+        throw new Error(`Missing retained namespace lease for ${testNamespace}`);
       }
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        'helm-platform-instance',
+        [testNamespaceLease],
+        kc,
+        60_000
+      );
+      testNamespaceLease = undefined;
 
       console.log(`Helm integration test completed in ${Date.now() - startTime}ms`);
     },

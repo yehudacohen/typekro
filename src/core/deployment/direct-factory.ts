@@ -26,7 +26,6 @@ import {
   TypeKroError,
   ValidationError,
 } from '../errors.js';
-import { extractResourceReferencesFromExpression } from '../expressions/analysis/scope-resolver.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleCoreV1Api } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -34,12 +33,36 @@ import {
   copyResourceMetadata,
   getIncludeWhen,
   getMetadataField,
+  getReadinessEvaluator,
   getResourceId,
   setResourceId,
 } from '../metadata/index.js';
-import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
-import { getSingletonResourceId } from '../singleton/singleton.js';
 import type {
+  ArtifactApplyPolicy,
+  DirectKubernetesArtifactPlan,
+  DirectKubernetesArtifactResource,
+} from '../planning/artifacts.js';
+import {
+  assertAdapterCapabilitiesSupported,
+  collectArtifactOutputUses,
+  collectPlanValueSensitiveBindings,
+  compileDirectArtifactPlan,
+  createDirectArtifactExecutionMaterialization,
+  directArtifactPlanToResourceGraph,
+  encodeDirectArtifactExecutionRecord,
+  materializeDirectArtifactManifest,
+  planValueContainsSensitiveValue,
+  planValueSensitiveBindingNames,
+  resolveStaticYamlSensitiveBindings,
+  type StaticYamlMaterializationOptions,
+} from '../planning/index.js';
+import type { CapabilityRequirement, PlanValue } from '../planning/types.js';
+import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
+import { resolvePortableReadinessStrategy } from '../readiness/portable-strategies.js';
+import { runStandaloneOperation } from '../runtime/standalone-operation.js';
+import { getSingletonResourceId, singletonInstanceTypeMeta } from '../singleton/singleton.js';
+import type {
+  DeployedResource,
   DeploymentClosure,
   DeploymentError,
   DeploymentResourceGraph,
@@ -48,18 +71,39 @@ import type {
   FactoryOptions,
   FactoryStatus,
   InternalResourceFactoryDeployOptions,
+  InternalResourceFactoryReadOptions,
+  ResourceDeletionResult,
+  ResourceFactoryDeleteOptions,
+  ResourceFactoryOperationOptions,
   RollbackResult,
   SingletonDefinitionRecord,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
+import {
+  createDeletionResultState,
+  deletionTarget,
+  finishDeletionResult,
+} from './deletion-result.js';
 import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
+
+interface FactoryHealthDetails {
+  health: 'healthy' | 'degraded' | 'failed';
+  resourceCounts: {
+    healthy: number;
+    degraded: number;
+    failed: number;
+    total: number;
+  };
+  errors: DeploymentError[];
+}
+
 import {
   extractSerializableKubeConfigOptions,
   generateInstanceName,
@@ -72,6 +116,48 @@ import {
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
 import { DirectDeploymentStrategy } from './strategies/index.js';
+
+interface DirectArtifactExecution {
+  readonly graph: DeploymentResourceGraph;
+  readonly artifacts?: DirectKubernetesArtifactPlan;
+}
+
+function deployedResourceDeletionIdentity(
+  resource: import('../types/deployment.js').DeployedResource
+) {
+  const clusterScoped = getMetadataField(resource.manifest, 'scope') === 'cluster';
+  return deletionTarget(
+    resource.manifest.apiVersion,
+    resource.kind,
+    resource.name,
+    clusterScoped ? undefined : resource.namespace
+  );
+}
+
+function directArtifactPlanValues(
+  artifact: DirectKubernetesArtifactResource
+): readonly PlanValue[] {
+  const values: PlanValue[] = [
+    ...artifact.readiness.activation,
+    ...artifact.readiness.readyWhen,
+    ...(artifact.iteration ?? []).map((dimension) => dimension.collection),
+    ...(artifact.templateOverrides ?? []).map((override) => override.value),
+  ];
+  if (artifact.identity) {
+    values.push(artifact.identity.name);
+    if (artifact.identity.namespace) values.push(artifact.identity.namespace);
+  }
+  if (artifact.desired) values.push(artifact.desired);
+  if (artifact.lifecycle.instancing.kind === 'per-scope') {
+    values.push(artifact.lifecycle.instancing.key);
+  }
+  if (artifact.lifecycle.unusedEvidence) values.push(artifact.lifecycle.unusedEvidence.inputs);
+  if (artifact.readiness.strategy?.kind === 'registered') {
+    const configuration = artifact.readiness.strategy.configuration;
+    if (configuration) values.push(configuration);
+  }
+  return values;
+}
 
 /**
  * DirectResourceFactory implementation
@@ -97,6 +183,7 @@ export class DirectResourceFactoryImpl<
   private readonly factoryOptions: FactoryOptions;
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly singletonOwnerStatuses = new Map<string, Record<string, unknown>>();
+  private readonly singletonOwnerReferenceSeeds = new Map<string, DeployedResource>();
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private resolvedResourceKeysForHydration: Record<string, KubernetesResource> | undefined;
   private resolvedClosuresForDeployment: Record<string, DeploymentClosure> | undefined;
@@ -188,11 +275,22 @@ export class DirectResourceFactoryImpl<
    */
   async deploy(
     spec: TSpec,
-    opts?: {
-      targetScopes?: string[];
-      instanceNameOverride?: string;
-      singletonSpecFingerprint?: string;
+    opts?: InternalResourceFactoryDeployOptions
+  ): Promise<Enhanced<TSpec, TStatus>> {
+    if (opts?.operationSignal) {
+      return this.deployWithinOperation(spec, opts, opts.operationSignal);
     }
+    return runStandaloneOperation(
+      (abortSignal) =>
+        this.deployWithinOperation(spec, { ...opts, operationSignal: abortSignal }, abortSignal),
+      { abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal] }
+    );
+  }
+
+  private async deployWithinOperation(
+    spec: TSpec,
+    opts: InternalResourceFactoryDeployOptions,
+    abortSignal: AbortSignal
   ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
@@ -211,9 +309,9 @@ export class DirectResourceFactoryImpl<
       strategyType: strategy.constructor.name,
     });
 
-    await this.ensureSingletonOwners(spec);
+    await this.ensureSingletonOwners(spec, abortSignal);
 
-    const instance = await strategy.deploy(spec, opts);
+    const instance = await strategy.deploy(spec, { ...opts, abortSignal });
 
     // Check if deployment failed and throw for user-facing error handling
     if (instance.metadata?.annotations?.['typekro.io/deployment-status'] === 'failed') {
@@ -254,7 +352,11 @@ export class DirectResourceFactoryImpl<
    * fully typed Enhanced instances from live tagged resources is intentionally
    * not attempted here.
    */
-  async getInstances(): Promise<Enhanced<TSpec, TStatus>[]> {
+  async getInstances(
+    opts?: InternalResourceFactoryReadOptions
+  ): Promise<Enhanced<TSpec, TStatus>[]> {
+    const abortSignal = opts?.operationSignal ?? opts?.abortSignal;
+    abortSignal?.throwIfAborted();
     return Array.from(this.deployedInstances.values());
   }
 
@@ -286,29 +388,77 @@ export class DirectResourceFactoryImpl<
    */
   async deleteInstance(
     name: string,
-    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
-  ): Promise<void> {
+    opts?: ResourceFactoryDeleteOptions
+  ): Promise<ResourceDeletionResult> {
+    return runStandaloneOperation(
+      (abortSignal) => this.deleteInstanceWithinOperation(name, opts, abortSignal),
+      { abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal] }
+    );
+  }
+
+  private async deleteInstanceWithinOperation(
+    name: string,
+    opts: ResourceFactoryDeleteOptions | undefined,
+    abortSignal: AbortSignal
+  ): Promise<ResourceDeletionResult> {
+    const deletion = createDeletionResultState('direct', this.name, name);
     try {
-      const rollbackResult = await this.rollbackInstanceWithNamespaceCompletion(name, opts);
+      const rollbackResult = await this.rollbackInstanceWithNamespaceCompletion(
+        name,
+        opts,
+        abortSignal
+      );
+
+      deletion.deleted.push(
+        ...(rollbackResult.deletedResources ?? []).map(deployedResourceDeletionIdentity)
+      );
+      for (const resource of rollbackResult.retainedResources ?? []) {
+        const identity = deployedResourceDeletionIdentity(resource);
+        deletion.retained.push({
+          resource: identity,
+          policy: 'scope-filter',
+          reason:
+            'The resource scope is outside the requested deletion scope and was retained intentionally.',
+        });
+      }
 
       if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
-        const errorSummary = rollbackResult.errors
-          .map((error) => `${error.resourceId}: ${ensureError(error.error).message}`)
-          .join('; ');
-        throw new Error(
-          `Cleanup incomplete for instance ${name}: rollback ${rollbackResult.status}${errorSummary ? ` (${errorSummary})` : ''}`
-        );
+        for (const error of rollbackResult.errors) {
+          deletion.blockers.push({
+            code: 'CLEANUP_ERROR',
+            message: `${error.resourceId}: ${ensureError(error.error).message}`,
+            retryable: true,
+            retryGuidance:
+              'Inspect the referenced resource and retry deletion after its controller or finalizers can make progress.',
+          });
+        }
+        return finishDeletionResult(deletion, 'blocked', {
+          safe: true,
+          guidance: 'Retry after resolving the listed resource cleanup errors.',
+        });
       }
 
       // Remove from tracking
       this.deployedInstances.delete(name);
+      return finishDeletionResult(deletion, 'complete', {
+        safe: true,
+        guidance:
+          deletion.retained.length > 0
+            ? 'The instance-private graph is gone. Resources outside the requested scopes were retained explicitly.'
+            : 'The requested direct-mode instance graph is gone.',
+      });
     } catch (error: unknown) {
-      // INSTANCE_NOT_FOUND bubbles up — the caller asked us to delete
-      // an instance that has neither in-memory state nor a persisted
-      // record. That's a legitimate error (wrong name, already cleaned
-      // up) and the caller needs to see it.
+      if (abortSignal.aborted) {
+        throw abortSignal.reason ?? error;
+      }
+      // Deletion is idempotent: no in-memory state and no tagged live
+      // resources is positive evidence that the requested graph is gone.
       if (error instanceof TypeKroError && error.code === 'INSTANCE_NOT_FOUND') {
-        throw error;
+        return finishDeletionResult(deletion, 'complete', {
+          safe: true,
+          guidance:
+            'No tagged or in-memory resources remain for this instance; deletion is already complete.',
+        });
       }
       // Soft-swallow "Cannot rollback" errors from the engine —
       // they indicate the engine's in-memory deployment state has
@@ -317,13 +467,22 @@ export class DirectResourceFactoryImpl<
       const errorMessage = ensureError(error).message;
       if (errorMessage.includes('Cannot rollback')) {
         this.deployedInstances.delete(name);
-        return;
+        return finishDeletionResult(deletion, 'complete', {
+          safe: true,
+          guidance: 'The deployment record was already removed; no remaining instance was found.',
+        });
       }
-      throw new ResourceGraphFactoryError(
-        `Failed to delete instance ${name}: ${errorMessage}`,
-        this.name,
-        'cleanup'
-      );
+      deletion.blockers.push({
+        code: 'CLEANUP_ERROR',
+        message: `Failed to delete instance ${name}: ${errorMessage}`,
+        retryable: true,
+        retryGuidance:
+          'Inspect the reported Kubernetes error and retry. TypeKro does not report deletion complete while cleanup is unproven.',
+      });
+      return finishDeletionResult(deletion, 'blocked', {
+        safe: true,
+        guidance: 'Retry after resolving the reported cleanup error.',
+      });
     }
   }
 
@@ -345,7 +504,8 @@ export class DirectResourceFactoryImpl<
 
   private async rollbackInstanceResources(
     name: string,
-    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+    opts?: ResourceFactoryDeleteOptions,
+    abortSignal?: AbortSignal
   ): Promise<RollbackResult> {
     const engine = this.getDeploymentEngine();
     const instance = this.deployedInstances.get(name);
@@ -357,9 +517,12 @@ export class DirectResourceFactoryImpl<
           return await engine.rollback(deploymentId, {
             ...(opts?.scopes && { scopes: opts.scopes }),
             ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-            ...(this.factoryOptions.timeout !== undefined && {
-              timeout: this.factoryOptions.timeout,
-            }),
+            ...(opts?.timeout !== undefined || this.factoryOptions.timeout !== undefined
+              ? {
+                  timeout: opts?.timeout ?? this.factoryOptions.timeout,
+                }
+              : {}),
+            ...(abortSignal ? { abortSignal } : {}),
           });
         } catch (error: unknown) {
           const isNotFound =
@@ -374,6 +537,7 @@ export class DirectResourceFactoryImpl<
     const record = await engine.loadDeploymentByInstance({
       factoryName: this.name,
       instanceName: name,
+      factoryNamespace: this.namespace,
       knownGvks: this.buildKnownGvks(),
     });
     if (!record) {
@@ -392,7 +556,10 @@ export class DirectResourceFactoryImpl<
     return engine.rollbackRecord(record, {
       ...(opts?.scopes && { scopes: opts.scopes }),
       ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-      ...(this.factoryOptions.timeout !== undefined && { timeout: this.factoryOptions.timeout }),
+      ...(opts?.timeout !== undefined || this.factoryOptions.timeout !== undefined
+        ? { timeout: opts?.timeout ?? this.factoryOptions.timeout }
+        : {}),
+      ...(abortSignal ? { abortSignal } : {}),
     });
   }
 
@@ -403,16 +570,21 @@ export class DirectResourceFactoryImpl<
    */
   private async rollbackInstanceWithNamespaceCompletion(
     name: string,
-    opts?: { scopes?: string[]; includeUnscopedResources?: boolean }
+    opts?: ResourceFactoryDeleteOptions,
+    abortSignal?: AbortSignal
   ): Promise<RollbackResult> {
-    const rollbackResult = await this.rollbackInstanceResources(name, opts);
+    const rollbackResult = await this.rollbackInstanceResources(name, opts, abortSignal);
     if (rollbackResult.status === 'success' && rollbackResult.errors.length === 0) {
-      await this.completeNamespaceDeletion(rollbackResult);
+      await this.completeNamespaceDeletion(rollbackResult, opts?.timeout, abortSignal);
     }
     return rollbackResult;
   }
 
-  private async completeNamespaceDeletion(rollbackResult: RollbackResult): Promise<void> {
+  private async completeNamespaceDeletion(
+    rollbackResult: RollbackResult,
+    timeout?: number,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
     const deletedNamespaces = rollbackResult.rolledBackResources
       .filter((resource) => resource.startsWith('Namespace/'))
       .map((resource) => resource.split('/')[1])
@@ -425,6 +597,7 @@ export class DirectResourceFactoryImpl<
     const kubeConfig = this.getClientProvider().getKubeConfig();
     const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
     for (const namespace of deletedNamespaces) {
+      abortSignal?.throwIfAborted();
       let pvcs: Awaited<ReturnType<typeof coreApi.listNamespacedPersistentVolumeClaim>>;
       try {
         pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
@@ -439,6 +612,7 @@ export class DirectResourceFactoryImpl<
         });
       }
       for (const pvc of pvcs.items) {
+        abortSignal?.throwIfAborted();
         const pvcName = pvc.metadata?.name;
         if (!pvcName) continue;
         try {
@@ -452,11 +626,12 @@ export class DirectResourceFactoryImpl<
       }
     }
 
-    const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
+    const deleteTimeout = timeout ?? this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
     await this.waitForNamespaceDeletion(
       this.getDeploymentEngine().getKubernetesApi(),
       deletedNamespaces,
-      deleteTimeout
+      deleteTimeout,
+      abortSignal
     );
   }
 
@@ -469,7 +644,8 @@ export class DirectResourceFactoryImpl<
   private async waitForNamespaceDeletion(
     k8sApi: import('@kubernetes/client-node').KubernetesObjectApi,
     namespaces: string[],
-    timeout: number
+    timeout: number,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const pollInterval = DEFAULT_FAST_POLL_INTERVAL;
 
@@ -478,6 +654,7 @@ export class DirectResourceFactoryImpl<
       const nsStartTime = Date.now();
       let deleted = false;
       while (Date.now() - nsStartTime < timeout) {
+        abortSignal?.throwIfAborted();
         try {
           await k8sApi.read({
             apiVersion: 'v1',
@@ -485,7 +662,27 @@ export class DirectResourceFactoryImpl<
             metadata: { name: ns },
           });
           // Namespace still exists (likely "Terminating"), keep polling
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          await new Promise<void>((resolve, reject) => {
+            if (!abortSignal) {
+              setTimeout(resolve, pollInterval);
+              return;
+            }
+            const onAbort = () => {
+              clearTimeout(delay);
+              reject(
+                abortSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+              );
+            };
+            const delay = setTimeout(() => {
+              abortSignal.removeEventListener('abort', onAbort);
+              resolve();
+            }, pollInterval);
+            if (abortSignal.aborted) {
+              onAbort();
+              return;
+            }
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+          });
         } catch (error: unknown) {
           // 404 means the namespace is fully gone
           const k8sErr = error as { statusCode?: number; body?: { code?: number } };
@@ -519,15 +716,24 @@ export class DirectResourceFactoryImpl<
    * `getInstances()`. Use `deleteInstance(name)` for cross-process cleanup;
    * status reconstruction from tagged live resources is not currently exposed.
    */
-  async getStatus(): Promise<FactoryStatus> {
-    const instances = await this.getInstances();
+  async getStatus(opts?: InternalResourceFactoryReadOptions): Promise<FactoryStatus> {
+    if (opts?.operationSignal) {
+      return this.getStatusWithinOperation(opts.operationSignal);
+    }
+    return runStandaloneOperation((abortSignal) => this.getStatusWithinOperation(abortSignal), {
+      abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal],
+    });
+  }
+
+  private async getStatusWithinOperation(abortSignal: AbortSignal): Promise<FactoryStatus> {
+    const instances = await this.getInstances({ operationSignal: abortSignal });
 
     // If no instances, we're healthy by definition
     let health: 'healthy' | 'degraded' | 'failed' = 'healthy';
 
     if (instances.length > 0) {
       // Only perform cluster health checking if we have deployed instances
-      health = await this.checkFactoryHealth();
+      health = await this.checkFactoryHealth(abortSignal);
     }
 
     return {
@@ -542,10 +748,13 @@ export class DirectResourceFactoryImpl<
   /**
    * Check the overall health of the factory by leveraging existing ResourceReadinessChecker
    */
-  private async checkFactoryHealth(): Promise<'healthy' | 'degraded' | 'failed'> {
+  private async checkFactoryHealth(
+    abortSignal: AbortSignal
+  ): Promise<'healthy' | 'degraded' | 'failed'> {
     const healthLogger = this.logger.child({ method: 'checkFactoryHealth' });
 
     try {
+      abortSignal.throwIfAborted();
       const engine = this.getDeploymentEngine();
 
       // Get all deployment states from the engine
@@ -568,9 +777,11 @@ export class DirectResourceFactoryImpl<
           totalResources++;
 
           try {
+            abortSignal.throwIfAborted();
             // Use the deployment engine's readiness logic (includes custom evaluators + fallback)
             const engine = this.getDeploymentEngine();
             const isReady = await engine.isDeployedResourceReady(deployedResource);
+            abortSignal.throwIfAborted();
 
             if (isReady) {
               healthyCount++;
@@ -585,6 +796,7 @@ export class DirectResourceFactoryImpl<
               });
             }
           } catch (error: unknown) {
+            abortSignal.throwIfAborted();
             // Resource not found or API error - consider it failed
             failedCount++;
             const healthError: DeploymentError = {
@@ -642,6 +854,7 @@ export class DirectResourceFactoryImpl<
         return 'healthy';
       }
     } catch (error: unknown) {
+      abortSignal.throwIfAborted();
       healthLogger.error('Error checking factory health', ensureError(error));
       return 'failed';
     }
@@ -651,20 +864,23 @@ export class DirectResourceFactoryImpl<
    * Get detailed health information including any errors encountered
    * Useful for debugging and monitoring
    */
-  async getHealthDetails(): Promise<{
-    health: 'healthy' | 'degraded' | 'failed';
-    resourceCounts: {
-      healthy: number;
-      degraded: number;
-      failed: number;
-      total: number;
-    };
-    errors: DeploymentError[];
-  }> {
+  async getHealthDetails(opts?: InternalResourceFactoryReadOptions): Promise<FactoryHealthDetails> {
+    if (opts?.operationSignal) {
+      return this.getHealthDetailsWithinOperation(opts.operationSignal);
+    }
+    return runStandaloneOperation(
+      (abortSignal) => this.getHealthDetailsWithinOperation(abortSignal),
+      { abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal] }
+    );
+  }
+
+  private async getHealthDetailsWithinOperation(
+    abortSignal: AbortSignal
+  ): Promise<FactoryHealthDetails> {
     const healthLogger = this.logger.child({ method: 'getHealthDetails' });
 
     // Check if we have any instances first to avoid initializing engine unnecessarily
-    const instances = await this.getInstances();
+    const instances = await this.getInstances({ operationSignal: abortSignal });
     if (instances.length === 0) {
       return {
         health: 'healthy',
@@ -700,6 +916,7 @@ export class DirectResourceFactoryImpl<
           totalResources++;
 
           try {
+            abortSignal.throwIfAborted();
             const resourceRef = {
               apiVersion: deployedResource.manifest.apiVersion || '',
               kind: deployedResource.kind,
@@ -710,6 +927,7 @@ export class DirectResourceFactoryImpl<
             };
             // In the new API, methods return objects directly (no .body wrapper)
             const liveResource = await k8sApi.read(resourceRef);
+            abortSignal.throwIfAborted();
 
             const isReady = readinessChecker.isResourceReady(liveResource);
 
@@ -719,6 +937,7 @@ export class DirectResourceFactoryImpl<
               degradedCount++;
             }
           } catch (error: unknown) {
+            abortSignal.throwIfAborted();
             failedCount++;
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
@@ -744,6 +963,7 @@ export class DirectResourceFactoryImpl<
         errors: healthErrors,
       };
     } catch (error: unknown) {
+      abortSignal.throwIfAborted();
       healthLogger.error('Error getting health details', ensureError(error));
       return {
         health: 'failed',
@@ -767,7 +987,14 @@ export class DirectResourceFactoryImpl<
    * For cross-process cleanup, call `deleteInstance(name)` with the known
    * instance name so TypeKro can discover tagged resources from the cluster.
    */
-  async rollback(): Promise<RollbackResult> {
+  async rollback(opts?: ResourceFactoryOperationOptions): Promise<RollbackResult> {
+    return runStandaloneOperation((abortSignal) => this.rollbackWithinOperation(abortSignal), {
+      abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal],
+    });
+  }
+
+  private async rollbackWithinOperation(abortSignal: AbortSignal): Promise<RollbackResult> {
+    abortSignal.throwIfAborted();
     this.logger.debug('Starting rollback for all deployed instances');
 
     const startedAt = Date.now();
@@ -784,7 +1011,12 @@ export class DirectResourceFactoryImpl<
 
     for (const instanceName of instanceNames) {
       try {
-        const result = await this.rollbackInstanceWithNamespaceCompletion(instanceName);
+        abortSignal.throwIfAborted();
+        const result = await this.rollbackInstanceWithNamespaceCompletion(
+          instanceName,
+          undefined,
+          abortSignal
+        );
         rolledBackResources.push(...result.rolledBackResources);
         errors.push(...result.errors);
         if (result.status === 'failed') {
@@ -796,6 +1028,7 @@ export class DirectResourceFactoryImpl<
           this.deployedInstances.delete(instanceName);
         }
       } catch (error: unknown) {
+        abortSignal.throwIfAborted();
         status = 'failed';
         errors.push({
           resourceId: instanceName,
@@ -833,7 +1066,18 @@ export class DirectResourceFactoryImpl<
   /**
    * Perform a dry run deployment
    */
-  async toDryRun(spec: TSpec): Promise<DeploymentResult> {
+  async toDryRun(spec: TSpec, opts?: ResourceFactoryOperationOptions): Promise<DeploymentResult> {
+    return runStandaloneOperation(
+      (abortSignal) => this.toDryRunWithinOperation(spec, abortSignal),
+      { abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal] }
+    );
+  }
+
+  private async toDryRunWithinOperation(
+    spec: TSpec,
+    abortSignal: AbortSignal
+  ): Promise<DeploymentResult> {
+    abortSignal.throwIfAborted();
     const resourceGraph = this.createResourceGraphForInstance(spec);
 
     const deploymentOptions = {
@@ -842,6 +1086,7 @@ export class DirectResourceFactoryImpl<
       ...(this.factoryOptions.timeout && { timeout: this.factoryOptions.timeout }),
       waitForReady: false, // Don't wait for readiness in dry run
       dryRun: true,
+      abortSignal,
       ...(this.factoryOptions.retryPolicy && { retryPolicy: this.factoryOptions.retryPolicy }),
       ...(this.factoryOptions.progressCallback && {
         progressCallback: this.factoryOptions.progressCallback,
@@ -861,11 +1106,19 @@ export class DirectResourceFactoryImpl<
    * ValidationError is thrown — those constructs require the Kro controller
    * or runtime deployment via deploy().
    */
-  toYaml(spec: TSpec): string {
-    // Resolve references with the actual spec values
-    const resolvedResources = applyAspects(this.resolveResourcesForSpec(spec), {
-      mode: 'direct',
-      aspects: this.factoryOptions.aspects ?? [],
+  toYaml(spec: TSpec, options?: StaticYamlMaterializationOptions): string {
+    // Serialize the same artifact-derived graph used by deploy/dry-run/Alchemy.
+    // The compatibility facade still rejects runtime-only references below.
+    const execution = this.createArtifactExecutionForInstance(spec, undefined, {
+      staticYamlOptions: options ?? {},
+    });
+    this.assertExecutionCapabilities(execution, { host: null, output: 'static' });
+    const resolvedResources = Object.fromEntries(
+      execution.graph.resources.map(({ id, manifest }) => [id, manifest])
+    );
+    const orderedResources = execution.graph.dependencyGraph.getTopologicalOrder().flatMap((id) => {
+      const resource = resolvedResources[id];
+      return resource ? [resource] : [];
     });
 
     // Validate that all values are fully resolved — no KubernetesRef or
@@ -894,7 +1147,7 @@ export class DirectResourceFactoryImpl<
 
     // Generate individual Kubernetes resource YAML manifests (not RGD).
     // Uses js-yaml for safe serialization — avoids YAML injection via string interpolation.
-    const yamlParts = Object.values(resolvedResources).map((resource) => {
+    const yamlParts = orderedResources.map((resource) => {
       // Remove TypeKro-specific fields and generate clean Kubernetes YAML
       const cleanResource = { ...resource } as KubernetesResource & { id?: string };
       delete cleanResource.id; // Remove TypeKro id field
@@ -948,6 +1201,216 @@ export class DirectResourceFactoryImpl<
    * Create a resource graph for a specific instance
    */
   public createResourceGraphForInstance(
+    spec: TSpec,
+    instanceNameOverride?: string
+  ): DeploymentResourceGraph {
+    const execution = this.createArtifactExecutionForInstance(spec, instanceNameOverride);
+    this.assertExecutionCapabilities(execution, { host: 'standalone', output: 'live' });
+    return execution.graph;
+  }
+
+  private assertExecutionCapabilities(
+    execution: DirectArtifactExecution,
+    context: { readonly host: 'standalone' | 'alchemy' | null; readonly output: 'live' | 'static' }
+  ): void {
+    const compatibilityRequirements: readonly CapabilityRequirement[] =
+      execution.artifacts?.requiredCapabilities ??
+      (Object.keys(this.closures).length > 0
+        ? [
+            {
+              id: 'typekro.runtime-closure',
+              version: 1,
+              host: 'standalone',
+              output: 'live',
+            },
+          ]
+        : []);
+    assertAdapterCapabilitiesSupported(compatibilityRequirements, {
+      target: 'direct',
+      ...context,
+    });
+  }
+
+  private createArtifactExecutionForInstance(
+    spec: TSpec,
+    instanceNameOverride?: string,
+    options: {
+      readonly sensitiveBindings?: Readonly<Record<string, unknown>>;
+      readonly staticYamlOptions?: StaticYamlMaterializationOptions;
+      readonly preserveArtifactOutputs?: boolean;
+    } = {}
+  ): DirectArtifactExecution {
+    const legacyGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const capture = this.factoryOptions.semanticCapture;
+    if (!capture) return { graph: legacyGraph };
+
+    const configuredPlan = this.factoryOptions.plan ?? {};
+    const planOptions = {
+      ...configuredPlan,
+      aspects: configuredPlan.aspects ?? this.factoryOptions.aspects ?? [],
+    };
+    const materializedSourceIds = legacyGraph.resources
+      .map(({ manifest }) => getResourceId(manifest))
+      .filter((id): id is string => !!id);
+    const containsExpandedIteration =
+      new Set(materializedSourceIds).size !== materializedSourceIds.length;
+    // Re-execution expands collection bodies into concrete resources that
+    // intentionally share one authoring id. A materialized node map cannot
+    // represent those repetitions without losing their iteration identity, so
+    // retain the analyzer-proven PlanIterationDimension and let the direct
+    // runtime adapter expand it. Non-collection graphs keep their concrete
+    // materialized desired state, including nested composition resolution.
+    const plan = containsExpandedIteration
+      ? capture.plan(spec, planOptions)
+      : capture.planMaterialized(spec, legacyGraph, planOptions);
+    const artifacts = compileDirectArtifactPlan(plan, {
+      strict: true,
+      applyPolicy: this.getArtifactApplyPolicy(),
+    });
+    const placeholderArtifactOutputs = options.preserveArtifactOutputs
+      ? Object.fromEntries(
+          artifacts.artifactRequirements.map((requirement) => [
+            requirement.id,
+            Object.fromEntries(
+              requirement.outputs.map((output) => [
+                output,
+                `__typekro_artifact_${encodeURIComponent(requirement.id)}_${encodeURIComponent(output)}__`,
+              ])
+            ),
+          ])
+        )
+      : undefined;
+    const runtimeResources = Object.fromEntries(
+      legacyGraph.resources.flatMap((resource) => {
+        const logicalId = getResourceId(resource.manifest);
+        return logicalId ? [[logicalId, resource.manifest] as const] : [];
+      })
+    );
+    const capturedSensitiveBindings: Record<string, unknown> = {};
+    const mergeSensitiveBindings = (
+      incoming: Readonly<Record<string, unknown>>,
+      context: string
+    ): void => {
+      for (const [binding, bindingValue] of Object.entries(incoming)) {
+        if (
+          Object.hasOwn(capturedSensitiveBindings, binding) &&
+          !Object.is(capturedSensitiveBindings[binding], bindingValue)
+        ) {
+          throw new TypeKroError(
+            `Sensitive binding ${binding} resolved to conflicting values while ${context}.`,
+            'DIRECT_SENSITIVE_BINDING_CONFLICT',
+            { binding }
+          );
+        }
+        capturedSensitiveBindings[binding] = bindingValue;
+      }
+    };
+    for (const artifact of artifacts.resources) {
+      if (!artifact.desired) continue;
+      const sourceNodeId = artifact.sourceNodeId ?? artifact.id;
+      const concrete = runtimeResources[sourceNodeId];
+      if (!concrete) continue;
+      mergeSensitiveBindings(
+        collectPlanValueSensitiveBindings(
+          artifact.desired,
+          concrete,
+          `$.resources.${artifact.id}.desired`
+        ),
+        `capturing direct artifact ${artifact.id}`
+      );
+    }
+    let effectiveSensitiveBindings: Readonly<Record<string, unknown>> = {
+      ...capturedSensitiveBindings,
+    };
+    if (options.sensitiveBindings) {
+      mergeSensitiveBindings(options.sensitiveBindings, 'applying direct materialization inputs');
+      effectiveSensitiveBindings = { ...capturedSensitiveBindings };
+    }
+    if (options.staticYamlOptions) {
+      const requiredBindings = new Set<string>();
+      let containsSensitiveValue = false;
+      for (const artifact of artifacts.resources) {
+        for (const value of directArtifactPlanValues(artifact)) {
+          planValueSensitiveBindingNames(value).forEach((binding) => requiredBindings.add(binding));
+          containsSensitiveValue ||= planValueContainsSensitiveValue(value);
+        }
+      }
+      effectiveSensitiveBindings = resolveStaticYamlSensitiveBindings(
+        [...requiredBindings],
+        capturedSensitiveBindings,
+        options.staticYamlOptions,
+        `Direct factory ${this.name} YAML`,
+        containsSensitiveValue
+      );
+    }
+    const legacyGraphIdBySourceNodeId = new Map(
+      legacyGraph.resources.flatMap(({ id, manifest }) => {
+        const sourceNodeId = getResourceId(manifest);
+        return sourceNodeId ? ([[sourceNodeId, id]] as const) : [];
+      })
+    );
+    const graphIdsByArtifactId = Object.fromEntries(
+      artifacts.resources.flatMap((artifact) => {
+        const graphId = legacyGraphIdBySourceNodeId.get(artifact.sourceNodeId ?? artifact.id);
+        return graphId ? ([[artifact.id, graphId]] as const) : [];
+      })
+    );
+    const readinessEvaluators = Object.fromEntries([
+      ...legacyGraph.resources.flatMap(({ id, manifest }) => {
+        const evaluator = getReadinessEvaluator(manifest);
+        const resourceId = getResourceId(manifest);
+        if (!evaluator) return [];
+        return [...new Set([id, resourceId].filter((value): value is string => !!value))].map(
+          (value) => [`readiness:${value}`, evaluator] as const
+        );
+      }),
+      ...Object.entries(capture.ir.resources).flatMap(([logicalId, manifest]) => {
+        const evaluator = getReadinessEvaluator(manifest);
+        const resourceId = getResourceId(manifest);
+        if (!evaluator) return [];
+        return [
+          ...new Set([logicalId, resourceId].filter((value): value is string => !!value)),
+        ].map((value) => [`readiness:${value}`, evaluator] as const);
+      }),
+    ]);
+    return {
+      artifacts,
+      graph: directArtifactPlanToResourceGraph(artifacts, {
+        instanceName: instanceNameOverride ?? this.generateInstanceName(spec),
+        graphName: legacyGraph.name,
+        graphIdsByArtifactId,
+        spec,
+        ...(Object.keys(effectiveSensitiveBindings).length > 0
+          ? { sensitive: effectiveSensitiveBindings }
+          : {}),
+        ...(placeholderArtifactOutputs ? { artifactOutputs: placeholderArtifactOutputs } : {}),
+        runtimeResources,
+        readinessEvaluators,
+        resolveReadinessStrategy: resolvePortableReadinessStrategy,
+        // Existing singleton ownership is already reconciled before this graph
+        // executes. Keep compiler-generated owner operations out of the app graph.
+        includeSupportingArtifacts: false,
+      }),
+    };
+  }
+
+  private getArtifactApplyPolicy(): ArtifactApplyPolicy {
+    if (this.factoryOptions.applyPolicy) return this.factoryOptions.applyPolicy;
+    return {
+      strategy: 'create-or-patch',
+      existingResource: 'patch',
+      immutableFieldPolicy: 'fail',
+    };
+  }
+
+  /**
+   * Legacy composition materializer retained as the capture frontend while the
+   * semantic planner is built from current authoring machinery. Executors must
+   * call createResourceGraphForInstance(), not this method.
+   *
+   * @internal
+   */
+  public createLegacyResourceGraphForInstance(
     spec: TSpec,
     instanceNameOverride?: string
   ): DeploymentResourceGraph {
@@ -1012,7 +1475,17 @@ export class DirectResourceFactoryImpl<
     const deployableResources = resourceArray as DeployableK8sResource<
       Enhanced<unknown, unknown>
     >[];
-    const dependencyGraph = dependencyResolver.buildDependencyGraph(deployableResources);
+    const knownExternalResourceIds = new Set(
+      Object.entries(this.resolvedResourceKeysForHydration ?? {}).flatMap(
+        ([captureId, resource]) =>
+          Reflect.get(resource, '__externalRef') === true
+            ? [captureId, getResourceId(resource)].filter((id): id is string => !!id)
+            : []
+      )
+    );
+    const dependencyGraph = dependencyResolver.buildDependencyGraph(deployableResources, {
+      knownExternalResourceIds,
+    });
 
     // Create resources in the format expected by DirectDeploymentEngine
     const formattedResources = deployableResources.map((resource) => ({
@@ -1041,75 +1514,181 @@ export class DirectResourceFactoryImpl<
     spec: TSpec,
     opts?: { instanceNameOverride?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
-    const graph = this.createResourceGraphForInstance(spec, opts?.instanceNameOverride);
-    const kubeConfigOptions = extractSerializableKubeConfigOptions(
-      this.getClientProvider().getKubeConfig(),
-      this.factoryOptions.skipTLSVerify === true ? true : undefined
-    );
+    const execution = this.createArtifactExecutionForInstance(spec, opts?.instanceNameOverride, {
+      preserveArtifactOutputs: true,
+    });
+    this.assertExecutionCapabilities(execution, { host: 'alchemy', output: 'live' });
+    const graph = execution.graph;
+    const persistence =
+      this.factoryOptions.alchemyKubeConfig ??
+      (this.factoryOptions.kubeConfig === undefined
+        ? { source: { kind: 'default' as const } }
+        : undefined);
+    const kubeConfig =
+      this.factoryOptions.kubeConfig ??
+      (persistence?.source ? undefined : this.getClientProvider().getKubeConfig());
+    const kubeConfigOptions = extractSerializableKubeConfigOptions(kubeConfig, {
+      ...(this.factoryOptions.skipTLSVerify === true ? { skipTLSVerifyOverride: true } : {}),
+      ...(persistence ? { persistence } : {}),
+    });
 
-    // Per graph node: its alchemy resource id (for `dependsOn` / `KroResource` id), its logical id
-    // (what sibling `KubernetesRef`s + the resolver match on — the original composition id), and a
-    // serialized form used to recover dependencies the resolved graph dropped (see below).
+    // Per graph node: its alchemy resource id (for `dependsOn` / `KroResource` id) and logical id
+    // (what sibling `KubernetesRef`s + the resolver match on — the original composition id).
     interface Node {
       resource: Enhanced<unknown, unknown>;
       alchemyId: string;
       logicalId: string;
-      serialized: string;
     }
     const byGraphId = new Map<string, Node>();
+    const artifactByLogicalId = new Map(
+      execution.artifacts?.resources.map((artifact) => [
+        artifact.sourceNodeId ?? artifact.id,
+        artifact,
+      ]) ?? []
+    );
+    const executionArtifacts = execution.artifacts;
+    const materializationByArtifactId = new Map(
+      executionArtifacts?.resources.map((artifact) => [
+        artifact.id,
+        createDirectArtifactExecutionMaterialization(executionArtifacts, artifact.id, { spec }),
+      ]) ?? []
+    );
+    const hasSensitiveBindings = [...materializationByArtifactId.values()].some(
+      (materialization) => Object.keys(materialization.sensitiveBindings).length > 0
+    );
+    const hasSecretPayload = graph.resources.some(
+      ({ manifest }) =>
+        manifest.kind === 'Secret' &&
+        (Reflect.has(manifest, 'data') || Reflect.has(manifest, 'stringData'))
+    );
+    const Redacted =
+      hasSensitiveBindings || hasSecretPayload ? await import('effect/Redacted') : undefined;
     for (const { id: graphId, manifest } of graph.resources) {
       const resource = ensureReadinessEvaluator(manifest as Enhanced<unknown, unknown>);
       byGraphId.set(graphId, {
         resource,
         alchemyId: createAlchemyResourceId(resource, this.namespace),
         logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
-        serialized: JSON.stringify(manifest),
       });
-    }
-    const nodeByLogicalId = new Map(Array.from(byGraphId.values(), (n) => [n.logicalId, n]));
-    const logicalIds = new Set(nodeByLogicalId.keys());
-    const alchemyIdByLogicalId = new Map(
-      Array.from(byGraphId.values(), (n) => [n.logicalId, n.alchemyId])
-    );
-
-    // Compute each node's dependency logical-ids. The dependency graph captures `KubernetesRef`
-    // OBJECT references, but by the time the instance is resolved most cross-resource references
-    // have been serialized to CEL strings (`${otherResource.status.field}`) that the graph no
-    // longer sees — so we ALSO scan each manifest's serialized form for references to sibling
-    // logical ids. Union of both is the complete dependency set.
-    const depsByLogicalId = new Map<string, Set<string>>();
-    for (const [graphId, node] of byGraphId) {
-      const deps = new Set<string>();
-      for (const depGraphId of graph.dependencyGraph.getDependencies(graphId)) {
-        const dep = byGraphId.get(depGraphId);
-        if (dep) deps.add(dep.logicalId);
-      }
-      for (const ref of extractResourceReferencesFromExpression(node.serialized)) {
-        const head = ref.split(/[.[]/, 1)[0];
-        if (head && head !== node.logicalId && logicalIds.has(head)) deps.add(head);
-      }
-      depsByLogicalId.set(node.logicalId, deps);
     }
 
     const waitForReady = this.factoryOptions.waitForReady ?? false;
     const timeout = this.factoryOptions.timeout;
 
-    // Topologically sort by the COMPLETE dependency set (Kahn) so each declaration precedes its
-    // dependents — `getTopologicalOrder` alone would miss the CEL-string edges recovered above.
-    const ordered = topoSortLogicalIds(logicalIds, depsByLogicalId);
+    // The semantic planner records typed output/existence/readiness/ownership edges, and the
+    // direct artifact adapter lowers those edges into this graph. Alchemy must consume that
+    // authoritative ordering rather than reinterpreting serialized manifest strings.
+    const ordered = graph.dependencyGraph.getTopologicalOrder();
 
-    return ordered.flatMap((logicalId) => {
-      const node = nodeByLogicalId.get(logicalId);
+    return ordered.flatMap((graphId) => {
+      const node = byGraphId.get(graphId);
       if (!node) return [];
-      const dependsOn = Array.from(depsByLogicalId.get(logicalId) ?? [])
-        .map((depLogicalId) => alchemyIdByLogicalId.get(depLogicalId))
+      const artifact = artifactByLogicalId.get(node.logicalId);
+      const materialization = artifact ? materializationByArtifactId.get(artifact.id) : undefined;
+      const artifactOutputUses = materialization
+        ? collectArtifactOutputUses(materialization.record.artifact)
+        : [];
+      const artifactRequirementIds = new Set(artifactOutputUses.map((use) => use.requirementId));
+      const artifactRequirements =
+        executionArtifacts?.artifactRequirements.filter((requirement) =>
+          artifactRequirementIds.has(requirement.id)
+        ) ?? [];
+      const declarationArtifactOutputs = Object.fromEntries(
+        artifactRequirements.map((requirement) => [
+          requirement.id,
+          Object.fromEntries(
+            requirement.outputs.map((output) => [
+              output,
+              `__typekro_artifact_${encodeURIComponent(requirement.id)}_${encodeURIComponent(output)}__`,
+            ])
+          ),
+        ])
+      );
+      const sensitiveBindings =
+        materialization && Redacted
+          ? Object.fromEntries(
+              Object.entries(materialization.sensitiveBindings).map(([binding, value]) => [
+                binding,
+                Redacted.make(value),
+              ])
+            )
+          : undefined;
+      const strategy = materialization?.record.artifact.readiness.strategy;
+      const evaluator = getReadinessEvaluator(node.resource);
+      const readinessEvaluators =
+        strategy?.kind === 'runtime-binding' && evaluator
+          ? { [strategy.binding]: evaluator }
+          : undefined;
+      const declarationResource =
+        materialization &&
+        ((sensitiveBindings && Object.keys(sensitiveBindings).length > 0) ||
+          artifactOutputUses.length > 0)
+          ? (materializeDirectArtifactManifest(
+              materialization.record.artifact,
+              {
+                instanceName: opts?.instanceNameOverride ?? this.generateInstanceName(spec),
+                ...(sensitiveBindings ? { sensitive: sensitiveBindings } : {}),
+                ...(artifactOutputUses.length > 0
+                  ? { artifactOutputs: declarationArtifactOutputs }
+                  : {}),
+                runtimeResources: { [node.logicalId]: node.resource },
+                ...(readinessEvaluators ? { readinessEvaluators } : {}),
+                resolveReadinessStrategy: resolvePortableReadinessStrategy,
+              },
+              getResourceId(node.resource) ?? node.logicalId,
+              node.logicalId
+            ) as Enhanced<unknown, unknown>)
+          : Redacted && node.resource.kind === 'Secret'
+            ? ({
+                ...node.resource,
+                ...(Reflect.has(node.resource, 'data')
+                  ? {
+                      data: Object.fromEntries(
+                        Object.entries(
+                          (Reflect.get(node.resource, 'data') as Record<string, unknown>) ?? {}
+                        ).map(([key, value]) => [key, Redacted.make(value)])
+                      ),
+                    }
+                  : {}),
+                ...(Reflect.has(node.resource, 'stringData')
+                  ? {
+                      stringData: Object.fromEntries(
+                        Object.entries(
+                          (Reflect.get(node.resource, 'stringData') as Record<string, unknown>) ??
+                            {}
+                        ).map(([key, value]) => [key, Redacted.make(value)])
+                      ),
+                    }
+                  : {}),
+              } as Enhanced<unknown, unknown>)
+            : node.resource;
+      if (declarationResource !== node.resource) {
+        copyResourceMetadata(node.resource, declarationResource);
+      }
+      const dependsOn = graph.dependencyGraph
+        .getDependencies(graphId)
+        .map((dependencyGraphId) => byGraphId.get(dependencyGraphId)?.alchemyId)
         .filter((id): id is string => id !== undefined);
       return {
         id: node.alchemyId,
         dependsOn,
+        ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+        ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
         props: {
-          resource: node.resource,
+          resource: declarationResource,
           resourceId: node.logicalId,
+          ...(materialization
+            ? {
+                artifactExecutionRecord: encodeDirectArtifactExecutionRecord(
+                  materialization.record
+                ),
+                ...(sensitiveBindings && Object.keys(sensitiveBindings).length > 0
+                  ? { sensitiveBindings }
+                  : {}),
+                ...(artifactRequirements.length > 0 ? { artifactRequirements } : {}),
+                ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
+              }
+            : {}),
           namespace: this.namespace,
           deploymentStrategy: 'direct' as const,
           kubeConfigOptions,
@@ -1750,8 +2329,12 @@ export class DirectResourceFactoryImpl<
     return generateInstanceName(spec);
   }
 
-  private async ensureTargetNamespace(namespace = this.namespace): Promise<void> {
+  private async ensureTargetNamespace(
+    namespace = this.namespace,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
     try {
+      abortSignal?.throwIfAborted();
       const { createBunCompatibleKubernetesObjectApi } = await import(
         '../kubernetes/bun-api-client.js'
       );
@@ -1761,6 +2344,7 @@ export class DirectResourceFactoryImpl<
       const waitForNamespaceDeletion = async (): Promise<void> => {
         const start = Date.now();
         while (Date.now() - start < 120000) {
+          abortSignal?.throwIfAborted();
           try {
             const existing = (await k8sApi.read({
               apiVersion: 'v1',
@@ -1778,7 +2362,27 @@ export class DirectResourceFactoryImpl<
             }
             throw pollError;
           }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await new Promise<void>((resolve, reject) => {
+            if (!abortSignal) {
+              setTimeout(resolve, 1000);
+              return;
+            }
+            const onAbort = () => {
+              clearTimeout(delay);
+              reject(
+                abortSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+              );
+            };
+            const delay = setTimeout(() => {
+              abortSignal.removeEventListener('abort', onAbort);
+              resolve();
+            }, 1000);
+            if (abortSignal.aborted) {
+              onAbort();
+              return;
+            }
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+          });
         }
         throw new Error(`Namespace ${namespace} is still terminating after 120000ms`);
       };
@@ -1848,7 +2452,7 @@ export class DirectResourceFactoryImpl<
     }
   }
 
-  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
+  private async ensureSingletonOwners(spec: TSpec, operationSignal?: AbortSignal): Promise<void> {
     const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
 
     if (this.factoryOptions.compositionFn) {
@@ -1871,7 +2475,7 @@ export class DirectResourceFactoryImpl<
     if (discoveredSingletons.size === 0) return;
 
     for (const definition of discoveredSingletons.values()) {
-      await this.ensureTargetNamespace(definition.registryNamespace);
+      await this.ensureTargetNamespace(definition.registryNamespace, operationSignal);
 
       const singletonInstanceName = getSingletonInstanceName(definition.id);
       const singletonFactory = definition.composition.factory('direct', {
@@ -1923,7 +2527,7 @@ export class DirectResourceFactoryImpl<
               discoveredResources
             );
             if (legacyStatus) {
-              this.singletonOwnerStatuses.set(getSingletonResourceId(definition.key), legacyStatus);
+              this.rememberSingletonOwnerStatus(definition, legacyStatus);
             }
             if (hasAllExpectedResources && !hasHelmReleaseResources) {
               this.logger.warn(
@@ -1959,6 +2563,7 @@ export class DirectResourceFactoryImpl<
           singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(
             definition.specFingerprint
           ),
+          ...(operationSignal ? { operationSignal } : {}),
         };
         const deployedSingleton = await singletonFactory.deploy(
           definition.spec,
@@ -1970,15 +2575,52 @@ export class DirectResourceFactoryImpl<
           typeof singletonStatus === 'object' &&
           !Array.isArray(singletonStatus)
         ) {
-          this.singletonOwnerStatuses.set(
-            getSingletonResourceId(definition.key),
-            singletonStatus as Record<string, unknown>
-          );
+          this.rememberSingletonOwnerStatus(definition, singletonStatus as Record<string, unknown>);
         }
       } finally {
         await singletonFactory.dispose?.();
       }
     }
+  }
+
+  /**
+   * Expose already-reconciled singleton owners as reference seeds for the consumer graph.
+   * Direct mode owns the physical singleton resources directly; the logical KRO owner CR exists
+   * only as a composition boundary and must not be read from the Kubernetes API.
+   */
+  getExternalReferenceSeeds(): DeployedResource[] {
+    return [...this.singletonOwnerReferenceSeeds.values()];
+  }
+
+  private rememberSingletonOwnerStatus(
+    definition: SingletonDefinitionRecord,
+    status: Record<string, unknown>
+  ): void {
+    const id = getSingletonResourceId(definition.key);
+    const { apiVersion, kind } = singletonInstanceTypeMeta(definition.composition);
+    const name = getSingletonInstanceName(definition.id);
+    const manifest: KubernetesResource = {
+      apiVersion,
+      kind,
+      metadata: {
+        name,
+        namespace: definition.registryNamespace,
+      },
+      status,
+    };
+
+    this.singletonOwnerStatuses.set(id, status);
+    this.singletonOwnerReferenceSeeds.set(id, {
+      id,
+      kind,
+      name,
+      namespace: definition.registryNamespace,
+      manifest,
+      liveManifest: manifest,
+      status: 'ready',
+      applied: false,
+      deployedAt: new Date(),
+    });
   }
 
   private reExecuteSingletonStatusFromDiscoveredResources(
@@ -2128,42 +2770,6 @@ interface UnresolvedReference {
   path: string;
   /** Human-readable description of the reference type */
   description: string;
-}
-
-/**
- * Kahn topological sort of `ids` by their dependency set (`deps`: id → set of ids it depends on),
- * returning dependencies-first order. Edges to ids outside the set are ignored; if a cycle leaves
- * nodes unprocessed they're appended in stable order (best effort) rather than throwing.
- */
-function topoSortLogicalIds(ids: Set<string>, deps: Map<string, Set<string>>): string[] {
-  const inDegree = new Map<string, number>();
-  const dependents = new Map<string, string[]>();
-  for (const id of ids) {
-    inDegree.set(id, 0);
-    dependents.set(id, []);
-  }
-  for (const id of ids) {
-    for (const dep of deps.get(id) ?? []) {
-      if (!ids.has(dep)) continue;
-      inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
-      dependents.get(dep)?.push(id);
-    }
-  }
-  const queue = Array.from(ids).filter((id) => (inDegree.get(id) ?? 0) === 0);
-  const result: string[] = [];
-  while (queue.length > 0) {
-    const id = queue.shift() as string;
-    result.push(id);
-    for (const dependent of dependents.get(id) ?? []) {
-      const next = (inDegree.get(dependent) ?? 0) - 1;
-      inDegree.set(dependent, next);
-      if (next === 0) queue.push(dependent);
-    }
-  }
-  if (result.length < ids.size) {
-    for (const id of ids) if (!result.includes(id)) result.push(id);
-  }
-  return result;
 }
 
 /**

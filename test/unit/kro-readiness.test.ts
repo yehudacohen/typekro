@@ -71,6 +71,7 @@ function defaultOptions(overrides: {
   timeout?: number;
   pollInterval?: number;
   factoryContext?: string;
+  abortSignal?: AbortSignal;
 }): KroReadinessOptions {
   const opts: KroReadinessOptions = {
     instanceName: 'test-instance',
@@ -82,6 +83,7 @@ function defaultOptions(overrides: {
     kind: 'WebApp',
     rgdName: 'web-app',
     pollInterval: overrides.pollInterval ?? 100,
+    ...(overrides.abortSignal ? { abortSignal: overrides.abortSignal } : {}),
   };
   if (overrides.factoryContext !== undefined) {
     opts.factoryContext = overrides.factoryContext;
@@ -761,6 +763,24 @@ describe('waitForKroInstanceReady', () => {
   // ---------------------------------------------------------------------------
 
   describe('API call arguments', () => {
+    it('interrupts a wedged instance read with the caller abort reason', async () => {
+      const controller = new AbortController();
+      const reason = new DOMException('stop readiness', 'AbortError');
+      mockK8sApi.read.mockImplementation(() => new Promise(() => {}));
+
+      const result = waitForKroInstanceReady(
+        defaultOptions({
+          k8sApi: mockK8sApi,
+          customObjectsApi: mockCustomObjectsApi,
+          timeout: 10_000,
+          abortSignal: controller.signal,
+        })
+      ).catch((error: unknown) => error);
+      controller.abort(reason);
+
+      expect(await result).toBe(reason);
+    });
+
     it('passes correct apiVersion, kind, name, and namespace to k8sApi.read', async () => {
       mockK8sApi.read.mockResolvedValue(
         kroInstance({

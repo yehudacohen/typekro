@@ -6,7 +6,7 @@
  */
 
 import { TypeKroError } from '../errors.js';
-import type { DeployedResource } from '../types/deployment.js';
+import type { DeployedResource, ResourceDeletionResult } from '../types/deployment.js';
 
 // =============================================================================
 // DEPLOYMENT ERROR CLASSES
@@ -67,6 +67,60 @@ export class ResourceConflictError extends TypeKroError {
   }
 }
 
+/** A server-side apply field-ownership conflict that must not degrade to legacy 409 handling. */
+export class ServerSideApplyConflictError extends TypeKroError {
+  constructor(
+    resourceName: string,
+    resourceKind: string,
+    fieldManager: string,
+    fieldConflictPolicy: 'fail' | 'force-owned-fields',
+    cause: Error
+  ) {
+    super(
+      `Server-side apply conflict for ${resourceKind}/${resourceName} using field manager ${fieldManager}: ${cause.message}`,
+      'SERVER_SIDE_APPLY_CONFLICT',
+      {
+        resourceName,
+        resourceKind,
+        fieldManager,
+        fieldConflictPolicy,
+        cause: cause.message,
+        suggestions:
+          fieldConflictPolicy === 'fail'
+            ? [
+                'Inspect metadata.managedFields to identify the conflicting manager',
+                "Use fieldConflictPolicy: 'force-owned-fields' only when TypeKro should take ownership",
+              ]
+            : [
+                'Inspect the API-server conflict details; forced apply could not safely acquire the field',
+              ],
+      }
+    );
+    this.name = 'ServerSideApplyConflictError';
+    this.cause = cause;
+  }
+}
+
+/** Replacement cannot proceed until Kubernetes confirms that the old object is absent. */
+export class ResourceReplacementTimeoutError extends TypeKroError {
+  constructor(resourceName: string, resourceKind: string, timeout: number) {
+    super(
+      `Timeout after ${timeout}ms waiting to replace ${resourceKind}/${resourceName}; the previous object still exists.`,
+      'RESOURCE_REPLACEMENT_TIMEOUT',
+      {
+        resourceName,
+        resourceKind,
+        timeoutMs: timeout,
+        suggestions: [
+          `Inspect ${resourceKind}/${resourceName} for deletionTimestamp and blocking finalizers`,
+          'Increase DeploymentOptions.timeout if deletion is making legitimate progress',
+        ],
+      }
+    );
+    this.name = 'ResourceReplacementTimeoutError';
+  }
+}
+
 export class ResourceReadinessTimeoutError extends TypeKroError {
   public readonly suggestions: string[];
 
@@ -89,6 +143,27 @@ export class ResourceReadinessTimeoutError extends TypeKroError {
     );
     this.name = 'ResourceReadinessTimeoutError';
     this.suggestions = suggestions;
+  }
+}
+
+/**
+ * Raised by execution-host adapters when TypeKro cannot yet prove deletion complete.
+ *
+ * Standalone factories return {@link ResourceDeletionResult} directly. Hosts whose delete
+ * callbacks cannot return an operation result, such as Alchemy, receive this error so they can
+ * persist/retry the operation without losing TypeKro's Kubernetes-specific blocker evidence.
+ */
+export class ResourceDeletionIncompleteError extends TypeKroError {
+  constructor(public readonly result: ResourceDeletionResult) {
+    const blockerSummary = result.blockers
+      .map((blocker) => `${blocker.code}: ${blocker.message}`)
+      .join('; ');
+    super(
+      `Deletion of ${result.mode} instance ${result.factoryName}/${result.instanceName} is ${result.status}${blockerSummary ? ` (${blockerSummary})` : ''}`,
+      'RESOURCE_DELETION_INCOMPLETE',
+      { result }
+    );
+    this.name = 'ResourceDeletionIncompleteError';
   }
 }
 

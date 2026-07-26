@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { createMockKubeConfig } from '../../utils/mock-factories.js';
 
 describe('Hybrid Spec During Deployment', () => {
   const TestSpecSchema = type({
@@ -69,6 +70,7 @@ describe('Hybrid Spec During Deployment', () => {
     const factory = testComposition.factory('direct', {
       namespace: 'test',
       waitForReady: true,
+      kubeConfig: createMockKubeConfig(),
     });
 
     // Deploy with actual spec values
@@ -131,6 +133,7 @@ describe('Hybrid Spec During Deployment', () => {
     const factory = testComposition.factory('direct', {
       namespace: 'test',
       waitForReady: true,
+      kubeConfig: createMockKubeConfig(),
     });
 
     // Test 'strict' -> 'true'

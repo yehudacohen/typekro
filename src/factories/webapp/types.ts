@@ -96,6 +96,8 @@ export const WebAppWithProcessingConfigSchema = type({
     'volumePermissions?': 'boolean',
     /** Storage size per shard (default: '1Gi'). */
     'storageSize?': 'string',
+    /** Storage class name for Valkey PVCs (e.g. 'gp3', 'local-path'). */
+    'storageClass?': 'string',
   },
   /** Inngest background processing settings. */
   processing: {

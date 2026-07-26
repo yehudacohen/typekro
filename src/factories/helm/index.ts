@@ -27,5 +27,9 @@ export {
   helmReleaseReadinessEvaluator,
 } from './readiness-evaluators.js';
 
+// status.ts
+export type { HelmReleaseConditionSummary, HelmReleasePhase } from './status.js';
+export { helmReleaseConditionSummary } from './status.js';
+
 // types.ts
 export type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';

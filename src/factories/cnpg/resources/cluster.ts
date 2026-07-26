@@ -5,7 +5,10 @@
  * managed by the CloudNativePG operator.
  */
 
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
+import {
+  createConditionBasedReadinessEvaluator,
+  registerPortableReadinessEvaluator,
+} from '../../../core/readiness/index.js';
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ClusterConfig, ClusterStatus } from '../types.js';
@@ -84,6 +87,12 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
   // Fall back to condition-based evaluation for unknown phases
   return baseClusterEvaluator(liveResource);
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cnpg.cluster',
+  '1',
+  clusterReadinessEvaluator
+);
 
 /**
  * CloudNativePG Cluster Factory

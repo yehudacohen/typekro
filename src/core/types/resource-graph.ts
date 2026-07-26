@@ -6,6 +6,8 @@
  */
 
 import type { DependencyGraph } from '../dependencies/graph.js';
+import type { CompositionInspection, DesiredStatePlan, PlanOptions } from '../planning/types.js';
+import type { StaticYamlMaterializationOptions } from '../planning/materialization.js';
 import type {
   DeploymentOperationStatus,
   DeploymentOptions,
@@ -73,7 +75,13 @@ export interface ResourceGraph<
    * Convert the resource graph to YAML for inspection or manual deployment
    */
   toYaml(): string;
-  toYaml(spec: TSpec): string;
+  toYaml(spec: TSpec, options?: StaticYamlMaterializationOptions): string;
+
+  /** Experimental semantic inspection, present on graphs created by TypeKro. */
+  inspect?(): CompositionInspection;
+
+  /** Experimental semantic planning, present on graphs created by TypeKro. */
+  plan?(spec: TSpec, options?: PlanOptions): DesiredStatePlan;
 
   /**
    * Create a factory for this resource graph that can create instances

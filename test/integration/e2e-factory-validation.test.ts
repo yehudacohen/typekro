@@ -11,11 +11,17 @@
  * requiring full cluster deployment (which has serialization issues to fix).
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import { createCoreV1ApiClient, getIntegrationTestKubeConfig } from './shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  getIntegrationTestKubeConfig,
+  TestFactoryCleanupRegistry,
+} from './shared-kubeconfig.js';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-factory-validation';
@@ -33,7 +39,7 @@ const generateTestNamespace = (testName: string): string => {
 
 describe('E2E Factory Pattern Validation Tests', () => {
   let kc: k8s.KubeConfig;
-  const createdNamespaces: string[] = [];
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     // Initialize Kubernetes client (even if cluster isn't available)
@@ -45,13 +51,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
   });
 
   afterAll(async () => {
-    // Clean up any namespaces created during tests
-    if (createdNamespaces.length > 0 && kc) {
-      const { deleteNamespaceAndWait } = await import('./shared-kubeconfig.js');
-      console.log(`🧹 Cleaning up ${createdNamespaces.length} test namespaces...`);
-      await Promise.allSettled(createdNamespaces.map((ns) => deleteNamespaceAndWait(ns, kc)));
-      console.log('✅ Test namespace cleanup complete');
-    }
+    if (!kc) return;
+    await cleanupRegistry.cleanup(kc);
   });
 
   describe('KroResourceFactory without Alchemy Scope', () => {
@@ -200,18 +201,12 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(instanceYaml).toContain('my-api-api');
 
       // Create the test namespace before deployment
-      const k8sApi = createCoreV1ApiClient(kc);
       try {
-        await k8sApi.createNamespace({
-          body: { metadata: { name: testNamespace } },
-        });
-        createdNamespaces.push(testNamespace);
+        const namespaceLease = await createTestNamespace(testNamespace, kc);
+        cleanupRegistry.track(factory, 'my-api', [namespaceLease]);
         console.log(`✅ Created test namespace: ${testNamespace}`);
       } catch (error) {
-        // Namespace might already exist
-        console.log(
-          `⚠️  Namespace ${testNamespace} might already exist: ${(error as Error).message}`
-        );
+        console.log(`⚠️  Could not create test namespace: ${(error as Error).message}`);
       }
 
       // Test deployment attempt (should fail gracefully without cluster)

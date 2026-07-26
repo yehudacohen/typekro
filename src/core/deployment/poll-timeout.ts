@@ -43,17 +43,33 @@ export class PollTimeoutError extends Error {
  * means "an operation that actually started did not return in time" (a wedged call), never "the overall
  * poll deadline had already elapsed" — the two are distinct and must not be conflated.
  */
-export async function callWithTimeout<T>(op: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
+export async function callWithTimeout<T>(
+  op: () => Promise<T>,
+  timeoutMs: number,
+  label: string,
+  abortSignal?: AbortSignal
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let detachAbort = (): void => undefined;
   try {
+    abortSignal?.throwIfAborted();
+    const aborted = new Promise<never>((_, reject) => {
+      if (!abortSignal) return;
+      const onAbort = () =>
+        reject(abortSignal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      detachAbort = () => abortSignal.removeEventListener('abort', onAbort);
+    });
     return await Promise.race([
       op(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new PollTimeoutError(label, timeoutMs)), timeoutMs);
       }),
+      aborted,
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    detachAbort();
   }
 }
 

@@ -10,7 +10,7 @@ import { helmRepository } from '../../../src/factories/helm/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
 
 const NAMESPACE = 'typekro-test';
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Debug toResourceGraph vs kubernetesComposition', () => {

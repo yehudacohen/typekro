@@ -330,13 +330,13 @@ export function remapVariableNames(
 
     // No match or ambiguous
     if (prefixMatches.length > 1 || suffixMatches.length > 1) {
-      logger.warn('Ambiguous variable name in nested status CEL', {
+      logger.debug('Ambiguous variable name in intermediate nested status CEL', {
         variable: id,
         candidates: [...prefixMatches, ...suffixMatches],
         expression: exprStr.slice(0, 80),
       });
     } else {
-      logger.warn('Unresolvable variable name in nested status CEL', {
+      logger.debug('Unresolvable variable name in intermediate nested status CEL', {
         variable: id,
         innerResourceIds,
         expression: exprStr.slice(0, 80),
@@ -595,7 +595,7 @@ export function recoverGarbledExpression(
 
   const statusMatches = [...exprStr.matchAll(/(\w+)?\.status\.([a-zA-Z0-9_.]+)/g)];
   if (statusMatches.length === 0 || innerResourceIds.length === 0) {
-    logger.warn('Garbled expression with no recoverable status reference', {
+    logger.debug('Garbled intermediate expression has no recoverable status reference', {
       expression: exprStr.slice(0, 100),
     });
     return undefined;

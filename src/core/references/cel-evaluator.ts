@@ -189,10 +189,11 @@ export class CelEvaluator {
     expression: string
   ): Array<{ resourceId: string; fieldPath: string }> {
     const refs: Array<{ resourceId: string; fieldPath: string }> = [];
+    const searchableExpression = this.maskStringLiterals(expression);
 
     // Pattern to match resource references: resourceId.section.field
     const refPattern = /(\w+)\.(\w+)\.(\w+(?:\[\d+\])?(?:\.\w+)*)/g;
-    let match: RegExpExecArray | null = refPattern.exec(expression);
+    let match: RegExpExecArray | null = refPattern.exec(searchableExpression);
 
     while (match !== null) {
       const [, resourceId, section, fieldPath] = match;
@@ -202,10 +203,42 @@ export class CelEvaluator {
           fieldPath: `${section}.${fieldPath}`,
         });
       }
-      match = refPattern.exec(expression);
+      match = refPattern.exec(searchableExpression);
     }
 
     return refs;
+  }
+
+  /**
+   * Preserve expression offsets while hiding quoted CEL text from the resource-reference scanner.
+   * A dotted URL or hostname inside a string literal is data, not a resource path.
+   */
+  private maskStringLiterals(expression: string): string {
+    const chars = [...expression];
+    let quote: '"' | "'" | undefined;
+    let escaped = false;
+
+    for (let index = 0; index < chars.length; index += 1) {
+      const char = chars[index];
+      if (quote === undefined) {
+        if (char === '"' || char === "'") {
+          quote = char;
+          chars[index] = ' ';
+        }
+        continue;
+      }
+
+      chars[index] = ' ';
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+    }
+
+    return chars.join('');
   }
 
   /**

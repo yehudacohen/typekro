@@ -77,9 +77,9 @@ describe('resource scope metadata', () => {
     }
   });
 
-  it('factory-created namespaced resources do not inherit cluster scope', () => {
+  it('factory-created namespaced resources carry explicit namespaced scope', () => {
     const cm = configMap({ metadata: { name: 'settings', namespace: 'apps' }, data: {} });
-    expect(getMetadataField(cm, 'scope')).toBeUndefined();
-    expect(getResourceScope(cm)).toBeUndefined();
+    expect(getMetadataField(cm, 'scope')).toBe('namespaced');
+    expect(getResourceScope(cm)).toBe('namespaced');
   });
 });

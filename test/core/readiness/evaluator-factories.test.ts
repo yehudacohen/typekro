@@ -3,15 +3,63 @@ import { describe, expect, it } from 'bun:test';
 import {
   createAlwaysReadyEvaluator,
   createConditionBasedReadinessEvaluator,
+  createCustomResourceDefinitionReadinessEvaluator,
   createPhaseBasedReadinessEvaluator,
 } from '../../../src/core/readiness/evaluator-factories.js';
+import {
+  getPortableReadinessStrategy,
+  resolvePortableReadinessStrategy,
+} from '../../../src/core/readiness/portable-strategies.js';
 
 describe('Readiness Evaluator Factories', () => {
+  it('round-trips portable CustomResourceDefinition readiness', () => {
+    const evaluator = createCustomResourceDefinitionReadinessEvaluator();
+    const strategy = getPortableReadinessStrategy(evaluator);
+    const restored = resolvePortableReadinessStrategy(structuredClone(strategy!));
+
+    expect(strategy).toEqual(
+      expect.objectContaining({
+        kind: 'registered',
+        id: 'typekro.readiness.custom-resource-definition',
+        revision: '1',
+      })
+    );
+    expect(
+      restored?.({
+        status: {
+          conditions: [
+            { type: 'Established', status: 'True' },
+            { type: 'NamesAccepted', status: 'True' },
+          ],
+        },
+      })
+    ).toEqual({
+      ready: true,
+      message: 'CustomResourceDefinition is established and names are accepted',
+    });
+  });
+
   // ===========================================================================
   // createAlwaysReadyEvaluator
   // ===========================================================================
 
   describe('createAlwaysReadyEvaluator', () => {
+    it('round-trips through its registered portable strategy', () => {
+      const evaluator = createAlwaysReadyEvaluator('ConfigMap');
+      const strategy = getPortableReadinessStrategy(evaluator);
+
+      expect(strategy).toEqual(
+        expect.objectContaining({
+          kind: 'registered',
+          id: 'typekro.readiness.always',
+          revision: '1',
+        })
+      );
+      expect(resolvePortableReadinessStrategy(structuredClone(strategy!))?.({})).toEqual({
+        ready: true,
+        message: 'ConfigMap is ready (configuration resource)',
+      });
+    });
     it('should return ready: true regardless of input', () => {
       const evaluator = createAlwaysReadyEvaluator('ConfigMap');
       const result = evaluator({});

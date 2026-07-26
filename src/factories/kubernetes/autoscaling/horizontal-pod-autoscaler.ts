@@ -1,30 +1,20 @@
 import type { V2HorizontalPodAutoscaler } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V2HpaSpec = NonNullable<V2HorizontalPodAutoscaler['spec']>;
 export type V2HpaStatus = NonNullable<V2HorizontalPodAutoscaler['status']>;
 
-export function horizontalPodAutoscaler(
-  resource: V2HorizontalPodAutoscaler & { id?: string }
-): Enhanced<V2HpaSpec, V2HpaStatus> {
-  return createResource({
-    ...resource,
-    apiVersion: 'autoscaling/v2',
-    kind: 'HorizontalPodAutoscaler',
-    metadata: resource.metadata ?? { name: 'unnamed-hpa' },
-  }).withReadinessEvaluator((liveResource: V2HorizontalPodAutoscaler) => {
+const horizontalPodAutoscalerReadinessEvaluator = registerPortableReadinessEvaluator(
+  'typekro.readiness.kubernetes.horizontal-pod-autoscaler-v2',
+  '1',
+  (liveResource: V2HorizontalPodAutoscaler) => {
     try {
       const status = liveResource.status;
-
-      if (!status) {
-        return { ready: false, reason: 'No status available' };
-      }
-
-      // HPA is ready when it can read metrics and has current replicas
+      if (!status) return { ready: false, reason: 'No status available' };
       const ready = status.currentReplicas !== undefined;
-
       return {
         ready,
         reason: ready
@@ -37,5 +27,16 @@ export function horizontalPodAutoscaler(
         reason: `Error checking HPA status: ${ensureError(error).message}`,
       };
     }
-  });
+  }
+);
+
+export function horizontalPodAutoscaler(
+  resource: V2HorizontalPodAutoscaler & { id?: string }
+): Enhanced<V2HpaSpec, V2HpaStatus> {
+  return createResource({
+    ...resource,
+    apiVersion: 'autoscaling/v2',
+    kind: 'HorizontalPodAutoscaler',
+    metadata: resource.metadata ?? { name: 'unnamed-hpa' },
+  }).withReadinessEvaluator(horizontalPodAutoscalerReadinessEvaluator);
 }

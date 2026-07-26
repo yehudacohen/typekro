@@ -1051,7 +1051,7 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     );
 
     const innerSection = findResourceSection(outerComp.toYaml().split('\n'), 'innerString1');
-    expect(innerSection).toContain('cache.status.phase == \\"Ready\\"');
+    expect(innerSection).toContain('cache.status.phase == "Ready"');
     expect(innerSection).toContain('?');
     expect(innerSection).toContain('on');
     expect(innerSection).toContain('off');
@@ -1158,7 +1158,7 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     );
 
     const cfgSection = findResourceSection(comp.toYaml().split('\n'), 'cfg');
-    expect(cfgSection).toContain('cache.status.ready ? cache.status.phase : \\"fallback\\"');
+    expect(cfgSection).toContain('cache.status.ready ? cache.status.phase : "fallback"');
     expect(cfgSection).not.toContain('"expression"');
   });
 
@@ -1200,7 +1200,7 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     const cfgSection = findResourceSection(outerComp.toYaml().split('\n'), 'cfg');
     expect(cfgSection).not.toContain('nestedHandle.status.ready');
     expect(cfgSection).toContain('innerStatusHandle1.status.readyReplicas');
-    expect(cfgSection).toContain('? \\"on\\" : \\"off\\"');
+    expect(cfgSection).toContain('? "on" : "off"');
   });
 
   it('resource-status branch diffs finalize nested status handles inside Cel.expr branches', async () => {
@@ -1686,7 +1686,7 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     );
 
     const yaml = comp.toYaml();
-    expect(yaml).toContain('cache.status.ready ? schema.spec.image : \\"fallback\\"');
+    expect(yaml).toContain('cache.status.ready ? schema.spec.image : "fallback"');
     expect(yaml).not.toContain('cache.status.ready ? omit() : "fallback"');
   });
 
@@ -1781,7 +1781,7 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     );
 
     const yaml = comp.toYaml();
-    expect(yaml).toContain('cache.status.ready ? \\"--redis\\" : \\"--memory\\"');
+    expect(yaml).toContain('cache.status.ready ? "--redis" : "--memory"');
     expect(yaml).toContain('--memory');
   });
 
@@ -2062,6 +2062,6 @@ describe('Regression: a resource own-`.spec` ref inside a status ternary', () =>
     expect(yaml).not.toContain('d.schema.spec.replicas');
     expect(yaml).toContain('d.spec.replicas');
     // ...and the ternary itself must still compile.
-    expect(yaml).toMatch(/phase:.*\? 'Ready' : 'Installing'/);
+    expect(yaml).toMatch(/phase:.*\? ''Ready'' : ''Installing''/);
   });
 });

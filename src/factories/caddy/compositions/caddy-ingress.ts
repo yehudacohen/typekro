@@ -63,129 +63,136 @@ export interface CaddyIngressOptions {
  * extracts the readiness CEL from the composition fn's `return`), so this helper stops short of it.
  */
 const buildCaddyResources = (spec: CaddyIngressConfig, ephemeral: boolean) => {
-    const name = spec.name;
-    const ns = spec.namespace ?? DEFAULT_CADDY_NAMESPACE;
-    const image = spec.image ?? DEFAULT_CADDY_IMAGE;
-    const version = spec.version ?? DEFAULT_CADDY_VERSION;
-    const httpPort = spec.httpPort ?? DEFAULT_CADDY_HTTP_PORT;
-    const httpsPort = spec.httpsPort ?? DEFAULT_CADDY_HTTPS_PORT;
-    const serviceType = spec.serviceType ?? 'ClusterIP';
-    const pvcSize = spec.persistence?.size ?? DEFAULT_CADDY_PVC_SIZE;
+  const name = spec.name;
+  const ns = spec.namespace ?? DEFAULT_CADDY_NAMESPACE;
+  const image = spec.image ?? DEFAULT_CADDY_IMAGE;
+  const version = spec.version ?? DEFAULT_CADDY_VERSION;
+  const httpPort = spec.httpPort ?? DEFAULT_CADDY_HTTP_PORT;
+  const httpsPort = spec.httpsPort ?? DEFAULT_CADDY_HTTPS_PORT;
+  const serviceType = spec.serviceType ?? 'ClusterIP';
+  const pvcSize = spec.persistence?.size ?? DEFAULT_CADDY_PVC_SIZE;
 
-    const labels = {
-      'app.kubernetes.io/name': 'caddy',
-      'app.kubernetes.io/instance': name,
-      'app.kubernetes.io/version': version,
-      'app.kubernetes.io/managed-by': 'typekro',
+  const labels = {
+    'app.kubernetes.io/name': 'caddy',
+    'app.kubernetes.io/instance': name,
+    'app.kubernetes.io/version': version,
+    'app.kubernetes.io/managed-by': 'typekro',
+  };
+  const selector = { 'app.kubernetes.io/name': 'caddy', 'app.kubernetes.io/instance': name };
+  const configMapName = `${name}-caddyfile`;
+  const pvcName = `${name}-data`;
+
+  // The Caddy workload namespace (distinct from the namespace that holds a KRO instance, so no finalizer
+  // deadlock). Cluster-scoped namespace factory handles its own readiness/deletion ordering.
+  namespace({ metadata: { name: ns, labels }, id: 'caddyNamespace' });
+
+  configMap({
+    metadata: { name: configMapName, namespace: ns, labels },
+    data: { Caddyfile: spec.caddyfile },
+    id: 'caddyConfig',
+  });
+
+  // `/data` holds Caddy's `tls internal` CA root. Default: a PVC so the CA survives restarts. Ephemeral
+  // (build-time option): an emptyDir — the CA regenerates per pod, but the plane no longer depends on a
+  // single-AZ RWO volume that strands the pod on a node/AZ change. The choice is made HERE (real JS
+  // boolean), so only one resource set is registered — no KRO runtime conditional.
+  let dataVolume: V1Volume;
+  let dataClaim: ReturnType<typeof persistentVolumeClaim> | undefined;
+  if (ephemeral) {
+    dataVolume = { name: 'data', emptyDir: {} };
+  } else {
+    dataClaim = persistentVolumeClaim({
+      metadata: { name: pvcName, namespace: ns, labels },
+      spec: {
+        accessModes: ['ReadWriteOnce'],
+        resources: { requests: { storage: pvcSize } },
+        ...(spec.persistence?.storageClass
+          ? { storageClassName: spec.persistence.storageClass }
+          : {}),
+      },
+      id: 'caddyData',
+    });
+    dataVolume = {
+      name: 'data',
+      persistentVolumeClaim: { claimName: dataClaim.metadata.name as string },
     };
-    const selector = { 'app.kubernetes.io/name': 'caddy', 'app.kubernetes.io/instance': name };
-    const configMapName = `${name}-caddyfile`;
-    const pvcName = `${name}-data`;
+  }
 
-    // The Caddy workload namespace (distinct from the namespace that holds a KRO instance, so no finalizer
-    // deadlock). Cluster-scoped namespace factory handles its own readiness/deletion ordering.
-    namespace({ metadata: { name: ns, labels }, id: 'caddyNamespace' });
+  const volumes: V1Volume[] = [
+    { name: 'caddyfile', configMap: { name: configMapName } },
+    dataVolume,
+  ];
 
-    configMap({
-      metadata: { name: configMapName, namespace: ns, labels },
-      data: { Caddyfile: spec.caddyfile },
-      id: 'caddyConfig',
-    });
-
-    // `/data` holds Caddy's `tls internal` CA root. Default: a PVC so the CA survives restarts. Ephemeral
-    // (build-time option): an emptyDir — the CA regenerates per pod, but the plane no longer depends on a
-    // single-AZ RWO volume that strands the pod on a node/AZ change. The choice is made HERE (real JS
-    // boolean), so only one resource set is registered — no KRO runtime conditional.
-    let dataVolume: V1Volume;
-    if (ephemeral) {
-      dataVolume = { name: 'data', emptyDir: {} };
-    } else {
-      persistentVolumeClaim({
-        metadata: { name: pvcName, namespace: ns, labels },
+  const caddyDeployment = deployment({
+    metadata: { name, namespace: ns, labels },
+    spec: {
+      // Pinned to a single replica BY DESIGN: `tls internal` keeps its CA in the RWO `/data` PVC,
+      // which exactly one pod can own. Multiple pods would (a) fail to co-mount the RWO volume and
+      // (b) each mint a different CA → clients see mismatched certs. HA needs RWX storage or an
+      // externalized CA — deliberately out of scope, so `replicaCount` is not a config knob.
+      replicas: 1,
+      // RWO + single replica REQUIRES Recreate: the default RollingUpdate surges a second pod that
+      // can't mount the PVC held by the outgoing one → the rollout wedges. Recreate tears the old
+      // pod down (releasing the volume) before starting the new one.
+      strategy: { type: 'Recreate' },
+      selector: { matchLabels: selector },
+      template: {
+        metadata: { labels },
         spec: {
-          accessModes: ['ReadWriteOnce'],
-          resources: { requests: { storage: pvcSize } },
-          ...(spec.persistence?.storageClass
-            ? { storageClassName: spec.persistence.storageClass }
-            : {}),
-        },
-        id: 'caddyData',
-      });
-      dataVolume = { name: 'data', persistentVolumeClaim: { claimName: pvcName } };
-    }
-
-    const volumes: V1Volume[] = [
-      { name: 'caddyfile', configMap: { name: configMapName } },
-      dataVolume,
-    ];
-
-    const caddyDeployment = deployment({
-      metadata: { name, namespace: ns, labels },
-      spec: {
-        // Pinned to a single replica BY DESIGN: `tls internal` keeps its CA in the RWO `/data` PVC,
-        // which exactly one pod can own. Multiple pods would (a) fail to co-mount the RWO volume and
-        // (b) each mint a different CA → clients see mismatched certs. HA needs RWX storage or an
-        // externalized CA — deliberately out of scope, so `replicaCount` is not a config knob.
-        replicas: 1,
-        // RWO + single replica REQUIRES Recreate: the default RollingUpdate surges a second pod that
-        // can't mount the PVC held by the outgoing one → the rollout wedges. Recreate tears the old
-        // pod down (releasing the volume) before starting the new one.
-        strategy: { type: 'Recreate' },
-        selector: { matchLabels: selector },
-        template: {
-          metadata: { labels },
-          spec: {
-            containers: [
-              {
-                name: 'caddy',
-                image,
-                // Full command (overrides entrypoint): the caddy image puts `caddy` in CMD, so overriding
-                // only args would drop it ("exec: run: not found"). Reads the mounted Caddyfile.
-                command: [
-                  'caddy',
-                  'run',
-                  '--config',
-                  '/etc/caddy/Caddyfile',
-                  '--adapter',
-                  'caddyfile',
-                ],
-                ports: [
-                  { name: 'http', containerPort: httpPort },
-                  { name: 'https', containerPort: httpsPort },
-                ],
-                volumeMounts: [
-                  { name: 'caddyfile', mountPath: '/etc/caddy', readOnly: true },
-                  { name: 'data', mountPath: '/data' },
-                ],
-                ...(spec.resources ? { resources: spec.resources } : {}),
-                readinessProbe: {
-                  tcpSocket: { port: httpsPort },
-                  initialDelaySeconds: 5,
-                  periodSeconds: 10,
-                },
+          containers: [
+            {
+              name: 'caddy',
+              image,
+              // Full command (overrides entrypoint): the caddy image puts `caddy` in CMD, so overriding
+              // only args would drop it ("exec: run: not found"). Reads the mounted Caddyfile.
+              command: [
+                'caddy',
+                'run',
+                '--config',
+                '/etc/caddy/Caddyfile',
+                '--adapter',
+                'caddyfile',
+              ],
+              ports: [
+                { name: 'http', containerPort: httpPort },
+                { name: 'https', containerPort: httpsPort },
+              ],
+              volumeMounts: [
+                { name: 'caddyfile', mountPath: '/etc/caddy', readOnly: true },
+                { name: 'data', mountPath: '/data' },
+              ],
+              ...(spec.resources ? { resources: spec.resources } : {}),
+              readinessProbe: {
+                tcpSocket: { port: httpsPort },
+                initialDelaySeconds: 5,
+                periodSeconds: 10,
               },
-            ],
-            volumes,
-          },
+            },
+          ],
+          volumes,
         },
       },
-      id: 'caddyDeployment',
-    });
+    },
+    id: 'caddyDeployment',
+  });
+  if (dataClaim) {
+    caddyDeployment.dependsOn(dataClaim);
+  }
 
-    service({
-      metadata: { name, namespace: ns, labels },
-      spec: {
-        type: serviceType,
-        selector,
-        ports: [
-          { name: 'http', port: httpPort, targetPort: httpPort },
-          { name: 'https', port: httpsPort, targetPort: httpsPort },
-        ],
-      },
-      id: 'caddyService',
-    });
+  service({
+    metadata: { name, namespace: ns, labels },
+    spec: {
+      type: serviceType,
+      selector,
+      ports: [
+        { name: 'http', port: httpPort, targetPort: httpPort },
+        { name: 'https', port: httpsPort, targetPort: httpsPort },
+      ],
+    },
+    id: 'caddyService',
+  });
 
-    return { caddyDeployment, version };
+  return { caddyDeployment, version };
 };
 
 // The readiness status: a direct proxy comparison (no Cel.expr / conditions array). readyReplicas vs the
@@ -209,14 +216,14 @@ const buildCaddyResources = (spec: CaddyIngressConfig, ephemeral: boolean) => {
 // returns the EPHEMERAL (persistence-free) config type — the common subset of both modes. Returning the
 // PVC config would expose `persistence` on a composition that may actually be ephemeral (which rejects
 // it at runtime); the persistence-free type never exposes a field that could be invalid for the mode.
+export function makeCaddyIngress(options: {
+  readonly ephemeral: true;
+}): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
+export function makeCaddyIngress(options?: {
+  readonly ephemeral?: false;
+}): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(
-  options: { readonly ephemeral: true },
-): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
-export function makeCaddyIngress(
-  options?: { readonly ephemeral?: false },
-): CallableComposition<CaddyIngressConfig, CaddyIngressStatus>;
-export function makeCaddyIngress(
-  options: CaddyIngressOptions,
+  options: CaddyIngressOptions
 ): CallableComposition<CaddyIngressEphemeralConfig, CaddyIngressStatus>;
 export function makeCaddyIngress(options: CaddyIngressOptions = {}) {
   if (options.ephemeral) {
@@ -233,7 +240,7 @@ export function makeCaddyIngress(options: CaddyIngressOptions = {}) {
           ready: caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas,
           version,
         };
-      },
+      }
     );
   }
   return kubernetesComposition(
@@ -249,7 +256,7 @@ export function makeCaddyIngress(options: CaddyIngressOptions = {}) {
         ready: caddyDeployment.status.readyReplicas >= caddyDeployment.spec.replicas,
         version,
       };
-    },
+    }
   );
 }
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
-/**
- * Cleanup script for leftover test namespaces
- * 
- * This script cleans up any test namespaces that were left behind by failed tests.
- * Run with: bun run scripts/cleanup-test-namespaces.ts
- */
+/** Clean up UID-leased integration namespaces left by interrupted test runs. */
 
 import * as k8s from '@kubernetes/client-node';
 import { createBunCompatibleCoreV1Api } from '../src/core/kubernetes/index.js';
+import {
+  deleteTestNamespaceAndWait,
+  TYPEKRO_TEST_NAMESPACE_LABEL,
+  type TestNamespaceLease,
+} from '../test/integration/shared-kubeconfig.js';
 
 async function main() {
   console.log('🧹 Starting cleanup of leftover test namespaces...');
@@ -23,79 +23,44 @@ async function main() {
 
   const coreApi = createBunCompatibleCoreV1Api(kc);
 
-  // Patterns for test namespaces
-  const testNamespacePatterns = [
-    /^typekro-e2e-basic-/,
-    /^typekro-comprehensive-/,
-    /^typekro-imperative-e2e-/,
-    /^typekro-factory-pattern-/,
-    /^typekro-tls-/,
-    /^alchemy-test-/,
-    /^typekro-test-/,
-  ];
-
-  try {
-    const namespaces = await coreApi.listNamespace();
-    
-    const testNamespaces = namespaces.items
-      .filter((ns) => {
-        const name = ns.metadata?.name;
-        if (!name) return false;
-        return testNamespacePatterns.some((pattern) => pattern.test(name));
-      })
-      .map((ns) => ns.metadata!.name!);
-
-    if (testNamespaces.length === 0) {
-      console.log('✅ No leftover test namespaces found');
-      return;
+  const namespaces = await coreApi.listNamespace({
+    labelSelector: `${TYPEKRO_TEST_NAMESPACE_LABEL}=owned`,
+  });
+  const leases = namespaces.items.map((namespace): TestNamespaceLease => {
+    const name = namespace.metadata?.name;
+    const uid = namespace.metadata?.uid;
+    if (!name || !uid) {
+      throw new Error('Refusing test cleanup because a labeled namespace has no name or UID');
     }
+    return { name, uid };
+  });
 
-    console.log(`🔍 Found ${testNamespaces.length} test namespaces to clean up:`);
-    testNamespaces.forEach((ns) => console.log(`   - ${ns}`));
-
-    // Delete all matching namespaces
-    for (const ns of testNamespaces) {
-      try {
-        console.log(`🗑️ Deleting namespace: ${ns}`);
-        await coreApi.deleteNamespace({ name: ns });
-      } catch (error: any) {
-        if (error.statusCode === 404) {
-          console.log(`   ✅ Already deleted: ${ns}`);
-        } else {
-          console.warn(`   ⚠️ Failed to delete ${ns}: ${error.message}`);
-        }
-      }
-    }
-
-    // Wait for namespaces to be fully deleted
-    console.log('⏳ Waiting for namespaces to be fully deleted...');
-    const startTime = Date.now();
-    const timeoutMs = 120000; // 2 minutes
-
-    while (Date.now() - startTime < timeoutMs) {
-      const remaining = await coreApi.listNamespace();
-      const stillExist = remaining.items
-        .filter((ns) => {
-          const name = ns.metadata?.name;
-          if (!name) return false;
-          return testNamespacePatterns.some((pattern) => pattern.test(name));
-        })
-        .map((ns) => ns.metadata!.name!);
-
-      if (stillExist.length === 0) {
-        console.log('✅ All test namespaces have been deleted');
-        return;
-      }
-
-      console.log(`   Still waiting for ${stillExist.length} namespaces: ${stillExist.join(', ')}`);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-
-    console.warn('⚠️ Timeout waiting for all namespaces to be deleted');
-  } catch (error) {
-    console.error('❌ Error during cleanup:', error);
-    process.exit(1);
+  if (leases.length === 0) {
+    console.log('✅ No labeled integration namespaces found');
+    return;
   }
+
+  console.log(`🔍 Found ${leases.length} labeled integration namespace(s):`);
+  leases.forEach(({ name, uid }) => console.log(`   - ${name} (${uid})`));
+
+  const cleanupResults = await Promise.allSettled(
+    leases.map((lease) => deleteTestNamespaceAndWait(lease, kc))
+  );
+  const failures = cleanupResults.flatMap((result, index) =>
+    result.status === 'rejected'
+      ? [{ namespace: leases[index]?.name ?? 'unknown', error: result.reason }]
+      : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `Failed to clean ${failures.length} labeled integration namespace(s): ${failures
+        .map(({ namespace }) => namespace)
+        .join(', ')}`
+    );
+  }
+
+  console.log('✅ All labeled integration namespaces were deleted');
 }
 
-main().catch(console.error);
+await main();

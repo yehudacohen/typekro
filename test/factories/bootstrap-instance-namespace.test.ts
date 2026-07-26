@@ -46,7 +46,11 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
       name: 'analytics',
       namespace: 'dagster',
     } as never);
-    const nsDecl = decls[0];
+    const nsDecl = decls.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'dagster'
+    );
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('dagster');
     // Findings #3 + #4: the namespace is EMPTY-GATED (delete-if-empty / retain-if-occupied)
@@ -54,9 +58,14 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     // delete AFTER the RGD + instance (both dependsOn it) — the delete-after-RGD ordering.
     expect(nsDecl?.props.namespaceEmptyGate).toBe(true);
     expect(nsDecl?.props.retain).toBeUndefined();
-    // The instance CR depends on the namespace, so reverse-topo teardown removes the
-    // instance (then the RGD) before the namespace — the delete-after-RGD ordering.
-    expect(decls.at(-1)?.dependsOn).toContain(nsDecl?.id);
+    // The RGD depends on the namespace and the instance depends on the RGD, so
+    // reverse-topological teardown removes the instance, then RGD, then namespace.
+    const rgdDecl = decls.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'ResourceGraphDefinition' &&
+        declaration.props.resource.metadata?.name === 'dagster-bootstrap'
+    );
+    expect(rgdDecl?.dependsOn).toContain(nsDecl?.id);
     // The instance CR (last declaration) stays in the workload namespace.
     expect(decls.at(-1)?.props.namespace).toBe('dagster');
     // The instance CR itself is neither retained nor empty-gated (torn down normally).
@@ -120,9 +129,19 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     // The hoisted retained-namespace declaration IS keyed by the workload ns NAME, so
     // those two happen to differ here — but that is the namespace singleton's id, not
     // the instance CR's, and does not isolate the CRs from each other.
-    expect(dev[0]?.props.resource.metadata?.name).toBe('dev');
-    expect(prod[0]?.props.resource.metadata?.name).toBe('prod');
-    expect(dev[0]?.id).not.toBe(prod[0]?.id as string);
+    const devNamespace = dev.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'dev'
+    );
+    const prodNamespace = prod.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'prod'
+    );
+    expect(devNamespace?.props.resource.metadata?.name).toBe('dev');
+    expect(prodNamespace?.props.resource.metadata?.name).toBe('prod');
+    expect(devNamespace?.id).not.toBe(prodNamespace?.id as string);
   });
 
   it('the hoisted namespace is retained for BOTH Flux and Argo (survives Application deletion)', () => {
@@ -140,7 +159,11 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     const decls = await dagsterBootstrap
       .factory('kro')
       .toAlchemyResources({ name: 'demo', namespace: 'dagster' } as never);
-    const nsDecl = decls[0];
+    const nsDecl = decls.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'dagster'
+    );
     expect(nsDecl?.props.resource.kind).toBe('Namespace');
     expect(nsDecl?.props.resource.metadata?.name).toBe('dagster');
     // Findings #3 + #4: replaces the old retain-by-name-equality distinction. Every
@@ -164,11 +187,21 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     const b = await valkeyBootstrap
       .factory('kro')
       .toAlchemyResources({ name: 'b', namespace: 'shared-ns' } as never);
-    expect(a[0]?.props.resource.metadata?.name).toBe('shared-ns');
-    expect(b[0]?.props.resource.metadata?.name).toBe('shared-ns');
-    expect(a[0]?.id).toBe(b[0]?.id as string);
-    expect(a[0]?.props.namespaceEmptyGate).toBe(true);
-    expect(b[0]?.props.namespaceEmptyGate).toBe(true);
+    const aNamespace = a.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'shared-ns'
+    );
+    const bNamespace = b.find(
+      (declaration) =>
+        declaration.props.resource.kind === 'Namespace' &&
+        declaration.props.resource.metadata?.name === 'shared-ns'
+    );
+    expect(aNamespace?.props.resource.metadata?.name).toBe('shared-ns');
+    expect(bNamespace?.props.resource.metadata?.name).toBe('shared-ns');
+    expect(aNamespace?.id).toBe(bNamespace?.id as string);
+    expect(aNamespace?.props.namespaceEmptyGate).toBe(true);
+    expect(bNamespace?.props.namespaceEmptyGate).toBe(true);
   });
 
   it('clickstackBootstrap serializes without throwing (instance in workload ns)', () => {

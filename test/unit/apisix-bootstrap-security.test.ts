@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as jsYaml from 'js-yaml';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
-import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
-import { mapAPISixConfigToHelmValues, validateAPISixHelmValues } from '../../src/factories/apisix/utils/helm-values-mapper.js';
+import {
+  APISixBootstrapConfigSchema,
+  APISixBootstrapStatusSchema,
+} from '../../src/factories/apisix/types.js';
+import {
+  mapAPISixConfigToHelmValues,
+  validateAPISixHelmValues,
+} from '../../src/factories/apisix/utils/helm-values-mapper.js';
 import { kubernetesComposition } from '../../src/index.js';
 
 describe('APISIX bootstrap credential serialization', () => {
@@ -67,6 +74,12 @@ describe('APISIX bootstrap credential serialization', () => {
       etcd: {
         enabled: true,
         replicaCount: 1,
+        persistence: {
+          enabled: true,
+          storageClass: 'local-path',
+          size: '4Gi',
+          accessModes: ['ReadWriteOnce'],
+        },
         auth: { tls: { enabled: false } },
       },
       customValues: { extra: { enabled: true } },
@@ -77,8 +90,28 @@ describe('APISIX bootstrap credential serialization', () => {
       expect(result.apisix?.image?.repository).toBe('apache/apisix');
       expect(result.dashboard?.enabled).toBe(true);
       expect(result.etcd?.replicaCount).toBe(1);
+      expect(result.etcd?.persistence?.storageClass).toBe('local-path');
       expect(result.customValues).toEqual({ extra: { enabled: true } });
     }
+  });
+
+  it('maps typed etcd persistence into APISIX Helm values', () => {
+    const helmValues = mapAPISixConfigToHelmValues({
+      name: 'apisix',
+      etcd: {
+        persistence: {
+          enabled: true,
+          storageClass: 'local-path',
+          size: '4Gi',
+        },
+      },
+    });
+
+    expect(helmValues.etcd?.persistence).toEqual({
+      enabled: true,
+      storageClass: 'local-path',
+      size: '4Gi',
+    });
   });
 
   it('exposes gateway service ports in the KRO status schema', () => {
@@ -110,7 +143,7 @@ describe('APISIX bootstrap credential serialization', () => {
     });
 
     expect(warnings).toContain(
-      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.',
+      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.'
     );
     expect(warnings).not.toContain(
       'Ingress controller is disabled. This will prevent ingress resources from being processed.'
@@ -187,20 +220,73 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
-  it('wires the HelmRelease sourceRef to the created HelmRepository name', () => {
+  it('wires the HelmRelease to a separately owned HelmRepository singleton', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;
     process.env.APISIX_ADMIN_KEY = 'env-admin-key';
     process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
 
     try {
-      const yaml = apisixBootstrap.toYaml();
+      const documents = jsYaml.loadAll(apisixBootstrap.toYaml()) as Array<{
+        kind?: string;
+        spec?: {
+          schema?: { kind?: string };
+          resources?: Array<{
+            id?: string;
+            externalRef?: {
+              kind?: string;
+              metadata?: { name?: string; namespace?: string };
+            };
+            template?: {
+              kind?: string;
+              metadata?: { name?: string; namespace?: string };
+              spec?: {
+                chart?: {
+                  spec?: {
+                    sourceRef?: { kind?: string; name?: string; namespace?: string };
+                  };
+                };
+              };
+            };
+          }>;
+        };
+      }>;
+      const owner = documents.find(
+        (document) =>
+          document.kind === 'ResourceGraphDefinition' &&
+          document.spec?.schema?.kind === 'APISixHelmRepository'
+      );
+      const consumer = documents.find(
+        (document) =>
+          document.kind === 'ResourceGraphDefinition' &&
+          document.spec?.schema?.kind === 'APISixBootstrap'
+      );
+      const repository = owner?.spec?.resources?.find(
+        (resource) => resource.template?.kind === 'HelmRepository'
+      );
+      const repositoryRef = consumer?.spec?.resources?.find(
+        (resource) => resource.externalRef?.kind === 'APISixHelmRepository'
+      );
+      const release = consumer?.spec?.resources?.find(
+        (resource) => resource.template?.kind === 'HelmRelease'
+      );
 
-      expect(yaml).toContain('kind: HelmRepository');
-      expect(yaml).toContain('name: apisix-repo');
-      expect(yaml).toContain('sourceRef:');
-      expect(yaml).toContain('name: apisix-repo');
-      expect(yaml).not.toContain('name: apisix-bootstrap-repo');
+      expect(repository?.template?.metadata).toEqual({
+        name: '${schema.spec.name}',
+        namespace: '${schema.spec.namespace}',
+      });
+      expect(repositoryRef?.externalRef?.metadata).toEqual({
+        name: 'apisix-helm-repository',
+        namespace: 'typekro-singletons',
+      });
+      expect(release?.template?.spec?.chart?.spec?.sourceRef).toEqual({
+        kind: 'HelmRepository',
+        name: 'apisix-repo',
+        namespace: 'flux-system',
+      });
+      expect(
+        consumer?.spec?.resources?.some((resource) => resource.template?.kind === 'HelmRepository')
+      ).toBe(false);
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;
@@ -223,12 +309,28 @@ describe('APISIX bootstrap credential serialization', () => {
 
     try {
       const yaml = apisixBootstrap.toYaml();
+      const rgd = (
+        jsYaml.loadAll(yaml) as Array<{
+          spec?: {
+            schema?: { kind?: string };
+            resources?: Array<{ id: string; template?: { spec?: { values?: unknown } } }>;
+          };
+        }>
+      ).find((document) => document.spec?.schema?.kind === 'APISixBootstrap');
+      expect(rgd).toBeDefined();
+      const values = rgd!.spec!.resources!.find((resource) => resource.id === 'apisixHelmRelease')
+        ?.template?.spec?.values as Record<string, unknown>;
+      const serializedValues = JSON.stringify(values);
 
-      expect(yaml).toContain('apisix:');
-      expect(yaml).toContain('image: "${has(schema.spec.apisix) && has(schema.spec.apisix.image) ? schema.spec.apisix.image : omit()}"');
-      expect(yaml).toContain('dashboard:');
-      expect(yaml).toContain('enabled: "${has(schema.spec.dashboard) && has(schema.spec.dashboard.enabled) ? schema.spec.dashboard.enabled : omit()}"');
-      expect(yaml).toContain('schema.spec.customValues');
+      expect(values).toHaveProperty('apisix');
+      expect(serializedValues).toContain(
+        '${has(schema.spec.apisix) && has(schema.spec.apisix.image) ? schema.spec.apisix.image : omit()}'
+      );
+      expect(values).toHaveProperty('dashboard');
+      expect(serializedValues).toContain(
+        '${has(schema.spec.dashboard) && has(schema.spec.dashboard.enabled) ? schema.spec.dashboard.enabled : omit()}'
+      );
+      expect(serializedValues).toContain('schema.spec.customValues');
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;

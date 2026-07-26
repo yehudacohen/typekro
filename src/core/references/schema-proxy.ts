@@ -5,7 +5,7 @@
  * KubernetesRef objects for field access, specifically marked as schema references.
  */
 
-import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { KUBERNETES_REF_BRAND, SCHEMA_REFERENCE_OPTIONAL_BRAND } from '../constants/brands.js';
 import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy } from '../types.js';
 
 /** Callback type for array iteration methods (map, forEach, filter, some, every) on schema proxies. */
@@ -30,16 +30,22 @@ type ArrayIterationCallback = (element: unknown, index: number, array: unknown[]
  */
 interface ObjectShape {
   kind: 'object';
-  children: Map<string, unknown>;
+  children: Map<string, { readonly node: unknown; readonly optional: boolean }>;
 }
 interface MapShape {
   kind: 'map';
 }
 type SchemaShape = ObjectShape | MapShape | undefined;
 
-function appendFieldPathSegment(fieldPath: string, prop: string | symbol): string {
+function appendFieldPathSegment(
+  fieldPath: string,
+  prop: string | symbol,
+  optional = false
+): string {
   const segment = String(prop);
-  return /^\d+$/.test(segment) ? `${fieldPath}[${segment}]` : `${fieldPath}.${segment}`;
+  return /^\d+$/.test(segment)
+    ? `${fieldPath}[${segment}]`
+    : `${fieldPath}.${optional ? '?' : ''}${segment}`;
 }
 
 function analyzeSchemaShape(schemaNode: unknown): SchemaShape {
@@ -58,10 +64,15 @@ function analyzeSchemaShape(schemaNode: unknown): SchemaShape {
   const required = Array.isArray(node.required) ? node.required : [];
   const optional = Array.isArray(node.optional) ? node.optional : [];
   if (required.length === 0 && optional.length === 0) return undefined;
-  const children = new Map<string, unknown>();
-  for (const entry of [...required, ...optional]) {
+  const children = new Map<string, { readonly node: unknown; readonly optional: boolean }>();
+  for (const entry of required) {
     if (entry && typeof entry.key === 'string') {
-      children.set(entry.key, entry.value);
+      children.set(entry.key, { node: entry.value, optional: false });
+    }
+  }
+  for (const entry of optional) {
+    if (entry && typeof entry.key === 'string') {
+      children.set(entry.key, { node: entry.value, optional: true });
     }
   }
   return { kind: 'object', children };
@@ -78,13 +89,23 @@ function analyzeSchemaShape(schemaNode: unknown): SchemaShape {
  * dropping them. Fields accessed via `get` still work identically — the schema
  * node is threaded through so nested access carries the correct sub-schema.
  */
-function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unknown): T {
+function createSchemaRefFactory<T = unknown>(
+  fieldPath: string,
+  schemaNode?: unknown,
+  optional = false
+): T {
   const proxyTarget = () => {
     // Empty function used as proxy target
   };
   Object.defineProperty(proxyTarget, KUBERNETES_REF_BRAND, { value: true, enumerable: false });
   Object.defineProperty(proxyTarget, 'resourceId', { value: '__schema__', enumerable: false });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: fieldPath, enumerable: false });
+  if (optional) {
+    Object.defineProperty(proxyTarget, SCHEMA_REFERENCE_OPTIONAL_BRAND, {
+      value: true,
+      enumerable: false,
+    });
+  }
 
   // Create a single "element" proxy for iteration support.
   // When the schema ref is used as an iterable (for-of) or array-like (.map(), .filter(), etc.),
@@ -95,7 +116,8 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
   // /__KUBERNETES_REF_{id}_{fieldPath}__/ uses [a-zA-Z0-9.] for fieldPath, and
   // underscores in `__element__` would break the delimiter detection.
   // `$item` uses `$` which is included in [a-zA-Z0-9.$] after we update the regex.
-  const createElement = (): unknown => createSchemaRefFactory(`${fieldPath}.$item`);
+  const createElement = (): unknown =>
+    createSchemaRefFactory(`${fieldPath}.$item`, undefined, optional);
 
   // Analyze the arktype JSON shape once so ownKeys/getOwnPropertyDescriptor
   // can report real declared fields and produce matching sub-proxies.
@@ -104,7 +126,12 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
   return new Proxy(proxyTarget, {
     get(target, prop) {
       // Check for our defined properties first
-      if (prop === KUBERNETES_REF_BRAND || prop === 'resourceId' || prop === 'fieldPath') {
+      if (
+        prop === KUBERNETES_REF_BRAND ||
+        prop === SCHEMA_REFERENCE_OPTIONAL_BRAND ||
+        prop === 'resourceId' ||
+        prop === 'fieldPath'
+      ) {
         return target[prop as keyof typeof target];
       }
 
@@ -121,7 +148,8 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       // Handle Symbol.toPrimitive — marker string for string coercion (template
       // literals), NaN for numeric coercion (comparisons like `ref >= 1`).
       if (prop === Symbol.toPrimitive) {
-        return (hint: string) => hint === 'string' ? `__KUBERNETES_REF___schema___${fieldPath}__` : NaN;
+        return (hint: string) =>
+          hint === 'string' ? `__KUBERNETES_REF___schema___${fieldPath}__` : NaN;
       }
 
       // Support for-of iteration: yield a single element proxy so loop bodies execute once
@@ -152,7 +180,7 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
           // The predicate's return value is only used for AST analysis.
           callback(elem, 0, [elem]);
           // Return a proxy that also supports chaining (.filter().map())
-          return createSchemaArrayProxy(fieldPath, callback);
+          return createSchemaArrayProxy(fieldPath, callback, optional);
         };
       }
       if (prop === 'some' || prop === 'every') {
@@ -177,9 +205,12 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       // own shape — `spec.processing.eventKey` gets the `string` schema
       // and will be a scalar leaf; `spec.processing` gets the object
       // schema with `required`/`optional` children.
-      const childNode =
-        shape?.kind === 'object' ? shape.children.get(String(prop)) : undefined;
-      return createSchemaRefFactory(appendFieldPathSegment(fieldPath, prop), childNode);
+      const child = shape?.kind === 'object' ? shape.children.get(String(prop)) : undefined;
+      return createSchemaRefFactory(
+        appendFieldPathSegment(fieldPath, prop),
+        child?.node,
+        optional || child?.optional === true
+      );
     },
 
     // `ownKeys` determines what spread (`{ ...spec.X }`) and
@@ -235,8 +266,9 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       if (shape?.kind === 'object' && typeof prop === 'string' && shape.children.has(prop)) {
         return {
           value: createSchemaRefFactory(
-            `${fieldPath}.${prop}`,
-            shape.children.get(prop)
+            appendFieldPathSegment(fieldPath, prop),
+            shape.children.get(prop)?.node,
+            optional || shape.children.get(prop)?.optional === true
           ),
           writable: false,
           enumerable: true,
@@ -245,7 +277,7 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       }
       if (prop === '__typekroSchemaKey') {
         return {
-          value: createSchemaRefFactory(`${fieldPath}.__typekroSchemaKey`),
+          value: createSchemaRefFactory(`${fieldPath}.__typekroSchemaKey`, undefined, optional),
           writable: false,
           enumerable: true,
           configurable: true,
@@ -264,11 +296,13 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
  */
 function createSchemaArrayProxy(
   baseFieldPath: string,
-  _filterCallback: ArrayIterationCallback
+  _filterCallback: ArrayIterationCallback,
+  optional = false
 ): unknown[] {
   // Use $item sentinel (same as the primary array proxy) so that the marker regex
   // and YAML serializer's $item substitution work correctly for chained calls.
-  const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.$item`);
+  const createElement = (): unknown =>
+    createSchemaRefFactory(`${baseFieldPath}.$item`, undefined, optional);
   const arr = [createElement()];
 
   return new Proxy(arr, {
@@ -330,9 +364,12 @@ function createSchemaMagicProxy<T extends object>(
       // Always return a schema reference for any string property access.
       // Thread the child's JSON node through when the shape is known so
       // nested access carries the right sub-schema all the way down.
-      const childNode =
-        shape?.kind === 'object' ? shape.children.get(prop) : undefined;
-      return createSchemaRefFactory(appendFieldPathSegment(basePath, prop), childNode);
+      const child = shape?.kind === 'object' ? shape.children.get(prop) : undefined;
+      return createSchemaRefFactory(
+        appendFieldPathSegment(basePath, prop),
+        child?.node,
+        child?.optional === true
+      );
     },
     ownKeys() {
       if (shape?.kind === 'object') {
@@ -344,15 +381,12 @@ function createSchemaMagicProxy<T extends object>(
       return [];
     },
     getOwnPropertyDescriptor(_obj, prop) {
-      if (
-        shape?.kind === 'object' &&
-        typeof prop === 'string' &&
-        shape.children.has(prop)
-      ) {
+      if (shape?.kind === 'object' && typeof prop === 'string' && shape.children.has(prop)) {
         return {
           value: createSchemaRefFactory(
-            `${basePath}.${prop}`,
-            shape.children.get(prop)
+            appendFieldPathSegment(basePath, prop),
+            shape.children.get(prop)?.node,
+            shape.children.get(prop)?.optional === true
           ),
           writable: false,
           enumerable: true,
@@ -505,7 +539,8 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
 
       // Handle Symbol.toPrimitive — marker string for string coercion, NaN for numeric.
       if (prop === Symbol.toPrimitive) {
-        return (hint: string) => hint === 'string' ? `__KUBERNETES_REF_${resourceId}_${fieldPath}__` : NaN;
+        return (hint: string) =>
+          hint === 'string' ? `__KUBERNETES_REF_${resourceId}_${fieldPath}__` : NaN;
       }
 
       // Preserve essential function properties

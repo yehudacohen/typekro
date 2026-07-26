@@ -50,7 +50,9 @@ function extractConditionalCallName(node: ASTNode): string | undefined {
       return (node as Identifier).name;
     case 'MemberExpression': {
       const member = node as MemberExpression;
-      return member.property.type === 'Identifier' ? (member.property as Identifier).name : undefined;
+      return member.property.type === 'Identifier'
+        ? (member.property as Identifier).name
+        : undefined;
     }
     case 'ChainExpression': {
       const expression = (node as ASTNode & { expression?: ASTNode }).expression;
@@ -162,6 +164,7 @@ export function walkStatement(
         forEachStack: [...ctx.forEachStack, dimension],
         includeWhenStack: [...ctx.includeWhenStack],
         optionalFieldNames: ctx.optionalFieldNames,
+        lexicalAliases: ctx.lexicalAliases,
       };
 
       const body = forOf.body;
@@ -194,6 +197,7 @@ export function walkStatement(
           forEachStack: [...ctx.forEachStack],
           includeWhenStack: [...ctx.includeWhenStack, condition],
           optionalFieldNames: ctx.optionalFieldNames,
+          lexicalAliases: ctx.lexicalAliases,
         };
 
         // Walk consequent
@@ -240,6 +244,7 @@ export function walkStatement(
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, negatedCondition],
             optionalFieldNames: ctx.optionalFieldNames,
+            lexicalAliases: ctx.lexicalAliases,
           };
         }
 
@@ -274,7 +279,7 @@ export function walkStatement(
     case 'TryStatement': {
       const tryStmt = node as ASTNode & {
         block: ASTNode & { body?: ASTNode[] };
-        finalizer?: ASTNode & { body?: ASTNode[] } | null;
+        finalizer?: (ASTNode & { body?: ASTNode[] }) | null;
       };
 
       if (tryStmt.block.body) {
@@ -288,7 +293,14 @@ export function walkStatement(
 
     case 'ReturnStatement': {
       // Analyze return statement for ternary expressions in status values
-      analyzeReturnStatementTernaries(node, fullSource, specParamName, result, ctx.optionalFieldNames);
+      analyzeReturnStatementTernaries(
+        node,
+        fullSource,
+        specParamName,
+        result,
+        ctx.optionalFieldNames,
+        ctx.lexicalAliases
+      );
       // Analyze return statement for collection aggregate expressions
       analyzeReturnCollectionAggregates(
         node,
@@ -337,7 +349,15 @@ export function walkExpression(
     if (id) {
       registerResourceControlFlow(id, extractFactoryName(call), ctx, result);
       // Scan factory argument properties for ternary expressions that should become CEL
-      analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result, ctx.optionalFieldNames);
+      analyzeFactoryArgTernaries(
+        call,
+        id,
+        fullSource,
+        specParamName,
+        result,
+        ctx.optionalFieldNames,
+        ctx.lexicalAliases
+      );
     }
     return;
   }
@@ -360,7 +380,14 @@ export function walkExpression(
     }
     const firstArg = call.arguments[0];
     if (firstArg?.type === 'ObjectExpression') {
-      analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result, ctx.optionalFieldNames);
+      analyzeFactoryArgTernaries(
+        call,
+        callId,
+        fullSource,
+        specParamName,
+        result,
+        ctx.optionalFieldNames
+      );
     }
   }
 
@@ -404,6 +431,7 @@ export function walkExpression(
             forEachStack: [...ctx.forEachStack, dimension],
             includeWhenStack: [...ctx.includeWhenStack],
             optionalFieldNames: ctx.optionalFieldNames,
+            lexicalAliases: ctx.lexicalAliases,
           };
 
           // Walk the callback body recursively to detect nested control flow
@@ -448,12 +476,7 @@ export function walkExpression(
     const testNode = cond.test;
 
     if (!isCompileTimeLiteral(testNode) && referencesSpec(testNode, specParamName)) {
-      const condition = conditionToCel(
-        testNode,
-        fullSource,
-        specParamName,
-        ctx.optionalFieldNames
-      );
+      const condition = conditionToCel(testNode, fullSource, specParamName, ctx.optionalFieldNames);
 
       // Check if consequent contains factory calls
       const consequentCalls = findFactoryCallsInSubtree(cond.consequent);
@@ -467,6 +490,7 @@ export function walkExpression(
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: condition }],
             optionalFieldNames: ctx.optionalFieldNames,
+            lexicalAliases: ctx.lexicalAliases,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }
@@ -478,6 +502,7 @@ export function walkExpression(
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: negatedCondition }],
             optionalFieldNames: ctx.optionalFieldNames,
+            lexicalAliases: ctx.lexicalAliases,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }
@@ -511,6 +536,7 @@ export function walkExpression(
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: condition }],
             optionalFieldNames: ctx.optionalFieldNames,
+            lexicalAliases: ctx.lexicalAliases,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }
@@ -524,11 +550,77 @@ export function walkExpression(
     return;
   }
 
+  // Composite expressions must preserve the control-flow context of nested
+  // expressions. A generic subtree scan can find a factory call inside an
+  // object/array, but it loses an intervening `.map()` dimension. Bun commonly
+  // normalizes `const resources = spec.items.map(...); return { count:
+  // resources.length }` into a return object containing the map directly, so
+  // recursively walking these containers is part of the compatibility
+  // frontend rather than an optimizer-specific special case.
+  if (node.type === 'ObjectExpression') {
+    const properties = (node as ASTNode & { properties?: ASTNode[] }).properties ?? [];
+    for (const property of properties) {
+      if (property.type === 'Property') {
+        const value = (property as ASTNode & { value?: ASTNode }).value;
+        if (value) walkExpression(value, fullSource, specParamName, ctx, result);
+      } else if (property.type === 'SpreadElement') {
+        const argument = (property as ASTNode & { argument?: ASTNode }).argument;
+        if (argument) walkExpression(argument, fullSource, specParamName, ctx, result);
+      }
+    }
+    return;
+  }
+
+  if (node.type === 'ArrayExpression') {
+    const elements = (node as ASTNode & { elements?: Array<ASTNode | null> }).elements ?? [];
+    for (const element of elements) {
+      if (element) walkExpression(element, fullSource, specParamName, ctx, result);
+    }
+    return;
+  }
+
+  if (node.type === 'MemberExpression') {
+    const member = node as MemberExpression;
+    walkExpression(member.object, fullSource, specParamName, ctx, result);
+    if (Reflect.get(member, 'computed') === true) {
+      walkExpression(member.property, fullSource, specParamName, ctx, result);
+    }
+    return;
+  }
+
+  if (
+    node.type === 'SpreadElement' ||
+    node.type === 'AwaitExpression' ||
+    node.type === 'ChainExpression'
+  ) {
+    const argument =
+      (node as ASTNode & { argument?: ASTNode; expression?: ASTNode }).argument ??
+      (node as ASTNode & { expression?: ASTNode }).expression;
+    if (argument) walkExpression(argument, fullSource, specParamName, ctx, result);
+    return;
+  }
+
+  if (node.type === 'SequenceExpression') {
+    const expressions = (node as ASTNode & { expressions?: ASTNode[] }).expressions ?? [];
+    for (const expression of expressions) {
+      walkExpression(expression, fullSource, specParamName, ctx, result);
+    }
+    return;
+  }
+
   // For any other expression, search for factory calls in subtree
   const calls = findFactoryCallsInSubtree(node);
   for (const call of calls) {
     registerResourceControlFlow(call.id, call.factoryName, ctx, result);
-    analyzeFactoryArgTernaries(call.node, call.id, fullSource, specParamName, result, ctx.optionalFieldNames);
+    analyzeFactoryArgTernaries(
+      call.node,
+      call.id,
+      fullSource,
+      specParamName,
+      result,
+      ctx.optionalFieldNames,
+      ctx.lexicalAliases
+    );
   }
 }
 

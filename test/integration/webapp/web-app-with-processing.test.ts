@@ -17,22 +17,35 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bu
 // and clean up child resources (~30s per resource × 9 resources ≈ 270s).
 // afterAll hooks need headroom beyond this for namespace cleanup.
 setDefaultTimeout(600000);
+
 import type * as k8s from '@kubernetes/client-node';
-import type { Enhanced } from '../../../src/core/types/index.js';
-import type { ResourceFactory } from '../../../src/core/types/deployment.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import type { ResourceFactory } from '../../../src/core/types/deployment.js';
+import type { Enhanced } from '../../../src/core/types/index.js';
 import type {
   WebAppWithProcessingConfig,
   WebAppWithProcessingStatus,
 } from '../../../src/factories/webapp/types.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  createCoreV1ApiClient,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  requireTestStorageClass,
+  runWithExpectedTestNamespace,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
-async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
-  const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
-  await deleteNamespaceAndWait(namespace, kubeConfig, 120000);
+async function cleanupNamespace(
+  lease: TestNamespaceLease,
+  kubeConfig: k8s.KubeConfig
+): Promise<void> {
+  const { deleteTestNamespaceAndWait } = await import('../shared-kubeconfig.js');
+  await deleteTestNamespaceAndWait(lease, kubeConfig);
 }
 
 // ── Shared test spec ─────────────────────────────────────────────────────
+
+let configuredStorageClass: string;
 
 const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   name: 'testapp',
@@ -45,7 +58,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   database: {
     instances: 1,
     storageSize: '1Gi',
-    storageClass: 'local-path',
+    storageClass: configuredStorageClass,
     database: 'testdb',
     owner: 'app',
   },
@@ -54,6 +67,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
     replicas: 0,
     volumePermissions: true,
     storageSize: '1Gi',
+    storageClass: configuredStorageClass,
   },
   processing: {
     eventKey: 'deadbeef0123456789abcdef01234567',
@@ -97,26 +111,15 @@ function assertWebAppStatus(
 
 /**
  * Verify that all pods in the app namespace are Running and Ready.
- * Queries the cluster directly via kubectl — this is independent of TypeKro's
+ * Queries the cluster through the shared Kubernetes client — this is independent of TypeKro's
  * status hydration and serves as ground truth for the deployment's health.
  */
-async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
-  const proc = Bun.spawn(
-    ['kubectl', 'get', 'pods', '-n', appNamespace, '-o', 'json'],
-    { stdout: 'pipe', stderr: 'pipe' }
-  );
-  const output = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  expect(exitCode).toBe(0);
-
-  const podList = JSON.parse(output);
-  const pods = podList.items as Array<{
-    metadata?: { name?: string };
-    status?: {
-      phase?: string;
-      containerStatuses?: Array<{ name?: string; ready?: boolean; restartCount?: number }>;
-    };
-  }>;
+async function assertAllPodsHealthy(
+  appNamespace: string,
+  kubeConfig: k8s.KubeConfig
+): Promise<void> {
+  const coreApi = createCoreV1ApiClient(kubeConfig);
+  const pods = (await coreApi.listNamespacedPod({ namespace: appNamespace })).items;
 
   expect(pods.length).toBeGreaterThan(0);
 
@@ -149,33 +152,49 @@ async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
 
 describe('WebAppWithProcessing Direct Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let directFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let directFactory:
+    | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
+    | undefined;
+  let factoryNamespaceLease: TestNamespaceLease | undefined;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const factoryNamespace = `typekro-webapp-${suffix}`;
   const appNamespace = `webapp-app-${suffix}`;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
-    await ensureNamespaceExists(factoryNamespace, kubeConfig);
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
+    factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
   });
 
   afterAll(async () => {
+    const cleanupErrors: unknown[] = [];
     // Delete instance-scoped resources only. Shared operator resources
     // (cnpg-system, valkey-operator-system) must persist for the KRO mode
     // test — it needs the operator CRDs and webhook services.
     if (directFactory) {
       try {
-        await directFactory.deleteInstance('testapp');
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          directFactory,
+          'testapp',
+          appNamespaceLease ? [appNamespaceLease] : [],
+          kubeConfig,
+          60_000
+        );
       } catch (e) {
-        console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
+        cleanupErrors.push(e);
       }
     }
-    for (const ns of [factoryNamespace, appNamespace]) {
+    for (const lease of [factoryNamespaceLease, appNamespaceLease]) {
+      if (!lease) continue;
       try {
-        await cleanupNamespace(ns, kubeConfig);
+        await cleanupNamespace(lease, kubeConfig);
       } catch (e) {
-        console.error(`⚠️ Namespace ${ns} cleanup failed:`, (e as Error).message);
+        cleanupErrors.push(e);
       }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'WebApp direct-mode cleanup failed');
     }
   });
 
@@ -191,12 +210,19 @@ describe('WebAppWithProcessing Direct Mode', () => {
       kubeConfig,
     });
 
-    const instance = await directFactory.deploy(testSpec(appNamespace));
+    const instance = await runWithExpectedTestNamespace(
+      appNamespace,
+      kubeConfig,
+      (lease) => {
+        appNamespaceLease = lease;
+      },
+      () => directFactory!.deploy(testSpec(appNamespace))
+    );
 
     assertWebAppStatus(instance, appNamespace);
 
     // Ground-truth verification: all pods are actually Running and Ready
-    await assertAllPodsHealthy(appNamespace);
+    await assertAllPodsHealthy(appNamespace, kubeConfig);
   }, 1500000);
 
   it('should generate valid KRO YAML', async () => {
@@ -234,36 +260,49 @@ describe('WebAppWithProcessing Direct Mode', () => {
 
 describe('WebAppWithProcessing KRO Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let kroFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
-  const suffix = Math.random().toString(36).slice(2, 7);
+  let kroFactory:
+    | ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus>
+    | undefined;
+  let factoryNamespaceLease: TestNamespaceLease | undefined;
+  let appNamespaceLease: TestNamespaceLease | undefined;
+  const suffix = crypto.randomUUID().slice(0, 8);
   const kroNamespace = `typekro-kro-${suffix}`;
   const appNamespace = `webapp-kro-${suffix}`;
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
 
-    await ensureNamespaceExists(kroNamespace, kubeConfig);
+    factoryNamespaceLease = await createTestNamespace(kroNamespace, kubeConfig);
   });
 
   afterAll(async () => {
+    const cleanupErrors: unknown[] = [];
     // Delete the KRO instance first so the controller follows the graph and
     // removes child resources before namespace teardown.
     if (kroFactory) {
       try {
-        await kroFactory.deleteInstance('testapp');
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          'testapp',
+          appNamespaceLease ? [appNamespaceLease] : [],
+          kubeConfig,
+          60_000
+        );
       } catch (e) {
-        console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+        cleanupErrors.push(e);
       }
     }
-    try {
-      await cleanupNamespace(appNamespace, kubeConfig);
-    } catch (e) {
-      console.error(`⚠️ Namespace ${appNamespace} cleanup failed:`, (e as Error).message);
+    for (const lease of [appNamespaceLease, factoryNamespaceLease]) {
+      if (!lease) continue;
+      try {
+        await cleanupNamespace(lease, kubeConfig);
+      } catch (e) {
+        cleanupErrors.push(e);
+      }
     }
-    try {
-      await cleanupNamespace(kroNamespace, kubeConfig);
-    } catch (e) {
-      console.error(`⚠️ Namespace ${kroNamespace} cleanup failed:`, (e as Error).message);
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'WebApp KRO-mode cleanup failed');
     }
   });
 
@@ -282,11 +321,18 @@ describe('WebAppWithProcessing KRO Mode', () => {
       kubeConfig,
     });
 
-    const instance = await kroFactory.deploy(testSpec(appNamespace));
+    const instance = await runWithExpectedTestNamespace(
+      appNamespace,
+      kubeConfig,
+      (lease) => {
+        appNamespaceLease = lease;
+      },
+      () => kroFactory!.deploy(testSpec(appNamespace))
+    );
 
     assertWebAppStatus(instance, appNamespace);
 
     // Ground-truth verification: all pods are actually Running and Ready
-    await assertAllPodsHealthy(appNamespace);
+    await assertAllPodsHealthy(appNamespace, kubeConfig);
   }, 1500000);
 });

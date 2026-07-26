@@ -82,7 +82,7 @@ export interface HttpTimeoutConfig {
  * TLS-related options extracted from an https.Agent at runtime.
  * Node.js stores these on agent.options but it's not part of the public type.
  */
-interface AgentTlsOptions {
+export interface AgentTlsOptions {
   rejectUnauthorized?: boolean;
   cert?: string | Buffer;
   key?: string | Buffer;
@@ -91,6 +91,13 @@ interface AgentTlsOptions {
   passphrase?: string;
   servername?: string;
   ciphers?: string;
+}
+
+/** Extract the TLS material KubeConfig placed on an https.Agent. */
+export function extractAgentTlsOptions(agent: unknown): AgentTlsOptions {
+  return agent && typeof agent === 'object' && 'options' in agent
+    ? (Reflect.get(agent, 'options') as AgentTlsOptions)
+    : {};
 }
 
 /**
@@ -206,8 +213,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // Extract TLS options from the agent if present
       // This is the key workaround for Bun's https.Agent issues
       // Node.js stores constructor options on agent.options (not in public types)
-      const agentOptions: AgentTlsOptions =
-        agent && 'options' in agent ? (Reflect.get(agent, 'options') as AgentTlsOptions) : {};
+      const agentOptions = extractAgentTlsOptions(agent);
 
       const options: https.RequestOptions = {
         hostname: url.hostname,

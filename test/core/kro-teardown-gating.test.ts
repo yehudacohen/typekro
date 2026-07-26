@@ -4,6 +4,7 @@ import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
  * DETERMINISTIC, OFFLINE proof of the PR #113 v4 teardown ORDER + CRD retention policy.
@@ -47,7 +48,11 @@ function makeFactory(factoryName: string, workloadNs: string) {
       return { ready: true };
     }
   );
-  return composition.factory('kro', { namespace: workloadNs, timeout: 250 });
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
 }
 
 interface Op {
@@ -126,7 +131,7 @@ describe('KRO teardown retains the generated CRD Active', () => {
     const { api, ops } = makeMockApi({ namespaceAnnotations: {} });
     wire(factory, api, ['app-ns']);
 
-    await factory.deleteInstance('inst');
+    const result = await factory.deleteInstance('inst');
 
     const crDelete = first(ops, 'delete', 'TeardownGate');
     const rgdDelete = first(ops, 'delete', 'ResourceGraphDefinition');
@@ -139,6 +144,13 @@ describe('KRO teardown retains the generated CRD Active', () => {
     expect(rgdDelete).toBeGreaterThan(nsRead); // RGD after the namespace step
     // The generated definition remains Active and immediately reusable.
     expect(crdDelete).toBe(-1);
+    expect(result.status).toBe('complete');
+    expect(result.retained).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ policy: 'adopted-resource' }),
+        expect.objectContaining({ policy: 'generated-crd' }),
+      ])
+    );
   });
 });
 

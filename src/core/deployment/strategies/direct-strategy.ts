@@ -58,6 +58,7 @@ export class DirectDeploymentStrategy<
       getReExecutedStatus?(): TStatus | null;
       getResourceKeysForHydration?(): Record<string, KubernetesResource> | undefined;
       getClosuresForDeployment?(): NonNullable<FactoryOptions['closures']>;
+      getExternalReferenceSeeds?(): DeployedResource[];
       reExecuteWithLiveStatus?(
         spec: TSpec,
         liveStatusMap: Map<string, Record<string, unknown>>
@@ -98,11 +99,13 @@ export class DirectDeploymentStrategy<
         ...(opts?.singletonSpecFingerprint && {
           singletonSpecFingerprint: opts.singletonSpecFingerprint,
         }),
+        ...(opts?.abortSignal && { abortSignal: opts.abortSignal }),
       };
 
       // Pass closures to deployment engine for level-based execution
       const closures =
         this.resourceResolver.getClosuresForDeployment?.() ?? this.factoryOptions.closures ?? {};
+      const seedResources = this.resourceResolver.getExternalReferenceSeeds?.();
 
       // Deploy using the direct deployment engine with closures if available, otherwise use regular deploy
       let deploymentResult: DeploymentResult;
@@ -113,30 +116,40 @@ export class DirectDeploymentStrategy<
             graph: DeploymentResourceGraph,
             closures: Record<string, unknown>,
             options: Parameters<DirectDeploymentEngine['deploy']>[1],
-            spec: TSpec
+            spec: TSpec,
+            seedResources?: DeployedResource[]
           ): Promise<DeploymentResult>;
         };
         deploymentResult = await engineWithClosures.deployWithClosures(
           resourceGraph,
           closures,
           deploymentOptions,
-          spec
+          spec,
+          seedResources
         );
       } else {
         // Fallback to regular deployment for backward compatibility
-        deploymentResult = await this.deploymentEngine.deploy(resourceGraph, deploymentOptions);
+        deploymentResult = await this.deploymentEngine.deploy(
+          resourceGraph,
+          deploymentOptions,
+          seedResources
+        );
       }
 
-      if (deploymentResult.status === 'failed') {
-        const firstError = deploymentResult.errors[0]?.error;
+      const blockingErrors =
+        deploymentResult.status === 'partial'
+          ? deploymentResult.errors.filter((error) => !error.resourceId.startsWith('closure-'))
+          : deploymentResult.errors;
+      if (deploymentResult.status === 'failed' || blockingErrors.length > 0) {
+        const firstError = blockingErrors[0]?.error;
         const deploymentError = new ResourceDeploymentError(
           'resource-graph',
           'ResourceGraph',
           firstError || new Error('Unknown deployment error')
         );
         // Add additional context from all errors
-        if (deploymentResult.errors.length > 1) {
-          deploymentError.message += ` (and ${deploymentResult.errors.length - 1} other errors)`;
+        if (blockingErrors.length > 1) {
+          deploymentError.message += ` (and ${blockingErrors.length - 1} other errors)`;
         }
         throw deploymentError;
       }
@@ -160,8 +173,18 @@ export class DirectDeploymentStrategy<
       this.resourceKeys = hydrationResourceKeys;
     }
 
+    // Singleton owners and other seeded external references are deliberately not part of the
+    // consumer deployment result: they were reconciled by another owner and must never be rolled
+    // back with this graph. Their live state is still required by the status builder, though. Use
+    // a hydration-only result so post-deployment CEL resolution sees the same reference context as
+    // deployment without changing the ownership result returned by the engine.
+    const statusDeploymentResult = withExternalReferenceSeeds(
+      deploymentResult,
+      this.resourceResolver.getExternalReferenceSeeds?.() ?? []
+    );
+
     // Get the base proxy first
-    const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
+    const baseProxy = await super.createEnhancedProxy(spec, instanceName, statusDeploymentResult);
 
     if (this.factoryOptions.waitForReady === false || this.factoryOptions.hydrateStatus === false) {
       return baseProxy;
@@ -172,7 +195,7 @@ export class DirectDeploymentStrategy<
     // status comparisons like `database.status.readyInstances >= 1` evaluate
     // correctly instead of returning proxy artifacts.
     if (deploymentResult.status === 'success' && this.resourceResolver.reExecuteWithLiveStatus) {
-      const liveStatusMap = await this.buildLiveStatusMap(deploymentResult);
+      const liveStatusMap = await this.buildLiveStatusMap(statusDeploymentResult);
 
       if (liveStatusMap.size > 0) {
         const liveStatus = this.resourceResolver.reExecuteWithLiveStatus(spec, liveStatusMap);
@@ -341,6 +364,22 @@ export class DirectDeploymentStrategy<
   protected getStrategyMode(): 'direct' | 'kro' {
     return 'direct';
   }
+}
+
+export function withExternalReferenceSeeds(
+  deploymentResult: DeploymentResult,
+  seeds: DeployedResource[]
+): DeploymentResult {
+  if (seeds.length === 0) return deploymentResult;
+
+  const knownIds = new Set(deploymentResult.resources.map((resource) => resource.id));
+  const missingSeeds = seeds.filter((seed) => !knownIds.has(seed.id));
+  if (missingSeeds.length === 0) return deploymentResult;
+
+  return {
+    ...deploymentResult,
+    resources: [...deploymentResult.resources, ...missingSeeds],
+  };
 }
 
 // ── Module-level helpers ─────────────────────────────────────────────────

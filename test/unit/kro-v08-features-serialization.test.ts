@@ -2316,10 +2316,13 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const yamlStr = graph.toYaml();
-      expect(yamlStr).toContain(
+      const parsed = parseRgdYaml(yamlStr);
+      const value = findResource(parsed, 'app').template.spec.template.spec.containers[0].env[0]
+        .value as string;
+      expect(value).toContain(
         'has(schema.spec.primary) ? schema.spec.primary : (has(schema.spec.secondary)'
       );
-      expect(yamlStr).toContain('? schema.spec.secondary : \\"fallback\\")');
+      expect(value).toContain('? schema.spec.secondary : "fallback")');
     });
 
     it('observedResource() serializes with the externalRef primitive', () => {
@@ -3108,13 +3111,13 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const yamlStr = graph.toYaml();
+      const tier = parseRgdYaml(yamlStr).spec.schema.status?.tier as string;
       // Should contain nested ternary in CEL
-      // CEL uses single quotes to avoid YAML double-quote escaping issues
-      expect(yamlStr).toContain("schema.spec.env == 'production'");
-      expect(yamlStr).toContain("schema.spec.env == 'staging'");
-      expect(yamlStr).toContain("'standard'");
-      expect(yamlStr).toContain("'minimal'");
-      expect(yamlStr).toContain('dep.status.readyReplicas');
+      expect(tier).toContain("schema.spec.env == 'production'");
+      expect(tier).toContain("schema.spec.env == 'staging'");
+      expect(tier).toContain("'standard'");
+      expect(tier).toContain("'minimal'");
+      expect(tier).toContain('dep.status.readyReplicas');
     });
 
     it('non-string value in string template warns or wraps with string()', () => {

@@ -1,4 +1,5 @@
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type {
   JetStreamConsumerConfig,
@@ -26,6 +27,12 @@ function jetStreamReadiness(resource: unknown): ResourceStatus {
       : (ready?.message ?? 'NACK has not reported the resource ready.'),
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.nats.jetstream',
+  '1',
+  jetStreamReadiness
+);
 
 /** Create a NACK-managed JetStream Stream. */
 export function jetStreamStream(

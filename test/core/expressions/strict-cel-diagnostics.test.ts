@@ -23,6 +23,9 @@ import {
   JavaScriptToCelAnalyzer,
 } from '../../../src/core/expressions/analysis/analyzer.js';
 import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
+import type { KubernetesResource } from '../../../src/core/types.js';
+import { validateStatusCelExpressions } from '../../../src/core/validation/cel-validator.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
@@ -365,6 +368,35 @@ describe('Strict CEL diagnostics', () => {
 
       const factory = graph.factory('kro', { strictCelDiagnostics: true });
       expect(factory.toYaml()).toContain('deployment.status.readyReplicas');
+    });
+
+    it('reports an unresolved nested status reference only in final structured validation', () => {
+      const nestedReference = {
+        [KUBERNETES_REF_BRAND]: true,
+        __nestedComposition: true,
+        resourceId: 'childStack',
+        fieldPath: 'status.ready',
+      };
+      const resources: Record<string, KubernetesResource> = {
+        deployment: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          id: 'deployment',
+          metadata: { name: 'app' },
+        },
+      };
+
+      const result = validateStatusCelExpressions({ ready: nestedReference }, resources);
+
+      expect(result.isValid).toBe(true);
+      expect(result.warnings).toContainEqual(
+        expect.objectContaining({
+          field: 'ready',
+          code: 'unknown-resource',
+          referencedResource: 'childStack',
+          expression: 'childStack.status.ready',
+        })
+      );
     });
   });
 });

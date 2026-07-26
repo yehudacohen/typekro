@@ -143,6 +143,54 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     mockK8sApi.create.mockClear();
     mockK8sApi.patch.mockClear();
     mockReferenceResolver.resolveReferences.mockClear();
+    mockK8sApi.read.mockImplementation((resource?: Record<string, unknown>) => {
+      if (resource?.kind === 'CustomResourceDefinition') {
+        return Promise.resolve({
+          status: {
+            conditions: [{ type: 'Established', status: 'True' }],
+          },
+        });
+      }
+      return Promise.reject({ statusCode: 404 });
+    });
+    mockK8sApi.list.mockImplementation((apiVersion?: string, kind?: string) => {
+      if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
+        return Promise.resolve({
+          items: [
+            {
+              metadata: { name: 'myresources.example.com' },
+              spec: {
+                group: 'example.com',
+                names: { kind: 'MyResource', plural: 'myresources' },
+              },
+            },
+            {
+              metadata: { name: 'slowresources.example.com' },
+              spec: {
+                group: 'example.com',
+                names: { kind: 'SlowResource', plural: 'slowresources' },
+              },
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ items: [] });
+    });
+    mockK8sApi.create.mockImplementation((resource?: Record<string, Record<string, unknown>>) =>
+      Promise.resolve({
+        ...resource,
+        metadata: { ...resource?.metadata, uid: 'test-uid' },
+      })
+    );
+    mockK8sApi.patch.mockImplementation((resource?: Record<string, Record<string, unknown>>) =>
+      Promise.resolve({
+        ...resource,
+        metadata: { ...resource?.metadata, uid: 'test-uid' },
+      })
+    );
+    mockReferenceResolver.resolveReferences.mockImplementation(
+      (resource: Record<string, unknown>) => Promise.resolve(resource)
+    );
   });
 
   it('should wait for CRD establishment before deploying custom resources', async () => {

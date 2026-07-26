@@ -1,5 +1,6 @@
 // Cert-Manager Challenge and Order Resources
 import { createResource } from '../../shared.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import type { ChallengeConfig, OrderConfig, ChallengeStatus, OrderStatus } from '../types.js';
 
@@ -67,6 +68,12 @@ function challengeReadinessEvaluator(liveResource: unknown): { ready: boolean; m
     reason: 'Unknown'
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cert-manager.challenge',
+  '1',
+  challengeReadinessEvaluator
+);
 
 /**
  * Challenge Factory Function
@@ -240,6 +247,12 @@ function orderReadinessEvaluator(liveResource: unknown): { ready: boolean; messa
     reason: 'Unknown'
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cert-manager.order',
+  '1',
+  orderReadinessEvaluator
+);
 
 /**
  * Order Factory Function

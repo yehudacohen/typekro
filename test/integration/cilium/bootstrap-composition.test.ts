@@ -5,7 +5,10 @@
  * with real Kubernetes deployments using both kro and direct factory patterns.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
@@ -17,17 +20,22 @@ import {
 } from '../../../src/factories/cilium/resources/helm.js';
 // import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 import {
-  createCoreV1ApiClient,
-  createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestFluxHelmReleaseArtifacts,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  prepareTestHelmReleaseForOrphanedDeletion,
+  type TestDeletableFactory,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
-const NAMESPACE = 'typekro-test-bootstrap'; // Use unique namespace for this test file
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-bootstrap-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 // Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
@@ -79,9 +87,9 @@ const CiliumStackStatus = type({
 
 describeOrSkip('Cilium Bootstrap Composition Integration', () => {
   let kubeConfig: k8s.KubeConfig;
-  let _k8sApi: k8s.KubernetesObjectApi;
-  let coreApi: k8s.CoreV1Api;
   let testNamespace: string;
+  let namespaceLease: TestNamespaceLease;
+  let directFactory: TestDeletableFactory | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -90,86 +98,64 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
 
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE; // Use the standard test namespace
-
-    // Create test namespace, waiting for any prior terminating namespace to clear
-    const maxWait = 60000;
-    const startWait = Date.now();
-    while (Date.now() - startWait < maxWait) {
-      try {
-        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-        console.log(`📦 Created test namespace: ${testNamespace}`);
-        break;
-      } catch (error: any) {
-        const msg = error.body?.message || error.message || '';
-        if (msg.includes('being deleted')) {
-          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          continue;
-        }
-        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-          console.log(`📦 Test namespace ${testNamespace} already exists`);
-          break;
-        }
-        throw error;
-      }
-    }
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     console.log('✅ Cilium bootstrap integration test environment ready!');
   });
 
   afterAll(async () => {
-    if (!clusterAvailable || !coreApi) return;
+    if (!clusterAvailable || !kubeConfig) return;
 
-    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
+    const cleanupErrors: unknown[] = [];
 
-    // Clean up HelmReleases in kube-system created by the bootstrap deploy test.
+    // Suspend the TypeKro-owned release and the setup fixture before removal.
     // IMPORTANT: Suspend first to prevent Flux helm-controller from uninstalling
     // the Helm release (which would remove Cilium pods from the cluster).
     const helmReleaseNames = ['cilium-direct', 'cilium-test'];
     for (const name of helmReleaseNames) {
-      try {
-        // Suspend to prevent Flux from acting on deletion
-        await k8sApi.patch(
-          {
-            apiVersion: 'helm.toolkit.fluxcd.io/v2',
-            kind: 'HelmRelease',
-            metadata: { name, namespace: 'kube-system' },
-          },
-          undefined as any, // patchBody not used when using options.body
-          undefined, // pretty
-          undefined, // dryRun
-          undefined, // fieldManager
-          undefined, // force
-          {
-            headers: { 'Content-Type': 'application/merge-patch+json' },
-            body: { spec: { suspend: true } },
-          } as any
-        );
-      } catch (_error: any) {
-        // Ignore patch errors — HelmRelease may not exist
-      }
-      try {
-        await k8sApi.delete({
-          apiVersion: 'helm.toolkit.fluxcd.io/v2',
-          kind: 'HelmRelease',
-          metadata: { name, namespace: 'kube-system' },
-        });
-        console.log(`🗑️ Deleted HelmRelease: ${name} from kube-system`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete HelmRelease ${name}: ${error.message}`);
-        }
-      }
+      await prepareTestHelmReleaseForOrphanedDeletion(
+        'kube-system',
+        name,
+        kubeConfig,
+        name === 'cilium-direct'
+          ? {
+              factoryName: 'cilium-bootstrap-direct',
+              instanceName: 'test-cilium-direct',
+            }
+          : undefined
+      ).catch((error) => cleanupErrors.push(error));
     }
 
-    // Clean up test namespace and wait for completion (deletes HelmRepositories and other namespaced resources)
-    try {
-      await deleteNamespaceAndWait(testNamespace, kubeConfig);
-    } catch (error: any) {
-      console.log(`⚠️ Could not delete test namespace: ${error.message}`);
+    if (directFactory) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        directFactory,
+        'test-cilium-direct',
+        [],
+        kubeConfig,
+        120_000
+      ).catch((error) => cleanupErrors.push(error));
+    }
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        kind: 'HelmRelease',
+        metadata: { name: 'cilium-test', namespace: 'kube-system' },
+      },
+      kubeConfig,
+      120_000
+    ).catch((error) => cleanupErrors.push(error));
+    await deleteTestFluxHelmReleaseArtifacts(
+      'kube-system',
+      'cilium-direct',
+      testNamespace,
+      kubeConfig
+    ).catch((error) => cleanupErrors.push(error));
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig).catch((error) =>
+      cleanupErrors.push(error)
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Cilium bootstrap cleanup did not complete safely');
     }
   });
 
@@ -311,13 +297,14 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
       );
 
       // Test with direct factory
-      const directFactory = await ciliumStack.factory('direct', {
+      const deployedFactory = await ciliumStack.factory('direct', {
         namespace: testNamespace,
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      directFactory = deployedFactory;
 
-      const deploymentResult = await directFactory.deploy({
+      const deploymentResult = await deployedFactory.deploy({
         name: 'test-cilium-direct',
         clusterName: 'test-cluster-direct',
         clusterId: 1,

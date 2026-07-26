@@ -55,10 +55,7 @@ import type {
   CustomResourceDefinitionList,
   KubernetesResource,
 } from '../types.js';
-import {
-  buildFactoryInstanceSelector,
-  extractTypekroTags,
-} from './resource-tagging.js';
+import { buildFactoryInstanceSelector, extractTypekroTags } from './resource-tagging.js';
 
 const logger = getComponentLogger('deployment-state-discovery');
 
@@ -132,9 +129,7 @@ export const BUILT_IN_GVKS: readonly GvkTarget[] = [
  * CRD listing failures (RBAC, transient errors) are logged and the
  * built-in list is returned alone so discovery can still make progress.
  */
-export async function discoverClusterGvks(
-  k8sApi: k8s.KubernetesObjectApi
-): Promise<GvkTarget[]> {
+export async function discoverClusterGvks(k8sApi: k8s.KubernetesObjectApi): Promise<GvkTarget[]> {
   const targets: GvkTarget[] = [...BUILT_IN_GVKS];
 
   try {
@@ -148,10 +143,9 @@ export async function discoverClusterGvks(
       targets.push(...crdTargets);
     }
   } catch (err) {
-    logger.warn(
-      'Failed to list CRDs during discovery — proceeding with built-in GVKs only',
-      { error: err instanceof Error ? err.message : String(err) }
-    );
+    logger.warn('Failed to list CRDs during discovery — proceeding with built-in GVKs only', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   return targets;
@@ -203,6 +197,7 @@ export async function discoverDeployedResourcesByInstance(
   opts: {
     factoryName: string;
     instanceName: string;
+    factoryNamespace?: string;
     /**
      * GVK hint from the factory's resource templates. When provided,
      * only these kinds are queried — dropping a typical delete from
@@ -223,6 +218,7 @@ export async function discoverDeployedResourcesByInstance(
   logger.debug('Discovering deployed resources by label', {
     factoryName: opts.factoryName,
     instanceName: opts.instanceName,
+    factoryNamespace: opts.factoryNamespace,
     gvkCount: gvkTargets.length,
     source: usingHint ? 'knownGvks hint' : 'full cluster enumeration',
     labelSelector,
@@ -232,47 +228,43 @@ export async function discoverDeployedResourcesByInstance(
   // can flood the API server on large clusters; 8 concurrent lists is
   // a reasonable default.
   const discoveryStart = Date.now();
-  const matches = await listWithConcurrency(
-    gvkTargets,
-    8,
-    async (target) => {
-      try {
-        const result = await k8sApi.list<KubernetesResource>(
-          target.apiVersion,
-          target.kind,
-          undefined, // namespace — cluster-wide scan
-          undefined, // pretty
-          undefined, // exact (deprecated)
-          undefined, // export (deprecated)
-          undefined, // fieldSelector
-          labelSelector
-        );
-        // K8s list responses often omit apiVersion/kind on individual
-        // items — they're inferred from the list's metadata. Stamp
-        // each item with the target's GVK so downstream code (dedup,
-        // rollback) has the correct kind for API calls.
-        const items = result.items ?? [];
-        for (const item of items) {
-          if (!item.apiVersion) (item as { apiVersion: string }).apiVersion = target.apiVersion;
-          if (!item.kind) (item as { kind: string }).kind = target.kind;
-          if (!target.namespaced) {
-            setMetadataField(item, 'scope', 'cluster');
-          }
+  const matches = await listWithConcurrency(gvkTargets, 8, async (target) => {
+    try {
+      const result = await k8sApi.list<KubernetesResource>(
+        target.apiVersion,
+        target.kind,
+        undefined, // namespace — cluster-wide scan
+        undefined, // pretty
+        undefined, // exact (deprecated)
+        undefined, // export (deprecated)
+        undefined, // fieldSelector
+        labelSelector
+      );
+      // K8s list responses often omit apiVersion/kind on individual
+      // items — they're inferred from the list's metadata. Stamp
+      // each item with the target's GVK so downstream code (dedup,
+      // rollback) has the correct kind for API calls.
+      const items = result.items ?? [];
+      for (const item of items) {
+        if (!item.apiVersion) (item as { apiVersion: string }).apiVersion = target.apiVersion;
+        if (!item.kind) (item as { kind: string }).kind = target.kind;
+        if (!target.namespaced) {
+          setMetadataField(item, 'scope', 'cluster');
         }
-        return items;
-      } catch (err) {
-        // 404 on a GVK means the API server doesn't recognise that
-        // kind — expected for CRDs that were uninstalled mid-discovery.
-        // Log at debug so the noise doesn't drown out real errors.
-        logger.debug('List failed for GVK during discovery', {
-          apiVersion: target.apiVersion,
-          kind: target.kind,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return [];
       }
+      return items;
+    } catch (err) {
+      // 404 on a GVK means the API server doesn't recognise that
+      // kind — expected for CRDs that were uninstalled mid-discovery.
+      // Log at debug so the noise doesn't drown out real errors.
+      logger.debug('List failed for GVK during discovery', {
+        apiVersion: target.apiVersion,
+        kind: target.kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
     }
-  );
+  });
 
   const discoveryDuration = Date.now() - discoveryStart;
   logger.info('Discovery list calls completed', {
@@ -283,7 +275,10 @@ export async function discoverDeployedResourcesByInstance(
     durationMs: discoveryDuration,
   });
 
-  // Flatten, deduplicate by (kind, namespace, name), and post-filter
+  // Flatten, post-filter, and deduplicate. A CRD can expose the same live
+  // object through several served versions, so metadata.uid is authoritative
+  // when present. Fall back to full GVK identity for synthetic/legacy objects
+  // that do not carry a UID.
   // by raw annotation values. The label selector uses sanitized values
   // which can collide (e.g., "my@factory" and "my#factory" both
   // sanitize to "my-factory"). The raw factory/instance name stored in
@@ -292,13 +287,21 @@ export async function discoverDeployedResourcesByInstance(
   const seen = new Set<string>();
   const uniqueResources: KubernetesResource[] = [];
   for (const item of matches.flat()) {
-    const key = `${item.apiVersion}/${item.kind}/${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
     // Post-filter: verify raw annotation matches requested identity
-    const tags = extractTypekroTags(item as { metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> } });
+    const tags = extractTypekroTags(
+      item as {
+        metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> };
+      }
+    );
     if (tags.factoryName && tags.factoryName !== opts.factoryName) continue;
     if (tags.instanceName && tags.instanceName !== opts.instanceName) continue;
+    if (opts.factoryNamespace && tags.factoryNamespace !== opts.factoryNamespace) continue;
+    const uid = item.metadata?.uid;
+    const key = uid
+      ? `uid:${uid}`
+      : `identity:${item.apiVersion}/${item.kind}/${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     uniqueResources.push(item);
   }
 
@@ -342,6 +345,8 @@ function buildRecordFromResources(
   const deployedResources: DeployedResource[] = [];
   const idToResource = new Map<string, DeployedResource>();
   const dependenciesById = new Map<string, string[]>();
+  const resourceIds = new Map<KubernetesResource, string>();
+  const idsByUid = new Map<string, string>();
 
   // First pass: extract tags and build DeployedResource records
   let deploymentId: string | undefined;
@@ -350,8 +355,8 @@ function buildRecordFromResources(
 
   for (const resource of resources) {
     const tags = extractTypekroTags(resource);
-    const id = tags.resourceId;
-    if (!id) {
+    const taggedId = tags.resourceId;
+    if (!taggedId) {
       // A resource with no resource-id annotation can't participate in
       // graph reconstruction — it must have been tagged by a partial
       // upgrade or external mutator. Skip rather than crash.
@@ -360,6 +365,28 @@ function buildRecordFromResources(
         name: resource.metadata?.name,
       });
       continue;
+    }
+    let id = taggedId;
+    if (idToResource.has(id)) {
+      const identity = [
+        resource.apiVersion ?? 'unknown',
+        resource.kind ?? 'Unknown',
+        resource.metadata?.namespace ?? '',
+        resource.metadata?.name ?? 'unknown',
+      ].join(':');
+      id = `${taggedId}::discovered:${identity}`;
+      let collision = 2;
+      while (idToResource.has(id)) {
+        id = `${taggedId}::discovered:${identity}:${collision}`;
+        collision += 1;
+      }
+      logger.debug('Disambiguating duplicate resource-id annotation during discovery', {
+        taggedId,
+        discoveredId: id,
+        kind: resource.kind,
+        name: resource.metadata?.name,
+        namespace: resource.metadata?.namespace,
+      });
     }
 
     if (!deploymentId && tags.deploymentId) deploymentId = tags.deploymentId;
@@ -383,6 +410,10 @@ function buildRecordFromResources(
     };
     deployedResources.push(deployed);
     idToResource.set(id, deployed);
+    resourceIds.set(resource, id);
+    if (resource.metadata?.uid) {
+      idsByUid.set(resource.metadata.uid, id);
+    }
     if (tags.dependencies.length > 0) {
       dependenciesById.set(id, tags.dependencies);
     }
@@ -412,6 +443,31 @@ function buildRecordFromResources(
     }
   }
 
+  // Controllers often copy TypeKro labels/annotations to descendants. Those
+  // descendants remain useful teardown evidence, but deleting one before its
+  // owner can fight the controller or block on finalizers. In the reconstructed
+  // deletion-only graph, make the owner depend on the child so reverse
+  // topological deletion removes the owner first and then cleans up any
+  // descendant that Kubernetes did not garbage-collect.
+  for (const resource of resources) {
+    const childId = resourceIds.get(resource);
+    if (!childId) continue;
+    for (const owner of resource.metadata?.ownerReferences ?? []) {
+      if (owner.controller === false || !owner.uid) continue;
+      const ownerId = idsByUid.get(owner.uid);
+      if (!ownerId || ownerId === childId) continue;
+      if (wouldCreateDependencyCycle(dependencyGraph, ownerId, childId)) {
+        logger.debug('Skipping controller ownership edge that would create a cycle', {
+          ownerId,
+          childId,
+          ownerUid: owner.uid,
+        });
+        continue;
+      }
+      dependencyGraph.addEdge(ownerId, childId);
+    }
+  }
+
   return {
     deploymentId: deploymentId ?? `discovered-${Date.now()}`,
     resources: deployedResources,
@@ -425,6 +481,23 @@ function buildRecordFromResources(
       instanceName: opts.instanceName,
     },
   };
+}
+
+function wouldCreateDependencyCycle(
+  graph: DependencyGraph,
+  dependentId: string,
+  dependencyId: string
+): boolean {
+  const pending = [dependencyId];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || visited.has(current)) continue;
+    if (current === dependentId) return true;
+    visited.add(current);
+    pending.push(...graph.getDependencies(current));
+  }
+  return false;
 }
 
 /**

@@ -9,11 +9,8 @@
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
-import { getComponentLogger } from '../logging/index.js';
 import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
-
-const logger = getComponentLogger('cel-validator');
 
 export interface CelValidationError {
   field: string;
@@ -129,19 +126,9 @@ function requiresKroResolution(
       if (innerExpr !== undefined) {
         return !isStaticExpression(innerExpr, nestedStatusCel);
       }
-      // Nested ref with no entry in the table — conservatively dynamic.
-      // This either means the resolution table is incomplete (a real bug
-      // we want to surface for diagnosis) or the alias mechanism in
-      // `buildNestedCompositionAliases` couldn't match the variable
-      // assignment in the composition source. The fallback keeps the
-      // serialization succeeding by treating the ref as dynamic, but
-      // KRO will reject the resulting CEL at runtime because the virtual
-      // baseId isn't a real resource — so we want this on the radar.
-      logger.warn('Nested composition ref classified as dynamic — no nestedStatusCel entry', {
-        resourceId: value.resourceId,
-        fieldPath: value.fieldPath,
-        availableKeys: Object.keys(nestedStatusCel).slice(0, 10),
-      });
+      // Nested ref with no entry in the table is conservatively dynamic. Do not
+      // log during classification: later analysis may still recover an alias.
+      // Final validation reports an unresolved ref structurally if it survives.
       return true;
     }
 
@@ -403,7 +390,34 @@ export function validateStatusCelExpressions(
 
   // Only validate dynamic fields that will be sent to Kro
   function validateExpression(fieldName: string, value: unknown): void {
-    if (isCelExpression(value)) {
+    if (isKubernetesRef(value)) {
+      const isNestedComposition =
+        (value as { __nestedComposition?: boolean }).__nestedComposition === true;
+      if (!isNestedComposition) return;
+
+      const nestedField = value.fieldPath.replace(/^status\./, '');
+      const nestedExpression = nestedStatusCelForValidation
+        ? resourceIds.has(value.resourceId)
+          ? lookupNestedExpression(
+              value.resourceId,
+              nestedField,
+              nestedStatusCelForValidation,
+              false
+            )
+          : lookupNestedExpression(value.resourceId, nestedField, nestedStatusCelForValidation)
+        : undefined;
+      if (nestedExpression === undefined) {
+        warnings.push({
+          field: fieldName,
+          expression: `${value.resourceId}.${value.fieldPath}`,
+          error: `Nested composition reference '${value.resourceId}.${value.fieldPath}' has no final status-expression mapping`,
+          suggestion:
+            'Use a supported nested-composition assignment shape or expose the referenced status field directly',
+          code: 'unknown-resource',
+          referencedResource: value.resourceId,
+        });
+      }
+    } else if (isCelExpression(value)) {
       const idList = Array.from(resourceIds).filter((id): id is string => typeof id === 'string');
 
       // PASS 1 — mirror the serializer's variable remapping EXACTLY (single-resource fallback

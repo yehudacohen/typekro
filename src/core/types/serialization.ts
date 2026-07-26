@@ -3,6 +3,7 @@
  */
 
 import type { Type } from 'arktype';
+import type { StaticYamlMaterializationOptions } from '../planning/materialization.js';
 import type { MagicAssignable } from './common.js';
 import type {
   DeploymentOperationStatus,
@@ -242,7 +243,7 @@ export interface ResourceGraphWithDeployment {
    * instance YAML string when a spec is provided.
    */
   toYaml(): string;
-  toYaml(spec: KroCompatibleType): string;
+  toYaml(spec: KroCompatibleType, options?: StaticYamlMaterializationOptions): string;
 }
 
 /**
@@ -447,6 +448,12 @@ export interface ResourceGraphDefinition<
 > {
   /** Kubernetes-compatible name for this RGD. Must follow DNS subdomain rules (lowercase, hyphens). */
   name: string;
+  /**
+   * Stable author-declared composition revision used for durable planning identity.
+   * Compositions without a revision may still be inspected and planned locally,
+   * but their plans are marked preview-only and are not durable-cache eligible.
+   */
+  revision?: string;
   /**
    * Full apiVersion string for the generated CRD, including group and version.
    * If a `group` is also provided, this should be just the version suffix.

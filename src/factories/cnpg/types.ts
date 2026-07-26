@@ -136,17 +136,20 @@ export type CnpgBootstrapConfig = typeof CnpgBootstrapConfigSchema.infer;
  */
 export interface CnpgBootstrapStatus {
   /** Overall deployment phase (derived from HelmRelease Ready condition). */
-  phase: 'Ready' | 'Installing';
+  phase: 'Ready' | 'Installing' | 'Failed';
   /** Whether the operator is ready to manage clusters. */
   ready: boolean;
+  /** Whether the HelmRelease Ready condition is explicitly False. */
+  failed: boolean;
   /** Deployed chart version. */
   version?: string;
 }
 
 /** ArkType schema for CnpgBootstrapStatus. */
 export const CnpgBootstrapStatusSchema = type({
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   ready: 'boolean',
+  failed: 'boolean',
   'version?': 'string',
 });
 

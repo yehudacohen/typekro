@@ -248,7 +248,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           database: 'boolean',
           cache: 'boolean',
         },
-        conditions: 'string[]',
+        conditionLabels: 'string[]',
       });
 
       const graph = toResourceGraph(
@@ -276,7 +276,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
             database: true,
             cache: true,
           },
-          conditions: ['Ready', 'Available'],
+          conditionLabels: ['Ready', 'Available'],
         })
       );
 

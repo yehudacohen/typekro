@@ -575,6 +575,174 @@ describe('ReferenceResolver', () => {
       );
     });
 
+    it('discovers generated custom resources when KubernetesObjectApi has no registered kind', async () => {
+      const objectApi = {
+        ...mockK8sApi,
+        read: mock(() =>
+          Promise.reject(
+            new Error('Unrecognized API version and kind: kro.run/v1alpha1 DagsterHelmRepository')
+          )
+        ),
+      };
+      const customApi = {
+        getAPIResources: mock(() =>
+          Promise.resolve({
+            groupVersion: 'kro.run/v1alpha1',
+            resources: [
+              {
+                name: 'dagsterhelmrepositories',
+                kind: 'DagsterHelmRepository',
+                namespaced: true,
+                singularName: '',
+                verbs: ['get'],
+              },
+            ],
+          })
+        ),
+        getNamespacedCustomObject: mock(() =>
+          Promise.resolve({
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'DagsterHelmRepository',
+            metadata: { name: 'dagster-helm-repository', namespace: 'typekro-singletons' },
+            status: { ready: true },
+          })
+        ),
+        getClusterCustomObject: mock(() => Promise.reject(new Error('unexpected cluster read'))),
+      };
+      const customResolver = new ReferenceResolver(
+        mockKubeConfig,
+        'direct',
+        objectApi as unknown as k8s.KubernetesObjectApi,
+        customApi as unknown as k8s.CustomObjectsApi
+      );
+      const customContext = {
+        ...context,
+        resourceKeyMapping: new Map([
+          [
+            'repository',
+            {
+              apiVersion: 'kro.run/v1alpha1',
+              kind: 'DagsterHelmRepository',
+              metadata: {
+                name: 'dagster-helm-repository',
+                namespace: 'typekro-singletons',
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await customResolver.resolveReferences(
+        {
+          ready: {
+            [KUBERNETES_REF_BRAND]: true,
+            resourceId: 'repository',
+            fieldPath: 'status.ready',
+          },
+        },
+        customContext
+      );
+
+      expect(result.ready).toBe(true);
+      expect(customApi.getAPIResources).toHaveBeenCalledTimes(1);
+      expect(customApi.getNamespacedCustomObject).toHaveBeenCalledWith({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'dagsterhelmrepositories',
+        name: 'dagster-helm-repository',
+        namespace: 'typekro-singletons',
+      });
+    });
+
+    it('falls back to the generated CRD when API discovery has not observed it yet', async () => {
+      const objectApi = {
+        ...mockK8sApi,
+        read: mock(() =>
+          Promise.reject(
+            new Error('Unrecognized API version and kind: kro.run/v1alpha1 DagsterHelmRepository')
+          )
+        ),
+        list: mock(() =>
+          Promise.resolve({
+            items: [
+              {
+                spec: {
+                  group: 'kro.run',
+                  names: {
+                    kind: 'DagsterHelmRepository',
+                    plural: 'dagsterhelmrepositories',
+                  },
+                  scope: 'Namespaced',
+                  versions: [{ name: 'v1alpha1', served: true }],
+                },
+              },
+            ],
+          })
+        ),
+      };
+      const customApi = {
+        getAPIResources: mock(() =>
+          Promise.resolve({ groupVersion: 'kro.run/v1alpha1', resources: [] })
+        ),
+        getNamespacedCustomObject: mock(() =>
+          Promise.resolve({
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'DagsterHelmRepository',
+            metadata: { name: 'dagster-helm-repository', namespace: 'typekro-singletons' },
+            status: { ready: true },
+          })
+        ),
+        getClusterCustomObject: mock(() => Promise.reject(new Error('unexpected cluster read'))),
+      };
+      const customResolver = new ReferenceResolver(
+        mockKubeConfig,
+        'direct',
+        objectApi as unknown as k8s.KubernetesObjectApi,
+        customApi as unknown as k8s.CustomObjectsApi
+      );
+      const customContext = {
+        ...context,
+        resourceKeyMapping: new Map([
+          [
+            'repository',
+            {
+              apiVersion: 'kro.run/v1alpha1',
+              kind: 'DagsterHelmRepository',
+              metadata: {
+                name: 'dagster-helm-repository',
+                namespace: 'typekro-singletons',
+              },
+            },
+          ],
+        ]),
+      };
+
+      const result = await customResolver.resolveReferences(
+        {
+          ready: {
+            [KUBERNETES_REF_BRAND]: true,
+            resourceId: 'repository',
+            fieldPath: 'status.ready',
+          },
+        },
+        customContext
+      );
+
+      expect(result.ready).toBe(true);
+      expect(customApi.getAPIResources).toHaveBeenCalledTimes(1);
+      expect(objectApi.list).toHaveBeenCalledWith(
+        'apiextensions.k8s.io/v1',
+        'CustomResourceDefinition'
+      );
+      expect(customApi.getNamespacedCustomObject).toHaveBeenCalledWith({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'dagsterhelmrepositories',
+        name: 'dagster-helm-repository',
+        namespace: 'typekro-singletons',
+      });
+    });
+
     it('should throw CelExpressionError for invalid CEL expressions', async () => {
       const resource = {
         spec: {

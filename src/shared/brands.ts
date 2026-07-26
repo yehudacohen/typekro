@@ -16,6 +16,14 @@
 export const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
 
 /**
+ * Internal marker carried by schema references whose value can be absent.
+ *
+ * This metadata is projected into canonical PlanValue records before any
+ * serialization boundary; it is not itself a serialized contract.
+ */
+export const SCHEMA_REFERENCE_OPTIONAL_BRAND = Symbol.for('TypeKro.SchemaReferenceOptional');
+
+/**
  * Brand symbol for CelExpression objects
  */
 export const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');

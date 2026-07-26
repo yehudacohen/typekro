@@ -37,6 +37,7 @@ import {
   storageClass,
 } from '../../src/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
+import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers & types
@@ -356,7 +357,13 @@ describe('KroResourceFactory: prerequisite deployment', () => {
         server: 'https://example.invalid',
         skipTLSVerify: false,
       }),
-      getCurrentUser: () => ({ name: 'admin', token: 'tok' }),
+      getCurrentUser: () => ({
+        name: 'admin',
+        exec: {
+          apiVersion: 'client.authentication.k8s.io/v1',
+          command: 'test-auth',
+        },
+      }),
       getCurrentContext: () => 'ctx',
     });
 
@@ -470,6 +477,41 @@ function makeFlexibleFactory(
   };
   return createKroResourceFactory(name, emptyResources, schema, {}, options);
 }
+
+describe('KroResourceFactory: reserved provider bindings', () => {
+  it('rejects schemas that claim TypeKro provider binding storage', () => {
+    const schema = makeSchema({
+      spec: type({
+        name: 'string',
+        replicas: 'number',
+        typekroArtifactBindings: 'string',
+      }) as never,
+    });
+
+    expect(() => makeFactory('reservedSchemaApp', {}, schema)).toThrow(
+      'Spec field typekroArtifactBindings is reserved'
+    );
+  });
+
+  it('rejects concrete reserved fields consistently across KRO entry points', async () => {
+    const factory = makeFactory('reservedInstanceApp');
+    const spec = {
+      name: 'demo',
+      replicas: 1,
+      typekroArtifactBindings: 'user-owned',
+    } as unknown as TestSpec;
+
+    expect(() => factory.toYaml(spec)).toThrow('Spec field typekroArtifactBindings is reserved');
+    await expect(factory.toAlchemyResources(spec)).rejects.toMatchObject({
+      code: 'KRO_RESERVED_SPEC_FIELD',
+      context: expect.objectContaining({ surface: 'instance-spec' }),
+    });
+    await expect(factory.deploy(spec)).rejects.toMatchObject({
+      code: 'KRO_RESERVED_SPEC_FIELD',
+      context: expect.objectContaining({ surface: 'instance-spec' }),
+    });
+  });
+});
 
 /** Create a branded CelExpression object */
 function makeCelExpr(expression: string): { expression: string; [k: symbol]: boolean } {
@@ -927,6 +969,39 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
     );
   });
 
+  it('cancels cluster-backed reads before acquiring Kubernetes clients', async () => {
+    const factory = makeFactory('cancelledReads');
+    const factoryRecord = factory as unknown as Record<string, unknown>;
+    let clientAcquisitions = 0;
+    factoryRecord.createCustomObjectsApi = async () => {
+      clientAcquisitions++;
+      throw new Error('client acquisition should not run');
+    };
+    factoryRecord.getKubeConfig = () => {
+      clientAcquisitions++;
+      throw new Error('kubeconfig acquisition should not run');
+    };
+
+    const controller = new AbortController();
+    const reason = new DOMException('cancelled status read', 'AbortError');
+    controller.abort(reason);
+
+    const instancesError = await factory
+      .getInstances({ abortSignal: controller.signal })
+      .catch((error: unknown) => error);
+    const rgdError = await factory
+      .getRGDStatus({ abortSignal: controller.signal })
+      .catch((error: unknown) => error);
+    const statusError = await factory
+      .getStatus({ abortSignal: controller.signal })
+      .catch((error: unknown) => error);
+
+    expect(instancesError).toBe(reason);
+    expect(rgdError).toBe(reason);
+    expect(statusError).toBe(reason);
+    expect(clientAcquisitions).toBe(0);
+  });
+
   it('uses kind from schema definition', () => {
     const factory = makeFactory('myApp', {}, makeSchema({ kind: 'WebApp' }));
     const yaml = factory.toYaml({ name: 'test', replicas: 1 });
@@ -1000,23 +1075,8 @@ describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
 });
 
 describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
-  function withKubeConfig(
-    factory: KroResourceFactory<TestSpec, TestStatus>
-  ): KroResourceFactory<TestSpec, TestStatus> {
-    (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({
-      getCurrentCluster: () => ({
-        name: 'test-cluster',
-        server: 'https://example.invalid',
-        skipTLSVerify: false,
-      }),
-      getCurrentUser: () => ({ name: 'admin', token: 'tok' }),
-      getCurrentContext: () => 'ctx',
-    });
-    return factory;
-  }
-
   it('emits the RGD + CR instance as two independent declarations', async () => {
-    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const factory = makeFactory('alchemyApp');
     const decls = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
 
     expect(decls).toHaveLength(2);
@@ -1027,7 +1087,11 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
     expect((rgd.props.resource as { kind?: string }).kind).toBe('ResourceGraphDefinition');
     expect(rgd.props.deploymentStrategy).toBe('kro');
     expect(rgd.props.options?.waitForReady).toBe(true);
-    expect(rgd.props.kubeConfigOptions?.cluster?.server).toBe('https://example.invalid');
+    expect(rgd.props.kubeConfigOptions).toMatchObject({
+      loadFromDefault: true,
+      skipTLSVerify: false,
+    });
+    expect(rgd.props.kubeConfigOptions?.cluster).toBeUndefined();
     expect(rgd.props.kroDeletion?.rgdName).toBe(factory.rgdName);
     expect(rgd.props.kroDeletion?.kind).toBe('TestApp');
 
@@ -1039,7 +1103,7 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
   });
 
   it('honors an explicit waitForReady: false on the CR instance declaration', async () => {
-    const factory = withKubeConfig(makeFactory('alchemyApp', { waitForReady: false }));
+    const factory = makeFactory('alchemyApp', { waitForReady: false });
     const decls = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
     const instance = decls[1]!;
     // Fire-and-forget opt-out is honored; the RGD still ready-gates on CRD establishment.
@@ -1048,7 +1112,7 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
   });
 
   it('gives the RGD and instance distinct, deterministic ids', async () => {
-    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const factory = makeFactory('alchemyApp');
     const first = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
     const second = await factory.toAlchemyResources({ name: 'web', replicas: 2 });
 
@@ -1059,7 +1123,7 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
   });
 
   it('honors instanceNameOverride for the instance declaration', async () => {
-    const factory = withKubeConfig(makeFactory('alchemyApp'));
+    const factory = makeFactory('alchemyApp');
     const decls = await factory.toAlchemyResources(
       { name: 'web', replicas: 1 },
       { instanceNameOverride: 'custom-instance' }
@@ -1093,9 +1157,9 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
       spec: { name: 'shared-platform' },
     } satisfies SingletonDefinitionRecord;
 
-    const factory = withKubeConfig(
-      makeFactory('singletonConsumer', { singletonDefinitions: [singletonDefinition] })
-    );
+    const factory = makeFactory('singletonConsumer', {
+      singletonDefinitions: [singletonDefinition],
+    });
     const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
 
     // Singleton owner's RGD + instance are emitted (the bug: they were skipped entirely).
@@ -1152,9 +1216,7 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
       spec: { name: 'mid' },
     } satisfies SingletonDefinitionRecord;
 
-    const factory = withKubeConfig(
-      makeFactory('nestedConsumer', { singletonDefinitions: [midDefinition] })
-    );
+    const factory = makeFactory('nestedConsumer', { singletonDefinitions: [midDefinition] });
     const decls = await factory.toAlchemyResources({ name: 'web', replicas: 1 });
 
     const byKind = (k: string) =>
@@ -1773,6 +1835,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
       {},
       {
         namespace: 'default',
+        kubeConfig: createMockKubeConfig(),
         compositionFn: (spec: ParentSpec) => {
           const child = nested({ name: spec.name });
           return {
@@ -1843,6 +1906,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
       {},
       {
         namespace: 'default',
+        kubeConfig: createMockKubeConfig(),
         compositionFn: (spec: ParentSpec) => {
           const inner = nested({ name: spec.name });
           return { ready: inner.status.ready };
@@ -1904,6 +1968,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
       {},
       {
         namespace: 'default',
+        kubeConfig: createMockKubeConfig(),
         compositionFn: (spec: ParentSpec) => {
           const shared = singleton(fakeOwnerComposition as never, {
             id: 'platform-bootstrap',

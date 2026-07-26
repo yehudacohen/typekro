@@ -1,5 +1,5 @@
 // kubernetes-api.ts
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import {
   ensureError,
   KubernetesApiOperationError,
@@ -8,6 +8,7 @@ import {
 } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createKubernetesClientProvider, type KubernetesClientConfig } from './client-provider.js';
+import { getKubernetesClientNode } from './client-node-runtime.js';
 
 /**
  * Configuration for the Kubernetes API client, sourced from environment variables.
@@ -183,7 +184,7 @@ export class KubernetesApi {
    */
   public async apply(manifestString: string): Promise<void> {
     // Parse the manifest string as a KubernetesObject
-    const manifest = k8s.loadYaml(manifestString) as k8s.KubernetesObject;
+    const manifest = getKubernetesClientNode().loadYaml(manifestString) as k8s.KubernetesObject;
 
     // Ensure metadata and name exist for proper application
     if (!manifest.metadata || !manifest.metadata.name) {

@@ -312,6 +312,20 @@ await factory.deploy({ name: 'app', image: 'nginx' });
 4. **Week 4**: Add status expressions for runtime state
 5. **Ongoing**: Migrate remaining resources as needed
 
+## KRO schema-changing upgrades
+
+TypeKro waits for an updated `ResourceGraphDefinition` to report the current
+`metadata.generation` in `status.observedGeneration` before applying its custom
+resource instance. This prevents the API server from admitting an instance
+against the previous generated CRD schema and silently pruning newly added
+nested fields.
+
+TypeKro also compares the API server's immediate apply response with the desired
+instance spec. If structural-schema pruning still removes a desired path, the
+deployment fails with `KRO_INSTANCE_SPEC_PRUNED` and lists only the omitted
+paths, never their values. Do not retry around this error blindly: inspect the
+RGD and generated CRD status, then resolve the schema or reconciliation problem.
+
 ## Upgrading from a pre-hoist TypeKro release (KRO)
 
 TypeKro **never emits a `Namespace` into RGD YAML**. Every Namespace a composition
@@ -354,13 +368,21 @@ pruning your namespace. There is no automatic reclaim. Choose one:
   # 2. Strip KRO's ownership labels so the new RGD's prune no longer enumerates the ns.
   kubectl label namespace <ns> \
     applyset.kubernetes.io/part-of- \
-    kro.run/owned- kro.run/instance-id- \
+    kro.run/instance-group- kro.run/instance-id- \
+    kro.run/instance-kind- kro.run/instance-name- \
+    kro.run/instance-namespace- kro.run/instance-version- \
+    kro.run/kro-version- kro.run/node-id- kro.run/owned- \
     app.kubernetes.io/managed-by- \
     typekro.io/kro-instance-namespace=true --overwrite
 
   # 3. Apply the new (hoisted) RGD, then resume the controller.
   kubectl -n kro-system scale deploy/kro --replicas=1
   ```
+
+  Remove **every** `kro.run/*` label present on the Namespace, not only the
+  currently known keys shown above. The deployment guard intentionally treats
+  any remaining `kro.run/*` label as unresolved ApplySet ownership and continues
+  to fail closed.
 
   The namespace is now a plain, TypeKro-marked sibling that the current empty-gated
   delete path manages. If you cannot quiesce the controller, prefer **Recreate**.
@@ -469,6 +491,33 @@ the KRO status once the Namespace leaves the RGD — in **either** shape:
 TypeKro **rejects** such a composition at serialization (naming the field) in both
 cases — one consistent behavior — rather than silently shipping a weaker status API.
 Derive the value from a managed resource, or drop the field.
+
+### Helm-backed integration status now reports failures consistently
+
+The CNPG, Valkey, Inngest, NATS, Rook, ClickHouse operator, ClickStack telemetry,
+cert-manager, and external-dns compositions now derive their aggregate status from one
+shared Flux HelmRelease condition policy:
+
+- integration authors pass whole HelmRelease resources to
+  `helmReleaseConditionSummary(release, ...releases)`, allowing the helper to compare
+  `status.observedGeneration` and condition generations with `metadata.generation`;
+- `ready` is true only when every required HelmRelease has a current-generation
+  `Ready=True`;
+- where exposed, `failed` is true when any required HelmRelease has a
+  current-generation `Ready=False`; and
+- `phase` is now `Ready | Installing | Failed`.
+
+Missing or stale Flux status remains `Installing`; readiness from a previous generation
+is never reused for the new desired state. Concrete condition arrays are no longer a
+supported input to this newly public helper.
+
+This tightens several public status schemas. CNPG, ClickHouse, and ClickStack telemetry
+gain a required `failed` field. Valkey, Inngest, NATS, and Rook already exposed
+`failed`, but their `phase` unions gain `Failed`. cert-manager and external-dns keep
+their existing status fields while their `phase` can now emit `Failed`. Update
+exhaustive `phase` switches, typed fixtures, and hand-written status mocks before
+upgrading. This is a public API compatibility change and should be consumed as a
+pre-1.0 minor release rather than a patch release.
 
 ## Next Steps
 

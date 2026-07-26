@@ -8,6 +8,10 @@ import * as estraverse from 'estraverse';
 import { escapeRegExp } from '../../../utils/helpers.js';
 import { isKnownFactory } from '../../resources/factory-registry.js';
 import { getIdentifierName } from '../analysis/ast-type-guards.js';
+import {
+  inlineLexicalAliases,
+  type LexicalAliasScope,
+} from '../analysis/alias-inliner.js';
 import type {
   ASTNode,
   CallExpression,
@@ -235,13 +239,15 @@ export function conditionToCel(
   node: ASTNode,
   fullSource: string,
   specParamName: string,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): string {
   // Flatten any embedded template literals to CEL concat up front, before the
   // raw-source rewrites and the final `${…}` wrap below — otherwise a template
   // used as a ternary branch leaves a `${…}` nested inside the outer `${…}`,
   // which Kro rejects.
-  let source = flattenEmbeddedTemplateLiterals(getSource(node, fullSource));
+  const sourceWithAliases = inlineLexicalAliases(getSource(node, fullSource), lexicalAliases ?? {});
+  let source = flattenEmbeddedTemplateLiterals(sourceWithAliases);
 
   const optionalTruthinessGuard = (path: string, negation: string): string | undefined => {
     if (!optionalFieldNames || optionalFieldNames.size === 0) return undefined;
@@ -799,9 +805,10 @@ export function expressionToCel(
   node: ASTNode,
   fullSource: string,
   specParamName: string,
-  optionalFieldNames?: Set<string>
+  optionalFieldNames?: Set<string>,
+  lexicalAliases?: LexicalAliasScope
 ): string {
-  return conditionToCel(node, fullSource, specParamName, optionalFieldNames);
+  return conditionToCel(node, fullSource, specParamName, optionalFieldNames, lexicalAliases);
 }
 
 /**

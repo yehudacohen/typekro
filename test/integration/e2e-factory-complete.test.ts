@@ -1,25 +1,29 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+import { randomUUID } from 'node:crypto';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import {
-  createCustomObjectsApiClient,
+  createTestNamespace,
   createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
-  ensureNamespaceExists,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
-const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-${randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
   let kubeConfig: k8s.KubeConfig;
   let k8sApi: k8s.KubernetesObjectApi;
-  let _customApi: k8s.CustomObjectsApi;
+  let namespaceLease: TestNamespaceLease;
   // Hoisted so afterAll can delete the instance before the RGD — Kro requires
   // instances to be fully gone before the RGD is deleted, otherwise the
   // kro.run/finalizer on the instance can never be processed and the namespace
@@ -36,10 +40,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     kubeConfig = getIntegrationTestKubeConfig();
 
     k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    _customApi = createCustomObjectsApiClient(kubeConfig);
-
-    // Ensure test namespace exists
-    await ensureNamespaceExists(NAMESPACE, kubeConfig);
+    namespaceLease = await createTestNamespace(NAMESPACE, kubeConfig);
 
     console.log('✅ Factory e2e test environment ready!');
   }); // 5 minute timeout for setup
@@ -48,57 +49,17 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     if (!clusterAvailable) return;
     console.log('🧹 Cleaning up factory test environment...');
 
-    // Step 1: Delete the Kro instance FIRST and wait for the kro.run/finalizer to
-    // be cleared. If we delete the RGD before the instance, Kro loses the ability
-    // to process the finalizer and the namespace gets stuck in Terminating.
     if (kroFactory) {
-      try {
-        await kroFactory.deleteInstance('test-webapp');
-        console.log('🗑️ Deleted Kro instance: test-webapp');
-        // Wait for the instance to fully disappear (finalizer cleared)
-        const customApi = createCustomObjectsApiClient(kubeConfig);
-        const deadline = Date.now() + 60000;
-        while (Date.now() < deadline) {
-          try {
-            await customApi.getNamespacedCustomObject({
-              group: 'kro.run',
-              version: 'v2beta1',
-              namespace: NAMESPACE,
-              plural: 'webappfactorye2es',
-              name: 'test-webapp',
-            });
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          } catch (e: any) {
-            if (e.statusCode === 404 || e.body?.reason === 'NotFound') break;
-          }
-        }
-        console.log('✅ Kro instance fully removed');
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.reason !== 'NotFound') {
-          console.warn('⚠️ Failed to delete Kro instance:', error);
-        }
-      }
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        kroFactory,
+        'test-webapp',
+        [namespaceLease],
+        kubeConfig,
+        60_000
+      );
+    } else {
+      await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
     }
-
-    // Step 2: Delete the RGD now that no instances remain
-    try {
-      const customApi = createCustomObjectsApiClient(kubeConfig);
-      await customApi.deleteClusterCustomObject({
-        group: 'kro.run',
-        version: 'v1alpha1',
-        plural: 'resourcegraphdefinitions',
-        name: 'webapp-factory-e2e',
-      });
-      console.log('🗑️ Deleted RGD: webapp-factory-e2e');
-    } catch (error: unknown) {
-      const err = error as { statusCode?: number; body?: { reason?: string } };
-      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-        console.warn('⚠️ Failed to delete RGD webapp-factory-e2e:', error);
-      }
-    }
-
-    // Step 3: Now the namespace has no finalizer-blocked resources and can terminate cleanly
-    await deleteNamespaceAndWait(NAMESPACE, kubeConfig);
     console.log('✅ Factory test cleanup completed');
   });
 
@@ -112,7 +73,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     const WebAppSpecSchema = type({
       name: 'string',
       image: 'string',
-      replicas: 'number',
+      replicas: 'number%1',
       environment: '"development" | "staging" | "production"',
     });
 
@@ -400,13 +361,5 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     console.log(
       '✅ Full end-to-end workflow from TypeScript → Factory → Kro → Kubernetes → Status Hydration works'
     );
-    // Cleanup using factory-based resource destruction
-    console.log('🧹 Cleaning up factory complete test...');
-    try {
-      await kroFactory.deleteInstance('test-webapp');
-      console.log('✅ Factory complete cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Factory complete cleanup failed:', error);
-    }
-  }, 300000); // 5 minute timeout for the test
+  }, 900000); // 15 minute timeout for deployment and namespace cleanup
 });

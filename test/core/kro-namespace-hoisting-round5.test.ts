@@ -8,6 +8,7 @@ import {
 } from '../../src/core/deployment/kro-instance-safety.js';
 import {
   getIncludeWhen,
+  getMetadataField,
   getResourceId,
   setIncludeWhen,
   setResourceId,
@@ -15,6 +16,7 @@ import {
 import { Cel } from '../../src/core/references/cel.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { NAMESPACE_OWNER_ANNOTATION } from '../../src/core/deployment/kro-namespace-teardown.js';
 
 /**
  * Round-5 rework coverage for PR #113 (v2: namespaces NEVER in the RGD). OFFLINE
@@ -77,7 +79,10 @@ describe('finding #2: CR placement defaults to the FACTORY namespace (v0.26.0), 
   });
 
   it('an explicit instanceNamespace override still wins and is spec-independent', () => {
-    const factory = ownsNs().factory('kro', { namespace: 'factory-ns', instanceNamespace: 'cr-ns' });
+    const factory = ownsNs().factory('kro', {
+      namespace: 'factory-ns',
+      instanceNamespace: 'cr-ns',
+    });
     const resolve = priv(factory, 'resolveInstanceNamespace');
     expect(resolve()).toBe('cr-ns');
     expect(resolve({ name: 'x', namespace: 'whatever' })).toBe('cr-ns');
@@ -133,10 +138,9 @@ describe('finding #6: references to a hoisted Namespace are rewritten STRUCTURAL
     // string()-wrapped inside a CEL interpolation.
     expect(
       (
-        rewriteHoistedNamespaceRefsInValue(
-          cel('${string(ownedNamespace.metadata.name)}'),
-          ids
-        ) as { expression: string }
+        rewriteHoistedNamespaceRefsInValue(cel('${string(ownedNamespace.metadata.name)}'), ids) as {
+          expression: string;
+        }
       ).expression
     ).toBe('${string(schema.spec.namespace)}');
 
@@ -208,7 +212,10 @@ describe('finding #7: reference rewriting requires EXACT metadata.name (no over-
   const ids = specNamedNs();
 
   it('rewrites an EXACT metadata.name KubernetesRef to the hoisted Namespace', () => {
-    const out = rewriteHoistedNamespaceRefsInValue(kref('ownedNamespace', 'metadata.name'), ids) as {
+    const out = rewriteHoistedNamespaceRefsInValue(
+      kref('ownedNamespace', 'metadata.name'),
+      ids
+    ) as {
       expression?: string;
     };
     // Rewritten to a CEL expression referencing schema.spec.namespace.
@@ -298,6 +305,8 @@ describe('finding #8: the hoisted (sibling) Namespace preserves the COMPLETE dec
     expect(nsDoc).toContain('kubernetes');
     // Retention markers merged on top.
     expect(nsDoc).toContain("typekro.io/kro-instance-namespace: 'true'");
+    // Static YAML cannot prove create-vs-adopt ownership and stays neutral.
+    expect(nsDoc).not.toContain(NAMESPACE_OWNER_ANNOTATION);
   });
 
   it('toAlchemyResources retains schema-derived + non-string labels AND the spec', async () => {
@@ -310,6 +319,13 @@ describe('finding #8: the hoisted (sibling) Namespace preserves the COMPLETE dec
     expect(labels.team).toBe('data-platform');
     expect(labels.replicas).toBe('3');
     expect((ns as { spec?: { finalizers?: string[] } })?.spec?.finalizers).toEqual(['kubernetes']);
+    expect(ns?.metadata?.annotations?.[NAMESPACE_OWNER_ANNOTATION]).toBe('round5');
+    expect(getMetadataField(ns as object, 'applyPolicy')).toEqual({
+      strategy: 'server-side-apply',
+      fieldManager: 'typekro',
+      fieldConflictPolicy: 'force-owned-fields',
+      immutableFieldPolicy: 'fail',
+    });
   });
 });
 

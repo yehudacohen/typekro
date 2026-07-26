@@ -7,7 +7,11 @@
 
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
-import { ResourceDeploymentError } from '../core/deployment/errors.js';
+import {
+  ResourceDeletionIncompleteError,
+  ResourceDeploymentError,
+} from '../core/deployment/errors.js';
+import { assertKroInstanceSpecPreserved } from '../core/deployment/kro-instance-admission.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import {
   applyResourceScopeMetadata,
@@ -16,7 +20,11 @@ import {
 } from '../core/metadata/index.js';
 import { ensureReadinessEvaluator } from '../core/readiness/index.js';
 import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
-import type { DeploymentOptions, DeploymentResourceGraph } from '../core/types/deployment.js';
+import type {
+  DeploymentOptions,
+  DeploymentResourceGraph,
+  ResourceDeletionResult,
+} from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
 import type { TypeKroDeployer } from './types.js';
 
@@ -32,12 +40,14 @@ export class ResourceGraphDefinitionDeletionDeferredError extends Error {
 }
 
 interface KroTypeKroDeployerOptions {
+  /** Validate that the API server preserved the desired KRO instance spec. */
+  validateInstanceSpec?: boolean;
   /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
-  deleteInstance?: (name: string) => Promise<void>;
+  deleteInstance?: (name: string, abortSignal?: AbortSignal) => Promise<ResourceDeletionResult>;
   /** True when an RGD still has live instances and must be preserved. */
-  shouldSkipRgdDelete?: (rgdName: string) => Promise<boolean>;
+  shouldSkipRgdDelete?: (rgdName: string, abortSignal?: AbortSignal) => Promise<boolean>;
   /** Delete the RGD and generated CRD when no CR instance exists. */
-  deleteResourceGraphDefinition?: (rgdName: string) => Promise<void>;
+  deleteResourceGraphDefinition?: (rgdName: string, abortSignal?: AbortSignal) => Promise<void>;
 }
 
 function getKubernetesErrorCode(error: unknown): number | undefined {
@@ -45,8 +55,21 @@ function getKubernetesErrorCode(error: unknown): number | undefined {
   return k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  abortSignal?.throwIfAborted();
+  if (!abortSignal) return new Promise((resolve) => setTimeout(resolve, ms));
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(abortSignal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function isKroManagedDeletionMode(
@@ -61,7 +84,9 @@ function isKroManagedDeletionMode(
   );
 }
 
-function applyAlchemyResourceScopeMetadata(resource: Enhanced<any, any>): 'cluster' | 'namespaced' | undefined {
+function applyAlchemyResourceScopeMetadata(
+  resource: Enhanced<any, any>
+): 'cluster' | 'namespaced' | undefined {
   const scope = applyResourceScopeMetadata(resource);
   if (scope === 'cluster') {
     delete (resource.metadata as Record<string, unknown> | undefined)?.namespace;
@@ -187,7 +212,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     };
 
     // Use the engine's unified deleteResource method
-    await this.engine.deleteResource(deployedResource);
+    await this.engine.deleteResource(deployedResource, options);
   }
 }
 
@@ -250,7 +275,13 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       throw deploymentError;
     }
 
-    // Return the original resource (DirectDeploymentEngine doesn't modify the input)
+    const deployedId = getResourceId(resource, resourceId);
+    const live =
+      result.resources?.find((candidate) => candidate.id === deployedId)?.liveManifest ??
+      result.resources?.[0]?.liveManifest;
+    if (live && this.deployerOptions.validateInstanceSpec === true) {
+      assertKroInstanceSpecPreserved(resource, live);
+    }
     return resource;
   }
 
@@ -260,10 +291,11 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     if (resource.kind === 'ResourceGraphDefinition') {
       if (this.deployerOptions.deleteInstance) {
+        const rgdName = resource.metadata?.name || 'unnamed';
         const shouldSkip =
-          (await this.deployerOptions.shouldSkipRgdDelete?.(
-            resource.metadata?.name || 'unnamed'
-          )) ?? true;
+          (await (options.abortSignal
+            ? this.deployerOptions.shouldSkipRgdDelete?.(rgdName, options.abortSignal)
+            : this.deployerOptions.shouldSkipRgdDelete?.(rgdName))) ?? true;
         if (shouldSkip) {
           logger.debug('Deferring Alchemy RGD delete while KRO instances still exist', {
             name: resource.metadata?.name,
@@ -277,9 +309,11 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
           name: resource.metadata?.name,
         });
         if (this.deployerOptions.deleteResourceGraphDefinition) {
-          await this.deployerOptions.deleteResourceGraphDefinition(
-            resource.metadata?.name || 'unnamed'
-          );
+          if (options.abortSignal) {
+            await this.deployerOptions.deleteResourceGraphDefinition(rgdName, options.abortSignal);
+          } else {
+            await this.deployerOptions.deleteResourceGraphDefinition(rgdName);
+          }
           return;
         }
       }
@@ -294,7 +328,15 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
 
     const name = resource.metadata?.name || 'unnamed';
     if (this.deployerOptions.deleteInstance) {
-      await this.deployerOptions.deleteInstance(name);
+      let result: ResourceDeletionResult;
+      if (options.abortSignal) {
+        result = await this.deployerOptions.deleteInstance(name, options.abortSignal);
+      } else {
+        result = await this.deployerOptions.deleteInstance(name);
+      }
+      if (result.status !== 'complete') {
+        throw new ResourceDeletionIncompleteError(result);
+      }
       return;
     }
 
@@ -324,6 +366,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     const timeout = options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
+      options.abortSignal?.throwIfAborted();
       try {
         await k8sApi.read(deleteTarget as any);
       } catch (error: unknown) {
@@ -332,7 +375,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
         }
         throw error;
       }
-      await delay(2000);
+      await delay(2000, options.abortSignal);
     }
 
     logger.warn(

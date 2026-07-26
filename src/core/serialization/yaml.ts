@@ -7,8 +7,8 @@
  */
 
 import * as yaml from 'js-yaml';
+import { convertReadyWhenCallbackToCel } from '../expressions/analysis/ready-when.js';
 import { getMetadataField } from '../metadata/resource-metadata.js';
-import { escapeRegExp } from '../../utils/helpers.js';
 import {
   extractResourceReferences,
   isCelExpression,
@@ -33,7 +33,12 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';
-import { finalizeCelForKro, getInnerCelPath, normalizeRefMarkersToCelPaths, processResourceReferences } from './cel-references.js';
+import {
+  finalizeCelForKro,
+  getInnerCelPath,
+  normalizeRefMarkersToCelPaths,
+  processResourceReferences,
+} from './cel-references.js';
 import { generateKroSchema } from './schema.js';
 
 /**
@@ -125,7 +130,10 @@ function readTemplateOverrides(
  *  - string (already CEL) → pass-through
  *  - string with __KUBERNETES_REF__ markers → convert markers to CEL
  */
-function convertIncludeWhenValueToCel(value: unknown, context: SerializationContext): string | undefined {
+function convertIncludeWhenValueToCel(
+  value: unknown,
+  context: SerializationContext
+): string | undefined {
   if (typeof value === 'string') {
     if (value.includes('__KUBERNETES_REF_')) {
       return `\${${convertRefMarkersInString(value, context)}}`;
@@ -175,198 +183,6 @@ function resolveIncludeWhen(raw: unknown, context: SerializationContext): string
 // readyWhen → CEL conversion
 // ---------------------------------------------------------------------------
 
-const READY_WHEN_CALLBACK_METHODS = new Set(['exists', 'all', 'filter', 'map', 'some', 'every']);
-
-function findMatchingParen(source: string, openIndex: number): number {
-  let depth = 0;
-  let quote: '"' | "'" | '`' | undefined;
-  let escaped = false;
-
-  for (let i = openIndex; i < source.length; i++) {
-    const char = source[i];
-
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char;
-      continue;
-    }
-
-    if (char === '(') {
-      depth++;
-    } else if (char === ')') {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-
-  return -1;
-}
-
-function normalizeArrowBody(body: string): string {
-  const trimmed = body.trim();
-  if (!trimmed.startsWith('{')) return trimmed;
-
-  return trimmed
-    .replace(/^\{\s*(?:return\s+)?/, '')
-    .replace(/;?\s*\}\s*$/, '')
-    .trim();
-}
-
-function convertReadyWhenCallbackMethods(expression: string): string {
-  let result = '';
-  let index = 0;
-
-  while (index < expression.length) {
-    const dotIndex = expression.indexOf('.', index);
-    if (dotIndex === -1) {
-      result += expression.slice(index);
-      break;
-    }
-
-    result += expression.slice(index, dotIndex);
-
-    let cursor = dotIndex + 1;
-    while (/\s/.test(expression[cursor] ?? '')) cursor++;
-
-    const methodMatch = /^[a-zA-Z_$][a-zA-Z0-9_$]*/.exec(expression.slice(cursor));
-    if (!methodMatch || !READY_WHEN_CALLBACK_METHODS.has(methodMatch[0])) {
-      result += expression[dotIndex];
-      index = dotIndex + 1;
-      continue;
-    }
-
-    const method = methodMatch[0];
-    cursor += method.length;
-    while (/\s/.test(expression[cursor] ?? '')) cursor++;
-
-    if (expression[cursor] !== '(') {
-      result += expression[dotIndex];
-      index = dotIndex + 1;
-      continue;
-    }
-
-    const closeIndex = findMatchingParen(expression, cursor);
-    if (closeIndex === -1) {
-      result += expression[dotIndex];
-      index = dotIndex + 1;
-      continue;
-    }
-
-    const callbackSource = expression.slice(cursor + 1, closeIndex).trim();
-    const arrowIndex = callbackSource.indexOf('=>');
-    if (arrowIndex === -1) {
-      result += expression.slice(dotIndex, closeIndex + 1);
-      index = closeIndex + 1;
-      continue;
-    }
-
-    let param = callbackSource.slice(0, arrowIndex).trim();
-    param = param.replace(/^\(\s*/, '').replace(/\s*\)$/, '').trim();
-    const colonIndex = param.indexOf(':');
-    if (colonIndex !== -1) param = param.slice(0, colonIndex).trim();
-
-    if (!/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(param)) {
-      result += expression.slice(dotIndex, closeIndex + 1);
-      index = closeIndex + 1;
-      continue;
-    }
-
-    let body = normalizeArrowBody(callbackSource.slice(arrowIndex + 2));
-    body = body.replace(/===/g, '==').replace(/!==/g, '!=');
-    body = convertReadyWhenCallbackMethods(body);
-
-    const celMethod = method === 'some' ? 'exists' : method === 'every' ? 'all' : method;
-    result += `.${celMethod}(${param}, ${body})`;
-    index = closeIndex + 1;
-  }
-
-  return result;
-}
-
-/**
- * Convert a readyWhen callback function to a CEL expression string by parsing its source.
- *
- * Strategy: use fn.toString() and simple regex/string transforms to convert
- * JavaScript expressions to CEL, replacing the callback parameter with the resource id.
- *
- * Examples:
- *   (self) => self.status.readyReplicas > 0
- *   → "web.status.readyReplicas > 0"
- *
- *   (self) => self.status.phase === 'Running'
- *   → 'app.status.phase == "Running"'
- *
- *   (self) => self.status.conditions.exists((c) => c.type === 'Ready' && c.status === 'True')
- *   → 'db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
- */
-function convertReadyWhenCallbackToCel(
-  fn: (...args: unknown[]) => unknown,
-  resourceId: string
-): string {
-  const fnStr = fn.toString();
-
-  // Extract parameter name and body from arrow function
-  // Patterns:
-  //   (self) => self.status.readyReplicas > 0
-  //   self => self.status.readyReplicas > 0
-  //   (self) => { return self.status.readyReplicas > 0; }
-  const arrowMatch = fnStr.match(
-    /^\s*\(?([a-zA-Z_$][a-zA-Z0-9_$]*)\)?\s*=>\s*(?:\{\s*(?:return\s+)?)?([\s\S]+?)(?:\s*;?\s*\})?$/
-  );
-
-  let paramName: string;
-  let bodyStr: string;
-
-  if (arrowMatch?.[1] && arrowMatch[2]) {
-    paramName = arrowMatch[1];
-    bodyStr = arrowMatch[2].trim();
-    // Remove trailing semicolons and closing braces
-    bodyStr = bodyStr
-      .replace(/;\s*$/, '')
-      .replace(/\}\s*$/, '')
-      .trim();
-  } else {
-    // Fallback: try regular function syntax
-    const funcMatch = fnStr.match(
-      /function\s*\w*\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)\s*\{\s*(?:return\s+)?([\s\S]+?);\s*\}/
-    );
-    if (funcMatch?.[1] && funcMatch[2]) {
-      paramName = funcMatch[1];
-      bodyStr = funcMatch[2].trim();
-    } else {
-      // Cannot parse — return as-is
-      return fnStr;
-    }
-  }
-
-  // Replace parameter name with resource id (word boundary to avoid substrings)
-  let celExpr = bodyStr.replace(new RegExp(`\\b${escapeRegExp(paramName)}\\b`, 'g'), resourceId);
-
-  // JS → CEL operator conversions (must happen before inner callback processing)
-  celExpr = celExpr.replace(/===/g, '==');
-  celExpr = celExpr.replace(/!==/g, '!=');
-
-  // Convert JS arrow function callbacks inside CEL macros and natural JS array
-  // helpers. Use a balanced scanner instead of a regex so nested parentheses in
-  // predicate bodies don't truncate the callback body.
-  celExpr = convertReadyWhenCallbackMethods(celExpr);
-
-  // Convert remaining single-quoted strings to double-quoted for CEL
-  celExpr = celExpr.replace(/'([^']+)'/g, '"$1"');
-
-  return celExpr;
-}
-
 /**
  * Convert a readyWhen value to a CEL expression string.
  *
@@ -382,16 +198,18 @@ function convertReadyWhenValueToCel(
   hasForEach: boolean,
   context: SerializationContext
 ): string | undefined {
+  // Branded references may use callable proxy targets, so classify them
+  // before treating an arbitrary function as an author callback.
+  if (isKubernetesRef(value)) {
+    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
+    return `\${${celPath}}`;
+  }
+
   // Callback function — parse source to extract CEL expression
   if (typeof value === 'function') {
     const baseId = hasForEach ? 'each' : resourceId;
     const celExpr = convertReadyWhenCallbackToCel(value as (...args: unknown[]) => unknown, baseId);
     return `\${${celExpr}}`;
-  }
-
-  if (isKubernetesRef(value)) {
-    const celPath = normalizeRefMarkersToCelPaths(getInnerCelPath(value), context);
-    return `\${${celPath}}`;
   }
 
   if (isCelExpression(value)) {
@@ -540,7 +358,9 @@ function stripOrphanedItemSentinels<T>(template: T): T {
 }
 
 function normalizeOptionalArrayConditional(value: string): string | undefined {
-  const match = value.match(/^\$\{has\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\) \? (\[.*), \1\] : (\[.*\])\}$/);
+  const match = value.match(
+    /^\$\{has\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\) \? (\[.*), \1\] : (\[.*\])\}$/
+  );
   if (!match?.[1] || !match[2] || !match[3]) return undefined;
   const [, basePath, truthyPrefix, fallbackList] = match;
   if (`${truthyPrefix}]` !== fallbackList) return undefined;
@@ -567,10 +387,13 @@ function isDirectOrphanedItemElement(value: unknown, basePath: string): boolean 
   if (typeof value === 'string') {
     return value.includes('${') && value.includes(`${basePath}.$item`);
   }
-  if (Array.isArray(value)) return value.every((item) => isDirectOrphanedItemElement(item, basePath));
+  if (Array.isArray(value))
+    return value.every((item) => isDirectOrphanedItemElement(item, basePath));
   if (value && typeof value === 'object') {
     const entries = Object.values(value);
-    return entries.length > 0 && entries.every((entry) => isDirectOrphanedItemElement(entry, basePath));
+    return (
+      entries.length > 0 && entries.every((entry) => isDirectOrphanedItemElement(entry, basePath))
+    );
   }
   return false;
 }
@@ -596,7 +419,11 @@ function collapseOrphanedArraySpreads(items: unknown[]): string | undefined {
     sawSpread = true;
     flushLiterals();
     const serialized = JSON.stringify(item) ?? '';
-    parts.push(serialized.includes(`has(${basePath})`) ? `(${hasGuardForPath(basePath)} ? ${basePath} : [])` : basePath);
+    parts.push(
+      serialized.includes(`has(${basePath})`)
+        ? `(${hasGuardForPath(basePath)} ? ${basePath} : [])`
+        : basePath
+    );
   }
 
   if (!sawSpread) return undefined;
@@ -667,9 +494,10 @@ function applyTemplateOverrides(
       const part = parts[i];
       if (!part) continue;
       if (!target) break;
-      const next = Array.isArray(target) && /^\d+$/.test(part)
-        ? target[Number(part)]
-        : (target as Record<string, unknown>)[part];
+      const next =
+        Array.isArray(target) && /^\d+$/.test(part)
+          ? target[Number(part)]
+          : (target as Record<string, unknown>)[part];
       if (next && typeof next === 'object') {
         target = next as Record<string, unknown> | unknown[];
       } else {
@@ -678,7 +506,8 @@ function applyTemplateOverrides(
           break;
         }
         const nextPart = parts[i + 1];
-        const container: Record<string, unknown> | unknown[] = nextPart && /^\d+$/.test(nextPart) ? [] : {};
+        const container: Record<string, unknown> | unknown[] =
+          nextPart && /^\d+$/.test(nextPart) ? [] : {};
         if (Array.isArray(target) && /^\d+$/.test(part)) {
           target[Number(part)] = container;
         } else {
@@ -748,9 +577,12 @@ function resolveDependsOnResourceId(
     return candidates[0] ?? dependencyId;
   }
 
-  return candidates.sort(
-    (left, right) => commonPrefixLength(right, currentResourceId) - commonPrefixLength(left, currentResourceId)
-  )[0] ?? dependencyId;
+  return (
+    candidates.sort(
+      (left, right) =>
+        commonPrefixLength(right, currentResourceId) - commonPrefixLength(left, currentResourceId)
+    )[0] ?? dependencyId
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -800,9 +632,10 @@ function buildResourceEntry(
       kind: String(kindDesc?.value ?? ''),
       metadata: {
         name: String(processedName ?? ''),
-        ...(rawNamespace !== undefined && processedNamespace !== undefined && {
-          namespace: String(processedNamespace),
-        }),
+        ...(rawNamespace !== undefined &&
+          processedNamespace !== undefined && {
+            namespace: String(processedNamespace),
+          }),
       },
     };
 
@@ -818,10 +651,18 @@ function buildResourceEntry(
     return entry;
   }
 
-  // Regular resource: emit template
+  // Regular resource: emit only Kubernetes manifest fields. Planning/materialization can make
+  // TypeKro's transport identity enumerable, but KRO validates every template against the target
+  // API schema and therefore must never receive those internal fields.
+  const template = processResourceReferences(resource, context) as KubernetesResource & {
+    id?: unknown;
+    scope?: unknown;
+  };
+  delete template.id;
+  delete template.scope;
   const entry: KroResourceTemplate = {
     id,
-    template: processResourceReferences(resource, context),
+    template,
   };
 
   // forEach — collection dimensions (populated by proxy layer / AST analysis)
@@ -904,8 +745,13 @@ function buildResourceEntry(
       const metadata = (template.metadata ?? {}) as Record<string, unknown>;
       const annotations = (metadata.annotations ?? {}) as Record<string, string>;
       for (const dep of dependsOnDeps) {
-        const resolvedDependencyId = resolveDependsOnResourceId(dep.resourceId, id, context.resourceIds);
-        annotations[`typekro.dev/depends-on-${resolvedDependencyId}`] = `\${${resolvedDependencyId}.metadata.name}`;
+        const resolvedDependencyId = resolveDependsOnResourceId(
+          dep.resourceId,
+          id,
+          context.resourceIds
+        );
+        annotations[`typekro.dev/depends-on-${resolvedDependencyId}`] =
+          `\${${resolvedDependencyId}.metadata.name}`;
       }
       metadata.annotations = annotations;
       template.metadata = metadata;
@@ -930,20 +776,19 @@ function buildResourceEntry(
  * - group: Custom API group in schema (passed through customSchema)
  * - allowBreakingChanges: Emits annotation on RGD metadata
  */
-export function serializeResourceGraphToYaml(
+export function serializeResourceGraphToManifest(
   name: string,
   resources: Record<string, KubernetesResource>,
   options?: SerializationOptions,
   customSchema?: KroSimpleSchema
-): string {
+): KroResourceGraphDefinition {
   // Extract optional-field omit list from schema metadata (if present).
   // These fields get `has() ? ... : omit()` wrapping applied inline during
   // ref-to-CEL conversion — no post-hoc YAML-string rewriting needed.
   const schemaWithMeta = customSchema as KroSimpleSchemaWithMetadata | undefined;
   const omitFieldsList = schemaWithMeta?.__omitFields;
-  const omitFields = omitFieldsList && omitFieldsList.length > 0
-    ? new Set(omitFieldsList)
-    : undefined;
+  const omitFields =
+    omitFieldsList && omitFieldsList.length > 0 ? new Set(omitFieldsList) : undefined;
 
   // Create serialization context
   const nestedStatusCel = schemaWithMeta?.__nestedStatusCel;
@@ -1026,8 +871,15 @@ export function serializeResourceGraphToYaml(
     },
   };
 
-  // 5. Convert to YAML
-  return yaml.dump(kroDefinition, {
+  return kroDefinition;
+}
+
+/** Encode an already-built RGD manifest without reparsing YAML at another host boundary. */
+export function serializeResourceGraphDefinitionToYaml(
+  definition: KroResourceGraphDefinition,
+  options?: SerializationOptions
+): string {
+  return yaml.dump(definition, {
     indent: options?.indent || 2,
     lineWidth: options?.lineWidth || -1,
     noRefs: options?.noRefs ?? true,
@@ -1036,4 +888,17 @@ export function serializeResourceGraphToYaml(
     forceQuotes: false,
     schema: RGD_DUMP_SCHEMA,
   });
+}
+
+/** Build and encode a ResourceGraphDefinition. */
+export function serializeResourceGraphToYaml(
+  name: string,
+  resources: Record<string, KubernetesResource>,
+  options?: SerializationOptions,
+  customSchema?: KroSimpleSchema
+): string {
+  return serializeResourceGraphDefinitionToYaml(
+    serializeResourceGraphToManifest(name, resources, options, customSchema),
+    options
+  );
 }

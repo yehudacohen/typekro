@@ -468,7 +468,7 @@ describe('official Harbor platform', () => {
     expect(yaml).toContain('typekro.io/hoisted-namespaces: \'["harbor-system"]\'');
   });
 
-  it('preserves namespace safety for singleton owner instances', () => {
+  it('hoists a singleton owner namespace before the owner and consumer instances', async () => {
     const consumer = kubernetesComposition(
       {
         name: 'singleton-harbor-consumer',
@@ -484,9 +484,21 @@ describe('official Harbor platform', () => {
         return { ready: installation.status.ready };
       }
     );
-    expect(() =>
-      consumer.factory('kro', { namespace: 'apps' }).toYaml({ name: 'consumer' })
-    ).toThrow('cannot also be an owned Namespace');
+    const factory = consumer.factory('kro', { namespace: 'apps' });
+    const spec = { name: 'consumer' };
+    const yaml = factory.toYaml(spec);
+    const namespaceIndex = yaml.indexOf('kind: Namespace');
+    const ownerIndex = yaml.indexOf('kind: HarborLocalInstallation');
+    const consumerIndex = yaml.indexOf('kind: SingletonHarborConsumer');
+
+    expect(namespaceIndex).toBeGreaterThanOrEqual(0);
+    expect(namespaceIndex).toBeLessThan(ownerIndex);
+    expect(ownerIndex).toBeLessThan(consumerIndex);
+    expect(yaml).toContain('typekro.io/hoisted-namespaces: \'["typekro-singletons"]\'');
+
+    const declarations = await factory.toAlchemyResources(spec);
+    expect(declarations[0]?.props.resource.kind).toBe('Namespace');
+    expect(declarations[0]?.props.resource.metadata?.name).toBe(DEFAULT_SINGLETON_NAMESPACE);
   });
 
   it('exports focused and namespaced APIs', () => {

@@ -132,21 +132,24 @@ describe('SearXNG Factory', () => {
 
   describe('bootstrap settings', () => {
     it('emits documented concrete settings fields in direct YAML', () => {
-      const yaml = searxngBootstrap.toYaml({
-        name: 'search',
-        server: {
-          secret_key: 'test-secret',
-          limiter: true,
-          bind_address: '0.0.0.0:8080',
-          method: 'POST',
+      const yaml = searxngBootstrap.factory('direct').toYaml(
+        {
+          name: 'search',
+          server: {
+            secret_key: 'test-secret',
+            limiter: true,
+            bind_address: '0.0.0.0:8080',
+            method: 'POST',
+          },
+          search: {
+            formats: ['html', 'json', 'rss'],
+            default_lang: 'en',
+            autocomplete: 'duckduckgo',
+            safe_search: 2,
+          },
         },
-        search: {
-          formats: ['html', 'json', 'rss'],
-          default_lang: 'en',
-          autocomplete: 'duckduckgo',
-          safe_search: 2,
-        },
-      });
+        { allowSensitiveMaterialization: true }
+      );
 
       expect(yaml).toContain('bind_address: 0.0.0.0:8080');
       expect(yaml).toContain('method: POST');

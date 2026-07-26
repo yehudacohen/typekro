@@ -3,8 +3,181 @@
  */
 
 import { ensureError } from '../../core/errors.js';
+import {
+  identifyPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from '../../core/readiness/portable-strategies.js';
+import {
+  readinessConfiguration,
+  readinessLiteral,
+  requiredReadinessString,
+} from '../../core/readiness/strategy-configuration.js';
 import type { Enhanced, ResourceStatus, WithKroStatusFields } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
+
+const KRO_CUSTOM_RESOURCE_READINESS_STRATEGY = 'typekro.readiness.kro.custom-resource';
+
+function createKroCustomResourceReadinessEvaluator(resourceKind: string) {
+  const evaluator = (liveResource: unknown): ResourceStatus => {
+    try {
+      const typedLiveResource = liveResource as
+        | {
+            metadata?: { generation?: number };
+            status?: WithKroStatusFields<Record<string, unknown>>;
+          }
+        | null
+        | undefined;
+      const status = typedLiveResource?.status;
+      if (!status) {
+        return {
+          ready: false,
+          reason: 'StatusMissing',
+          message: `${resourceKind} status not yet available`,
+          details: { statusExists: false },
+        };
+      }
+
+      const state = status.state;
+      const conditions = status.conditions || [];
+      const generation =
+        typeof typedLiveResource?.metadata?.generation === 'number'
+          ? typedLiveResource.metadata.generation
+          : undefined;
+      const statusObservedGeneration =
+        typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined;
+      const hasConditionObservedGeneration = conditions.some(
+        (condition) => typeof condition.observedGeneration === 'number'
+      );
+      const currentConditions =
+        hasConditionObservedGeneration && generation !== undefined
+          ? conditions.filter((condition) => (condition.observedGeneration ?? 0) >= generation)
+          : conditions;
+
+      if (
+        generation !== undefined &&
+        statusObservedGeneration !== undefined &&
+        statusObservedGeneration < generation
+      ) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ${resourceKind} generation ${generation}.`,
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
+        };
+      }
+
+      if (
+        generation !== undefined &&
+        hasConditionObservedGeneration &&
+        currentConditions.length === 0
+      ) {
+        return {
+          ready: false,
+          reason: 'GenerationPending',
+          message: `Waiting for Kro controller to process ${resourceKind} generation ${generation}.`,
+          details: {
+            generation,
+            observedGeneration: statusObservedGeneration,
+            conditions,
+          },
+        };
+      }
+
+      if (state === undefined) {
+        return {
+          ready: false,
+          reason: 'StateFieldMissing',
+          message: `${resourceKind} state field not yet populated by Kro controller`,
+          details: {
+            statusExists: true,
+            stateExists: false,
+            conditions: currentConditions.length > 0 ? currentConditions : undefined,
+          },
+        };
+      }
+      if (state === 'FAILED') {
+        const failedCondition = currentConditions.find((condition) => condition.status === 'False');
+        return {
+          ready: false,
+          reason: 'KroInstanceFailed',
+          message: `${resourceKind} instance failed: ${failedCondition?.message || 'Unknown error'}`,
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
+        };
+      }
+      if (state === 'PROGRESSING') {
+        return {
+          ready: false,
+          reason: 'KroInstanceProgressing',
+          message: `${resourceKind} instance progressing - State: ${state}`,
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
+        };
+      }
+      if (state !== 'ACTIVE') {
+        return {
+          ready: false,
+          reason: 'StateNotActive',
+          message: `${resourceKind} state is '${state}', waiting for 'ACTIVE'`,
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
+        };
+      }
+
+      const readyCondition = currentConditions.find((condition) => condition.type === 'Ready');
+      const syncedCondition = currentConditions.find(
+        (condition) => condition.type === 'InstanceSynced'
+      );
+      if (readyCondition?.status === 'True') {
+        return { ready: true, message: `${resourceKind} instance is active and ready` };
+      }
+      if (readyCondition) {
+        return {
+          ready: false,
+          reason: 'ReadyConditionFalse',
+          message: `${resourceKind} Ready condition is '${readyCondition.status}': ${readyCondition.message || 'No message'}`,
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
+        };
+      }
+      if (syncedCondition?.status === 'True') {
+        return { ready: true, message: `${resourceKind} instance is active and synced` };
+      }
+      if (syncedCondition) {
+        return {
+          ready: false,
+          reason: 'NotSynced',
+          message: `${resourceKind} InstanceSynced condition is '${syncedCondition.status}': ${syncedCondition.message || 'No message'}`,
+          details: { state, conditions, observedGeneration: statusObservedGeneration },
+        };
+      }
+      return {
+        ready: false,
+        reason: 'ReadinessConditionMissing',
+        message: `${resourceKind} Ready or InstanceSynced condition not yet available`,
+        details: { state, conditions, observedGeneration: statusObservedGeneration },
+      };
+    } catch (error: unknown) {
+      return {
+        ready: false,
+        reason: 'EvaluationError',
+        message: `Error evaluating ${resourceKind} readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
+      };
+    }
+  };
+
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: KRO_CUSTOM_RESOURCE_READINESS_STRATEGY,
+    revision: '1',
+    configuration: readinessConfiguration({ resourceKind: readinessLiteral(resourceKind) }),
+  });
+}
+
+registerPortableReadinessStrategy(KRO_CUSTOM_RESOURCE_READINESS_STRATEGY, '1', (configuration) =>
+  createKroCustomResourceReadinessEvaluator(requiredReadinessString(configuration, 'resourceKind'))
+);
 
 /**
  * Generic Kro custom resource factory with schema-based typing
@@ -21,149 +194,8 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
   metadata: { name: string; namespace?: string };
   spec: TSpec;
 }): Enhanced<TSpec, WithKroStatusFields<TStatus>> {
-  // Capture kind in closure for readiness evaluation
-  const resourceKind = resource.kind;
-
   return createResource<TSpec, WithKroStatusFields<TStatus>>({
     ...resource,
     metadata: resource.metadata ?? { name: 'unnamed-kro-resource' },
-  }).withReadinessEvaluator((liveResource: unknown): ResourceStatus => {
-    try {
-      const status = (liveResource as { status?: WithKroStatusFields<TStatus> } | null | undefined)?.status;
-
-      // Check if status object exists at all
-      if (!status) {
-        return {
-          ready: false,
-          reason: 'StatusMissing',
-          message: `${resourceKind} status not yet available`,
-          details: { statusExists: false },
-        };
-      }
-
-      const state = status.state;
-      const conditions = status.conditions || [];
-
-      // Check if required Kro fields are present
-      if (state === undefined) {
-        return {
-          ready: false,
-          reason: 'StateFieldMissing',
-          message: `${resourceKind} state field not yet populated by Kro controller`,
-          details: {
-            statusExists: true,
-            stateExists: false,
-            conditions: conditions.length > 0 ? conditions : undefined,
-          },
-        };
-      }
-
-      // Check for failed state
-      if (state === 'FAILED') {
-        const failedCondition = conditions.find((c) => c.status === 'False');
-        return {
-          ready: false,
-          reason: 'KroInstanceFailed',
-          message: `${resourceKind} instance failed: ${failedCondition?.message || 'Unknown error'}`,
-          details: {
-            state,
-            conditions,
-            observedGeneration: status.observedGeneration,
-          },
-        };
-      }
-
-      // Handle different states
-      if (state === 'PROGRESSING') {
-        return {
-          ready: false,
-          reason: 'KroInstanceProgressing',
-          message: `${resourceKind} instance progressing - State: ${state}`,
-          details: {
-            state,
-            conditions,
-            observedGeneration: status.observedGeneration,
-          },
-        };
-      }
-
-      if (state !== 'ACTIVE') {
-        return {
-          ready: false,
-          reason: 'StateNotActive',
-          message: `${resourceKind} state is '${state}', waiting for 'ACTIVE'`,
-          details: {
-            state,
-            conditions,
-            observedGeneration: status.observedGeneration,
-          },
-        };
-      }
-
-      // For ACTIVE state, check for Ready condition (primary) or InstanceSynced condition (fallback)
-      const readyCondition = conditions.find((c) => c.type === 'Ready');
-      const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
-
-      // Prefer Ready condition if available
-      if (readyCondition) {
-        if (readyCondition.status === 'True') {
-          return {
-            ready: true,
-            message: `${resourceKind} instance is active and ready`,
-          };
-        } else {
-          return {
-            ready: false,
-            reason: 'ReadyConditionFalse',
-            message: `${resourceKind} Ready condition is '${readyCondition.status}': ${readyCondition.message || 'No message'}`,
-            details: {
-              state,
-              conditions,
-              observedGeneration: status.observedGeneration,
-            },
-          };
-        }
-      }
-
-      // Fallback to InstanceSynced condition
-      if (syncedCondition) {
-        if (syncedCondition.status === 'True') {
-          return {
-            ready: true,
-            message: `${resourceKind} instance is active and synced`,
-          };
-        } else {
-          return {
-            ready: false,
-            reason: 'NotSynced',
-            message: `${resourceKind} InstanceSynced condition is '${syncedCondition.status}': ${syncedCondition.message || 'No message'}`,
-            details: {
-              state,
-              conditions,
-              observedGeneration: status.observedGeneration,
-            },
-          };
-        }
-      }
-
-      // No Ready or InstanceSynced condition found
-      return {
-        ready: false,
-        reason: 'ReadinessConditionMissing',
-        message: `${resourceKind} Ready or InstanceSynced condition not yet available`,
-        details: {
-          state,
-          conditions,
-          observedGeneration: status.observedGeneration,
-        },
-      };
-    } catch (error: unknown) {
-      return {
-        ready: false,
-        reason: 'EvaluationError',
-        message: `Error evaluating ${resourceKind} readiness: ${ensureError(error).message}`,
-        details: { error: ensureError(error).message },
-      };
-    }
-  });
+  }).withReadinessEvaluator(createKroCustomResourceReadinessEvaluator(resource.kind));
 }

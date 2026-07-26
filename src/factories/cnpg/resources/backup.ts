@@ -5,6 +5,7 @@
  */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { BackupConfig, BackupStatus } from '../types.js';
 
@@ -58,6 +59,12 @@ function backupReadinessEvaluator(liveResource: unknown): ResourceStatus {
     reason: 'Pending',
   };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cnpg.backup',
+  '1',
+  backupReadinessEvaluator
+);
 
 /**
  * CloudNativePG Backup Factory

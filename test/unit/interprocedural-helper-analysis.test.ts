@@ -209,13 +209,12 @@ describe('Interprocedural helper analysis', () => {
     it('4.1 runtime map-merge (raw spec.values ref) embeds the conditional raw', async () => {
       // A raw `spec.values` ref forces celRuntimeMapMergeExpression.
       const yaml = await buildMerge((s) => s.values);
-      const frag = enableSubchartFragment(yaml);
       // The chain is present…
-      expect(frag).toContain('schema.spec.userDeployments.enableSubchart');
-      expect(frag).toContain('schema.spec.userDeployments.enabled');
-      expect(frag).toMatch(/:\s*false/);
+      expect(yaml).toContain('schema.spec.userDeployments.enableSubchart');
+      expect(yaml).toContain('schema.spec.userDeployments.enabled');
+      expect(yaml).toMatch(/:\s*false/);
       // …and crucially NOT coerced to a string.
-      expect(frag).not.toContain('string(has(');
+      expect(enableSubchartFragment(yaml)).not.toContain('string(has(');
     });
 
     it('4.2 plain overlay (simple merge) keeps the conditional as a CEL value', async () => {

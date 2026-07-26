@@ -9,9 +9,32 @@
  * - CiliumClusterwideEnvoyConfig (TODO)
  */
 
-import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
+import {
+  createAlwaysReadyEvaluator,
+  registerPortableReadinessEvaluator,
+} from '../../../core/readiness/index.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { createResource } from '../../shared.js';
+
+function ciliumIngressReadinessEvaluator(resource: Record<string, unknown>) {
+  const status = resource.status as
+    | { loadBalancer?: { ingress?: Array<{ ip?: string; hostname?: string }> } }
+    | undefined;
+  const hasLoadBalancer = (status?.loadBalancer?.ingress?.length ?? 0) > 0;
+
+  return {
+    ready: hasLoadBalancer,
+    message: hasLoadBalancer
+      ? 'Ingress has load balancer endpoint'
+      : 'Waiting for load balancer endpoint',
+  };
+}
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.cilium.ingress',
+  '1',
+  ciliumIngressReadinessEvaluator
+);
 
 /**
  * CiliumIngressClass configuration options
@@ -162,20 +185,7 @@ export function CiliumIngress(config: CiliumIngressConfig): KubernetesResource {
       tls,
     },
     id: config.id || `ciliumIngress-${config.name}`,
-  }).withReadinessEvaluator((resource: Record<string, unknown>) => {
-    // Ingress is ready when it has at least one load balancer IP/hostname
-    const status = resource.status as
-      | { loadBalancer?: { ingress?: Array<{ ip?: string; hostname?: string }> } }
-      | undefined;
-    const hasLoadBalancer = (status?.loadBalancer?.ingress?.length ?? 0) > 0;
-
-    return {
-      ready: hasLoadBalancer,
-      message: hasLoadBalancer
-        ? 'Ingress has load balancer endpoint'
-        : 'Waiting for load balancer endpoint',
-    };
-  });
+  }).withReadinessEvaluator(ciliumIngressReadinessEvaluator);
 }
 
 // TODO: Implement in future tasks

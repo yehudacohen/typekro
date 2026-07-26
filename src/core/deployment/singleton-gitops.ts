@@ -17,7 +17,6 @@
 import * as yaml from 'js-yaml';
 import { singletonInstanceTypeMeta } from '../singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
-import { assertSingletonOwnerNamespaceOwnershipSafe } from './kro-instance-safety.js';
 import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import { getSingletonInstanceName } from './shared-utilities.js';
 import { singletonSpecFingerprintAnnotationValue } from './singleton-owner-drift.js';
@@ -47,7 +46,6 @@ export function singletonOwnerInstanceManifests(
   definitions: readonly SingletonDefinitionRecord[]
 ): unknown[] {
   return dedupeByKey(definitions).map((definition) => {
-    assertSingletonOwnerNamespaceOwnershipSafe(definition);
     const { apiVersion, kind } = singletonInstanceTypeMeta(definition.composition);
     return {
       apiVersion,

@@ -17,7 +17,7 @@ describe('Status Field Generation', () => {
   const WebAppStatusSchema = type({
     url: 'string',
     readyReplicas: 'number%1',
-    conditions: 'string[]',
+    deploymentConditions: 'string[]',
   });
 
   describe('CEL expression generation', () => {
@@ -47,7 +47,7 @@ describe('Status Field Generation', () => {
         (_schema, resources) => ({
           readyReplicas: resources.deployment?.status.readyReplicas,
           url: Cel.template('http://%s', resources.service?.status.loadBalancer?.ingress?.[0]?.ip),
-          conditions: Cel.expr<string[]>(
+          deploymentConditions: Cel.expr<string[]>(
             resources.deployment?.status.conditions,
             '.map(c, c.type)'
           ),
@@ -59,11 +59,13 @@ describe('Status Field Generation', () => {
       // Should contain CEL expressions for status fields, not type definitions
       expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
       expect(yaml).toContain('url: http://${webappService.status.loadBalancer.ingress[0].ip}');
-      expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
+      expect(yaml).toContain(
+        'deploymentConditions: ${webappDeployment.status.conditions.map(c, c.type)}'
+      );
 
       // Should not contain type definitions for user status fields
       expect(yaml).not.toContain('readyReplicas: integer');
-      expect(yaml).not.toContain('conditions: string[]');
+      expect(yaml).not.toContain('deploymentConditions: string[]');
       expect(yaml).not.toContain('url: string');
 
       // Should not contain default Kro status fields (these are auto-injected by Kro)
@@ -144,9 +146,9 @@ describe('Status Field Generation', () => {
       const yaml = graph.toYaml();
 
       // Should map to service status fields
-      expect(yaml).toContain('endpoint: ${webService.status.loadBalancer.ingress[0].ip}');
+      expect(yaml).toContain('endpoint: ${webService.status.loadBalancer.ingress?[0]?.ip}');
       expect(yaml).toContain(
-        'serviceEndpoint: ${webService.status.loadBalancer.ingress[0].hostname}'
+        'serviceEndpoint: ${webService.status.loadBalancer.ingress?[0]?.hostname}'
       );
       // url field is now treated as static since it uses resource metadata
     });
@@ -191,7 +193,7 @@ describe('Status Field Generation', () => {
       expect(yaml).toContain('readyReplicas: ${appDeployment.status.readyReplicas}');
 
       // Should map service fields to service
-      expect(yaml).toContain('url: ${appService.status.loadBalancer.ingress[0].ip}');
+      expect(yaml).toContain('url: ${appService.status.loadBalancer?.ingress?[0]?.ip}');
 
       // Static fields should NOT be in the YAML (they're hydrated directly by TypeKro)
       expect(yaml).not.toContain('customField:');

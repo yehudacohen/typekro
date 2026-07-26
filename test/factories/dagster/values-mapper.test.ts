@@ -119,6 +119,7 @@ describe('Dagster Helm values mapper', () => {
           username: 'dagster',
           database: 'dagster',
           passwordSecretName: 'dagster-postgres',
+          storageClass: 'local-path',
           servicePort: 5432,
         },
         runLauncher: {
@@ -169,6 +170,7 @@ describe('Dagster Helm values mapper', () => {
       postgresqlHost: 'dagster-postgres.postgres.svc.cluster.local',
       postgresqlUsername: 'dagster',
       postgresqlDatabase: 'dagster',
+      persistence: { storageClass: 'local-path' },
       service: { port: 5432 },
     });
     expect(values.global).toMatchObject({ postgresqlSecretName: 'dagster-postgres' });

@@ -15,16 +15,16 @@
  * - Cleanup and rollback capabilities
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import {
-  cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from './shared-kubeconfig';
@@ -33,6 +33,8 @@ import {
 const _CLUSTER_NAME = 'typekro-e2e-test';
 const BASE_NAMESPACE = 'typekro-comprehensive';
 const _TEST_TIMEOUT = 300000; // 5 minutes
+const RUN_SUFFIX = crypto.randomUUID().slice(0, 6);
+const WEB_APP_KIND = `WebApp${RUN_SUFFIX}`;
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
@@ -66,12 +68,12 @@ type WebAppSpec = typeof WebAppSpecSchema.infer;
 
 // Create a comprehensive resource graph for testing
 const createTestResourceGraph = (testPrefix = '') => {
-  const namePrefix = testPrefix ? `${testPrefix}-` : '';
+  const namePrefix = testPrefix ? `${testPrefix}-${RUN_SUFFIX}-` : `${RUN_SUFFIX}-`;
   return toResourceGraph(
     {
       name: `${namePrefix}e2e-comprehensive-webapp`,
       apiVersion: 'v1alpha1',
-      kind: 'WebApp',
+      kind: WEB_APP_KIND,
       spec: WebAppSpecSchema,
       status: WebAppStatusSchema,
     },
@@ -125,14 +127,13 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
-  let _customApi: k8s.CustomObjectsApi;
   let clusterInitialized = false;
 
   beforeAll(async () => {
     console.log('🚀 SETUP: Connecting to existing cluster...');
 
     // Check cluster availability at runtime
-    if (!checkClusterAvailable()) {
+    if (!(await checkClusterAvailable())) {
       console.log('⚠️ Cluster not available, skipping initialization');
       return;
     }
@@ -143,7 +144,6 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
       k8sApi = createCoreV1ApiClient(kc);
       appsApi = createAppsV1ApiClient(kc);
-      _customApi = createCustomObjectsApiClient(kc);
 
       clusterInitialized = true;
       console.log('✅ Kubernetes API clients initialized');
@@ -155,9 +155,6 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
     }
 
     // Note: Individual test namespaces will be created per test for better isolation
-
-    // Clean up any stuck Kro instances from previous test runs
-    await cleanupStuckKroInstances();
 
     console.log('✅ E2E test environment ready!');
   });
@@ -181,136 +178,18 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
     }
 
     const namespace = generateTestNamespace(testName);
+    const namespaceLease = await createTestNamespace(namespace, kc);
 
     try {
-      // Create namespace
-      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
-      console.log(`📦 Created test namespace: ${namespace}`);
-
       // Run test
       const result = await testFn(namespace);
 
       return result;
     } finally {
       // Cleanup namespace and wait for full deletion
-      await deleteNamespaceAndWait(namespace, kc);
+      await deleteTestNamespaceAndWait(namespaceLease, kc);
     }
   };
-
-  // Helper function to clean up stuck Kro instances
-  async function cleanupStuckKroInstances() {
-    try {
-      console.log('🧹 Cleaning up any stuck Kro instances...');
-
-      // Try to delete any existing WebApp instances that might be stuck
-      const customApi = createCustomObjectsApiClient(kc);
-
-      try {
-        const instances = await customApi.listNamespacedCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          namespace: 'default', // Use default namespace for cleanup
-          plural: 'webapps',
-        });
-
-        const instanceList = instances as { items: any[] };
-        for (const instance of instanceList.items) {
-          try {
-            console.log(`🗑️ Deleting stuck instance: ${instance.metadata.name}`);
-            await customApi.deleteNamespacedCustomObject({
-              group: 'kro.run',
-              version: 'v1alpha1',
-              namespace: 'default', // Use default namespace for cleanup
-              plural: 'webapps',
-              name: instance.metadata.name,
-            });
-          } catch (error) {
-            console.warn(`⚠️ Failed to delete instance ${instance.metadata.name}:`, error);
-          }
-        }
-      } catch (_error) {
-        // No instances to clean up or API not available
-        console.log('📝 No stuck instances found or API not available');
-      }
-
-      // Also try to clean up any stuck RGDs (cluster-scoped, not namespaced)
-      try {
-        const rgds = await customApi.listClusterCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          plural: 'resourcegraphdefinitions',
-        });
-
-        const rgdList = rgds as { items: any[] };
-        for (const rgd of rgdList.items) {
-          // Only clean up test RGDs
-          if (
-            rgd.metadata.name.includes('e2e-comprehensive-webapp') ||
-            rgd.metadata.name.includes('basic-app')
-          ) {
-            try {
-              console.log(`🗑️ Deleting stuck RGD: ${rgd.metadata.name}`);
-              await customApi.deleteClusterCustomObject({
-                group: 'kro.run',
-                version: 'v1alpha1',
-                plural: 'resourcegraphdefinitions',
-                name: rgd.metadata.name,
-              });
-            } catch (error) {
-              console.warn(`⚠️ Failed to delete RGD ${rgd.metadata.name}:`, error);
-            }
-          }
-        }
-      } catch (_error) {
-        console.log('📝 No stuck RGDs found or API not available');
-      }
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      console.log('✅ Cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Cleanup failed, but continuing with tests:', error);
-    }
-  }
-
-  afterAll(async () => {
-    console.log('🧹 Cleaning up E2E test environment...');
-
-    // Clean up RGDs created by this test suite
-    if (kc) {
-      const customApi = createCustomObjectsApiClient(kc);
-      const rgdNames = [
-        'kro-e2e-comprehensive-webapp',
-        'kro-alchemy-e2e-comprehensive-webapp',
-        'compat-e2e-comprehensive-webapp',
-        'types-e2e-comprehensive-webapp',
-        'direct-e2e-comprehensive-webapp',
-        'direct-alchemy-e2e-comprehensive-webapp',
-      ];
-      for (const name of rgdNames) {
-        try {
-          await customApi.deleteClusterCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            plural: 'resourcegraphdefinitions',
-            name,
-          });
-          console.log(`🗑️ Deleted RGD: ${name}`);
-        } catch (error: unknown) {
-          const err = error as { statusCode?: number; body?: { reason?: string } };
-          if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
-            console.warn(`⚠️ Failed to delete RGD ${name}:`, error);
-          }
-        }
-      }
-
-      console.log('🧹 Cleaning up any leftover test namespaces...');
-      await cleanupTestNamespaces(/^typekro-comprehensive-/, kc);
-    }
-
-    // Don't delete the cluster - reuse it for other tests
-    console.log('✅ Cluster preserved for reuse');
-  });
 
   describe('DirectResourceFactory without Alchemy', () => {
     it('should deploy, manage, and cleanup resources directly to Kubernetes', async () => {
@@ -319,6 +198,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         console.log('🧪 Testing DirectResourceFactory without alchemy...');
 
         const graph = createTestResourceGraph('direct');
+        const resourcePrefix = `direct-${RUN_SUFFIX}`;
         const factory = await graph.factory('direct', {
           namespace: testNamespace,
           waitForReady: true,
@@ -358,85 +238,92 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           message: 'Hello from DirectResourceFactory!',
         };
 
-        console.log('🚀 Starting deployment...');
-        const instance = await factory.deploy(spec);
-        console.log('✅ Deployment completed');
-
-        // Verify Enhanced proxy functionality
-        expect(instance).toBeDefined();
-        expect(instance.spec.name).toBe(`direct-app-${uniqueSuffix}`);
-        expect(instance.spec.replicas).toBe(2);
-        expect(instance.spec.environment).toBe('production');
-
-        // Verify resources were created in Kubernetes
-        const configMapName = 'direct-webapp-config';
-        const deploymentName = 'direct-webapp-deployment';
-        const serviceName = 'direct-webapp-service';
-
-        const configMap = await k8sApi.readNamespacedConfigMap({
-          name: configMapName,
-          namespace: testNamespace,
-        });
-        expect(configMap.data?.MESSAGE).toBe('Hello from E2E test');
-        expect(configMap.data?.ENVIRONMENT).toBe('test');
-        expect(configMap.data?.REPLICA_COUNT).toBe('2');
-
-        const deployment = await appsApi.readNamespacedDeployment({
-          name: deploymentName,
-          namespace: testNamespace,
-        });
-        expect(deployment.spec?.replicas).toBe(2);
-        expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
-
-        const service = await k8sApi.readNamespacedService({
-          name: serviceName,
-          namespace: testNamespace,
-        });
-        expect(service.spec?.ports?.[0]?.port).toBe(80);
-        expect(service.spec?.selector?.app).toBe('direct-webapp-deployment');
-
-        // Test instance management
-        const instances = await factory.getInstances();
-        expect(instances.length).toBe(1);
-        expect(instances[0]?.spec.name).toBe(`direct-app-${uniqueSuffix}`);
-
-        // Poll for factory health to be ready (resources may need time to stabilize)
-        let status = await factory.getStatus();
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        while (status.health !== 'healthy' && attempts < maxAttempts) {
-          console.log(
-            `⏳ Factory health: ${status.health} (attempt ${attempts + 1}/${maxAttempts})`
-          );
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          status = await factory.getStatus();
-          attempts++;
-        }
-
-        // Test factory status
-        expect(status.mode).toBe('direct');
-        expect(status.instanceCount).toBe(1);
-        expect(status.health).toBe('healthy');
-
-        // Test YAML generation
-        const yaml = factory.toYaml(spec);
-        expect(yaml).toContain('kind: ConfigMap');
-        expect(yaml).toContain('kind: Deployment');
-        expect(yaml).toContain('kind: Service');
-        expect(yaml).toContain('webapp-config');
-
-        // Cleanup using factory-based resource destruction
-        console.log('🧹 Cleaning up DirectResourceFactory without alchemy...');
+        let deploymentAttempted = false;
         try {
-          await factory.deleteInstance(`direct-app-${uniqueSuffix}`);
-          console.log('✅ DirectResourceFactory cleanup completed');
-        } catch (error) {
-          console.warn('⚠️ DirectResourceFactory cleanup failed:', error);
+          console.log('🚀 Starting deployment...');
+          deploymentAttempted = true;
+          const instance = await factory.deploy(spec);
+          console.log('✅ Deployment completed');
+
+          // Verify Enhanced proxy functionality
+          expect(instance).toBeDefined();
+          expect(instance.spec.name).toBe(`direct-app-${uniqueSuffix}`);
+          expect(instance.spec.replicas).toBe(2);
+          expect(instance.spec.environment).toBe('production');
+
+          // Verify resources were created in Kubernetes
+          const configMapName = `${resourcePrefix}-webapp-config`;
+          const deploymentName = `${resourcePrefix}-webapp-deployment`;
+          const serviceName = `${resourcePrefix}-webapp-service`;
+
+          const configMap = await k8sApi.readNamespacedConfigMap({
+            name: configMapName,
+            namespace: testNamespace,
+          });
+          expect(configMap.data?.MESSAGE).toBe('Hello from E2E test');
+          expect(configMap.data?.ENVIRONMENT).toBe('test');
+          expect(configMap.data?.REPLICA_COUNT).toBe('2');
+
+          const deployment = await appsApi.readNamespacedDeployment({
+            name: deploymentName,
+            namespace: testNamespace,
+          });
+          expect(deployment.spec?.replicas).toBe(2);
+          expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
+
+          const service = await k8sApi.readNamespacedService({
+            name: serviceName,
+            namespace: testNamespace,
+          });
+          expect(service.spec?.ports?.[0]?.port).toBe(80);
+          expect(service.spec?.selector?.app).toBe(`${resourcePrefix}-webapp-deployment`);
+
+          // Test instance management
+          const instances = await factory.getInstances();
+          expect(instances.length).toBe(1);
+          expect(instances[0]?.spec.name).toBe(`direct-app-${uniqueSuffix}`);
+
+          // Poll for factory health to be ready (resources may need time to stabilize)
+          let status = await factory.getStatus();
+          let attempts = 0;
+          const maxAttempts = 10;
+
+          while (status.health !== 'healthy' && attempts < maxAttempts) {
+            console.log(
+              `⏳ Factory health: ${status.health} (attempt ${attempts + 1}/${maxAttempts})`
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            status = await factory.getStatus();
+            attempts++;
+          }
+
+          // Test factory status
+          expect(status.mode).toBe('direct');
+          expect(status.instanceCount).toBe(1);
+          expect(status.health).toBe('healthy');
+
+          // Test YAML generation
+          const yaml = factory.toYaml(spec);
+          expect(yaml).toContain('kind: ConfigMap');
+          expect(yaml).toContain('kind: Deployment');
+          expect(yaml).toContain('kind: Service');
+          expect(yaml).toContain('webapp-config');
+          console.log('✅ DirectResourceFactory without alchemy test passed!');
+        } finally {
+          if (deploymentAttempted) {
+            console.log('🧹 Cleaning up DirectResourceFactory without alchemy...');
+            await deleteTestFactoryInstanceAndRecoverNamespaces(
+              factory,
+              `direct-app-${uniqueSuffix}`,
+              [],
+              kc,
+              60_000
+            );
+            console.log('✅ DirectResourceFactory cleanup completed');
+          }
         }
-        console.log('✅ DirectResourceFactory without alchemy test passed!');
       });
-    }, 120000); // 2 minute timeout for deployment + cleanup
+    }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
   });
 
   describe('KroResourceFactory without Alchemy', () => {
@@ -465,7 +352,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         console.log('✅ Factory mode verified');
         expect(factory.namespace).toBe(testNamespace);
         console.log('✅ Factory namespace verified');
-        expect(factory.rgdName).toBe('kro-e2e-comprehensive-webapp');
+        expect(factory.rgdName).toBe(`kro-${RUN_SUFFIX}-e2e-comprehensive-webapp`);
         console.log('✅ Factory RGD name verified');
         expect(factory.schema).toBeDefined();
         console.log('✅ Factory schema verified');
@@ -475,7 +362,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         const rgdYaml = factory.toYaml();
         console.log('✅ RGD YAML generated');
         expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
-        expect(rgdYaml).toContain('name: kro-e2e-comprehensive-webapp');
+        expect(rgdYaml).toContain(`name: kro-${RUN_SUFFIX}-e2e-comprehensive-webapp`);
         expect(rgdYaml).toContain('apiVersion: kro.run/v1alpha1');
         console.log('✅ RGD YAML validation passed');
 
@@ -490,7 +377,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         };
 
         const instanceYaml = factory.toYaml(spec);
-        expect(instanceYaml).toContain('kind: WebApp');
+        expect(instanceYaml).toContain(`kind: ${WEB_APP_KIND}`);
         expect(instanceYaml).toContain('apiVersion: kro.run/v1alpha1');
         expect(instanceYaml).toContain(`name: kro-app-${uniqueSuffix}`);
 
@@ -498,38 +385,34 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         expect(factory.schema.spec).toBeDefined();
         expect(factory.schema.status).toBeDefined();
 
-        // Test actual deployment with Kro controller
+        let deploymentAttempted = false;
         try {
+          // Test actual deployment with Kro controller
+          deploymentAttempted = true;
           const deployedInstance = await factory.deploy(spec);
           console.log('✅ Kro deployment succeeded');
           expect(deployedInstance).toBeDefined();
           expect(deployedInstance.metadata?.name).toContain(`kro-app-${uniqueSuffix}`);
-        } catch (error) {
-          // If deployment fails, it should be due to a specific reason
-          console.log('⚠️ Kro deployment failed:', (error as Error).message);
-          // Don't fail the test if it's a known issue
-          if (!(error as Error).message.includes('RGD deployment failed')) {
-            throw error;
+
+          const status = await factory.getStatus();
+          expect(status.mode).toBe('kro');
+          expect(status.health).toBe('healthy');
+          console.log('✅ KroResourceFactory without alchemy test passed!');
+        } finally {
+          if (deploymentAttempted) {
+            console.log('🧹 Cleaning up KroResourceFactory without alchemy...');
+            await deleteTestFactoryInstanceAndRecoverNamespaces(
+              factory,
+              `kro-app-${uniqueSuffix}`,
+              [],
+              kc,
+              60_000
+            );
+            console.log('✅ KroResourceFactory cleanup completed');
           }
         }
-
-        // Test factory status
-        const status = await factory.getStatus();
-        expect(status.mode).toBe('kro');
-        // Health can be either healthy or degraded depending on deployment success
-        expect(['healthy', 'degraded']).toContain(status.health);
-
-        // Cleanup using factory-based resource destruction
-        console.log('🧹 Cleaning up KroResourceFactory without alchemy...');
-        try {
-          await factory.deleteInstance(`kro-app-${uniqueSuffix}`);
-          console.log('✅ KroResourceFactory cleanup completed');
-        } catch (error) {
-          console.warn('⚠️ KroResourceFactory cleanup failed:', error);
-        }
-        console.log('✅ KroResourceFactory without alchemy test passed!');
       });
-    }, 120000); // 2 minute timeout for deployment + cleanup
+    }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
 
     describe('Cross-Factory Compatibility', () => {
       it('should generate functionally identical resources across factory types', async () => {
@@ -573,7 +456,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Cross-factory compatibility test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
 
     describe('Type Safety and Enhanced Proxy', () => {
@@ -624,7 +507,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Type safety and Enhanced proxy test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
 
     describe('Error Handling and Edge Cases', () => {
@@ -676,7 +559,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
           console.log('✅ Error handling test passed!');
         });
-      }, 120000); // 2 minute timeout for deployment + cleanup
+      }, 900000); // 15 minute timeout for deployment + cleanup on CRD-heavy clusters
     });
   });
 });

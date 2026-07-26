@@ -9,8 +9,11 @@ export { createDirectResourceFactory } from './direct-factory.js';
 export { DirectDeploymentEngine } from './engine.js';
 export {
   ResourceConflictError,
+  ResourceDeletionIncompleteError,
   ResourceDeploymentError,
   ResourceReadinessTimeoutError,
+  ResourceReplacementTimeoutError,
+  ServerSideApplyConflictError,
   UnsupportedMediaTypeError,
 } from './errors.js';
 export { createKroResourceFactory } from './kro-factory.js';

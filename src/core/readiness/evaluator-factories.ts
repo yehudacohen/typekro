@@ -12,7 +12,67 @@
  */
 
 import { ensureError } from '../errors.js';
+import type { PlanValue } from '../planning/types.js';
 import type { ReadinessEvaluator, ResourceStatus } from '../types/kubernetes.js';
+import {
+  identifyPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from './portable-strategies.js';
+
+const ALWAYS_READY_STRATEGY = 'typekro.readiness.always';
+const CONDITION_READY_STRATEGY = 'typekro.readiness.condition';
+const PHASE_READY_STRATEGY = 'typekro.readiness.phase';
+const CRD_READY_STRATEGY = 'typekro.readiness.custom-resource-definition';
+const BUILTIN_READINESS_REVISION = '1';
+
+function literal(value: string): PlanValue {
+  return { kind: 'literal', value };
+}
+
+function objectValue(entries: Record<string, PlanValue | undefined>): PlanValue {
+  return {
+    kind: 'object',
+    entries: Object.entries(entries)
+      .filter((entry): entry is [string, PlanValue] => entry[1] !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => ({ key, value })),
+  };
+}
+
+function stringArray(values: readonly string[]): PlanValue {
+  return { kind: 'array', items: values.map(literal) };
+}
+
+function configurationEntries(configuration: PlanValue | undefined): Map<string, PlanValue> {
+  if (configuration?.kind !== 'object') return new Map();
+  return new Map(configuration.entries.map((entry) => [entry.key, entry.value]));
+}
+
+function requiredString(entries: Map<string, PlanValue>, key: string): string {
+  const value = entries.get(key);
+  if (value?.kind !== 'literal' || typeof value.value !== 'string') {
+    throw new Error(`Portable readiness configuration requires string field ${key}.`);
+  }
+  return value.value;
+}
+
+function optionalString(entries: Map<string, PlanValue>, key: string): string | undefined {
+  const value = entries.get(key);
+  return value?.kind === 'literal' && typeof value.value === 'string' ? value.value : undefined;
+}
+
+function requiredStrings(entries: Map<string, PlanValue>, key: string): string[] {
+  const value = entries.get(key);
+  if (value?.kind !== 'array') {
+    throw new Error(`Portable readiness configuration requires string array field ${key}.`);
+  }
+  return value.items.map((item) => {
+    if (item.kind !== 'literal' || typeof item.value !== 'string') {
+      throw new Error(`Portable readiness configuration field ${key} must contain strings.`);
+    }
+    return item.value;
+  });
+}
 
 // =============================================================================
 // Pattern 1: Always Ready
@@ -34,11 +94,22 @@ import type { ReadinessEvaluator, ResourceStatus } from '../types/kubernetes.js'
  * );
  * ```
  */
-export function createAlwaysReadyEvaluator<T = unknown>(kind: string): ReadinessEvaluator<T> {
-  return () => ({
-    ready: true,
-    message: `${kind} is ready (configuration resource)`,
-  });
+export function createAlwaysReadyEvaluator<T = unknown>(
+  kind: string,
+  message = `${kind} is ready (configuration resource)`
+): ReadinessEvaluator<T> {
+  return identifyPortableReadinessEvaluator(
+    () => ({
+      ready: true,
+      message,
+    }),
+    {
+      kind: 'registered',
+      id: ALWAYS_READY_STRATEGY,
+      revision: BUILTIN_READINESS_REVISION,
+      configuration: objectValue({ kind: literal(kind), message: literal(message) }),
+    }
+  );
 }
 
 // =============================================================================
@@ -99,7 +170,7 @@ export function createConditionBasedReadinessEvaluator(
 ): ReadinessEvaluator<unknown> {
   const { kind, conditionType = 'Ready' } = options;
 
-  return (liveResource: unknown): ResourceStatus => {
+  const evaluator = (liveResource: unknown): ResourceStatus => {
     try {
       const resource = liveResource as { status?: StatusWithConditions } | null | undefined;
       const status = resource?.status;
@@ -154,6 +225,18 @@ export function createConditionBasedReadinessEvaluator(
       };
     }
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: CONDITION_READY_STRATEGY,
+    revision: BUILTIN_READINESS_REVISION,
+    configuration: objectValue({
+      conditionType: literal(conditionType),
+      defaultReadyMessage: options.defaultReadyMessage
+        ? literal(options.defaultReadyMessage)
+        : undefined,
+      kind: literal(kind),
+    }),
+  });
 }
 
 // =============================================================================
@@ -198,7 +281,7 @@ export function createPhaseBasedReadinessEvaluator<T = unknown>(
 ): ReadinessEvaluator<T> {
   const { kind, readyPhases, phaseField = 'phase' } = options;
 
-  return (liveResource: T): ResourceStatus => {
+  const evaluator = (liveResource: T): ResourceStatus => {
     try {
       const resource = liveResource as { status?: Record<string, unknown> } | null | undefined;
       const status = resource?.status;
@@ -234,4 +317,87 @@ export function createPhaseBasedReadinessEvaluator<T = unknown>(
       };
     }
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: PHASE_READY_STRATEGY,
+    revision: BUILTIN_READINESS_REVISION,
+    configuration: objectValue({
+      kind: literal(kind),
+      phaseField: literal(phaseField),
+      readyPhases: stringArray(readyPhases),
+    }),
+  });
 }
+
+/** Portable readiness for CRDs, which require both Kubernetes establishment conditions. */
+export function createCustomResourceDefinitionReadinessEvaluator(): ReadinessEvaluator<unknown> {
+  const evaluator: ReadinessEvaluator<unknown> = (liveResource) => {
+    const conditions =
+      (
+        liveResource as {
+          status?: { conditions?: Array<{ type?: string; status?: string }> };
+        } | null
+      )?.status?.conditions ?? [];
+    const established = conditions.find((condition) => condition.type === 'Established');
+    const namesAccepted = conditions.find((condition) => condition.type === 'NamesAccepted');
+    const ready = established?.status === 'True' && namesAccepted?.status === 'True';
+    return ready
+      ? {
+          ready: true,
+          message: 'CustomResourceDefinition is established and names are accepted',
+        }
+      : {
+          ready: false,
+          reason: 'ConditionsNotMet',
+          message: 'CustomResourceDefinition is not established and names accepted yet',
+          details: { conditions },
+        };
+  };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: CRD_READY_STRATEGY,
+    revision: BUILTIN_READINESS_REVISION,
+    configuration: objectValue({}),
+  });
+}
+
+registerPortableReadinessStrategy(
+  ALWAYS_READY_STRATEGY,
+  BUILTIN_READINESS_REVISION,
+  (configuration) => {
+    const entries = configurationEntries(configuration);
+    const kind = requiredString(entries, 'kind');
+    return createAlwaysReadyEvaluator(
+      kind,
+      optionalString(entries, 'message') ?? `${kind} is ready (configuration resource)`
+    );
+  }
+);
+registerPortableReadinessStrategy(
+  CONDITION_READY_STRATEGY,
+  BUILTIN_READINESS_REVISION,
+  (configuration) => {
+    const entries = configurationEntries(configuration);
+    const defaultReadyMessage = optionalString(entries, 'defaultReadyMessage');
+    return createConditionBasedReadinessEvaluator({
+      kind: requiredString(entries, 'kind'),
+      conditionType: requiredString(entries, 'conditionType'),
+      ...(defaultReadyMessage ? { defaultReadyMessage } : {}),
+    });
+  }
+);
+registerPortableReadinessStrategy(
+  PHASE_READY_STRATEGY,
+  BUILTIN_READINESS_REVISION,
+  (configuration) => {
+    const entries = configurationEntries(configuration);
+    return createPhaseBasedReadinessEvaluator({
+      kind: requiredString(entries, 'kind'),
+      phaseField: requiredString(entries, 'phaseField'),
+      readyPhases: requiredStrings(entries, 'readyPhases'),
+    });
+  }
+);
+registerPortableReadinessStrategy(CRD_READY_STRATEGY, BUILTIN_READINESS_REVISION, () =>
+  createCustomResourceDefinitionReadinessEvaluator()
+);

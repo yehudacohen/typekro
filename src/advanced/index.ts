@@ -98,7 +98,10 @@ export {
 // =============================================================================
 
 export type {
+  DurableKubeConfigOptions,
   KubeConfigConsumer,
+  KubeConfigCredentialBinding,
+  KubeConfigCredentialBindings,
   KubernetesApiConsumer,
   KubernetesClientConfig,
 } from '../core/kubernetes/client-provider.js';
@@ -129,10 +132,48 @@ export {
 // RESOURCE ID GENERATION
 // =============================================================================
 
+export type {
+  CanonicalDriftDifference,
+  CanonicalDriftKind,
+  CanonicalDriftValueEvidence,
+  CanonicalResourceComparison,
+  CanonicalValueDiffOptions,
+  ComparisonCanonicalizerEvidence,
+  DesiredResourceCanonicalizer,
+  FactoryRegistration,
+  KubernetesResourceComparisonOptions,
+  LiveResourceCanonicalizer,
+  ResourceComparisonSide,
+} from '../core/resources/index.js';
+export {
+  canonicalizeResourceForComparison,
+  compareKubernetesResources,
+  diffCanonicalValues,
+  formatCanonicalDrift,
+  getFactoryRegistration,
+  getFactoryRegistrationsForGVK,
+  registerFactories,
+  registerFactory,
+} from '../core/resources/index.js';
 export {
   generateDeterministicResourceId,
   generateResourceId,
 } from '../core/resources/id.js';
+
+// =============================================================================
+// READINESS PORTABILITY
+// =============================================================================
+
+export type { RuntimeReadinessClassification } from '../core/planning/types.js';
+export {
+  getPortableReadinessStrategy,
+  getRuntimeReadinessClassification,
+  identifyPortableReadinessEvaluator,
+  identifyRuntimeReadinessEvaluator,
+  registerPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+  resolvePortableReadinessStrategy,
+} from '../core/readiness/index.js';
 
 // =============================================================================
 // YAML PROCESSING

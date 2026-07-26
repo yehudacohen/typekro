@@ -20,6 +20,7 @@ import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
 import { buildLexicalAliasScope } from '../analysis/alias-inliner.js';
 import { JavaScriptToCelAnalyzer } from '../analysis/analyzer.js';
+import { setCelExpressionAnalysis } from '../analysis/expression-metadata.js';
 import type { SourceMapEntry } from '../analysis/source-map.js';
 import {
   EnhancedTypeOptionalityHandler,
@@ -73,6 +74,19 @@ const DEFAULT_ANALYSIS_OPTIONS: Required<StatusBuilderAnalysisOptions> = {
   hydrationStates: new Map(),
   conservativeNullSafety: true,
 };
+
+function preserveFieldExpressionAnalysis(field: {
+  readonly celExpression: CelExpression | null;
+  readonly dependencies: readonly KubernetesRef<unknown>[];
+  readonly sourceMap?: readonly SourceMapEntry[];
+}): void {
+  if (!field.celExpression) return;
+  const source = field.sourceMap?.[0]?.sourceLocation;
+  setCelExpressionAnalysis(field.celExpression, {
+    references: field.dependencies,
+    ...(source ? { sourceLocation: { line: source.line, column: source.column } } : {}),
+  });
+}
 
 /**
  * Status Builder Analyzer
@@ -151,6 +165,7 @@ export class StatusBuilderAnalyzer {
             schemaProxy,
             aliasScope
           );
+          preserveFieldExpressionAnalysis(fieldResult);
 
           fieldAnalysis.set(property.name, fieldResult);
 
@@ -242,7 +257,7 @@ export class StatusBuilderAnalyzer {
         'function-call'
       );
 
-      this.logger.info(
+      this.logger.debug(
         'Status builder analysis using fallback - this is normal for certain patterns',
         {
           reason: 'Status builder contains patterns that cannot be converted to CEL expressions',
@@ -301,6 +316,7 @@ export class StatusBuilderAnalyzer {
           this.options,
           schemaProxy
         );
+        preserveFieldExpressionAnalysis(fieldResult);
 
         if (fieldResult.celExpression) {
           statusMappings[fieldName] = fieldResult.celExpression;
@@ -406,6 +422,7 @@ export class StatusBuilderAnalyzer {
             this.options,
             schemaProxy
           );
+          preserveFieldExpressionAnalysis(fieldResult);
 
           if (fieldResult.celExpression) {
             flattenedMappings[fullPath] = fieldResult.celExpression;

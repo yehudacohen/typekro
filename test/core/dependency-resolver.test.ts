@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { DependencyGraph, DependencyResolver } from '../../src/core/dependencies/index.js';
 import { CircularDependencyError } from '../../src/core/errors.js';
-import { setResourceId } from '../../src/core/metadata/index.js';
+import { setMetadataField, setResourceId } from '../../src/core/metadata/index.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/index.js';
 
 // Helper function to create properly typed test resources
@@ -59,6 +59,48 @@ describe('DependencyResolver', () => {
 
       expect(graph.getNode('app')).toBeDefined();
       expect(graph.getNode('db')).toBeDefined();
+    });
+
+    it('does not run concrete identity heuristics on symbolic namespaces', () => {
+      const symbolicNamespace = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.namespace',
+      } as unknown as string;
+      const service = createMockResource({
+        id: 'service',
+        kind: 'Service',
+        apiVersion: 'v1',
+        metadata: { name: 'api', namespace: symbolicNamespace },
+      });
+      setMetadataField(service, 'dnsAddressable', true);
+      const consumer = createMockResource({
+        id: 'consumer',
+        metadata: { name: 'consumer', namespace: symbolicNamespace },
+        spec: { env: [{ name: 'SERVICE_HOST', value: 'api' }] },
+      });
+
+      expect(() => resolver.buildDependencyGraph([service, consumer])).not.toThrow();
+    });
+
+    it('permits explicit dependencies on known external resources omitted from the apply graph', () => {
+      const consumer = createMockResource({ id: 'consumer', metadata: { name: 'consumer' } });
+      setMetadataField(consumer, 'dependsOn', [{ resourceId: 'externalDatabase' }]);
+
+      const graph = resolver.buildDependencyGraph([consumer], {
+        knownExternalResourceIds: new Set(['externalDatabase']),
+      });
+
+      expect(graph.getDependencies('consumer')).toEqual([]);
+    });
+
+    it('still rejects explicit dependencies that are neither owned nor declared external', () => {
+      const consumer = createMockResource({ id: 'consumer', metadata: { name: 'consumer' } });
+      setMetadataField(consumer, 'dependsOn', [{ resourceId: 'missing' }]);
+
+      expect(() => resolver.buildDependencyGraph([consumer])).toThrow(
+        "dependsOn target 'missing' was not found"
+      );
     });
 
     it('should detect dependencies from KubernetesRef objects', () => {
@@ -133,6 +175,30 @@ describe('DependencyResolver', () => {
       const graph = resolver.buildDependencyGraph(resources);
 
       expect(graph.getDependencies('app')).toContain('db');
+    });
+
+    it('normalizes CEL schema roots without reporting an unknown resource', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'schema.spec.namespace == "2026.06.01"',
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([app]);
+
+      expect(graph.getDependencies('app')).toEqual([]);
+      expect(warnings).toEqual([]);
     });
 
     it('should handle nested references in complex objects', () => {
@@ -726,8 +792,9 @@ describe('DependencyGraph', () => {
       const graph = resolver.buildDependencyGraph([database, helmRelease]);
 
       // The marker ref 'database' should be resolved to 'testappResource0Database'
-      expect(graph.getDependencies('testappResource5Inngesthelmrelease'))
-        .toContain('testappResource0Database');
+      expect(graph.getDependencies('testappResource5Inngesthelmrelease')).toContain(
+        'testappResource0Database'
+      );
     });
 
     it('should produce correct deployment levels with marker + namespace deps', () => {

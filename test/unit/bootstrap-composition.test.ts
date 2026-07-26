@@ -3,6 +3,12 @@ import type { RbacMode } from '../../src/compositions/typekro-runtime/index.js';
 import { typeKroRuntimeBootstrap } from '../../src/compositions/typekro-runtime/index.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 
+function serializableRuntimeBootstrap(
+  config: Parameters<typeof typeKroRuntimeBootstrap>[0] = {}
+) {
+  return typeKroRuntimeBootstrap({ ...config, fluxInstallation: 'external' });
+}
+
 describe('TypeKro Runtime Bootstrap Composition', () => {
   it('should create bootstrap composition with default config', () => {
     const bootstrap = typeKroRuntimeBootstrap();
@@ -84,7 +90,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
   });
 
   it('uses spec namespace for Flux resources and Kro sourceRef in KRO templates', () => {
-    const bootstrap = typeKroRuntimeBootstrap();
+    const bootstrap = serializableRuntimeBootstrap();
     const yaml = bootstrap.factory('kro').toYaml();
 
     expect(yaml).toContain('namespace: ${schema.spec.namespace}');
@@ -109,7 +115,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
   });
 
   it('should include complete Flux RBAC configuration', () => {
-    const bootstrap = typeKroRuntimeBootstrap({
+    const bootstrap = serializableRuntimeBootstrap({
       namespace: 'flux-system',
     });
 
@@ -134,7 +140,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
 
   describe('RBAC modes', () => {
     it('default (no rbac option) uses cluster-admin', () => {
-      const bootstrap = typeKroRuntimeBootstrap({ namespace: 'flux-system' });
+      const bootstrap = serializableRuntimeBootstrap({ namespace: 'flux-system' });
       const factory = bootstrap.factory('kro', { namespace: 'flux-system' });
       const yaml = factory.toYaml();
 
@@ -145,7 +151,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     });
 
     it('rbac: "cluster-admin" behaves same as default', () => {
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'flux-system',
         rbac: 'cluster-admin',
       });
@@ -157,7 +163,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     });
 
     it('rbac: "scoped" creates a dedicated ClusterRole and binds to it', () => {
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'flux-system',
         rbac: 'scoped',
       });
@@ -189,7 +195,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
 
     it('rbac: { clusterRoleRef } binds to user-provided ClusterRole', () => {
       const rbac: RbacMode = { clusterRoleRef: 'my-custom-flux-role' };
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'flux-system',
         rbac,
       });
@@ -211,7 +217,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     });
 
     it('scoped mode includes CRD management permissions', () => {
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'flux-system',
         rbac: 'scoped',
       });
@@ -224,7 +230,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     });
 
     it('scoped mode includes leader election (coordination) permissions', () => {
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'flux-system',
         rbac: 'scoped',
       });
@@ -236,7 +242,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     });
 
     it('custom namespace propagates to RBAC subjects in all modes', () => {
-      const bootstrap = typeKroRuntimeBootstrap({
+      const bootstrap = serializableRuntimeBootstrap({
         namespace: 'custom-ns',
         rbac: 'scoped',
       });

@@ -245,7 +245,7 @@ describe('Rook operator bootstrap factory modes', () => {
     );
   });
 
-  it('rejects unsafe singleton owners before GitOps or live-cluster side effects', async () => {
+  it('hoists singleton owner namespaces before declarative owner and consumer resources', async () => {
     const consumer = kubernetesComposition(
       {
         name: 'rook-singleton-consumer',
@@ -267,11 +267,18 @@ describe('Rook operator bootstrap factory modes', () => {
     const factory = consumer.factory('kro', { namespace: 'apps' });
     const consumerSpec = { name: 'consumer' };
 
-    expect(() => factory.toYaml(consumerSpec)).toThrow('cannot also be an owned Namespace');
-    await expect(factory.deploy(consumerSpec)).rejects.toThrow('cannot also be an owned Namespace');
-    await expect(factory.toAlchemyResources(consumerSpec)).rejects.toThrow(
-      'cannot also be an owned Namespace'
+    const yaml = factory.toYaml(consumerSpec);
+    expect(yaml.indexOf('kind: Namespace')).toBeLessThan(
+      yaml.indexOf('kind: RookCephOperatorBootstrap')
     );
+    expect(yaml.indexOf('kind: RookCephOperatorBootstrap')).toBeLessThan(
+      yaml.indexOf('kind: RookSingletonConsumer')
+    );
+    expect(yaml).toContain('typekro.io/hoisted-namespaces: \'["typekro-singletons"]\'');
+
+    const declarations = await factory.toAlchemyResources(consumerSpec);
+    expect(declarations[0]?.props.resource.kind).toBe('Namespace');
+    expect(declarations[0]?.props.resource.metadata?.name).toBe(DEFAULT_SINGLETON_NAMESPACE);
   });
 });
 

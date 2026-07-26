@@ -1,6 +1,18 @@
-import type { Enhanced, KubernetesCondition, ReadinessEvaluator } from '../../core/types/index.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
+import {
+  identifyPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from '../../core/readiness/portable-strategies.js';
+import {
+  optionalReadinessString,
+  readinessConfiguration,
+  readinessLiteral,
+} from '../../core/readiness/strategy-configuration.js';
+import type { Enhanced, KubernetesCondition, ReadinessEvaluator } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
+
+const HELM_REPOSITORY_STRATEGY = 'typekro.readiness.flux.helm-repository';
+const HELM_REPOSITORY_READINESS_REVISION = '1';
 
 export interface HelmRepositorySpec {
   url: string;
@@ -51,10 +63,12 @@ export interface HelmRepositoryConfig {
  *   Defaults to no prefix (`'HelmRepository'`).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRepository is a CRD without typed client
-export function createHelmRepositoryReadinessEvaluator(label?: string): ReadinessEvaluator<unknown> {
+export function createHelmRepositoryReadinessEvaluator(
+  label?: string
+): ReadinessEvaluator<unknown> {
   const prefix = label ? `${label} ` : '';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRepository is a CRD without typed client
-  return (resource: unknown) => {
+  const evaluator: ReadinessEvaluator<unknown> = (resource: unknown) => {
     const liveResource = resource as {
       status?: { conditions?: KubernetesCondition[] };
       spec?: { type?: string };
@@ -67,7 +81,8 @@ export function createHelmRepositoryReadinessEvaluator(label?: string): Readines
     // For OCI repositories, they may not have status conditions but are functional
     // if the resource exists and has been processed by Flux
     const isOciRepository = liveResource.spec?.type === 'oci';
-    const hasBeenProcessed = liveResource.metadata?.generation && liveResource.metadata?.resourceVersion;
+    const hasBeenProcessed =
+      liveResource.metadata?.generation && liveResource.metadata?.resourceVersion;
 
     const isReady = readyCondition?.status === 'True' || (isOciRepository && !!hasBeenProcessed);
 
@@ -80,7 +95,22 @@ export function createHelmRepositoryReadinessEvaluator(label?: string): Readines
         : `${prefix}HelmRepository is not ready`,
     };
   };
+  return identifyPortableReadinessEvaluator(evaluator, {
+    kind: 'registered',
+    id: HELM_REPOSITORY_STRATEGY,
+    revision: HELM_REPOSITORY_READINESS_REVISION,
+    configuration: readinessConfiguration({
+      label: label === undefined ? undefined : readinessLiteral(label),
+    }),
+  });
 }
+
+registerPortableReadinessStrategy(
+  HELM_REPOSITORY_STRATEGY,
+  HELM_REPOSITORY_READINESS_REVISION,
+  (configuration) =>
+    createHelmRepositoryReadinessEvaluator(optionalReadinessString(configuration, 'label'))
+);
 
 /** Default (unlabeled) HelmRepository readiness evaluator */
 const helmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEvaluator();

@@ -366,8 +366,8 @@ When `CephObjectStoreUser.spec.keys` is supplied, every entry must contain both
 | `ObjectBucketClaim` | `status.phase == "Bound"` |
 | Bucket `StorageClass` | Kubernetes accepted the immutable resource |
 
-The bootstrap exposes `failed` separately because the two-state `phase`
-reports only `Ready` or `Installing`.
+The bootstrap reports `Ready`, `Installing`, or `Failed` and also exposes the
+underlying failure signal as `failed`.
 
 ## Direct and KRO boundaries
 

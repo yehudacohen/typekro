@@ -1,4 +1,9 @@
 import { ensureError } from '../../../core/errors.js';
+import {
+  identifyPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from '../../../core/readiness/portable-strategies.js';
+import { readinessConfiguration } from '../../../core/readiness/strategy-configuration.js';
 import type {
   KubernetesCondition,
   ReadinessEvaluator,
@@ -12,82 +17,105 @@ import type {
  * This evaluator follows TypeKro patterns and integrates with the cluster state access system.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Kustomization is a CRD without typed client
-export const kustomizationReadinessEvaluator: ReadinessEvaluator<unknown> = (
-  liveResource: unknown
-): ResourceStatus => {
-  try {
-    const status = (liveResource as {
-      status?: {
-        conditions?: KubernetesCondition[];
-        inventory?: { entries?: unknown[] };
-      };
-    } | null | undefined)?.status;
+const KUSTOMIZATION_READINESS_STRATEGY = 'typekro.readiness.flux.kustomization';
+const KUSTOMIZATION_READINESS_REVISION = '1';
 
-    if (!status) {
-      return {
-        ready: false,
-        reason: 'StatusMissing',
-        message: 'Kustomization status not available yet',
-      };
+export const kustomizationReadinessEvaluator: ReadinessEvaluator<unknown> =
+  identifyPortableReadinessEvaluator(
+    (liveResource: unknown): ResourceStatus => {
+      try {
+        const status = (
+          liveResource as
+            | {
+                status?: {
+                  conditions?: KubernetesCondition[];
+                  inventory?: { entries?: unknown[] };
+                };
+              }
+            | null
+            | undefined
+        )?.status;
+
+        if (!status) {
+          return {
+            ready: false,
+            reason: 'StatusMissing',
+            message: 'Kustomization status not available yet',
+          };
+        }
+
+        // Check for conditions array
+        if (!status.conditions || !Array.isArray(status.conditions)) {
+          return {
+            ready: false,
+            reason: 'ConditionsMissing',
+            message: 'Kustomization conditions not available',
+          };
+        }
+
+        // Check for Ready condition
+        const readyCondition = status.conditions.find(
+          (c: KubernetesCondition) => c.type === 'Ready'
+        );
+        if (!readyCondition) {
+          return {
+            ready: false,
+            reason: 'ReadyConditionMissing',
+            message: 'Ready condition not found in Kustomization status',
+          };
+        }
+
+        if (readyCondition.status !== 'True') {
+          return {
+            ready: false,
+            reason: readyCondition.reason || 'NotReady',
+            message: readyCondition.message || 'Kustomization is not ready',
+          };
+        }
+
+        // Check for Healthy condition if present
+        const healthyCondition = status.conditions.find(
+          (c: KubernetesCondition) => c.type === 'Healthy'
+        );
+        if (healthyCondition && healthyCondition.status !== 'True') {
+          return {
+            ready: false,
+            reason: healthyCondition.reason || 'NotHealthy',
+            message: healthyCondition.message || 'Kustomization resources are not healthy',
+          };
+        }
+
+        // Check if we have applied resources
+        if (status.inventory?.entries && status.inventory.entries.length === 0) {
+          return {
+            ready: false,
+            reason: 'NoResourcesApplied',
+            message: 'No resources have been applied by this Kustomization',
+          };
+        }
+
+        return {
+          ready: true,
+          message: `Kustomization is ready with ${status.inventory?.entries?.length || 0} applied resources`,
+        };
+      } catch (error: unknown) {
+        return {
+          ready: false,
+          reason: 'EvaluationError',
+          message: `Error evaluating Kustomization readiness: ${ensureError(error).message}`,
+        };
+      }
+    },
+    {
+      kind: 'registered',
+      id: KUSTOMIZATION_READINESS_STRATEGY,
+      revision: KUSTOMIZATION_READINESS_REVISION,
+      configuration: readinessConfiguration({}),
     }
+  );
 
-    // Check for conditions array
-    if (!status.conditions || !Array.isArray(status.conditions)) {
-      return {
-        ready: false,
-        reason: 'ConditionsMissing',
-        message: 'Kustomization conditions not available',
-      };
-    }
-
-    // Check for Ready condition
-    const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
-    if (!readyCondition) {
-      return {
-        ready: false,
-        reason: 'ReadyConditionMissing',
-        message: 'Ready condition not found in Kustomization status',
-      };
-    }
-
-    if (readyCondition.status !== 'True') {
-      return {
-        ready: false,
-        reason: readyCondition.reason || 'NotReady',
-        message: readyCondition.message || 'Kustomization is not ready',
-      };
-    }
-
-    // Check for Healthy condition if present
-    const healthyCondition = status.conditions.find(
-      (c: KubernetesCondition) => c.type === 'Healthy'
-    );
-    if (healthyCondition && healthyCondition.status !== 'True') {
-      return {
-        ready: false,
-        reason: healthyCondition.reason || 'NotHealthy',
-        message: healthyCondition.message || 'Kustomization resources are not healthy',
-      };
-    }
-
-    // Check if we have applied resources
-    if (status.inventory?.entries && status.inventory.entries.length === 0) {
-      return {
-        ready: false,
-        reason: 'NoResourcesApplied',
-        message: 'No resources have been applied by this Kustomization',
-      };
-    }
-
-    return {
-      ready: true,
-      message: `Kustomization is ready with ${status.inventory?.entries?.length || 0} applied resources`,
-    };
-  } catch (error: unknown) {
-    return {
-      ready: false,
-      reason: 'EvaluationError',
-      message: `Error evaluating Kustomization readiness: ${ensureError(error).message}`,
-    };
-  }
-};
+registerPortableReadinessStrategy(
+  KUSTOMIZATION_READINESS_STRATEGY,
+  KUSTOMIZATION_READINESS_REVISION,
+  () => kustomizationReadinessEvaluator
+);

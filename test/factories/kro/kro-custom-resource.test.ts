@@ -179,6 +179,56 @@ describe('KroCustomResource Factory', () => {
       expect(result.message).toBe('WebApplication instance is active and synced');
     });
 
+    it('waits for the current top-level generation before reporting ready', () => {
+      const enhanced = kroCustomResource<TestSpec, TestStatus>(createTestResource());
+      const evaluator = requireReadinessEvaluator(enhanced);
+
+      const result = evaluator({
+        metadata: { name: 'testResource', generation: 2 },
+        spec: { image: 'nginx:latest' },
+        status: {
+          state: 'ACTIVE',
+          observedGeneration: 1,
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 1,
+              message: 'Previous generation is ready',
+            },
+          ],
+        },
+      });
+
+      expect(result.ready).toBe(false);
+      expect(result.reason).toBe('GenerationPending');
+      expect(result.details).toMatchObject({ generation: 2, observedGeneration: 1 });
+    });
+
+    it('ignores stale generation-tagged ready conditions', () => {
+      const enhanced = kroCustomResource<TestSpec, TestStatus>(createTestResource());
+      const evaluator = requireReadinessEvaluator(enhanced);
+
+      const result = evaluator({
+        metadata: { name: 'testResource', generation: 2 },
+        spec: { image: 'nginx:latest' },
+        status: {
+          state: 'ACTIVE',
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              observedGeneration: 1,
+              message: 'Previous generation is ready',
+            },
+          ],
+        },
+      });
+
+      expect(result.ready).toBe(false);
+      expect(result.reason).toBe('GenerationPending');
+    });
+
     it('should evaluate as not ready when state is FAILED', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);

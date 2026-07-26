@@ -11,9 +11,35 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { typeKroRuntimeBootstrap } from '../../src/compositions/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap as createTypeKroRuntimeBootstrap } from '../../src/compositions/typekro-runtime/index.js';
+
+function typeKroRuntimeBootstrap(
+  config: Parameters<typeof createTypeKroRuntimeBootstrap>[0] = {}
+) {
+  return createTypeKroRuntimeBootstrap({ ...config, fluxInstallation: 'external' });
+}
 
 describe('TypeKro Runtime Bootstrap CEL Generation', () => {
+  it('rejects static YAML when the runtime Flux installer is managed', () => {
+    const bootstrap = createTypeKroRuntimeBootstrap({ fluxInstallation: 'managed' });
+    expect(() => bootstrap.factory('kro').toYaml()).toThrow(
+      'Artifact capabilities cannot be satisfied by kro/no-host/static'
+    );
+    expect(() =>
+      bootstrap.factory('direct').toYaml({ namespace: 'flux-system' })
+    ).toThrow('Artifact capabilities cannot be satisfied by direct/no-host/static');
+  });
+
+  it('rejects managed runtime closures from durable Alchemy declarations', async () => {
+    const bootstrap = createTypeKroRuntimeBootstrap({ fluxInstallation: 'managed' });
+    await expect(
+      bootstrap.factory('kro').toAlchemyResources({ namespace: 'flux-system' })
+    ).rejects.toThrow('Artifact capabilities cannot be satisfied by kro/alchemy/live');
+    await expect(
+      bootstrap.factory('direct').toAlchemyResources({ namespace: 'flux-system' })
+    ).rejects.toThrow('Artifact capabilities cannot be satisfied by direct/alchemy/live');
+  });
+
   describe('Status field KubernetesRef creation', () => {
     it('should create KubernetesRef objects for status fields in bootstrap composition', async () => {
       const bootstrap = typeKroRuntimeBootstrap({
@@ -34,7 +60,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       expect(yaml).not.toContain('fluxHelmRelease.status.conditions');
 
       // Verify that the status section contains dynamic expressions
-      expect(yaml).toContain('phase: "${');
+      expect(yaml).toContain("phase: '${");
       // Verify that components is now properly structured with individual CEL expressions
       expect(yaml).toContain('components:');
       expect(yaml).toContain('kroSystem: ${');
@@ -155,9 +181,9 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
 
       // Test that CEL expressions are properly serialized
       expect(yaml).toContain(
-        'kroHelmRelease.status.conditions.exists(c, c.type == \\"Ready\\" && c.status == \\"True\\")'
+        'kroHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
       );
-      expect(yaml).toContain('? \\"Ready\\" : \\"Installing\\"');
+      expect(yaml).toContain('? "Ready" : "Installing"');
 
       // Ensure it's not a static value
       expect(yaml).not.toContain('phase: Ready');

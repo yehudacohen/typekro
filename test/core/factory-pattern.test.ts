@@ -13,6 +13,7 @@ import type {
   InternalFactoryOptions,
   KroResourceFactory,
   PublicFactoryOptions,
+  ResourceDeletionResult,
   ResourceFactory,
   TypedResourceGraph,
 } from '../../src/core/types/deployment.js';
@@ -208,7 +209,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {
@@ -252,7 +253,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {
@@ -322,7 +323,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {
@@ -384,7 +385,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {
@@ -449,7 +450,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {
@@ -505,7 +506,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async deleteInstance(_name) {
-          // Mock implementation
+          return {} as ResourceDeletionResult;
         },
 
         async getStatus() {

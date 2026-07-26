@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { decodeDirectArtifactExecutionRecord } from '../../src/experimental-planning.js';
 
 describe('DirectResourceFactory', () => {
   const WebAppSpecSchema = type({
@@ -215,6 +216,52 @@ describe('DirectResourceFactory', () => {
       expect(status.instanceCount).toBe(0); // No instances deployed yet
       expect(status.health).toBe('healthy');
     });
+
+    it('preserves cancellation across status, rollback, and server dry-run boundaries', async () => {
+      const graph = toResourceGraph(
+        {
+          name: 'cancelled-direct-operations',
+          apiVersion: 'v1alpha1',
+          kind: 'WebApp',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        (schema) => ({
+          deployment: simple.Deployment({
+            name: schema.spec.name,
+            image: schema.spec.image,
+            replicas: schema.spec.replicas,
+            id: 'cancelledDeployment',
+          }),
+        }),
+        (_schema, resources) => ({
+          url: `http://${resources.deployment.metadata.name}`,
+          readyReplicas: resources.deployment.status.readyReplicas,
+          phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
+        })
+      );
+      const factory = await graph.factory('direct');
+      const controller = new AbortController();
+      const reason = new DOMException('cancelled direct operation', 'AbortError');
+      controller.abort(reason);
+
+      const statusError = await factory
+        .getStatus({ abortSignal: controller.signal })
+        .catch((error: unknown) => error);
+      const rollbackError = await factory
+        .rollback({ abortSignal: controller.signal })
+        .catch((error: unknown) => error);
+      const dryRunError = await factory
+        .toDryRun(
+          { name: 'demo', image: 'nginx:latest', replicas: 1, port: 8080 },
+          { abortSignal: controller.signal }
+        )
+        .catch((error: unknown) => error);
+
+      expect(statusError).toBe(reason);
+      expect(rollbackError).toBe(reason);
+      expect(dryRunError).toBe(reason);
+    });
   });
 
   describe('Instance Management', () => {
@@ -248,7 +295,7 @@ describe('DirectResourceFactory', () => {
       expect(instances).toEqual([]);
     });
 
-    it('should throw error for unimplemented deleteInstance', async () => {
+    it('treats an already-absent instance as idempotently deleted', async () => {
       const graph = toResourceGraph(
         {
           name: 'delete-test',
@@ -273,10 +320,29 @@ describe('DirectResourceFactory', () => {
       );
 
       const factory = await graph.factory('direct');
+      const subject = factory as unknown as {
+        getDeploymentEngine(): {
+          loadDeploymentByInstance: (...args: unknown[]) => Promise<unknown>;
+        };
+      };
+      const getDeploymentEngine = subject.getDeploymentEngine;
+      subject.getDeploymentEngine = () => ({ loadDeploymentByInstance: async () => null });
 
-      await expect(factory.deleteInstance('test-instance')).rejects.toThrow(
-        'Instance not found: test-instance'
-      );
+      let result: Awaited<ReturnType<typeof factory.deleteInstance>>;
+      try {
+        result = await factory.deleteInstance('test-instance');
+      } finally {
+        subject.getDeploymentEngine = getDeploymentEngine;
+      }
+
+      expect(result.status).toBe('complete');
+      expect(result.mode).toBe('direct');
+      expect(result.instanceName).toBe('test-instance');
+      expect(result.deleted).toEqual([]);
+      expect(result.remaining).toEqual([]);
+      expect(result.blockers).toEqual([]);
+      expect(result.retry.safe).toBe(true);
+      expect(result.retry.guidance).toContain('already complete');
     });
   });
 
@@ -381,6 +447,7 @@ describe('DirectResourceFactory', () => {
         expect(d.props.deploymentStrategy).toBe('direct');
         expect(d.props.namespace).toBe('apps');
         expect(typeof d.props.resourceId).toBe('string');
+        expect(typeof d.props.artifactExecutionRecord).toBe('string');
         expect(d.id.length).toBeGreaterThan(0);
       }
       // Distinct alchemy ids per resource (independent state entries).
@@ -388,7 +455,15 @@ describe('DirectResourceFactory', () => {
     });
 
     it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {
-      const factory = await makeGraph().factory('direct', { namespace: 'apps' });
+      const composition = makeGraph();
+      const plan = composition.plan!(spec, { strict: true });
+      expect(plan.edges).toContainEqual({
+        kind: 'existence',
+        prerequisite: 'webappDeployment',
+        dependent: 'webappConfig',
+      });
+
+      const factory = await composition.factory('direct', { namespace: 'apps' });
       const decls = await factory.toAlchemyResources(spec);
 
       const byLogicalId = new Map(decls.map((d) => [d.props.resourceId, d]));
@@ -396,6 +471,13 @@ describe('DirectResourceFactory', () => {
       const config = byLogicalId.get('webappConfig')!;
       expect(deployment).toBeDefined();
       expect(config).toBeDefined();
+
+      const configArtifact = decodeDirectArtifactExecutionRecord(
+        config.props.artifactExecutionRecord!
+      );
+      expect(configArtifact.artifact.sourceNodeId).toBe('webappConfig');
+      expect(configArtifact.dependencies).toEqual(['webappDeployment']);
+      expect(JSON.stringify(configArtifact.artifact.desired)).toContain('webappDeployment');
 
       // The configMap references the deployment's status, so it must depend on it…
       expect(config.dependsOn).toContain(deployment.id);

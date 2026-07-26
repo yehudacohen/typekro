@@ -14,6 +14,8 @@
  */
 
 import type { ResourceAspectMetadata } from '../aspects/types.js';
+import type { ArtifactApplyPolicy } from '../planning/artifacts.js';
+import type { ReadinessStrategyIdentity } from '../planning/types.js';
 import type { ResourceStatus } from '../types/kubernetes.js';
 
 // ---------------------------------------------------------------------------
@@ -32,12 +34,29 @@ import type { ResourceStatus } from '../types/kubernetes.js';
  * - `templateOverrides`  → was `__templateOverrides`
  */
 export interface ResourceMetadata {
+  /**
+   * Factory registration that created this resource.
+   *
+   * Planning uses this provenance to select factory-owned semantic hooks
+   * without consulting every registration that happens to share the same GVK.
+   */
+  factoryName?: string;
+  /** Target-compiler-selected API-server write behavior for this artifact. */
+  applyPolicy?: ArtifactApplyPolicy;
+  /**
+   * Explicit classification for non-confidential bytes stored in a Kubernetes
+   * Secret, such as documented local-development placeholders. Unset Secret
+   * material remains sensitive and is redacted into bindings by the planner.
+   */
+  secretMaterial?: 'public-placeholder';
   /** Original resource identifier for cross-resource references */
   resourceId?: string;
   /** Local resource IDs that should resolve to this emitted resource ID. */
   resourceAliases?: string[];
   /** Factory-provided function that evaluates whether a deployed resource is ready */
   readinessEvaluator?: (resource: unknown) => ResourceStatus;
+  /** Serializable identity for resolving the evaluator after artifact rehydration. */
+  readinessStrategy?: ReadinessStrategyIdentity;
   /** Conditional resource creation CEL expression array */
   includeWhen?: unknown[];
   /** Resource readiness conditions CEL expression array */
@@ -48,6 +67,8 @@ export interface ResourceMetadata {
   templateOverrides?: Array<{ propertyPath: string; celExpression: string }>;
   /** Kubernetes scope — 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.) */
   scope?: 'namespaced' | 'cluster';
+  /** Whether scope came from a factory declaration or createResource's compatibility default. */
+  scopeProvenance?: 'explicit' | 'default';
   /**
    * Whether this resource creates a DNS-addressable service in the
    * cluster. When `true`, the dependency resolver will detect implicit
@@ -217,14 +238,24 @@ const LEGACY_TO_METADATA: Record<string, ResourceMetadataKey> = {
  * @returns `true` if metadata was copied, `false` if source had no metadata
  *          and no legacy properties were found.
  */
-export function copyResourceMetadata(source: WeakKey, target: WeakKey): boolean {
+export function copyResourceMetadata(
+  source: WeakKey,
+  target: WeakKey,
+  options: { readonly exclude?: readonly ResourceMetadataKey[] } = {}
+): boolean {
   let copied = false;
+  const excluded = new Set(options.exclude ?? []);
 
   // Copy existing WeakMap metadata
   const metadata = store.get(source);
   if (metadata) {
-    store.set(target, { ...metadata });
-    copied = true;
+    const copiedMetadata = Object.fromEntries(
+      Object.entries(metadata).filter(([key]) => !excluded.has(key as ResourceMetadataKey))
+    ) as ResourceMetadata;
+    if (Object.keys(copiedMetadata).length > 0) {
+      store.set(target, copiedMetadata);
+      copied = true;
+    }
   }
 
   // Also migrate legacy non-enumerable properties from source to target's WeakMap
@@ -236,7 +267,7 @@ export function copyResourceMetadata(source: WeakKey, target: WeakKey): boolean 
         if (prop === 'readinessEvaluator' && typeof desc.value !== 'function') continue;
 
         const metaKey = LEGACY_TO_METADATA[prop];
-        if (metaKey) {
+        if (metaKey && !excluded.has(metaKey)) {
           setMetadataField(target, metaKey, desc.value);
           copied = true;
         }

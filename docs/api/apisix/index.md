@@ -144,6 +144,12 @@ interface APISixBootstrapConfig {
   etcd?: {
     enabled?: boolean;
     replicaCount?: number;
+    persistence?: {
+      enabled?: boolean;
+      storageClass?: string;
+      size?: string;
+      accessModes?: string[];
+    };
     image?: object;
     resources?: object;
     auth?: {

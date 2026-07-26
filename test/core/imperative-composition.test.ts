@@ -1274,7 +1274,7 @@ describe('Imperative Composition Pattern', () => {
       const ConditionalStatusSchema = type({
         phase: '"Initializing" | "Running" | "Scaling" | "Error"',
         message: 'string',
-        conditions: 'string[]',
+        conditionLabels: 'string[]',
         scaling: {
           desired: 'number%1',
           current: 'number%1',
@@ -1326,7 +1326,7 @@ describe('Imperative Composition Pattern', () => {
             deployment.spec.replicas,
             ') + ")"'
           ),
-          conditions: ['Available', 'Progressing'],
+          conditionLabels: ['Available', 'Progressing'],
           scaling: {
             desired: deployment.spec.replicas,
             current: deployment.status.replicas,

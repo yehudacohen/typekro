@@ -341,6 +341,36 @@ describe('ResourceRollbackManager', () => {
       expect(mockK8sApi.read).not.toHaveBeenCalled();
     });
 
+    it('interrupts deletion polling when the operation signal is aborted', async () => {
+      const deployedResource: DeployedResource = {
+        id: 'terminatingConfig',
+        kind: 'ConfigMap',
+        name: 'terminating-config',
+        namespace: 'default',
+        manifest: {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name: 'terminating-config', namespace: 'default' },
+        } as Enhanced<unknown, unknown>,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+      const abortController = new AbortController();
+      const reason = new Error('host interrupted deletion');
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read.mockResolvedValue({ body: deployedResource.manifest });
+
+      const deletion = manager.deleteDeployedResource(
+        deployedResource,
+        30_000,
+        abortController.signal
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      abortController.abort(reason);
+
+      await expect(deletion).rejects.toBe(reason);
+    });
+
     it('rolls back scoped resources that match a target-scoped failed deploy', async () => {
       const clusterOperator = createTestDeployment('cluster-operator');
       setMetadataField(clusterOperator, 'scopes', ['cluster']);
@@ -540,7 +570,7 @@ describe('ResourceRollbackManager', () => {
       const duration = Date.now() - startTime;
 
       expect(result.status).toBe('failed');
-      expect(duration).toBeGreaterThan(1000); // Should have waited at least the timeout
+      expect(duration).toBeGreaterThanOrEqual(1000); // Should have waited at least the timeout
       expect(result.errors[0]?.error.message).toContain('Timeout waiting for resource deletion');
     });
   });

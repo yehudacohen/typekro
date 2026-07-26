@@ -1,15 +1,26 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition } from '../../../src/index.js';
-import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import {
+  createTestNamespace,
+  deleteTestCertificateSecrets,
+  deleteTestNamespaceAndWait,
+  deleteTestSecretAndWait,
+  TestFactoryCleanupRegistry,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test-comprehensive';
+  const testNamespace = `typekro-test-comprehensive-${crypto.randomUUID().slice(0, 8)}`;
+  let namespaceLease: TestNamespaceLease;
+  const cleanupRegistry = new TestFactoryCleanupRegistry();
 
   beforeAll(async () => {
     console.log(
@@ -31,7 +42,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       });
 
       // Create test namespace
-      await ensureNamespaceExists(testNamespace, kubeConfig);
+      namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -39,97 +50,12 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
   });
 
   afterEach(async () => {
-    // Clean up test resources to prevent conflicts between tests
-    try {
-      console.log('🧹 Cleaning up comprehensive integration test resources...');
-
-      // Delete all cert-manager resources in test namespace that start with 'test-'
-      const resourceTypes = [
-        { group: 'cert-manager.io', version: 'v1', plural: 'certificates' },
-        { group: 'cert-manager.io', version: 'v1', plural: 'clusterissuers' },
-        { group: 'cert-manager.io', version: 'v1', plural: 'issuers' },
-        { group: 'acme.cert-manager.io', version: 'v1', plural: 'challenges' },
-        { group: 'acme.cert-manager.io', version: 'v1', plural: 'orders' },
-        { group: 'helm.toolkit.fluxcd.io', version: 'v2', plural: 'helmreleases' },
-        { group: 'source.toolkit.fluxcd.io', version: 'v1', plural: 'helmrepositories' },
-      ];
-
-      for (const resourceType of resourceTypes) {
-        try {
-          let response: unknown;
-          if (
-            resourceType.plural === 'clusterissuers' ||
-            resourceType.plural === 'helmrepositories'
-          ) {
-            // Cluster-scoped resources
-            response = await customObjectsApi.listClusterCustomObject({
-              group: resourceType.group,
-              version: resourceType.version,
-              plural: resourceType.plural,
-            });
-          } else {
-            // Namespace-scoped resources
-            response = await customObjectsApi.listNamespacedCustomObject({
-              group: resourceType.group,
-              version: resourceType.version,
-              namespace: testNamespace,
-              plural: resourceType.plural,
-            });
-          }
-
-          const items =
-            ((response as Record<string, unknown>).items as { metadata: { name: string } }[]) ?? [];
-          for (const item of items) {
-            if (
-              item.metadata.name.startsWith('test-') ||
-              item.metadata.name.startsWith('pebble-')
-            ) {
-              try {
-                if (
-                  resourceType.plural === 'clusterissuers' ||
-                  resourceType.plural === 'helmrepositories'
-                ) {
-                  await customObjectsApi.deleteClusterCustomObject({
-                    group: resourceType.group,
-                    version: resourceType.version,
-                    plural: resourceType.plural,
-                    name: item.metadata.name,
-                  });
-                } else {
-                  await customObjectsApi.deleteNamespacedCustomObject({
-                    group: resourceType.group,
-                    version: resourceType.version,
-                    namespace: testNamespace,
-                    plural: resourceType.plural,
-                    name: item.metadata.name,
-                  });
-                }
-                console.log(`🗑️ Deleted ${resourceType.plural}: ${item.metadata.name}`);
-              } catch (deleteError) {
-                console.warn(
-                  `⚠️ Failed to delete ${resourceType.plural} ${item.metadata.name}:`,
-                  deleteError
-                );
-              }
-            }
-          }
-        } catch (listError) {
-          console.warn(`⚠️ Failed to list ${resourceType.plural} for cleanup:`, listError);
-        }
-      }
-
-      // Wait a moment for cleanup to complete
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      console.log('✅ Comprehensive integration test resource cleanup completed');
-    } catch (error) {
-      console.warn('⚠️ Comprehensive integration test cleanup failed (non-critical):', error);
-    }
+    await cleanupRegistry.cleanup(kubeConfig, 60_000);
   });
 
   afterAll(async () => {
     console.log('Cleaning up comprehensive cert-manager integration tests...');
-    await deleteNamespaceAndWait(testNamespace, kubeConfig);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
   });
 
   it('should deploy complete ACME certificate issuance stack with Pebble test server', async () => {
@@ -244,9 +170,9 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     });
 
     const uniqueBaseName = `test-acme-${Date.now()}`;
-    const _issuerName = `${uniqueBaseName}-issuer`;
-    const _certName = `${uniqueBaseName}-cert`;
-    const _secretName = `${uniqueBaseName}-secret`;
+    const issuerName = `${uniqueBaseName}-issuer`;
+    const certName = `${uniqueBaseName}-cert`;
+    const secretName = `${uniqueBaseName}-secret`;
     const pebbleName = `${uniqueBaseName}-pebble`;
 
     console.log(`📦 Deploying complete ACME certificate issuance stack: ${uniqueBaseName}`);
@@ -257,6 +183,13 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       dnsNames: ['test.funwiththe.cloud', 'api.test.funwiththe.cloud'],
       acmeServer: 'https://acme-staging-v02.api.letsencrypt.org/directory',
     });
+    cleanupRegistry.trackResult(directFactory, deploymentResult);
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestCertificateSecrets(testNamespace, certName, [secretName], kubeConfig)
+    );
+    cleanupRegistry.trackPostFactoryCleanup(() =>
+      deleteTestSecretAndWait('cert-manager', `${issuerName}-private-key`, kubeConfig)
+    );
 
     // Validate deployment result
     expect(deploymentResult).toBeDefined();
@@ -275,8 +208,8 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     });
     const createdIssuer = (
       (clusterIssuers as Record<string, unknown>).items as Record<string, unknown>[]
-    ).find((issuer) =>
-      ((issuer.metadata as Record<string, unknown>).name as string).includes('issuer')
+    ).find(
+      (issuer) => ((issuer.metadata as Record<string, unknown>).name as string) === issuerName
     )!;
     expect(createdIssuer).toBeDefined();
     const issuerSpec = createdIssuer.spec as Record<string, unknown>;
@@ -294,7 +227,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     });
     const createdCert = (
       (certificates as Record<string, unknown>).items as Record<string, unknown>[]
-    ).find((cert) => ((cert.metadata as Record<string, unknown>).name as string).includes('cert'))!;
+    ).find((cert) => ((cert.metadata as Record<string, unknown>).name as string) === certName)!;
     expect(createdCert).toBeDefined();
     const certSpec = createdCert.spec as Record<string, unknown>;
     expect(certSpec.commonName).toBe('test.funwiththe.cloud');
@@ -540,6 +473,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       email: 'crossref@funwiththe.cloud',
       domains: ['crossref.funwiththe.cloud', 'api.crossref.funwiththe.cloud'],
     });
+    cleanupRegistry.trackResult(directFactory, deploymentResult);
 
     // Validate deployment result
     expect(deploymentResult).toBeDefined();

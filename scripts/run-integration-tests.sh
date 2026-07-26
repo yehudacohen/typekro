@@ -10,6 +10,8 @@ SKIP_CLUSTER_TESTS=${SKIP_CLUSTER_TESTS:-false}
 SKIP_CLUSTER_SETUP=${SKIP_CLUSTER_SETUP:-false}
 REQUIRE_CLUSTER_TESTS=${REQUIRE_CLUSTER_TESTS:-false}
 CREATE_CLUSTER=false
+CLUSTER_AVAILABLE=false
+NEEDS_KIND_CLUSTER=false
 
 echo "🚀 Starting Integration Test Suite..."
 echo "====================================="
@@ -29,34 +31,38 @@ if ! command -v bun &> /dev/null; then
     exit 1
 fi
 
-# Check if kubectl is available
-if ! command -v kubectl &> /dev/null; then
-    echo "⚠️  kubectl not found. E2E cluster tests will be skipped."
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ kubectl found"
+# Probe Kubernetes through the same Bun-compatible client used by the tests.
+if bun scripts/integration-cluster-harness.ts cluster-ready; then
+    CLUSTER_AVAILABLE=true
 fi
 
-# Check if kind is available
-if ! command -v kind &> /dev/null; then
-    echo "⚠️  kind not found. E2E cluster tests will be skipped."
-    echo "   Install kind from: https://kind.sigs.k8s.io/docs/user/quick-start/"
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ kind found"
+if [ "${CREATE_KIND_CLUSTER:-false}" = "true" ] || [ "$CLUSTER_AVAILABLE" != "true" ]; then
+    NEEDS_KIND_CLUSTER=true
 fi
 
-# Check if Docker is running
-if ! docker info &> /dev/null; then
-    echo "⚠️  Docker not running. E2E cluster tests will be skipped."
-    SKIP_CLUSTER_TESTS=true
-else
-    echo "✅ Docker is running"
+if [ "$SKIP_CLUSTER_TESTS" != "true" ] && [ "$NEEDS_KIND_CLUSTER" = "true" ]; then
+    # kind and Docker are only prerequisites when the harness must create a cluster.
+    if ! command -v kind &> /dev/null; then
+        echo "⚠️  kind not found and no existing cluster is available."
+        echo "   Install kind from: https://kind.sigs.k8s.io/docs/user/quick-start/"
+        SKIP_CLUSTER_TESTS=true
+    else
+        echo "✅ kind found"
+    fi
+
+    if ! docker info &> /dev/null; then
+        echo "⚠️  Docker not running and a kind cluster is required."
+        SKIP_CLUSTER_TESTS=true
+    else
+        echo "✅ Docker is running"
+    fi
+elif [ "$CLUSTER_AVAILABLE" = "true" ]; then
+    echo "✅ Existing Kubernetes cluster is accessible; kind and Docker are not required"
 fi
 
 if [ "$SKIP_CLUSTER_TESTS" = "true" ] && [ "$REQUIRE_CLUSTER_TESTS" = "true" ]; then
     echo "❌ Cluster integration tests are required, but prerequisites are missing."
-    echo "   Install kubectl/kind and start Docker, or unset REQUIRE_CLUSTER_TESTS."
+    echo "   Install kind and start Docker, or unset REQUIRE_CLUSTER_TESTS."
     exit 1
 fi
 
@@ -84,12 +90,12 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   if [ "${CREATE_KIND_CLUSTER:-false}" = "true" ]; then
     echo "🔧 CREATE_KIND_CLUSTER is set, will create new kind cluster..."
     CREATE_CLUSTER=true
-  elif ! kubectl cluster-info &> /dev/null; then
+  elif [ "$CLUSTER_AVAILABLE" != "true" ]; then
     echo "🔧 No accessible Kubernetes cluster found, will create kind cluster..."
     CREATE_CLUSTER=true
   else
     echo "✅ Using existing Kubernetes cluster"
-    CURRENT_CONTEXT=$(kubectl config current-context)
+    CURRENT_CONTEXT=$(bun scripts/integration-cluster-harness.ts current-context)
     echo "   Current context: $CURRENT_CONTEXT"
   fi
 
@@ -103,32 +109,19 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   # by extracting TLS options from https.Agent and passing them directly to https.request
   NODE_ENV=test NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-setup.ts
 
-  # NATS JetStream file storage requires a real RWO StorageClass. An explicit
-  # class wins; otherwise use only the cluster's annotated default. Never
-  # mutate a caller-owned cluster by installing storage infrastructure.
-  if [ -n "${TYPEKRO_NATS_STORAGE_CLASS:-}" ]; then
-    if ! kubectl get storageclass "$TYPEKRO_NATS_STORAGE_CLASS" > /dev/null 2>&1; then
-      echo "❌ TYPEKRO_NATS_STORAGE_CLASS names a missing StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
-      exit 1
-    fi
-  else
-    TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
-    if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
-      TYPEKRO_NATS_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.beta\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -n 1 || true)
-    fi
-  fi
-  if [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ] && [ "$CREATE_CLUSTER" = "true" ]; then
-    echo "🔧 Installing local-path StorageClass in the harness-created cluster..."
-    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
-    kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=180s
-    TYPEKRO_NATS_STORAGE_CLASS=local-path
-  elif [ -z "$TYPEKRO_NATS_STORAGE_CLASS" ]; then
-    echo "❌ Existing cluster has no default StorageClass for JetStream integration."
-    echo "   Set TYPEKRO_NATS_STORAGE_CLASS to an existing RWO-capable StorageClass."
-    exit 1
-  fi
+  # Storage-backed fixtures require a proven RWO StorageClass. Caller-owned
+  # clusters must opt into a class explicitly; an annotated default alone is
+  # not evidence that its provisioner is operational.
+  TYPEKRO_NATS_STORAGE_CLASS=$(CREATE_CLUSTER="$CREATE_CLUSTER" bun scripts/integration-cluster-harness.ts storage-class "${TYPEKRO_NATS_STORAGE_CLASS:-}")
   export TYPEKRO_NATS_STORAGE_CLASS
   echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"
+
+  # Cluster-backed fixtures should share the same discovered RWO class instead
+  # of assuming a provisioner-specific name such as `local-path`.
+  TYPEKRO_TEST_STORAGE_CLASS=${TYPEKRO_TEST_STORAGE_CLASS:-$TYPEKRO_NATS_STORAGE_CLASS}
+  TYPEKRO_TEST_STORAGE_CLASS=$(CREATE_CLUSTER=false bun scripts/integration-cluster-harness.ts storage-class "$TYPEKRO_TEST_STORAGE_CLASS")
+  export TYPEKRO_TEST_STORAGE_CLASS
+  echo "   General test StorageClass: $TYPEKRO_TEST_STORAGE_CLASS"
 
   # Signal tests to skip any per-test cluster setup/teardown
   SKIP_CLUSTER_SETUP=true
@@ -141,7 +134,22 @@ echo "==============================="
 # NOTE: We still use bun test but with NODE_TLS_REJECT_UNAUTHORIZED=0
 # The client cert auth issue with Bun is being tracked. For now, this allows
 # TLS to work, and we rely on the cluster's default service account for auth.
-NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 1200000 # 20 minutes
+# Cilium bootstrap tests install and then detach a cluster CNI release. Run them
+# last so their teardown cannot prevent later suites from creating pod sandboxes.
+NON_CILIUM_TEST_FILES=()
+while IFS= read -r test_file; do
+  NON_CILIUM_TEST_FILES+=("$test_file")
+done < <(find test/integration -name '*.test.ts' ! -path 'test/integration/cilium/*' | sort)
+CILIUM_TEST_FILES=()
+while IFS= read -r test_file; do
+  CILIUM_TEST_FILES+=("$test_file")
+done < <(find test/integration/cilium -name '*.test.ts' | sort)
+
+# Bun does not guarantee that a single invocation honors command-line file order,
+# even with max concurrency set to one. Use separate invocations so Cilium teardown
+# cannot remove the cluster CNI before a later suite creates pod sandboxes.
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test "${NON_CILIUM_TEST_FILES[@]}" --timeout 1200000 --max-concurrency 1 # 20 minutes
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test "${CILIUM_TEST_FILES[@]}" --timeout 1200000 --max-concurrency 1 # 20 minutes
 
 echo ""
 
@@ -168,7 +176,7 @@ echo "📊 Test Summary:"
 if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
     echo "✅ E2E Cluster: Full deployment to Kubernetes with Kro"
 else
-    echo "⏭️  E2E Cluster: Skipped (install kubectl, kind, and Docker to enable)"
+    echo "⏭️  E2E Cluster: Skipped (install kind and Docker to enable)"
 fi
 
 echo ""

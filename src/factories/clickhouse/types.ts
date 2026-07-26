@@ -87,17 +87,20 @@ export type ClickHouseOperatorBootstrapConfig =
  */
 export interface ClickHouseOperatorBootstrapStatus {
   /** Overall deployment phase (derived from HelmRelease Ready condition). */
-  phase: 'Ready' | 'Installing';
+  phase: 'Ready' | 'Installing' | 'Failed';
   /** Whether the operator is ready to manage installations. */
   ready: boolean;
+  /** Whether the HelmRelease Ready condition is explicitly False. */
+  failed: boolean;
   /** Deployed chart version. */
   version?: string;
 }
 
 /** ArkType schema for ClickHouseOperatorBootstrapStatus. */
 export const ClickHouseOperatorBootstrapStatusSchema = type({
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   ready: 'boolean',
+  failed: 'boolean',
   'version?': 'string',
 });
 
@@ -140,8 +143,7 @@ export const ClickHouseHelmRepositoryConfigSchema = type({
 });
 
 /** Configuration for the Altinity Helm chart repository. */
-export type ClickHouseHelmRepositoryConfig =
-  typeof ClickHouseHelmRepositoryConfigSchema.infer;
+export type ClickHouseHelmRepositoryConfig = typeof ClickHouseHelmRepositoryConfigSchema.infer;
 
 /**
  * ArkType schema for ClickHouseOperatorHelmReleaseConfig.
@@ -299,8 +301,7 @@ export const ClickHouseInstallationConfigSchema = type({
 });
 
 /** High-level configuration for a ClickHouseInstallation. */
-export type ClickHouseInstallationConfig =
-  typeof ClickHouseInstallationConfigSchema.infer;
+export type ClickHouseInstallationConfig = typeof ClickHouseInstallationConfigSchema.infer;
 
 // ----------------------------------------------------------------------------
 // CHI spec shapes (what the factory compiles TO). Typed as far as practical;

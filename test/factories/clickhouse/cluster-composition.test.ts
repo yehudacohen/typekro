@@ -9,6 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { load } from 'js-yaml';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import {
   CLICKHOUSE_DEFAULT_DATABASE,
@@ -130,16 +131,30 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
         users: [{ name: 'signoz' }],
       }).toYaml();
 
+      const rgd = load(yaml) as {
+        spec: { schema: { status: Record<string, unknown> } };
+      };
+      const status = rgd.spec.schema.status as {
+        ready: string;
+        phase: string;
+        installation: Record<string, string>;
+        clickhouse: Record<string, string>;
+        keeper: Record<string, string>;
+      };
+
       // Resource-derived fields serialize as CEL over the CHI resource.
-      expect(yaml).toContain('ready: ${clickhouse.status.status == "Completed"}');
-      // The three-state phase ternary (quotes YAML-escaped inside the CEL string).
-      expect(yaml).toContain('\\"Ready\\" : clickhouse.status.status == \\"Aborted\\" ? \\"Failed\\" : \\"Installing\\"');
-      expect(yaml).toContain('endpoint: ${clickhouse.status.endpoint}');
+      expect(status.ready).toBe('${clickhouse.status.status == "Completed"}');
+      expect(status.phase).toBe(
+        '${clickhouse.status.status == "Completed" ? "Ready" : clickhouse.status.status == "Aborted" ? "Failed" : "Installing"}'
+      );
+      expect(status.installation.endpoint).toBe('${clickhouse.status.endpoint}');
       // The operator's REAL CHI status fields are `hosts`/`hostsCompleted` (verified
       // live against the installed CRD's OpenAPI schema — see clickhouse-cluster.ts).
       // The public contract keeps the more explicit names; only the CEL source differs.
-      expect(yaml).toContain('hostsCount: ${clickhouse.status.hosts}');
-      expect(yaml).toContain('hostsCompletedCount: ${clickhouse.status.hostsCompleted}');
+      expect(status.installation.hostsCount).toBe('${clickhouse.status.hosts}');
+      expect(status.installation.hostsCompletedCount).toBe(
+        '${clickhouse.status.hostsCompleted}'
+      );
 
       // The CONNECTION CONTRACT is anchored on the OWNED CHI RESOURCE, so it
       // reaches the KRO CR's status (GitOps/KRO consumers see it live) —
@@ -148,39 +163,39 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       // >= 0.24.0 / #97): the analyzer emits KRO's mixed-template format with
       // string()-wrapped resource-metadata interpolations and inlined port
       // literals.
-      const statusSection = yaml.slice(yaml.indexOf('status:'), yaml.indexOf('resources:'));
-      expect(statusSection).toContain(
-        'host: clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
+      expect(status.clickhouse.host).toBe(
+        'clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local'
       );
-      expect(statusSection).toContain(
-        'nativeUrl: clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
+      expect(status.clickhouse.nativeUrl).toBe(
+        'clickhouse://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:9000'
       );
-      expect(statusSection).toContain(
-        'httpUrl: http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
+      expect(status.clickhouse.httpUrl).toBe(
+        'http://clickhouse-${string(clickhouse.metadata.name)}.${string(clickhouse.metadata.namespace)}.svc.cluster.local:8123'
       );
-      expect(statusSection).toContain(
-        'clusterName: ${clickhouse.spec.configuration.clusters[0].name}'
+      expect(status.clickhouse.clusterName).toBe(
+        '${clickhouse.spec.configuration.clusters[0].name}'
       );
       // Keeper echo comes from the CHI's own zookeeper section.
-      expect(statusSection).toContain(
-        'host: ${clickhouse.spec.configuration.zookeeper.nodes[0].host}'
+      expect(status.keeper.host).toBe(
+        '${clickhouse.spec.configuration.zookeeper.nodes[0].host}'
       );
-      expect(statusSection).toContain(
-        'port: ${clickhouse.spec.configuration.zookeeper.nodes[0].port}'
+      expect(status.keeper.port).toBe(
+        '${clickhouse.spec.configuration.zookeeper.nodes[0].port}'
       );
       // Installation identity from the owned resource too.
-      expect(statusSection).toContain('name: ${clickhouse.metadata.name}');
-      expect(statusSection).toContain('namespace: ${clickhouse.metadata.namespace}');
+      expect(status.installation.name).toBe('${clickhouse.metadata.name}');
+      expect(status.installation.namespace).toBe('${clickhouse.metadata.namespace}');
 
       // KRO status CEL can never reference schema.spec.*.
-      expect(statusSection).not.toContain('schema.spec');
+      expect(JSON.stringify(status)).not.toContain('schema.spec');
 
       // BARE constants (clickhouse.port/database/user) have no resource
       // anchor, so they stay CLIENT-HYDRATED — absent from KRO status. The
       // native port is still KRO-visible inside nativeUrl above.
-      expect(statusSection).not.toContain('database:');
-      expect(statusSection).not.toContain('user:');
-      expect(statusSection).not.toMatch(/^\s+port: 9000$/m);
+      const serializedStatus = JSON.stringify(status);
+      expect(serializedStatus).not.toContain('database');
+      expect(serializedStatus).not.toContain('user');
+      expect(serializedStatus).not.toContain('"port":9000');
     });
 
     it('derives the connection contract from verified operator naming and ports', () => {

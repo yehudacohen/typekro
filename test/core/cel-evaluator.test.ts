@@ -20,6 +20,18 @@ describe('CelEvaluator', () => {
     };
   });
 
+  it('treats dotted URLs in string literals as literal data', async () => {
+    const result = await evaluator.evaluate(
+      {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: "'http://api.example.com'",
+      },
+      context
+    );
+
+    expect(result).toBe('http://api.example.com');
+  });
+
   describe('evaluate', () => {
     it('should evaluate simple arithmetic expressions', async () => {
       const expression = {
@@ -49,6 +61,23 @@ describe('CelEvaluator', () => {
 
       const result = await evaluator.evaluate(expression, context);
       expect(result).toBe(true);
+    });
+
+    it('evaluates has() for optional fields inside collection bindings', async () => {
+      context.variables = {
+        conditions: [
+          { type: 'Ready', status: 'True' },
+          { type: 'Ready', status: 'False', observedGeneration: 1 },
+        ],
+      };
+      const expression = {
+        [CEL_EXPRESSION_BRAND]: true as const,
+        expression:
+          'conditions.exists(c, c.status == "True" && (has(c.observedGeneration) ? c.observedGeneration >= 2 : true))',
+      };
+
+      expect(await evaluator.evaluate(expression, context)).toBe(true);
+      expect(await evaluator.parse(expression)(context)).toBe(true);
     });
 
     it('should evaluate expressions with variables', async () => {

@@ -1,9 +1,20 @@
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 
 import { CRDInstanceError, ensureError } from '../core/errors.js';
+import {
+  blockerForRemainingResource,
+  createDeletionResultState,
+  deletionTarget,
+  finishDeletionResult,
+  readDeletionResourceIdentity,
+} from '../core/deployment/deletion-result.js';
 import { createRollbackManager } from '../core/deployment/rollback-manager.js';
-import { createBunCompatibleCustomObjectsApi, createBunCompatibleKubernetesObjectApi } from '../core/kubernetes/bun-api-client.js';
+import {
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+} from '../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../core/logging/index.js';
+import type { DeletionRetention, ResourceDeletionResult } from '../core/types/deployment.js';
 
 export interface KroDeletionOptions {
   apiVersion: string;
@@ -21,7 +32,9 @@ function getSchemaVersion(apiVersion: string): string {
 
 function getSchemaGroup(options: KroDeletionOptions): string {
   if (options.group) return options.group;
-  return options.apiVersion.includes('/') ? options.apiVersion.split('/')[0] || 'kro.run' : 'kro.run';
+  return options.apiVersion.includes('/')
+    ? options.apiVersion.split('/')[0] || 'kro.run'
+    : 'kro.run';
 }
 
 function getInstanceApiVersion(options: KroDeletionOptions): string {
@@ -31,6 +44,41 @@ function getInstanceApiVersion(options: KroDeletionOptions): string {
 function getKubernetesErrorCode(error: unknown): number | undefined {
   const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number } };
   return k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+async function interruptibleSleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  sleep: (ms: number) => Promise<void>
+): Promise<void> {
+  throwIfAborted(signal);
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    sleep(ms).then(
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
+  throwIfAborted(signal);
 }
 
 function shouldPreserveRgd(
@@ -90,7 +138,9 @@ export interface KroInstanceDeletionApis {
 async function lookupCRDPlural(
   kubeConfig: KubeConfig,
   options: KroDeletionOptions,
-  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectCleanupApi
+  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(
+    kubeConfig
+  ) as KubernetesObjectCleanupApi
 ): Promise<string | undefined> {
   const logger = getComponentLogger('alchemy-kro-delete');
   try {
@@ -125,9 +175,13 @@ async function lookupCRDPlural(
 async function listKroInstances(
   kubeConfig: KubeConfig,
   options: KroDeletionOptions,
-  customApi: CustomObjectListApi = createBunCompatibleCustomObjectsApi(kubeConfig) as CustomObjectListApi
+  customApi: CustomObjectListApi = createBunCompatibleCustomObjectsApi(
+    kubeConfig
+  ) as CustomObjectListApi,
+  abortSignal?: AbortSignal
 ): Promise<Array<{ metadata?: { name?: unknown; namespace?: unknown } }>> {
-  const plural = options.plural ?? await lookupCRDPlural(kubeConfig, options);
+  throwIfAborted(abortSignal);
+  const plural = options.plural ?? (await lookupCRDPlural(kubeConfig, options));
   if (!plural) {
     return [];
   }
@@ -137,6 +191,7 @@ async function listKroInstances(
     version: getSchemaVersion(options.apiVersion),
     plural,
   });
+  throwIfAborted(abortSignal);
   return response.items ?? [];
 }
 
@@ -145,16 +200,21 @@ export const listKroInstancesForTest = listKroInstances;
 
 export async function hasKroInstances(
   kubeConfig: KubeConfig,
-  options: KroDeletionOptions
+  options: KroDeletionOptions,
+  abortSignal?: AbortSignal
 ): Promise<boolean> {
-  return (await listKroInstances(kubeConfig, options)).length > 0;
+  return (await listKroInstances(kubeConfig, options, undefined, abortSignal)).length > 0;
 }
 
 export async function deleteKroDefinition(
   kubeConfig: KubeConfig,
   options: KroDeletionOptions,
-  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectCleanupApi
+  k8sApi: KubernetesObjectCleanupApi = createBunCompatibleKubernetesObjectApi(
+    kubeConfig
+  ) as KubernetesObjectCleanupApi,
+  abortSignal?: AbortSignal
 ): Promise<void> {
+  throwIfAborted(abortSignal);
   const logger = getComponentLogger('alchemy-kro-delete');
   // ONE gating mechanism: the engine's rollback manager deletes then polls to a REAL 404
   // and THROWS on timeout — the SAME primitive the imperative KRO teardown uses. A
@@ -166,7 +226,7 @@ export async function deleteKroDefinition(
   try {
     await rollback.deleteResourceAndWait(
       { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', name: options.rgdName },
-      { timeout }
+      { timeout, ...(abortSignal ? { abortSignal } : {}) }
     );
   } catch (error: unknown) {
     logger.error('Alchemy KRO RGD cleanup failed', ensureError(error), {
@@ -204,23 +264,57 @@ export async function deleteKroDefinition(
 export async function deleteKroInstanceFinalizerSafe(
   kubeConfig: KubeConfig,
   name: string,
-  options: KroDeletionOptions
-): Promise<void> {
-  return deleteKroInstanceFinalizerSafeWithApis(kubeConfig, name, options, {
-    k8sApi: createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectInstanceApi,
-  });
+  options: KroDeletionOptions,
+  abortSignal?: AbortSignal
+): Promise<ResourceDeletionResult> {
+  return deleteKroInstanceFinalizerSafeWithApis(
+    kubeConfig,
+    name,
+    options,
+    {
+      k8sApi: createBunCompatibleKubernetesObjectApi(kubeConfig) as KubernetesObjectInstanceApi,
+    },
+    abortSignal
+  );
 }
 
 async function deleteKroInstanceFinalizerSafeWithApis(
   kubeConfig: KubeConfig,
   name: string,
   options: KroDeletionOptions,
-  apis: KroInstanceDeletionApis
-): Promise<void> {
+  apis: KroInstanceDeletionApis,
+  abortSignal?: AbortSignal
+): Promise<ResourceDeletionResult> {
+  throwIfAborted(abortSignal);
   const logger = getComponentLogger('alchemy-kro-delete');
-  const { customApi, k8sApi, sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) } = apis;
+  const {
+    customApi,
+    k8sApi,
+    sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = apis;
   const apiVersion = getInstanceApiVersion(options);
   const timeout = options.timeout ?? 300000;
+  const deletion = createDeletionResultState('kro', options.rgdName, name);
+  const instanceTarget = deletionTarget(apiVersion, options.kind, name, options.namespace);
+  const rgdTarget = deletionTarget('kro.run/v1alpha1', 'ResourceGraphDefinition', options.rgdName);
+  const retainDefinition = (
+    policy: DeletionRetention['policy'],
+    reason: string,
+    plural?: string
+  ): void => {
+    deletion.retained.push({ resource: rgdTarget, policy, reason });
+    if (plural) {
+      deletion.retained.push({
+        resource: deletionTarget(
+          'apiextensions.k8s.io/v1',
+          'CustomResourceDefinition',
+          `${plural}.${getSchemaGroup(options)}`
+        ),
+        policy: 'generated-crd',
+        reason,
+      });
+    }
+  };
   let instanceDeleted = false;
   let deletionTimedOut = false;
 
@@ -233,13 +327,14 @@ async function deleteKroInstanceFinalizerSafeWithApis(
 
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
+      throwIfAborted(abortSignal);
       try {
         await k8sApi.read({
           apiVersion,
           kind: options.kind,
           metadata: { name, namespace: options.namespace },
         });
-        await sleep(2000);
+        await interruptibleSleep(2000, abortSignal, sleep);
       } catch (pollError: unknown) {
         if (getKubernetesErrorCode(pollError) === 404) {
           instanceDeleted = true;
@@ -249,7 +344,7 @@ async function deleteKroInstanceFinalizerSafeWithApis(
           name,
           errorCode: getKubernetesErrorCode(pollError),
         });
-        await sleep(2000);
+        await interruptibleSleep(2000, abortSignal, sleep);
       }
     }
     if (!instanceDeleted) {
@@ -261,46 +356,184 @@ async function deleteKroInstanceFinalizerSafeWithApis(
       });
     }
   } catch (error: unknown) {
+    throwIfAborted(abortSignal);
     if (getKubernetesErrorCode(error) === 404) {
       instanceDeleted = true;
     } else {
-      throw new CRDInstanceError(
-        `Failed to delete instance ${name}: ${ensureError(error).message}`,
-        apiVersion,
-        options.kind,
-        name,
-        'deletion',
-        ensureError(error)
+      deletion.remaining.push(instanceTarget);
+      deletion.blockers.push({
+        code: 'CLEANUP_ERROR',
+        message: `Failed to delete KRO instance ${options.kind}/${name}: ${ensureError(error).message}`,
+        resource: instanceTarget,
+        retryable: true,
+        retryGuidance:
+          'Resolve the Kubernetes API error and retry; the RGD and generated CRD were retained.',
+      });
+      retainDefinition(
+        'safety-proof-unavailable',
+        'The KRO instance delete request failed, so shared definition teardown is unsafe.',
+        options.plural
       );
+      return finishDeletionResult(deletion, 'blocked', {
+        safe: true,
+        guidance: 'Retry after resolving the reported Kubernetes API error.',
+      });
     }
   }
 
   if (deletionTimedOut) {
-    throw new CRDInstanceError(
-      `KRO instance ${name} deletion did not complete within ${timeout}ms`,
-      apiVersion,
-      options.kind,
-      name,
-      'deletion'
+    let live = instanceTarget;
+    try {
+      live = (await readDeletionResourceIdentity(k8sApi, instanceTarget)) ?? instanceTarget;
+    } catch (error: unknown) {
+      deletion.blockers.push({
+        code: 'CLEANUP_ERROR',
+        message: `KRO instance deletion timed out and its blocker state could not be read: ${ensureError(error).message}`,
+        resource: instanceTarget,
+        retryable: true,
+        retryGuidance: 'Restore Kubernetes API read access, then retry deletion.',
+      });
+    }
+    deletion.remaining.push(live);
+    deletion.blockers.push(
+      blockerForRemainingResource(
+        live,
+        `KRO instance ${name} deletion did not complete within ${timeout}ms.`
+      )
     );
+    retainDefinition(
+      'safety-proof-unavailable',
+      'The KRO instance is still present, so its RGD and generated CRD must remain available.',
+      options.plural
+    );
+    return finishDeletionResult(deletion, live.deletionTimestamp ? 'progressing' : 'blocked', {
+      safe: true,
+      afterMs: 2_000,
+      guidance: 'Retry after KRO and the listed owners clear the remaining finalizers.',
+    });
   }
 
-  let hasRemainingInstances = false;
+  deletion.deleted.push(instanceTarget);
+
+  let resolvedPlural = options.plural;
+  let instances: Array<{ metadata?: { name?: unknown; namespace?: unknown } }>;
   try {
-    const instances = await listKroInstances(kubeConfig, options, customApi);
-    hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted, options.namespace);
+    if (!resolvedPlural) {
+      resolvedPlural = await lookupCRDPlural(kubeConfig, options, k8sApi);
+    }
+    instances = resolvedPlural
+      ? await listKroInstances(
+          kubeConfig,
+          { ...options, plural: resolvedPlural },
+          customApi,
+          abortSignal
+        )
+      : [];
   } catch (error: unknown) {
     logger.warn('Cannot list Alchemy KRO instances to check for shared RGD; preserving RGD', {
       rgdName: options.rgdName,
       error: ensureError(error).message,
     });
-    hasRemainingInstances = true;
+    const reason = `Cannot list KRO instances to prove whether ${options.rgdName} is unused: ${ensureError(error).message}`;
+    retainDefinition('safety-proof-unavailable', reason, resolvedPlural ?? options.plural);
+    deletion.blockers.push({
+      code: 'DISCOVERY_FAILED',
+      message: reason,
+      resource: rgdTarget,
+      retryable: true,
+      retryGuidance:
+        'Restore cluster-wide list access for the generated custom resource, then retry deletion.',
+    });
+    return finishDeletionResult(deletion, 'blocked', {
+      safe: true,
+      guidance:
+        'Retry after instance discovery is available; Alchemy will preserve shared KRO definitions meanwhile.',
+    });
   }
 
-  if (!hasRemainingInstances) {
-    await deleteKroDefinition(kubeConfig, options, k8sApi);
+  const hasRemainingInstances = shouldPreserveRgd(
+    instances,
+    name,
+    instanceDeleted,
+    options.namespace
+  );
+  if (hasRemainingInstances) {
+    retainDefinition(
+      'shared-instance',
+      'Other KRO instances still depend on this ResourceGraphDefinition.',
+      resolvedPlural
+    );
+    return finishDeletionResult(deletion, 'complete', {
+      safe: true,
+      guidance:
+        'The requested instance is gone. Shared KRO definitions were retained intentionally.',
+    });
   }
 
+  try {
+    await deleteKroDefinition(
+      kubeConfig,
+      { ...options, ...(resolvedPlural ? { plural: resolvedPlural } : {}) },
+      k8sApi,
+      abortSignal
+    );
+    deletion.deleted.push(rgdTarget);
+    if (resolvedPlural) {
+      deletion.retained.push({
+        resource: deletionTarget(
+          'apiextensions.k8s.io/v1',
+          'CustomResourceDefinition',
+          `${resolvedPlural}.${getSchemaGroup(options)}`
+        ),
+        policy: 'generated-crd',
+        reason:
+          'Generated CRDs remain Active after the last Alchemy-hosted instance and RGD are removed; administrative GC may remove them after proving they are unused.',
+      });
+    }
+  } catch (error: unknown) {
+    throwIfAborted(abortSignal);
+    let live = rgdTarget;
+    try {
+      live = (await readDeletionResourceIdentity(k8sApi, rgdTarget)) ?? rgdTarget;
+    } catch (readError: unknown) {
+      deletion.blockers.push({
+        code: 'CLEANUP_ERROR',
+        message: `RGD deletion failed and its blocker state could not be read: ${ensureError(readError).message}`,
+        resource: rgdTarget,
+        retryable: true,
+        retryGuidance: 'Restore Kubernetes API read access, then retry deletion.',
+      });
+    }
+    deletion.remaining.push(live);
+    deletion.blockers.push(
+      blockerForRemainingResource(
+        live,
+        `ResourceGraphDefinition ${options.rgdName} did not complete deletion: ${ensureError(error).message}`
+      )
+    );
+    if (resolvedPlural) {
+      deletion.retained.push({
+        resource: deletionTarget(
+          'apiextensions.k8s.io/v1',
+          'CustomResourceDefinition',
+          `${resolvedPlural}.${getSchemaGroup(options)}`
+        ),
+        policy: 'generated-crd',
+        reason: 'The generated CRD remains Active while RGD cleanup is incomplete.',
+      });
+    }
+    return finishDeletionResult(deletion, live.deletionTimestamp ? 'progressing' : 'blocked', {
+      safe: true,
+      afterMs: 2_000,
+      guidance: 'Retry after KRO clears the listed RGD finalizers or API error.',
+    });
+  }
+
+  return finishDeletionResult(deletion, 'complete', {
+    safe: true,
+    guidance:
+      'The KRO instance and RGD are gone. The generated CRD was retained Active under policy.',
+  });
 }
 
 /** Internal test hook for finalizer-safe KRO instance deletion decisions. */

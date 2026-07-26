@@ -285,6 +285,7 @@ const postgresqlSchemaShape = {
   'database?': 'string',
   'password?': 'string',
   'passwordSecretName?': 'string',
+  'storageClass?': 'string',
   'servicePort?': 'number.integer',
   'params?': 'Record<string, string>',
   'scheme?': 'string',
@@ -704,6 +705,8 @@ export interface DagsterPostgresqlConfig {
   password?: string;
   /** Existing Secret name for the PostgreSQL password. */
   passwordSecretName?: string;
+  /** StorageClass for the bundled PostgreSQL persistent volume. */
+  storageClass?: string;
   /** PostgreSQL service port. */
   servicePort?: number;
   /** Additional PostgreSQL connection parameters. */

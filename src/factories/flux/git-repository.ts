@@ -1,5 +1,73 @@
+import {
+  identifyPortableReadinessEvaluator,
+  registerPortableReadinessStrategy,
+} from '../../core/readiness/portable-strategies.js';
+import { readinessConfiguration } from '../../core/readiness/strategy-configuration.js';
 import type { KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
+
+const GIT_REPOSITORY_READINESS_STRATEGY = 'typekro.readiness.flux.git-repository';
+const GIT_REPOSITORY_READINESS_REVISION = '1';
+
+const gitRepositoryReadinessEvaluator = identifyPortableReadinessEvaluator(
+  (liveResource: unknown): ResourceStatus => {
+    const status = (
+      liveResource as
+        | {
+            status?: {
+              conditions?: KubernetesCondition[];
+              artifact?: { revision?: string };
+            };
+          }
+        | null
+        | undefined
+    )?.status;
+    if (!status) {
+      return {
+        ready: false,
+        reason: 'NoStatus',
+        message: 'GitRepository status not available yet',
+      };
+    }
+
+    const readyCondition = status.conditions?.find(
+      (condition: KubernetesCondition) => condition.type === 'Ready'
+    );
+    if (readyCondition?.status === 'True') {
+      return {
+        ready: true,
+        message:
+          readyCondition.message ||
+          `GitRepository is ready (artifact: ${status.artifact?.revision ?? 'unknown'})`,
+      };
+    }
+    if (readyCondition) {
+      return {
+        ready: false,
+        reason: readyCondition.reason || 'NotReady',
+        message: readyCondition.message || 'GitRepository is not ready',
+      };
+    }
+
+    return {
+      ready: false,
+      reason: 'Reconciling',
+      message: 'GitRepository is reconciling',
+    };
+  },
+  {
+    kind: 'registered',
+    id: GIT_REPOSITORY_READINESS_STRATEGY,
+    revision: GIT_REPOSITORY_READINESS_REVISION,
+    configuration: readinessConfiguration({}),
+  }
+);
+
+registerPortableReadinessStrategy(
+  GIT_REPOSITORY_READINESS_STRATEGY,
+  GIT_REPOSITORY_READINESS_REVISION,
+  () => gitRepositoryReadinessEvaluator
+);
 
 export interface GitRepositorySpec {
   url: string;
@@ -82,46 +150,5 @@ export function gitRepository(config: GitRepositoryConfig) {
       interval: config.interval,
       secretRef: config.secretRef,
     },
-  }).withReadinessEvaluator((liveResource: unknown): ResourceStatus => {
-    const status = (liveResource as {
-      status?: {
-        conditions?: KubernetesCondition[];
-        artifact?: { revision?: string };
-      };
-    } | null | undefined)?.status;
-    if (!status) {
-      return {
-        ready: false,
-        reason: 'NoStatus',
-        message: 'GitRepository status not available yet',
-      };
-    }
-
-    // Check status.conditions for Ready=True
-    if (status.conditions && Array.isArray(status.conditions)) {
-      const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
-      if (readyCondition?.status === 'True') {
-        return {
-          ready: true,
-          message:
-            readyCondition.message ||
-            `GitRepository is ready (artifact: ${status.artifact?.revision ?? 'unknown'})`,
-        };
-      }
-      if (readyCondition) {
-        return {
-          ready: false,
-          reason: readyCondition.reason || 'NotReady',
-          message: readyCondition.message || 'GitRepository is not ready',
-        };
-      }
-    }
-
-    // No Ready condition yet — still reconciling
-    return {
-      ready: false,
-      reason: 'Reconciling',
-      message: 'GitRepository is reconciling',
-    };
-  });
+  }).withReadinessEvaluator(gitRepositoryReadinessEvaluator);
 }

@@ -1,6 +1,7 @@
 /** Typed `CephObjectStoreUser` factory for explicit RGW users. */
 
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 import type { CephObjectStoreUserConfig, CephObjectStoreUserStatus } from '../types.js';
 
@@ -21,6 +22,12 @@ export function cephObjectStoreUserReadinessEvaluator(liveResource: unknown): Re
     ? { ready: true, reason: 'Ready', message: 'CephObjectStoreUser is ready' }
     : { ready: false, reason: phase, message: `CephObjectStoreUser phase is ${phase}` };
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.rook.ceph-object-store-user',
+  '1',
+  cephObjectStoreUserReadinessEvaluator
+);
 
 /**
  * Create a Rook `ceph.rook.io/v1` CephObjectStoreUser.

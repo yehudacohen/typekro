@@ -5,7 +5,9 @@
  * Kubernetes deployments using both kro and direct factory patterns.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
@@ -14,17 +16,17 @@ import {
   ciliumNetworkPolicy,
 } from '../../../src/factories/cilium/resources/networking.js';
 import {
-  createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
-const NAMESPACE = 'typekro-test-networking';
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-networking-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 // Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
@@ -48,16 +50,9 @@ const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe
 
 describeOrSkip('Cilium Networking Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
-  let _k8sApi: k8s.KubernetesObjectApi;
-  let coreApi: k8s.CoreV1Api;
   let testNamespace: string;
-  // Hoisted so afterAll can delete instances before the RGDs — Kro requires
-  // instances to be fully gone before the RGD is deleted, otherwise the
-  // kro.run/finalizer on the instance can never be processed.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let kroNetworkPolicyFactory: any = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let kroDenyAllFactory: any = null;
+  let namespaceLease: TestNamespaceLease;
+  const deployedInstances: Array<{ factory: any; instanceName: string }> = [];
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -65,125 +60,30 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
     console.log('🚀 SETUP: Connecting to existing cluster for Cilium networking tests...');
 
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
-
-    // Create test namespace, waiting for any prior terminating namespace to clear
-    const maxWait = 60000; // 1 minute max wait for terminating namespace
-    const startWait = Date.now();
-    while (Date.now() - startWait < maxWait) {
-      try {
-        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-        console.log(`📦 Created test namespace: ${testNamespace}`);
-        break;
-      } catch (error: any) {
-        const msg = error.body?.message || error.message || '';
-        if (msg.includes('being deleted')) {
-          // Namespace exists but is terminating — wait and retry
-          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          continue;
-        }
-        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-          console.log(`📦 Test namespace ${testNamespace} already exists`);
-          break;
-        }
-        throw error;
-      }
-    }
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     console.log('✅ Cilium networking integration test environment ready!');
   }); // 2 minute timeout for Cilium installation
 
   afterAll(async () => {
-    if (!clusterAvailable || !coreApi) return;
+    if (!clusterAvailable || !kubeConfig) return;
 
-    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    const customApi = createCustomObjectsApiClient(kubeConfig);
-
-    // Step 1: Delete Kro instances FIRST and wait for the kro.run/finalizer to be cleared.
-    // If we delete the RGD before the instance, Kro loses the ability to process the
-    // finalizer and the namespace gets stuck in Terminating.
-    const kroInstancesToDelete = [
-      {
-        factory: kroNetworkPolicyFactory,
-        instanceName: 'test-network-policy-kro',
-        plural: 'networkpolicykrotests',
-      },
-      { factory: kroDenyAllFactory, instanceName: 'test-deny-all-policy', plural: 'denyalltests' },
-    ];
-
-    for (const { factory, instanceName, plural } of kroInstancesToDelete) {
-      if (!factory) continue;
-      try {
-        await factory.deleteInstance(instanceName);
-        console.log(`🗑️ Deleted Kro instance: ${instanceName}`);
-        // Wait for the instance to fully disappear (finalizer cleared)
-        const deadline = Date.now() + 60000;
-        while (Date.now() < deadline) {
-          try {
-            await customApi.getNamespacedCustomObject({
-              group: 'kro.run',
-              version: 'v1alpha1',
-              namespace: testNamespace,
-              plural,
-              name: instanceName,
-            });
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          } catch (e: any) {
-            if (e.statusCode === 404 || e.body?.reason === 'NotFound') break;
-          }
-        }
-        console.log(`✅ Kro instance fully removed: ${instanceName}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.reason !== 'NotFound') {
-          console.warn(`⚠️ Failed to delete Kro instance ${instanceName}:`, error);
-        }
-      }
+    const cleanupErrors: unknown[] = [];
+    for (const { factory, instanceName } of deployedInstances.reverse()) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        instanceName,
+        [],
+        kubeConfig,
+        60_000
+      ).catch((error) => cleanupErrors.push(error));
     }
-
-    // Step 2: Delete RGDs now that no instances remain
-    const rgdNames = ['network-policy-kro-test', 'deny-all-test'];
-    for (const name of rgdNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'kro.run/v1alpha1',
-          kind: 'ResourceGraphDefinition',
-          metadata: { name },
-        });
-        console.log(`🗑️ Deleted RGD: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete RGD ${name}: ${error.message}`);
-        }
-      }
-    }
-
-    // Step 3: Clean up any orphaned cluster-scoped CiliumClusterwideNetworkPolicies
-    const clusterPolicyNames = ['test-cluster-policy', 'test-deny-all-policy', 'test-deny-all'];
-    for (const name of clusterPolicyNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'cilium.io/v2',
-          kind: 'CiliumClusterwideNetworkPolicy',
-          metadata: { name },
-        });
-        console.log(`🗑️ Deleted CiliumClusterwideNetworkPolicy: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(
-            `⚠️ Could not delete CiliumClusterwideNetworkPolicy ${name}: ${error.message}`
-          );
-        }
-      }
-    }
-
-    // 4. Clean up test namespace and wait for completion (deletes all namespaced resources)
-    try {
-      await deleteNamespaceAndWait(testNamespace, kubeConfig);
-    } catch (error: any) {
-      console.log(`⚠️ Could not delete test namespace: ${error.message}`);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig).catch((error) =>
+      cleanupErrors.push(error)
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Cilium networking integration cleanup failed');
     }
   });
 
@@ -253,6 +153,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: directFactory, instanceName: 'test-network-policy' });
 
       const deploymentResult = await directFactory.deploy({
         name: 'test-network-policy',
@@ -326,10 +227,14 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         }
       );
 
-      kroNetworkPolicyFactory = networkPolicyComposition.factory('kro', {
+      const kroNetworkPolicyFactory = networkPolicyComposition.factory('kro', {
         namespace: testNamespace,
         waitForReady: true,
         kubeConfig: kubeConfig,
+      });
+      deployedInstances.push({
+        factory: kroNetworkPolicyFactory,
+        instanceName: 'test-network-policy-kro',
       });
 
       const deploymentResult = await kroNetworkPolicyFactory.deploy({
@@ -420,6 +325,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: directFactory, instanceName: 'test-l7-policy' });
 
       const deploymentResult = await directFactory.deploy({
         name: 'test-l7-policy',
@@ -494,6 +400,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: directFactory, instanceName: 'test-cluster-policy' });
 
       const deploymentResult = await directFactory.deploy({
         name: 'test-cluster-policy',
@@ -552,11 +459,12 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         }
       );
 
-      kroDenyAllFactory = denyAllComposition.factory('kro', {
+      const kroDenyAllFactory = denyAllComposition.factory('kro', {
         namespace: testNamespace,
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: kroDenyAllFactory, instanceName: 'test-deny-all-policy' });
 
       const deploymentResult = await kroDenyAllFactory.deploy({
         name: 'test-deny-all-policy',

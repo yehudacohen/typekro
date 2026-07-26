@@ -1,6 +1,4 @@
 import * as yaml from 'js-yaml';
-import { ResourceGraphFactoryError } from '../../../core/errors.js';
-import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
@@ -11,7 +9,11 @@ import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
-import { handleConflict } from './conflict-handler.js';
+import {
+  applyYamlArtifact,
+  type YamlDeploymentStrategy,
+  yamlAppliedResource,
+} from './yaml-artifact-applier.js';
 
 /**
  * Parse YAML content into Kubernetes manifests
@@ -42,7 +44,7 @@ export interface YamlDirectoryConfig {
   exclude?: string[]; // Glob patterns
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
   /** @default 'replace' */
-  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail';
+  deploymentStrategy?: Exclude<YamlDeploymentStrategy, 'serverSideApply'>;
 }
 
 /**
@@ -110,42 +112,13 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
           }
 
           if (deploymentContext.validationOnly) {
-            allResults.push({
-              kind: manifest.kind || 'Unknown',
-              name: manifest.metadata?.name || 'unknown',
-              namespace: manifest.metadata?.namespace || undefined,
-              apiVersion: manifest.apiVersion || 'v1',
-            });
+            allResults.push(yamlAppliedResource(manifest));
             continue;
           }
 
-          try {
-            if (deploymentContext.kubernetesApi) {
-              await deploymentContext.kubernetesApi.create(manifest);
-            } else {
-              throw new ResourceGraphFactoryError(
-                'No Kubernetes API available for YAML deployment',
-                config.name,
-                'deployment'
-              );
-            }
-
-            allResults.push({
-              kind: manifest.kind || 'Unknown',
-              name: manifest.metadata?.name || 'unknown',
-              namespace: manifest.metadata?.namespace || undefined,
-              apiVersion: manifest.apiVersion || 'v1',
-            });
-          } catch (error: unknown) {
-            // Handle conflicts based on deployment strategy
-            if (getErrorStatusCode(error) === 409) {
-              const result = await handleConflict(error, manifest, strategy, deploymentContext);
-              allResults.push(result);
-            } else {
-              // Non-conflict errors should always be thrown
-              throw error;
-            }
-          }
+          allResults.push(
+            await applyYamlArtifact(manifest, strategy, deploymentContext, config.name)
+          );
         }
       }
 

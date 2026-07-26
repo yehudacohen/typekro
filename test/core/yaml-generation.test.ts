@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as yaml from 'js-yaml';
 import { simple, toResourceGraph } from '../../src/index';
+import { secret } from '../../src/factories/kubernetes/config/secret.js';
 
 /** Loose type for parsed Kro YAML for test assertions */
 interface ParsedKroYaml {
@@ -37,17 +38,6 @@ describe('YAML Generation Integration Test', () => {
         DATABASE_URL: 'postgresql://postgres:5432/webapp',
         REDIS_URL: 'redis://redis:6379',
         FEATURE_FLAGS: 'auth,metrics,logging,caching',
-      },
-    });
-
-    const appSecrets = simple.Secret({
-      name: 'webapp-secrets',
-      namespace: 'production',
-      stringData: {
-        API_KEY: 'super-secret-api-key-12345',
-        JWT_SECRET: 'jwt-signing-secret-67890',
-        DATABASE_PASSWORD: 'secure-db-password-abcdef',
-        REDIS_PASSWORD: 'redis-password-ghijkl',
       },
     });
 
@@ -150,27 +140,46 @@ describe('YAML Generation Integration Test', () => {
     // Generate the Kro YAML
     console.log('🔄 Generating Kro ResourceGraphDefinition...');
     const { type } = await import('arktype');
-    const TestSchema = type({ name: 'string' });
+    const TestSchema = type({
+      name: 'string',
+      apiKey: 'string',
+      jwtSecret: 'string',
+      databasePassword: 'string',
+      redisPassword: 'string',
+    });
+    const StatusSchema = type({ name: 'string' });
     const resourceGraph = toResourceGraph(
       {
         name: 'production-webapp-stack',
         apiVersion: 'test.com/v1',
         kind: 'TestResource',
         spec: TestSchema,
-        status: TestSchema,
+        status: StatusSchema,
       },
-      () => ({
-        appConfig,
-        appSecrets,
-        dbStorage,
-        database,
-        redis,
-        webapp,
-        dbService,
-        redisService,
-        webService,
-        webHpa,
-      }),
+      (schema) => {
+        const appSecrets = secret({
+          metadata: { name: 'webapp-secrets', namespace: 'production' },
+          stringData: {
+            API_KEY: schema.spec.apiKey,
+            JWT_SECRET: schema.spec.jwtSecret,
+            DATABASE_PASSWORD: schema.spec.databasePassword,
+            REDIS_PASSWORD: schema.spec.redisPassword,
+          },
+          id: 'webappSecrets',
+        });
+        return {
+          appConfig,
+          appSecrets,
+          dbStorage,
+          database,
+          redis,
+          webapp,
+          dbService,
+          redisService,
+          webService,
+          webHpa,
+        };
+      },
       () => ({ name: 'test-status' })
     );
 
@@ -269,14 +278,6 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const secrets = simple.Secret({
-      name: 'app-secrets',
-      stringData: {
-        DB_PASSWORD: 'secret123',
-        CACHE_PASSWORD: 'cache456',
-      },
-    });
-
     const db = simple.Deployment({
       name: 'database',
       image: 'postgres:13',
@@ -306,22 +307,27 @@ describe('YAML Generation Integration Test', () => {
     });
 
     const { type } = await import('arktype');
-    const TestSchema = type({ name: 'string' });
+    const TestSchema = type({ name: 'string', dbPassword: 'string', cachePassword: 'string' });
+    const StatusSchema = type({ name: 'string' });
     const resourceGraph = toResourceGraph(
       {
         name: 'complex-app',
         apiVersion: 'test.com/v1',
         kind: 'TestResource',
         spec: TestSchema,
-        status: TestSchema,
+        status: StatusSchema,
       },
-      () => ({
-        config,
-        secrets,
-        db,
-        cache,
-        app,
-      }),
+      (schema) => {
+        const secrets = secret({
+          metadata: { name: 'app-secrets' },
+          stringData: {
+            DB_PASSWORD: schema.spec.dbPassword,
+            CACHE_PASSWORD: schema.spec.cachePassword,
+          },
+          id: 'appSecrets',
+        });
+        return { config, secrets, db, cache, app };
+      },
       () => ({ name: 'test-status' })
     );
 

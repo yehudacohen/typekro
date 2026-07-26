@@ -14,17 +14,17 @@ import {
   ciliumNetworkPolicy,
 } from '../../../src/factories/cilium/resources/networking.js';
 import {
-  createCoreV1ApiClient,
-  createCustomObjectsApiClient,
-  createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
-const NAMESPACE = 'typekro-test-cross-resource';
-const clusterAvailable = isClusterAvailable();
+const NAMESPACE = `typekro-test-cross-resource-${crypto.randomUUID().slice(0, 8)}`;
+const clusterAvailable = await isClusterAvailable();
 
 // Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
@@ -51,18 +51,12 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   // (instance finalizer wait + RGD/namespace deletion), exceed the default 5s
   // timeout. bun:test's hook types take no per-hook timeout arg, so set it for the
   // whole file here; the deploy `it` overrides with its own longer timeout.
-  setDefaultTimeout(180000);
+  setDefaultTimeout(900000);
 
   let kubeConfig: k8s.KubeConfig;
-  let _k8sApi: k8s.KubernetesObjectApi;
-  let coreApi: k8s.CoreV1Api;
   let testNamespace: string;
-  // Hoisted so afterAll can delete the instance before the RGD — Kro requires
-  // instances to be fully gone before the RGD is deleted, otherwise the
-  // kro.run/finalizer on the instance can never be processed and the namespace
-  // gets stuck in Terminating forever.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let kroMultiPolicyFactory: any = null;
+  let namespaceLease: TestNamespaceLease;
+  const deployedInstances: Array<{ factory: any; instanceName: string }> = [];
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -72,118 +66,30 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     );
 
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
-
-    // Create test namespace, waiting for any prior terminating namespace to clear
-    const maxWait = 60000;
-    const startWait = Date.now();
-    while (Date.now() - startWait < maxWait) {
-      try {
-        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-        console.log(`📦 Created test namespace: ${testNamespace}`);
-        break;
-      } catch (error: any) {
-        const msg = error.body?.message || error.message || '';
-        if (msg.includes('being deleted')) {
-          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          continue;
-        }
-        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-          console.log(`📦 Test namespace ${testNamespace} already exists`);
-          break;
-        }
-        throw error;
-      }
-    }
+    namespaceLease = await createTestNamespace(testNamespace, kubeConfig);
 
     console.log('✅ Cilium cross-resource integration test environment ready!');
   });
 
   afterAll(async () => {
-    if (!clusterAvailable || !coreApi) return;
+    if (!clusterAvailable || !kubeConfig) return;
 
-    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
-    const customApi = createCustomObjectsApiClient(kubeConfig);
-
-    // Step 1: Delete the Kro instance FIRST and wait for the kro.run/finalizer to be cleared.
-    // If we delete the RGD before the instance, Kro loses the ability to process the
-    // finalizer and the namespace gets stuck in Terminating.
-    if (kroMultiPolicyFactory) {
-      try {
-        await kroMultiPolicyFactory.deleteInstance('test-multi-policy');
-        console.log('🗑️ Deleted Kro instance: test-multi-policy');
-        // Wait for the instance to fully disappear (finalizer cleared)
-        const deadline = Date.now() + 60000;
-        while (Date.now() < deadline) {
-          try {
-            await customApi.getNamespacedCustomObject({
-              group: 'kro.run',
-              version: 'v1alpha1',
-              namespace: testNamespace,
-              plural: 'multipolicyapps',
-              name: 'test-multi-policy',
-            });
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          } catch (e: any) {
-            if (e.statusCode === 404 || e.body?.reason === 'NotFound') break;
-          }
-        }
-        console.log('✅ Kro instance fully removed: test-multi-policy');
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.reason !== 'NotFound') {
-          console.warn('⚠️ Failed to delete Kro instance test-multi-policy:', error);
-        }
-      }
+    const cleanupErrors: unknown[] = [];
+    for (const { factory, instanceName } of deployedInstances.reverse()) {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(
+        factory,
+        instanceName,
+        [],
+        kubeConfig,
+        60_000
+      ).catch((error) => cleanupErrors.push(error));
     }
-
-    // Step 2: Delete RGDs now that no instances remain
-    const rgdNames = ['multi-policy-app'];
-    for (const name of rgdNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'kro.run/v1alpha1',
-          kind: 'ResourceGraphDefinition',
-          metadata: { name },
-        });
-        console.log(`🗑️ Deleted RGD: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(`⚠️ Could not delete RGD ${name}: ${error.message}`);
-        }
-      }
-    }
-
-    // Step 3: Clean up any orphaned cluster-scoped CiliumClusterwideNetworkPolicies
-    const clusterPolicyNames = [
-      'test-cluster-policy',
-      'complex-app-cluster-security',
-      'test-multi-policy-cluster-policy',
-    ];
-    for (const name of clusterPolicyNames) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'cilium.io/v2',
-          kind: 'CiliumClusterwideNetworkPolicy',
-          metadata: { name },
-        });
-        console.log(`🗑️ Deleted CiliumClusterwideNetworkPolicy: ${name}`);
-      } catch (error: any) {
-        if (error.statusCode !== 404 && error.body?.code !== 404) {
-          console.log(
-            `⚠️ Could not delete CiliumClusterwideNetworkPolicy ${name}: ${error.message}`
-          );
-        }
-      }
-    }
-
-    // 4. Clean up test namespace and wait for completion (deletes all namespaced resources)
-    try {
-      await deleteNamespaceAndWait(testNamespace, kubeConfig);
-    } catch (error: any) {
-      console.log(`⚠️ Could not delete test namespace: ${error.message}`);
+    await deleteTestNamespaceAndWait(namespaceLease, kubeConfig).catch((error) =>
+      cleanupErrors.push(error)
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Cilium cross-resource cleanup failed');
     }
   });
 
@@ -258,6 +164,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: directFactory, instanceName: 'test-cross-ref-app' });
 
       const deploymentResult = await directFactory.deploy({
         appName: 'test-cross-ref-app',
@@ -373,12 +280,13 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
         }
       );
 
-      kroMultiPolicyFactory = multiPolicyComposition.factory('kro', {
+      const kroMultiPolicyFactory = multiPolicyComposition.factory('kro', {
         namespace: testNamespace,
         waitForReady: true,
         kubeConfig: kubeConfig,
         hydrateStatus: true,
       });
+      deployedInstances.push({ factory: kroMultiPolicyFactory, instanceName: 'test-multi-policy' });
 
       const deploymentResult = await kroMultiPolicyFactory.deploy({
         name: 'test-multi-policy',
@@ -575,6 +483,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
         waitForReady: true,
         kubeConfig: kubeConfig,
       });
+      deployedInstances.push({ factory: directFactory, instanceName: 'complex-app' });
 
       const deploymentResult = await directFactory.deploy({
         appName: 'complex-app',

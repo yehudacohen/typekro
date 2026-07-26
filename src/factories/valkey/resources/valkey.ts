@@ -5,7 +5,10 @@
  * managed by the Hyperspike operator.
  */
 
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
+import {
+  createConditionBasedReadinessEvaluator,
+  registerPortableReadinessEvaluator,
+} from '../../../core/readiness/index.js';
 import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ValkeyConfig, ValkeyStatus } from '../types.js';
@@ -61,6 +64,12 @@ function valkeyReadinessEvaluator(liveResource: unknown): ResourceStatus {
   // Fall back to condition-based evaluation
   return baseValkeyEvaluator(liveResource);
 }
+
+registerPortableReadinessEvaluator(
+  'typekro.readiness.valkey.valkey',
+  '1',
+  valkeyReadinessEvaluator
+);
 
 /**
  * Hyperspike Valkey Cluster Factory

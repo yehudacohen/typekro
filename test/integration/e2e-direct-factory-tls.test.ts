@@ -4,22 +4,23 @@ import { type } from 'arktype';
 import { simple, toResourceGraph } from '../../src/index.js';
 import {
   createCoreV1ApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from './shared-kubeconfig';
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
-  const timestamp = Date.now().toString().slice(-6); // Last 6 digits
   const sanitized = testName
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '-')
     .slice(0, 20);
-  return `typekro-${sanitized}-${timestamp}`;
+  return `typekro-${sanitized}-${crypto.randomUUID().slice(0, 8)}`;
 };
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
@@ -34,20 +35,8 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
     const NAMESPACE = generateTestNamespace('tls-direct-deploy');
     console.log('🧪 Testing DirectResourceFactory with TLS skip configuration...');
 
-    // Create test namespace
+    const namespaceLease = await createTestNamespace(NAMESPACE, kc);
     const k8sApi = createCoreV1ApiClient(kc);
-    try {
-      await k8sApi.createNamespace({ body: { metadata: { name: NAMESPACE } } });
-      console.log(`📦 Created test namespace: ${NAMESPACE}`);
-    } catch (error: any) {
-      // Only ignore if namespace already exists (409 conflict)
-      if (error?.response?.statusCode === 409) {
-        console.log(`📦 Namespace ${NAMESPACE} already exists, continuing...`);
-      } else {
-        console.error(`❌ Failed to create namespace ${NAMESPACE}:`, error);
-        throw error;
-      }
-    }
 
     // Create a simple resource graph
     const resourceGraph = toResourceGraph(
@@ -80,39 +69,45 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
       kubeConfig: kc, // Pass the TLS-skip configured kubeConfig
     });
 
-    // Deploy the resources
-    const instance = await factory.deploy({ name: 'tls-test-instance' });
-
-    // Verify the instance was created
-    expect(instance).toBeDefined();
-    expect(instance.spec.name).toBe('tls-test-instance');
-
-    console.log('✅ DirectResourceFactory deployed successfully without TLS errors');
-
-    // Verify the ConfigMap was actually created in the cluster
-    const configMap = await k8sApi.readNamespacedConfigMap({ name: 'tls-test-config', namespace: NAMESPACE });
-
-    expect(configMap.data?.TEST_VALUE).toBe('direct-factory-works');
-    expect(configMap.data?.TIMESTAMP).toBeDefined();
-
-    console.log('✅ ConfigMap was created successfully in the cluster');
-
-    // Clean up (best effort)
+    let testError: unknown;
     try {
-      await factory.deleteInstance('tls-test-instance');
-      console.log('✅ Resources cleaned up successfully');
+      // Deploy the resources
+      const instance = await factory.deploy({ name: 'tls-test-instance' });
+
+      // Verify the instance was created
+      expect(instance).toBeDefined();
+      expect(instance.spec.name).toBe('tls-test-instance');
+
+      console.log('✅ DirectResourceFactory deployed successfully without TLS errors');
+
+      // Verify the ConfigMap was actually created in the cluster
+      const configMap = await k8sApi.readNamespacedConfigMap({
+        name: 'tls-test-config',
+        namespace: NAMESPACE,
+      });
+
+      expect(configMap.data?.TEST_VALUE).toBe('direct-factory-works');
+      expect(configMap.data?.TIMESTAMP).toBeDefined();
+
+      console.log('✅ ConfigMap was created successfully in the cluster');
     } catch (error) {
-      console.warn('⚠️ Cleanup failed (this is expected for this test):', error);
-      // Clean up manually
-      try {
-        await k8sApi.deleteNamespacedConfigMap({ name: 'tls-test-config', namespace: NAMESPACE });
-        console.log('✅ Manual cleanup successful');
-      } catch (manualError) {
-        console.warn('⚠️ Manual cleanup also failed:', manualError);
-      }
+      testError = error;
     }
 
-    // Clean up namespace and wait for full deletion
-    await deleteNamespaceAndWait(NAMESPACE, kc);
-  }, 60000);
+    const cleanupErrors: unknown[] = [];
+    try {
+      await deleteTestFactoryInstanceAndRecoverNamespaces(factory, 'tls-test-instance', [], kc);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await deleteTestNamespaceAndWait(namespaceLease, kc);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    const failures = [...(testError !== undefined ? [testError] : []), ...cleanupErrors];
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Direct TLS integration did not complete safely');
+    }
+  }, 900000);
 });

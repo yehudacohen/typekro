@@ -37,7 +37,10 @@
  * `sela-eks` context is LIVE PROD.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+
+setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 
@@ -46,14 +49,21 @@ import { Cel } from '../../src/core/references/cel.js';
 import { configMap } from '../../src/factories/kubernetes/config/index.js';
 import { namespace as namespaceResource } from '../../src/factories/kubernetes/core/namespace.js';
 import {
+  captureTestNamespaceLease,
   createCoreV1ApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceAndWait,
+  createTestNamespace,
+  deleteGeneratedCrdAndWait,
+  deleteTestFactoryInstanceAndRecoverNamespaces,
+  deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  isNotFoundError,
+  type TestNamespaceLease,
 } from './shared-kubeconfig';
 
-const clusterAvailable = isClusterAvailable();
+const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 const APPLYSET_PART_OF_LABEL = 'applyset.kubernetes.io/part-of';
@@ -149,6 +159,7 @@ describeOrSkip('KRO namespace sibling CREATE-ORDER (v2: namespaces never in the 
   let kc: k8s.KubeConfig;
   let coreApi: k8s.CoreV1Api;
   let objectApi: k8s.KubernetesObjectApi;
+  let workloadNamespaceLease: TestNamespaceLease | undefined;
 
   beforeAll(() => {
     if (!clusterAvailable) return;
@@ -159,16 +170,17 @@ describeOrSkip('KRO namespace sibling CREATE-ORDER (v2: namespaces never in the 
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    try {
-      const factory = ownsNamespace.factory('kro', {
-        namespace: workloadNamespace,
-        kubeConfig: kc,
-      });
-      await factory.deleteInstance(instanceName).catch(() => {});
-    } catch {
-      /* best effort */
-    }
-    await deleteNamespaceAndWait(workloadNamespace, kc).catch(() => {});
+    const factory = ownsNamespace.factory('kro', {
+      namespace: workloadNamespace,
+      kubeConfig: kc,
+    });
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      factory,
+      instanceName,
+      workloadNamespaceLease ? [workloadNamespaceLease] : [],
+      kc,
+      60_000
+    );
   });
 
   it('creates the workload namespace as a typekro sibling (never a KRO ApplySet member) with the child inside it', async () => {
@@ -178,6 +190,10 @@ describeOrSkip('KRO namespace sibling CREATE-ORDER (v2: namespaces never in the 
       timeout: 180_000,
     });
     await factory.deploy({ name: instanceName, namespace: workloadNamespace });
+    workloadNamespaceLease = await captureTestNamespaceLease(workloadNamespace, kc);
+    if (!workloadNamespaceLease) {
+      throw new Error(`Expected TypeKro to create namespace ${workloadNamespace}`);
+    }
 
     // The workload namespace exists and was created by typekro (sibling), NOT by KRO:
     // it carries typekro's marker and NEVER an ApplySet `part-of` membership label —
@@ -231,6 +247,13 @@ describeOrSkip(
     let kc: k8s.KubeConfig;
     let coreApi: k8s.CoreV1Api;
     let objectApi: k8s.KubernetesObjectApi;
+    const namespaceLeases = new Map<string, TestNamespaceLease>();
+
+    const captureOwnedNamespace = async (namespace: string): Promise<void> => {
+      const lease = await captureTestNamespaceLease(namespace, kc);
+      if (!lease) throw new Error(`Expected TypeKro to create namespace ${namespace}`);
+      namespaceLeases.set(namespace, lease);
+    };
 
     // Unique per-test namespaces so the cases never collide.
     const emptyNs = `typekro-ns-del-empty-${Date.now().toString().slice(-6)}`;
@@ -250,13 +273,53 @@ describeOrSkip(
 
     afterAll(async () => {
       if (!clusterAvailable) return;
-      // The occupied + adopted namespaces are intentionally retained by the delete path — sweep them.
-      await deleteNamespaceAndWait(occupiedNs, kc).catch(() => {});
-      await deleteNamespaceAndWait(adoptedNs, kc).catch(() => {});
-      await deleteNamespaceAndWait(emptyNs, kc).catch(() => {});
-      await deleteNamespaceAndWait(retryNs, kc).catch(() => {});
-      await deleteNamespaceAndWait(sharedNs, kc).catch(() => {});
-      await deleteNamespaceAndWait(sharedControlNs, kc).catch(() => {});
+      const cleanupErrors: unknown[] = [];
+
+      // The occupied-namespace case deliberately leaves this fixture behind to prove that
+      // TypeKro will not delete foreign content. The test harness owns the fixture itself,
+      // so remove it explicitly before releasing the namespace lease.
+      await deleteTestResourceAndWait(
+        {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name: 'foreign-tenant-config', namespace: occupiedNs },
+        },
+        kc
+      ).catch((error) => cleanupErrors.push(error));
+
+      for (const lease of namespaceLeases.values()) {
+        try {
+          await deleteTestNamespaceAndWait(lease, kc);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+
+      // Occupied/adopted namespace cases intentionally retain their RGD during normal
+      // teardown. Once the exact test fixtures above are gone, retire those unique RGDs
+      // before deleting generated CRDs so KRO cannot recreate their definitions.
+      for (const name of [
+        `ns-del-empty-${runToken}`,
+        `ns-del-occ-${runToken}`,
+        `ns-del-adopt-${runToken}`,
+        `ns-del-shared-${runToken}`,
+        `ns-del-retry-${runToken}`,
+      ]) {
+        try {
+          await deleteTestResourceAndWait(
+            {
+              apiVersion: 'kro.run/v1alpha1',
+              kind: 'ResourceGraphDefinition',
+              metadata: { name },
+            },
+            kc,
+            180_000
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+
       // Normal application teardown intentionally retains generated CRDs Active. This is
       // explicit test-fixture GC for the unique, retired kinds created by this suite.
       for (const kind of [
@@ -266,15 +329,26 @@ describeOrSkip(
         `NsShared${runToken}`,
         `NsDelRetry${runToken}`,
       ]) {
-        const crdName = await findGeneratedCrdName(objectApi, group, kind);
-        if (!crdName) continue;
-        await objectApi
-          .delete({
-            apiVersion: 'apiextensions.k8s.io/v1',
-            kind: 'CustomResourceDefinition',
-            metadata: { name: crdName },
-          } as k8s.KubernetesObject)
-          .catch(() => {});
+        try {
+          const crdName = await findGeneratedCrdName(objectApi, group, kind);
+          if (!crdName) continue;
+          await deleteGeneratedCrdAndWait(
+            {
+              apiVersion: 'apiextensions.k8s.io/v1',
+              kind: 'CustomResourceDefinition',
+              metadata: { name: crdName },
+            },
+            `${group}/v1alpha1`,
+            kind,
+            kc
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(cleanupErrors, 'KRO namespace sibling lifecycle cleanup failed');
       }
     });
 
@@ -284,9 +358,10 @@ describeOrSkip(
       const factory = ownsNamespace(`ns-del-empty-${runToken}`, kind).factory('kro', {
         namespace: emptyNs,
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'ns-del-empty-instance', namespace: emptyNs });
+      await captureOwnedNamespace(emptyNs);
       expect(await readNamespace(objectApi, emptyNs)).toBeDefined();
       // The generated CRD exists after deploy.
       expect(await findGeneratedCrdName(objectApi, group, kind)).toBeDefined();
@@ -336,6 +411,7 @@ describeOrSkip(
         }
       );
       await factory.deploy({ name: 'ns-del-occ-instance', namespace: occupiedNs });
+      await captureOwnedNamespace(occupiedNs);
       expect(await readNamespace(objectApi, occupiedNs)).toBeDefined();
 
       // Simulate ANOTHER stack/user: create a non-default ConfigMap in the namespace that
@@ -354,7 +430,16 @@ describeOrSkip(
       // deleteInstance drains THIS instance (CR → 404), then the empty-gate finds a
       // non-default occupant and RETAINS the namespace rather than deleting it; the RGD
       // (→ 404); the generated CRD remains Active for reuse.
-      await factory.deleteInstance('ns-del-occ-instance');
+      const deletionStartedAt = Date.now();
+      const deletion = await factory.deleteInstance('ns-del-occ-instance');
+      expect(deletion.status).toBe('complete');
+      expect(deletion.retained).toContainEqual(
+        expect.objectContaining({
+          resource: expect.objectContaining({ kind: 'Namespace', name: occupiedNs }),
+          policy: 'occupied-namespace',
+        })
+      );
+      expect(Date.now() - deletionStartedAt).toBeLessThan(30_000);
 
       // The namespace is RETAINED — still present and NOT terminating — because it is
       // occupied by the foreign ConfigMap.
@@ -375,9 +460,7 @@ describeOrSkip(
       // The namespace PRE-EXISTS (created out-of-band, not by typekro). typekro adopts it
       // (the CR lands in it) but must NOT stamp the `created-by-rgd` ownership record, so
       // teardown NEVER deletes a namespace it merely adopted (finding #4b / finding #3).
-      await coreApi.createNamespace({
-        body: { apiVersion: 'v1', kind: 'Namespace', metadata: { name: adoptedNs } },
-      });
+      namespaceLeases.set(adoptedNs, await createTestNamespace(adoptedNs, kc));
 
       const factory = ownsNamespace(`ns-del-adopt-${runToken}`, `NsDelAdopt${runToken}`).factory(
         'kro',
@@ -413,9 +496,11 @@ describeOrSkip(
         namespace: sharedControlNs,
         instanceNamespace: sharedControlNs, // both CRs live here, NOT in the shared workload ns
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'shared-a', namespace: sharedNs });
+      await captureOwnedNamespace(sharedNs);
+      await captureOwnedNamespace(sharedControlNs);
       await factory.deploy({ name: 'shared-b', namespace: sharedNs });
       expect(await readNamespace(objectApi, sharedNs)).toBeDefined();
 
@@ -443,9 +528,10 @@ describeOrSkip(
       const factory = ownsNamespace(`ns-del-retry-${runToken}`, kind).factory('kro', {
         namespace: retryNs,
         kubeConfig: kc,
-        timeout: 180_000,
+        timeout: 300_000,
       });
       await factory.deploy({ name: 'ns-del-retry-instance', namespace: retryNs });
+      await captureOwnedNamespace(retryNs);
 
       // The owned namespace carries the DURABLE `created-by-rgd` ownership record (the record
       // that survives the CR — unlike the CR's `hoisted-namespaces` annotation).
@@ -462,7 +548,9 @@ describeOrSkip(
           kind,
           metadata: { name: 'ns-del-retry-instance', namespace: retryNs },
         } as k8s.KubernetesObject)
-        .catch(() => {});
+        .catch((error) => {
+          if (!isNotFoundError(error)) throw error;
+        });
       const crDeadline = Date.now() + 120_000;
       // Poll the CR to a real 404 (KRO clears kro.run/finalizer — the hoisted namespace is
       // NOT a graph child, so KRO never touches it).

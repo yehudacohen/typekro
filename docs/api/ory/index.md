@@ -110,6 +110,7 @@ await platform.deploy({
   namespace: 'ory-test',
   managed: {
     databases: true,
+    databaseStorageClass: 'local-path',
     secrets: true,
     routes: true,
     sampleUpstream: true,
@@ -120,6 +121,9 @@ await platform.deploy({
   },
 });
 ```
+
+On existing clusters, set `managed.databaseStorageClass` explicitly when managed databases are
+enabled. TypeKro applies it to all three CNPG clusters in both direct and KRO modes.
 
 The ACK/SES courier path is planned and explicit: enable `managed.courierSes` only when you also provide the corresponding managed or external courier dependency source. Baseline local e2e does not create ACK/SES resources and does not require AWS.
 

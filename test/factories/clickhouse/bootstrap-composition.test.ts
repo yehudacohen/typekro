@@ -92,8 +92,13 @@ describe('ClickHouse operator bootstrap composition', () => {
   it('Derive ready/phase status from the HelmRelease Ready condition', () => {
     const yaml = clickhouseOperatorBootstrap.toYaml();
 
-    expect(yaml).toContain('ready: ${clickhouseOperatorHelmRelease.status.conditions');
+    expect(yaml).toContain(
+      "ready: '${has(clickhouseOperatorHelmRelease.status.observedGeneration) && clickhouseOperatorHelmRelease.status.observedGeneration >= clickhouseOperatorHelmRelease.metadata.generation"
+    );
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
+    expect(yaml).toContain(
+      'c.observedGeneration >= clickhouseOperatorHelmRelease.metadata.generation'
+    );
     expect(yaml).toContain('Ready');
     expect(yaml).toContain('Installing');
   });

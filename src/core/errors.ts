@@ -687,6 +687,7 @@ export class DeploymentTimeoutError extends TypeKroError {
       | 'crd-establishment'
       | 'crd-discovery'
       | 'instance-readiness'
+      | 'deployment'
   ) {
     super(message, 'DEPLOYMENT_TIMEOUT', {
       resourceKind,

@@ -1,7 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { setMetadataField } from '../../../core/metadata/index.js';
-import { Cel } from '../../../core/references/cel.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../kubernetes/rbac/cluster-role-binding.js';
 import { cnpgHelmRelease, cnpgHelmRepository } from '../resources/helm.js';
@@ -140,20 +140,9 @@ export const cnpgBootstrap = kubernetesComposition(
       setMetadataField(supplementalClusterRoleBinding, 'scopes', ['cluster']);
     }
 
-    // Status derived from HelmRelease conditions.
-    // Flux HelmRelease v2 uses conditions with type='Ready' for readiness.
+    // Status derived from the Flux HelmRelease Ready condition.
     return {
-      ready: Cel.expr<boolean>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True")'
-      ),
-      // Two-state phase: nested ternaries with .exists() require repeating the
-      // full resource path in CEL, which Cel.expr(ref, operator) cannot express.
-      // The second .exists() lacks a receiver and produces invalid CEL.
-      phase: Cel.expr<'Ready' | 'Installing'>(
-        _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
-      ),
+      ...helmReleaseConditionSummary(_helmRelease),
       version: resolvedVersion,
     };
   }

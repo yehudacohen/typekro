@@ -511,7 +511,7 @@ describe('analyzeAndConvertStatusMappings: fallback behavior', () => {
     expect(result.analyzedStatusMappings).toBeDefined();
   });
 
-  test('complete failure: all analysis paths fail, outer catch returns raw mappings', () => {
+  test('a poisoned legacy metadata getter cannot break WeakMap-backed analysis', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
     const resources = makeResources();
 
@@ -530,13 +530,13 @@ describe('analyzeAndConvertStatusMappings: fallback behavior', () => {
       makeLogger()
     );
 
-    // Outer catch should handle this gracefully
+    // Source-analysis metadata no longer lives on the status object, so an
+    // unrelated poisoned getter cannot force the pipeline into its empty fallback.
     expect(result.statusMappings).toBeDefined();
     expect(result.analyzedStatusMappings).toBeDefined();
-    // When outer catch fires, mappingAnalysis is reset to empty
     expect(result.mappingAnalysis.kubernetesRefFields).toEqual([]);
     expect(result.mappingAnalysis.celExpressionFields).toEqual([]);
-    expect(result.mappingAnalysis.staticValueFields).toEqual([]);
+    expect(result.mappingAnalysis.staticValueFields).toEqual(['ready', 'url', 'phase']);
     expect(result.mappingAnalysis.complexExpressionFields).toEqual([]);
   });
 

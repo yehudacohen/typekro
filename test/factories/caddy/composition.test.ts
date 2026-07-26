@@ -67,6 +67,24 @@ describe('Caddy ingress composition', () => {
     expect(yaml).not.toContain('kind: HelmRelease');
   });
 
+  it('wires the Deployment to the PVC through a resource proxy dependency', async () => {
+    const declarations = await caddyIngress.factory('direct').toAlchemyResources({
+      name: 'caddy',
+      namespace: 'caddy-system',
+      caddyfile: SAMPLE_CADDYFILE,
+    });
+    const pvc = declarations.find(
+      (declaration) =>
+        (declaration.props.resource as { kind?: string }).kind === 'PersistentVolumeClaim'
+    );
+    const workload = declarations.find(
+      (declaration) => (declaration.props.resource as { kind?: string }).kind === 'Deployment'
+    );
+    expect(pvc).toBeDefined();
+    expect(workload).toBeDefined();
+    expect(workload?.dependsOn).toContain(pvc?.id);
+  });
+
   it('readiness compares readyReplicas to the Deployment desired count (cannot go ready before the pod exists)', () => {
     const yaml = caddyIngress.toYaml();
     // Compares to spec.replicas (a concrete ≥1), NOT status.replicas (0 at t=0 → false-positive ready).
