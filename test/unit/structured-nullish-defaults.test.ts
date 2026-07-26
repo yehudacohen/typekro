@@ -95,10 +95,11 @@ const conditionalResourcesComposition = kubernetesComposition(
     status: type({ ready: 'boolean' }),
   },
   (spec: ConditionalResourcesSpec) => {
+    const resources = resolveConditionalResources(spec);
     Deployment({
       name: spec.name,
       image: 'nginx:1.29',
-      resources: resolveConditionalResources(spec),
+      ...(resources === undefined ? {} : { resources }),
       id: 'workload',
     });
     return { ready: true };
