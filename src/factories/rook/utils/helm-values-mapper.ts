@@ -151,10 +151,21 @@ const singleNodeResources = {
   rgw: { requests: { cpu: '100m', memory: '256Mi' }, limits: { memory: '1Gi' } },
 };
 
+function resolveSingleNodeResources(config: RookCephSingleNodePlatformConfig) {
+  return {
+    mon: config.resources?.mon ?? singleNodeResources.mon,
+    mgr: config.resources?.mgr ?? singleNodeResources.mgr,
+    osd: config.resources?.osd ?? singleNodeResources.osd,
+    prepareosd: config.resources?.prepareosd ?? singleNodeResources.prepareosd,
+    rgw: config.resources?.rgw ?? singleNodeResources.rgw,
+  };
+}
+
 /** Canonical single-node RGW spec shared by chart and composition materialization. */
 export function mapRookCephSingleNodeObjectStoreSpec(
-  _config: RookCephSingleNodePlatformConfig
+  config: RookCephSingleNodePlatformConfig
 ): CephObjectStoreConfig['spec'] {
+  const resources = resolveSingleNodeResources(config);
   return {
     metadataPool: {
       failureDomain: 'osd',
@@ -165,7 +176,7 @@ export function mapRookCephSingleNodeObjectStoreSpec(
       replicated: { size: 1, requireSafeReplicaSize: false },
     },
     preservePoolsOnDelete: true,
-    gateway: { port: 80, instances: 1, resources: singleNodeResources.rgw },
+    gateway: { port: 80, instances: 1, resources: resources.rgw },
   };
 }
 
@@ -226,7 +237,7 @@ export function mapRookCephSingleNodePlatformToHelmValues(
 ): RookCephClusterChartValues | ValuesMergeExpression {
   const objectStoreName = config.objectStoreName ?? 'harbor-object-store';
   const storageClassName = config.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
-  const resources = singleNodeResources;
+  const resources = resolveSingleNodeResources(config);
   const values: RookCephClusterChartValues = {
     operatorNamespace: config.operatorNamespace ?? 'rook-ceph-operator',
     clusterName: config.name,

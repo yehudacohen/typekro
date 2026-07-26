@@ -48,6 +48,10 @@ const objectStoreName = 'harbor-object-store';
 const retainedStorageClass = `typekro-${suffix}-bucket-retain`.slice(0, 63);
 const disposableStorageClass = `typekro-${suffix}-bucket-delete`.slice(0, 63);
 const operatorNamespace = 'typekro-rook-e2e-operator';
+const osdResources = {
+  requests: { cpu: '500m', memory: '1Gi' },
+  limits: { memory: '4Gi' },
+};
 const localBlock = createOrbStackLocalBlockFixture({
   name: `typekro-${suffix}-ceph-block`.slice(0, 48),
   namespace: controlNamespace,
@@ -240,6 +244,7 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
         storageSize: '8Gi',
         objectStoreName,
         bucketStorageClassName: retainedStorageClass,
+        resources: { osd: osdResources },
       });
     } catch (error) {
       platformNamespaceLease = await captureTestNamespaceLease(platformNamespace, kubeConfig);
@@ -265,12 +270,25 @@ describeOrSkip('official Rook/Ceph platform over a shared operator', () => {
     });
     expect(platform.status.endpoint).not.toBe('');
     expect(['HEALTH_OK', 'HEALTH_WARN']).toContain(platform.status.cephHealth);
-    const storageClass = (await createKubernetesObjectApiClient(kubeConfig).read({
+    const objectApi = createKubernetesObjectApiClient(kubeConfig);
+    const storageClass = (await objectApi.read({
       apiVersion: 'storage.k8s.io/v1',
       kind: 'StorageClass',
       metadata: { name: retainedStorageClass },
     })) as { reclaimPolicy?: string };
     expect(storageClass.reclaimPolicy).toBe('Retain');
+    const cluster = (await objectApi.read({
+      apiVersion: 'ceph.rook.io/v1',
+      kind: 'CephCluster',
+      metadata: { name: clusterName, namespace: platformNamespace },
+    })) as {
+      spec?: {
+        resources?: { osd?: typeof osdResources };
+        storage?: { storageClassDeviceSets?: Array<{ resources?: typeof osdResources }> };
+      };
+    };
+    expect(cluster.spec?.resources?.osd).toEqual(osdResources);
+    expect(cluster.spec?.storage?.storageClassDeviceSets?.[0]?.resources).toEqual(osdResources);
   });
 
   it('binds an application claim and performs S3 put/get/delete', async () => {
