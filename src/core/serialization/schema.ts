@@ -416,6 +416,8 @@ function resolveDefaultsByReExecution(
       if (defaultsRes) {
         extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
         extractStructuredFallbacksByComparison(
+          compositionFn,
+          specJson,
           proxyRes,
           defaultsRes,
           id,
@@ -484,6 +486,7 @@ const FULL_MARKER_RE = new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`);
 type Leaf =
   | { kind: 'field'; field: string }
   | { kind: 'literal'; value: string | number | boolean }
+  | { kind: 'structured'; value: readonly unknown[] | Record<string, unknown> }
   | { kind: 'none' };
 
 /** Classify a single output-leaf value (marker-ref vs literal vs other). */
@@ -495,6 +498,10 @@ function classifyLeaf(value: unknown): Leaf {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     if (isSentinelDerivedValue(value)) return { kind: 'none' };
     return { kind: 'literal', value };
+  }
+  if (Array.isArray(value)) return { kind: 'structured', value };
+  if (value !== null && typeof value === 'object') {
+    return { kind: 'structured', value: value as Record<string, unknown> };
   }
   return { kind: 'none' };
 }
@@ -611,6 +618,8 @@ function presenceGuard(field: string): string {
  * Choosing the whole object preserves JavaScript replacement semantics.
  */
 function extractStructuredFallbacksByComparison(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
   proxyValue: unknown,
   fallbackValue: unknown,
   resourceId: string,
@@ -623,6 +632,8 @@ function extractStructuredFallbacksByComparison(
   // defaults nested inside helpers are captured before runtime merge lowering.
   if (isValuesMergeExpression(proxyValue) && !isValuesMergeExpression(fallbackValue)) {
     extractStructuredFallbacksByComparison(
+      compositionFn,
+      specJson,
       proxyValue.base,
       fallbackValue,
       resourceId,
@@ -645,11 +656,34 @@ function extractStructuredFallbacksByComparison(
     ) {
       try {
         const field = exactMarker.slice('spec.'.length);
+        const probeResource = runProbe(
+          compositionFn,
+          specJson,
+          new Set<string>([field]),
+          resourceId
+        );
+        const probedFallback = readAtPath(probeResource, path);
+        if (
+          !Array.isArray(probedFallback) &&
+          (probedFallback === null || typeof probedFallback !== 'object')
+        ) {
+          return;
+        }
         const fallbackCel = celLiteralForValueTree(
           fallbackValue,
           undefined,
           `structured-default.${resourceId}.${path.join('.')}`
         );
+        const probedFallbackCel = celLiteralForValueTree(
+          probedFallback,
+          undefined,
+          `structured-default.${resourceId}.${path.join('.')}`
+        );
+        // A proxy/default diff can also be produced by an unrelated conditional,
+        // for example `spec.enabled ? spec.resources : defaults`. Confirm that
+        // removing the referenced field itself selects this exact fallback before
+        // attributing the behavior to nullish coalescing.
+        if (probedFallbackCel !== fallbackCel) return;
         out.push({
           resourceId,
           path: [...path],
@@ -669,6 +703,8 @@ function extractStructuredFallbacksByComparison(
   if (Array.isArray(proxyValue) && Array.isArray(fallbackValue)) {
     for (let index = 0; index < Math.min(proxyValue.length, fallbackValue.length); index++) {
       extractStructuredFallbacksByComparison(
+        compositionFn,
+        specJson,
         proxyValue[index],
         fallbackValue[index],
         resourceId,
@@ -687,6 +723,8 @@ function extractStructuredFallbacksByComparison(
   ) {
     for (const key of Object.keys(proxyValue as Record<string, unknown>)) {
       extractStructuredFallbacksByComparison(
+        compositionFn,
+        specJson,
         (proxyValue as Record<string, unknown>)[key],
         (fallbackValue as Record<string, unknown>)[key],
         resourceId,
@@ -698,22 +736,42 @@ function extractStructuredFallbacksByComparison(
 }
 
 /** Render the chain's CEL: <guard(a)> ? a : (<guard(b)> ? b : <tail>). */
-function buildChainCel(chain: string[], tail: Leaf): string {
-  const tailCel =
-    tail.kind === 'literal'
-      ? typeof tail.value === 'string'
-        ? `"${escapeCelString(tail.value)}"`
-        : String(tail.value)
-      : tail.kind === 'field'
-        ? celField(tail.field)
-        : 'omit()';
-  let expr = tailCel;
-  let nested = false;
-  for (const f of [...chain].reverse()) {
-    expr = `${presenceGuard(f)} ? ${celField(f)} : ${nested ? `(${expr})` : expr}`;
-    nested = true;
+function buildChainCel(
+  chain: string[],
+  tail: Leaf,
+  resourceId: string,
+  path: string[]
+): string | undefined {
+  try {
+    const tailCel =
+      tail.kind === 'literal'
+        ? typeof tail.value === 'string'
+          ? `"${escapeCelString(tail.value)}"`
+          : String(tail.value)
+        : tail.kind === 'field'
+          ? celField(tail.field)
+          : tail.kind === 'structured'
+            ? `(${celLiteralForValueTree(
+                tail.value,
+                undefined,
+                `structured-coalesce.${resourceId}.${path.join('.')}`
+              )})`
+            : 'omit()';
+    let expr = tailCel;
+    let nested = false;
+    for (const f of [...chain].reverse()) {
+      expr = `${presenceGuard(f)} ? ${celField(f)} : ${nested ? `(${expr})` : expr}`;
+      nested = true;
+    }
+    return `\${${expr}}`;
+  } catch (error) {
+    logger.debug('Skipping non-serializable structured coalescing fallback', {
+      resourceId,
+      path: path.join('.'),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
   }
-  return `\${${expr}}`;
 }
 
 /**
@@ -764,8 +822,11 @@ function reconstructCrossFieldChains(
     // existing default/omit-wrapping mechanisms, so this change can't regress them.
     const [head] = chain;
     if (chain.length >= 2 && head !== undefined) {
-      delete defaults[head];
-      out.push({ resourceId, path, cel: buildChainCel(chain, tail) });
+      const cel = buildChainCel(chain, tail, resourceId, path);
+      if (cel !== undefined) {
+        delete defaults[head];
+        out.push({ resourceId, path, cel });
+      }
     }
   }
 }
