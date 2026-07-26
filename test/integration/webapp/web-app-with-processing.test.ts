@@ -30,6 +30,7 @@ import {
   createCoreV1ApiClient,
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
+  requireTestStorageClass,
   runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -44,6 +45,8 @@ async function cleanupNamespace(
 
 // ── Shared test spec ─────────────────────────────────────────────────────
 
+let configuredStorageClass: string;
+
 const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   name: 'testapp',
   namespace: appNamespace,
@@ -55,9 +58,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   database: {
     instances: 1,
     storageSize: '1Gi',
-    ...(process.env.TYPEKRO_TEST_STORAGE_CLASS
-      ? { storageClass: process.env.TYPEKRO_TEST_STORAGE_CLASS }
-      : {}),
+    storageClass: configuredStorageClass,
     database: 'testdb',
     owner: 'app',
   },
@@ -66,9 +67,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
     replicas: 0,
     volumePermissions: true,
     storageSize: '1Gi',
-    ...(process.env.TYPEKRO_TEST_STORAGE_CLASS
-      ? { storageClass: process.env.TYPEKRO_TEST_STORAGE_CLASS }
-      : {}),
+    storageClass: configuredStorageClass,
   },
   processing: {
     eventKey: 'deadbeef0123456789abcdef01234567',
@@ -164,6 +163,7 @@ describe('WebAppWithProcessing Direct Mode', () => {
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
     factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
   });
 
@@ -271,6 +271,7 @@ describe('WebAppWithProcessing KRO Mode', () => {
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
 
     factoryNamespaceLease = await createTestNamespace(kroNamespace, kubeConfig);
   });

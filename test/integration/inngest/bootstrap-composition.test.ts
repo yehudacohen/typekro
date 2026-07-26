@@ -12,6 +12,7 @@ import {
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
+  requireTestStorageClass,
   runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -21,6 +22,7 @@ describe('Inngest Bootstrap Composition Tests', () => {
   let factory: ResourceFactory<InngestBootstrapConfig, InngestBootstrapStatus> | undefined;
   let testNamespaceLease: TestNamespaceLease | undefined;
   let inngestNamespaceLease: TestNamespaceLease | undefined;
+  let storageClass: string;
   const suffix = crypto.randomUUID().slice(0, 8);
   const testNamespace = `typekro-test-inngest-${suffix}`;
   const inngestNs = `inngest-test-${suffix}`;
@@ -28,6 +30,7 @@ describe('Inngest Bootstrap Composition Tests', () => {
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
+      storageClass = await requireTestStorageClass({ kubeConfig });
       testNamespaceLease = await createTestNamespace(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
@@ -75,7 +78,6 @@ describe('Inngest Bootstrap Composition Tests', () => {
       kubeConfig,
     });
 
-    const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
     const instance = await runWithExpectedTestNamespace(
       inngestNs,
       kubeConfig,
@@ -90,14 +92,12 @@ describe('Inngest Bootstrap Composition Tests', () => {
             eventKey: 'deadbeef0123456789abcdef01234567',
             signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
           },
-          ...(storageClass && {
-            postgresql: {
-              persistence: { storageClass },
-            },
-            redis: {
-              persistence: { storageClass },
-            },
-          }),
+          postgresql: {
+            persistence: { storageClass },
+          },
+          redis: {
+            persistence: { storageClass },
+          },
         })
     );
 

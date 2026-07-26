@@ -234,6 +234,55 @@ export function createKubernetesObjectApiClient(kc?: k8s.KubeConfig): k8s.Kubern
   return createBunCompatibleKubernetesObjectApi(kubeConfig);
 }
 
+export interface TestStorageClassReader {
+  read(resource: {
+    apiVersion: 'storage.k8s.io/v1';
+    kind: 'StorageClass';
+    metadata: { name: string };
+  }): Promise<unknown>;
+}
+
+export interface TestStorageClassRequirement {
+  kubeConfig?: k8s.KubeConfig;
+  envVar?: string;
+  environment?: Record<string, string | undefined>;
+  reader?: TestStorageClassReader;
+}
+
+/**
+ * Require explicit, cluster-verified storage evidence for a live integration.
+ * Existing clusters must never inherit an arbitrary default StorageClass.
+ */
+export async function requireTestStorageClass(
+  requirement: TestStorageClassRequirement = {}
+): Promise<string> {
+  const envVar = requirement.envVar ?? 'TYPEKRO_TEST_STORAGE_CLASS';
+  const environment = requirement.environment ?? process.env;
+  const name = environment[envVar]?.trim();
+  if (!name) {
+    throw new Error(
+      `Storage-backed integration tests require an explicit StorageClass. ` +
+        `Set ${envVar}=<rwo-storage-class>; no cluster default will be selected implicitly.`
+    );
+  }
+
+  const reader = requirement.reader ?? createKubernetesObjectApiClient(requirement.kubeConfig);
+  try {
+    await reader.read({
+      apiVersion: 'storage.k8s.io/v1',
+      kind: 'StorageClass',
+      metadata: { name },
+    });
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) {
+      throw new Error(`Configured StorageClass does not exist: ${name}`, { cause: error });
+    }
+    throw new Error(`Failed to verify configured StorageClass ${name}`, { cause: error });
+  }
+
+  return name;
+}
+
 export interface TestPodOptions {
   namespace: string;
   name: string;

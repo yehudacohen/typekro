@@ -7,6 +7,7 @@ import {
   deleteTestFactoryInstanceAndRecoverNamespaces,
   initiateNamespaceDeletion,
   type NamespaceDeletionClient,
+  requireTestStorageClass,
   TestFactoryCleanupRegistry,
   waitForTestNamespaceEmpty,
 } from '../integration/shared-kubeconfig.js';
@@ -18,6 +19,77 @@ function inventory(overrides: Partial<NamespaceInventory> = {}): NamespaceInvent
     ...overrides,
   };
 }
+
+describe('test StorageClass prerequisite', () => {
+  it('fails closed when explicit storage evidence is absent', async () => {
+    await expect(
+      requireTestStorageClass({
+        environment: {},
+        reader: { read: async () => ({}) },
+      })
+    ).rejects.toThrow('Set TYPEKRO_TEST_STORAGE_CLASS=<rwo-storage-class>');
+  });
+
+  it('verifies and returns the exact configured StorageClass', async () => {
+    const reads: unknown[] = [];
+
+    await expect(
+      requireTestStorageClass({
+        environment: { TYPEKRO_TEST_STORAGE_CLASS: ' local-path ' },
+        reader: {
+          async read(resource) {
+            reads.push(resource);
+            return {};
+          },
+        },
+      })
+    ).resolves.toBe('local-path');
+
+    expect(reads).toEqual([
+      {
+        apiVersion: 'storage.k8s.io/v1',
+        kind: 'StorageClass',
+        metadata: { name: 'local-path' },
+      },
+    ]);
+  });
+
+  it('supports suite-specific environment variables', async () => {
+    await expect(
+      requireTestStorageClass({
+        envVar: 'TYPEKRO_NATS_STORAGE_CLASS',
+        environment: { TYPEKRO_NATS_STORAGE_CLASS: 'nats-rwo' },
+        reader: { read: async () => ({}) },
+      })
+    ).resolves.toBe('nats-rwo');
+  });
+
+  it('rejects a configured StorageClass that is absent from the cluster', async () => {
+    await expect(
+      requireTestStorageClass({
+        environment: { TYPEKRO_TEST_STORAGE_CLASS: 'missing' },
+        reader: {
+          async read() {
+            throw { code: 404 };
+          },
+        },
+      })
+    ).rejects.toThrow('Configured StorageClass does not exist: missing');
+  });
+
+  it('preserves verification failures as an explicit prerequisite error', async () => {
+    await expect(
+      requireTestStorageClass({
+        environment: { TYPEKRO_TEST_STORAGE_CLASS: 'local-path' },
+        reader: {
+          async read() {
+            throw new Error('API unavailable');
+          },
+        },
+      })
+    ).rejects.toThrow('Failed to verify configured StorageClass local-path');
+  });
+});
 
 describe('test namespace finalizer recovery gate', () => {
   it('accepts a namespace whose discovered resource inventory is empty', async () => {

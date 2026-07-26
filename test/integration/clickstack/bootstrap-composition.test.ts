@@ -41,6 +41,7 @@ import {
   deleteTestNamespaceAndWait,
   deleteTestResourceAndWait,
   isClusterAvailable,
+  requireTestStorageClass,
   runWithExpectedTestNamespaces,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -80,7 +81,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   // same split as the searxng/dagster KRO-mode suites.
   const kroStackNs = `clickstack-test-kro-${runId}`;
   const kroCrNs = `clickstack-test-kro-cr-${runId}`;
-  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+  let storageClass: string;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   const chiName = 'clickstack-e2e-ch';
@@ -101,6 +102,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
+      storageClass = await requireTestStorageClass({ kubeConfig });
       const { createBunCompatibleCustomObjectsApi } = await import(
         '../../../src/core/kubernetes/index.js'
       );
@@ -358,7 +360,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       version: '25.7',
       storage: {
         size: '1Gi',
-        ...(storageClass && { storageClassName: storageClass }),
+        storageClassName: storageClass,
       },
       podResources: {
         requests: { cpu: '100m', memory: '512Mi' },
@@ -385,9 +387,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
 
     const { makeClickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
     const clickstackBootstrap = makeClickstackBootstrap({
-      ...(storageClass && {
-        mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
-      }),
+      mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
     });
 
     clickstackFactory = clickstackBootstrap.factory('direct', {
@@ -452,9 +452,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
 
     const { makeClickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
     const clickstackBootstrap = makeClickstackBootstrap({
-      ...(storageClass && {
-        mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
-      }),
+      mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
     });
     const { createBunCompatibleCustomObjectsApi } = await import(
       '../../../src/core/kubernetes/index.js'

@@ -3,7 +3,8 @@
  *
  * bun test test/integration/nats/jetstream-resources.test.ts
  *
- * Requires Flux, KRO, and a default ReadWriteOnce StorageClass. Each mode
+ * Requires Flux, KRO, and an explicit TYPEKRO_NATS_STORAGE_CLASS naming a
+ * ReadWriteOnce StorageClass. Each mode
  * installs the official NATS and NACK charts, then reconciles a real Stream
  * and Consumer through NACK. Every run uses unique namespaces.
  */
@@ -33,6 +34,7 @@ import {
   deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  requireTestStorageClass,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -237,6 +239,10 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   const targetNamespace = `tk-nats-${suffix}`.slice(0, 63);
   const appNamespace = `tk-nats-app-${suffix}`.slice(0, 63);
   const kubeConfig = getIntegrationTestKubeConfig();
+  const storageClassName = await requireTestStorageClass({
+    kubeConfig,
+    envVar: 'TYPEKRO_NATS_STORAGE_CLASS',
+  });
 
   const platformFactory = natsBootstrap.factory(mode, {
     namespace: controlNamespace,
@@ -268,9 +274,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
         replicas: mode === 'kro' ? 3 : 1,
         storageSize: '1Gi',
         pvcRetentionPolicy: 'delete',
-        ...(process.env.TYPEKRO_NATS_STORAGE_CLASS
-          ? { storageClassName: process.env.TYPEKRO_NATS_STORAGE_CLASS }
-          : {}),
+        storageClassName,
       });
     } catch (deploymentError: unknown) {
       try {

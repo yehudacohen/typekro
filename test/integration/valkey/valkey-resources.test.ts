@@ -1,10 +1,11 @@
 /**
  * Opt-in live Valkey proof against a real cluster.
  *
- * RUN_VALKEY_INTEGRATION=true bun test test/integration/valkey/valkey-resources.test.ts
+ * RUN_VALKEY_INTEGRATION=true TYPEKRO_TEST_STORAGE_CLASS=local-path \
+ *   bun test test/integration/valkey/valkey-resources.test.ts
  *
- * Requires the Hyperspike v0.0.61 operator, KRO, Flux, and a default
- * ReadWriteOnce StorageClass. Every run uses a unique namespace and deletes
+ * Requires the Hyperspike v0.0.61 operator, KRO, Flux, and an explicitly
+ * selected ReadWriteOnce StorageClass. Every run uses a unique namespace and deletes
  * only resources it created.
  */
 
@@ -13,8 +14,8 @@ import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { Cel } from '../../../src/core/references/cel.js';
-import { isKubernetesRef } from '../../../src/utils/type-guards.js';
 import { valkey } from '../../../src/factories/valkey/resources/valkey.js';
+import { isKubernetesRef } from '../../../src/utils/type-guards.js';
 import {
   createCoreV1ApiClient,
   createTestNamespace,
@@ -22,6 +23,7 @@ import {
   deleteTestNamespaceAndWait,
   deleteTestPodAndWait,
   isClusterAvailable,
+  requireTestStorageClass,
   runTestPodAndReadLogs,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -132,6 +134,7 @@ async function restartValkeyPod(
 
 async function proveDataPlane(mode: 'direct' | 'kro', name: string): Promise<void> {
   const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const storageClassName = await requireTestStorageClass({ kubeConfig });
   const factory = liveValkey.factory(mode, {
     namespace,
     waitForReady: true,
@@ -144,7 +147,7 @@ async function proveDataPlane(mode: 'direct' | 'kro', name: string): Promise<voi
     const instance = await factory.deploy({
       name,
       namespace,
-      storageClassName: 'local-path',
+      storageClassName,
     });
     expect(instance.status.ready).toBe(true);
     expect(instance.status.serviceName).toBe(name);

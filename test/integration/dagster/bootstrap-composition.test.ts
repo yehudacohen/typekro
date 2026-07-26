@@ -12,6 +12,7 @@ import {
   deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  requireTestStorageClass,
   type TestDeletableFactory,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -23,7 +24,7 @@ const requireClusterTests = process.env.REQUIRE_CLUSTER_TESTS === 'true';
 const defaultValidationImageName = 'typekro-dagster-validation';
 const defaultValidationImageTag = '1.13.8';
 const defaultLocalValidationImage = `${defaultValidationImageName}:${defaultValidationImageTag}`;
-const configuredStorageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+let configuredStorageClass: string;
 const envConfiguredValidationImage = process.env.DAGSTER_TEST_VALIDATION_IMAGE;
 const configuredValidationImage =
   envConfiguredValidationImage ??
@@ -207,6 +208,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
     }
 
     kubeConfig = getIntegrationTestKubeConfig();
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
     const validationImage = await resolveValidationImage();
     if (validationImage) {
       loadLocalImageIntoKindIfNeeded(validationImage, kubeConfig);
@@ -318,7 +320,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
           },
           postgresql: {
             enabled: true,
-            ...(configuredStorageClass && { storageClass: configuredStorageClass }),
+            storageClass: configuredStorageClass,
           },
           ...(dagsterSystemImage && {
             webserver: {
@@ -383,7 +385,7 @@ describeLiveOrSkip('Dagster bootstrap composition live deployment', () => {
           },
           postgresql: {
             enabled: true,
-            ...(configuredStorageClass && { storageClass: configuredStorageClass }),
+            storageClass: configuredStorageClass,
           },
           ...(dagsterSystemImage && {
             webserver: {

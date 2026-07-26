@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { relative } from 'node:path';
 import {
-  selectStorageClass,
   type StorageClassCandidate,
+  selectStorageClass,
 } from '../../scripts/integration-storage-selection.js';
 
 const integrationRoot = new URL('../integration/', import.meta.url);
@@ -14,6 +14,18 @@ const dagsterIntegration = new URL(
   import.meta.url
 );
 const oryIntegration = new URL('../integration/ory/ory-identity-stack.test.ts', import.meta.url);
+const storageBackedIntegrationFiles = [
+  'apisix/integration.test.ts',
+  'clickhouse/bootstrap-composition.test.ts',
+  'clickstack/bootstrap-composition.test.ts',
+  'cnpg/bootstrap-composition.test.ts',
+  'dagster/bootstrap-composition.test.ts',
+  'inngest/bootstrap-composition.test.ts',
+  'nats/jetstream-resources.test.ts',
+  'ory/ory-identity-stack.test.ts',
+  'valkey/valkey-resources.test.ts',
+  'webapp/web-app-with-processing.test.ts',
+] as const;
 const directDeletionEvidenceFiles = new Set([
   'kro-namespace-sibling-lifecycle.test.ts',
   'rook/object-storage-claim.test.ts',
@@ -54,6 +66,10 @@ const forbiddenPatterns: ForbiddenPattern[] = [
   {
     description: 'executable kubectl subprocesses',
     pattern: /Bun\.spawn(?:Sync)?\s*\(\s*\[\s*['"]kubectl['"]/s,
+  },
+  {
+    description: 'direct StorageClass environment reads instead of the verified prerequisite',
+    pattern: /process\.env\.TYPEKRO_(?:TEST|NATS)_STORAGE_CLASS/,
   },
   {
     description: 'silently swallowed factory teardown failures',
@@ -158,9 +174,17 @@ describe('integration harness conformance', () => {
     const dagsterSource = await Bun.file(dagsterIntegration).text();
     const orySource = await Bun.file(oryIntegration).text();
 
-    expect(dagsterSource).toContain('process.env.TYPEKRO_TEST_STORAGE_CLASS');
+    for (const relativePath of storageBackedIntegrationFiles) {
+      const source = await Bun.file(
+        new URL(`../integration/${relativePath}`, import.meta.url)
+      ).text();
+      expect(source, relativePath).toContain('requireTestStorageClass');
+      expect(source, relativePath).not.toMatch(/process\.env\.TYPEKRO_(?:TEST|NATS)_STORAGE_CLASS/);
+    }
+
+    expect(dagsterSource).toContain('requireTestStorageClass({ kubeConfig })');
     expect(dagsterSource.match(/storageClass: configuredStorageClass/g)).toHaveLength(2);
-    expect(orySource).toContain('process.env.TYPEKRO_TEST_STORAGE_CLASS');
+    expect(orySource).toContain('requireTestStorageClass({ kubeConfig })');
     expect(orySource.match(/databaseStorageClass: configuredStorageClass/g)).toHaveLength(2);
   });
 

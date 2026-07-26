@@ -22,6 +22,7 @@ import {
   deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  requireTestStorageClass,
   runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -72,7 +73,8 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
         instanceName,
         namespaceLease ? [namespaceLease] : [],
         kubeConfig,
-        600_000
+        600_000,
+        { scopes: ['cluster'] }
       );
       namespaceLease = undefined;
     } else if (namespaceLease) {
@@ -101,7 +103,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     // Deploy APISIX using chart v2.13.0 (default)
     // Uses NodePort because the chart's gateway service template unconditionally
     // sets externalTrafficPolicy which is invalid for ClusterIP on Kubernetes 1.33+
-    const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+    const storageClass = await requireTestStorageClass({ kubeConfig });
     const instance = await runWithExpectedTestNamespace(
       apisixNamespace,
       kubeConfig,
@@ -114,11 +116,9 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
           namespace: apisixNamespace,
           version: '2.13.0',
           replicaCount: 1,
-          ...(storageClass && {
-            etcd: {
-              persistence: { storageClass },
-            },
-          }),
+          etcd: {
+            persistence: { storageClass },
+          },
           gateway: {
             type: 'NodePort',
             http: { enabled: true, servicePort: 80 },
@@ -239,7 +239,8 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       instanceName,
       [namespaceLease],
       kubeConfig,
-      600_000
+      600_000,
+      { scopes: ['cluster'] }
     );
     namespaceLease = undefined;
     const repositoryAfterDelete = await customObjectsApi.getNamespacedCustomObject({

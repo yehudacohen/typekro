@@ -19,6 +19,7 @@ import {
   deleteTestResourceAndWait,
   deleteTestSecretAndWait,
   isClusterAvailable,
+  requireTestStorageClass,
   runTestPodAndReadLogs,
   type TestDeletableFactory,
   type TestNamespaceLease,
@@ -27,7 +28,7 @@ import {
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
-const configuredStorageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+let configuredStorageClass: string;
 
 setDefaultTimeout(1500000);
 
@@ -247,6 +248,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    configuredStorageClass = await requireTestStorageClass({ kubeConfig });
     apisixRoutesAvailable = await isApisixRouteCrdAvailable();
 
     directFactory = oryPlatformStack.factory('direct', {
@@ -299,7 +301,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       namespace,
       managed: {
         databases: true,
-        ...(configuredStorageClass && { databaseStorageClass: configuredStorageClass }),
+        databaseStorageClass: configuredStorageClass,
         secrets: true,
         routes: apisixRoutesAvailable,
         sampleUpstream: true,
@@ -515,7 +517,7 @@ describeOrSkip('Ory platform stack Kubernetes integration', () => {
       namespace: kroNamespace,
       managed: {
         databases: true,
-        ...(configuredStorageClass && { databaseStorageClass: configuredStorageClass }),
+        databaseStorageClass: configuredStorageClass,
         secrets: true,
         routes: apisixRoutesAvailable,
         sampleUpstream: true,

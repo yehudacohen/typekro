@@ -7,6 +7,7 @@ import {
   deleteTestNamespaceAndWait,
   deleteTestResourceAndWait,
   isClusterAvailable,
+  requireTestStorageClass,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -34,12 +35,13 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   // searxng/dagster KRO-mode suites.
   const kroNs = `clickhouse-test-kro-${runId}`;
   const kroCrNs = `clickhouse-test-kro-cr-${runId}`;
-  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+  let storageClass: string;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
+      storageClass = await requireTestStorageClass({ kubeConfig });
       namespaceLeases.push(
         ...(await Promise.all(
           [testNamespace, operatorNs, chiNs, kroNs, kroCrNs].map((namespace) =>
@@ -216,7 +218,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       replicas: 1,
       storage: {
         size: '1Gi',
-        ...(storageClass && { storageClassName: storageClass }),
+        storageClassName: storageClass,
       },
       podResources: {
         requests: { cpu: '100m', memory: '512Mi' },
@@ -315,7 +317,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         version: '25.7',
         storage: {
           size: '1Gi',
-          ...(storageClass && { storageClassName: storageClass }),
+          storageClassName: storageClass,
         },
         podResources: {
           requests: { cpu: '100m', memory: '512Mi' },
@@ -388,7 +390,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         version: '25.7',
         storage: {
           size: '1Gi',
-          ...(storageClass && { storageClassName: storageClass }),
+          storageClassName: storageClass,
         },
         podResources: {
           requests: { cpu: '100m', memory: '512Mi' },

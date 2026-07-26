@@ -454,7 +454,7 @@ await buildContainer({
 Then run the live test:
 
 ```sh
-bun test test/integration/dagster/bootstrap-composition.test.ts --timeout 900000
+TYPEKRO_TEST_STORAGE_CLASS=local-path bun run test:integration:dagster
 ```
 
 The test also auto-detects `typekro-dagster-validation:1.13.8` on arm64 when it is available in the
@@ -462,6 +462,10 @@ local Docker image store. If the image is absent and Docker is available, the te
 TypeKro's `buildContainer` helper before deploying. For remote clusters, push that fixture to a
 registry the cluster can pull and set `DAGSTER_TEST_VALIDATION_IMAGE` to the registry reference.
 Direct `docker build` is not required for the local validation path.
+
+The named `TYPEKRO_TEST_STORAGE_CLASS` is mandatory for focused runs and is verified through the
+Kubernetes API before Dagster creates its PostgreSQL PVC. TypeKro does not inherit an annotated
+cluster default for live integration evidence.
 
 On amd64 clusters, the official Dagster example image can be used for user code. To override both
 the user-code and Dagster system images explicitly, set `DAGSTER_TEST_USER_CODE_IMAGE` and

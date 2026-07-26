@@ -16,6 +16,7 @@ import {
   deleteTestResourceAndWait,
   isClusterAvailable,
   isNotFoundError,
+  requireTestStorageClass,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -120,12 +121,13 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
   const testNamespace = `typekro-test-cnpg-${runId}`;
   const operatorNs = `cnpg-test-op-${runId}`;
   const clusterNs = `cnpg-test-db-${runId}`;
-  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
+  let storageClass: string;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   beforeAll(async () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
+      storageClass = await requireTestStorageClass({ kubeConfig });
       namespaceLeases.push(
         ...(await Promise.all(
           [testNamespace, operatorNs, clusterNs].map((namespace) =>
@@ -311,7 +313,7 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
         instances: 1,
         storage: {
           size: '1Gi',
-          ...(storageClass && { storageClass }),
+          storageClass,
         },
         bootstrap: {
           initdb: { database: 'e2etest', owner: 'app' },

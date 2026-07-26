@@ -541,9 +541,11 @@ because it passes when invoked directly. It must participate in the repository h
   replace the harness run.
 - Confirm from the Bun summary or a distinctive test log that the new direct and KRO cases actually ran;
   a green command with the suite counted as skipped is not evidence.
-- If the integration needs an additional baseline prerequisite such as a default StorageClass, add it to
-  the harness setup or fail with a clear prerequisite error. Do not leave the only working setup as an
-  undocumented property of the author's local cluster.
+- Storage-backed suites must call `requireTestStorageClass()` and pass its returned name into every
+  persistent resource. The helper requires explicit environment evidence and verifies the named
+  StorageClass through the Kubernetes API, so focused test-file invocations are as safe as the full
+  runner. The shell harness may install or select storage for a harness-created cluster, but it must not
+  be the suite's only prerequisite check.
 
 **Deep merge for values:**
 - Test one-level deep merge (existing keys preserved)
