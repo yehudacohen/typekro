@@ -34,6 +34,7 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
   // searxng/dagster KRO-mode suites.
   const kroNs = `clickhouse-test-kro-${runId}`;
   const kroCrNs = `clickhouse-test-kro-cr-${runId}`;
+  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   beforeAll(async () => {
@@ -213,7 +214,10 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
       version: '25.3',
       shards: 1,
       replicas: 1,
-      storage: { size: '1Gi' },
+      storage: {
+        size: '1Gi',
+        ...(storageClass && { storageClassName: storageClass }),
+      },
       podResources: {
         requests: { cpu: '100m', memory: '512Mi' },
         limits: { memory: '1Gi' },
@@ -309,7 +313,10 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         name: 'e2e-cluster',
         namespace: chiNs,
         version: '25.7',
-        storage: { size: '1Gi' },
+        storage: {
+          size: '1Gi',
+          ...(storageClass && { storageClassName: storageClass }),
+        },
         podResources: {
           requests: { cpu: '100m', memory: '512Mi' },
           limits: { memory: '1Gi' },
@@ -379,7 +386,10 @@ describeOrSkip('ClickHouse Operator Bootstrap Composition Tests', () => {
         name: instanceName,
         namespace: kroNs,
         version: '25.7',
-        storage: { size: '1Gi' },
+        storage: {
+          size: '1Gi',
+          ...(storageClass && { storageClassName: storageClass }),
+        },
         podResources: {
           requests: { cpu: '100m', memory: '512Mi' },
           limits: { memory: '1Gi' },

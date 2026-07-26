@@ -80,6 +80,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   // same split as the searxng/dagster KRO-mode suites.
   const kroStackNs = `clickstack-test-kro-${runId}`;
   const kroCrNs = `clickstack-test-kro-cr-${runId}`;
+  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   const chiName = 'clickstack-e2e-ch';
@@ -355,7 +356,10 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       name: chiName,
       namespace: chiNs,
       version: '25.7',
-      storage: { size: '1Gi' },
+      storage: {
+        size: '1Gi',
+        ...(storageClass && { storageClassName: storageClass }),
+      },
       podResources: {
         requests: { cpu: '100m', memory: '512Mi' },
         limits: { memory: '1Gi' },
@@ -379,7 +383,12 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   it('deploys clickstack wired at the external ClickHouse and hydrates the status contract', async () => {
     expect(clickhouseHost).toBeDefined();
 
-    const { clickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
+    const { makeClickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
+    const clickstackBootstrap = makeClickstackBootstrap({
+      ...(storageClass && {
+        mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
+      }),
+    });
 
     clickstackFactory = clickstackBootstrap.factory('direct', {
       namespace: stackNs,
@@ -441,7 +450,12 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     // instance CR's status carries the ui/gateway/app endpoint contract.
     expect(clickhouseHost).toBeDefined();
 
-    const { clickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
+    const { makeClickstackBootstrap } = await import('../../../src/factories/clickstack/index.js');
+    const clickstackBootstrap = makeClickstackBootstrap({
+      ...(storageClass && {
+        mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
+      }),
+    });
     const { createBunCompatibleCustomObjectsApi } = await import(
       '../../../src/core/kubernetes/index.js'
     );

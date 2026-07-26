@@ -178,6 +178,12 @@ export interface APISixBootstrapConfig {
     enabled?: boolean;
     /** Number of etcd replicas. Defaults to 1 for single-node clusters. */
     replicaCount?: number;
+    persistence?: {
+      enabled?: boolean;
+      storageClass?: string;
+      size?: string;
+      accessModes?: string[];
+    };
     image?: {
       repository?: string;
       tag?: string;
@@ -327,6 +333,12 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
   'etcd?': {
     'enabled?': 'boolean',
     'replicaCount?': 'number.integer',
+    'persistence?': {
+      'enabled?': 'boolean',
+      'storageClass?': 'string',
+      'size?': 'string',
+      'accessModes?': 'string[]',
+    },
     'image?': imageSchemaShape,
     'resources?': resourceRequirementsSchemaShape,
     'auth?': {
@@ -565,6 +577,12 @@ export interface APISixHelmValues {
     enabled?: boolean;
     /** Number of etcd replicas. */
     replicaCount?: number;
+    persistence?: {
+      enabled?: boolean;
+      storageClass?: string;
+      size?: string;
+      accessModes?: string[];
+    };
     image?: {
       repository?: string;
       tag?: string;

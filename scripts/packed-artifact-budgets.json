@@ -4,6 +4,7 @@
   "maxUnpackedBytes": 15000000,
   "maxDeclarationBytes": 2500000,
   "maxFileCount": 3000,
+  "coldImportSamples": 3,
   "maxColdImportMilliseconds": {
     "node": 5000,
     "bun": 5000

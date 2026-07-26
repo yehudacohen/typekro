@@ -120,6 +120,7 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
   const testNamespace = `typekro-test-cnpg-${runId}`;
   const operatorNs = `cnpg-test-op-${runId}`;
   const clusterNs = `cnpg-test-db-${runId}`;
+  const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
   const namespaceLeases: TestNamespaceLease[] = [];
 
   beforeAll(async () => {
@@ -308,7 +309,10 @@ describeOrSkip('CNPG Bootstrap Composition Tests', () => {
       namespace: clusterNs,
       spec: {
         instances: 1,
-        storage: { size: '1Gi' },
+        storage: {
+          size: '1Gi',
+          ...(storageClass && { storageClass }),
+        },
         bootstrap: {
           initdb: { database: 'e2etest', owner: 'app' },
         },

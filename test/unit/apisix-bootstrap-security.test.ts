@@ -2,8 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as jsYaml from 'js-yaml';
 import { apisixBootstrap } from '../../src/factories/apisix/compositions/apisix-bootstrap.js';
-import { APISixBootstrapConfigSchema, APISixBootstrapStatusSchema } from '../../src/factories/apisix/types.js';
-import { mapAPISixConfigToHelmValues, validateAPISixHelmValues } from '../../src/factories/apisix/utils/helm-values-mapper.js';
+import {
+  APISixBootstrapConfigSchema,
+  APISixBootstrapStatusSchema,
+} from '../../src/factories/apisix/types.js';
+import {
+  mapAPISixConfigToHelmValues,
+  validateAPISixHelmValues,
+} from '../../src/factories/apisix/utils/helm-values-mapper.js';
 import { kubernetesComposition } from '../../src/index.js';
 
 describe('APISIX bootstrap credential serialization', () => {
@@ -68,6 +74,12 @@ describe('APISIX bootstrap credential serialization', () => {
       etcd: {
         enabled: true,
         replicaCount: 1,
+        persistence: {
+          enabled: true,
+          storageClass: 'local-path',
+          size: '4Gi',
+          accessModes: ['ReadWriteOnce'],
+        },
         auth: { tls: { enabled: false } },
       },
       customValues: { extra: { enabled: true } },
@@ -78,8 +90,28 @@ describe('APISIX bootstrap credential serialization', () => {
       expect(result.apisix?.image?.repository).toBe('apache/apisix');
       expect(result.dashboard?.enabled).toBe(true);
       expect(result.etcd?.replicaCount).toBe(1);
+      expect(result.etcd?.persistence?.storageClass).toBe('local-path');
       expect(result.customValues).toEqual({ extra: { enabled: true } });
     }
+  });
+
+  it('maps typed etcd persistence into APISIX Helm values', () => {
+    const helmValues = mapAPISixConfigToHelmValues({
+      name: 'apisix',
+      etcd: {
+        persistence: {
+          enabled: true,
+          storageClass: 'local-path',
+          size: '4Gi',
+        },
+      },
+    });
+
+    expect(helmValues.etcd?.persistence).toEqual({
+      enabled: true,
+      storageClass: 'local-path',
+      size: '4Gi',
+    });
   });
 
   it('exposes gateway service ports in the KRO status schema', () => {
@@ -111,7 +143,7 @@ describe('APISIX bootstrap credential serialization', () => {
     });
 
     expect(warnings).toContain(
-      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.',
+      'APISIX ingress controller is disabled. APISIX CRD resources and standard Kubernetes Ingress resources will not be reconciled unless you deploy an ingress controller separately.'
     );
     expect(warnings).not.toContain(
       'Ingress controller is disabled. This will prevent ingress resources from being processed.'

@@ -295,6 +295,31 @@ describeOrSkip(
         }
       }
 
+      // Occupied/adopted namespace cases intentionally retain their RGD during normal
+      // teardown. Once the exact test fixtures above are gone, retire those unique RGDs
+      // before deleting generated CRDs so KRO cannot recreate their definitions.
+      for (const name of [
+        `ns-del-empty-${runToken}`,
+        `ns-del-occ-${runToken}`,
+        `ns-del-adopt-${runToken}`,
+        `ns-del-shared-${runToken}`,
+        `ns-del-retry-${runToken}`,
+      ]) {
+        try {
+          await deleteTestResourceAndWait(
+            {
+              apiVersion: 'kro.run/v1alpha1',
+              kind: 'ResourceGraphDefinition',
+              metadata: { name },
+            },
+            kc,
+            180_000
+          );
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+
       // Normal application teardown intentionally retains generated CRDs Active. This is
       // explicit test-fixture GC for the unique, retired kinds created by this suite.
       for (const kind of [

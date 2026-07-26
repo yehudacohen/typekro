@@ -12,6 +12,7 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 
 setDefaultTimeout(900_000);
+
 import type * as k8s from '@kubernetes/client-node';
 import { createBunCompatibleNetworkingV1Api } from '../../../src/core/kubernetes/bun-api-client.js';
 import {
@@ -103,6 +104,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     // Deploy APISIX using chart v2.13.0 (default)
     // Uses NodePort because the chart's gateway service template unconditionally
     // sets externalTrafficPolicy which is invalid for ClusterIP on Kubernetes 1.33+
+    const storageClass = process.env.TYPEKRO_TEST_STORAGE_CLASS;
     const instance = await runWithExpectedTestNamespace(
       apisixNamespace,
       kubeConfig,
@@ -115,6 +117,11 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
           namespace: apisixNamespace,
           version: '2.13.0',
           replicaCount: 1,
+          ...(storageClass && {
+            etcd: {
+              persistence: { storageClass },
+            },
+          }),
           gateway: {
             type: 'NodePort',
             http: { enabled: true, servicePort: 80 },

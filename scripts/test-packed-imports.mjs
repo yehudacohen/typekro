@@ -66,6 +66,11 @@ function assertBudget(name, actual, maximum, failures) {
   }
 }
 
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
 try {
   run('bun', ['run', 'build:lib']);
   run('bun', ['pm', 'pack', '--destination', temporaryRoot, '--ignore-scripts', '--quiet']);
@@ -115,7 +120,19 @@ try {
   const importProgram = exportEntries
     .map(([exportName]) => `await import(${JSON.stringify(packageSpecifier(exportName))})`)
     .join(';');
+  const coldImportSampleCount = budgets.coldImportSamples;
+  if (
+    !Number.isInteger(coldImportSampleCount) ||
+    coldImportSampleCount < 3 ||
+    coldImportSampleCount % 2 === 0
+  ) {
+    throw new Error(
+      `coldImportSamples must be an odd integer of at least 3; found ${coldImportSampleCount}`
+    );
+  }
+
   const coldImportMilliseconds = {};
+  const coldImportSamplesMilliseconds = {};
   for (const [runtimeName, label, runtime, args] of [
     [
       'node',
@@ -125,13 +142,18 @@ try {
     ],
     ['bun', 'bun', 'bun', ['-e', importProgram]],
   ]) {
-    const result = run(runtime, args, { cwd: consumerRoot });
-    if (result.stdout !== '' || result.stderr !== '') {
-      throw new Error(
-        `${label} packed imports emitted output.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
-      );
+    const samples = [];
+    for (let sample = 0; sample < coldImportSampleCount; sample += 1) {
+      const result = run(runtime, args, { cwd: consumerRoot });
+      if (result.stdout !== '' || result.stderr !== '') {
+        throw new Error(
+          `${label} packed imports emitted output.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+        );
+      }
+      samples.push(Math.ceil(result.durationMilliseconds));
     }
-    coldImportMilliseconds[runtimeName] = Math.ceil(result.durationMilliseconds);
+    coldImportSamplesMilliseconds[runtimeName] = samples;
+    coldImportMilliseconds[runtimeName] = median(samples);
   }
 
   const failures = [];
@@ -162,6 +184,7 @@ try {
     exportCount: exportEntries.length,
     ...artifactMetrics,
     coldImportMilliseconds,
+    coldImportSamplesMilliseconds,
     budgets,
   };
   if (failures.length > 0) {

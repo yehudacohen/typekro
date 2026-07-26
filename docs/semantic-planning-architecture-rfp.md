@@ -214,6 +214,10 @@ While Effect v4 remains pre-stable, TypeKro pins and tests one coherent Effect d
 including `effect`, `@effect/platform-*`, `@effect/vitest`, and Alchemy's supported peer range.
 Exact-pinning only the root `effect` package is insufficient when transitive Effect packages resolve
 to incompatible beta revisions. CI verifies the installed cohort and packed-package behavior.
+Changing that cohort is most directly observable by Alchemy and Effect-interoperating consumers;
+ordinary consumers of the stable Promise facade do not receive Effect programs, but still require
+packed-import and declaration verification because Effect remains part of TypeKro's runtime
+dependency graph.
 
 ### 4.6 Existing Provider-Like APIs
 
@@ -1696,19 +1700,20 @@ readiness polling, rollback, deletion, or the JS-to-CEL frontend.
 | B | Value, expression, sensitivity, schema IR, and canonical codecs | 2.75-4 weeks | Complete for the mandatory architecture and representative live matrix |
 | C | Captured composition IR, planning contracts, provenance, lifecycle, and digest validation | 3-4.5 weeks | Complete; retain conformance coverage |
 | D | Effect shell, artifact-plan migration, and standalone/Alchemy/YAML adaptation | 3.5-5.5 weeks | Complete for mandatory acceptance; retain compatibility coverage |
-| E | Live canonicalization, lifecycle completion, apply-policy hardening, packaging, and stabilization | 3.5-6 weeks | 0.05-0.15 week of review and downstream soak |
+| E | Live canonicalization, lifecycle completion, apply-policy hardening, packaging, and stabilization | 3.5-6 weeks | Implementation substantially complete; full required-cluster evidence, review, and downstream soak remain release gates |
 
 The revised production-grade migration is approximately **14-22 engineer-weeks** from v0.28.1.
 That number is retained as the historical whole-program estimate, not as work still outstanding.
-Against the current experimental branch, the remaining work is approximately **0.05-0.15
-engineer-week**, or roughly **0.2-0.5 calendar week** with review and downstream soak.
-The remaining implementation allowance is only **0.01-0.03 engineer-week** for defects exposed by
-review or prerelease consumers; the final repository and packaging gates are green. Recoverable
+Against the current experimental branch, the architecture and primary implementation are
+substantially complete. The remaining duration cannot be reduced responsibly to a fraction of an
+engineer-week: it is driven by required-cluster verification, review findings, and downstream
+soak, each of which may expose integration-specific conformance work. Recoverable
 analyzer warnings now wait for final analysis, contextual timeout
 errors preserve the operation and resource evidence, authenticated Bun watches are implemented,
 completed Job descendants are handled by exact controller UID, and live direct/YAML SSA plus
-KRO/Alchemy persisted-upgrade fixtures pass. The balance is the complete repository and packaging
-gates, review, documentation reconciliation, and a small release margin. Specialized-readiness
+KRO/Alchemy persisted-upgrade fixtures have focused live evidence. Release acceptance still
+requires the declared repository, packed-consumer, and complete required-cluster gates to pass on
+the release candidate, followed by review and downstream soak. Specialized-readiness
 classification, strict rejection of unclassified evaluators, instance-bound Secret handling,
 prompt permanent-occupant retention, correct Helm fixture naming, direct singleton resolution,
 static artifact ordering, and KRO-accepted runtime Helm-value lowering remain implemented.
@@ -1832,12 +1837,12 @@ systems:
 | Canonicalization and lifecycle completion | Desired/live canonicalizers, exact redacted drift paths, direct/KRO parity, canonical no-op decisions, structured completion, generated-CRD retention, occupied-resource policy, controller-descendant drain, exact completed-Job controller-UID capture, blocker diagnostics, typed Alchemy retry adaptation, confirmed replacement, and authoritative CRD fallback are implemented. Live `NetworkPolicy`, completed Job/Pod, generated-CRD, ClickStack, and namespace-policy fixtures prove the representative paths. Remaining work is conformance expansion for unusual API normalization and finalizer combinations. | 0.01-0.03 week |
 | Apply-policy and release hardening | Retain live direct/YAML fail/force/coexistence/ownership-migration evidence, typed SSA conflicts, field-manager-preserving create fallback, fail-closed CRD admission, immutable-field and replacement regressions, packed-consumer budgets, full-suite gates, and release documentation. Expand the live API-kind matrix when a supported integration exposes a new ownership topology. | 0.025-0.065 week |
 
-These packages sum to **0.05-0.14 engineer-week** and are rounded to the **0.05-0.15
-engineer-week** forecast above to include review and downstream-soak margin.
-The representative repository round-trip and live target/host matrices are green. The primary RFP
-architecture has therefore earned acceptance through implementation plus live evidence, not merely
-through DTOs or pure compilers. The repository, packaging, documentation, and packed-consumer
-gates are green; the remaining release work is human review and ordinary downstream soak.
+These estimates describe the likely size of localized implementation follow-up, not a release
+date. Cluster verification and downstream soak remain elapsed-time gates and can reveal work that
+is not usefully predictable in advance. The primary RFP architecture has earned implementation
+acceptance through focused live evidence, not merely through DTOs or pure compilers. Release
+acceptance requires a clean run of the declared repository, packaging, packed-consumer, randomized,
+and required-cluster matrices from the release-candidate commit.
 
 The residual range is broad relative to its small size because Kubernetes admission/defaulting and
 third-party finalizers can still expose a new kind-specific conformance case. The recursive
@@ -2186,7 +2191,7 @@ not mistaken for production migration:
 | 6 | Replace architectural `mode: 'alchemy'` branching with direct/KRO target plus Alchemy host context. | Provider execution now passes the declaration's direct/KRO strategy. The legacy union value remains only for source/state compatibility and still needs a deprecation migration. |
 | 7 | Replace Alchemy CEL scanning and WeakMap/readiness reconstruction with explicit serializable artifact records. | Implemented for new direct and KRO Alchemy state. Direct declarations carry digested per-resource execution records; KRO declarations carry a canonical recursive bundle plus operation identity. Provider reconciliation decodes them, validates identity and dependency wiring against artifact edges, and restores portable metadata. JSON-state, tampering, live host, and legacy-to-canonical persisted-upgrade fixtures pass. A scanner remains only for the documented pre-record compatibility window. |
 | 8 | Use typed, interruptible Effect adapters with one standalone outer runtime and no nested Alchemy runtime. | Implemented across stable cluster-facing Promise operations. Alchemy provider operations use `Effect.tryPromise` without a nested runtime. Standalone direct and KRO deploy/delete, instance/RGD/status reads, direct health/status reads, rollback, server dry-run, and authenticated event watch enter or join the operation boundary as appropriate. Exact TypeKro errors and abort reasons survive the Promise boundary, and interruption propagates through deployment, readiness, prerequisites, rollback, finalizer, and namespace-teardown waits. Generated-client calls with no per-request signal retain the documented bounded-timeout limitation. |
-| 9 | Enforce one supported Effect v4 dependency cohort in package and lockfile tests. | Implemented for beta.75 across core, Bun platform, node-shared platform, and test packages, with Alchemy runtime coverage and a lockfile assertion. |
+| 9 | Enforce one supported Effect v4 dependency cohort in package and lockfile tests. | Implemented for beta.84 across core, Bun platform, node-shared platform, and test packages, with Alchemy runtime coverage, a lockfile assertion, and packed Node/Bun import budgets. |
 
 In addition, canonical plan/artifact codecs, typed reference/template lowering, plan-value
 materialization, and direct artifact-to-runtime adaptation now exist. The production direct factory
@@ -2208,19 +2213,23 @@ correction 7 is complete for new state.
 
 ## 18. Recommendation
 
-Approve the responsibility boundary and move the measured migration into release stabilization.
+Approve the responsibility boundary and move the measured migration into release-candidate
+stabilization.
 The prototype has now demonstrated canonical planning, exact factory
 provenance, decentralized representation requirements, target compilation, strict decoding, and a
 production direct-path bridge with explicit external-reference materialization and readiness
-identity, plus an authoritative production KRO graph-child/RGD path. The representative live
-lifecycle, ownership, and target/host fixtures now pass, as do the final repository and packaging
-gates; keep the DTOs experimental until the formats receive an explicit stability decision.
+identity, plus an authoritative production KRO graph-child/RGD path. Focused live lifecycle,
+ownership, and target/host fixtures pass; require the complete release-candidate matrix and
+packed-consumer gates before publication. Keep the DTOs experimental until the formats receive an
+explicit stability decision.
 Specialized readiness behavior is now portable or explicitly constrained. Optionality, iteration,
 activation, sensitivity, identity,
 and established compiler shapes now survive the mandatory checked-in analyzer and integration
 corpus. KRO outer-bundle
-execution is now authoritative for new semantic-capture state in every host. The remaining reasons
-to keep it experimental are final release evidence, downstream soak, and format stabilization, not
+execution is now authoritative for new semantic-capture state in every host. Publish first as a
+prerelease (for example, `0.29.0-rc.1`) for downstream soak rather than promoting directly from
+focused evidence. The remaining reasons to keep it experimental are final release evidence,
+downstream soak, and format stabilization, not
 a missing host adapter, missing primary lifecycle path, or unresolved responsibility boundary.
 
 Migrate KRO and declarative adapters incrementally through artifact plans, preserving the existing
