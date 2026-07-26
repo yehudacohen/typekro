@@ -220,20 +220,73 @@ describe('APISIX bootstrap credential serialization', () => {
     }
   });
 
-  it('wires the HelmRelease sourceRef to the created HelmRepository name', () => {
+  it('wires the HelmRelease to a separately owned HelmRepository singleton', () => {
     const originalAdmin = process.env.APISIX_ADMIN_KEY;
     const originalViewer = process.env.APISIX_VIEWER_KEY;
     process.env.APISIX_ADMIN_KEY = 'env-admin-key';
     process.env.APISIX_VIEWER_KEY = 'env-viewer-key';
 
     try {
-      const yaml = apisixBootstrap.toYaml();
+      const documents = jsYaml.loadAll(apisixBootstrap.toYaml()) as Array<{
+        kind?: string;
+        spec?: {
+          schema?: { kind?: string };
+          resources?: Array<{
+            id?: string;
+            externalRef?: {
+              kind?: string;
+              metadata?: { name?: string; namespace?: string };
+            };
+            template?: {
+              kind?: string;
+              metadata?: { name?: string; namespace?: string };
+              spec?: {
+                chart?: {
+                  spec?: {
+                    sourceRef?: { kind?: string; name?: string; namespace?: string };
+                  };
+                };
+              };
+            };
+          }>;
+        };
+      }>;
+      const owner = documents.find(
+        (document) =>
+          document.kind === 'ResourceGraphDefinition' &&
+          document.spec?.schema?.kind === 'APISixHelmRepository'
+      );
+      const consumer = documents.find(
+        (document) =>
+          document.kind === 'ResourceGraphDefinition' &&
+          document.spec?.schema?.kind === 'APISixBootstrap'
+      );
+      const repository = owner?.spec?.resources?.find(
+        (resource) => resource.template?.kind === 'HelmRepository'
+      );
+      const repositoryRef = consumer?.spec?.resources?.find(
+        (resource) => resource.externalRef?.kind === 'APISixHelmRepository'
+      );
+      const release = consumer?.spec?.resources?.find(
+        (resource) => resource.template?.kind === 'HelmRelease'
+      );
 
-      expect(yaml).toContain('kind: HelmRepository');
-      expect(yaml).toContain('name: apisix-repo');
-      expect(yaml).toContain('sourceRef:');
-      expect(yaml).toContain('name: apisix-repo');
-      expect(yaml).not.toContain('name: apisix-bootstrap-repo');
+      expect(repository?.template?.metadata).toEqual({
+        name: '${schema.spec.name}',
+        namespace: '${schema.spec.namespace}',
+      });
+      expect(repositoryRef?.externalRef?.metadata).toEqual({
+        name: 'apisix-helm-repository',
+        namespace: 'typekro-singletons',
+      });
+      expect(release?.template?.spec?.chart?.spec?.sourceRef).toEqual({
+        kind: 'HelmRepository',
+        name: 'apisix-repo',
+        namespace: 'flux-system',
+      });
+      expect(
+        consumer?.spec?.resources?.some((resource) => resource.template?.kind === 'HelmRepository')
+      ).toBe(false);
     } finally {
       if (originalAdmin === undefined) {
         delete process.env.APISIX_ADMIN_KEY;
@@ -256,10 +309,16 @@ describe('APISIX bootstrap credential serialization', () => {
 
     try {
       const yaml = apisixBootstrap.toYaml();
-      const rgd = jsYaml.load(yaml) as {
-        spec: { resources: Array<{ id: string; template?: { spec?: { values?: unknown } } }> };
-      };
-      const values = rgd.spec.resources.find((resource) => resource.id === 'apisixHelmRelease')
+      const rgd = (
+        jsYaml.loadAll(yaml) as Array<{
+          spec?: {
+            schema?: { kind?: string };
+            resources?: Array<{ id: string; template?: { spec?: { values?: unknown } } }>;
+          };
+        }>
+      ).find((document) => document.spec?.schema?.kind === 'APISixBootstrap');
+      expect(rgd).toBeDefined();
+      const values = rgd!.spec!.resources!.find((resource) => resource.id === 'apisixHelmRelease')
         ?.template?.spec?.values as Record<string, unknown>;
       const serializedValues = JSON.stringify(values);
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { relative } from 'node:path';
+import {
+  selectStorageClass,
+  type StorageClassCandidate,
+} from '../../scripts/integration-storage-selection.js';
 
 const integrationRoot = new URL('../integration/', import.meta.url);
 const cleanupScript = new URL('../../scripts/cleanup-test-namespaces.ts', import.meta.url);
@@ -58,6 +62,31 @@ const forbiddenPatterns: ForbiddenPattern[] = [
 ];
 
 describe('integration harness conformance', () => {
+  it('requires caller-owned clusters to name a StorageClass explicitly', () => {
+    const storageClasses: StorageClassCandidate[] = [
+      {
+        metadata: {
+          name: 'stale-default',
+          annotations: {
+            'storageclass.kubernetes.io/is-default-class': 'true',
+          },
+        },
+      },
+      {
+        metadata: { name: 'local-path' },
+      },
+    ];
+
+    expect(() => selectStorageClass(storageClasses, undefined, false)).toThrow(
+      'Existing clusters require an explicit RWO-capable StorageClass'
+    );
+    expect(selectStorageClass(storageClasses, 'local-path', false)).toBe('local-path');
+    expect(selectStorageClass(storageClasses, undefined, true)).toBe('stale-default');
+    expect(() => selectStorageClass(storageClasses, 'missing', false)).toThrow(
+      'Configured StorageClass does not exist: missing'
+    );
+  });
+
   it('keeps live suites on UID-leased API-driven lifecycle primitives', async () => {
     const violations: string[] = [];
     const glob = new Bun.Glob('**/*.test.ts');

@@ -404,6 +404,18 @@ export const APISixBootstrapStatusSchema: Type<APISixBootstrapStatus> = type({
   },
 });
 
+/** Spec accepted by the shared APISIX HelmRepository singleton. */
+export const APISixHelmRepositorySingletonSpecSchema = type({
+  name: 'string',
+  namespace: 'string',
+  url: 'string',
+});
+
+/** Status surfaced by the shared APISIX HelmRepository singleton. */
+export const APISixHelmRepositorySingletonStatusSchema = type({
+  ready: 'boolean',
+});
+
 // APISix Bootstrap Status
 export interface APISixBootstrapStatus {
   // Overall status

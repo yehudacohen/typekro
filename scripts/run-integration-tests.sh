@@ -109,9 +109,9 @@ if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
   # by extracting TLS options from https.Agent and passing them directly to https.request
   NODE_ENV=test NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-setup.ts
 
-  # NATS JetStream file storage requires a real RWO StorageClass. An explicit
-  # class wins; otherwise use only the cluster's annotated default. Never
-  # mutate a caller-owned cluster by installing storage infrastructure.
+  # Storage-backed fixtures require a proven RWO StorageClass. Caller-owned
+  # clusters must opt into a class explicitly; an annotated default alone is
+  # not evidence that its provisioner is operational.
   TYPEKRO_NATS_STORAGE_CLASS=$(CREATE_CLUSTER="$CREATE_CLUSTER" bun scripts/integration-cluster-harness.ts storage-class "${TYPEKRO_NATS_STORAGE_CLASS:-}")
   export TYPEKRO_NATS_STORAGE_CLASS
   echo "   JetStream StorageClass: $TYPEKRO_NATS_STORAGE_CLASS"

@@ -72,8 +72,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
         instanceName,
         namespaceLease ? [namespaceLease] : [],
         kubeConfig,
-        600_000,
-        { scopes: ['cluster'], includeUnscopedResources: true }
+        600_000
       );
       namespaceLease = undefined;
     } else if (namespaceLease) {
@@ -89,14 +88,12 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       '../../../src/factories/apisix/compositions/apisix-bootstrap.js'
     );
 
-    // Create direct factory for deployment
-    // hydrateStatus: false — status hydration for compositions has un-timed K8s API calls
-    // in base-strategy.ts that can hang indefinitely (tracked as separate bug).
-    // This test validates deployment + resource creation, not status hydration.
+    // Create direct factory for deployment. Hydration is part of the public
+    // contract and is bounded by the factory timeout.
     directFactory = apisixBootstrap.factory('direct', {
       namespace: 'flux-system', // HelmReleases go to flux-system
       waitForReady: true,
-      hydrateStatus: false,
+      hydrateStatus: true,
       timeout: 600000, // 10 minutes - Helm chart pull + pod startup
       kubeConfig: kubeConfig,
     });
@@ -141,6 +138,21 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     // Validate deployment result
     expect(instance).toBeDefined();
     expect(instance.metadata.name).toBe(instanceName);
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.phase).toBe('Ready');
+    expect(instance.status.gatewayReady).toBe(true);
+    expect(instance.status.standardIngressReady).toBe(false);
+    expect(instance.status.dashboardReady).toBe(true);
+    expect(instance.status.etcdReady).toBe(true);
+    expect(instance.status.gatewayService).toEqual({
+      name: `${instanceName}-gateway`,
+      namespace: apisixNamespace,
+      type: 'NodePort',
+      ports: [
+        { name: 'http', port: 80, targetPort: 9080, protocol: 'TCP' },
+        { name: 'https', port: 443, targetPort: 9443, protocol: 'TCP' },
+      ],
+    });
     console.log('APISIX bootstrap deployment completed');
 
     // Step 1: Verify HelmRepository was created
@@ -180,6 +192,14 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
     expect(chartSpec.chart).toBe('apisix');
     expect(chartSpec.version).toBe('2.13.0');
     expect(releaseSpec.targetNamespace).toBe(apisixNamespace);
+    const releaseMetadata = apisixRelease!.metadata as Record<string, unknown>;
+    const releaseStatus = apisixRelease!.status as Record<string, unknown>;
+    expect(releaseStatus.observedGeneration).toBe(releaseMetadata.generation);
+    const readyCondition = (releaseStatus.conditions as Record<string, unknown>[]).find(
+      (condition) => condition.type === 'Ready'
+    );
+    expect(readyCondition?.status).toBe('True');
+    expect(readyCondition?.observedGeneration).toBe(releaseMetadata.generation);
     console.log('HelmRelease created with chart apisix@2.13.0');
 
     // Step 3: Verify this bootstrap did not create a misleading IngressClass
@@ -219,10 +239,18 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       instanceName,
       [namespaceLease],
       kubeConfig,
-      600_000,
-      { scopes: ['cluster'], includeUnscopedResources: true }
+      600_000
     );
     namespaceLease = undefined;
+    const repositoryAfterDelete = await customObjectsApi.getNamespacedCustomObject({
+      group: 'source.toolkit.fluxcd.io',
+      version: 'v1',
+      namespace: 'flux-system',
+      plural: 'helmrepositories',
+      name: 'apisix-repo',
+    });
+    expect(repositoryAfterDelete).toBeDefined();
+    directFactory = undefined;
     console.log('APISIX deployment cleaned up');
   }, 900000); // 15 minute timeout
 

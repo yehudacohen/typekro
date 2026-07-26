@@ -10,6 +10,7 @@ import {
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from '../test/integration/shared-kubeconfig.js';
+import { selectStorageClass } from './integration-storage-selection.js';
 
 const LOCAL_PATH_MANIFEST =
   'https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml';
@@ -103,36 +104,14 @@ async function listStorageClasses(kubeConfig: k8s.KubeConfig): Promise<StorageCl
   return response.items as StorageClassResource[];
 }
 
-function defaultStorageClass(resources: StorageClassResource[]): string | undefined {
-  return resources.find((resource) => {
-    const annotations = resource.metadata?.annotations ?? {};
-    return (
-      annotations['storageclass.kubernetes.io/is-default-class'] === 'true' ||
-      annotations['storageclass.beta.kubernetes.io/is-default-class'] === 'true'
-    );
-  })?.metadata?.name;
-}
-
 async function resolveStorageClass(
   requested: string | undefined,
   allowInstall: boolean
 ): Promise<string> {
   const kubeConfig = getIntegrationTestKubeConfig();
   let storageClasses = await listStorageClasses(kubeConfig);
-  if (requested) {
-    if (!storageClasses.some((resource) => resource.metadata?.name === requested)) {
-      throw new Error(`Configured StorageClass does not exist: ${requested}`);
-    }
-    return requested;
-  }
-
-  const currentDefault = defaultStorageClass(storageClasses);
-  if (currentDefault) return currentDefault;
-  if (!allowInstall) {
-    throw new Error(
-      'Existing cluster has no default StorageClass. Set TYPEKRO_NATS_STORAGE_CLASS to an existing RWO-capable class.'
-    );
-  }
+  const selected = selectStorageClass(storageClasses, requested, allowInstall);
+  if (selected) return selected;
 
   console.error('Installing local-path StorageClass in the harness-created cluster...');
   await installLocalPathProvisioner(kubeConfig);

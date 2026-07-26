@@ -1,22 +1,24 @@
-import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { Cel } from '../../../core/references/cel.js';
+import { singleton } from '../../../core/singleton/singleton.js';
 import type {
   DirectResourceFactory,
   KroResourceFactory,
   PublicFactoryOptions,
 } from '../../../core/types/deployment.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
-import { apisixHelmRelease, apisixHelmRepository } from '../resources/helm.js';
+import { apisixHelmRelease } from '../resources/helm.js';
 import {
   type APISixBootstrapConfig,
-  type APISixBootstrapStatus,
   APISixBootstrapConfigSchema,
+  type APISixBootstrapStatus,
   APISixBootstrapStatusSchema,
 } from '../types.js';
 import { resolveAdminCredentials } from '../utils/admin-credentials.js';
 import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import { apisixHelmRepositoryBootstrap } from './apisix-helm-repository.js';
 
 /**
  * APISix Bootstrap Composition
@@ -257,14 +259,17 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       id: 'apisixNamespace',
     });
 
-    // Create HelmRepository for APISix charts
+    // The official chart source is shared by every APISIX installation. Keep
+    // its ownership outside any consumer instance so one teardown cannot
+    // delete or relabel the repository used by another HelmRelease.
     const repositoryName = 'apisix-repo';
-    const _helmRepository = apisixHelmRepository({
-      name: repositoryName,
-      namespace: DEFAULT_FLUX_NAMESPACE,
-      url: 'https://charts.apiseven.com',
-      interval: '1h',
-      id: 'apisixHelmRepository',
+    const _helmRepository = singleton(apisixHelmRepositoryBootstrap, {
+      id: 'apisix-helm-repository',
+      spec: {
+        name: repositoryName,
+        namespace: DEFAULT_FLUX_NAMESPACE,
+        url: 'https://charts.apiseven.com',
+      },
     });
 
     // Create single HelmRelease for APISIX (gateway + etcd). The ingress-controller
@@ -282,21 +287,8 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       id: 'apisixHelmRelease',
     });
 
-    // Return status with CEL expressions referencing HelmRelease conditions
-    // Flux HelmRelease v2 uses conditions array (not a phase field).
-    // We use CEL .exists() to check for the Ready condition.
-    const helmReady = Cel.expr<boolean>(
-      helmRelease.status.conditions,
-      '.exists(c, c.type == "Ready" && c.status == "True")'
-    );
-    const helmFailed = Cel.expr<boolean>(
-      helmRelease.status.conditions,
-      '.exists(c, c.type == "Ready" && c.status == "False")'
-    );
-    const helmReconciling = Cel.expr<boolean>(
-      helmRelease.status.conditions,
-      '.exists(c, c.type == "Reconciling" && c.status == "True")'
-    );
+    // Ignore stale Flux conditions from a previous HelmRelease generation.
+    const releaseStatus = helmReleaseConditionSummary(helmRelease);
     const gatewayServicePorts: NonNullable<APISixBootstrapStatus['gatewayService']>['ports'] = [];
     if (fullConfig.gateway?.http?.enabled !== false) {
       gatewayServicePorts.push({
@@ -316,21 +308,14 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
     }
 
     return {
-      ready: helmReady,
-      phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'>(
-        helmReady,
-        ' ? "Ready" : ',
-        helmFailed,
-        ' ? "Failed" : ',
-        helmReconciling,
-        ' ? "Upgrading" : "Installing"'
-      ),
-      gatewayReady: helmReady,
+      ready: releaseStatus.ready,
+      phase: releaseStatus.phase,
+      gatewayReady: releaseStatus.ready,
       // The APISIX ingress-controller subchart is intentionally disabled above,
       // so this bootstrap does not reconcile standard Kubernetes Ingress by itself.
       standardIngressReady: false,
-      dashboardReady: fullConfig.dashboard?.enabled === false ? true : helmReady,
-      etcdReady: fullConfig.etcd?.enabled === false ? true : helmReady,
+      dashboardReady: fullConfig.dashboard?.enabled === false ? true : releaseStatus.ready,
+      etcdReady: fullConfig.etcd?.enabled === false ? true : releaseStatus.ready,
       gatewayService: {
         name: `${actualName}-gateway`,
         namespace: actualNamespace,
