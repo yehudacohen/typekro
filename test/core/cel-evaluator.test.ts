@@ -4,7 +4,8 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
-import { CelEvaluator } from '../../src/core/references/index.js';
+import { Cel, CelEvaluator } from '../../src/core/references/index.js';
+import type { KubernetesRef } from '../../src/core/types/common.js';
 import { CelEvaluationError } from '../../src/index.js';
 
 describe('CelEvaluator', () => {
@@ -109,6 +110,39 @@ describe('CelEvaluator', () => {
 
       const result = await evaluator.evaluate(expression, context);
       expect(result).toBe('10.0.0.1:8080');
+    });
+
+    it('treats dyn() as identity for structured Cel.default() in evaluate and parse paths', async () => {
+      const fallback = {
+        requests: { cpu: '250m', memory: '1Gi' },
+        limits: { memory: '2Gi' },
+      };
+      const resourcesRef: KubernetesRef<typeof fallback | undefined> = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'workload',
+        fieldPath: 'spec.resources',
+      };
+      const expression = Cel.default(resourcesRef, fallback);
+
+      context.resources.set('workload', {
+        spec: {
+          resources: {
+            requests: { cpu: '500m' },
+            limits: { memory: '4Gi' },
+          },
+        },
+      });
+
+      const expected = {
+        requests: { cpu: '500m' },
+        limits: { memory: '4Gi' },
+      };
+      expect(await evaluator.evaluate(expression, context)).toEqual(expected);
+      expect(await evaluator.parse(expression)(context)).toEqual(expected);
+
+      context.resources.set('workload', { spec: {} });
+      expect(await evaluator.evaluate(expression, context)).toEqual(fallback);
+      expect(await evaluator.parse(expression)(context)).toEqual(fallback);
     });
 
     it('should evaluate complex expressions with multiple resources', async () => {

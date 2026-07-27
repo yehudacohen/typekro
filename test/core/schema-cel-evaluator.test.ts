@@ -40,6 +40,53 @@ describe('schema CEL evaluator', () => {
     expect(evaluateSchemaCelExpression(expression, { replicas: 2 })).toBe(3);
   });
 
+  it('treats KRO dyn() type widening as runtime identity', () => {
+    const expression: CelExpression<Record<string, unknown>> = {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression:
+        'has(schema.spec.resources) && schema.spec.resources != null ? dyn(schema.spec.resources) : dyn({"requests":{"cpu":"250m"}})',
+    };
+
+    expect(evaluateSchemaCelExpression(expression, {})).toEqual({
+      requests: { cpu: '250m' },
+    });
+    expect(
+      evaluateSchemaCelExpression(expression, {
+        resources: { limits: { memory: '2Gi' } },
+      })
+    ).toEqual({ limits: { memory: '2Gi' } });
+  });
+
+  it('does not shadow a schema field named dyn with the evaluator helper', () => {
+    const expression: CelExpression<string> = {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: 'schema.spec.dyn',
+    };
+
+    expect(evaluateSchemaCelExpression(expression, { dyn: 'user-owned' })).toBe('user-owned');
+  });
+
+  it('preserves dyn( text inside a structured fallback string', () => {
+    const expression: CelExpression<Record<string, unknown>> = {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression:
+        'has(schema.spec.resources) && schema.spec.resources != null ? dyn(schema.spec.resources) : dyn({"script":"dyn("})',
+    };
+
+    expect(evaluateSchemaCelExpression(expression, {})).toEqual({
+      script: 'dyn(',
+    });
+  });
+
+  it('preserves quoted schema orValue() fallbacks across lexical segments', () => {
+    const expression: CelExpression<string> = {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: 'schema.spec.optional.orValue("fallback")',
+    };
+
+    expect(evaluateSchemaCelExpression(expression, {})).toBe('fallback');
+  });
+
   it('does not evaluate escaped literal interpolation text', () => {
     const result = evaluateSchemaCelExpression(
       template('prefix-\\${schema.spec.secret}-${schema.spec.name}'),
