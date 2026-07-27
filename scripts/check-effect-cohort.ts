@@ -1,4 +1,4 @@
-const EXPECTED_EFFECT_VERSION = '4.0.0-beta.84';
+const EXPECTED_EFFECT_VERSION = '4.0.0-beta.999';
 const COHORT_PACKAGES = [
   'effect',
   '@effect/platform-bun',
