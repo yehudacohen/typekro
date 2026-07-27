@@ -23,15 +23,19 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build
+        id: build
         run: bun run build
 
       - name: Typecheck
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run typecheck
 
       - name: Lint
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run lint
 
       - name: Docs validation
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           bun run docs:validate
           bun run docs:check-lines
@@ -40,21 +44,27 @@ jobs:
           bun run docs:build
 
       - name: Circular dependency check
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bunx madge --circular --extensions ts src/
 
       - name: Effect dependency cohort
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run check:effect-cohort
 
       - name: Packed artifact budgets and imports
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:packed-imports
 
       - name: Randomized unit test isolation
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:randomized
 
       - name: Unit tests with coverage
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:coverage
 
       - name: Integration YAML tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bun run test:integration:yaml
 
       - name: Upload coverage to Codecov
