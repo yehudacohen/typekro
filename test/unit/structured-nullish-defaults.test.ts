@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1ResourceRequirements } from '@kubernetes/client-node';
 import { type } from 'arktype';
+import type { Type } from 'arktype';
 import { mergeValuesExpression } from '../../src/core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { Cel } from '../../src/core/references/cel.js';
@@ -103,6 +104,31 @@ const NullableUnionSettingsSpecSchema = type({
 });
 
 type NullableUnionSettingsSpec = typeof NullableUnionSettingsSpecSchema.infer;
+
+const NullableArrayMemberSpecSchema = type({
+  name: 'string',
+  items: type('string | null').array(),
+});
+
+const NullableRecordValueSpecSchema = type({
+  name: 'string',
+  values: 'Record<string, string | null>',
+});
+
+const NestedNullableArrayMemberSpecSchema = type({
+  name: 'string',
+  groups: type('string | null').array().array(),
+});
+
+const NullableTupleMemberSpecSchema = type({
+  name: 'string',
+  items: ['string | null', 'number'],
+});
+
+const NullableArrayObjectPropertySpecSchema = type({
+  name: 'string',
+  items: type({ value: 'string | null' }).array(),
+});
 
 const defaultOsdResources = {
   requests: { cpu: '250m', memory: '1Gi' },
@@ -474,6 +500,59 @@ const nullableUnionBranchComposition = kubernetesComposition(
   }
 );
 
+function nullableCollectionComposition<TSpec extends { name: string }>(
+  name: string,
+  kind: string,
+  spec: Type<TSpec>
+) {
+  return kubernetesComposition(
+    {
+      name,
+      kind,
+      spec,
+      status: type({ ready: 'boolean' }),
+    },
+    (value: { name: string }) => {
+      Deployment({
+        name: value.name,
+        image: 'nginx:1.29',
+        id: 'workload',
+      });
+      return { ready: true };
+    }
+  );
+}
+
+const nullableArrayMemberComposition = nullableCollectionComposition(
+  'nullable-array-member',
+  'NullableArrayMember',
+  NullableArrayMemberSpecSchema
+);
+
+const nullableRecordValueComposition = nullableCollectionComposition(
+  'nullable-record-value',
+  'NullableRecordValue',
+  NullableRecordValueSpecSchema
+);
+
+const nestedNullableArrayMemberComposition = nullableCollectionComposition(
+  'nested-nullable-array-member',
+  'NestedNullableArrayMember',
+  NestedNullableArrayMemberSpecSchema
+);
+
+const nullableTupleMemberComposition = nullableCollectionComposition(
+  'nullable-tuple-member',
+  'NullableTupleMember',
+  NullableTupleMemberSpecSchema
+);
+
+const nullableArrayObjectPropertyComposition = nullableCollectionComposition(
+  'nullable-array-object-property',
+  'NullableArrayObjectProperty',
+  NullableArrayObjectPropertySpecSchema
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -683,6 +762,30 @@ describe('structured nullish defaults', () => {
   it('finds unrepresentable nullable fields nested inside union branches', () => {
     expect(() => nullableUnionBranchComposition.factory('kro').toYaml()).toThrow(
       /KRO SimpleSchema cannot represent nullable field schema\.spec\.settings\.resources/
+    );
+  });
+
+  it('finds unrepresentable nullable array members through sequence wrappers', () => {
+    expect(() => nullableArrayMemberComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.items\[\]/
+    );
+  });
+
+  it('finds unrepresentable nullable record values through index wrappers', () => {
+    expect(() => nullableRecordValueComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.values\.\*/
+    );
+  });
+
+  it('recurses through nested collection wrappers', () => {
+    expect(() => nestedNullableArrayMemberComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.groups\[\]\[\]/
+    );
+    expect(() => nullableTupleMemberComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.items\[\]\[0\]/
+    );
+    expect(() => nullableArrayObjectPropertyComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.items\[\]\.value/
     );
   });
 

@@ -797,9 +797,48 @@ function collectSchemaFieldPaths(node: unknown): SchemaFieldPaths {
     }
     if (current === null || typeof current !== 'object') return;
     const objectNode = current as {
+      defaultables?: [unknown, unknown][];
+      sequence?: unknown;
+      proto?: unknown;
+      index?: Array<{ value?: unknown }>;
+      optionals?: unknown[];
+      postfix?: unknown[];
+      prefix?: unknown[];
       required?: Array<{ key: string; value?: unknown }>;
       optional?: Array<{ key: string; value?: unknown }>;
+      variadic?: unknown;
     };
+
+    const walkCollectionMember = (member: unknown, path: string): void => {
+      if (schemaNodeAllowsNull(member)) nullable.add(path);
+      walk(member, path);
+    };
+
+    if (objectNode.proto === 'Array' && objectNode.sequence !== undefined) {
+      const elementPath = `${prefix}[]`;
+      walkCollectionMember(objectNode.sequence, elementPath);
+    }
+
+    for (const [index, member] of (objectNode.prefix ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[${index}]`);
+    }
+    for (const [index, member] of (objectNode.optionals ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[optional:${index}]`);
+    }
+    for (const [index, entry] of (objectNode.defaultables ?? []).entries()) {
+      walkCollectionMember(entry[0], `${prefix}[defaultable:${index}]`);
+    }
+    if (objectNode.variadic !== undefined) {
+      walkCollectionMember(objectNode.variadic, `${prefix}[]`);
+    }
+    for (const [index, member] of (objectNode.postfix ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[postfix:${index}]`);
+    }
+
+    for (const entry of objectNode.index ?? []) {
+      const valuePath = prefix ? `${prefix}.*` : '*';
+      walkCollectionMember(entry.value, valuePath);
+    }
 
     for (const entry of objectNode.optional ?? []) {
       const path = prefix ? `${prefix}.${entry.key}` : entry.key;

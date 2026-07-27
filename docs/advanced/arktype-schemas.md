@@ -108,7 +108,8 @@ const ConfigSpec = type({
 
 KRO SimpleSchema has no syntax for an explicitly nullable field. TypeKro therefore rejects ArkType
 spec fields such as `type({ value: SomeSchema.or('null') })` when generating a KRO graph instead of
-silently changing `T | null` into `T` or `T | undefined`.
+silently changing `T | null` into `T` or `T | undefined`. This also applies recursively to nullable
+array members, nested collection members, and record values.
 
 Use an optional field when omission expresses the intended state, and use `Cel.default(value,
 fallback)` for graph-aware defaults. Use direct mode when explicit `null` is part of the required
