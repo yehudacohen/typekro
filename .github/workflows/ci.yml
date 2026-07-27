@@ -26,12 +26,15 @@ jobs:
         run: bun run build
 
       - name: Typecheck
+        if: ${{ !cancelled() }}
         run: bun run typecheck
 
       - name: Lint
+        if: ${{ !cancelled() }}
         run: bun run lint
 
       - name: Docs validation
+        if: ${{ !cancelled() }}
         run: |
           bun run docs:validate
           bun run docs:check-lines
@@ -40,21 +43,27 @@ jobs:
           bun run docs:build
 
       - name: Circular dependency check
+        if: ${{ !cancelled() }}
         run: bunx madge --circular --extensions ts src/
 
       - name: Effect dependency cohort
+        if: ${{ !cancelled() }}
         run: bun run check:effect-cohort
 
       - name: Packed artifact budgets and imports
+        if: ${{ !cancelled() }}
         run: bun run test:packed-imports
 
       - name: Randomized unit test isolation
+        if: ${{ !cancelled() }}
         run: bun run test:randomized
 
       - name: Unit tests with coverage
+        if: ${{ !cancelled() }}
         run: bun run test:coverage
 
       - name: Integration YAML tests
+        if: ${{ !cancelled() }}
         run: bun run test:integration:yaml
 
       - name: Upload coverage to Codecov
