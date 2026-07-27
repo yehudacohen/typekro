@@ -413,13 +413,6 @@ function resolveDefaultsByReExecution(
       // skip them when it's absent (only in the proxy run, or the defaults run threw).
       if (defaultsRes) {
         extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
-        collectAmbiguousStructuredFallbacks(
-          proxyRes,
-          defaultsRes,
-          id,
-          [],
-          ambiguousStructuredFallbacks
-        );
         extractTernaryConditionals(
           proxyRes,
           defaultsRes,
@@ -428,6 +421,18 @@ function resolveDefaultsByReExecution(
           ternaryConditionFieldHints
         );
       }
+      // Ambiguity detection cannot depend on the all-defaults resource existing:
+      // an optional guard may remove the entire resource from that execution.
+      // Probe each bare structured schema marker with only that marker absent.
+      // A concrete structured value then proves only that black-box execution is
+      // ambiguous—not that the source was `??`—so compilation fails closed.
+      probeAmbiguousStructuredFallbacks(
+        compositionFn,
+        specJson,
+        proxyRes,
+        id,
+        ambiguousStructuredFallbacks
+      );
       // Cross-field `??` chain reconstruction is independent of the defaults run —
       // it does its own presence-probing — so it always runs.
       reconstructCrossFieldChains(
@@ -551,6 +556,41 @@ function collectMarkerLeaves(
 }
 
 /**
+ * Collect bare schema markers that have no explicit structured-expression
+ * provenance. ValuesMergeExpression already records its base/overlay semantics,
+ * so probing values inside that wrapper would misclassify an authored merge as
+ * an implicit fallback.
+ */
+function collectAmbiguityCandidateLeaves(
+  node: unknown,
+  path: string[],
+  out: Array<{ path: string[]; field: string }>
+): void {
+  if (isValuesMergeExpression(node)) return;
+
+  const classified = classifyLeaf(node);
+  if (classified.kind === 'field') {
+    out.push({ path: [...path], field: classified.field });
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((value, index) =>
+      collectAmbiguityCandidateLeaves(value, [...path, String(index)], out)
+    );
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node as Record<string, unknown>)) {
+      collectAmbiguityCandidateLeaves(
+        (node as Record<string, unknown>)[key],
+        [...path, key],
+        out
+      );
+    }
+  }
+}
+
+/**
  * Build a probe `spec`: the magic schema proxy (so any field access emits its
  * `spec.X` marker) wrapped so the dotted paths in `absent` resolve to `undefined`.
  * Driving presence this way lets a probe reveal which field a `??` chain falls
@@ -598,72 +638,62 @@ function runProbe(
 const celField = (field: string): string => `schema.spec.${field}`;
 
 /**
- * Detect structured proxy/default differences without pretending black-box
- * re-execution proves a `??` operation. Explicit `Cel.default()` values carry
- * their own CEL provenance and therefore do not appear as bare schema markers.
+ * Read a probed resource using a path captured from the proxy run. Values-merge
+ * wrappers may disappear when the probed field is absent, so their `base` path
+ * segment is transparent in that case.
  */
-function collectAmbiguousStructuredFallbacks(
-  proxyValue: unknown,
-  fallbackValue: unknown,
+function readProbeValueAtPath(obj: unknown, path: string[]): unknown {
+  let current = obj;
+  for (const key of path) {
+    if (key === 'base' && !isValuesMergeExpression(current)) continue;
+    if (current === null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+/**
+ * Detect a bare structured schema marker that becomes a concrete object/array
+ * when that exact field is absent. This targeted probe does not infer `??`
+ * semantics; it establishes that black-box execution is ambiguous and must
+ * fail closed. Explicit `Cel.default()` values carry CEL provenance and do not
+ * appear as bare schema-marker leaves.
+ */
+function probeAmbiguousStructuredFallbacks(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
+  proxyResource: Record<string, unknown>,
   resourceId: string,
-  path: string[],
   out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
-  if (isValuesMergeExpression(proxyValue) && !isValuesMergeExpression(fallbackValue)) {
-    collectAmbiguousStructuredFallbacks(
-      proxyValue.base,
-      fallbackValue,
-      resourceId,
-      [...path, 'base'],
-      out
+  const markerLeaves: Array<{ path: string[]; field: string }> = [];
+  collectAmbiguityCandidateLeaves(proxyResource, [], markerLeaves);
+  const pathsByField = new Map<string, string[][]>();
+  for (const marker of markerLeaves) {
+    const paths = pathsByField.get(marker.field) ?? [];
+    paths.push(marker.path);
+    pathsByField.set(marker.field, paths);
+  }
+
+  for (const [field, paths] of pathsByField) {
+    const probedResource = runProbe(
+      compositionFn,
+      specJson,
+      new Set([field]),
+      resourceId
     );
-    return;
-  }
-
-  const proxyString =
-    typeof proxyValue === 'function' || typeof proxyValue === 'string'
-      ? String(proxyValue)
-      : undefined;
-  const exactMarker = proxyString?.match(FULL_MARKER_RE)?.[1];
-  if (
-    exactMarker?.startsWith('spec.') &&
-    (Array.isArray(fallbackValue) || (fallbackValue !== null && typeof fallbackValue === 'object'))
-  ) {
-    out.push({
-      resourceId,
-      path: [...path],
-      field: exactMarker.slice('spec.'.length),
-    });
-    return;
-  }
-
-  if (Array.isArray(proxyValue) && Array.isArray(fallbackValue)) {
-    for (let index = 0; index < Math.min(proxyValue.length, fallbackValue.length); index++) {
-      collectAmbiguousStructuredFallbacks(
-        proxyValue[index],
-        fallbackValue[index],
-        resourceId,
-        [...path, String(index)],
-        out
-      );
-    }
-    return;
-  }
-
-  if (
-    proxyValue !== null &&
-    typeof proxyValue === 'object' &&
-    fallbackValue !== null &&
-    typeof fallbackValue === 'object'
-  ) {
-    for (const key of Object.keys(proxyValue as Record<string, unknown>)) {
-      collectAmbiguousStructuredFallbacks(
-        (proxyValue as Record<string, unknown>)[key],
-        (fallbackValue as Record<string, unknown>)[key],
-        resourceId,
-        [...path, key],
-        out
-      );
+    for (const path of paths) {
+      const fallbackValue = readProbeValueAtPath(probedResource, path);
+      if (
+        Array.isArray(fallbackValue) ||
+        (fallbackValue !== null && typeof fallbackValue === 'object')
+      ) {
+        out.push({
+          resourceId,
+          path,
+          field,
+        });
+      }
     }
   }
 }

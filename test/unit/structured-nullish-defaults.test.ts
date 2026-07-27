@@ -50,6 +50,14 @@ const StructuredChainSpecSchema = type({
 
 type StructuredChainSpec = typeof StructuredChainSpecSchema.infer;
 
+const GuardedResourcesSpecSchema = type({
+  name: 'string',
+  'enabled?': 'boolean',
+  'resources?': ResourceRequirementsSchema,
+});
+
+type GuardedResourcesSpec = typeof GuardedResourcesSpecSchema.infer;
+
 const defaultOsdResources = {
   requests: { cpu: '250m', memory: '1Gi' },
   limits: { memory: '2Gi' },
@@ -156,6 +164,66 @@ const structuredChainComposition = kubernetesComposition(
       resources: resolveStructuredChain(spec),
       id: 'workload',
     });
+    return { ready: true };
+  }
+);
+
+const guardedNativeFallbackComposition = kubernetesComposition(
+  {
+    name: 'guarded-native-structured-fallback',
+    kind: 'GuardedNativeStructuredFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    if (spec.enabled) {
+      Deployment({
+        name: spec.name,
+        image: 'nginx:1.29',
+        resources: spec.resources ?? defaultOsdResources,
+        id: 'workload',
+      });
+    }
+    return { ready: true };
+  }
+);
+
+const guardedExplicitFallbackComposition = kubernetesComposition(
+  {
+    name: 'guarded-explicit-structured-fallback',
+    kind: 'GuardedExplicitStructuredFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    if (spec.enabled) {
+      Deployment({
+        name: spec.name,
+        image: 'nginx:1.29',
+        resources: Cel.default(spec.resources, defaultOsdResources),
+        id: 'workload',
+      });
+    }
+    return { ready: true };
+  }
+);
+
+const guardedOptionalPassthroughComposition = kubernetesComposition(
+  {
+    name: 'guarded-optional-structured-passthrough',
+    kind: 'GuardedOptionalStructuredPassthrough',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    if (spec.enabled) {
+      Deployment({
+        name: spec.name,
+        image: 'nginx:1.29',
+        ...(spec.resources === undefined ? {} : { resources: spec.resources }),
+        id: 'workload',
+      });
+    }
     return { ready: true };
   }
 );
@@ -273,6 +341,34 @@ describe('structured nullish defaults', () => {
     const enabled = deploymentSection(enabledYaml, 'enabled-mode');
     expect(enabled).toContain('memory: 4Gi');
     expect(enabled).not.toContain('memory: 2Gi');
+  });
+
+  it('fails closed when the all-defaults execution omits the guarded resource', () => {
+    expect(() => guardedNativeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
+    );
+  });
+
+  it('preserves an explicit fallback when the all-defaults execution omits the resource', () => {
+    const yaml = guardedExplicitFallbackComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).toContain('includeWhen:');
+    expect(compact).toContain(
+      'has(schema.spec.resources)?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+    );
+    expect(compact).not.toContain(
+      'has(schema.spec.resources)?schema.spec.resources:omit()'
+    );
+  });
+
+  it('retains an authored optional passthrough on a guarded resource', () => {
+    const yaml = guardedOptionalPassthroughComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).toContain(
+      'has(schema.spec.resources)?schema.spec.resources:omit()'
+    );
   });
 
   it('preserves a structured terminal fallback in a cross-field chain', () => {
