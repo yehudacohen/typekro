@@ -218,6 +218,11 @@ describe('CelExpression<T> compile-time types', () => {
 
       // @ts-expect-error — string fallback is not valid for a numeric ref
       Cel.default(phantom<KubernetesRef<number | undefined>>(), 'fallback');
+
+      const structuredRef = phantom<KubernetesRef<{ limits?: { memory?: string } } | undefined>>();
+      assertType<{ limits?: { memory?: string } }>(
+        Cel.default(structuredRef, { limits: { memory: '2Gi' } })
+      );
     }
 
     expect(true).toBe(true);

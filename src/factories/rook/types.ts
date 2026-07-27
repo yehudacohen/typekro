@@ -327,6 +327,14 @@ const cephDaemonResourcesSchemaShape = {
   rgw: resourceRequirementsSchemaShape,
 } as const;
 
+const optionalCephDaemonResourcesSchemaShape = {
+  'mon?': resourceRequirementsSchemaShape,
+  'mgr?': resourceRequirementsSchemaShape,
+  'osd?': resourceRequirementsSchemaShape,
+  'prepareosd?': resourceRequirementsSchemaShape,
+  'rgw?': resourceRequirementsSchemaShape,
+} as const;
+
 const rookCephClusterCommonSchemaShape = {
   name: 'string',
   'namespace?': 'string',
@@ -349,6 +357,7 @@ export const RookCephSingleNodePlatformConfigSchema = type({
   ...rookCephClusterCommonSchemaShape,
   profile: '"single-node-development"',
   'storageSize?': 'string',
+  'resources?': optionalCephDaemonResourcesSchemaShape,
 });
 
 export type RookCephSingleNodePlatformConfig = typeof RookCephSingleNodePlatformConfigSchema.infer;
@@ -371,6 +380,7 @@ export const RookCephExternalOperatorSingleNodePlatformConfigSchema = type({
   operatorNamespace: 'string',
   'operatorDeploymentName?': 'string',
   'storageSize?': 'string',
+  'resources?': optionalCephDaemonResourcesSchemaShape,
 });
 
 export type RookCephExternalOperatorSingleNodePlatformConfig =

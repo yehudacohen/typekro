@@ -550,7 +550,11 @@ export function createResource<TSpec extends object, TStatus extends object>(
       );
     }
 
-    if (options?.scope === 'namespaced' && !hasNamespace) {
+    if (
+      options?.scope === 'namespaced' &&
+      !hasNamespace &&
+      !getCurrentCompositionContext()?.suppressResourceDiagnostics
+    ) {
       debugLogger.warn(
         `${resource.kind} is namespaced but no namespace specified. Kubernetes will use 'default'.`,
         {

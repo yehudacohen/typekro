@@ -433,8 +433,8 @@ describe('clickstackK8sTelemetry factory modes', () => {
       expect(secretRefs).toHaveLength(2);
       expect(secretRefs.every((ref) => ref.optional === false)).toBe(true);
       expect(secretRefs.map((ref) => ref.key)).toEqual([
-        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
-        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
+        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) && schema.spec.apiKeySecret.key != null ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
+        '${has(schema.spec.apiKeySecret) && has(schema.spec.apiKeySecret.key) && schema.spec.apiKeySecret.key != null ? schema.spec.apiKeySecret.key : "HYPERDX_API_KEY"}',
       ]);
 
       // Status contract: ready/phase over BOTH owned HelmReleases.

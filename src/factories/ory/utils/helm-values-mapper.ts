@@ -5,7 +5,11 @@ import {
 } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValue, TypeKroChartValues } from '../../../core/types/common.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../../utils/type-guards.js';
 import type {
   OryConfigValidationResult,
   OryDependencySource,
@@ -91,7 +95,12 @@ function mergeValues<T extends object>(
   if (isValuesMergeExpression(base)) {
     return mergeValuesExpression(base, typed) as unknown as T;
   }
-  if (isKubernetesRef(typed) || isCelExpression(typed) || isValuesMergeExpression(typed)) {
+  if (
+    containsKubernetesRefs(base) ||
+    isKubernetesRef(typed) ||
+    isCelExpression(typed) ||
+    isValuesMergeExpression(typed)
+  ) {
     return mergeValuesExpression(base, typed) as unknown as T;
   }
   return (typed === undefined ? base : deepMergeValue(base, typed)) as T;
@@ -646,7 +655,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
     ),
   };
 
-  if (isKubernetesRef(config.global)) {
+  if (containsKubernetesRefs(config)) {
     const graphGlobal = config.global ? { global: config.global } : undefined;
     values.hydra = mergeValues(values.hydra, graphGlobal);
     values.kratos = mergeValues(values.kratos, graphGlobal);

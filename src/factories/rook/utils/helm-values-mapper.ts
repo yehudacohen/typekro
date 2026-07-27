@@ -5,7 +5,12 @@ import {
   mergeValuesExpression,
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import { Cel } from '../../../core/references/cel.js';
+import {
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../../utils/type-guards.js';
 import type {
   CephObjectStoreConfig,
   RookCephOperatorBootstrapConfig,
@@ -69,9 +74,8 @@ function mergeValuesLast<T extends Record<string, unknown>>(
   base: T,
   overrides: unknown
 ): T | ValuesMergeExpression {
-  if (overrides === undefined) return base;
-
   if (
+    containsKubernetesRefs(base) ||
     isKubernetesRef(overrides) ||
     isCelExpression(overrides) ||
     isValuesMergeExpression(overrides)
@@ -79,6 +83,7 @@ function mergeValuesLast<T extends Record<string, unknown>>(
     return mergeValuesExpression(base, overrides);
   }
 
+  if (overrides === undefined) return base;
   if (isPlainObject(overrides)) deepMerge(base, overrides);
   return base;
 }
@@ -151,10 +156,21 @@ const singleNodeResources = {
   rgw: { requests: { cpu: '100m', memory: '256Mi' }, limits: { memory: '1Gi' } },
 };
 
+function resolveSingleNodeResources(config: RookCephSingleNodePlatformConfig) {
+  return {
+    mon: Cel.default(config.resources?.mon, singleNodeResources.mon),
+    mgr: Cel.default(config.resources?.mgr, singleNodeResources.mgr),
+    osd: Cel.default(config.resources?.osd, singleNodeResources.osd),
+    prepareosd: Cel.default(config.resources?.prepareosd, singleNodeResources.prepareosd),
+    rgw: Cel.default(config.resources?.rgw, singleNodeResources.rgw),
+  };
+}
+
 /** Canonical single-node RGW spec shared by chart and composition materialization. */
 export function mapRookCephSingleNodeObjectStoreSpec(
-  _config: RookCephSingleNodePlatformConfig
+  config: RookCephSingleNodePlatformConfig
 ): CephObjectStoreConfig['spec'] {
+  const resources = resolveSingleNodeResources(config);
   return {
     metadataPool: {
       failureDomain: 'osd',
@@ -165,7 +181,7 @@ export function mapRookCephSingleNodeObjectStoreSpec(
       replicated: { size: 1, requireSafeReplicaSize: false },
     },
     preservePoolsOnDelete: true,
-    gateway: { port: 80, instances: 1, resources: singleNodeResources.rgw },
+    gateway: { port: 80, instances: 1, resources: resources.rgw },
   };
 }
 
@@ -226,7 +242,7 @@ export function mapRookCephSingleNodePlatformToHelmValues(
 ): RookCephClusterChartValues | ValuesMergeExpression {
   const objectStoreName = config.objectStoreName ?? 'harbor-object-store';
   const storageClassName = config.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
-  const resources = singleNodeResources;
+  const resources = resolveSingleNodeResources(config);
   const values: RookCephClusterChartValues = {
     operatorNamespace: config.operatorNamespace ?? 'rook-ceph-operator',
     clusterName: config.name,

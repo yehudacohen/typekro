@@ -74,6 +74,38 @@ describe('official Rook Ceph cluster chart platform', () => {
     });
   });
 
+  it('overrides individual development daemon resources without restating every daemon', () => {
+    const osd = {
+      requests: { cpu: '500m', memory: '2Gi' },
+      limits: { memory: '4Gi' },
+    };
+    const rgw = {
+      requests: { cpu: '250m', memory: '512Mi' },
+      limits: { memory: '2Gi' },
+    };
+    const values = mapRookCephSingleNodePlatformToHelmValues({
+      name: 'rook-local',
+      profile: 'single-node-development',
+      storageClassName: 'local-path',
+      resources: { osd, rgw },
+    });
+    expect(values).toMatchObject({
+      cephClusterSpec: {
+        resources: {
+          mon: {
+            requests: { cpu: '100m', memory: '256Mi' },
+            limits: { memory: '1Gi' },
+          },
+          osd,
+        },
+        storage: {
+          storageClassDeviceSets: [{ resources: osd }],
+        },
+      },
+      cephObjectStores: [{ spec: { gateway: { resources: rgw } } }],
+    });
+  });
+
   it('deep-merges raw chart values last without erasing unrelated safe defaults', () => {
     const values = mapRookCephSingleNodePlatformToHelmValues({
       name: 'rook-local',
@@ -170,6 +202,56 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('kind: CephObjectStore');
     expect(yaml).toContain('kind: StorageClass');
     expectCleanYaml(yaml);
+  });
+
+  it('admits and renders development daemon resource overrides in direct and KRO modes', () => {
+    const config = {
+      name: 'rook-local',
+      profile: 'single-node-development' as const,
+      storageClassName: 'local-path',
+      resources: {
+        osd: {
+          requests: { cpu: '500m', memory: '2Gi' },
+          limits: { memory: '4Gi' },
+        },
+        rgw: {
+          requests: { memory: '512Mi' },
+          limits: { memory: '2Gi' },
+        },
+      },
+    };
+    const factory = rookCephSingleNodePlatform.factory('kro', {
+      namespace: 'typekro-control',
+    });
+    const directYaml = rookCephSingleNodePlatform
+      .factory('direct', { namespace: 'typekro-control' })
+      .toYaml(config);
+    const kroYaml = factory.toYaml(config);
+    const rgdYaml = factory.toYaml();
+
+    for (const yaml of [directYaml, kroYaml]) {
+      expect(yaml).toContain('memory: 4Gi');
+      expect(yaml).toContain('memory: 2Gi');
+      expect(yaml).toContain('memory: 512Mi');
+      expectCleanYaml(yaml);
+    }
+    expect(rgdYaml).toContain('resources:');
+    expect(rgdYaml).toContain('osd:');
+    expect(rgdYaml).toContain('rgw:');
+    const expectedFallbacks = {
+      mon: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+      mgr: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+      osd: '{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}',
+      prepareosd: '{"requests":{"cpu":"100m","memory":"128Mi"},"limits":{"memory":"1Gi"}}',
+      rgw: '{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}',
+    };
+    const compactRgd = rgdYaml.replaceAll(' ', '');
+    for (const [daemon, fallback] of Object.entries(expectedFallbacks)) {
+      const path = `schema.spec.resources.${daemon}`;
+      const guard = `has(schema.spec.resources)&&has(${path})&&${path}!=null?${path}:`;
+      expect(compactRgd).toContain(`${guard}${fallback}`);
+    }
+    expectCleanYaml(rgdYaml);
   });
 
   it('renders production singleton booleans as admission-enforced booleans', () => {

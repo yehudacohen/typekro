@@ -122,8 +122,26 @@ await local.deploy({
   storageSize: '16Gi',
   objectStoreName: 'application-objects',
   bucketStorageClassName: 'application-buckets-retain',
+  resources: {
+    // Each supplied daemon entry replaces that daemon's development default.
+    // This cluster has enough memory for a less constrained OSD.
+    osd: {
+      requests: { cpu: '500m', memory: '2Gi' },
+      limits: { memory: '4Gi' },
+    },
+  },
 });
 ```
+
+The development profile has deliberately small defaults for `mon`, `mgr`,
+`osd`, `prepareosd`, and `rgw`. Use the optional `resources` map when the
+defaults do not fit the target node. Each daemon entry is independent, so an
+OSD override does not require restating the monitor, manager, prepare job, or
+gateway defaults. A supplied entry replaces that daemon's complete resource
+requirements; specify every request and limit that the daemon should retain.
+The same values are admitted and rendered in direct and KRO modes, including
+the OSD resource requirements on its storage device set and the RGW gateway
+requirements on the separately materialized `CephObjectStore`.
 
 The production profile requires the availability and operational decisions
 that the local profile deliberately supplies as unsafe single-node defaults:

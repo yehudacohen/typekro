@@ -10,7 +10,11 @@ import type { Type } from 'arktype';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { pascalCase } from '../../utils/string.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { isValuesMergeExpression } from '../aspects/values-merge.js';
+import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
@@ -19,10 +23,9 @@ import type {
   SchemaDefinition,
   TernaryConditional,
 } from '../types/serialization.js';
-import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
-import { serializeStatusMappingsToCel } from './cel-references.js';
+import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
 const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
@@ -312,6 +315,8 @@ interface ReExecutionResult {
    * multi-field `has(...) ? ... : ...` chains it cannot express.
    */
   crossFieldOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
+  /** Structured proxy/default diffs that lack explicit nullish provenance. */
+  ambiguousStructuredFallbacks: Array<{ resourceId: string; path: string[]; field: string }>;
 }
 
 /**
@@ -347,8 +352,11 @@ function resolveDefaultsByReExecution(
     // Build the set of optional top-level field names. Only optional fields
     // can be ternary-controlled (required fields always have a value).
     const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
+    const optionalFieldPaths = collectSchemaFieldPaths(specJson).optional;
 
-    const tempCtx = createCompositionContext('defaults-extraction');
+    const tempCtx = createCompositionContext('defaults-extraction', {
+      suppressResourceDiagnostics: true,
+    });
     // The all-undefined defaults run can throw when a composition dereferences an
     // absent optional parent (`spec.settings.tier` with settings undefined). Contain
     // it: literal-default extraction is then simply empty, but cross-field probing
@@ -400,6 +408,7 @@ function resolveDefaultsByReExecution(
     }
 
     const crossFieldOverrides: ReExecutionResult['crossFieldOverrides'] = [];
+    const ambiguousStructuredFallbacks: ReExecutionResult['ambiguousStructuredFallbacks'] = [];
     for (const [id, proxyRes] of proxyEntries) {
       const defaultsRes = defaultsMap.get(id);
       // Literal-default + ternary extraction need the defaults-run counterpart;
@@ -414,6 +423,19 @@ function resolveDefaultsByReExecution(
           ternaryConditionFieldHints
         );
       }
+      // Ambiguity detection cannot depend on the all-defaults resource existing:
+      // an optional guard may remove the entire resource from that execution.
+      // Probe each bare structured schema marker with only that marker absent.
+      // A concrete structured value then proves only that black-box execution is
+      // ambiguous—not that the source was `??`—so compilation fails closed.
+      probeAmbiguousStructuredFallbacks(
+        compositionFn,
+        specJson,
+        proxyRes,
+        id,
+        optionalFieldPaths,
+        ambiguousStructuredFallbacks
+      );
       // Cross-field `??` chain reconstruction is independent of the defaults run —
       // it does its own presence-probing — so it always runs.
       reconstructCrossFieldChains(
@@ -429,8 +451,11 @@ function resolveDefaultsByReExecution(
     const hasResults =
       Object.keys(defaults).length > 0 ||
       ternaryConditionals.length > 0 ||
-      crossFieldOverrides.length > 0;
-    return hasResults ? { defaults, ternaryConditionals, crossFieldOverrides } : undefined;
+      crossFieldOverrides.length > 0 ||
+      ambiguousStructuredFallbacks.length > 0;
+    return hasResults
+      ? { defaults, ternaryConditionals, crossFieldOverrides, ambiguousStructuredFallbacks }
+      : undefined;
   } catch (err) {
     // Best-effort: composition functions with undefined spec fields may throw
     // (e.g., accessing spec.nested.field without optional chaining). Log at
@@ -465,6 +490,7 @@ const FULL_MARKER_RE = new RegExp(`^${SCHEMA_MARKER_PATTERN_SOURCE}$`);
 type Leaf =
   | { kind: 'field'; field: string }
   | { kind: 'literal'; value: string | number | boolean }
+  | { kind: 'structured'; value: readonly unknown[] | Record<string, unknown> }
   | { kind: 'none' };
 
 /** Classify a single output-leaf value (marker-ref vs literal vs other). */
@@ -476,6 +502,10 @@ function classifyLeaf(value: unknown): Leaf {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     if (isSentinelDerivedValue(value)) return { kind: 'none' };
     return { kind: 'literal', value };
+  }
+  if (Array.isArray(value)) return { kind: 'structured', value };
+  if (value !== null && typeof value === 'object') {
+    return { kind: 'structured', value: value as Record<string, unknown> };
   }
   return { kind: 'none' };
 }
@@ -529,6 +559,72 @@ function collectMarkerLeaves(
 }
 
 /**
+ * Collect bare schema markers that have no explicit structured-expression
+ * provenance. A ValuesMergeExpression records only the merge operation's
+ * provenance; its base and overlays may still contain implicit fallbacks. Keep
+ * those operands as explicit path segments so a probe compares the same operand
+ * rather than mistaking a normalized final merge result for its former base.
+ */
+interface AmbiguityCandidateLeaf {
+  path: string[];
+  field: string;
+  mergeShapes: Array<{ path: string[]; overlayCount: number }>;
+}
+
+function collectAmbiguityCandidateLeaves(
+  node: unknown,
+  path: string[],
+  out: AmbiguityCandidateLeaf[],
+  mergeShapes: AmbiguityCandidateLeaf['mergeShapes'] = []
+): void {
+  if (isValuesMergeExpression(node)) {
+    const nestedMergeShapes = [
+      ...mergeShapes,
+      { path: [...path], overlayCount: node.overlays.length },
+    ];
+    collectAmbiguityCandidateLeaves(node.base, [...path, 'base'], out, nestedMergeShapes);
+    node.overlays.forEach((overlay, index) =>
+      collectAmbiguityCandidateLeaves(
+        overlay,
+        [...path, 'overlays', String(index)],
+        out,
+        nestedMergeShapes
+      )
+    );
+    return;
+  }
+
+  const classified = classifyLeaf(node);
+  if (classified.kind === 'field') {
+    out.push({
+      path: [...path],
+      field: classified.field,
+      mergeShapes: mergeShapes.map((shape) => ({
+        path: [...shape.path],
+        overlayCount: shape.overlayCount,
+      })),
+    });
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((value, index) =>
+      collectAmbiguityCandidateLeaves(value, [...path, String(index)], out, mergeShapes)
+    );
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node as Record<string, unknown>)) {
+      collectAmbiguityCandidateLeaves(
+        (node as Record<string, unknown>)[key],
+        [...path, key],
+        out,
+        mergeShapes
+      );
+    }
+  }
+}
+
+/**
  * Build a probe `spec`: the magic schema proxy (so any field access emits its
  * `spec.X` marker) wrapped so the dotted paths in `absent` resolve to `undefined`.
  * Driving presence this way lets a probe reveal which field a `??` chain falls
@@ -543,8 +639,8 @@ function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
         const full = prefix ? `${prefix}.${prop}` : prop;
         if (absent.has(full)) return undefined;
         const v = (t as Record<string, unknown>)[prop];
-        const hasDeeperAbsent = [...absent].some((a) => a.startsWith(`${full}.`));
-        if (hasDeeperAbsent && v && (typeof v === 'object' || typeof v === 'function')) {
+        const hasDeeperMutation = [...absent].some((a) => a.startsWith(`${full}.`));
+        if (hasDeeperMutation && v && (typeof v === 'object' || typeof v === 'function')) {
           return wrap(v as object, full);
         }
         return v;
@@ -561,7 +657,9 @@ function runProbe(
   resourceId: string
 ): Record<string, unknown> | undefined {
   try {
-    const ctx = createCompositionContext('cross-field-probe');
+    const ctx = createCompositionContext('cross-field-probe', {
+      suppressResourceDiagnostics: true,
+    });
     runWithCompositionContext(ctx, () => {
       compositionFn(buildProbeSpec(specJson, absent));
     });
@@ -572,6 +670,318 @@ function runProbe(
 }
 
 const celField = (field: string): string => `schema.spec.${field}`;
+
+/**
+ * Read a probed resource using a path captured from the proxy run. Values-merge
+ * operand segments intentionally are not transparent: if removing a candidate
+ * causes the wrapper to normalize away, the resulting merged object is not
+ * evidence that the original operand contained an implicit fallback.
+ */
+function readRawValueAtPath(obj: unknown, path: string[]): unknown {
+  let current = obj;
+  for (const key of path) {
+    if (current === null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function replaceValueAtPath(root: unknown, path: string[], value: unknown): unknown {
+  const [head, ...tail] = path;
+  if (head === undefined) return value;
+
+  if (Array.isArray(root)) {
+    const index = Number(head);
+    if (!Number.isInteger(index) || index < 0 || index >= root.length) return root;
+    const copy = [...root];
+    copy[index] = replaceValueAtPath(copy[index], tail, value);
+    return copy;
+  }
+
+  if (root === null || typeof root !== 'object') return root;
+  const record = root as Record<string, unknown>;
+  return {
+    ...record,
+    [head]: replaceValueAtPath(record[head], tail, value),
+  };
+}
+
+/**
+ * Canonicalize only ordinary value-tree containers. References and CEL nodes
+ * are semantic leaves, while merge expressions retain their explicit operand
+ * ordering. Kubernetes object maps are unordered, so sorting their keys keeps
+ * semantically identical normalization paths from differing solely because a
+ * helper inserted properties in a different order.
+ */
+function canonicalizeValueTree(value: unknown): unknown {
+  if (isKubernetesRef(value) || isCelExpression(value)) return value;
+  if (isValuesMergeExpression(value)) {
+    let base = canonicalizeValueTree(value.base);
+    let overlays = value.overlays.map(canonicalizeValueTree);
+    while (isValuesMergeExpression(base)) {
+      overlays = [...base.overlays, ...overlays];
+      base = base.base;
+    }
+    overlays = overlays.filter(
+      (overlay) =>
+        overlay !== undefined &&
+        !(
+          overlay !== null &&
+          typeof overlay === 'object' &&
+          !Array.isArray(overlay) &&
+          Object.getPrototypeOf(overlay) === Object.prototype &&
+          Object.keys(overlay).length === 0
+        )
+    );
+    if (overlays.length === 0) return base;
+    return {
+      __typekroValuesMerge: true,
+      base,
+      overlays,
+    };
+  }
+  if (Array.isArray(value)) return value.map(canonicalizeValueTree);
+  if (value === null || typeof value !== 'object') return value;
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .flatMap((key) => {
+        const canonical = canonicalizeValueTree(record[key]);
+        return canonical === undefined ? [] : [[key, canonical]];
+      })
+  );
+}
+
+function valueTreeFingerprint(value: unknown): string | undefined {
+  try {
+    return celLiteralForValueTree(
+      canonicalizeValueTree(value),
+      undefined,
+      'structured-fallback-normalization'
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+interface ProbeValueRead {
+  value: unknown;
+  ambiguousNormalization: boolean;
+}
+
+interface SchemaFieldPaths {
+  optional: Set<string>;
+  nullable: Set<string>;
+}
+
+function schemaNodeAllowsNull(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(schemaNodeAllowsNull);
+  if (node === null || typeof node !== 'object') return false;
+  const record = node as Record<string, unknown>;
+  return Object.hasOwn(record, 'unit') && record.unit === null;
+}
+
+function collectSchemaFieldPaths(node: unknown): SchemaFieldPaths {
+  const optional = new Set<string>();
+  const nullable = new Set<string>();
+
+  const walk = (current: unknown, prefix: string): void => {
+    if (Array.isArray(current)) {
+      for (const branch of current) walk(branch, prefix);
+      return;
+    }
+    if (current === null || typeof current !== 'object') return;
+    const objectNode = current as {
+      defaultables?: [unknown, unknown][];
+      sequence?: unknown;
+      proto?: unknown;
+      index?: Array<{ value?: unknown }>;
+      optionals?: unknown[];
+      postfix?: unknown[];
+      prefix?: unknown[];
+      required?: Array<{ key: string; value?: unknown }>;
+      optional?: Array<{ key: string; value?: unknown }>;
+      variadic?: unknown;
+    };
+
+    const walkCollectionMember = (member: unknown, path: string): void => {
+      if (schemaNodeAllowsNull(member)) nullable.add(path);
+      walk(member, path);
+    };
+
+    if (objectNode.proto === 'Array' && objectNode.sequence !== undefined) {
+      const elementPath = `${prefix}[]`;
+      walkCollectionMember(objectNode.sequence, elementPath);
+    }
+
+    for (const [index, member] of (objectNode.prefix ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[${index}]`);
+    }
+    for (const [index, member] of (objectNode.optionals ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[optional:${index}]`);
+    }
+    for (const [index, entry] of (objectNode.defaultables ?? []).entries()) {
+      walkCollectionMember(entry[0], `${prefix}[defaultable:${index}]`);
+    }
+    if (objectNode.variadic !== undefined) {
+      walkCollectionMember(objectNode.variadic, `${prefix}[]`);
+    }
+    for (const [index, member] of (objectNode.postfix ?? []).entries()) {
+      walkCollectionMember(member, `${prefix}[postfix:${index}]`);
+    }
+
+    for (const entry of objectNode.index ?? []) {
+      const valuePath = prefix ? `${prefix}.*` : '*';
+      walkCollectionMember(entry.value, valuePath);
+    }
+
+    for (const entry of objectNode.optional ?? []) {
+      const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+      optional.add(path);
+      if (schemaNodeAllowsNull(entry.value)) nullable.add(path);
+      walk(entry.value, path);
+    }
+    for (const entry of objectNode.required ?? []) {
+      const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+      if (schemaNodeAllowsNull(entry.value)) nullable.add(path);
+      walk(entry.value, path);
+    }
+  };
+
+  walk(node, '');
+  return { optional, nullable };
+}
+
+function matchingAncestorPath(field: string, paths: ReadonlySet<string>): string | undefined {
+  let match: string | undefined;
+  for (const path of paths) {
+    if (
+      (field === path || field.startsWith(`${path}.`)) &&
+      (match === undefined || path.length > match.length)
+    ) {
+      match = path;
+    }
+  }
+  return match;
+}
+
+function readProbeValueAtPath(
+  proxyResource: Record<string, unknown>,
+  probedResource: unknown,
+  candidate: AmbiguityCandidateLeaf
+): ProbeValueRead {
+  for (const shape of candidate.mergeShapes) {
+    const probedMerge = readRawValueAtPath(probedResource, shape.path);
+    if (
+      !isValuesMergeExpression(probedMerge) ||
+      probedMerge.overlays.length !== shape.overlayCount
+    ) {
+      const originalMerge = readRawValueAtPath(proxyResource, shape.path);
+      if (!isValuesMergeExpression(originalMerge)) {
+        return { value: undefined, ambiguousNormalization: true };
+      }
+
+      const expectedWithoutCandidate = replaceValueAtPath(
+        originalMerge,
+        candidate.path.slice(shape.path.length),
+        undefined
+      );
+      const actualFingerprint = valueTreeFingerprint(probedMerge);
+      const expectedFingerprint = valueTreeFingerprint(expectedWithoutCandidate);
+      const ambiguousNormalization =
+        actualFingerprint === undefined ||
+        expectedFingerprint === undefined ||
+        actualFingerprint !== expectedFingerprint;
+      return {
+        value: ambiguousNormalization ? probedMerge : undefined,
+        ambiguousNormalization,
+      };
+    }
+  }
+  return {
+    value: readRawValueAtPath(probedResource, candidate.path),
+    ambiguousNormalization: false,
+  };
+}
+
+/**
+ * Detect a bare structured schema marker that becomes a concrete object/array
+ * when that exact field is absent. This targeted probe does not infer `??`
+ * semantics; it establishes that black-box execution is ambiguous and must
+ * fail closed. Explicit `Cel.default()` values carry CEL provenance and do not
+ * appear as bare schema-marker leaves.
+ */
+function probeAmbiguousStructuredFallbacks(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
+  proxyResource: Record<string, unknown>,
+  resourceId: string,
+  optionalFieldPaths: ReadonlySet<string>,
+  out: ReExecutionResult['ambiguousStructuredFallbacks']
+): void {
+  const markerLeaves: AmbiguityCandidateLeaf[] = [];
+  collectAmbiguityCandidateLeaves(proxyResource, [], markerLeaves);
+  const candidatesByField = new Map<string, AmbiguityCandidateLeaf[]>();
+  for (const marker of markerLeaves) {
+    const candidates = candidatesByField.get(marker.field) ?? [];
+    candidates.push(marker);
+    candidatesByField.set(marker.field, candidates);
+  }
+
+  for (const [field, candidates] of candidatesByField) {
+    // Removing a required leaf is not a realizable KRO instance state. Probe
+    // only a field that is optional itself or descends from an optional parent.
+    // Nullable fields are rejected at the ArkType → KRO schema boundary because
+    // SimpleSchema cannot represent explicit null.
+    const optionalPath = matchingAncestorPath(field, optionalFieldPaths);
+    if (optionalPath === undefined) continue;
+    const probedResource = runProbe(
+      compositionFn,
+      specJson,
+      new Set([optionalPath]),
+      resourceId
+    );
+
+    for (const candidate of candidates) {
+      const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
+      const fallbackValue = probeRead.value;
+      if (
+        probeRead.ambiguousNormalization ||
+        Array.isArray(fallbackValue) ||
+        (fallbackValue !== null && typeof fallbackValue === 'object')
+      ) {
+        out.push({
+          resourceId,
+          path: candidate.path,
+          field,
+        });
+      }
+    }
+  }
+}
+
+function assertNoAmbiguousStructuredFallbacks(result: ReExecutionResult | undefined): void {
+  const [ambiguous] = result?.ambiguousStructuredFallbacks ?? [];
+  if (!ambiguous) return;
+
+  throw new TypeKroError(
+    `Cannot prove structured fallback semantics for schema.spec.${ambiguous.field} at ` +
+      `${ambiguous.resourceId}.${ambiguous.path.join('.')}. ` +
+      'Black-box re-execution cannot distinguish nullish coalescing from value-based control flow. ' +
+      'Use Cel.default(value, fallback) or Cel.coalesce(value, fallback) to make the graph semantics explicit.',
+    'AMBIGUOUS_STRUCTURED_FALLBACK',
+    {
+      resourceId: ambiguous.resourceId,
+      path: ambiguous.path.join('.'),
+      field: ambiguous.field,
+    }
+  );
+}
 
 /**
  * Presence guard for a (possibly nested) optional field — every ancestor must be
@@ -586,22 +996,42 @@ function presenceGuard(field: string): string {
 }
 
 /** Render the chain's CEL: <guard(a)> ? a : (<guard(b)> ? b : <tail>). */
-function buildChainCel(chain: string[], tail: Leaf): string {
-  const tailCel =
-    tail.kind === 'literal'
-      ? typeof tail.value === 'string'
-        ? `"${escapeCelString(tail.value)}"`
-        : String(tail.value)
-      : tail.kind === 'field'
-        ? celField(tail.field)
-        : 'omit()';
-  let expr = tailCel;
-  let nested = false;
-  for (const f of [...chain].reverse()) {
-    expr = `${presenceGuard(f)} ? ${celField(f)} : ${nested ? `(${expr})` : expr}`;
-    nested = true;
+function buildChainCel(
+  chain: string[],
+  tail: Leaf,
+  resourceId: string,
+  path: string[]
+): string | undefined {
+  try {
+    const tailCel =
+      tail.kind === 'literal'
+        ? typeof tail.value === 'string'
+          ? `"${escapeCelString(tail.value)}"`
+          : String(tail.value)
+        : tail.kind === 'field'
+          ? celField(tail.field)
+          : tail.kind === 'structured'
+            ? `(${celLiteralForValueTree(
+                tail.value,
+                undefined,
+                `structured-coalesce.${resourceId}.${path.join('.')}`
+              )})`
+            : 'omit()';
+    let expr = tailCel;
+    let nested = false;
+    for (const f of [...chain].reverse()) {
+      expr = `${presenceGuard(f)} ? ${celField(f)} : ${nested ? `(${expr})` : expr}`;
+      nested = true;
+    }
+    return `\${${expr}}`;
+  } catch (error) {
+    logger.debug('Skipping non-serializable structured coalescing fallback', {
+      resourceId,
+      path: path.join('.'),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
   }
-  return `\${${expr}}`;
 }
 
 /**
@@ -652,8 +1082,11 @@ function reconstructCrossFieldChains(
     // existing default/omit-wrapping mechanisms, so this change can't regress them.
     const [head] = chain;
     if (chain.length >= 2 && head !== undefined) {
-      delete defaults[head];
-      out.push({ resourceId, path, cel: buildChainCel(chain, tail) });
+      const cel = buildChainCel(chain, tail, resourceId, path);
+      if (cel !== undefined) {
+        delete defaults[head];
+        out.push({ resourceId, path, cel });
+      }
     }
   }
 }
@@ -1220,6 +1653,20 @@ export function arktypeToKroSchema(
   nestedStatusCel?: Record<string, string>,
   schemaFieldValidations?: Readonly<Record<string, string>>
 ): KroSimpleSchemaWithMetadata {
+  const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json).nullable
+    .values()
+    .next().value;
+  if (nullableField !== undefined) {
+    throw new TypeKroError(
+      `KRO SimpleSchema cannot represent nullable field schema.spec.${nullableField}. ` +
+        "TypeKro cannot preserve an ArkType 'T | null' contract by silently converting null " +
+        'to omission or a non-nullable field. Model the KRO input as optional and use ' +
+        'Cel.default(...) for omission, or use direct mode when explicit null is required.',
+      'KRO_NULLABLE_SCHEMA_UNSUPPORTED',
+      { field: nullableField }
+    );
+  }
+
   const specFields = arktypeJsonToKroFields(schemaDefinition.spec.json);
 
   if (!specFields.name) {
@@ -1304,6 +1751,7 @@ export function arktypeToKroSchema(
               nestedResources
             )
           : undefined;
+      assertNoAmbiguousStructuredFallbacks(reExecutionResult);
       const reExecutionDefaults = reExecutionResult?.defaults ?? {};
       const innerDefaults = remapNullishDefaults(
         { ...extractedDefaults, ...reExecutionDefaults },
@@ -1336,6 +1784,7 @@ export function arktypeToKroSchema(
       resources
     );
     if (reExecutionResult) {
+      assertNoAmbiguousStructuredFallbacks(reExecutionResult);
       applyNullishDefaults(specFields, reExecutionResult.defaults, true);
       ternaryConditionals.push(...reExecutionResult.ternaryConditionals);
       // Cross-field `??` chains reconstructed by probing: write each CEL conditional
