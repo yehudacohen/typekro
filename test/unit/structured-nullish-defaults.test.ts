@@ -89,6 +89,21 @@ const OptionalNullableResourcesSpecSchema = type({
 
 type OptionalNullableResourcesSpec = typeof OptionalNullableResourcesSpecSchema.infer;
 
+const NullableUnionSettingsSchema = type({
+  mode: "'standard'",
+  resources: ResourceRequirementsSchema.or('null'),
+}).or({
+  mode: "'intensive'",
+  resources: ResourceRequirementsSchema.or('null'),
+});
+
+const NullableUnionSettingsSpecSchema = type({
+  name: 'string',
+  settings: NullableUnionSettingsSchema,
+});
+
+type NullableUnionSettingsSpec = typeof NullableUnionSettingsSpecSchema.infer;
+
 const defaultOsdResources = {
   requests: { cpu: '250m', memory: '1Gi' },
   limits: { memory: '2Gi' },
@@ -441,6 +456,24 @@ const optionalNullableNullBranchComposition = kubernetesComposition(
   }
 );
 
+const nullableUnionBranchComposition = kubernetesComposition(
+  {
+    name: 'nullable-union-branch',
+    kind: 'NullableUnionBranch',
+    spec: NullableUnionSettingsSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: NullableUnionSettingsSpec) => {
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      resources: spec.settings.resources ?? defaultOsdResources,
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -623,18 +656,15 @@ describe('structured nullish defaults', () => {
     );
   });
 
-  it('fails closed for a native fallback on a required nullable structured field', () => {
+  it('rejects a required nullable field that KRO SimpleSchema cannot represent', () => {
     expect(() => requiredNullableNativeFallbackComposition.factory('kro').toYaml()).toThrow(
-      /schema\.spec\.resources.*Cel\.default/
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.resources/
     );
   });
 
-  it('preserves explicit nullish semantics for a required nullable structured field', () => {
-    const yaml = requiredNullableExplicitFallbackComposition.factory('kro').toYaml();
-    const compact = yaml.replaceAll(' ', '');
-
-    expect(compact).toContain(
-      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+  it('does not let Cel.default conceal an unrepresentable nullable KRO schema', () => {
+    expect(() => requiredNullableExplicitFallbackComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.resources/
     );
 
     const directYaml = requiredNullableExplicitFallbackComposition.factory('direct').toYaml({
@@ -644,9 +674,15 @@ describe('structured nullish defaults', () => {
     expect(deploymentSection(directYaml, 'nullable-direct')).toContain('cpu: 250m');
   });
 
-  it('probes null independently when an optional structured field is also nullable', () => {
+  it('rejects optional-plus-nullable because omission cannot preserve explicit null', () => {
     expect(() => optionalNullableNullBranchComposition.factory('kro').toYaml()).toThrow(
-      /schema\.spec\.resources.*Cel\.default/
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.resources/
+    );
+  });
+
+  it('finds unrepresentable nullable fields nested inside union branches', () => {
+    expect(() => nullableUnionBranchComposition.factory('kro').toYaml()).toThrow(
+      /KRO SimpleSchema cannot represent nullable field schema\.spec\.settings\.resources/
     );
   });
 

@@ -352,7 +352,7 @@ function resolveDefaultsByReExecution(
     // Build the set of optional top-level field names. Only optional fields
     // can be ternary-controlled (required fields always have a value).
     const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
-    const nullishFieldPaths = collectNullishSchemaPaths(specJson);
+    const optionalFieldPaths = collectSchemaFieldPaths(specJson).optional;
 
     const tempCtx = createCompositionContext('defaults-extraction', {
       suppressResourceDiagnostics: true,
@@ -433,7 +433,7 @@ function resolveDefaultsByReExecution(
         specJson,
         proxyRes,
         id,
-        nullishFieldPaths,
+        optionalFieldPaths,
         ambiguousStructuredFallbacks
       );
       // Cross-field `??` chain reconstruction is independent of the defaults run —
@@ -630,11 +630,7 @@ function collectAmbiguityCandidateLeaves(
  * Driving presence this way lets a probe reveal which field a `??` chain falls
  * through to when earlier links are absent.
  */
-function buildProbeSpec(
-  specJson: unknown,
-  absent: Set<string>,
-  overrides: ReadonlyMap<string, unknown> = new Map()
-): unknown {
+function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
   const root = (createSchemaProxy(specJson) as { spec: unknown }).spec;
   const wrap = (target: object, prefix: string): unknown =>
     new Proxy(target, {
@@ -642,11 +638,8 @@ function buildProbeSpec(
         if (typeof prop !== 'string') return Reflect.get(t, prop);
         const full = prefix ? `${prefix}.${prop}` : prop;
         if (absent.has(full)) return undefined;
-        if (overrides.has(full)) return overrides.get(full);
         const v = (t as Record<string, unknown>)[prop];
-        const hasDeeperMutation =
-          [...absent].some((a) => a.startsWith(`${full}.`)) ||
-          [...overrides.keys()].some((path) => path.startsWith(`${full}.`));
+        const hasDeeperMutation = [...absent].some((a) => a.startsWith(`${full}.`));
         if (hasDeeperMutation && v && (typeof v === 'object' || typeof v === 'function')) {
           return wrap(v as object, full);
         }
@@ -661,15 +654,14 @@ function runProbe(
   compositionFn: (...args: unknown[]) => unknown,
   specJson: unknown,
   absent: Set<string>,
-  resourceId: string,
-  overrides: ReadonlyMap<string, unknown> = new Map()
+  resourceId: string
 ): Record<string, unknown> | undefined {
   try {
     const ctx = createCompositionContext('cross-field-probe', {
       suppressResourceDiagnostics: true,
     });
     runWithCompositionContext(ctx, () => {
-      compositionFn(buildProbeSpec(specJson, absent, overrides));
+      compositionFn(buildProbeSpec(specJson, absent));
     });
     return (ctx.resources as Record<string, Record<string, unknown>>)[resourceId];
   } catch {
@@ -782,7 +774,7 @@ interface ProbeValueRead {
   ambiguousNormalization: boolean;
 }
 
-interface NullishSchemaPaths {
+interface SchemaFieldPaths {
   optional: Set<string>;
   nullable: Set<string>;
 }
@@ -794,7 +786,7 @@ function schemaNodeAllowsNull(node: unknown): boolean {
   return Object.hasOwn(record, 'unit') && record.unit === null;
 }
 
-function collectNullishSchemaPaths(node: unknown): NullishSchemaPaths {
+function collectSchemaFieldPaths(node: unknown): SchemaFieldPaths {
   const optional = new Set<string>();
   const nullable = new Set<string>();
 
@@ -890,7 +882,7 @@ function probeAmbiguousStructuredFallbacks(
   specJson: unknown,
   proxyResource: Record<string, unknown>,
   resourceId: string,
-  nullishFieldPaths: NullishSchemaPaths,
+  optionalFieldPaths: ReadonlySet<string>,
   out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
   const markerLeaves: AmbiguityCandidateLeaf[] = [];
@@ -903,44 +895,27 @@ function probeAmbiguousStructuredFallbacks(
   }
 
   for (const [field, candidates] of candidatesByField) {
-    // Probe only schema-valid nullish states. Optional paths use absence, while
-    // required nullable paths must remain present with a null value. A nullable
-    // ancestor is probed at that ancestor because dereferencing through it is not
-    // itself a valid runtime state. Probe both states when a field is optional
-    // and nullable: authored control flow may distinguish undefined from null
-    // even though JavaScript `??` treats them identically.
-    const optionalPath = matchingAncestorPath(field, nullishFieldPaths.optional);
-    const nullablePath = matchingAncestorPath(field, nullishFieldPaths.nullable);
-    const probedResources: Array<Record<string, unknown> | undefined> = [];
-    if (optionalPath !== undefined) {
-      probedResources.push(
-        runProbe(compositionFn, specJson, new Set([optionalPath]), resourceId)
-      );
-    }
-    if (nullablePath !== undefined) {
-      probedResources.push(
-        runProbe(
-          compositionFn,
-          specJson,
-          new Set(),
-          resourceId,
-          new Map([[nullablePath, null]])
-        )
-      );
-    }
-    if (probedResources.length === 0) continue;
+    // Removing a required leaf is not a realizable KRO instance state. Probe
+    // only a field that is optional itself or descends from an optional parent.
+    // Nullable fields are rejected at the ArkType → KRO schema boundary because
+    // SimpleSchema cannot represent explicit null.
+    const optionalPath = matchingAncestorPath(field, optionalFieldPaths);
+    if (optionalPath === undefined) continue;
+    const probedResource = runProbe(
+      compositionFn,
+      specJson,
+      new Set([optionalPath]),
+      resourceId
+    );
 
     for (const candidate of candidates) {
-      const ambiguous = probedResources.some((probedResource) => {
-        const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
-        const fallbackValue = probeRead.value;
-        return (
-          probeRead.ambiguousNormalization ||
-          Array.isArray(fallbackValue) ||
-          (fallbackValue !== null && typeof fallbackValue === 'object')
-        );
-      });
-      if (ambiguous) {
+      const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
+      const fallbackValue = probeRead.value;
+      if (
+        probeRead.ambiguousNormalization ||
+        Array.isArray(fallbackValue) ||
+        (fallbackValue !== null && typeof fallbackValue === 'object')
+      ) {
         out.push({
           resourceId,
           path: candidate.path,
@@ -1639,6 +1614,20 @@ export function arktypeToKroSchema(
   nestedStatusCel?: Record<string, string>,
   schemaFieldValidations?: Readonly<Record<string, string>>
 ): KroSimpleSchemaWithMetadata {
+  const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json).nullable
+    .values()
+    .next().value;
+  if (nullableField !== undefined) {
+    throw new TypeKroError(
+      `KRO SimpleSchema cannot represent nullable field schema.spec.${nullableField}. ` +
+        "TypeKro cannot preserve an ArkType 'T | null' contract by silently converting null " +
+        'to omission or a non-nullable field. Model the KRO input as optional and use ' +
+        'Cel.default(...) for omission, or use direct mode when explicit null is required.',
+      'KRO_NULLABLE_SCHEMA_UNSUPPORTED',
+      { field: nullableField }
+    );
+  }
+
   const specFields = arktypeJsonToKroFields(schemaDefinition.spec.json);
 
   if (!specFields.name) {
