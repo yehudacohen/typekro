@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1ResourceRequirements } from '@kubernetes/client-node';
 import { type } from 'arktype';
+import { mergeValuesExpression } from '../../src/core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { Cel } from '../../src/core/references/cel.js';
+import { helmRelease } from '../../src/factories/helm/helm-release.js';
 import { Deployment } from '../../src/factories/simple/index.js';
 
 const ResourceRequirementsSchema = type({
@@ -228,6 +230,86 @@ const guardedOptionalPassthroughComposition = kubernetesComposition(
   }
 );
 
+const mergedNativeFallbackComposition = kubernetesComposition(
+  {
+    name: 'merged-native-structured-fallback',
+    kind: 'MergedNativeStructuredFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    helmRelease({
+      name: spec.name,
+      chart: { repository: 'https://example.com/charts', name: 'example' },
+      values: mergeValuesExpression(spec.resources ?? defaultOsdResources, {
+        replicaCount: 1,
+      }),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+const mergedExplicitFallbackComposition = kubernetesComposition(
+  {
+    name: 'merged-explicit-structured-fallback',
+    kind: 'MergedExplicitStructuredFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    helmRelease({
+      name: spec.name,
+      chart: { repository: 'https://example.com/charts', name: 'example' },
+      values: mergeValuesExpression(Cel.default(spec.resources, defaultOsdResources), {
+        replicaCount: 1,
+      }),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+const mergedOverlayNativeFallbackComposition = kubernetesComposition(
+  {
+    name: 'merged-overlay-native-structured-fallback',
+    kind: 'MergedOverlayNativeStructuredFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    helmRelease({
+      name: spec.name,
+      chart: { repository: 'https://example.com/charts', name: 'example' },
+      values: mergeValuesExpression({ replicaCount: 1 }, spec.resources ?? defaultOsdResources),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+function mergeOptionalValues(base: unknown, overlay: Record<string, unknown>) {
+  return base === undefined ? overlay : mergeValuesExpression(base, overlay);
+}
+
+const normalizedValuesMergeComposition = kubernetesComposition(
+  {
+    name: 'normalized-values-merge',
+    kind: 'NormalizedValuesMerge',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    helmRelease({
+      name: spec.name,
+      chart: { repository: 'https://example.com/charts', name: 'example' },
+      values: mergeOptionalValues(spec.resources, { replicaCount: 1 }),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -357,18 +439,45 @@ describe('structured nullish defaults', () => {
     expect(compact).toContain(
       'has(schema.spec.resources)?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
     );
-    expect(compact).not.toContain(
-      'has(schema.spec.resources)?schema.spec.resources:omit()'
-    );
+    expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
   });
 
   it('retains an authored optional passthrough on a guarded resource', () => {
     const yaml = guardedOptionalPassthroughComposition.factory('kro').toYaml();
     const compact = yaml.replaceAll(' ', '');
 
-    expect(compact).toContain(
-      'has(schema.spec.resources)?schema.spec.resources:omit()'
+    expect(compact).toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
+  });
+
+  it('fails closed for an implicit structured fallback inside a values-merge operand', () => {
+    expect(() => mergedNativeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
     );
+  });
+
+  it('preserves an explicit structured fallback inside a values-merge operand', () => {
+    const yaml = mergedExplicitFallbackComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).toContain(
+      'has(schema.spec.resources)?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+    );
+    expect(compact).toContain('"replicaCount":1');
+    expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
+  });
+
+  it('fails closed for an implicit structured fallback inside a values-merge overlay', () => {
+    expect(() => mergedOverlayNativeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
+    );
+  });
+
+  it('does not confuse a normalized-away values merge with a base fallback', () => {
+    const yaml = normalizedValuesMergeComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).toContain('schema.spec.resources');
+    expect(compact).toContain('"replicaCount":1');
   });
 
   it('preserves a structured terminal fallback in a cross-field chain', () => {

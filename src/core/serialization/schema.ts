@@ -557,25 +557,55 @@ function collectMarkerLeaves(
 
 /**
  * Collect bare schema markers that have no explicit structured-expression
- * provenance. ValuesMergeExpression already records its base/overlay semantics,
- * so probing values inside that wrapper would misclassify an authored merge as
- * an implicit fallback.
+ * provenance. A ValuesMergeExpression records only the merge operation's
+ * provenance; its base and overlays may still contain implicit fallbacks. Keep
+ * those operands as explicit path segments so a probe compares the same operand
+ * rather than mistaking a normalized final merge result for its former base.
  */
+interface AmbiguityCandidateLeaf {
+  path: string[];
+  field: string;
+  mergeShapes: Array<{ path: string[]; overlayCount: number }>;
+}
+
 function collectAmbiguityCandidateLeaves(
   node: unknown,
   path: string[],
-  out: Array<{ path: string[]; field: string }>
+  out: AmbiguityCandidateLeaf[],
+  mergeShapes: AmbiguityCandidateLeaf['mergeShapes'] = []
 ): void {
-  if (isValuesMergeExpression(node)) return;
+  if (isValuesMergeExpression(node)) {
+    const nestedMergeShapes = [
+      ...mergeShapes,
+      { path: [...path], overlayCount: node.overlays.length },
+    ];
+    collectAmbiguityCandidateLeaves(node.base, [...path, 'base'], out, nestedMergeShapes);
+    node.overlays.forEach((overlay, index) =>
+      collectAmbiguityCandidateLeaves(
+        overlay,
+        [...path, 'overlays', String(index)],
+        out,
+        nestedMergeShapes
+      )
+    );
+    return;
+  }
 
   const classified = classifyLeaf(node);
   if (classified.kind === 'field') {
-    out.push({ path: [...path], field: classified.field });
+    out.push({
+      path: [...path],
+      field: classified.field,
+      mergeShapes: mergeShapes.map((shape) => ({
+        path: [...shape.path],
+        overlayCount: shape.overlayCount,
+      })),
+    });
     return;
   }
   if (Array.isArray(node)) {
     node.forEach((value, index) =>
-      collectAmbiguityCandidateLeaves(value, [...path, String(index)], out)
+      collectAmbiguityCandidateLeaves(value, [...path, String(index)], out, mergeShapes)
     );
     return;
   }
@@ -584,7 +614,8 @@ function collectAmbiguityCandidateLeaves(
       collectAmbiguityCandidateLeaves(
         (node as Record<string, unknown>)[key],
         [...path, key],
-        out
+        out,
+        mergeShapes
       );
     }
   }
@@ -639,17 +670,30 @@ const celField = (field: string): string => `schema.spec.${field}`;
 
 /**
  * Read a probed resource using a path captured from the proxy run. Values-merge
- * wrappers may disappear when the probed field is absent, so their `base` path
- * segment is transparent in that case.
+ * operand segments intentionally are not transparent: if removing a candidate
+ * causes the wrapper to normalize away, the resulting merged object is not
+ * evidence that the original operand contained an implicit fallback.
  */
-function readProbeValueAtPath(obj: unknown, path: string[]): unknown {
+function readRawValueAtPath(obj: unknown, path: string[]): unknown {
   let current = obj;
   for (const key of path) {
-    if (key === 'base' && !isValuesMergeExpression(current)) continue;
     if (current === null || typeof current !== 'object') return undefined;
     current = (current as Record<string, unknown>)[key];
   }
   return current;
+}
+
+function readProbeValueAtPath(obj: unknown, candidate: AmbiguityCandidateLeaf): unknown {
+  for (const shape of candidate.mergeShapes) {
+    const probedMerge = readRawValueAtPath(obj, shape.path);
+    if (
+      !isValuesMergeExpression(probedMerge) ||
+      probedMerge.overlays.length !== shape.overlayCount
+    ) {
+      return undefined;
+    }
+  }
+  return readRawValueAtPath(obj, candidate.path);
 }
 
 /**
@@ -666,31 +710,26 @@ function probeAmbiguousStructuredFallbacks(
   resourceId: string,
   out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
-  const markerLeaves: Array<{ path: string[]; field: string }> = [];
+  const markerLeaves: AmbiguityCandidateLeaf[] = [];
   collectAmbiguityCandidateLeaves(proxyResource, [], markerLeaves);
-  const pathsByField = new Map<string, string[][]>();
+  const candidatesByField = new Map<string, AmbiguityCandidateLeaf[]>();
   for (const marker of markerLeaves) {
-    const paths = pathsByField.get(marker.field) ?? [];
-    paths.push(marker.path);
-    pathsByField.set(marker.field, paths);
+    const candidates = candidatesByField.get(marker.field) ?? [];
+    candidates.push(marker);
+    candidatesByField.set(marker.field, candidates);
   }
 
-  for (const [field, paths] of pathsByField) {
-    const probedResource = runProbe(
-      compositionFn,
-      specJson,
-      new Set([field]),
-      resourceId
-    );
-    for (const path of paths) {
-      const fallbackValue = readProbeValueAtPath(probedResource, path);
+  for (const [field, candidates] of candidatesByField) {
+    const probedResource = runProbe(compositionFn, specJson, new Set([field]), resourceId);
+    for (const candidate of candidates) {
+      const fallbackValue = readProbeValueAtPath(probedResource, candidate);
       if (
         Array.isArray(fallbackValue) ||
         (fallbackValue !== null && typeof fallbackValue === 'object')
       ) {
         out.push({
           resourceId,
-          path,
+          path: candidate.path,
           field,
         });
       }
