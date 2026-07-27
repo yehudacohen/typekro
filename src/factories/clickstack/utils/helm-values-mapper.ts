@@ -127,7 +127,7 @@ function resolve<T>(value: T | undefined, fallback: NonNullable<T>): NonNullable
     return Cel.default(
       value as Parameters<typeof Cel.default>[0],
       fallback as Parameters<typeof Cel.default>[1]
-    ) as NonNullable<T>;
+    ) as unknown as NonNullable<T>;
   }
   return (value ?? fallback) as NonNullable<T>;
 }

@@ -3,7 +3,7 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getInnerCelPath } from '../serialization/cel-references.js';
+import { celLiteralForValueTree, getInnerCelPath } from '../serialization/cel-references.js';
 import type { CelExpression, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
@@ -295,7 +295,7 @@ function math<T = unknown>(
  * properly quotes string literals and converts marker strings
  * (containing `__KUBERNETES_REF__` tokens) to CEL concatenation.
  */
-function celValueForTernary(value: RefOrValue<CelValue>): string {
+function celValueForTernary(value: RefOrValue<unknown>): string {
   if (isKubernetesRef(value)) {
     return getInnerCelPath(value);
   }
@@ -307,6 +307,9 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
   }
   if (value === null || value === undefined) {
     return '""';
+  }
+  if (typeof value === 'object') {
+    return celLiteralForValueTree(value, undefined, 'cel.ternary');
   }
   const str = String(value);
   // Check for __KUBERNETES_REF__ markers from template literal coercion.
@@ -403,12 +406,30 @@ function cond<T = unknown>(
  * Use a value when its optional CEL path is present, otherwise use a fallback.
  *
  * This is shorthand for `has(value) ? value : fallback` with the same literal
- * quoting and template-marker handling as {@link cond}.
+ * quoting and template-marker handling as {@link cond}. Object and array
+ * fallbacks are serialized as structured CEL literals, so integrations can
+ * preserve `value ?? fallback` semantics without inspecting schema proxies.
+ *
+ * With concrete direct-mode values, this evaluates as native JavaScript `??`.
  */
 function defaultValue<T extends CelValue>(
   value: RefOrValue<T>,
   fallback: RefOrValue<NonNullable<T>>
-): CelExpression<NonNullable<T>> & NonNullable<T> {
+): CelExpression<NonNullable<T>> & NonNullable<T>;
+function defaultValue<T extends object | null | undefined>(
+  value: RefOrValue<T>,
+  fallback: RefOrValue<NonNullable<T>>
+): CelExpression<NonNullable<T>> & NonNullable<T>;
+function defaultValue(
+  value: RefOrValue<unknown>,
+  fallback: RefOrValue<unknown>
+): CelExpression<unknown> | unknown {
+  // Preserve ordinary JavaScript `??` semantics in direct mode. Schema/resource
+  // refs and nested CEL expressions take the graph path below.
+  if (!isKubernetesRef(value) && !isCelExpression(value)) {
+    return value ?? fallback;
+  }
+
   const guard = isKubernetesRef(value)
     ? (schemaSpecHasGuard(getInnerCelPath(value)) ?? has(value).expression)
     : has(value).expression;
@@ -417,16 +438,11 @@ function defaultValue<T extends CelValue>(
   return {
     [CEL_EXPRESSION_BRAND]: true,
     expression,
-  } as CelExpression<NonNullable<T>> & NonNullable<T>;
+  } as CelExpression<unknown>;
 }
 
 /** Alias for {@link defaultValue}. */
-function coalesce<T extends CelValue>(
-  value: RefOrValue<T>,
-  fallback: RefOrValue<NonNullable<T>>
-): CelExpression<NonNullable<T>> & NonNullable<T> {
-  return defaultValue(value, fallback);
-}
+const coalesce: typeof defaultValue = defaultValue;
 
 /**
  * Creates a mixed string template that combines literal strings with CEL expressions

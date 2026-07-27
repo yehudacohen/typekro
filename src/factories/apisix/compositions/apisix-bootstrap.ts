@@ -1,6 +1,7 @@
 import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import type {
   DirectResourceFactory,
@@ -93,7 +94,7 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
       // Global defaults
       global: {
         ...spec.global,
-        imagePullSecrets: spec.global?.imagePullSecrets || [],
+        imagePullSecrets: Cel.default(spec.global?.imagePullSecrets, []),
         imageRegistry: spec.global?.imageRegistry || '',
       },
 
@@ -115,12 +116,12 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
         },
       },
 
-    // Ingress config compatibility defaults. The chart subchart remains disabled below.
+      // Ingress config compatibility defaults. The chart subchart remains disabled below.
       ingressController: {
         ...spec.ingressController,
         enabled:
           spec.ingressController?.enabled !== undefined ? spec.ingressController.enabled : true,
-        extraArgs: spec.ingressController?.extraArgs || [],
+        extraArgs: Cel.default(spec.ingressController?.extraArgs, []),
         config: {
           ...spec.ingressController?.config,
           kubernetes: {

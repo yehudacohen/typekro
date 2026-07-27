@@ -5,6 +5,7 @@ import {
   mergeValuesExpression,
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
+import { Cel } from '../../../core/references/cel.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type {
   CephObjectStoreConfig,
@@ -153,11 +154,11 @@ const singleNodeResources = {
 
 function resolveSingleNodeResources(config: RookCephSingleNodePlatformConfig) {
   return {
-    mon: config.resources?.mon ?? singleNodeResources.mon,
-    mgr: config.resources?.mgr ?? singleNodeResources.mgr,
-    osd: config.resources?.osd ?? singleNodeResources.osd,
-    prepareosd: config.resources?.prepareosd ?? singleNodeResources.prepareosd,
-    rgw: config.resources?.rgw ?? singleNodeResources.rgw,
+    mon: Cel.default(config.resources?.mon, singleNodeResources.mon),
+    mgr: Cel.default(config.resources?.mgr, singleNodeResources.mgr),
+    osd: Cel.default(config.resources?.osd, singleNodeResources.osd),
+    prepareosd: Cel.default(config.resources?.prepareosd, singleNodeResources.prepareosd),
+    rgw: Cel.default(config.resources?.rgw, singleNodeResources.rgw),
   };
 }
 

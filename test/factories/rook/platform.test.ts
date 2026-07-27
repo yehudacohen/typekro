@@ -249,7 +249,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     for (const [daemon, fallback] of Object.entries(expectedFallbacks)) {
       const path = `schema.spec.resources.${daemon}`;
       const guard = `has(schema.spec.resources)&&has(${path})?${path}:`;
-      expect(compactRgd).toContain(`${guard}(${fallback})`);
+      expect(compactRgd).toContain(`${guard}${fallback}`);
     }
     expectCleanYaml(rgdYaml);
   });

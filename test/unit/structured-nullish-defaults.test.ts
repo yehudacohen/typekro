@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { V1ResourceRequirements } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Cel } from '../../src/core/references/cel.js';
 import { Deployment } from '../../src/factories/simple/index.js';
 
 const ResourceRequirementsSchema = type({
@@ -61,8 +62,8 @@ const defaultMonResources = {
 
 function resolveDaemonResources(spec: StructuredDefaultsSpec) {
   return {
-    osd: spec.resources?.osd ?? defaultOsdResources,
-    mon: spec.resources?.mon ?? defaultMonResources,
+    osd: Cel.default(spec.resources?.osd, defaultOsdResources),
+    mon: Cel.default(spec.resources?.mon, defaultMonResources),
   };
 }
 
@@ -115,7 +116,7 @@ const conditionalResourcesComposition = kubernetesComposition(
 );
 
 function resolveScalarConditionalResources(spec: ScalarConditionalResourcesSpec) {
-  return spec.mode && spec.resources ? spec.resources : defaultOsdResources;
+  return spec.mode !== 'disabled' && spec.resources ? spec.resources : defaultOsdResources;
 }
 
 const scalarConditionalResourcesComposition = kubernetesComposition(
@@ -138,7 +139,7 @@ const scalarConditionalResourcesComposition = kubernetesComposition(
 );
 
 function resolveStructuredChain(spec: StructuredChainSpec) {
-  return spec.primary ?? spec.secondary ?? defaultOsdResources;
+  return Cel.default(spec.primary, Cel.default(spec.secondary, defaultOsdResources));
 }
 
 const structuredChainComposition = kubernetesComposition(
@@ -167,15 +168,15 @@ function deploymentSection(yaml: string, name: string): string {
 }
 
 describe('structured nullish defaults', () => {
-  it('lowers helper-returned object fallbacks into guarded KRO expressions', () => {
+  it('lowers explicit helper-returned structured defaults into guarded KRO expressions', () => {
     const yaml = structuredDefaultsComposition.factory('kro').toYaml();
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.osd)?schema.spec.resources.osd:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+      'has(schema.spec.resources)&&has(schema.spec.resources.osd)?schema.spec.resources.osd:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
     );
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.mon)?schema.spec.resources.mon:({"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}})'
+      'has(schema.spec.resources)&&has(schema.spec.resources.mon)?schema.spec.resources.mon:{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}'
     );
   });
 
@@ -227,11 +228,8 @@ describe('structured nullish defaults', () => {
   });
 
   it('does not infer a nullish fallback from an unrelated conditional', () => {
-    const yaml = conditionalResourcesComposition.factory('kro').toYaml();
-    const compact = yaml.replaceAll(' ', '');
-
-    expect(compact).not.toContain(
-      'has(schema.spec.resources)?schema.spec.resources:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+    expect(() => conditionalResourcesComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
     );
 
     const disabledYaml = conditionalResourcesComposition.factory('direct').toYaml({
@@ -253,20 +251,17 @@ describe('structured nullish defaults', () => {
     expect(enabled).not.toContain('memory: 2Gi');
   });
 
-  it('does not erase a required scalar guard while inferring a structured fallback', () => {
-    const yaml = scalarConditionalResourcesComposition.factory('kro').toYaml();
-    const compact = yaml.replaceAll(' ', '');
-
-    expect(compact).not.toContain(
-      'has(schema.spec.resources)?schema.spec.resources:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+  it('fails closed instead of erasing a value-based scalar guard', () => {
+    expect(() => scalarConditionalResourcesComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
     );
 
     const disabledYaml = scalarConditionalResourcesComposition.factory('direct').toYaml({
-      name: 'empty-mode',
-      mode: '',
+      name: 'disabled-mode',
+      mode: 'disabled',
       resources: { limits: { memory: '4Gi' } },
     });
-    const disabled = deploymentSection(disabledYaml, 'empty-mode');
+    const disabled = deploymentSection(disabledYaml, 'disabled-mode');
     expect(disabled).toContain('memory: 2Gi');
     expect(disabled).not.toContain('memory: 4Gi');
 
@@ -285,7 +280,7 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.primary)?schema.spec.primary:(has(schema.spec.secondary)?schema.spec.secondary:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}))'
+      'has(schema.spec.primary)?schema.spec.primary:(has(schema.spec.secondary)?schema.spec.secondary:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
   });
 

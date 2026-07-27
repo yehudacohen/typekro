@@ -445,6 +445,7 @@ function executeNestedCompositionWithSpec<
   const uniqueExecutionName = `${compositionName}-execution-${++globalCompositionCounter}`;
   const executionContext = createCompositionContext(uniqueExecutionName, {
     ...(parentContext.isReExecution ? { isReExecution: true } : {}),
+    ...(parentContext.suppressResourceDiagnostics ? { suppressResourceDiagnostics: true } : {}),
     isNestedCall: true,
     ...(options?.supportedModes ? { supportedModes: options.supportedModes } : {}),
   });

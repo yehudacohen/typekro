@@ -114,6 +114,8 @@ export interface CompositionContext {
   singletonDefinitions?: Map<string, SingletonDefinitionRecord>;
   /** True when this context is a direct-mode re-execution. */
   isReExecution?: boolean | undefined;
+  /** Suppress resource-construction warnings during internal analysis executions. */
+  suppressResourceDiagnostics?: boolean | undefined;
   /** Deployment modes supported by the composition owning this context. */
   supportedModes?: readonly ('direct' | 'kro')[];
   /**
@@ -145,6 +147,8 @@ export interface CompositionContextOptions {
    * pass (which generates CEL) and only run the spec-driven execution.
    */
   isReExecution?: boolean;
+  /** Suppress resource-construction warnings during internal analysis executions. */
+  suppressResourceDiagnostics?: boolean;
   /** Deployment modes supported by the composition owning this context. */
   supportedModes?: readonly ('direct' | 'kro')[];
   /**
@@ -262,6 +266,7 @@ export function createCompositionContext(
     nestedStatusSnapshots: new Map(),
     singletonDefinitions: new Map(),
     isReExecution: contextOptions?.isReExecution,
+    suppressResourceDiagnostics: contextOptions?.suppressResourceDiagnostics,
     ...(contextOptions?.supportedModes ? { supportedModes: contextOptions.supportedModes } : {}),
     isNestedCall: contextOptions?.isNestedCall,
     addResource(id: string, resource: Enhanced<unknown, unknown>) {

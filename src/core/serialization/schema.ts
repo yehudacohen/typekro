@@ -13,6 +13,7 @@ import { pascalCase } from '../../utils/string.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
@@ -313,13 +314,8 @@ interface ReExecutionResult {
    * multi-field `has(...) ? ... : ...` chains it cannot express.
    */
   crossFieldOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
-  /**
-   * Structured single-field fallbacks (`spec.resources?.osd ?? DEFAULT_OSD`)
-   * captured by executing the real composition/helper graph with optionals absent.
-   * KRO SimpleSchema cannot represent object-valued defaults, so these are
-   * lowered into presence-guarded CEL at the exact resource template path.
-   */
-  structuredFallbackOverrides: Array<{ resourceId: string; path: string[]; cel: string }>;
+  /** Structured proxy/default diffs that lack explicit nullish provenance. */
+  ambiguousStructuredFallbacks: Array<{ resourceId: string; path: string[]; field: string }>;
 }
 
 /**
@@ -356,7 +352,9 @@ function resolveDefaultsByReExecution(
     // can be ternary-controlled (required fields always have a value).
     const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
 
-    const tempCtx = createCompositionContext('defaults-extraction');
+    const tempCtx = createCompositionContext('defaults-extraction', {
+      suppressResourceDiagnostics: true,
+    });
     // The all-undefined defaults run can throw when a composition dereferences an
     // absent optional parent (`spec.settings.tier` with settings undefined). Contain
     // it: literal-default extraction is then simply empty, but cross-field probing
@@ -408,21 +406,19 @@ function resolveDefaultsByReExecution(
     }
 
     const crossFieldOverrides: ReExecutionResult['crossFieldOverrides'] = [];
-    const structuredFallbackOverrides: ReExecutionResult['structuredFallbackOverrides'] = [];
+    const ambiguousStructuredFallbacks: ReExecutionResult['ambiguousStructuredFallbacks'] = [];
     for (const [id, proxyRes] of proxyEntries) {
       const defaultsRes = defaultsMap.get(id);
       // Literal-default + ternary extraction need the defaults-run counterpart;
       // skip them when it's absent (only in the proxy run, or the defaults run threw).
       if (defaultsRes) {
         extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
-        extractStructuredFallbacksByComparison(
-          compositionFn,
-          specJson,
+        collectAmbiguousStructuredFallbacks(
           proxyRes,
           defaultsRes,
           id,
           [],
-          structuredFallbackOverrides
+          ambiguousStructuredFallbacks
         );
         extractTernaryConditionals(
           proxyRes,
@@ -448,9 +444,9 @@ function resolveDefaultsByReExecution(
       Object.keys(defaults).length > 0 ||
       ternaryConditionals.length > 0 ||
       crossFieldOverrides.length > 0 ||
-      structuredFallbackOverrides.length > 0;
+      ambiguousStructuredFallbacks.length > 0;
     return hasResults
-      ? { defaults, ternaryConditionals, crossFieldOverrides, structuredFallbackOverrides }
+      ? { defaults, ternaryConditionals, crossFieldOverrides, ambiguousStructuredFallbacks }
       : undefined;
   } catch (err) {
     // Best-effort: composition functions with undefined spec fields may throw
@@ -560,11 +556,7 @@ function collectMarkerLeaves(
  * Driving presence this way lets a probe reveal which field a `??` chain falls
  * through to when earlier links are absent.
  */
-function buildProbeSpec(
-  specJson: unknown,
-  absent: Set<string>,
-  overrides: ReadonlyMap<string, unknown> = new Map()
-): unknown {
+function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
   const root = (createSchemaProxy(specJson) as { spec: unknown }).spec;
   const wrap = (target: object, prefix: string): unknown =>
     new Proxy(target, {
@@ -572,11 +564,8 @@ function buildProbeSpec(
         if (typeof prop !== 'string') return Reflect.get(t, prop);
         const full = prefix ? `${prefix}.${prop}` : prop;
         if (absent.has(full)) return undefined;
-        if (overrides.has(full)) return overrides.get(full);
         const v = (t as Record<string, unknown>)[prop];
-        const hasDeeperMutation =
-          [...absent].some((a) => a.startsWith(`${full}.`)) ||
-          [...overrides.keys()].some((a) => a.startsWith(`${full}.`));
+        const hasDeeperMutation = [...absent].some((a) => a.startsWith(`${full}.`));
         if (hasDeeperMutation && v && (typeof v === 'object' || typeof v === 'function')) {
           return wrap(v as object, full);
         }
@@ -586,227 +575,42 @@ function buildProbeSpec(
   return wrap(root as object, '');
 }
 
-interface ProbeResult {
-  completed: boolean;
-  resource: Record<string, unknown> | undefined;
-}
-
-/** Run the composition with a probe spec and retain whether execution completed. */
-function runProbeWithResult(
-  compositionFn: (...args: unknown[]) => unknown,
-  specJson: unknown,
-  absent: Set<string>,
-  resourceId: string,
-  overrides: ReadonlyMap<string, unknown> = new Map()
-): ProbeResult {
-  try {
-    const ctx = createCompositionContext('cross-field-probe');
-    runWithCompositionContext(ctx, () => {
-      compositionFn(buildProbeSpec(specJson, absent, overrides));
-    });
-    return {
-      completed: true,
-      resource: (ctx.resources as Record<string, Record<string, unknown>>)[resourceId],
-    };
-  } catch {
-    return { completed: false, resource: undefined };
-  }
-}
-
 /** Run the composition with a probe spec; return the resource matching `resourceId`. */
 function runProbe(
   compositionFn: (...args: unknown[]) => unknown,
   specJson: unknown,
   absent: Set<string>,
-  resourceId: string,
-  overrides: ReadonlyMap<string, unknown> = new Map()
+  resourceId: string
 ): Record<string, unknown> | undefined {
-  return runProbeWithResult(compositionFn, specJson, absent, resourceId, overrides).resource;
+  try {
+    const ctx = createCompositionContext('cross-field-probe', {
+      suppressResourceDiagnostics: true,
+    });
+    runWithCompositionContext(ctx, () => {
+      compositionFn(buildProbeSpec(specJson, absent));
+    });
+    return (ctx.resources as Record<string, Record<string, unknown>>)[resourceId];
+  } catch {
+    return undefined;
+  }
 }
 
 const celField = (field: string): string => `schema.spec.${field}`;
 
 /**
- * Presence guard for a (possibly nested) optional field — every ancestor must be
- * present too. `userDeployments.enableSubchart` →
- * `has(schema.spec.userDeployments) && has(schema.spec.userDeployments.enableSubchart)`.
- * Matches the optional-chain guard the inline analyzer emits, so a bare nested ref is
- * never read through an absent parent.
+ * Detect structured proxy/default differences without pretending black-box
+ * re-execution proves a `??` operation. Explicit `Cel.default()` values carry
+ * their own CEL provenance and therefore do not appear as bare schema markers.
  */
-function presenceGuard(field: string): string {
-  const segs = field.split('.');
-  return segs.map((_, i) => `has(schema.spec.${segs.slice(0, i + 1).join('.')})`).join(' && ');
-}
-
-interface CounterfactualProbe {
-  absent: Set<string>;
-  overrides: Map<string, unknown>;
-}
-
-function numericBoundAdmitsZero(bound: unknown, kind: 'min' | 'max'): boolean {
-  if (bound === undefined) return true;
-  const rule =
-    typeof bound === 'number'
-      ? bound
-      : bound !== null &&
-          typeof bound === 'object' &&
-          typeof Reflect.get(bound, 'rule') === 'number'
-        ? (Reflect.get(bound, 'rule') as number)
-        : undefined;
-  if (rule === undefined) return false;
-  const exclusive =
-    bound !== null && typeof bound === 'object' && Reflect.get(bound, 'exclusive') === true;
-  return kind === 'min'
-    ? rule < 0 || (rule === 0 && !exclusive)
-    : rule > 0 || (rule === 0 && !exclusive);
-}
-
-/**
- * Return every falsy JavaScript value that the ArkType JSON node admits.
- * These are useful counterfactuals for required scalar guards: unlike schema
- * proxies, real strings, numbers, booleans, and null can be falsy.
- */
-function falsySchemaValues(node: unknown): unknown[] {
-  if (node === 'boolean') return [false];
-  if (node === 'string') return [''];
-  if (node === 'number') return [0];
-  if (node === 'unknown') return [false, 0, '', null];
-  if (node === 'null') return [null];
-  if (Array.isArray(node)) {
-    const values = node.flatMap(falsySchemaValues);
-    return values.filter(
-      (value, index) => values.findIndex((candidate) => Object.is(candidate, value)) === index
-    );
-  }
-  if (node === null || typeof node !== 'object') return [];
-
-  if ('unit' in node) {
-    const unit = Reflect.get(node, 'unit');
-    return !unit ? [unit] : [];
-  }
-  if (
-    Reflect.has(node, 'required') ||
-    Reflect.has(node, 'optional') ||
-    Reflect.get(node, 'proto') === 'Array'
-  ) {
-    return [];
-  }
-
-  const domain = Reflect.get(node, 'domain');
-  if (domain === 'boolean') return [false];
-  if (domain === 'string') {
-    const exactLength = Reflect.get(node, 'exactLength');
-    const minLength = Reflect.get(node, 'minLength');
-    const pattern = Reflect.get(node, 'pattern');
-    const admitsEmpty =
-      (exactLength === undefined || exactLength === 0) &&
-      (minLength === undefined || minLength === 0) &&
-      pattern === undefined;
-    return admitsEmpty ? [''] : [];
-  }
-  if (domain === 'number') {
-    const admitsZero =
-      numericBoundAdmitsZero(Reflect.get(node, 'min'), 'min') &&
-      numericBoundAdmitsZero(Reflect.get(node, 'max'), 'max');
-    return admitsZero ? [0] : [];
-  }
-
-  // ArkType serializes `unknown` as an empty node.
-  if (Object.keys(node).length === 0) return [false, 0, '', null];
-  return [];
-}
-
-/**
- * Build single-field counterfactuals for every schema path other than the
- * candidate and its optional ancestors. Optional fields are removed; every
- * scalar field is also exercised with each falsy value its schema admits.
- * Callers ignore hybrid proxy/concrete probes that cannot execute and require
- * every executable counterfactual to preserve the candidate marker.
- */
-function collectCounterfactualProbes(
-  node: unknown,
-  candidate: string,
-  prefix = '',
-  out: CounterfactualProbe[] = []
-): CounterfactualProbe[] {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return out;
-
-  const objectNode = node as {
-    required?: Array<{ key: string; value: unknown }>;
-    optional?: Array<{ key: string; value: unknown }>;
-  };
-  const candidateDependsOnPath = (path: string): boolean =>
-    candidate === path || candidate.startsWith(`${path}.`);
-
-  for (const property of objectNode.required ?? []) {
-    const path = prefix ? `${prefix}.${property.key}` : property.key;
-    if (!candidateDependsOnPath(path)) {
-      for (const value of falsySchemaValues(property.value)) {
-        out.push({ absent: new Set(), overrides: new Map([[path, value]]) });
-      }
-    }
-    collectCounterfactualProbes(property.value, candidate, path, out);
-  }
-
-  for (const property of objectNode.optional ?? []) {
-    const path = prefix ? `${prefix}.${property.key}` : property.key;
-    if (!candidateDependsOnPath(path)) {
-      out.push({ absent: new Set([path]), overrides: new Map() });
-      for (const value of falsySchemaValues(property.value)) {
-        out.push({ absent: new Set(), overrides: new Map([[path, value]]) });
-      }
-    }
-    collectCounterfactualProbes(property.value, candidate, path, out);
-  }
-
-  return out;
-}
-
-/**
- * ValuesMergeExpression is an authoring-time wrapper. When a counterfactual
- * removes the overlay that created it, the same authored base appears directly.
- * Treat `base` segments introduced by that wrapper as transparent for probes.
- */
-function readAuthoredValueAtPath(obj: unknown, path: string[]): unknown {
-  let current: unknown = obj;
-  for (const key of path) {
-    if (key === 'base' && !isValuesMergeExpression(current)) continue;
-    if (current === null || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
-
-function exactSchemaField(value: unknown): string | undefined {
-  const valueString =
-    typeof value === 'function' || typeof value === 'string' ? String(value) : undefined;
-  const marker = valueString?.match(FULL_MARKER_RE)?.[1];
-  return marker?.startsWith('spec.') ? marker.slice('spec.'.length) : undefined;
-}
-
-/**
- * Capture object/array-valued `??` fallbacks without teaching integrations
- * about schema proxies. The proxy run contributes the exact `spec.X` marker;
- * the optionals-absent run contributes the concrete structured fallback.
- * Choosing the whole object preserves JavaScript replacement semantics.
- */
-function extractStructuredFallbacksByComparison(
-  compositionFn: (...args: unknown[]) => unknown,
-  specJson: unknown,
+function collectAmbiguousStructuredFallbacks(
   proxyValue: unknown,
   fallbackValue: unknown,
   resourceId: string,
   path: string[],
-  out: ReExecutionResult['structuredFallbackOverrides']
+  out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
-  // A graph-aware optional `values` overlay can make the proxy run a
-  // ValuesMergeExpression while the optionals-absent run remains the plain
-  // base object. Compare the authored base against that concrete fallback so
-  // defaults nested inside helpers are captured before runtime merge lowering.
   if (isValuesMergeExpression(proxyValue) && !isValuesMergeExpression(fallbackValue)) {
-    extractStructuredFallbacksByComparison(
-      compositionFn,
-      specJson,
+    collectAmbiguousStructuredFallbacks(
       proxyValue.base,
       fallbackValue,
       resourceId,
@@ -821,94 +625,21 @@ function extractStructuredFallbacksByComparison(
       ? String(proxyValue)
       : undefined;
   const exactMarker = proxyString?.match(FULL_MARKER_RE)?.[1];
-
-  if (exactMarker?.startsWith('spec.')) {
-    if (
-      Array.isArray(fallbackValue) ||
-      (fallbackValue !== null && typeof fallbackValue === 'object')
-    ) {
-      try {
-        const field = exactMarker.slice('spec.'.length);
-        const probeResource = runProbe(
-          compositionFn,
-          specJson,
-          new Set<string>([field]),
-          resourceId
-        );
-        const probedFallback = readAuthoredValueAtPath(probeResource, path);
-        if (
-          !Array.isArray(probedFallback) &&
-          (probedFallback === null || typeof probedFallback !== 'object')
-        ) {
-          return;
-        }
-        const fallbackCel = celLiteralForValueTree(
-          fallbackValue,
-          undefined,
-          `structured-default.${resourceId}.${path.join('.')}`
-        );
-        const probedFallbackCel = celLiteralForValueTree(
-          probedFallback,
-          undefined,
-          `structured-default.${resourceId}.${path.join('.')}`
-        );
-        // A proxy/default diff can also be produced by an unrelated conditional,
-        // for example `spec.enabled ? spec.resources : defaults`. Confirm that
-        // removing the referenced field itself selects this exact fallback before
-        // attributing the behavior to nullish coalescing.
-        if (probedFallbackCel !== fallbackCel) return;
-        // The referenced field must also remain the selected marker under every
-        // other single-field counterfactual. This rejects control flow such as
-        // `enabled && resources ? resources : defaults`, including when enabled
-        // is a required boolean and therefore cannot be tested by absence alone.
-        for (const counterfactual of collectCounterfactualProbes(specJson, field)) {
-          const counterfactualResult = runProbeWithResult(
-            compositionFn,
-            specJson,
-            counterfactual.absent,
-            resourceId,
-            counterfactual.overrides
-          );
-          // Some helpers legitimately cannot operate on a hybrid proxy/concrete
-          // input (for example structuredClone after an optional overlay becomes
-          // undefined). Such a probe carries no semantic evidence either way.
-          if (!counterfactualResult.completed) continue;
-          const observedField = exactSchemaField(
-            readAuthoredValueAtPath(counterfactualResult.resource, path)
-          );
-          if (observedField !== field) {
-            logger.debug('Structured fallback candidate rejected by counterfactual probe', {
-              resourceId,
-              path: path.join('.'),
-              field,
-              observedField,
-              absent: [...counterfactual.absent],
-              overrides: Object.fromEntries(counterfactual.overrides),
-            });
-            return;
-          }
-        }
-        out.push({
-          resourceId,
-          path: [...path],
-          cel: `\${${presenceGuard(field)} ? ${celField(field)} : (${fallbackCel})}`,
-        });
-      } catch (error) {
-        logger.debug('Skipping non-serializable structured fallback', {
-          resourceId,
-          path: path.join('.'),
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+  if (
+    exactMarker?.startsWith('spec.') &&
+    (Array.isArray(fallbackValue) || (fallbackValue !== null && typeof fallbackValue === 'object'))
+  ) {
+    out.push({
+      resourceId,
+      path: [...path],
+      field: exactMarker.slice('spec.'.length),
+    });
     return;
   }
 
   if (Array.isArray(proxyValue) && Array.isArray(fallbackValue)) {
     for (let index = 0; index < Math.min(proxyValue.length, fallbackValue.length); index++) {
-      extractStructuredFallbacksByComparison(
-        compositionFn,
-        specJson,
+      collectAmbiguousStructuredFallbacks(
         proxyValue[index],
         fallbackValue[index],
         resourceId,
@@ -926,9 +657,7 @@ function extractStructuredFallbacksByComparison(
     typeof fallbackValue === 'object'
   ) {
     for (const key of Object.keys(proxyValue as Record<string, unknown>)) {
-      extractStructuredFallbacksByComparison(
-        compositionFn,
-        specJson,
+      collectAmbiguousStructuredFallbacks(
         (proxyValue as Record<string, unknown>)[key],
         (fallbackValue as Record<string, unknown>)[key],
         resourceId,
@@ -937,6 +666,36 @@ function extractStructuredFallbacksByComparison(
       );
     }
   }
+}
+
+function assertNoAmbiguousStructuredFallbacks(result: ReExecutionResult | undefined): void {
+  const [ambiguous] = result?.ambiguousStructuredFallbacks ?? [];
+  if (!ambiguous) return;
+
+  throw new TypeKroError(
+    `Cannot prove structured fallback semantics for schema.spec.${ambiguous.field} at ` +
+      `${ambiguous.resourceId}.${ambiguous.path.join('.')}. ` +
+      'Black-box re-execution cannot distinguish nullish coalescing from value-based control flow. ' +
+      'Use Cel.default(value, fallback) or Cel.coalesce(value, fallback) to make the graph semantics explicit.',
+    'AMBIGUOUS_STRUCTURED_FALLBACK',
+    {
+      resourceId: ambiguous.resourceId,
+      path: ambiguous.path.join('.'),
+      field: ambiguous.field,
+    }
+  );
+}
+
+/**
+ * Presence guard for a (possibly nested) optional field — every ancestor must be
+ * present too. `userDeployments.enableSubchart` →
+ * `has(schema.spec.userDeployments) && has(schema.spec.userDeployments.enableSubchart)`.
+ * Matches the optional-chain guard the inline analyzer emits, so a bare nested ref is
+ * never read through an absent parent.
+ */
+function presenceGuard(field: string): string {
+  const segs = field.split('.');
+  return segs.map((_, i) => `has(schema.spec.${segs.slice(0, i + 1).join('.')})`).join(' && ');
 }
 
 /** Render the chain's CEL: <guard(a)> ? a : (<guard(b)> ? b : <tail>). */
@@ -1681,6 +1440,7 @@ export function arktypeToKroSchema(
               nestedResources
             )
           : undefined;
+      assertNoAmbiguousStructuredFallbacks(reExecutionResult);
       const reExecutionDefaults = reExecutionResult?.defaults ?? {};
       const innerDefaults = remapNullishDefaults(
         { ...extractedDefaults, ...reExecutionDefaults },
@@ -1713,11 +1473,9 @@ export function arktypeToKroSchema(
       resources
     );
     if (reExecutionResult) {
+      assertNoAmbiguousStructuredFallbacks(reExecutionResult);
       applyNullishDefaults(specFields, reExecutionResult.defaults, true);
       ternaryConditionals.push(...reExecutionResult.ternaryConditionals);
-      for (const override of reExecutionResult.structuredFallbackOverrides) {
-        setAtResourcePath(resources[override.resourceId], override.path, override.cel);
-      }
       // Cross-field `??` chains reconstructed by probing: write each CEL conditional
       // directly at its resource path (overwriting the bare head-field marker).
       for (const ov of reExecutionResult.crossFieldOverrides) {
