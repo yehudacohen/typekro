@@ -310,6 +310,33 @@ const normalizedValuesMergeComposition = kubernetesComposition(
   }
 );
 
+function conditionallyMergeResourceDefaults(spec: GuardedResourcesSpec) {
+  return spec.resources
+    ? mergeValuesExpression({ replicaCount: 1 }, { resources: spec.resources })
+    : {
+        replicaCount: 1,
+        resources: defaultOsdResources,
+      };
+}
+
+const conditionalMergeFallbackComposition = kubernetesComposition(
+  {
+    name: 'conditional-values-merge-fallback',
+    kind: 'ConditionalValuesMergeFallback',
+    spec: GuardedResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: GuardedResourcesSpec) => {
+    helmRelease({
+      name: spec.name,
+      chart: { repository: 'https://example.com/charts', name: 'example' },
+      values: conditionallyMergeResourceDefaults(spec),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -478,6 +505,12 @@ describe('structured nullish defaults', () => {
 
     expect(compact).toContain('schema.spec.resources');
     expect(compact).toContain('"replicaCount":1');
+  });
+
+  it('fails closed when merge normalization reveals a different fallback branch', () => {
+    expect(() => conditionalMergeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /Cannot prove structured fallback semantics.*Cel\.default/
+    );
   });
 
   it('preserves a structured terminal fallback in a cross-field chain', () => {

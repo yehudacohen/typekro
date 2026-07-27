@@ -10,6 +10,7 @@ import type { Type } from 'arktype';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { pascalCase } from '../../utils/string.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
@@ -351,6 +352,7 @@ function resolveDefaultsByReExecution(
     // Build the set of optional top-level field names. Only optional fields
     // can be ternary-controlled (required fields always have a value).
     const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
+    const optionalFieldPaths = collectOptionalSchemaPaths(specJson);
 
     const tempCtx = createCompositionContext('defaults-extraction', {
       suppressResourceDiagnostics: true,
@@ -431,6 +433,7 @@ function resolveDefaultsByReExecution(
         specJson,
         proxyRes,
         id,
+        optionalFieldPaths,
         ambiguousStructuredFallbacks
       );
       // Cross-field `??` chain reconstruction is independent of the defaults run —
@@ -683,17 +686,163 @@ function readRawValueAtPath(obj: unknown, path: string[]): unknown {
   return current;
 }
 
-function readProbeValueAtPath(obj: unknown, candidate: AmbiguityCandidateLeaf): unknown {
+function replaceValueAtPath(root: unknown, path: string[], value: unknown): unknown {
+  const [head, ...tail] = path;
+  if (head === undefined) return value;
+
+  if (Array.isArray(root)) {
+    const index = Number(head);
+    if (!Number.isInteger(index) || index < 0 || index >= root.length) return root;
+    const copy = [...root];
+    copy[index] = replaceValueAtPath(copy[index], tail, value);
+    return copy;
+  }
+
+  if (root === null || typeof root !== 'object') return root;
+  const record = root as Record<string, unknown>;
+  return {
+    ...record,
+    [head]: replaceValueAtPath(record[head], tail, value),
+  };
+}
+
+/**
+ * Canonicalize only ordinary value-tree containers. References and CEL nodes
+ * are semantic leaves, while merge expressions retain their explicit operand
+ * ordering. Kubernetes object maps are unordered, so sorting their keys keeps
+ * semantically identical normalization paths from differing solely because a
+ * helper inserted properties in a different order.
+ */
+function canonicalizeValueTree(value: unknown): unknown {
+  if (isKubernetesRef(value) || isCelExpression(value)) return value;
+  if (isValuesMergeExpression(value)) {
+    let base = canonicalizeValueTree(value.base);
+    let overlays = value.overlays.map(canonicalizeValueTree);
+    while (isValuesMergeExpression(base)) {
+      overlays = [...base.overlays, ...overlays];
+      base = base.base;
+    }
+    overlays = overlays.filter(
+      (overlay) =>
+        overlay !== undefined &&
+        !(
+          overlay !== null &&
+          typeof overlay === 'object' &&
+          !Array.isArray(overlay) &&
+          Object.getPrototypeOf(overlay) === Object.prototype &&
+          Object.keys(overlay).length === 0
+        )
+    );
+    if (overlays.length === 0) return base;
+    return {
+      __typekroValuesMerge: true,
+      base,
+      overlays,
+    };
+  }
+  if (Array.isArray(value)) return value.map(canonicalizeValueTree);
+  if (value === null || typeof value !== 'object') return value;
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .flatMap((key) => {
+        const canonical = canonicalizeValueTree(record[key]);
+        return canonical === undefined ? [] : [[key, canonical]];
+      })
+  );
+}
+
+function valueTreeFingerprint(value: unknown): string | undefined {
+  try {
+    return celLiteralForValueTree(
+      canonicalizeValueTree(value),
+      undefined,
+      'structured-fallback-normalization'
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+interface ProbeValueRead {
+  value: unknown;
+  ambiguousNormalization: boolean;
+}
+
+function collectOptionalSchemaPaths(node: unknown): Set<string> {
+  const paths = new Set<string>();
+
+  const walk = (current: unknown, prefix: string): void => {
+    if (current === null || typeof current !== 'object') return;
+    const objectNode = current as {
+      required?: Array<{ key: string; value?: unknown }>;
+      optional?: Array<{ key: string; value?: unknown }>;
+    };
+
+    for (const entry of objectNode.optional ?? []) {
+      const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+      paths.add(path);
+      walk(entry.value, path);
+    }
+    for (const entry of objectNode.required ?? []) {
+      const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+      walk(entry.value, path);
+    }
+  };
+
+  walk(node, '');
+  return paths;
+}
+
+function canSchemaFieldBeAbsent(field: string, optionalFieldPaths: ReadonlySet<string>): boolean {
+  for (const optionalPath of optionalFieldPaths) {
+    if (field === optionalPath || field.startsWith(`${optionalPath}.`)) return true;
+  }
+  return false;
+}
+
+function readProbeValueAtPath(
+  proxyResource: Record<string, unknown>,
+  probedResource: unknown,
+  candidate: AmbiguityCandidateLeaf
+): ProbeValueRead {
   for (const shape of candidate.mergeShapes) {
-    const probedMerge = readRawValueAtPath(obj, shape.path);
+    const probedMerge = readRawValueAtPath(probedResource, shape.path);
     if (
       !isValuesMergeExpression(probedMerge) ||
       probedMerge.overlays.length !== shape.overlayCount
     ) {
-      return undefined;
+      const originalMerge = readRawValueAtPath(proxyResource, shape.path);
+      if (!isValuesMergeExpression(originalMerge)) {
+        return { value: undefined, ambiguousNormalization: true };
+      }
+
+      const expectedWithoutCandidate = replaceValueAtPath(
+        originalMerge,
+        candidate.path.slice(shape.path.length),
+        undefined
+      );
+      const actualFingerprint = valueTreeFingerprint(probedMerge);
+      const expectedFingerprint = valueTreeFingerprint(expectedWithoutCandidate);
+      const ambiguousNormalization =
+        actualFingerprint === undefined ||
+        expectedFingerprint === undefined ||
+        actualFingerprint !== expectedFingerprint;
+      return {
+        value: ambiguousNormalization ? probedMerge : undefined,
+        ambiguousNormalization,
+      };
     }
   }
-  return readRawValueAtPath(obj, candidate.path);
+  return {
+    value: readRawValueAtPath(probedResource, candidate.path),
+    ambiguousNormalization: false,
+  };
 }
 
 /**
@@ -708,6 +857,7 @@ function probeAmbiguousStructuredFallbacks(
   specJson: unknown,
   proxyResource: Record<string, unknown>,
   resourceId: string,
+  optionalFieldPaths: ReadonlySet<string>,
   out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
   const markerLeaves: AmbiguityCandidateLeaf[] = [];
@@ -720,10 +870,17 @@ function probeAmbiguousStructuredFallbacks(
   }
 
   for (const [field, candidates] of candidatesByField) {
+    // Removing a required leaf is not a realizable instance state and can make
+    // unrelated composition/aspect branches disappear. Only fields that are
+    // themselves optional, or descend from an optional parent, can participate
+    // in an implicit nullish fallback.
+    if (!canSchemaFieldBeAbsent(field, optionalFieldPaths)) continue;
     const probedResource = runProbe(compositionFn, specJson, new Set([field]), resourceId);
     for (const candidate of candidates) {
-      const fallbackValue = readProbeValueAtPath(probedResource, candidate);
+      const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
+      const fallbackValue = probeRead.value;
       if (
+        probeRead.ambiguousNormalization ||
         Array.isArray(fallbackValue) ||
         (fallbackValue !== null && typeof fallbackValue === 'object')
       ) {

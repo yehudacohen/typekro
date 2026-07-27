@@ -6,7 +6,11 @@ import {
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
 import { Cel } from '../../../core/references/cel.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../../utils/type-guards.js';
 import type {
   CephObjectStoreConfig,
   RookCephOperatorBootstrapConfig,
@@ -70,9 +74,8 @@ function mergeValuesLast<T extends Record<string, unknown>>(
   base: T,
   overrides: unknown
 ): T | ValuesMergeExpression {
-  if (overrides === undefined) return base;
-
   if (
+    containsKubernetesRefs(base) ||
     isKubernetesRef(overrides) ||
     isCelExpression(overrides) ||
     isValuesMergeExpression(overrides)
@@ -80,6 +83,7 @@ function mergeValuesLast<T extends Record<string, unknown>>(
     return mergeValuesExpression(base, overrides);
   }
 
+  if (overrides === undefined) return base;
   if (isPlainObject(overrides)) deepMerge(base, overrides);
   return base;
 }
