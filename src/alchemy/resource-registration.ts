@@ -15,6 +15,7 @@
  */
 
 import type { KubeConfig } from '@kubernetes/client-node';
+import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
 import * as ProviderMod from 'alchemy/Provider';
 import type { Resource as ResourceT } from 'alchemy/Resource';
@@ -196,7 +197,11 @@ export function materializeAlchemyResources(
   kroResource: typeof KroResource,
   declarations: readonly AlchemyResourceDeclaration[],
   options: MaterializeAlchemyResourcesOptions = {}
-) {
+): Effect.Effect<
+  Record<string, KroResourceR>,
+  never,
+  ProviderMod.Provider<KroResourceR>
+> {
   return Effect.gen(function* () {
     // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
     // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
@@ -237,9 +242,14 @@ export function materializeAlchemyResources(
       // Cast: `props` carries an `Output` for `dependencies` that the `KroResource` constructor
       // accepts as an `Input<…>` and alchemy resolves before reconcile — the field's static type
       // is the resolved (post-evaluation) shape.
+      //
+      // Target the PLAIN-props overload explicitly. `Parameters<typeof kroResource>[1]` resolves to
+      // the LAST call signature — the one taking `Effect<InputProps<…>, never, PropsReq>` — so casting
+      // to it selected the Effect-props overload and returned `Effect<R, never, PropsReq | Req>` with
+      // `PropsReq` unresolved, leaking `unknown` into this function's public requirement channel.
       handles[decl.id] = yield* kroResource(
         decl.id,
-        props as unknown as Parameters<typeof kroResource>[1]
+        props as unknown as { [K in keyof KroResourceR['Props']]: Input<KroResourceR['Props'][K]> }
       );
     }
     return handles;
