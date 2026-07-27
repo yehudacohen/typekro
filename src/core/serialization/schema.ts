@@ -10,8 +10,9 @@ import type { Type } from 'arktype';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { pascalCase } from '../../utils/string.js';
-import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
+import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
@@ -20,7 +21,6 @@ import type {
   SchemaDefinition,
   TernaryConditional,
 } from '../types/serialization.js';
-import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
@@ -643,26 +643,85 @@ interface CounterfactualProbe {
   overrides: Map<string, unknown>;
 }
 
-function isBooleanSchemaNode(node: unknown): boolean {
-  return (
-    node === 'boolean' ||
-    (Array.isArray(node) &&
-      node.some(
-        (branch) =>
-          branch !== null &&
-          typeof branch === 'object' &&
-          'unit' in branch &&
-          typeof branch.unit === 'boolean'
-      ))
-  );
+function numericBoundAdmitsZero(bound: unknown, kind: 'min' | 'max'): boolean {
+  if (bound === undefined) return true;
+  const rule =
+    typeof bound === 'number'
+      ? bound
+      : bound !== null &&
+          typeof bound === 'object' &&
+          typeof Reflect.get(bound, 'rule') === 'number'
+        ? (Reflect.get(bound, 'rule') as number)
+        : undefined;
+  if (rule === undefined) return false;
+  const exclusive =
+    bound !== null && typeof bound === 'object' && Reflect.get(bound, 'exclusive') === true;
+  return kind === 'min'
+    ? rule < 0 || (rule === 0 && !exclusive)
+    : rule > 0 || (rule === 0 && !exclusive);
+}
+
+/**
+ * Return every falsy JavaScript value that the ArkType JSON node admits.
+ * These are useful counterfactuals for required scalar guards: unlike schema
+ * proxies, real strings, numbers, booleans, and null can be falsy.
+ */
+function falsySchemaValues(node: unknown): unknown[] {
+  if (node === 'boolean') return [false];
+  if (node === 'string') return [''];
+  if (node === 'number') return [0];
+  if (node === 'unknown') return [false, 0, '', null];
+  if (node === 'null') return [null];
+  if (Array.isArray(node)) {
+    const values = node.flatMap(falsySchemaValues);
+    return values.filter(
+      (value, index) => values.findIndex((candidate) => Object.is(candidate, value)) === index
+    );
+  }
+  if (node === null || typeof node !== 'object') return [];
+
+  if ('unit' in node) {
+    const unit = Reflect.get(node, 'unit');
+    return !unit ? [unit] : [];
+  }
+  if (
+    Reflect.has(node, 'required') ||
+    Reflect.has(node, 'optional') ||
+    Reflect.get(node, 'proto') === 'Array'
+  ) {
+    return [];
+  }
+
+  const domain = Reflect.get(node, 'domain');
+  if (domain === 'boolean') return [false];
+  if (domain === 'string') {
+    const exactLength = Reflect.get(node, 'exactLength');
+    const minLength = Reflect.get(node, 'minLength');
+    const pattern = Reflect.get(node, 'pattern');
+    const admitsEmpty =
+      (exactLength === undefined || exactLength === 0) &&
+      (minLength === undefined || minLength === 0) &&
+      pattern === undefined;
+    return admitsEmpty ? [''] : [];
+  }
+  if (domain === 'number') {
+    const admitsZero =
+      numericBoundAdmitsZero(Reflect.get(node, 'min'), 'min') &&
+      numericBoundAdmitsZero(Reflect.get(node, 'max'), 'max');
+    return admitsZero ? [0] : [];
+  }
+
+  // ArkType serializes `unknown` as an empty node.
+  if (Object.keys(node).length === 0) return [false, 0, '', null];
+  return [];
 }
 
 /**
  * Build single-field counterfactuals for every schema path other than the
- * candidate and its optional ancestors. Optional fields are removed; boolean
- * fields (including required fields) are also exercised with `false`. Callers
- * ignore hybrid proxy/concrete probes that cannot execute and require every
- * executable counterfactual to preserve the candidate marker.
+ * candidate and its optional ancestors. Optional fields are removed; every
+ * scalar field is also exercised with each falsy value its schema admits.
+ * Callers ignore hybrid proxy/concrete probes that cannot execute and require
+ * every executable counterfactual to preserve the candidate marker.
  */
 function collectCounterfactualProbes(
   node: unknown,
@@ -681,8 +740,10 @@ function collectCounterfactualProbes(
 
   for (const property of objectNode.required ?? []) {
     const path = prefix ? `${prefix}.${property.key}` : property.key;
-    if (!candidateDependsOnPath(path) && isBooleanSchemaNode(property.value)) {
-      out.push({ absent: new Set(), overrides: new Map([[path, false]]) });
+    if (!candidateDependsOnPath(path)) {
+      for (const value of falsySchemaValues(property.value)) {
+        out.push({ absent: new Set(), overrides: new Map([[path, value]]) });
+      }
     }
     collectCounterfactualProbes(property.value, candidate, path, out);
   }
@@ -691,8 +752,8 @@ function collectCounterfactualProbes(
     const path = prefix ? `${prefix}.${property.key}` : property.key;
     if (!candidateDependsOnPath(path)) {
       out.push({ absent: new Set([path]), overrides: new Map() });
-      if (isBooleanSchemaNode(property.value)) {
-        out.push({ absent: new Set(), overrides: new Map([[path, false]]) });
+      for (const value of falsySchemaValues(property.value)) {
+        out.push({ absent: new Set(), overrides: new Map([[path, value]]) });
       }
     }
     collectCounterfactualProbes(property.value, candidate, path, out);

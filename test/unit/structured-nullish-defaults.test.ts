@@ -33,6 +33,14 @@ const ConditionalResourcesSpecSchema = type({
 
 type ConditionalResourcesSpec = typeof ConditionalResourcesSpecSchema.infer;
 
+const ScalarConditionalResourcesSpecSchema = type({
+  name: 'string',
+  mode: 'string',
+  'resources?': ResourceRequirementsSchema,
+});
+
+type ScalarConditionalResourcesSpec = typeof ScalarConditionalResourcesSpecSchema.infer;
+
 const StructuredChainSpecSchema = type({
   name: 'string',
   'primary?': ResourceRequirementsSchema,
@@ -96,6 +104,29 @@ const conditionalResourcesComposition = kubernetesComposition(
   },
   (spec: ConditionalResourcesSpec) => {
     const resources = resolveConditionalResources(spec);
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      ...(resources === undefined ? {} : { resources }),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+function resolveScalarConditionalResources(spec: ScalarConditionalResourcesSpec) {
+  return spec.mode && spec.resources ? spec.resources : defaultOsdResources;
+}
+
+const scalarConditionalResourcesComposition = kubernetesComposition(
+  {
+    name: 'scalar-conditional-structured-resources',
+    kind: 'ScalarConditionalStructuredResources',
+    spec: ScalarConditionalResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: ScalarConditionalResourcesSpec) => {
+    const resources = resolveScalarConditionalResources(spec);
     Deployment({
       name: spec.name,
       image: 'nginx:1.29',
@@ -218,6 +249,33 @@ describe('structured nullish defaults', () => {
       resources: { limits: { memory: '4Gi' } },
     });
     const enabled = deploymentSection(enabledYaml, 'enabled');
+    expect(enabled).toContain('memory: 4Gi');
+    expect(enabled).not.toContain('memory: 2Gi');
+  });
+
+  it('does not erase a required scalar guard while inferring a structured fallback', () => {
+    const yaml = scalarConditionalResourcesComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).not.toContain(
+      'has(schema.spec.resources)?schema.spec.resources:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+    );
+
+    const disabledYaml = scalarConditionalResourcesComposition.factory('direct').toYaml({
+      name: 'empty-mode',
+      mode: '',
+      resources: { limits: { memory: '4Gi' } },
+    });
+    const disabled = deploymentSection(disabledYaml, 'empty-mode');
+    expect(disabled).toContain('memory: 2Gi');
+    expect(disabled).not.toContain('memory: 4Gi');
+
+    const enabledYaml = scalarConditionalResourcesComposition.factory('direct').toYaml({
+      name: 'enabled-mode',
+      mode: 'enabled',
+      resources: { limits: { memory: '4Gi' } },
+    });
+    const enabled = deploymentSection(enabledYaml, 'enabled-mode');
     expect(enabled).toContain('memory: 4Gi');
     expect(enabled).not.toContain('memory: 2Gi');
   });
