@@ -778,6 +778,10 @@ function collectOptionalSchemaPaths(node: unknown): Set<string> {
   const paths = new Set<string>();
 
   const walk = (current: unknown, prefix: string): void => {
+    if (Array.isArray(current)) {
+      for (const branch of current) walk(branch, prefix);
+      return;
+    }
     if (current === null || typeof current !== 'object') return;
     const objectNode = current as {
       required?: Array<{ key: string; value?: unknown }>;

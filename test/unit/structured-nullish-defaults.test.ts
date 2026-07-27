@@ -60,6 +60,21 @@ const GuardedResourcesSpecSchema = type({
 
 type GuardedResourcesSpec = typeof GuardedResourcesSpecSchema.infer;
 
+const UnionSettingsSchema = type({
+  mode: "'standard'",
+  'resources?': ResourceRequirementsSchema,
+}).or({
+  mode: "'intensive'",
+  'resources?': ResourceRequirementsSchema,
+});
+
+const UnionSettingsSpecSchema = type({
+  name: 'string',
+  settings: UnionSettingsSchema,
+});
+
+type UnionSettingsSpec = typeof UnionSettingsSpecSchema.infer;
+
 const defaultOsdResources = {
   requests: { cpu: '250m', memory: '1Gi' },
   limits: { memory: '2Gi' },
@@ -337,6 +352,26 @@ const conditionalMergeFallbackComposition = kubernetesComposition(
   }
 );
 
+const unionBranchNativeFallbackComposition = kubernetesComposition(
+  {
+    name: 'union-branch-native-structured-fallback',
+    kind: 'UnionBranchNativeStructuredFallback',
+    spec: UnionSettingsSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: UnionSettingsSpec) => {
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      resources: spec.settings.resources ?? {
+        requests: { cpu: '250m' },
+      },
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -510,6 +545,12 @@ describe('structured nullish defaults', () => {
   it('fails closed when merge normalization reveals a different fallback branch', () => {
     expect(() => conditionalMergeFallbackComposition.factory('kro').toYaml()).toThrow(
       /Cannot prove structured fallback semantics.*Cel\.default/
+    );
+  });
+
+  it('fails closed for an optional structured fallback inside a required union', () => {
+    expect(() => unionBranchNativeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /schema\.spec\.settings\.resources.*Cel\.default/
     );
   });
 
