@@ -27,7 +27,7 @@ type StructuredDefaultsSpec = typeof StructuredDefaultsSpecSchema.infer;
 
 const ConditionalResourcesSpecSchema = type({
   name: 'string',
-  'enabled?': 'boolean',
+  enabled: 'boolean',
   'resources?': ResourceRequirementsSchema,
 });
 
@@ -84,7 +84,7 @@ const structuredDefaultsComposition = kubernetesComposition(
 );
 
 function resolveConditionalResources(spec: ConditionalResourcesSpec) {
-  return spec.enabled ? spec.resources : defaultOsdResources;
+  return spec.enabled && spec.resources ? spec.resources : defaultOsdResources;
 }
 
 const conditionalResourcesComposition = kubernetesComposition(
@@ -202,6 +202,24 @@ describe('structured nullish defaults', () => {
     expect(compact).not.toContain(
       'has(schema.spec.resources)?schema.spec.resources:({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
+
+    const disabledYaml = conditionalResourcesComposition.factory('direct').toYaml({
+      name: 'disabled',
+      enabled: false,
+      resources: { limits: { memory: '4Gi' } },
+    });
+    const disabled = deploymentSection(disabledYaml, 'disabled');
+    expect(disabled).toContain('memory: 2Gi');
+    expect(disabled).not.toContain('memory: 4Gi');
+
+    const enabledYaml = conditionalResourcesComposition.factory('direct').toYaml({
+      name: 'enabled',
+      enabled: true,
+      resources: { limits: { memory: '4Gi' } },
+    });
+    const enabled = deploymentSection(enabledYaml, 'enabled');
+    expect(enabled).toContain('memory: 4Gi');
+    expect(enabled).not.toContain('memory: 2Gi');
   });
 
   it('preserves a structured terminal fallback in a cross-field chain', () => {

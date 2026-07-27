@@ -560,7 +560,11 @@ function collectMarkerLeaves(
  * Driving presence this way lets a probe reveal which field a `??` chain falls
  * through to when earlier links are absent.
  */
-function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
+function buildProbeSpec(
+  specJson: unknown,
+  absent: Set<string>,
+  overrides: ReadonlyMap<string, unknown> = new Map()
+): unknown {
   const root = (createSchemaProxy(specJson) as { spec: unknown }).spec;
   const wrap = (target: object, prefix: string): unknown =>
     new Proxy(target, {
@@ -568,9 +572,12 @@ function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
         if (typeof prop !== 'string') return Reflect.get(t, prop);
         const full = prefix ? `${prefix}.${prop}` : prop;
         if (absent.has(full)) return undefined;
+        if (overrides.has(full)) return overrides.get(full);
         const v = (t as Record<string, unknown>)[prop];
-        const hasDeeperAbsent = [...absent].some((a) => a.startsWith(`${full}.`));
-        if (hasDeeperAbsent && v && (typeof v === 'object' || typeof v === 'function')) {
+        const hasDeeperMutation =
+          [...absent].some((a) => a.startsWith(`${full}.`)) ||
+          [...overrides.keys()].some((a) => a.startsWith(`${full}.`));
+        if (hasDeeperMutation && v && (typeof v === 'object' || typeof v === 'function')) {
           return wrap(v as object, full);
         }
         return v;
@@ -579,22 +586,42 @@ function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
   return wrap(root as object, '');
 }
 
+interface ProbeResult {
+  completed: boolean;
+  resource: Record<string, unknown> | undefined;
+}
+
+/** Run the composition with a probe spec and retain whether execution completed. */
+function runProbeWithResult(
+  compositionFn: (...args: unknown[]) => unknown,
+  specJson: unknown,
+  absent: Set<string>,
+  resourceId: string,
+  overrides: ReadonlyMap<string, unknown> = new Map()
+): ProbeResult {
+  try {
+    const ctx = createCompositionContext('cross-field-probe');
+    runWithCompositionContext(ctx, () => {
+      compositionFn(buildProbeSpec(specJson, absent, overrides));
+    });
+    return {
+      completed: true,
+      resource: (ctx.resources as Record<string, Record<string, unknown>>)[resourceId],
+    };
+  } catch {
+    return { completed: false, resource: undefined };
+  }
+}
+
 /** Run the composition with a probe spec; return the resource matching `resourceId`. */
 function runProbe(
   compositionFn: (...args: unknown[]) => unknown,
   specJson: unknown,
   absent: Set<string>,
-  resourceId: string
+  resourceId: string,
+  overrides: ReadonlyMap<string, unknown> = new Map()
 ): Record<string, unknown> | undefined {
-  try {
-    const ctx = createCompositionContext('cross-field-probe');
-    runWithCompositionContext(ctx, () => {
-      compositionFn(buildProbeSpec(specJson, absent));
-    });
-    return (ctx.resources as Record<string, Record<string, unknown>>)[resourceId];
-  } catch {
-    return undefined;
-  }
+  return runProbeWithResult(compositionFn, specJson, absent, resourceId, overrides).resource;
 }
 
 const celField = (field: string): string => `schema.spec.${field}`;
@@ -609,6 +636,91 @@ const celField = (field: string): string => `schema.spec.${field}`;
 function presenceGuard(field: string): string {
   const segs = field.split('.');
   return segs.map((_, i) => `has(schema.spec.${segs.slice(0, i + 1).join('.')})`).join(' && ');
+}
+
+interface CounterfactualProbe {
+  absent: Set<string>;
+  overrides: Map<string, unknown>;
+}
+
+function isBooleanSchemaNode(node: unknown): boolean {
+  return (
+    node === 'boolean' ||
+    (Array.isArray(node) &&
+      node.some(
+        (branch) =>
+          branch !== null &&
+          typeof branch === 'object' &&
+          'unit' in branch &&
+          typeof branch.unit === 'boolean'
+      ))
+  );
+}
+
+/**
+ * Build single-field counterfactuals for every schema path other than the
+ * candidate and its optional ancestors. Optional fields are removed; boolean
+ * fields (including required fields) are also exercised with `false`. Callers
+ * ignore hybrid proxy/concrete probes that cannot execute and require every
+ * executable counterfactual to preserve the candidate marker.
+ */
+function collectCounterfactualProbes(
+  node: unknown,
+  candidate: string,
+  prefix = '',
+  out: CounterfactualProbe[] = []
+): CounterfactualProbe[] {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return out;
+
+  const objectNode = node as {
+    required?: Array<{ key: string; value: unknown }>;
+    optional?: Array<{ key: string; value: unknown }>;
+  };
+  const candidateDependsOnPath = (path: string): boolean =>
+    candidate === path || candidate.startsWith(`${path}.`);
+
+  for (const property of objectNode.required ?? []) {
+    const path = prefix ? `${prefix}.${property.key}` : property.key;
+    if (!candidateDependsOnPath(path) && isBooleanSchemaNode(property.value)) {
+      out.push({ absent: new Set(), overrides: new Map([[path, false]]) });
+    }
+    collectCounterfactualProbes(property.value, candidate, path, out);
+  }
+
+  for (const property of objectNode.optional ?? []) {
+    const path = prefix ? `${prefix}.${property.key}` : property.key;
+    if (!candidateDependsOnPath(path)) {
+      out.push({ absent: new Set([path]), overrides: new Map() });
+      if (isBooleanSchemaNode(property.value)) {
+        out.push({ absent: new Set(), overrides: new Map([[path, false]]) });
+      }
+    }
+    collectCounterfactualProbes(property.value, candidate, path, out);
+  }
+
+  return out;
+}
+
+/**
+ * ValuesMergeExpression is an authoring-time wrapper. When a counterfactual
+ * removes the overlay that created it, the same authored base appears directly.
+ * Treat `base` segments introduced by that wrapper as transparent for probes.
+ */
+function readAuthoredValueAtPath(obj: unknown, path: string[]): unknown {
+  let current: unknown = obj;
+  for (const key of path) {
+    if (key === 'base' && !isValuesMergeExpression(current)) continue;
+    if (current === null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function exactSchemaField(value: unknown): string | undefined {
+  const valueString =
+    typeof value === 'function' || typeof value === 'string' ? String(value) : undefined;
+  const marker = valueString?.match(FULL_MARKER_RE)?.[1];
+  return marker?.startsWith('spec.') ? marker.slice('spec.'.length) : undefined;
 }
 
 /**
@@ -662,7 +774,7 @@ function extractStructuredFallbacksByComparison(
           new Set<string>([field]),
           resourceId
         );
-        const probedFallback = readAtPath(probeResource, path);
+        const probedFallback = readAuthoredValueAtPath(probeResource, path);
         if (
           !Array.isArray(probedFallback) &&
           (probedFallback === null || typeof probedFallback !== 'object')
@@ -684,6 +796,37 @@ function extractStructuredFallbacksByComparison(
         // removing the referenced field itself selects this exact fallback before
         // attributing the behavior to nullish coalescing.
         if (probedFallbackCel !== fallbackCel) return;
+        // The referenced field must also remain the selected marker under every
+        // other single-field counterfactual. This rejects control flow such as
+        // `enabled && resources ? resources : defaults`, including when enabled
+        // is a required boolean and therefore cannot be tested by absence alone.
+        for (const counterfactual of collectCounterfactualProbes(specJson, field)) {
+          const counterfactualResult = runProbeWithResult(
+            compositionFn,
+            specJson,
+            counterfactual.absent,
+            resourceId,
+            counterfactual.overrides
+          );
+          // Some helpers legitimately cannot operate on a hybrid proxy/concrete
+          // input (for example structuredClone after an optional overlay becomes
+          // undefined). Such a probe carries no semantic evidence either way.
+          if (!counterfactualResult.completed) continue;
+          const observedField = exactSchemaField(
+            readAuthoredValueAtPath(counterfactualResult.resource, path)
+          );
+          if (observedField !== field) {
+            logger.debug('Structured fallback candidate rejected by counterfactual probe', {
+              resourceId,
+              path: path.join('.'),
+              field,
+              observedField,
+              absent: [...counterfactual.absent],
+              overrides: Object.fromEntries(counterfactual.overrides),
+            });
+            return;
+          }
+        }
         out.push({
           resourceId,
           path: [...path],
