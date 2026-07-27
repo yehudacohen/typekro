@@ -75,6 +75,20 @@ const UnionSettingsSpecSchema = type({
 
 type UnionSettingsSpec = typeof UnionSettingsSpecSchema.infer;
 
+const RequiredNullableResourcesSpecSchema = type({
+  name: 'string',
+  resources: ResourceRequirementsSchema.or('null'),
+});
+
+type RequiredNullableResourcesSpec = typeof RequiredNullableResourcesSpecSchema.infer;
+
+const OptionalNullableResourcesSpecSchema = type({
+  name: 'string',
+  'resources?': ResourceRequirementsSchema.or('null'),
+});
+
+type OptionalNullableResourcesSpec = typeof OptionalNullableResourcesSpecSchema.infer;
+
 const defaultOsdResources = {
   requests: { cpu: '250m', memory: '1Gi' },
   limits: { memory: '2Gi' },
@@ -372,6 +386,61 @@ const unionBranchNativeFallbackComposition = kubernetesComposition(
   }
 );
 
+const requiredNullableNativeFallbackComposition = kubernetesComposition(
+  {
+    name: 'required-nullable-native-structured-fallback',
+    kind: 'RequiredNullableNativeStructuredFallback',
+    spec: RequiredNullableResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: RequiredNullableResourcesSpec) => {
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      resources: spec.resources ?? defaultOsdResources,
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+const requiredNullableExplicitFallbackComposition = kubernetesComposition(
+  {
+    name: 'required-nullable-explicit-structured-fallback',
+    kind: 'RequiredNullableExplicitStructuredFallback',
+    spec: RequiredNullableResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: RequiredNullableResourcesSpec) => {
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      resources: Cel.default(spec.resources, defaultOsdResources),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
+const optionalNullableNullBranchComposition = kubernetesComposition(
+  {
+    name: 'optional-nullable-null-branch',
+    kind: 'OptionalNullableNullBranch',
+    spec: OptionalNullableResourcesSpecSchema,
+    status: type({ ready: 'boolean' }),
+  },
+  (spec: OptionalNullableResourcesSpec) => {
+    const resources = spec.resources === null ? defaultOsdResources : spec.resources;
+    Deployment({
+      name: spec.name,
+      image: 'nginx:1.29',
+      ...(resources === undefined ? {} : { resources }),
+      id: 'workload',
+    });
+    return { ready: true };
+  }
+);
+
 function deploymentSection(yaml: string, name: string): string {
   const start = yaml.indexOf(`name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -385,10 +454,10 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.osd)?schema.spec.resources.osd:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&has(schema.spec.resources.osd)&&schema.spec.resources.osd!=null?schema.spec.resources.osd:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
     );
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.mon)?schema.spec.resources.mon:{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}'
+      'has(schema.spec.resources)&&has(schema.spec.resources.mon)&&schema.spec.resources.mon!=null?schema.spec.resources.mon:{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}'
     );
   });
 
@@ -499,7 +568,7 @@ describe('structured nullish defaults', () => {
 
     expect(compact).toContain('includeWhen:');
     expect(compact).toContain(
-      'has(schema.spec.resources)?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
     );
     expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
   });
@@ -522,7 +591,7 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.resources)?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
     );
     expect(compact).toContain('"replicaCount":1');
     expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
@@ -554,12 +623,39 @@ describe('structured nullish defaults', () => {
     );
   });
 
+  it('fails closed for a native fallback on a required nullable structured field', () => {
+    expect(() => requiredNullableNativeFallbackComposition.factory('kro').toYaml()).toThrow(
+      /schema\.spec\.resources.*Cel\.default/
+    );
+  });
+
+  it('preserves explicit nullish semantics for a required nullable structured field', () => {
+    const yaml = requiredNullableExplicitFallbackComposition.factory('kro').toYaml();
+    const compact = yaml.replaceAll(' ', '');
+
+    expect(compact).toContain(
+      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+    );
+
+    const directYaml = requiredNullableExplicitFallbackComposition.factory('direct').toYaml({
+      name: 'nullable-direct',
+      resources: null,
+    });
+    expect(deploymentSection(directYaml, 'nullable-direct')).toContain('cpu: 250m');
+  });
+
+  it('probes null independently when an optional structured field is also nullable', () => {
+    expect(() => optionalNullableNullBranchComposition.factory('kro').toYaml()).toThrow(
+      /schema\.spec\.resources.*Cel\.default/
+    );
+  });
+
   it('preserves a structured terminal fallback in a cross-field chain', () => {
     const yaml = structuredChainComposition.factory('kro').toYaml();
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.primary)?schema.spec.primary:(has(schema.spec.secondary)?schema.spec.secondary:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+      'has(schema.spec.primary)&&schema.spec.primary!=null?schema.spec.primary:(has(schema.spec.secondary)&&schema.spec.secondary!=null?schema.spec.secondary:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
   });
 

@@ -223,7 +223,7 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).not.toContain('? has(schema.spec.kratos.identitySchema) ?');
     expect(renderedYaml).toContain('["identitySchemas"]).merge');
     expect(renderedYaml).toContain(
-      'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) ? schema.spec.kratos.identitySchema'
+      'has(schema.spec.kratos) && has(schema.spec.kratos.identitySchema) && schema.spec.kratos.identitySchema != null ? schema.spec.kratos.identitySchema'
     );
     expect(renderedYaml).toContain('has(schema.spec.maester.hydra.enabledNamespaces)');
     expect(renderedYaml).not.toContain('"enabledNamespaces": schema.spec.maester.hydra.enabledNamespaces');

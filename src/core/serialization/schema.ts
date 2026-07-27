@@ -352,7 +352,7 @@ function resolveDefaultsByReExecution(
     // Build the set of optional top-level field names. Only optional fields
     // can be ternary-controlled (required fields always have a value).
     const optionalFieldNames = new Set((specJson.optional ?? []).map((p) => p.key));
-    const optionalFieldPaths = collectOptionalSchemaPaths(specJson);
+    const nullishFieldPaths = collectNullishSchemaPaths(specJson);
 
     const tempCtx = createCompositionContext('defaults-extraction', {
       suppressResourceDiagnostics: true,
@@ -433,7 +433,7 @@ function resolveDefaultsByReExecution(
         specJson,
         proxyRes,
         id,
-        optionalFieldPaths,
+        nullishFieldPaths,
         ambiguousStructuredFallbacks
       );
       // Cross-field `??` chain reconstruction is independent of the defaults run —
@@ -630,7 +630,11 @@ function collectAmbiguityCandidateLeaves(
  * Driving presence this way lets a probe reveal which field a `??` chain falls
  * through to when earlier links are absent.
  */
-function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
+function buildProbeSpec(
+  specJson: unknown,
+  absent: Set<string>,
+  overrides: ReadonlyMap<string, unknown> = new Map()
+): unknown {
   const root = (createSchemaProxy(specJson) as { spec: unknown }).spec;
   const wrap = (target: object, prefix: string): unknown =>
     new Proxy(target, {
@@ -638,8 +642,11 @@ function buildProbeSpec(specJson: unknown, absent: Set<string>): unknown {
         if (typeof prop !== 'string') return Reflect.get(t, prop);
         const full = prefix ? `${prefix}.${prop}` : prop;
         if (absent.has(full)) return undefined;
+        if (overrides.has(full)) return overrides.get(full);
         const v = (t as Record<string, unknown>)[prop];
-        const hasDeeperMutation = [...absent].some((a) => a.startsWith(`${full}.`));
+        const hasDeeperMutation =
+          [...absent].some((a) => a.startsWith(`${full}.`)) ||
+          [...overrides.keys()].some((path) => path.startsWith(`${full}.`));
         if (hasDeeperMutation && v && (typeof v === 'object' || typeof v === 'function')) {
           return wrap(v as object, full);
         }
@@ -654,14 +661,15 @@ function runProbe(
   compositionFn: (...args: unknown[]) => unknown,
   specJson: unknown,
   absent: Set<string>,
-  resourceId: string
+  resourceId: string,
+  overrides: ReadonlyMap<string, unknown> = new Map()
 ): Record<string, unknown> | undefined {
   try {
     const ctx = createCompositionContext('cross-field-probe', {
       suppressResourceDiagnostics: true,
     });
     runWithCompositionContext(ctx, () => {
-      compositionFn(buildProbeSpec(specJson, absent));
+      compositionFn(buildProbeSpec(specJson, absent, overrides));
     });
     return (ctx.resources as Record<string, Record<string, unknown>>)[resourceId];
   } catch {
@@ -774,8 +782,21 @@ interface ProbeValueRead {
   ambiguousNormalization: boolean;
 }
 
-function collectOptionalSchemaPaths(node: unknown): Set<string> {
-  const paths = new Set<string>();
+interface NullishSchemaPaths {
+  optional: Set<string>;
+  nullable: Set<string>;
+}
+
+function schemaNodeAllowsNull(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(schemaNodeAllowsNull);
+  if (node === null || typeof node !== 'object') return false;
+  const record = node as Record<string, unknown>;
+  return Object.hasOwn(record, 'unit') && record.unit === null;
+}
+
+function collectNullishSchemaPaths(node: unknown): NullishSchemaPaths {
+  const optional = new Set<string>();
+  const nullable = new Set<string>();
 
   const walk = (current: unknown, prefix: string): void => {
     if (Array.isArray(current)) {
@@ -790,24 +811,32 @@ function collectOptionalSchemaPaths(node: unknown): Set<string> {
 
     for (const entry of objectNode.optional ?? []) {
       const path = prefix ? `${prefix}.${entry.key}` : entry.key;
-      paths.add(path);
+      optional.add(path);
+      if (schemaNodeAllowsNull(entry.value)) nullable.add(path);
       walk(entry.value, path);
     }
     for (const entry of objectNode.required ?? []) {
       const path = prefix ? `${prefix}.${entry.key}` : entry.key;
+      if (schemaNodeAllowsNull(entry.value)) nullable.add(path);
       walk(entry.value, path);
     }
   };
 
   walk(node, '');
-  return paths;
+  return { optional, nullable };
 }
 
-function canSchemaFieldBeAbsent(field: string, optionalFieldPaths: ReadonlySet<string>): boolean {
-  for (const optionalPath of optionalFieldPaths) {
-    if (field === optionalPath || field.startsWith(`${optionalPath}.`)) return true;
+function matchingAncestorPath(field: string, paths: ReadonlySet<string>): string | undefined {
+  let match: string | undefined;
+  for (const path of paths) {
+    if (
+      (field === path || field.startsWith(`${path}.`)) &&
+      (match === undefined || path.length > match.length)
+    ) {
+      match = path;
+    }
   }
-  return false;
+  return match;
 }
 
 function readProbeValueAtPath(
@@ -861,7 +890,7 @@ function probeAmbiguousStructuredFallbacks(
   specJson: unknown,
   proxyResource: Record<string, unknown>,
   resourceId: string,
-  optionalFieldPaths: ReadonlySet<string>,
+  nullishFieldPaths: NullishSchemaPaths,
   out: ReExecutionResult['ambiguousStructuredFallbacks']
 ): void {
   const markerLeaves: AmbiguityCandidateLeaf[] = [];
@@ -874,20 +903,44 @@ function probeAmbiguousStructuredFallbacks(
   }
 
   for (const [field, candidates] of candidatesByField) {
-    // Removing a required leaf is not a realizable instance state and can make
-    // unrelated composition/aspect branches disappear. Only fields that are
-    // themselves optional, or descend from an optional parent, can participate
-    // in an implicit nullish fallback.
-    if (!canSchemaFieldBeAbsent(field, optionalFieldPaths)) continue;
-    const probedResource = runProbe(compositionFn, specJson, new Set([field]), resourceId);
+    // Probe only schema-valid nullish states. Optional paths use absence, while
+    // required nullable paths must remain present with a null value. A nullable
+    // ancestor is probed at that ancestor because dereferencing through it is not
+    // itself a valid runtime state. Probe both states when a field is optional
+    // and nullable: authored control flow may distinguish undefined from null
+    // even though JavaScript `??` treats them identically.
+    const optionalPath = matchingAncestorPath(field, nullishFieldPaths.optional);
+    const nullablePath = matchingAncestorPath(field, nullishFieldPaths.nullable);
+    const probedResources: Array<Record<string, unknown> | undefined> = [];
+    if (optionalPath !== undefined) {
+      probedResources.push(
+        runProbe(compositionFn, specJson, new Set([optionalPath]), resourceId)
+      );
+    }
+    if (nullablePath !== undefined) {
+      probedResources.push(
+        runProbe(
+          compositionFn,
+          specJson,
+          new Set(),
+          resourceId,
+          new Map([[nullablePath, null]])
+        )
+      );
+    }
+    if (probedResources.length === 0) continue;
+
     for (const candidate of candidates) {
-      const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
-      const fallbackValue = probeRead.value;
-      if (
-        probeRead.ambiguousNormalization ||
-        Array.isArray(fallbackValue) ||
-        (fallbackValue !== null && typeof fallbackValue === 'object')
-      ) {
+      const ambiguous = probedResources.some((probedResource) => {
+        const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
+        const fallbackValue = probeRead.value;
+        return (
+          probeRead.ambiguousNormalization ||
+          Array.isArray(fallbackValue) ||
+          (fallbackValue !== null && typeof fallbackValue === 'object')
+        );
+      });
+      if (ambiguous) {
         out.push({
           resourceId,
           path: candidate.path,

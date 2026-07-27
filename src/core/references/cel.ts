@@ -403,12 +403,12 @@ function cond<T = unknown>(
 }
 
 /**
- * Use a value when its optional CEL path is present, otherwise use a fallback.
+ * Use a value when its CEL path is present and non-null, otherwise use a fallback.
  *
- * This is shorthand for `has(value) ? value : fallback` with the same literal
- * quoting and template-marker handling as {@link cond}. Object and array
- * fallbacks are serialized as structured CEL literals, so integrations can
- * preserve `value ?? fallback` semantics without inspecting schema proxies.
+ * This is shorthand for `has(value) && value != null ? value : fallback` with
+ * the same literal quoting and template-marker handling as {@link cond}. Object
+ * and array fallbacks are serialized as structured CEL literals, so integrations
+ * can preserve `value ?? fallback` semantics without inspecting schema proxies.
  *
  * With concrete direct-mode values, this evaluates as native JavaScript `??`.
  */
@@ -433,7 +433,8 @@ function defaultValue(
   const guard = isKubernetesRef(value)
     ? (schemaSpecHasGuard(getInnerCelPath(value)) ?? has(value).expression)
     : has(value).expression;
-  const expression = `${guard} ? ${celValueForTernary(value)} : ${celValueForTernary(fallback)}`;
+  const celValue = celValueForTernary(value);
+  const expression = `${guard} && ${celValue} != null ? ${celValue} : ${celValueForTernary(fallback)}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
@@ -616,7 +617,7 @@ export const Cel = {
   join,
   conditional,
   cond,
-  /** Shorthand for `has(value) ? value : fallback`. */
+  /** Shorthand for `has(value) && value != null ? value : fallback`. */
   default: defaultValue,
   /** Alias for `Cel.default(...)`. */
   coalesce,

@@ -2213,7 +2213,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const yamlStr = graph.toYaml();
-      expect(yamlStr).toContain('${has(schema.spec.region) ? schema.spec.region');
+      expect(yamlStr).toContain(
+        '${has(schema.spec.region) && schema.spec.region != null ? schema.spec.region'
+      );
       expect(yamlStr).toContain('us-east-1');
     });
 
@@ -2239,7 +2241,9 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       );
 
       const yamlStr = graph.toYaml();
-      expect(yamlStr).toContain('${has(schema.spec.region) ? schema.spec.region');
+      expect(yamlStr).toContain(
+        '${has(schema.spec.region) && schema.spec.region != null ? schema.spec.region'
+      );
       expect(yamlStr).toContain('us-east-1');
     });
 
@@ -2320,9 +2324,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       const value = findResource(parsed, 'app').template.spec.template.spec.containers[0].env[0]
         .value as string;
       expect(value).toContain(
-        'has(schema.spec.primary) ? schema.spec.primary : (has(schema.spec.secondary)'
+        'has(schema.spec.primary) && schema.spec.primary != null ? schema.spec.primary : (has(schema.spec.secondary)'
       );
-      expect(value).toContain('? schema.spec.secondary : "fallback")');
+      expect(value).toContain(
+        '&& schema.spec.secondary != null ? schema.spec.secondary : "fallback")'
+      );
     });
 
     it('observedResource() serializes with the externalRef primitive', () => {
