@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
-import { ReferenceResolver } from '../../src/core/references/index.js';
+import { Cel, ReferenceResolver } from '../../src/core/references/index.js';
+import type { KubernetesRef } from '../../src/core/types/common.js';
 import { containsCelExpressions } from '../../src/utils/type-guards.js';
 import { createK8sError } from '../utils/mock-factories.js';
 
@@ -986,6 +987,37 @@ describe('ReferenceResolver', () => {
   });
 
   describe('resolveReferences with CEL expressions (integration)', () => {
+    it('resolves structured Cel.default() through the direct-mode pipeline', async () => {
+      const workload = {
+        id: 'workload',
+        kind: 'Deployment',
+        name: 'workload',
+        namespace: 'default',
+        manifest: { spec: {} },
+        status: 'deployed' as const,
+        deployedAt: new Date(),
+      };
+      context.deployedResources = [workload];
+      context.resourceKeyMapping = new Map([['workload', workload.manifest]]);
+
+      const fallback = {
+        requests: { cpu: '250m', memory: '1Gi' },
+        limits: { memory: '2Gi' },
+      };
+      const resourcesRef: KubernetesRef<typeof fallback | undefined> = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'workload',
+        fieldPath: 'spec.resources',
+      };
+
+      const resolved = await resolver.resolveReferences(
+        { spec: { resources: Cel.default(resourcesRef, fallback) } },
+        context
+      );
+
+      expect(resolved.spec.resources).toEqual(fallback);
+    });
+
     it('should use selective cloning when CEL expressions are present', async () => {
       const celExpr = {
         [CEL_EXPRESSION_BRAND]: true,

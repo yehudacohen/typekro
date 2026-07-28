@@ -434,7 +434,20 @@ function defaultValue(
     ? (schemaSpecHasGuard(getInnerCelPath(value)) ?? has(value).expression)
     : has(value).expression;
   const celValue = celValueForTernary(value);
-  const expression = `${guard} && ${celValue} != null ? ${celValue} : ${celValueForTernary(fallback)}`;
+  const fallbackCel = celValueForTernary(fallback);
+  // KRO gives schema object references a nominal object type while CEL object
+  // literals are inferred as maps. Although both values materialize to the same
+  // Kubernetes JSON object, CEL rejects a ternary that mixes those static types.
+  // Widen both structured branches to dyn so KRO can validate the expression
+  // without changing the runtime value or direct-mode `??` behavior.
+  const hasStructuredLiteralFallback =
+    fallback !== null &&
+    typeof fallback === 'object' &&
+    !isKubernetesRef(fallback) &&
+    !isCelExpression(fallback);
+  const selectedValue = hasStructuredLiteralFallback ? `dyn(${celValue})` : celValue;
+  const selectedFallback = hasStructuredLiteralFallback ? `dyn(${fallbackCel})` : fallbackCel;
+  const expression = `${guard} && ${celValue} != null ? ${selectedValue} : ${selectedFallback}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,

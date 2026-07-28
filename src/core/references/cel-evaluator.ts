@@ -31,6 +31,39 @@ import type { CelExpression, KubernetesRef } from '../types.js';
 
 export class CelEvaluator {
   /**
+   * Runtime implementations for CEL functions TypeKro emits itself.
+   *
+   * `dyn()` is a CEL type conversion used to widen expressions during KRO
+   * admission. It does not change the runtime value, so direct-mode evaluation
+   * must treat it as an identity function.
+   */
+  private evaluationFunctions(
+    context: CelEvaluationContext
+  ): Record<string, (...args: unknown[]) => unknown> {
+    return {
+      string: (value: unknown) => String(value),
+      int: (value: unknown) => parseInt(String(value), 10),
+      double: (value: unknown) => parseFloat(String(value)),
+      dyn: (value: unknown) => value,
+      size: (collection: unknown) => {
+        if (Array.isArray(collection)) return collection.length;
+        if (typeof collection === 'string') return collection.length;
+        if (collection && typeof collection === 'object') return Object.keys(collection).length;
+        return 0;
+      },
+      has: (obj: unknown, field?: unknown) => {
+        if (typeof field === 'string') {
+          return obj !== null && typeof obj === 'object' && field in obj;
+        }
+        // For expressions like has(config.debug), the field access is already resolved
+        return obj !== undefined && obj !== null;
+      },
+      concat: (...args: unknown[]) => args.join(''),
+      ...context.functions,
+    };
+  }
+
+  /**
    * Evaluate a CEL expression with the given context
    */
   async evaluate(expression: CelExpression, context: CelEvaluationContext): Promise<unknown> {
@@ -39,27 +72,7 @@ export class CelEvaluator {
       const celContext = await this.buildCelContext(expression, context);
 
       // Use cel-js to evaluate the expression with standard functions
-      const functions = {
-        // Standard CEL functions
-        string: (value: unknown) => String(value),
-        int: (value: unknown) => parseInt(String(value), 10),
-        double: (value: unknown) => parseFloat(String(value)),
-        size: (collection: unknown) => {
-          if (Array.isArray(collection)) return collection.length;
-          if (typeof collection === 'string') return collection.length;
-          if (collection && typeof collection === 'object') return Object.keys(collection).length;
-          return 0;
-        },
-        has: (obj: unknown, field?: string) => {
-          if (field) {
-            return obj && typeof obj === 'object' && field in obj;
-          }
-          // For expressions like has(config.debug), the field access is already resolved
-          return obj !== undefined && obj !== null;
-        },
-        concat: (...args: unknown[]) => args.join(''),
-        ...context.functions,
-      };
+      const functions = this.evaluationFunctions(context);
 
       const result = evaluate(expression.expression, celContext, functions);
 
@@ -84,27 +97,7 @@ export class CelEvaluator {
 
       return async (context: CelEvaluationContext) => {
         const celContext = await this.buildCelContext(expression, context);
-        const functions = {
-          // Standard CEL functions
-          string: (value: unknown) => String(value),
-          int: (value: unknown) => parseInt(String(value), 10),
-          double: (value: unknown) => parseFloat(String(value)),
-          size: (collection: unknown) => {
-            if (Array.isArray(collection)) return collection.length;
-            if (typeof collection === 'string') return collection.length;
-            if (collection && typeof collection === 'object') return Object.keys(collection).length;
-            return 0;
-          },
-          has: (obj: unknown, field?: string) => {
-            if (field) {
-              return obj && typeof obj === 'object' && field in obj;
-            }
-            // For expressions like has(config.debug), the field access is already resolved
-            return obj !== undefined && obj !== null;
-          },
-          concat: (...args: unknown[]) => args.join(''),
-          ...context.functions,
-        };
+        const functions = this.evaluationFunctions(context);
         return evaluate(parseResult.cst, celContext, functions);
       };
     } catch (error: unknown) {

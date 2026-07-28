@@ -248,8 +248,8 @@ describe('official Rook Ceph cluster chart platform', () => {
     const compactRgd = rgdYaml.replaceAll(' ', '');
     for (const [daemon, fallback] of Object.entries(expectedFallbacks)) {
       const path = `schema.spec.resources.${daemon}`;
-      const guard = `has(schema.spec.resources)&&has(${path})&&${path}!=null?${path}:`;
-      expect(compactRgd).toContain(`${guard}${fallback}`);
+      const guard = `has(schema.spec.resources)&&has(${path})&&${path}!=null?dyn(${path}):`;
+      expect(compactRgd).toContain(`${guard}dyn(${fallback})`);
     }
     expectCleanYaml(rgdYaml);
   });

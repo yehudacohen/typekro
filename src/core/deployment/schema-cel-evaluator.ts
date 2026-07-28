@@ -17,22 +17,65 @@ function hasSchemaValue(fieldPath: string, spec: KroCompatibleType): boolean {
   return current !== undefined;
 }
 
+/**
+ * Apply evaluator-only rewrites to CEL source while preserving quoted data
+ * byte-for-byte. Structured defaults are embedded as CEL object literals, so
+ * function-looking text inside their string values must never be rewritten.
+ */
+function rewriteOutsideQuotedStrings(
+  expression: string,
+  rewrite: (unquotedSource: string) => string
+): string {
+  let result = '';
+  let unquotedStart = 0;
+
+  for (let index = 0; index < expression.length; index++) {
+    const quote = expression[index];
+    if (quote !== '"' && quote !== "'") continue;
+
+    result += rewrite(expression.slice(unquotedStart, index));
+
+    let end = index + 1;
+    let escaped = false;
+    for (; end < expression.length; end++) {
+      const character = expression[end];
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        end++;
+        break;
+      }
+    }
+
+    result += expression.slice(index, end);
+    unquotedStart = end;
+    index = end - 1;
+  }
+
+  return result + rewrite(expression.slice(unquotedStart));
+}
+
 function prepareSchemaExpression(expression: string): string {
-  let prepared = expression;
   const schemaPath = '[a-zA-Z_$][\\w$]*(?:\\.[a-zA-Z_$][\\w$]*)*';
 
-  prepared = prepared.replace(
-    new RegExp(`\\bhas\\((?:schema\\.)?spec\\.(${schemaPath})\\)`, 'g'),
-    '__has("$1")'
-  );
-  prepared = prepared.replace(
-    new RegExp(`\\b(?:schema\\.)?spec\\.(${schemaPath})\\.orValue\\(([^()]*)\\)`, 'g'),
-    '__orValue($1, $2)'
-  );
-  prepared = prepared.replace(/\bstring\(/g, '__string(');
-  prepared = prepared.replace(/schema\.spec\.(\w+)/g, '$1');
-  prepared = prepared.replace(/\bspec\.(\w+)/g, '$1');
-  return prepared;
+  return rewriteOutsideQuotedStrings(expression, (unquotedSource) => {
+    let prepared = unquotedSource;
+    prepared = prepared.replace(
+      new RegExp(`\\bhas\\((?:schema\\.)?spec\\.(${schemaPath})\\)`, 'g'),
+      '__has("$1")'
+    );
+    prepared = prepared.replace(
+      new RegExp(`\\b(?:schema\\.)?spec\\.(${schemaPath})\\.orValue\\(`, 'g'),
+      '__orValue($1, '
+    );
+    prepared = prepared.replace(/\bstring\(/g, '__string(');
+    prepared = prepared.replace(/\bdyn\(/g, '__dyn(');
+    prepared = prepared.replace(/schema\.spec\.(\w+)/g, '$1');
+    prepared = prepared.replace(/\bspec\.(\w+)/g, '$1');
+    return prepared;
+  });
 }
 
 function createEvaluationScope(spec: KroCompatibleType): Record<string, unknown> {
@@ -41,6 +84,8 @@ function createEvaluationScope(spec: KroCompatibleType): Record<string, unknown>
       __has: (path: string) => hasSchemaValue(path, spec),
       __orValue: (value: unknown, defaultValue: unknown) => value ?? defaultValue,
       __string: (value: unknown) => String(value ?? ''),
+      // KRO uses dyn() only for static type widening; it is runtime identity.
+      __dyn: (value: unknown) => value,
       omit: () => undefined,
     })
   );

@@ -566,10 +566,10 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.osd)&&schema.spec.resources.osd!=null?schema.spec.resources.osd:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&has(schema.spec.resources.osd)&&schema.spec.resources.osd!=null?dyn(schema.spec.resources.osd):dyn({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
     expect(compact).toContain(
-      'has(schema.spec.resources)&&has(schema.spec.resources.mon)&&schema.spec.resources.mon!=null?schema.spec.resources.mon:{"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}}'
+      'has(schema.spec.resources)&&has(schema.spec.resources.mon)&&schema.spec.resources.mon!=null?dyn(schema.spec.resources.mon):dyn({"requests":{"cpu":"100m","memory":"256Mi"},"limits":{"memory":"1Gi"}})'
     );
   });
 
@@ -680,7 +680,7 @@ describe('structured nullish defaults', () => {
 
     expect(compact).toContain('includeWhen:');
     expect(compact).toContain(
-      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&schema.spec.resources!=null?dyn(schema.spec.resources):dyn({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
     expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
   });
@@ -703,7 +703,7 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.resources)&&schema.spec.resources!=null?schema.spec.resources:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}'
+      'has(schema.spec.resources)&&schema.spec.resources!=null?dyn(schema.spec.resources):dyn({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
     );
     expect(compact).toContain('"replicaCount":1');
     expect(compact).not.toContain('has(schema.spec.resources)?schema.spec.resources:omit()');
@@ -794,7 +794,7 @@ describe('structured nullish defaults', () => {
     const compact = yaml.replaceAll(' ', '');
 
     expect(compact).toContain(
-      'has(schema.spec.primary)&&schema.spec.primary!=null?schema.spec.primary:(has(schema.spec.secondary)&&schema.spec.secondary!=null?schema.spec.secondary:{"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}})'
+      'has(schema.spec.primary)&&schema.spec.primary!=null?schema.spec.primary:(has(schema.spec.secondary)&&schema.spec.secondary!=null?dyn(schema.spec.secondary):dyn({"requests":{"cpu":"250m","memory":"1Gi"},"limits":{"memory":"2Gi"}}))'
     );
   });
 
