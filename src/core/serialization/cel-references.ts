@@ -11,6 +11,7 @@
 
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
+import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
@@ -213,7 +214,7 @@ function generateCelExpression(
       ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
       : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
     if (innerExpr !== undefined) {
-      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context);
+      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true);
     }
   }
 
@@ -348,9 +349,10 @@ function collectLambdaVars(expr: string): Set<string> {
 
 /**
  * Check whether an already-resolved CEL-path string contains any
- * non-schema resource references. "Non-schema resource reference" means
- * any `<identifier>.(status|metadata|spec).<path>` where `<identifier>`
- * is neither `schema` nor a CEL macro lambda variable.
+ * non-schema resource references. The syntax-only fallback recognizes
+ * `<identifier>.(status|metadata|spec).<path>`. When graph resource IDs are
+ * available, any reference rooted at a known resource is dynamic as well,
+ * including kind-specific top-level fields such as ConfigMap `data`.
  *
  * Lambda variables (the `c` in `.exists(c, c.status == "True")`) are
  * detected via {@link collectLambdaVars} and excluded — otherwise a
@@ -366,17 +368,19 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
     if (id && lambdaVars.has(id)) continue;
     return false;
   }
-  // A bare reference to a known resource id (e.g. `size(workerDep)` from a
-  // forEach-collection aggregate) is also a non-schema ref even though it has
-  // no `.status`/`.spec`/`.metadata` field path. This needs the resource id
-  // set, so it only fires when callers provide it.
+  // A reference rooted at a known resource id is also non-schema even when it
+  // uses a kind-specific field such as ConfigMap `data`. Bare resource
+  // arguments (for example `size(workerDep)`) are accepted for collection
+  // aggregates. Do not match arbitrary occurrences: a resource id named
+  // `policy` must not turn the literal suffix in
+  // `string(schema.spec.name) + "-policy"` into a live-resource dependency.
   if (resourceIds) {
     for (const id of resourceIds) {
       if (lambdaVars.has(id)) continue;
       const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Token not preceded by `.` (so it's the resource itself, not a schema
-      // field like `schema.spec.<id>`) and not part of a longer identifier.
-      if (new RegExp(`(^|[^\\w.$])${escaped}(?![\\w$])`).test(expr)) {
+      const rootedField = new RegExp(`(^|[^\\w.$])${escaped}\\s*\\.`);
+      const bareArgument = new RegExp(`(?:\\(|,)\\s*${escaped}\\s*(?=[,)])`);
+      if (rootedField.test(expr) || bareArgument.test(expr)) {
         return false;
       }
     }
@@ -387,7 +391,7 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
 /**
  * Classify an expression as static (iff, after resolving all nested-
  * composition references and schema markers, it contains no references
- * to real-resource `status`/`metadata`/`spec` fields) or dynamic.
+ * to a known live resource) or dynamic.
  *
  * This is the authoritative depth-agnostic static/dynamic classifier.
  * It supersedes the local syntactic check in `validation/cel-validator.ts`
@@ -404,11 +408,18 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
 export function isStaticExpression(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds?: Iterable<string>
+  resourceIds?: Iterable<string>,
+  resolveKnownNestedResourceRefs = false
 ): boolean {
-  const afterNesting = resolveNestedCompositionRefs(expr, nestedStatusCel);
+  const knownResourceIds = resourceIds ? new Set(resourceIds) : undefined;
+  const afterNesting = resolveNestedCompositionRefs(
+    expr,
+    nestedStatusCel,
+    knownResourceIds,
+    resolveKnownNestedResourceRefs
+  );
   const afterMarkers = normalizeMarkerString(afterNesting);
-  return containsNoNonSchemaRefs(afterMarkers, resourceIds);
+  return containsNoNonSchemaRefs(afterMarkers, knownResourceIds);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,17 +584,29 @@ export function lookupNestedExpression(
 function resolveNestedCompositionRefs(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  resolveKnownNestedResourceRefs = true
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return expr;
   }
 
   let current = expr;
+  let allowKnownResourceSubstitution = resolveKnownNestedResourceRefs;
   for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
-    const next = substituteNestedRefsOnce(current, nestedStatusCel, resourceIds);
+    const next = substituteNestedRefsOnce(
+      current,
+      nestedStatusCel,
+      resourceIds,
+      allowKnownResourceSubstitution
+    );
     if (next === current) return current;
     current = next;
+    // Once a virtual nested-composition reference has been expanded, its
+    // analyzed expression may intentionally use a flattened child id that is
+    // also a concrete graph resource. Exact nested mappings are authoritative
+    // only inside that already-proven nested boundary.
+    allowKnownResourceSubstitution = true;
   }
   logger.warn('Nested composition resolution depth limit exceeded', {
     depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
@@ -607,7 +630,8 @@ export function inlineNestedStatusRefs(
 function substituteNestedRefsOnce(
   expr: string,
   nestedStatusCel: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  resolveKnownNestedResourceRefs = false
 ): string {
   const lambdaVars = collectLambdaVars(expr);
   // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
@@ -617,10 +641,10 @@ function substituteNestedRefsOnce(
   return expr.replace(pattern, (match, id: string, field: string) => {
     if (id === 'schema') return match;
     if (lambdaVars.has(id)) return match;
+    if (resourceIds?.has(id) && !resolveKnownNestedResourceRefs) return match;
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, field, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined) return `(${strictInnerExpr})`;
-      return match;
+      return strictInnerExpr === undefined ? match : `(${strictInnerExpr})`;
     }
     const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
     if (innerExpr !== undefined) return `(${innerExpr})`;
@@ -702,7 +726,12 @@ function innerExprToYamlSegment(
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
-  const resolved = resolveNestedCompositionRefs(innerExpr, nestedStatusCel, context?.resourceIds);
+  const resolved = resolveNestedCompositionRefs(
+    innerExpr,
+    nestedStatusCel,
+    context?.resourceIds,
+    true
+  );
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
     return convertKubernetesRefMarkersTocel(resolved, context);
@@ -746,10 +775,16 @@ function innerExprToYamlSegment(
 export function finalizeCelForKro(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  context?: SerializationContext
+  context?: SerializationContext,
+  resolveKnownNestedResourceRefs = true
 ): string {
   const resolved = normalizeCelArrayIndexPaths(
-    resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds)
+    resolveNestedCompositionRefs(
+      expr,
+      nestedStatusCel,
+      context?.resourceIds,
+      resolveKnownNestedResourceRefs
+    )
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
     return convertKubernetesRefMarkersTocel(resolved, context);
@@ -1730,7 +1765,8 @@ export function serializeStatusMappingsToCel(
   statusMappings: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
   resourceIds?: Set<string>,
-  resourceAliases?: ReadonlyMap<string, string>
+  resourceAliases?: ReadonlyMap<string, string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): Record<string, string | Record<string, unknown> | unknown[]> {
   logger.debug('Serializing status mappings to CEL', {
     fieldCount: Object.keys(statusMappings).length,
@@ -1751,30 +1787,30 @@ export function serializeStatusMappingsToCel(
   }
 
   function normalizeLocalResourceExpr(expr: string): string {
-    let normalized = expr;
-
-    if (resourceAliases && resourceAliases.size > 0) {
-      const aliasEntries = Array.from(resourceAliases.entries())
-        .filter(([alias, resolvedId]) => alias !== resolvedId)
-        .sort((left, right) => right[0].length - left[0].length);
-
-      for (const [alias, resolvedId] of aliasEntries) {
-        normalized = normalized
-          .replace(
-            new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.(?:status|spec|metadata)\\.)`, 'g'),
-            resolvedId
-          )
-          .replace(
-            new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
-            `__KUBERNETES_REF_${resolvedId}_`
-          );
-      }
-    }
+    const normalized = resourceAliases
+      ? canonicalizeCelResourceAliases(expr, resourceAliases)
+      : expr;
+    const preserveAfterCanonicalization = new Set([
+      ...preserveVariables,
+      ...(resourceAliases?.keys() ?? []),
+    ]);
 
     return localResourceIds.length > 0
-      ? remapVariableNames(normalized, localResourceIds, preserveVariables)
+      ? remapVariableNames(normalized, localResourceIds, preserveAfterCanonicalization)
       : normalized;
   }
+
+  // Canonicalize the nested lookup table once at the serialization boundary. Nested resolution can
+  // expand expressions recursively; parsing each expanded intermediate causes exponential work for
+  // self-referential legacy mappings. Every substituted branch now enters resolution canonical.
+  const normalizedNestedStatusCel = nestedStatusCel
+    ? Object.fromEntries(
+        Object.entries(nestedStatusCel).map(([key, expression]) => [
+          key,
+          normalizeLocalResourceExpr(expression),
+        ])
+      )
+    : undefined;
 
   /**
    * Rewrite resolved schema refs for KRO status CEL.
@@ -1806,10 +1842,19 @@ export function serializeStatusMappingsToCel(
    * Centralized here so the two branches don't drift on what "produce
    * KRO status CEL from a resolved expression" means.
    */
-  function statusFieldFromExpression(expr: string, rewriteSchemaRefs = true): string {
+  function statusFieldFromExpression(
+    expr: string,
+    rewriteSchemaRefs = true,
+    resolveKnownNestedResourceRefs = [...nestedCompositionIds].some((id) =>
+      new RegExp(`(^|[^\\w$])${escapeRegExpLiteral(id)}\\s*\\.`).test(expr)
+    )
+  ): string {
     const resolved = normalizeCelArrayIndexPaths(
-      normalizeLocalResourceExpr(
-        resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+      resolveNestedCompositionRefs(
+        normalizeLocalResourceExpr(expr),
+        normalizedNestedStatusCel,
+        resourceIds,
+        resolveKnownNestedResourceRefs
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1833,11 +1878,15 @@ export function serializeStatusMappingsToCel(
       // For nested composition status references, look up the inner
       // composition's analyzed CEL via the shared resolver and finalize
       // it for KRO status emission.
-      if (ref.__nestedComposition && nestedStatusCel) {
+      if (ref.__nestedComposition && normalizedNestedStatusCel) {
         const fieldName = ref.fieldPath.replace(/^status\./, '');
-        const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, nestedStatusCel);
+        const innerExpr = lookupNestedExpression(
+          ref.resourceId,
+          fieldName,
+          normalizedNestedStatusCel
+        );
         if (innerExpr !== undefined) {
-          return statusFieldFromExpression(innerExpr);
+          return statusFieldFromExpression(innerExpr, true, true);
         }
       }
 
@@ -1875,7 +1924,7 @@ export function serializeStatusMappingsToCel(
         // strings but handles mixed forms), then convert markers to KRO CEL.
         const resolved = resolveNestedRefMarkers(
           normalizeLocalResourceExpr(value),
-          nestedStatusCel,
+          normalizedNestedStatusCel,
           resourceIds
         );
         return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));

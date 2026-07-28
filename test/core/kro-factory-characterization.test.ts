@@ -1691,6 +1691,52 @@ describe('KroResourceFactory: factory creation smoke tests', () => {
 });
 
 describe('KroResourceFactory: mixed status hydration', () => {
+  it('hydrates arbitrary top-level resource projections from KRO status', async () => {
+    interface HydrationSpec {
+      name: string;
+    }
+
+    interface HydrationStatus {
+      version: string;
+    }
+
+    const contract = ConfigMap({
+      id: 'installationContract',
+      name: 'installation-contract',
+      data: { version: '1.2.3' },
+    });
+    const factory = createKroResourceFactory<HydrationSpec, HydrationStatus>(
+      'kro-top-level-resource-hydration',
+      { contractResource: contract },
+      {
+        apiVersion: 'v1alpha1',
+        kind: 'KroTopLevelResourceHydration',
+        spec: type({ name: 'string' }),
+        status: type({ version: 'string' }),
+      },
+      { version: makeCelExpr('contractResource.data.version') },
+      { namespace: 'default' }
+    );
+
+    const factoryRecord = factory as unknown as Record<string, unknown>;
+    factoryRecord.hydrateDynamicStatusFields = async (
+      _instanceName: string,
+      dynamicFields: Record<string, unknown>
+    ) => {
+      expect(dynamicFields).toHaveProperty('version');
+      return { version: '1.2.3' };
+    };
+
+    const createEnhancedProxyWithMixedHydration = getPrivateMethod(
+      factory as unknown as KroResourceFactory<TestSpec, TestStatus>,
+      'createEnhancedProxyWithMixedHydration'
+    ) as (spec: HydrationSpec, instanceName: string) => Promise<{ status: HydrationStatus }>;
+
+    const instance = await createEnhancedProxyWithMixedHydration({ name: 'demo' }, 'demo');
+
+    expect(instance.status).toEqual({ version: '1.2.3' });
+  });
+
   it('does not perform live status re-execution when hydrateStatus is false', async () => {
     interface HydrationSpec {
       name: string;

@@ -8,9 +8,101 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import {
+  celRootReferences,
+  kubernetesMarkerReferences,
+  type CelRootReference,
+} from '../../utils/cel-resource-identifiers.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
+import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
+
+export interface StatusResourceIdentityContext {
+  readonly resourceIds: ReadonlySet<string>;
+  readonly resourceAliases: ReadonlyMap<string, string>;
+  readonly ambiguousResourceAliases: ReadonlyMap<string, readonly string[]>;
+}
+
+export function getNestedCompositionIds(
+  statusMappings: Readonly<Record<string, unknown>>
+): ReadonlySet<string> {
+  const descriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionFns');
+  return descriptor?.value instanceof Map
+    ? new Set(
+        [...descriptor.value.keys()].filter((value): value is string => typeof value === 'string')
+      )
+    : new Set();
+}
+
+function deriveResourceIdAliases(resourceId: string): string[] {
+  const aliases: string[] = [];
+  for (const match of resourceId.matchAll(/\d+/g)) {
+    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
+    if (suffix && /^[A-Z]/.test(suffix)) {
+      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Build the canonical resource identity set used by status planning,
+ * serialization, and client-side hydration.
+ */
+export function createStatusResourceIdentityContext(
+  resources: Readonly<Record<string, KubernetesResource>>
+): StatusResourceIdentityContext {
+  const resourceIds = new Set<string>();
+  const resourceAliases = new Map<string, string>();
+  const identityOwners = new Map<string, { canonicalId: string; resourceKey: string }>();
+  const ambiguousResourceAliases = new Map<string, Set<string>>();
+
+  const registerIdentity = (
+    identity: string,
+    canonicalId: string,
+    resourceKey: string
+  ): void => {
+    const ambiguousOwners = ambiguousResourceAliases.get(identity);
+    if (ambiguousOwners) {
+      ambiguousOwners.add(canonicalId);
+      resourceIds.add(identity);
+      return;
+    }
+    const existing = identityOwners.get(identity);
+    if (existing && existing.canonicalId !== canonicalId) {
+      ambiguousResourceAliases.set(identity, new Set([existing.canonicalId, canonicalId]));
+      resourceAliases.delete(identity);
+      resourceIds.add(identity);
+      return;
+    }
+    identityOwners.set(identity, { canonicalId, resourceKey });
+    resourceIds.add(identity);
+    resourceAliases.set(identity, canonicalId);
+  };
+
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    const resourceId = getResourceId(resource) ?? resourceKey;
+    registerIdentity(resourceKey, resourceId, resourceKey);
+    registerIdentity(resourceId, resourceId, resourceKey);
+
+    for (const alias of new Set([
+      ...deriveResourceIdAliases(resourceKey),
+      ...deriveResourceIdAliases(resourceId),
+      ...(getMetadataField(resource, 'resourceAliases') ?? []),
+    ])) {
+      registerIdentity(alias, resourceId, resourceKey);
+    }
+  }
+
+  return {
+    resourceIds,
+    resourceAliases,
+    ambiguousResourceAliases: new Map(
+      [...ambiguousResourceAliases].map(([identity, owners]) => [identity, [...owners]])
+    ),
+  };
+}
 
 export interface CelValidationError {
   field: string;
@@ -18,7 +110,7 @@ export interface CelValidationError {
   error: string;
   suggestion?: string;
   /** Machine-readable finding category (used by strict CEL diagnostics). */
-  code?: 'unknown-resource';
+  code?: 'unknown-resource' | 'ambiguous-resource' | 'sensitive-status';
   /** The unresolved resource id, when code is 'unknown-resource'. */
   referencedResource?: string;
 }
@@ -71,8 +163,7 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *
  * A value requires KRO resolution iff, after transitively resolving any
  * nested-composition references through `nestedStatusCel`, it depends on
- * at least one real-resource reference (a `status.*` or generated
- * `metadata.*` field). Schema refs and literal values — at any depth,
+ * at least one real-resource reference. Schema refs and literal values — at any depth,
  * including the far side of nested composition references — are static
  * and hydrated by the TypeKro runtime at deploy time.
  *
@@ -81,6 +172,8 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *   - spec.*               — may include controller/defaulted or externalRef fields
  *   - metadata.uid         — assigned by API server
  *   - metadata.creationTimestamp / resourceVersion / generation
+ *   - explicit CEL naming a known graph resource, including kind-specific
+ *     top-level fields such as ConfigMap data or Secret stringData
  *
  * Static (TypeKro resolves at deploy time):
  *   - __schema__ refs       — resolved against the CR spec
@@ -92,7 +185,8 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
 function requiresKroResolution(
   value: unknown,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): boolean {
   const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
   const preserveVariables = new Set<string>();
@@ -124,7 +218,7 @@ function requiresKroResolution(
         ? lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel, false)
         : lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel);
       if (innerExpr !== undefined) {
-        return !isStaticExpression(innerExpr, nestedStatusCel);
+        return !isStaticExpression(innerExpr, nestedStatusCel, resourceIds, true);
       }
       // Nested ref with no entry in the table is conservatively dynamic. Do not
       // log during classification: later analysis may still recover an alias.
@@ -154,7 +248,17 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
         : value.expression;
-    return !isStaticExpression(normalizedExpression, nestedStatusCel);
+    const referencesNestedComposition = [...nestedCompositionIds].some((id) =>
+      new RegExp(`(^|[^\\w$])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.`).test(
+        normalizedExpression
+      )
+    );
+    return !isStaticExpression(
+      normalizedExpression,
+      nestedStatusCel,
+      resourceIds,
+      referencesNestedComposition
+    );
   }
 
   // Strings potentially containing __KUBERNETES_REF__ markers from
@@ -167,16 +271,30 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value, localResourceIds, preserveVariables)
         : value;
-    return !isStaticExpression(normalizedValue, nestedStatusCel);
+    const referencesNestedComposition = [...nestedCompositionIds].some(
+      (id) =>
+        normalizedValue.includes(`__KUBERNETES_REF_${id}_`) ||
+        new RegExp(`(^|[^\\w$])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.`).test(
+          normalizedValue
+        )
+    );
+    return !isStaticExpression(
+      normalizedValue,
+      nestedStatusCel,
+      resourceIds,
+      referencesNestedComposition
+    );
   }
 
   if (Array.isArray(value)) {
-    return value.some((v) => requiresKroResolution(v, nestedStatusCel, resourceIds));
+    return value.some((v) =>
+      requiresKroResolution(v, nestedStatusCel, resourceIds, nestedCompositionIds)
+    );
   }
 
   if (typeof value === 'object' && value !== null) {
     return Object.values(value as Record<string, unknown>).some((v) =>
-      requiresKroResolution(v, nestedStatusCel, resourceIds)
+      requiresKroResolution(v, nestedStatusCel, resourceIds, nestedCompositionIds)
     );
   }
 
@@ -192,7 +310,8 @@ function requiresKroResolution(
 function separateNestedObject(
   obj: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): {
   staticPart: Record<string, unknown>;
   dynamicPart: Record<string, unknown>;
@@ -213,7 +332,8 @@ function separateNestedObject(
       const nested = separateNestedObject(
         value as Record<string, unknown>,
         nestedStatusCel,
-        resourceIds
+        resourceIds,
+        nestedCompositionIds
       );
 
       if (nested.hasStatic) {
@@ -222,7 +342,7 @@ function separateNestedObject(
       if (nested.hasDynamic) {
         dynamicPart[key] = nested.dynamicPart;
       }
-    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
+    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds, nestedCompositionIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;
@@ -256,7 +376,8 @@ function separateNestedObject(
 export function separateStatusFields(
   statusMappings: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = getNestedCompositionIds(statusMappings)
 ): {
   staticFields: Record<string, unknown>;
   dynamicFields: Record<string, unknown>;
@@ -294,7 +415,8 @@ export function separateStatusFields(
       const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(
         fieldValue as Record<string, unknown>,
         nestedStatusCel,
-        resourceIds
+        resourceIds,
+        nestedCompositionIds
       );
 
       if (hasStatic) {
@@ -303,7 +425,9 @@ export function separateStatusFields(
       if (hasDynamic) {
         dynamicFields[fieldName] = dynamicPart;
       }
-    } else if (requiresKroResolution(fieldValue, nestedStatusCel, resourceIds)) {
+    } else if (
+      requiresKroResolution(fieldValue, nestedStatusCel, resourceIds, nestedCompositionIds)
+    ) {
       dynamicFields[fieldName] = fieldValue;
     } else {
       staticFields[fieldName] = fieldValue;
@@ -318,18 +442,17 @@ export function separateStatusFields(
  */
 export function validateStatusCelExpressions(
   statusMappings: Record<string, unknown>,
-  resources: Record<string, KubernetesResource>
+  resources: Record<string, KubernetesResource>,
+  options: { readonly enforceSensitiveStatus?: boolean } = {}
 ): CelValidationResult {
   const errors: CelValidationError[] = [];
   const warnings: CelValidationError[] = [];
-  // Build set of valid resource identifiers - includes both resource IDs and keys
-  // This supports both `resourceId.status.field` and `variableName.status.field` patterns
-  const resourceIds = new Set([
-    ...Object.keys(resources), // Variable names (from userKeyMap in imperative pattern)
-    ...Object.values(resources)
-      .map((r) => r.id)
-      .filter(Boolean), // Resource IDs
-  ]);
+  const identityContext = createStatusResourceIdentityContext(resources);
+  const resourceIds = new Set(identityContext.resourceIds);
+  const resourcesByCanonicalId = new Map<string, KubernetesResource>();
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    resourcesByCanonicalId.set(getResourceId(resource) ?? resourceKey, resource);
+  }
   const preserveVariables = new Set<string>();
   const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
   const nestedStatusCelForValidation =
@@ -346,8 +469,135 @@ export function validateStatusCelExpressions(
     }
   }
 
-  // Separate static and dynamic fields
-  const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
+  const nestedCompositionIds = getNestedCompositionIds(statusMappings);
+
+  function isSensitiveSecretField(resourceId: string, fieldPath: string): boolean {
+    const canonicalId = identityContext.resourceAliases.get(resourceId) ?? resourceId;
+    const resource = resourcesByCanonicalId.get(canonicalId);
+    const topLevelField = fieldPath.split('.')[0];
+    return (
+      resource?.kind === 'Secret' &&
+      getMetadataField(resource, 'secretMaterial') !== 'public-placeholder' &&
+      (fieldPath === '' || topLevelField === 'data' || topLevelField === 'stringData')
+    );
+  }
+
+  function expressionReferences(
+    expression: string
+  ): readonly Pick<CelRootReference, 'root' | 'segments'>[] {
+    return [...kubernetesMarkerReferences(expression), ...celRootReferences(expression)];
+  }
+
+  function findSensitiveReference(expression: string): string | undefined {
+    const sensitiveReference = expressionReferences(expression).find((reference) =>
+      isSensitiveSecretField(reference.root, reference.segments.join('.'))
+    );
+    return sensitiveReference
+      ? `${sensitiveReference.root}${
+          sensitiveReference.segments.length > 0
+            ? `.${sensitiveReference.segments.join('.')}`
+            : ''
+        }`
+      : undefined;
+  }
+
+  function findAmbiguousReference(value: unknown): string | undefined {
+    if (isKubernetesRef(value)) {
+      return identityContext.ambiguousResourceAliases.has(value.resourceId)
+        ? value.resourceId
+        : undefined;
+    }
+    if (isCelExpression(value)) {
+      return expressionReferences(value.expression).find((reference) =>
+        identityContext.ambiguousResourceAliases.has(reference.root)
+      )?.root;
+    }
+    if (
+      typeof value === 'string' &&
+      (value.includes('__KUBERNETES_REF_') || value.includes('${'))
+    ) {
+      return expressionReferences(value).find((reference) =>
+        identityContext.ambiguousResourceAliases.has(reference.root)
+      )?.root;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const ambiguousReference = findAmbiguousReference(item);
+        if (ambiguousReference) return ambiguousReference;
+      }
+    } else if (value && typeof value === 'object') {
+      for (const nestedValue of Object.values(value)) {
+        const ambiguousReference = findAmbiguousReference(nestedValue);
+        if (ambiguousReference) return ambiguousReference;
+      }
+    }
+    return undefined;
+  }
+
+  function validateSensitivity(fieldName: string, value: unknown): void {
+    let sensitiveExpression: string | undefined;
+    if (isKubernetesRef(value)) {
+      if (isSensitiveSecretField(value.resourceId, value.fieldPath)) {
+        sensitiveExpression = `${value.resourceId}.${value.fieldPath}`;
+      }
+    } else if (isCelExpression(value)) {
+      sensitiveExpression = findSensitiveReference(value.expression);
+    } else if (
+      typeof value === 'string' &&
+      (value.includes('__KUBERNETES_REF_') || value.includes('${'))
+    ) {
+      sensitiveExpression = findSensitiveReference(value);
+    } else if (value && typeof value === 'object') {
+      for (const [key, nestedValue] of Object.entries(value)) {
+        validateSensitivity(`${fieldName}.${key}`, nestedValue);
+      }
+    }
+    if (sensitiveExpression) {
+      const referencedResource = sensitiveExpression.split('.')[0];
+      errors.push({
+        field: fieldName,
+        expression: sensitiveExpression,
+        error: `Status field '${fieldName}' derives from sensitive Secret data and cannot be projected`,
+        suggestion:
+          'Project a non-sensitive readiness or identity field instead of Secret data/stringData',
+        code: 'sensitive-status',
+        ...(referencedResource ? { referencedResource } : {}),
+      });
+    }
+  }
+
+  if (options.enforceSensitiveStatus !== false) {
+    for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+      if (!fieldName.startsWith('__')) {
+        validateSensitivity(fieldName, fieldValue);
+      }
+    }
+  }
+
+  for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    if (fieldName.startsWith('__')) continue;
+    const ambiguousReference = findAmbiguousReference(fieldValue);
+    if (!ambiguousReference) continue;
+    const owners = identityContext.ambiguousResourceAliases.get(ambiguousReference) ?? [];
+    errors.push({
+      field: fieldName,
+      expression: ambiguousReference,
+      error:
+        `Status resource identity '${ambiguousReference}' is ambiguous between resources ` +
+        owners.map((owner) => `'${owner}'`).join(' and '),
+      suggestion: 'Reference an unambiguous canonical resource id',
+      code: 'ambiguous-resource',
+      referencedResource: ambiguousReference,
+    });
+  }
+
+  // Separate static and dynamic fields using the same graph identities as serialization.
+  const { staticFields, dynamicFields } = separateStatusFields(
+    statusMappings,
+    nestedStatusCelForValidation,
+    resourceIds,
+    nestedCompositionIds
+  );
 
   /**
    * Scan a (remapped) expression for direct resource references (`id.status.` / `id.spec.` /
@@ -548,7 +798,12 @@ export function validateResourceGraphDefinition(
 ): CelValidationResult {
   const resourceIdValidation = validateResourceIds(resources);
   const statusValidation = statusMappings
-    ? validateStatusCelExpressions(statusMappings, resources)
+    ? validateStatusCelExpressions(statusMappings, resources, {
+        // Graph construction must remain available to semantic planning, which
+        // independently taints and diagnoses sensitive projections. The legacy
+        // KRO serializer enforces this boundary immediately before YAML emission.
+        enforceSensitiveStatus: false,
+      })
     : { isValid: true, errors: [], warnings: [] };
 
   return {

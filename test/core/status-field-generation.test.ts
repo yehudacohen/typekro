@@ -5,7 +5,14 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import {
+  Cel,
+  createResource,
+  externalRef,
+  kubernetesComposition,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -230,6 +237,244 @@ describe('Status Field Generation', () => {
       // Static fallback values should NOT be in the YAML (they're hydrated directly by TypeKro)
       expect(yaml).not.toContain('readyReplicas:');
       expect(yaml).not.toContain('url:');
+    });
+
+    it('persists explicit status projections from ConfigMap data', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataStatus',
+          spec: type({ name: 'string' }),
+          status: type({
+            version: 'string',
+            digest: 'string',
+          }),
+        },
+        (schema) => ({
+          contractResource: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'installationContract',
+            data: {
+              version: '1.2.3',
+              digest: 'sha256:abc',
+            },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('installationContract.data.version'),
+          digest: Cel.expr<string>('installationContract.data.digest'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${installationContract.data.version}');
+      expect(yaml).toContain('digest: ${installationContract.data.digest}');
+    });
+
+    it('canonicalizes callback keys for arbitrary top-level resource fields', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-callback-alias-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataCallbackAlias',
+          spec: type({ name: 'string' }),
+          status: type({ version: 'string' }),
+        },
+        (schema) => ({
+          contractResource: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'installationContract',
+            data: { version: '1.2.3' },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('contractResource.data.version'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${installationContract.data.version}');
+      expect(yaml).not.toContain('contractResource.data.version');
+    });
+
+    it('canonicalizes derived nested aliases for arbitrary top-level resource fields', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-derived-alias-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataDerivedAlias',
+          spec: type({ name: 'string' }),
+          status: type({ version: 'string' }),
+        },
+        (schema) => ({
+          outer1InstallationContract: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'outer1InstallationContract',
+            data: { version: '1.2.3' },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('installationContract.data.version'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${outer1InstallationContract.data.version}');
+      expect(yaml).not.toContain('version: ${installationContract.data.version}');
+    });
+
+    it('rejects Secret data projections before legacy YAML emission', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'secret-data-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretDataStatus',
+          spec: type({ name: 'string', token: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: createResource(
+            {
+              id: 'credentials',
+              apiVersion: 'v1',
+              kind: 'Secret',
+              metadata: { name: schema.spec.name },
+              data: { token: schema.spec.token },
+            },
+            { factoryName: 'secret' }
+          ),
+        }),
+        () => ({
+          token: Cel.expr<string>('credentials.data.token'),
+        })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects Secret aggregates hidden behind CEL conversion functions', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'secret-dyn-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretDynStatus',
+          spec: type({ name: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: externalRef({
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+          }),
+        }),
+        () => ({
+          token: Cel.expr<string>('dyn(credentials).data.token'),
+        })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects Secret data in helper-generated mixed templates', () => {
+      const secretTemplate = () =>
+        Cel.template('prefix-%s', Cel.expr<string>('string(credentials.data.token)'));
+      const graph = toResourceGraph(
+        {
+          name: 'secret-template-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretTemplateStatus',
+          spec: type({ name: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: externalRef({
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+          }),
+        }),
+        () => ({ token: secretTemplate() })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects callback aliases that collide with another canonical resource identity', () => {
+      expect(() =>
+        toResourceGraph(
+          {
+            name: 'conflicting-status-alias-test',
+            apiVersion: 'v1alpha1',
+            kind: 'ConflictingStatusAlias',
+            spec: type({ name: 'string' }),
+            status: type({ version: 'string' }),
+          },
+          (schema) => ({
+            contract: simple.ConfigMap({
+              id: 'firstConfig',
+              name: `${schema.spec.name}-first`,
+              data: { version: '1' },
+            }),
+            canonicalContract: simple.ConfigMap({
+              id: 'contract',
+              name: `${schema.spec.name}-canonical`,
+              data: { version: '2' },
+            }),
+          }),
+          () => ({
+            version: Cel.expr<string>('contract.data.version'),
+          })
+        )
+      ).toThrow(
+        "Status resource identity 'contract' is ambiguous between resources " +
+          "'firstConfig' and 'contract'"
+      );
+    });
+
+    it('rejects ambiguous callback aliases through the imperative KRO factory', () => {
+      expect(() =>
+        kubernetesComposition(
+          {
+            name: 'imperative-conflicting-status-alias-test',
+            apiVersion: 'v1alpha1',
+            kind: 'ImperativeConflictingStatusAlias',
+            spec: type({ name: 'string' }),
+            status: type({ version: 'string' }),
+          },
+          (schema) => {
+            const contract = simple.ConfigMap({
+              id: 'firstConfig',
+              name: `${schema.name}-first`,
+              data: { value: '1' },
+            });
+            void contract;
+            simple.ConfigMap({
+              id: 'contract',
+              name: `${schema.name}-canonical`,
+              data: { value: '2' },
+            });
+            return {
+              version: Cel.expr<string>('contract.data.value'),
+            };
+          }
+        ).factory('kro').toYaml()
+      ).toThrow(
+        "Status resource identity 'contract' is ambiguous between resources " +
+          "'firstConfig' and 'contract'"
+      );
     });
   });
 

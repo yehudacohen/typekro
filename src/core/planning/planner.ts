@@ -4,6 +4,7 @@ import {
   isMixedTemplate,
   isResourceReference,
 } from '../../utils/type-guards.js';
+import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import { applyAspects } from '../aspects/apply.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { TypeKroError } from '../errors.js';
@@ -31,6 +32,7 @@ import {
 import type { DeploymentResourceGraph } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/schema.js';
+import { createStatusResourceIdentityContext } from '../validation/cel-validator.js';
 
 import { createAspectManifest } from './aspects.js';
 import { canonicalDigest, canonicalStringify } from './canonical.js';
@@ -282,6 +284,216 @@ function markSensitiveSpecReferences(
   return value;
 }
 
+function canonicalizeStatusResourceReferences(
+  value: PlanValue,
+  resourceAliases: ReadonlyMap<string, string>
+): PlanValue {
+  const canonicalResourceId = (resourceId: string): string =>
+    resourceAliases.get(resourceId) ?? resourceId;
+
+  switch (value.kind) {
+    case 'sensitive-value':
+      return {
+        ...value,
+        value: canonicalizeStatusResourceReferences(value.value, resourceAliases),
+      };
+    case 'reference':
+      return value.source === 'resource' && value.resourceId
+        ? { ...value, resourceId: canonicalResourceId(value.resourceId) }
+        : value;
+    case 'expression':
+      return {
+        ...value,
+        expression: {
+          ...value.expression,
+          expression: canonicalizeCelResourceAliases(value.expression.expression, resourceAliases),
+          references: value.expression.references.map((reference) =>
+            reference.source === 'resource' && reference.resourceId
+              ? { ...reference, resourceId: canonicalResourceId(reference.resourceId) }
+              : reference
+          ),
+        },
+      };
+    case 'template':
+      return {
+        ...value,
+        segments: value.segments.map((segment) => {
+          if (segment.kind === 'reference') {
+            return segment.source === 'resource' && segment.resourceId
+              ? { ...segment, resourceId: canonicalResourceId(segment.resourceId) }
+              : segment;
+          }
+          if (segment.kind === 'expression') {
+            return {
+              ...segment,
+              expression: {
+                ...segment.expression,
+                expression: canonicalizeCelResourceAliases(
+                  segment.expression.expression,
+                  resourceAliases
+                ),
+                references: segment.expression.references.map((reference) =>
+                  reference.source === 'resource' && reference.resourceId
+                    ? { ...reference, resourceId: canonicalResourceId(reference.resourceId) }
+                    : reference
+                ),
+              },
+            };
+          }
+          return segment;
+        }),
+      };
+    case 'array':
+      return {
+        ...value,
+        items: value.items.map((item) =>
+          canonicalizeStatusResourceReferences(item, resourceAliases)
+        ),
+      };
+    case 'object':
+      return {
+        ...value,
+        entries: value.entries.map((entry) => ({
+          ...entry,
+          value: canonicalizeStatusResourceReferences(entry.value, resourceAliases),
+        })),
+      };
+    default:
+      return value;
+  }
+}
+
+function resourceFieldValue(
+  desired: PlanValue,
+  fieldPath: string,
+  index = 0
+): PlanValue | undefined {
+  if (desired.kind === 'sensitive-value') return desired;
+  const segments = fieldPath
+    .split('.')
+    .filter(Boolean)
+    .map((segment) => segment.replace(/^\?/, '').replace(/\?$/, ''));
+  if (index >= segments.length) return desired;
+  const segment = segments[index];
+  if (!segment) return desired;
+
+  if (desired.kind === 'object') {
+    const entry = desired.entries.find((candidate) => candidate.key === segment);
+    return entry ? resourceFieldValue(entry.value, fieldPath, index + 1) : undefined;
+  }
+  if (desired.kind === 'array' && /^\d+$/.test(segment)) {
+    const item = desired.items[Number(segment)];
+    return item ? resourceFieldValue(item, fieldPath, index + 1) : undefined;
+  }
+  return undefined;
+}
+
+function resourceReferenceIsSensitive(
+  resourceId: string,
+  fieldPath: string,
+  resourceNodes: ReadonlyMap<string, PlanNode>,
+  capturedResources: ReadonlyMap<string, KubernetesResource>
+): boolean {
+  const resource = capturedResources.get(resourceId);
+  const topLevelField = fieldPath.split('.')[0]?.replace(/\?$/, '');
+  if (
+    resource?.kind === 'Secret' &&
+    getMetadataField(resource, 'secretMaterial') !== 'public-placeholder' &&
+    (topLevelField === 'data' || topLevelField === 'stringData')
+  ) {
+    return true;
+  }
+
+  const desired = resourceNodes.get(resourceId)?.desired;
+  if (!desired) return false;
+  const projectedValue = resourceFieldValue(desired, fieldPath);
+  return projectedValue ? summarizeValue(projectedValue).sensitive : false;
+}
+
+function markSensitiveResourceReferences(
+  value: PlanValue,
+  resourceNodes: ReadonlyMap<string, PlanNode>,
+  capturedResources: ReadonlyMap<string, KubernetesResource>
+): PlanValue {
+  if (value.kind === 'sensitive-binding' || value.kind === 'sensitive-value') return value;
+  if (
+    value.kind === 'reference' &&
+    value.source === 'resource' &&
+    value.resourceId &&
+    resourceReferenceIsSensitive(
+      value.resourceId,
+      value.fieldPath,
+      resourceNodes,
+      capturedResources
+    )
+  ) {
+    return { kind: 'sensitive-value', value };
+  }
+  if (
+    value.kind === 'expression' &&
+    value.expression.references.some(
+      (reference) =>
+        reference.source === 'resource' &&
+        reference.resourceId &&
+        resourceReferenceIsSensitive(
+          reference.resourceId,
+          reference.fieldPath,
+          resourceNodes,
+          capturedResources
+        )
+    )
+  ) {
+    return { kind: 'sensitive-value', value };
+  }
+  if (
+    value.kind === 'template' &&
+    value.segments.some((segment) => {
+      if (segment.kind === 'reference' && segment.source === 'resource' && segment.resourceId) {
+        return resourceReferenceIsSensitive(
+          segment.resourceId,
+          segment.fieldPath,
+          resourceNodes,
+          capturedResources
+        );
+      }
+      return (
+        segment.kind === 'expression' &&
+        segment.expression.references.some(
+          (reference) =>
+            reference.source === 'resource' &&
+            reference.resourceId &&
+            resourceReferenceIsSensitive(
+              reference.resourceId,
+              reference.fieldPath,
+              resourceNodes,
+              capturedResources
+            )
+        )
+      );
+    })
+  ) {
+    return { kind: 'sensitive-value', value };
+  }
+  if (value.kind === 'array') {
+    return {
+      ...value,
+      items: value.items.map((item) =>
+        markSensitiveResourceReferences(item, resourceNodes, capturedResources)
+      ),
+    };
+  }
+  if (value.kind === 'object') {
+    return {
+      ...value,
+      entries: value.entries.map((entry) => ({
+        ...entry,
+        value: markSensitiveResourceReferences(entry.value, resourceNodes, capturedResources),
+      })),
+    };
+  }
+  return value;
+}
+
 /**
  * Preserve symbolic leaves whose meaning cannot be recovered from an already
  * materialized manifest. Concrete object/array shape remains authoritative so
@@ -358,7 +570,11 @@ function statusProjections(
   statusMappings: Readonly<Record<string, unknown>>,
   diagnostics: PlanDiagnostic[],
   specSchema: SchemaIR,
-  sensitiveSpecPaths: ReadonlySet<string> = new Set()
+  sensitiveSpecPaths: ReadonlySet<string> = new Set(),
+  resourceIds?: ReadonlySet<string>,
+  resourceAliases: ReadonlyMap<string, string> = new Map(),
+  resourceNodes: ReadonlyMap<string, PlanNode> = new Map(),
+  capturedResources: ReadonlyMap<string, KubernetesResource> = new Map()
 ): {
   readonly outputs: Readonly<Record<string, PlanValue>>;
   readonly projections: StatusProjection[];
@@ -372,8 +588,13 @@ function statusProjections(
   for (const key of Object.keys(statusMappings)
     .filter((key) => !key.startsWith('__'))
     .sort()) {
-    const lowered = lowerPlanValue(statusMappings[key], { specSchema });
-    const value = markSensitiveSpecReferences(lowered.value, sensitiveSpecPaths);
+    const lowered = lowerPlanValue(statusMappings[key], { specSchema, resourceIds });
+    const canonicalValue = canonicalizeStatusResourceReferences(lowered.value, resourceAliases);
+    const value = markSensitiveResourceReferences(
+      markSensitiveSpecReferences(canonicalValue, sensitiveSpecPaths),
+      resourceNodes,
+      capturedResources
+    );
     outputs[key] = value;
     diagnostics.push(
       ...lowered.diagnostics.map((diagnostic) => ({
@@ -426,15 +647,29 @@ function buildStatusContract<TSpec extends KroCompatibleType>(
   diagnostics: PlanDiagnostic[],
   strict: boolean,
   specSchema: SchemaIR,
-  sensitiveSpecPaths: ReadonlySet<string> = new Set()
+  sensitiveSpecPaths: ReadonlySet<string> = new Set(),
+  resourceNodes: readonly PlanNode[] = []
 ): { readonly contract: StatusContract; readonly outputs: Readonly<Record<string, PlanValue>> } {
   const hydratedSchema = schemaToIR(capture.ir.definition.statusSchema, { strict: false });
   diagnostics.push(...hydratedSchema.diagnostics);
+  const identityContext = createStatusResourceIdentityContext(capture.ir.resources);
+  const capturedResources = new Map<string, KubernetesResource>();
+  for (const [resourceKey, resource] of Object.entries(capture.ir.resources)) {
+    const resourceId = getResourceId(resource) ?? resourceKey;
+    capturedResources.set(resourceId, resource);
+    for (const [alias, canonicalId] of identityContext.resourceAliases) {
+      if (canonicalId === resourceId) capturedResources.set(alias, resource);
+    }
+  }
   const projected = statusProjections(
     capture.ir.statusMappings,
     diagnostics,
     specSchema,
-    sensitiveSpecPaths
+    sensitiveSpecPaths,
+    identityContext.resourceIds,
+    identityContext.resourceAliases,
+    new Map(resourceNodes.map((node) => [node.id, node])),
+    capturedResources
   );
   const persistedFields = new Set(
     projected.projections
@@ -1686,7 +1921,8 @@ function buildPlanOnce<TSpec extends KroCompatibleType>(
     diagnostics,
     false,
     specSchema,
-    resources.sensitiveSpecPaths
+    resources.sensitiveSpecPaths,
+    resources.nodes
   );
   const semanticSpec = redactSensitiveSpecValues(plannedSpec.value, resources.sensitiveSpecPaths);
   const closures = closureNodes(capture);

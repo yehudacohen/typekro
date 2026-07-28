@@ -21,7 +21,11 @@ import '../../src/factories/kubernetes/config/secret.js';
 // HelmRelease is auto-registered when createResource() is called with kind: HelmRelease.
 // For test isolation, register it explicitly.
 import { registerFactory, getKindInfo } from '../../src/core/resources/factory-registry.js';
-registerFactory({ factoryName: 'HelmRelease', kind: 'HelmRelease', apiVersion: 'helm.toolkit.fluxcd.io/v2' });
+registerFactory({
+  factoryName: 'HelmRelease',
+  kind: 'HelmRelease',
+  apiVersion: 'helm.toolkit.fluxcd.io/v2',
+});
 import {
   analyzeStatusMappingTypes,
   analyzeValueType,
@@ -353,8 +357,67 @@ describe('detectAndPreserveCelExpressions', () => {
     });
   });
 
+  test('classifies explicit CEL over any known top-level resource field as dynamic', () => {
+    const version = makeCelExpr('installationContract.data.version');
+    const digest = makeCelExpr('installationContract.binaryData.digest');
+
+    const result = separateStatusFields(
+      { version, digest },
+      undefined,
+      new Set(['installationContract'])
+    );
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ version, digest });
+  });
+
+  test('does not promote unknown identifiers merely because they use top-level fields', () => {
+    const localValue = makeCelExpr('applicationConfig.data.version');
+
+    const result = separateStatusFields(
+      { localValue },
+      undefined,
+      new Set(['installationContract'])
+    );
+
+    expect(result.staticFields).toEqual({ localValue });
+    expect(result.dynamicFields).toEqual({});
+  });
+
+  test('does not treat a known resource id inside a literal suffix as dynamic', () => {
+    const generatedName = makeCelExpr('string(schema.spec.name) + "-policy"');
+
+    const result = separateStatusFields({ generatedName }, undefined, new Set(['policy']));
+
+    expect(result.staticFields).toEqual({ generatedName });
+    expect(result.dynamicFields).toEqual({});
+  });
+
+  test('keeps a known resource passed as a bare aggregate argument dynamic', () => {
+    const count = makeCelExpr('size(workerDep)');
+
+    const result = separateStatusFields({ count }, undefined, new Set(['workerDep']));
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ count });
+  });
+
+  test('does not substitute nested mappings over a known concrete resource identity', () => {
+    const ready = makeCelExpr('foo.status.ready');
+    const nestedStatusCel = {
+      '__nestedStatus:foo:ready': 'schema.spec.enabled',
+    };
+
+    const result = separateStatusFields({ ready }, nestedStatusCel, new Set(['foo']));
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ ready });
+  });
+
   test('derives nested composition aliases without rewriting incidental numeric resource names', () => {
-    expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe('hydraService');
+    expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe(
+      'hydraService'
+    );
     expect(deriveNestedCompositionResourceAlias('s3Bucket')).toBeUndefined();
   });
 
@@ -364,6 +427,26 @@ describe('detectAndPreserveCelExpressions', () => {
     });
 
     expect(result.phases).toEqual(['${deployment.status.phase}', '${"static"}']);
+  });
+
+  test('canonicalizes resource aliases without rewriting CEL literals or lambda variables', () => {
+    const result = serializeStatusMappingsToCel(
+      {
+        value: makeCelExpr(
+          'c.data.version == "c.data.version" && exists(c, c.type == "Ready") && contractResource.data.enabled'
+        ),
+      },
+      undefined,
+      new Set(['canonicalConfig', 'installationContract']),
+      new Map([
+        ['c', 'canonicalConfig'],
+        ['contractResource', 'installationContract'],
+      ])
+    );
+
+    expect(result.value).toBe(
+      '${canonicalConfig.data.version == "c.data.version" && exists(c, c.type == "Ready") && installationContract.data.enabled}'
+    );
   });
 
   test('detects multiple CEL expressions', () => {

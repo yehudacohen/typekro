@@ -30,7 +30,12 @@ import {
 import { remapResourceStatusReferences } from '../expressions/composition/composition-analyzer-helpers.js';
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getMetadataField, setResourceId } from '../metadata/index.js';
+import {
+  getMetadataField,
+  getResourceId,
+  setMetadataField,
+  setResourceId,
+} from '../metadata/index.js';
 import {
   inspectCapturedComposition,
   lowerPlanValue,
@@ -134,6 +139,12 @@ function separateResourcesAndClosures<
       closures[key] = value as DeploymentClosure;
     } else if (value && typeof value === 'object' && 'kind' in value && 'apiVersion' in value) {
       // This is an Enhanced<> resource
+      const resourceId = getResourceId(value);
+      if (resourceId && resourceId !== key) {
+        const aliases = new Set(getMetadataField(value, 'resourceAliases') ?? []);
+        aliases.add(key);
+        setMetadataField(value, 'resourceAliases', [...aliases]);
+      }
       resources[key] = value as Enhanced<unknown, unknown>;
     } else {
       // Unknown type, treat as resource for backward compatibility
@@ -2583,8 +2594,7 @@ function createTypedResourceGraph<
     plan: (spec, planOptions = {}) => planCapturedComposition(capture, spec, planOptions),
     planTemplate: (planOptions = {}) =>
       planCapturedTemplate(capture, schema.spec as TSpec, planOptions),
-    planSymbolic: (spec, planOptions = {}) =>
-      planCapturedTemplate(capture, spec, planOptions),
+    planSymbolic: (spec, planOptions = {}) => planCapturedTemplate(capture, spec, planOptions),
     planMaterialized: (spec, materializedGraph, planOptions = {}) =>
       planMaterializedComposition(capture, spec, materializedGraph, planOptions),
   };

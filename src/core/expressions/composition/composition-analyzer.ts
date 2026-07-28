@@ -22,8 +22,10 @@ import { buildLexicalAliasScope } from '../analysis/alias-inliner.js';
 import {
   getForEach,
   getIncludeWhen,
+  getMetadataField,
   setForEach,
   setIncludeWhen,
+  setMetadataField,
   setTemplateOverrides,
 } from '../../metadata/index.js';
 import { extractSpecParamName } from './composition-analyzer-helpers.js';
@@ -369,5 +371,30 @@ export function applyAnalysisToResources(
     if (!resource || typeof resource !== 'object' || overrides.length === 0) continue;
 
     setTemplateOverrides(resource, overrides);
+  }
+
+  // Preserve authored local-variable identities alongside canonical resource ids.
+  // Imperative compositions are registered by resource id, so without this metadata
+  // status validation cannot distinguish a local alias from another resource that
+  // happens to own that alias as its canonical id.
+  for (const [alias, resourceId] of analysis.variableToResourceId ?? []) {
+    const resource = resources[resourceId];
+    if (!resource || typeof resource !== 'object' || alias === resourceId) continue;
+    // A variable declared in the current composition shadows same-named aliases
+    // inherited from nested compositions. Remove only alias metadata; a sibling
+    // whose canonical resource id equals the alias remains intentionally ambiguous.
+    for (const [candidateId, candidate] of Object.entries(resources)) {
+      if (candidateId === resourceId || !candidate || typeof candidate !== 'object') continue;
+      const inheritedAliases = getMetadataField(candidate, 'resourceAliases');
+      if (!inheritedAliases?.includes(alias)) continue;
+      setMetadataField(
+        candidate,
+        'resourceAliases',
+        inheritedAliases.filter((candidateAlias) => candidateAlias !== alias)
+      );
+    }
+    const aliases = new Set(getMetadataField(resource, 'resourceAliases') ?? []);
+    aliases.add(alias);
+    setMetadataField(resource, 'resourceAliases', [...aliases]);
   }
 }
