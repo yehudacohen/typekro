@@ -116,6 +116,20 @@ describe('container()', () => {
     expect(calls).toEqual(['svc', 'svc']);
   });
 
+  it('memoizes adopt and replace policies independently', async () => {
+    const calls: string[] = [];
+    const build = makeFakeBuild(calls);
+    const common = {
+      context: './app',
+      imageName: 'policy',
+      tag: 'sha-complete-build',
+      registry: { type: 'ecr' as const },
+    };
+    await container({ ...common, existingTagPolicy: 'adopt' }, build);
+    await container({ ...common, existingTagPolicy: 'replace' }, build);
+    expect(calls).toEqual(['policy', 'policy']);
+  });
+
   it('evicts a failed build so a corrected retry can succeed', async () => {
     let attempts = 0;
     const build = async (opts: ContainerBuildOptions): Promise<ContainerBuildResult> => {

@@ -93,6 +93,17 @@ export interface ContainerBuildOptions {
   dockerfile?: string;
   imageName: string;
   tag?: string;
+  /**
+   * How to handle a remote tag that already resolves in the registry.
+   *
+   * `adopt` skips the build and returns the registry-verified immutable
+   * digest. It requires an explicit tag derived from the complete build input
+   * and a registry that enforces immutability. TypeKro's built-in
+   * `content-hash` is intentionally rejected because it does not cover build
+   * arguments, targets, platforms, extra Docker arguments, or all filesystem
+   * metadata. The default `replace` preserves ordinary mutable-tag behavior.
+   */
+  existingTagPolicy?: 'replace' | 'adopt';
   /** Build one target platform. Mutually exclusive with `platforms`. */
   platform?: string;
   /** Build and publish a multi-platform manifest with Buildx. */

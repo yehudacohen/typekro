@@ -32,6 +32,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { buildContainer, computeContentHash } from './build.js';
+import { ContainerBuildError } from './errors.js';
 import type { ContainerBuildOptions, ContainerBuildResult } from './registries/types.js';
 
 /** A built container image, resolved to a literal — both the full URI and its split parts. */
@@ -138,6 +139,20 @@ async function resolvedBuildOptions(
 ): Promise<ContainerOptions> {
   const context = resolve(options.context);
   const dockerfile = options.dockerfile ?? 'Dockerfile';
+  if (
+    build === buildContainer &&
+    options.existingTagPolicy === 'adopt' &&
+    (options.tag === undefined || options.tag === 'content-hash')
+  ) {
+    throw new ContainerBuildError(
+      'Adopting an existing tag requires an explicit tag derived from the complete build input.',
+      'UNSAFE_ADOPTION_TAG',
+      [
+        'Include the context, Dockerfile, build arguments, target, platforms, extra Docker arguments, and relevant filesystem metadata in the tag identity.',
+        'Use existingTagPolicy: "replace" with TypeKro\'s built-in content-hash tag.',
+      ]
+    );
+  }
   let tag = options.tag ?? 'content-hash';
   if (
     tag === 'content-hash' &&
@@ -157,6 +172,7 @@ function buildCacheKey(options: ContainerOptions, build: Builder): string {
     dockerfile: options.dockerfile,
     imageName: options.imageName,
     tag: options.tag,
+    existingTagPolicy: options.existingTagPolicy,
     platform: options.platform,
     platforms: options.platforms ? [...options.platforms] : undefined,
     buildArgs: sortedRecord(options.buildArgs),

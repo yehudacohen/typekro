@@ -148,6 +148,41 @@ const result = await buildContainer({
 - `.dockerignore` is respected — ignored files don't affect the hash
 - Docker's layer cache means unchanged builds return instantly
 
+The built-in content hash deliberately identifies source content only. It does **not** cover build
+arguments, targets, platforms, extra Docker arguments, file modes, or symlink metadata, so it is not
+a complete build identity and cannot safely authorize registry-side adoption.
+
+## Retry-safe immutable tag adoption
+
+For a remote registry that enforces immutable tags, an interrupted deployment can adopt an image
+that was already published by the same complete build instead of trying to push the tag again:
+
+```typescript
+const image = await container({
+  context: './apps/api',
+  imageName: 'api',
+  // Produced by your build pipeline from every build input, not TypeKro's
+  // context-only `content-hash`.
+  tag: completeBuildIdentity,
+  existingTagPolicy: 'adopt',
+  platform: 'linux/amd64',
+  registry: harbor({
+    registry: 'registry.example.com',
+    project: 'production',
+  }),
+});
+```
+
+`adopt` is fail-closed and has two non-negotiable preconditions:
+
+1. The explicit tag must identify the complete build: context bytes and paths, Dockerfile, build
+   arguments, target, platforms, extra Docker arguments, and relevant file/symlink metadata.
+2. The registry must enforce tag immutability.
+
+TypeKro rejects `adopt` with an omitted tag or `tag: 'content-hash'`. It builds only after the
+registry positively reports `manifest unknown`; authentication, TLS, registry, Docker, timeout,
+cancellation, and malformed-digest failures are returned to the caller without attempting a push.
+
 ## Full Stack Example
 
 Build a container and deploy it with the full infrastructure stack:
@@ -192,6 +227,7 @@ await factory.deploy({
 | `imageName` | `string` | required | Image name (lowercase, no registry prefix) |
 | `dockerfile` | `string` | `'Dockerfile'` | Dockerfile path relative to context |
 | `tag` | `string` | `'latest'` | Tag or `'content-hash'` for SHA-based |
+| `existingTagPolicy` | `'replace' \| 'adopt'` | `'replace'` | Adopt an existing immutable explicit tag; requires a complete caller-derived build identity |
 | `platform` | `string` | native | Target platform (e.g., `'linux/amd64'`) |
 | `platforms` | `string[]` | — | Multi-platform Buildx manifest; remote registries only |
 | `buildArgs` | `Record<string, string>` | — | Docker build arguments |
