@@ -1,7 +1,16 @@
 import { parse } from 'cel-js';
 
+import { KUBERNETES_REF_MARKER_SOURCE } from '../shared/brands.js';
+
 const CEL_LAMBDA_MACROS = new Set(['all', 'exists', 'exists_one', 'filter', 'map']);
 const KUBERNETES_REF_MARKER_PREFIX = /__KUBERNETES_REF_([A-Za-z_$][\w$]*)_/g;
+const MAX_CEL_REFERENCE_CACHE_ENTRIES = 2_048;
+const MAX_CANONICAL_EXPRESSION_CACHE_ENTRIES = 1_024;
+const celReferenceCache = new Map<string, readonly CelRootReference[]>();
+const canonicalExpressionCaches = new WeakMap<
+  ReadonlyMap<string, string>,
+  Map<string, string>
+>();
 
 interface CelToken {
   readonly image: string;
@@ -176,7 +185,7 @@ function collectRootReferences(
  * String literals never appear as identifier nodes, so callers can safely use these offsets for
  * source-preserving rewrites without corrupting literal data.
  */
-export function celRootReferences(expression: string): readonly CelRootReference[] {
+function analyzeCelRootReferences(expression: string): readonly CelRootReference[] {
   const parsed = parse(expression);
   if (!parsed.isSuccess) {
     const references: CelRootReference[] = [];
@@ -213,17 +222,43 @@ export function celRootReferences(expression: string): readonly CelRootReference
       }
     }
     for (const match of unquoted.matchAll(
-      /\.(?:all|exists|exists_one|filter|map)\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g
+      /(?:^|\.|\b)(?:all|exists|exists_one|filter|map)\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g
     )) {
       if (match[1]) lambdaNames.add(match[1]);
     }
-    for (const match of unquoted.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?=\??\.)/g)) {
+    const celKeywords = new Set(['true', 'false', 'null', 'in']);
+    for (const match of unquoted.matchAll(/\b([A-Za-z_$][\w$]*)\b/g)) {
       const root = match[1];
       const startOffset = match.index;
-      if (root === undefined || startOffset === undefined || lambdaNames.has(root)) continue;
+      if (
+        root === undefined ||
+        startOffset === undefined ||
+        lambdaNames.has(root) ||
+        celKeywords.has(root)
+      ) {
+        continue;
+      }
+      const before = unquoted.slice(0, startOffset).trimEnd();
+      const after = unquoted.slice(startOffset + root.length);
+      if (
+        before.endsWith('.') ||
+        before.endsWith('?.') ||
+        /^\s*\(/.test(after) ||
+        /^\s*:/.test(after)
+      ) {
+        continue;
+      }
+      const segments: string[] = [];
+      let remaining = after;
+      while (true) {
+        const segment = /^\s*\??\.\s*([A-Za-z_$][\w$]*)/.exec(remaining);
+        if (!segment?.[1]) break;
+        segments.push(segment[1]);
+        remaining = remaining.slice(segment[0].length);
+      }
       references.push({
         root,
-        segments: [],
+        segments,
         startOffset,
         endOffset: startOffset + root.length - 1,
       });
@@ -232,6 +267,42 @@ export function celRootReferences(expression: string): readonly CelRootReference
   }
   const boundRanges = collectBoundRanges(parsed.cst);
   return collectRootReferences(parsed.cst, boundRanges);
+}
+
+/**
+ * Parse CEL and return root identifier references, memoized by source text.
+ *
+ * Nested-composition resolution revisits stable expressions many times. Caching at this shared
+ * analysis boundary ensures syntax-aware consumers pay the parser cost once without coupling the
+ * cache to any particular serializer recursion strategy.
+ */
+export function celRootReferences(expression: string): readonly CelRootReference[] {
+  const cached = celReferenceCache.get(expression);
+  if (cached) return cached;
+
+  const references = analyzeCelRootReferences(expression);
+  if (celReferenceCache.size >= MAX_CEL_REFERENCE_CACHE_ENTRIES) {
+    const oldest = celReferenceCache.keys().next().value;
+    if (oldest !== undefined) celReferenceCache.delete(oldest);
+  }
+  celReferenceCache.set(expression, references);
+  return references;
+}
+
+/**
+ * Extract resource references embedded in TypeKro's string-coercion marker format.
+ */
+export function kubernetesMarkerReferences(
+  value: string
+): readonly Pick<CelRootReference, 'root' | 'segments'>[] {
+  const references: Pick<CelRootReference, 'root' | 'segments'>[] = [];
+  for (const match of value.matchAll(new RegExp(KUBERNETES_REF_MARKER_SOURCE, 'g'))) {
+    const root = match[1];
+    const fieldPath = match[2];
+    if (!root || root === '__schema__' || !fieldPath) continue;
+    references.push({ root, segments: fieldPath.split('.') });
+  }
+  return references;
 }
 
 function rewriteMarkersOutsideStrings(
@@ -287,6 +358,14 @@ export function canonicalizeCelResourceAliases(
   aliases: ReadonlyMap<string, string>
 ): string {
   if (aliases.size === 0) return expression;
+  let expressionCache = canonicalExpressionCaches.get(aliases);
+  if (!expressionCache) {
+    expressionCache = new Map();
+    canonicalExpressionCaches.set(aliases, expressionCache);
+  }
+  const cached = expressionCache.get(expression);
+  if (cached !== undefined) return cached;
+
   const withCanonicalMarkers = rewriteMarkersOutsideStrings(expression, aliases);
   const references = celRootReferences(withCanonicalMarkers);
   const replacements = references
@@ -302,5 +381,10 @@ export function canonicalizeCelResourceAliases(
       replacement.canonicalId +
       result.slice(replacement.endOffset + 1);
   }
+  if (expressionCache.size >= MAX_CANONICAL_EXPRESSION_CACHE_ENTRIES) {
+    const oldest = expressionCache.keys().next().value;
+    if (oldest !== undefined) expressionCache.delete(oldest);
+  }
+  expressionCache.set(expression, result);
   return result;
 }

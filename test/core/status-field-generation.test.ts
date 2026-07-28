@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, createResource, simple, toResourceGraph } from '../../src/index.js';
+import { Cel, createResource, externalRef, simple, toResourceGraph } from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -348,6 +348,92 @@ describe('Status Field Generation', () => {
 
       expect(() => graph.toYaml()).toThrow(
         "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects Secret aggregates hidden behind CEL conversion functions', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'secret-dyn-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretDynStatus',
+          spec: type({ name: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: externalRef({
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+          }),
+        }),
+        () => ({
+          token: Cel.expr<string>('dyn(credentials).data.token'),
+        })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects Secret data in helper-generated mixed templates', () => {
+      const secretTemplate = () =>
+        Cel.template('prefix-%s', Cel.expr<string>('string(credentials.data.token)'));
+      const graph = toResourceGraph(
+        {
+          name: 'secret-template-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretTemplateStatus',
+          spec: type({ name: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: externalRef({
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+          }),
+        }),
+        () => ({ token: secretTemplate() })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
+    });
+
+    it('rejects callback aliases that collide with another canonical resource identity', () => {
+      expect(() =>
+        toResourceGraph(
+          {
+            name: 'conflicting-status-alias-test',
+            apiVersion: 'v1alpha1',
+            kind: 'ConflictingStatusAlias',
+            spec: type({ name: 'string' }),
+            status: type({ version: 'string' }),
+          },
+          (schema) => ({
+            contract: simple.ConfigMap({
+              id: 'firstConfig',
+              name: `${schema.spec.name}-first`,
+              data: { version: '1' },
+            }),
+            canonicalContract: simple.ConfigMap({
+              id: 'contract',
+              name: `${schema.spec.name}-canonical`,
+              data: { version: '2' },
+            }),
+          }),
+          () => ({
+            version: Cel.expr<string>('contract.data.version'),
+          })
+        )
+      ).toThrow(
+        "Status resource identity 'contract' is ambiguous between resources " +
+          "'firstConfig' and 'contract'"
       );
     });
   });

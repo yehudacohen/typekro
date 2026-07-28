@@ -8,7 +8,11 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { celRootReferences } from '../../utils/cel-resource-identifiers.js';
+import {
+  celRootReferences,
+  kubernetesMarkerReferences,
+  type CelRootReference,
+} from '../../utils/cel-resource-identifiers.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
@@ -17,6 +21,7 @@ import type { KubernetesResource } from '../types.js';
 export interface StatusResourceIdentityContext {
   readonly resourceIds: ReadonlySet<string>;
   readonly resourceAliases: ReadonlyMap<string, string>;
+  readonly ambiguousResourceAliases: ReadonlyMap<string, readonly string[]>;
 }
 
 export function getNestedCompositionIds(
@@ -50,27 +55,53 @@ export function createStatusResourceIdentityContext(
 ): StatusResourceIdentityContext {
   const resourceIds = new Set<string>();
   const resourceAliases = new Map<string, string>();
+  const identityOwners = new Map<string, { canonicalId: string; resourceKey: string }>();
+  const ambiguousResourceAliases = new Map<string, Set<string>>();
+
+  const registerIdentity = (
+    identity: string,
+    canonicalId: string,
+    resourceKey: string
+  ): void => {
+    const ambiguousOwners = ambiguousResourceAliases.get(identity);
+    if (ambiguousOwners) {
+      ambiguousOwners.add(canonicalId);
+      resourceIds.add(identity);
+      return;
+    }
+    const existing = identityOwners.get(identity);
+    if (existing && existing.canonicalId !== canonicalId) {
+      ambiguousResourceAliases.set(identity, new Set([existing.canonicalId, canonicalId]));
+      resourceAliases.delete(identity);
+      resourceIds.add(identity);
+      return;
+    }
+    identityOwners.set(identity, { canonicalId, resourceKey });
+    resourceIds.add(identity);
+    resourceAliases.set(identity, canonicalId);
+  };
 
   for (const [resourceKey, resource] of Object.entries(resources)) {
     const resourceId = getResourceId(resource) ?? resourceKey;
-    resourceIds.add(resourceKey);
-    resourceIds.add(resourceId);
-    resourceAliases.set(resourceKey, resourceId);
-    resourceAliases.set(resourceId, resourceId);
+    registerIdentity(resourceKey, resourceId, resourceKey);
+    registerIdentity(resourceId, resourceId, resourceKey);
 
     for (const alias of new Set([
       ...deriveResourceIdAliases(resourceKey),
       ...deriveResourceIdAliases(resourceId),
       ...(getMetadataField(resource, 'resourceAliases') ?? []),
     ])) {
-      resourceIds.add(alias);
-      if (!resourceAliases.has(alias)) {
-        resourceAliases.set(alias, resourceId);
-      }
+      registerIdentity(alias, resourceId, resourceKey);
     }
   }
 
-  return { resourceIds, resourceAliases };
+  return {
+    resourceIds,
+    resourceAliases,
+    ambiguousResourceAliases: new Map(
+      [...ambiguousResourceAliases].map(([identity, owners]) => [identity, [...owners]])
+    ),
+  };
 }
 
 export interface CelValidationError {
@@ -79,7 +110,7 @@ export interface CelValidationError {
   error: string;
   suggestion?: string;
   /** Machine-readable finding category (used by strict CEL diagnostics). */
-  code?: 'unknown-resource' | 'sensitive-status';
+  code?: 'unknown-resource' | 'ambiguous-resource' | 'sensitive-status';
   /** The unresolved resource id, when code is 'unknown-resource'. */
   referencedResource?: string;
 }
@@ -447,8 +478,60 @@ export function validateStatusCelExpressions(
     return (
       resource?.kind === 'Secret' &&
       getMetadataField(resource, 'secretMaterial') !== 'public-placeholder' &&
-      (topLevelField === 'data' || topLevelField === 'stringData')
+      (fieldPath === '' || topLevelField === 'data' || topLevelField === 'stringData')
     );
+  }
+
+  function expressionReferences(
+    expression: string
+  ): readonly Pick<CelRootReference, 'root' | 'segments'>[] {
+    return [...kubernetesMarkerReferences(expression), ...celRootReferences(expression)];
+  }
+
+  function findSensitiveReference(expression: string): string | undefined {
+    const sensitiveReference = expressionReferences(expression).find((reference) =>
+      isSensitiveSecretField(reference.root, reference.segments.join('.'))
+    );
+    return sensitiveReference
+      ? `${sensitiveReference.root}${
+          sensitiveReference.segments.length > 0
+            ? `.${sensitiveReference.segments.join('.')}`
+            : ''
+        }`
+      : undefined;
+  }
+
+  function findAmbiguousReference(value: unknown): string | undefined {
+    if (isKubernetesRef(value)) {
+      return identityContext.ambiguousResourceAliases.has(value.resourceId)
+        ? value.resourceId
+        : undefined;
+    }
+    if (isCelExpression(value)) {
+      return expressionReferences(value.expression).find((reference) =>
+        identityContext.ambiguousResourceAliases.has(reference.root)
+      )?.root;
+    }
+    if (
+      typeof value === 'string' &&
+      (value.includes('__KUBERNETES_REF_') || value.includes('${'))
+    ) {
+      return expressionReferences(value).find((reference) =>
+        identityContext.ambiguousResourceAliases.has(reference.root)
+      )?.root;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const ambiguousReference = findAmbiguousReference(item);
+        if (ambiguousReference) return ambiguousReference;
+      }
+    } else if (value && typeof value === 'object') {
+      for (const nestedValue of Object.values(value)) {
+        const ambiguousReference = findAmbiguousReference(nestedValue);
+        if (ambiguousReference) return ambiguousReference;
+      }
+    }
+    return undefined;
   }
 
   function validateSensitivity(fieldName: string, value: unknown): void {
@@ -458,12 +541,12 @@ export function validateStatusCelExpressions(
         sensitiveExpression = `${value.resourceId}.${value.fieldPath}`;
       }
     } else if (isCelExpression(value)) {
-      const sensitiveReference = celRootReferences(value.expression).find((reference) =>
-        isSensitiveSecretField(reference.root, reference.segments.join('.'))
-      );
-      if (sensitiveReference) {
-        sensitiveExpression = `${sensitiveReference.root}.${sensitiveReference.segments.join('.')}`;
-      }
+      sensitiveExpression = findSensitiveReference(value.expression);
+    } else if (
+      typeof value === 'string' &&
+      (value.includes('__KUBERNETES_REF_') || value.includes('${'))
+    ) {
+      sensitiveExpression = findSensitiveReference(value);
     } else if (value && typeof value === 'object') {
       for (const [key, nestedValue] of Object.entries(value)) {
         validateSensitivity(`${fieldName}.${key}`, nestedValue);
@@ -489,6 +572,23 @@ export function validateStatusCelExpressions(
         validateSensitivity(fieldName, fieldValue);
       }
     }
+  }
+
+  for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    if (fieldName.startsWith('__')) continue;
+    const ambiguousReference = findAmbiguousReference(fieldValue);
+    if (!ambiguousReference) continue;
+    const owners = identityContext.ambiguousResourceAliases.get(ambiguousReference) ?? [];
+    errors.push({
+      field: fieldName,
+      expression: ambiguousReference,
+      error:
+        `Status resource identity '${ambiguousReference}' is ambiguous between resources ` +
+        owners.map((owner) => `'${owner}'`).join(' and '),
+      suggestion: 'Reference an unambiguous canonical resource id',
+      code: 'ambiguous-resource',
+      referencedResource: ambiguousReference,
+    });
   }
 
   // Separate static and dynamic fields using the same graph identities as serialization.

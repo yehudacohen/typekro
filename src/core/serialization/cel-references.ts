@@ -1800,6 +1800,18 @@ export function serializeStatusMappingsToCel(
       : normalized;
   }
 
+  // Canonicalize the nested lookup table once at the serialization boundary. Nested resolution can
+  // expand expressions recursively; parsing each expanded intermediate causes exponential work for
+  // self-referential legacy mappings. Every substituted branch now enters resolution canonical.
+  const normalizedNestedStatusCel = nestedStatusCel
+    ? Object.fromEntries(
+        Object.entries(nestedStatusCel).map(([key, expression]) => [
+          key,
+          normalizeLocalResourceExpr(expression),
+        ])
+      )
+    : undefined;
+
   /**
    * Rewrite resolved schema refs for KRO status CEL.
    *
@@ -1838,13 +1850,11 @@ export function serializeStatusMappingsToCel(
     )
   ): string {
     const resolved = normalizeCelArrayIndexPaths(
-      normalizeLocalResourceExpr(
-        resolveNestedCompositionRefs(
-          normalizeLocalResourceExpr(expr),
-          nestedStatusCel,
-          resourceIds,
-          resolveKnownNestedResourceRefs
-        )
+      resolveNestedCompositionRefs(
+        normalizeLocalResourceExpr(expr),
+        normalizedNestedStatusCel,
+        resourceIds,
+        resolveKnownNestedResourceRefs
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1868,9 +1878,13 @@ export function serializeStatusMappingsToCel(
       // For nested composition status references, look up the inner
       // composition's analyzed CEL via the shared resolver and finalize
       // it for KRO status emission.
-      if (ref.__nestedComposition && nestedStatusCel) {
+      if (ref.__nestedComposition && normalizedNestedStatusCel) {
         const fieldName = ref.fieldPath.replace(/^status\./, '');
-        const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, nestedStatusCel);
+        const innerExpr = lookupNestedExpression(
+          ref.resourceId,
+          fieldName,
+          normalizedNestedStatusCel
+        );
         if (innerExpr !== undefined) {
           return statusFieldFromExpression(innerExpr, true, true);
         }
@@ -1910,7 +1924,7 @@ export function serializeStatusMappingsToCel(
         // strings but handles mixed forms), then convert markers to KRO CEL.
         const resolved = resolveNestedRefMarkers(
           normalizeLocalResourceExpr(value),
-          nestedStatusCel,
+          normalizedNestedStatusCel,
           resourceIds
         );
         return rewriteSchemaRefsForKroStatus(convertKubernetesRefMarkersTocel(resolved));
