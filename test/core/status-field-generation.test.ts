@@ -5,7 +5,14 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, createResource, externalRef, simple, toResourceGraph } from '../../src/index.js';
+import {
+  Cel,
+  createResource,
+  externalRef,
+  kubernetesComposition,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -431,6 +438,39 @@ describe('Status Field Generation', () => {
             version: Cel.expr<string>('contract.data.version'),
           })
         )
+      ).toThrow(
+        "Status resource identity 'contract' is ambiguous between resources " +
+          "'firstConfig' and 'contract'"
+      );
+    });
+
+    it('rejects ambiguous callback aliases through the imperative KRO factory', () => {
+      expect(() =>
+        kubernetesComposition(
+          {
+            name: 'imperative-conflicting-status-alias-test',
+            apiVersion: 'v1alpha1',
+            kind: 'ImperativeConflictingStatusAlias',
+            spec: type({ name: 'string' }),
+            status: type({ version: 'string' }),
+          },
+          (schema) => {
+            const contract = simple.ConfigMap({
+              id: 'firstConfig',
+              name: `${schema.name}-first`,
+              data: { value: '1' },
+            });
+            void contract;
+            simple.ConfigMap({
+              id: 'contract',
+              name: `${schema.name}-canonical`,
+              data: { value: '2' },
+            });
+            return {
+              version: Cel.expr<string>('contract.data.value'),
+            };
+          }
+        ).factory('kro').toYaml()
       ).toThrow(
         "Status resource identity 'contract' is ambiguous between resources " +
           "'firstConfig' and 'contract'"

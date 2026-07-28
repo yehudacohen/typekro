@@ -1831,6 +1831,18 @@ export function arktypeToKroSchema(
         { errors: sensitiveErrors }
       );
     }
+    const ambiguousErrors = statusValidation.errors.filter(
+      (error) => error.code === 'ambiguous-resource'
+    );
+    if (ambiguousErrors.length > 0) {
+      throw new TypeKroError(
+        `KRO status cannot resolve ambiguous resource identities: ${ambiguousErrors
+          .map((error) => `${error.field}: ${error.error}`)
+          .join('; ')}`,
+        'KRO_AMBIGUOUS_STATUS_RESOURCE',
+        { errors: ambiguousErrors }
+      );
+    }
   }
 
   const { dynamicFields } = separateStatusFields(
