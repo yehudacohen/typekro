@@ -348,9 +348,10 @@ function collectLambdaVars(expr: string): Set<string> {
 
 /**
  * Check whether an already-resolved CEL-path string contains any
- * non-schema resource references. "Non-schema resource reference" means
- * any `<identifier>.(status|metadata|spec).<path>` where `<identifier>`
- * is neither `schema` nor a CEL macro lambda variable.
+ * non-schema resource references. The syntax-only fallback recognizes
+ * `<identifier>.(status|metadata|spec).<path>`. When graph resource IDs are
+ * available, any reference rooted at a known resource is dynamic as well,
+ * including kind-specific top-level fields such as ConfigMap `data`.
  *
  * Lambda variables (the `c` in `.exists(c, c.status == "True")`) are
  * detected via {@link collectLambdaVars} and excluded — otherwise a
@@ -366,17 +367,19 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
     if (id && lambdaVars.has(id)) continue;
     return false;
   }
-  // A bare reference to a known resource id (e.g. `size(workerDep)` from a
-  // forEach-collection aggregate) is also a non-schema ref even though it has
-  // no `.status`/`.spec`/`.metadata` field path. This needs the resource id
-  // set, so it only fires when callers provide it.
+  // A reference rooted at a known resource id is also non-schema even when it
+  // uses a kind-specific field such as ConfigMap `data`. Bare resource
+  // arguments (for example `size(workerDep)`) are accepted for collection
+  // aggregates. Do not match arbitrary occurrences: a resource id named
+  // `policy` must not turn the literal suffix in
+  // `string(schema.spec.name) + "-policy"` into a live-resource dependency.
   if (resourceIds) {
     for (const id of resourceIds) {
       if (lambdaVars.has(id)) continue;
       const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Token not preceded by `.` (so it's the resource itself, not a schema
-      // field like `schema.spec.<id>`) and not part of a longer identifier.
-      if (new RegExp(`(^|[^\\w.$])${escaped}(?![\\w$])`).test(expr)) {
+      const rootedField = new RegExp(`(^|[^\\w.$])${escaped}\\s*\\.`);
+      const bareArgument = new RegExp(`(?:\\(|,)\\s*${escaped}\\s*(?=[,)])`);
+      if (rootedField.test(expr) || bareArgument.test(expr)) {
         return false;
       }
     }
@@ -387,7 +390,7 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
 /**
  * Classify an expression as static (iff, after resolving all nested-
  * composition references and schema markers, it contains no references
- * to real-resource `status`/`metadata`/`spec` fields) or dynamic.
+ * to a known live resource) or dynamic.
  *
  * This is the authoritative depth-agnostic static/dynamic classifier.
  * It supersedes the local syntactic check in `validation/cel-validator.ts`

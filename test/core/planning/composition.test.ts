@@ -23,6 +23,7 @@ import {
   SEMANTIC_PLAN_VERSION,
 } from '../../../src/experimental-planning.js';
 import {
+  Cel,
   createResource,
   externalRef,
   kubernetesComposition,
@@ -102,6 +103,54 @@ describe('captured composition planning prototype', () => {
     ]);
     expect(plan.durability).toEqual(
       expect.objectContaining({ cacheEligible: true, provenanceEligible: true })
+    );
+  });
+
+  it('plans explicit CEL over a canonical resource id and kind-specific top-level field', () => {
+    const composition = toResourceGraph(
+      {
+        name: 'planning-config-data-status',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningConfigDataStatus',
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ version: 'string' }),
+      },
+      (schema) => ({
+        contractResource: simple.ConfigMap({
+          id: 'installationContract',
+          name: schema.spec.name,
+          data: { version: '1.2.3' },
+        }),
+      }),
+      () => ({
+        version: Cel.expr<string>('installationContract.data.version'),
+      })
+    );
+
+    const plan = composition.plan!({ name: 'demo' }, { strict: true });
+
+    expect(objectFields(plan.status.persistedSchema.root)).toEqual(['version']);
+    expect(plan.status.projections).toContainEqual(
+      expect.objectContaining({
+        path: 'version',
+        source: 'live-resource',
+        mode: 'native',
+      })
+    );
+    expect(plan.outputs.version).toEqual(
+      expect.objectContaining({
+        kind: 'expression',
+        expression: expect.objectContaining({
+          references: [
+            {
+              source: 'resource',
+              resourceId: 'installationContract',
+              fieldPath: 'data.version',
+            },
+          ],
+        }),
+      })
     );
   });
 

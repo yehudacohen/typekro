@@ -207,7 +207,10 @@ function tokenImage(value: unknown): string | undefined {
     : undefined;
 }
 
-function parsedExpressionReferences(expression: string): {
+function parsedExpressionReferences(
+  expression: string,
+  resourceIds?: ReadonlySet<string>
+): {
   readonly references: ExpressionReferenceIR[];
   readonly sourceLocation?: PlanSourceLocation;
 } {
@@ -243,7 +246,10 @@ function parsedExpressionReferences(expression: string): {
           references.set(`spec:${fieldPath}`, { source: 'spec', fieldPath });
         } else if (
           root &&
-          (segments[0] === 'spec' || segments[0] === 'status' || segments[0] === 'metadata')
+          (segments[0] === 'spec' ||
+            segments[0] === 'status' ||
+            segments[0] === 'metadata' ||
+            resourceIds?.has(root))
         ) {
           const fieldPath = segments.join('.');
           references.set(`resource:${root}:${fieldPath}`, {
@@ -281,6 +287,7 @@ export function expressionIR(
     readonly language?: ExpressionIR['language'];
     readonly sensitivity?: ExpressionIR['sensitivity'];
     readonly references?: readonly ExpressionReferenceIR[];
+    readonly resourceIds?: ReadonlySet<string> | undefined;
     readonly sourceLocation?: PlanSourceLocation;
   } = {}
 ): ExpressionIR {
@@ -290,7 +297,7 @@ export function expressionIR(
   const parsed =
     options.references || options.sourceLocation
       ? undefined
-      : parsedExpressionReferences(expression);
+      : parsedExpressionReferences(expression, options.resourceIds);
   return {
     version: 1,
     language: options.language ?? 'portable-cel',
@@ -512,7 +519,10 @@ function analyzerExpressionOptions(value: object): {
   };
 }
 
-function mixedTemplatePlanValue(value: { expression: string }): PlanValue {
+function mixedTemplatePlanValue(
+  value: { expression: string },
+  resourceIds?: ReadonlySet<string>
+): PlanValue {
   const segments: PlanTemplateSegment[] = [];
   const pattern = /\$\{([^{}]+)\}/g;
   let offset = 0;
@@ -523,8 +533,16 @@ function mixedTemplatePlanValue(value: { expression: string }): PlanValue {
       segments.push({ kind: 'literal', value: value.expression.slice(offset, index) });
     }
     const expression = match[1];
-    if (!expression) return { kind: 'expression', expression: expressionIR(value.expression) };
-    segments.push({ kind: 'expression', expression: expressionIR(expression) });
+    if (!expression) {
+      return {
+        kind: 'expression',
+        expression: expressionIR(value.expression, { resourceIds }),
+      };
+    }
+    segments.push({
+      kind: 'expression',
+      expression: expressionIR(expression, { resourceIds }),
+    });
     offset = index + match[0].length;
     match = pattern.exec(value.expression);
   }
@@ -539,6 +557,7 @@ function mixedTemplatePlanValue(value: { expression: string }): PlanValue {
 
 interface MutableLoweringState {
   readonly diagnostics: PlanDiagnostic[];
+  readonly resourceIds: ReadonlySet<string> | undefined;
   readonly seen: WeakSet<object>;
   sensitive: boolean;
 }
@@ -610,13 +629,14 @@ function lowerValue(
     };
   }
   if (isMixedTemplate(value) || (isCelExpression(value) && value.__isTemplate === true)) {
-    return mixedTemplatePlanValue(value);
+    return mixedTemplatePlanValue(value, state.resourceIds);
   }
   if (isCelExpression(value)) {
     return {
       kind: 'expression',
       expression: expressionIR(value.expression, {
         language: expressionLanguage,
+        resourceIds: state.resourceIds,
         ...analyzerExpressionOptions(value),
       }),
     };
@@ -718,12 +738,14 @@ export function lowerPlanValue(
   value: unknown,
   options: {
     readonly expressionLanguage?: ExpressionIR['language'];
+    readonly resourceIds?: ReadonlySet<string> | undefined;
     readonly specSchema?: SchemaIR;
     readonly strict?: boolean;
   } = {}
 ): PlanValueLoweringResult {
   const state: MutableLoweringState = {
     diagnostics: [],
+    resourceIds: options.resourceIds,
     seen: new WeakSet<object>(),
     sensitive: false,
   };

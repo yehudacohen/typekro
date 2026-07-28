@@ -231,6 +231,40 @@ describe('Status Field Generation', () => {
       expect(yaml).not.toContain('readyReplicas:');
       expect(yaml).not.toContain('url:');
     });
+
+    it('persists explicit status projections from ConfigMap data', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataStatus',
+          spec: type({ name: 'string' }),
+          status: type({
+            version: 'string',
+            digest: 'string',
+          }),
+        },
+        (schema) => ({
+          contractResource: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'installationContract',
+            data: {
+              version: '1.2.3',
+              digest: 'sha256:abc',
+            },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('installationContract.data.version'),
+          digest: Cel.expr<string>('installationContract.data.digest'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${installationContract.data.version}');
+      expect(yaml).toContain('digest: ${installationContract.data.digest}');
+    });
   });
 
   // Note: Backward compatibility test removed - automatic schema reference fallbacks

@@ -358,7 +358,8 @@ function statusProjections(
   statusMappings: Readonly<Record<string, unknown>>,
   diagnostics: PlanDiagnostic[],
   specSchema: SchemaIR,
-  sensitiveSpecPaths: ReadonlySet<string> = new Set()
+  sensitiveSpecPaths: ReadonlySet<string> = new Set(),
+  resourceIds?: ReadonlySet<string>
 ): {
   readonly outputs: Readonly<Record<string, PlanValue>>;
   readonly projections: StatusProjection[];
@@ -372,7 +373,7 @@ function statusProjections(
   for (const key of Object.keys(statusMappings)
     .filter((key) => !key.startsWith('__'))
     .sort()) {
-    const lowered = lowerPlanValue(statusMappings[key], { specSchema });
+    const lowered = lowerPlanValue(statusMappings[key], { specSchema, resourceIds });
     const value = markSensitiveSpecReferences(lowered.value, sensitiveSpecPaths);
     outputs[key] = value;
     diagnostics.push(
@@ -430,11 +431,21 @@ function buildStatusContract<TSpec extends KroCompatibleType>(
 ): { readonly contract: StatusContract; readonly outputs: Readonly<Record<string, PlanValue>> } {
   const hydratedSchema = schemaToIR(capture.ir.definition.statusSchema, { strict: false });
   diagnostics.push(...hydratedSchema.diagnostics);
+  const resourceIds = new Set<string>();
+  for (const [resourceKey, resource] of Object.entries(capture.ir.resources)) {
+    resourceIds.add(resourceKey);
+    const resourceId = getResourceId(resource);
+    if (resourceId) resourceIds.add(resourceId);
+    for (const alias of getMetadataField(resource, 'resourceAliases') ?? []) {
+      resourceIds.add(alias);
+    }
+  }
   const projected = statusProjections(
     capture.ir.statusMappings,
     diagnostics,
     specSchema,
-    sensitiveSpecPaths
+    sensitiveSpecPaths,
+    resourceIds
   );
   const persistedFields = new Set(
     projected.projections

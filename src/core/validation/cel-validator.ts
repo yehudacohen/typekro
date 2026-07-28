@@ -71,8 +71,7 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *
  * A value requires KRO resolution iff, after transitively resolving any
  * nested-composition references through `nestedStatusCel`, it depends on
- * at least one real-resource reference (a `status.*` or generated
- * `metadata.*` field). Schema refs and literal values — at any depth,
+ * at least one real-resource reference. Schema refs and literal values — at any depth,
  * including the far side of nested composition references — are static
  * and hydrated by the TypeKro runtime at deploy time.
  *
@@ -81,6 +80,8 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  *   - spec.*               — may include controller/defaulted or externalRef fields
  *   - metadata.uid         — assigned by API server
  *   - metadata.creationTimestamp / resourceVersion / generation
+ *   - explicit CEL naming a known graph resource, including kind-specific
+ *     top-level fields such as ConfigMap data or Secret stringData
  *
  * Static (TypeKro resolves at deploy time):
  *   - __schema__ refs       — resolved against the CR spec
@@ -124,7 +125,7 @@ function requiresKroResolution(
         ? lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel, false)
         : lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel);
       if (innerExpr !== undefined) {
-        return !isStaticExpression(innerExpr, nestedStatusCel);
+        return !isStaticExpression(innerExpr, nestedStatusCel, resourceIds);
       }
       // Nested ref with no entry in the table is conservatively dynamic. Do not
       // log during classification: later analysis may still recover an alias.
@@ -154,7 +155,7 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
         : value.expression;
-    return !isStaticExpression(normalizedExpression, nestedStatusCel);
+    return !isStaticExpression(normalizedExpression, nestedStatusCel, resourceIds);
   }
 
   // Strings potentially containing __KUBERNETES_REF__ markers from
@@ -167,7 +168,7 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value, localResourceIds, preserveVariables)
         : value;
-    return !isStaticExpression(normalizedValue, nestedStatusCel);
+    return !isStaticExpression(normalizedValue, nestedStatusCel, resourceIds);
   }
 
   if (Array.isArray(value)) {

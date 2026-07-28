@@ -16,7 +16,7 @@ import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getMetadataField } from '../metadata/index.js';
+import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
 import type {
   KroSimpleSchemaWithMetadata,
@@ -1820,13 +1820,20 @@ export function arktypeToKroSchema(
   // Static = references only schema.spec.* or literal values → TypeKro runtime hydration
   // Classification is transitive through nestedStatusCel: a nested composition
   // reference whose inner analyzed value is schema-only/literal is treated as static.
-  const resourceIds = resources ? new Set(Object.keys(resources)) : undefined;
+  const resourceIds = resources ? new Set<string>() : undefined;
   const resourceAliases = resources ? new Map<string, string>() : undefined;
 
-  if (resources && resourceAliases) {
-    for (const [resourceId, resource] of Object.entries(resources)) {
+  if (resources && resourceIds && resourceAliases) {
+    for (const [resourceKey, resource] of Object.entries(resources)) {
+      const resourceId = getResourceId(resource) ?? resourceKey;
+      resourceIds.add(resourceKey);
+      resourceIds.add(resourceId);
+      resourceAliases.set(resourceKey, resourceId);
       resourceAliases.set(resourceId, resourceId);
-      for (const alias of deriveResourceIdAliases(resourceId)) {
+      for (const alias of new Set([
+        ...deriveResourceIdAliases(resourceKey),
+        ...deriveResourceIdAliases(resourceId),
+      ])) {
         if (!resourceAliases.has(alias)) {
           resourceAliases.set(alias, resourceId);
         }

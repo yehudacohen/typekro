@@ -353,6 +353,59 @@ describe('detectAndPreserveCelExpressions', () => {
     });
   });
 
+  test('classifies explicit CEL over any known top-level resource field as dynamic', () => {
+    const version = makeCelExpr('installationContract.data.version');
+    const digest = makeCelExpr('installationContract.binaryData.digest');
+
+    const result = separateStatusFields(
+      { version, digest },
+      undefined,
+      new Set(['installationContract'])
+    );
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ version, digest });
+  });
+
+  test('does not promote unknown identifiers merely because they use top-level fields', () => {
+    const localValue = makeCelExpr('applicationConfig.data.version');
+
+    const result = separateStatusFields(
+      { localValue },
+      undefined,
+      new Set(['installationContract'])
+    );
+
+    expect(result.staticFields).toEqual({ localValue });
+    expect(result.dynamicFields).toEqual({});
+  });
+
+  test('does not treat a known resource id inside a literal suffix as dynamic', () => {
+    const generatedName = makeCelExpr('string(schema.spec.name) + "-policy"');
+
+    const result = separateStatusFields(
+      { generatedName },
+      undefined,
+      new Set(['policy'])
+    );
+
+    expect(result.staticFields).toEqual({ generatedName });
+    expect(result.dynamicFields).toEqual({});
+  });
+
+  test('keeps a known resource passed as a bare aggregate argument dynamic', () => {
+    const count = makeCelExpr('size(workerDep)');
+
+    const result = separateStatusFields(
+      { count },
+      undefined,
+      new Set(['workerDep'])
+    );
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ count });
+  });
+
   test('derives nested composition aliases without rewriting incidental numeric resource names', () => {
     expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe('hydraService');
     expect(deriveNestedCompositionResourceAlias('s3Bucket')).toBeUndefined();
