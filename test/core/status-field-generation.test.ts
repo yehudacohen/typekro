@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { Cel, createResource, simple, toResourceGraph } from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -318,6 +318,37 @@ describe('Status Field Generation', () => {
 
       expect(yaml).toContain('version: ${outer1InstallationContract.data.version}');
       expect(yaml).not.toContain('version: ${installationContract.data.version}');
+    });
+
+    it('rejects Secret data projections before legacy YAML emission', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'secret-data-status-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SecretDataStatus',
+          spec: type({ name: 'string', token: 'string' }),
+          status: type({ token: 'string' }),
+        },
+        (schema) => ({
+          credentials: createResource(
+            {
+              id: 'credentials',
+              apiVersion: 'v1',
+              kind: 'Secret',
+              metadata: { name: schema.spec.name },
+              data: { token: schema.spec.token },
+            },
+            { factoryName: 'secret' }
+          ),
+        }),
+        () => ({
+          token: Cel.expr<string>('credentials.data.token'),
+        })
+      );
+
+      expect(() => graph.toYaml()).toThrow(
+        "Status field 'token' derives from sensitive Secret data and cannot be projected"
+      );
     });
   });
 

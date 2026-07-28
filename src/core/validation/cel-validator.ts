@@ -8,6 +8,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { celRootReferences } from '../../utils/cel-resource-identifiers.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
@@ -78,7 +79,7 @@ export interface CelValidationError {
   error: string;
   suggestion?: string;
   /** Machine-readable finding category (used by strict CEL diagnostics). */
-  code?: 'unknown-resource';
+  code?: 'unknown-resource' | 'sensitive-status';
   /** The unresolved resource id, when code is 'unknown-resource'. */
   referencedResource?: string;
 }
@@ -410,18 +411,17 @@ export function separateStatusFields(
  */
 export function validateStatusCelExpressions(
   statusMappings: Record<string, unknown>,
-  resources: Record<string, KubernetesResource>
+  resources: Record<string, KubernetesResource>,
+  options: { readonly enforceSensitiveStatus?: boolean } = {}
 ): CelValidationResult {
   const errors: CelValidationError[] = [];
   const warnings: CelValidationError[] = [];
-  // Build set of valid resource identifiers - includes both resource IDs and keys
-  // This supports both `resourceId.status.field` and `variableName.status.field` patterns
-  const resourceIds = new Set([
-    ...Object.keys(resources), // Variable names (from userKeyMap in imperative pattern)
-    ...Object.values(resources)
-      .map((r) => r.id)
-      .filter(Boolean), // Resource IDs
-  ]);
+  const identityContext = createStatusResourceIdentityContext(resources);
+  const resourceIds = new Set(identityContext.resourceIds);
+  const resourcesByCanonicalId = new Map<string, KubernetesResource>();
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    resourcesByCanonicalId.set(getResourceId(resource) ?? resourceKey, resource);
+  }
   const preserveVariables = new Set<string>();
   const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
   const nestedStatusCelForValidation =
@@ -438,8 +438,66 @@ export function validateStatusCelExpressions(
     }
   }
 
-  // Separate static and dynamic fields
-  const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
+  const nestedCompositionIds = getNestedCompositionIds(statusMappings);
+
+  function isSensitiveSecretField(resourceId: string, fieldPath: string): boolean {
+    const canonicalId = identityContext.resourceAliases.get(resourceId) ?? resourceId;
+    const resource = resourcesByCanonicalId.get(canonicalId);
+    const topLevelField = fieldPath.split('.')[0];
+    return (
+      resource?.kind === 'Secret' &&
+      getMetadataField(resource, 'secretMaterial') !== 'public-placeholder' &&
+      (topLevelField === 'data' || topLevelField === 'stringData')
+    );
+  }
+
+  function validateSensitivity(fieldName: string, value: unknown): void {
+    let sensitiveExpression: string | undefined;
+    if (isKubernetesRef(value)) {
+      if (isSensitiveSecretField(value.resourceId, value.fieldPath)) {
+        sensitiveExpression = `${value.resourceId}.${value.fieldPath}`;
+      }
+    } else if (isCelExpression(value)) {
+      const sensitiveReference = celRootReferences(value.expression).find((reference) =>
+        isSensitiveSecretField(reference.root, reference.segments.join('.'))
+      );
+      if (sensitiveReference) {
+        sensitiveExpression = `${sensitiveReference.root}.${sensitiveReference.segments.join('.')}`;
+      }
+    } else if (value && typeof value === 'object') {
+      for (const [key, nestedValue] of Object.entries(value)) {
+        validateSensitivity(`${fieldName}.${key}`, nestedValue);
+      }
+    }
+    if (sensitiveExpression) {
+      const referencedResource = sensitiveExpression.split('.')[0];
+      errors.push({
+        field: fieldName,
+        expression: sensitiveExpression,
+        error: `Status field '${fieldName}' derives from sensitive Secret data and cannot be projected`,
+        suggestion:
+          'Project a non-sensitive readiness or identity field instead of Secret data/stringData',
+        code: 'sensitive-status',
+        ...(referencedResource ? { referencedResource } : {}),
+      });
+    }
+  }
+
+  if (options.enforceSensitiveStatus !== false) {
+    for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+      if (!fieldName.startsWith('__')) {
+        validateSensitivity(fieldName, fieldValue);
+      }
+    }
+  }
+
+  // Separate static and dynamic fields using the same graph identities as serialization.
+  const { staticFields, dynamicFields } = separateStatusFields(
+    statusMappings,
+    nestedStatusCelForValidation,
+    resourceIds,
+    nestedCompositionIds
+  );
 
   /**
    * Scan a (remapped) expression for direct resource references (`id.status.` / `id.spec.` /
@@ -640,7 +698,12 @@ export function validateResourceGraphDefinition(
 ): CelValidationResult {
   const resourceIdValidation = validateResourceIds(resources);
   const statusValidation = statusMappings
-    ? validateStatusCelExpressions(statusMappings, resources)
+    ? validateStatusCelExpressions(statusMappings, resources, {
+        // Graph construction must remain available to semantic planning, which
+        // independently taints and diagnoses sensitive projections. The legacy
+        // KRO serializer enforces this boundary immediately before YAML emission.
+        enforceSensitiveStatus: false,
+      })
     : { isValid: true, errors: [], warnings: [] };
 
   return {

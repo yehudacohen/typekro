@@ -27,6 +27,7 @@ import {
   createStatusResourceIdentityContext,
   getNestedCompositionIds,
   separateStatusFields,
+  validateStatusCelExpressions,
 } from '../validation/cel-validator.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
@@ -1815,6 +1816,22 @@ export function arktypeToKroSchema(
   const nestedCompositionIds = statusMappings
     ? getNestedCompositionIds(statusMappings)
     : new Set<string>();
+
+  if (resources && Object.keys(userStatusMappings).length > 0) {
+    const statusValidation = validateStatusCelExpressions(userStatusMappings, resources);
+    const sensitiveErrors = statusValidation.errors.filter(
+      (error) => error.code === 'sensitive-status'
+    );
+    if (sensitiveErrors.length > 0) {
+      throw new TypeKroError(
+        `KRO status cannot expose sensitive resource data: ${sensitiveErrors
+          .map((error) => `${error.field}: ${error.error}`)
+          .join('; ')}`,
+        'KRO_SENSITIVE_STATUS_PROJECTION',
+        { errors: sensitiveErrors }
+      );
+    }
+  }
 
   const { dynamicFields } = separateStatusFields(
     userStatusMappings,

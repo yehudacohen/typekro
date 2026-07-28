@@ -11,6 +11,7 @@
 
 import { KUBERNETES_REF_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
+import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
@@ -1786,25 +1787,16 @@ export function serializeStatusMappingsToCel(
   }
 
   function normalizeLocalResourceExpr(expr: string): string {
-    let normalized = expr;
-
-    if (resourceAliases && resourceAliases.size > 0) {
-      const aliasEntries = Array.from(resourceAliases.entries())
-        .filter(([alias, resolvedId]) => alias !== resolvedId)
-        .sort((left, right) => right[0].length - left[0].length);
-
-      for (const [alias, resolvedId] of aliasEntries) {
-        normalized = normalized
-          .replace(new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.)`, 'g'), resolvedId)
-          .replace(
-            new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
-            `__KUBERNETES_REF_${resolvedId}_`
-          );
-      }
-    }
+    const normalized = resourceAliases
+      ? canonicalizeCelResourceAliases(expr, resourceAliases)
+      : expr;
+    const preserveAfterCanonicalization = new Set([
+      ...preserveVariables,
+      ...(resourceAliases?.keys() ?? []),
+    ]);
 
     return localResourceIds.length > 0
-      ? remapVariableNames(normalized, localResourceIds, preserveVariables)
+      ? remapVariableNames(normalized, localResourceIds, preserveAfterCanonicalization)
       : normalized;
   }
 

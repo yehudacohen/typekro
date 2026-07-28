@@ -429,6 +429,26 @@ describe('detectAndPreserveCelExpressions', () => {
     expect(result.phases).toEqual(['${deployment.status.phase}', '${"static"}']);
   });
 
+  test('canonicalizes resource aliases without rewriting CEL literals or lambda variables', () => {
+    const result = serializeStatusMappingsToCel(
+      {
+        value: makeCelExpr(
+          'c.data.version == "c.data.version" && exists(c, c.type == "Ready") && contractResource.data.enabled'
+        ),
+      },
+      undefined,
+      new Set(['canonicalConfig', 'installationContract']),
+      new Map([
+        ['c', 'canonicalConfig'],
+        ['contractResource', 'installationContract'],
+      ])
+    );
+
+    expect(result.value).toBe(
+      '${canonicalConfig.data.version == "c.data.version" && exists(c, c.type == "Ready") && installationContract.data.enabled}'
+    );
+  });
+
   test('detects multiple CEL expressions', () => {
     const cel1 = makeCelExpr('expr1');
     const cel2 = makeCelExpr('expr2');

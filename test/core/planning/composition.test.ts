@@ -142,6 +142,7 @@ describe('captured composition planning prototype', () => {
       expect.objectContaining({
         kind: 'expression',
         expression: expect.objectContaining({
+          expression: 'installationContract.data.version',
           references: [
             {
               source: 'resource',
@@ -182,6 +183,7 @@ describe('captured composition planning prototype', () => {
       expect.objectContaining({
         kind: 'expression',
         expression: expect.objectContaining({
+          expression: 'installationContract.data.version',
           references: [
             {
               source: 'resource',
@@ -192,6 +194,9 @@ describe('captured composition planning prototype', () => {
         }),
       })
     );
+    const artifact = compileKroArtifactPlan(plan);
+    expect(JSON.stringify(artifact)).toContain('installationContract.data.version');
+    expect(JSON.stringify(artifact)).not.toContain('contractResource.data.version');
   });
 
   it('rejects status projections derived through sensitive Secret resource fields', () => {

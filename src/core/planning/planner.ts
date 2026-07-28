@@ -4,6 +4,7 @@ import {
   isMixedTemplate,
   isResourceReference,
 } from '../../utils/type-guards.js';
+import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import { applyAspects } from '../aspects/apply.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { TypeKroError } from '../errors.js';
@@ -305,6 +306,7 @@ function canonicalizeStatusResourceReferences(
         ...value,
         expression: {
           ...value.expression,
+          expression: canonicalizeCelResourceAliases(value.expression.expression, resourceAliases),
           references: value.expression.references.map((reference) =>
             reference.source === 'resource' && reference.resourceId
               ? { ...reference, resourceId: canonicalResourceId(reference.resourceId) }
@@ -326,6 +328,10 @@ function canonicalizeStatusResourceReferences(
               ...segment,
               expression: {
                 ...segment.expression,
+                expression: canonicalizeCelResourceAliases(
+                  segment.expression.expression,
+                  resourceAliases
+                ),
                 references: segment.expression.references.map((reference) =>
                   reference.source === 'resource' && reference.resourceId
                     ? { ...reference, resourceId: canonicalResourceId(reference.resourceId) }
