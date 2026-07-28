@@ -4,14 +4,21 @@
 
 import { TypeKroError } from '../errors.js';
 
+export interface DockerCommandFailure {
+  readonly exitCode: number;
+  readonly args: readonly string[];
+  readonly stderr: string;
+}
+
 export class ContainerBuildError extends TypeKroError {
   constructor(
     message: string,
     code: string,
     public readonly suggestions: string[] = [],
-    cause?: Error
+    cause?: Error,
+    public readonly command?: DockerCommandFailure
   ) {
-    super(message, code, { suggestions }, cause ? { cause } : undefined);
+    super(message, code, { suggestions, ...(command ? { command } : {}) }, cause ? { cause } : undefined);
     this.name = 'ContainerBuildError';
   }
 
@@ -48,7 +55,9 @@ export class ContainerBuildError extends TypeKroError {
     return new ContainerBuildError(
       `Docker ${operation} failed with exit code ${exitCode}:\n${stderr.slice(0, 2_000)}`,
       'DOCKER_COMMAND_FAILED',
-      ['Review the redacted Docker diagnostics and registry/build configuration.']
+      ['Review the redacted Docker diagnostics and registry/build configuration.'],
+      undefined,
+      { exitCode, args: [...args], stderr }
     );
   }
 
@@ -69,6 +78,18 @@ export class ContainerBuildError extends TypeKroError {
       `Registry manifest digest verification failed: ${detail}`,
       'DIGEST_VERIFICATION_FAILED',
       ['Verify registry availability, credentials, and that the pushed tag was not mutated.']
+    );
+  }
+
+  static tagInspectionFailed(imageUri: string, cause: Error): ContainerBuildError {
+    return new ContainerBuildError(
+      `Failed to inspect existing container tag ${imageUri}: ${cause.message}`,
+      'TAG_INSPECTION_FAILED',
+      [
+        'Verify registry availability, credentials, and TLS configuration.',
+        'Retry only after the registry can positively distinguish a missing manifest from an inspection failure.',
+      ],
+      cause
     );
   }
 

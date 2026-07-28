@@ -151,6 +151,62 @@ async function verifyPublishedDigest(
   return digest;
 }
 
+async function inspectPublishedDigest(
+  taggedImageUri: string,
+  session: RegistrySession,
+  builder: string | undefined,
+  timeout: number,
+  signal: AbortSignal | undefined
+): Promise<string | undefined> {
+  try {
+    const inspected = await execDocker(
+      [
+        'buildx',
+        'imagetools',
+        'inspect',
+        taggedImageUri,
+        ...(builder ? ['--builder', builder] : []),
+        '--format',
+        '{{json .Manifest.Digest}}',
+      ],
+      {
+        quiet: true,
+        timeout,
+        ...(session.environment ? { environment: session.environment } : {}),
+        ...(signal ? { signal } : {}),
+      }
+    );
+    return digestFromInspectOutput(inspected.stdout);
+  } catch (error) {
+    if (error instanceof ContainerBuildError && error.code === 'BUILD_CANCELLED') throw error;
+    if (signal?.aborted) throw ContainerBuildError.cancelled();
+    if (error instanceof ContainerBuildError && error.code === 'BUILD_TIMEOUT') throw error;
+    if (error instanceof ContainerBuildError && error.code === 'DIGEST_VERIFICATION_FAILED') {
+      throw error;
+    }
+    if (manifestWasPositivelyNotFound(error, taggedImageUri)) {
+      logger.debug('Container tag is not available for adoption', { taggedImageUri });
+      return undefined;
+    }
+    const cause = error instanceof Error ? error : new Error(String(error));
+    throw ContainerBuildError.tagInspectionFailed(taggedImageUri, cause);
+  }
+}
+
+function manifestWasPositivelyNotFound(error: unknown, taggedImageUri: string): boolean {
+  if (!(error instanceof ContainerBuildError) || error.code !== 'DOCKER_COMMAND_FAILED') {
+    return false;
+  }
+  const stderr = error.command?.stderr;
+  if (typeof stderr !== 'string') return false;
+  const target = taggedImageUri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const knownAbsence = new RegExp(
+    `^ERROR:\\s+${target}:\\s+(?:not found|manifest unknown(?::.*)?|manifest_unknown(?::.*)?|no such manifest(?::.*)?)\\s*$`,
+    'i'
+  );
+  return stderr.split(/\r?\n/).some((line) => knownAbsence.test(line.trim()));
+}
+
 /** Build, publish, and registry-verify a container image. */
 export async function buildContainer(
   options: ContainerBuildOptions
@@ -162,6 +218,7 @@ export async function buildContainer(
     imageName,
     buildArgs,
     target,
+    existingTagPolicy = 'replace',
     quiet = false,
     progress = 'auto',
     timeout = 300_000,
@@ -183,6 +240,26 @@ export async function buildContainer(
     throw new ContainerBuildError(`Invalid image name: "${imageName}".`, 'INVALID_IMAGE_NAME');
   }
   if (buildArgs) validateBuildArgs(buildArgs);
+  if (existingTagPolicy !== 'replace' && existingTagPolicy !== 'adopt') {
+    throw new ContainerBuildError(
+      `Invalid existing tag policy: "${String(existingTagPolicy)}".`,
+      'INVALID_TAG_POLICY',
+      ['Use "replace" for mutable tags or "adopt" for immutable content-derived tags.']
+    );
+  }
+  if (
+    existingTagPolicy === 'adopt' &&
+    (options.tag === undefined || options.tag === 'content-hash')
+  ) {
+    throw new ContainerBuildError(
+      'Adopting an existing tag requires an explicit tag derived from the complete build input.',
+      'UNSAFE_ADOPTION_TAG',
+      [
+        'Include the context, Dockerfile, build arguments, target, platforms, extra Docker arguments, and relevant filesystem metadata in the tag identity.',
+        'Use existingTagPolicy: "replace" with TypeKro\'s built-in content-hash tag.',
+      ]
+    );
+  }
   const platforms = resolvePlatforms(options);
   let tag = options.tag ?? 'latest';
   if (tag === 'content-hash') tag = await computeContentHash(contextPath, dockerfilePath);
@@ -190,7 +267,7 @@ export async function buildContainer(
   await checkDockerAvailable(signal);
   const registry = resolveRegistry(options.registry);
   const taggedImageUri = await registry.resolveImageUri(imageName, tag);
-  logger.info('Building container image', {
+  logger.info('Resolving container artifact', {
     taggedImageUri,
     platforms: platforms.length ? platforms : ['native'],
   });
@@ -224,6 +301,35 @@ export async function buildContainer(
     if (session.remote) {
       if (session.buildkitConfigPath || platforms.length > 1) {
         builder = await createBuildxBuilder(session, timeout, signal);
+      }
+      if (existingTagPolicy === 'adopt') {
+        const digest = await inspectPublishedDigest(
+          taggedImageUri,
+          session,
+          builder,
+          timeout,
+          signal
+        );
+        if (digest) {
+          const repository = repositoryFromTaggedUri(taggedImageUri);
+          const imageUri = `${repository}@${digest}`;
+          const duration = Date.now() - startedAt;
+          logger.info('Existing container tag adopted', {
+            imageUri,
+            taggedImageUri,
+            duration,
+          });
+          return {
+            imageUri,
+            taggedImageUri,
+            repository,
+            tag,
+            digest,
+            duration,
+            pushed: true,
+            platforms,
+          };
+        }
       }
       await execDocker(
         [

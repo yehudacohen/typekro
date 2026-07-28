@@ -24,6 +24,15 @@ import type { RegistryHandler } from '../../../src/core/containers/registries/ty
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 const OTHER_DIGEST = `sha256:${'b'.repeat(64)}`;
 
+async function waitForDockerLog(path: string, expected: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path) && readFileSync(path, 'utf8').includes(expected)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for Docker invocation containing ${expected}.`);
+}
+
 describe('generic OCI registry provider', () => {
   let directory = '';
   let originalPath = '';
@@ -85,8 +94,33 @@ if (args[0] === 'buildx' && args[1] === 'create') {
   process.exit(0);
 }
 if (args[0] === 'buildx' && args[1] === 'imagetools') {
-  process.stdout.write(JSON.stringify(process.env.FAKE_INSPECT_DIGEST || '${DIGEST}') + '\\n');
-  process.exit(0);
+  const inspect = () => {
+    if (process.env.FAKE_INSPECT_ERROR_ONCE) {
+      const marker = process.env.FAKE_DOCKER_LOG + '.inspect-error';
+      if (!fs.existsSync(marker)) {
+        fs.writeFileSync(marker, '1');
+        process.stderr.write(process.env.FAKE_INSPECT_ERROR_ONCE + '\\n');
+        process.exit(1);
+      }
+    }
+    if (process.env.FAKE_INSPECT_ERROR) {
+      process.stderr.write(process.env.FAKE_INSPECT_ERROR + '\\n');
+      process.exit(1);
+    }
+    if (process.env.FAKE_INSPECT_MISSING_ONCE === '1') {
+      const marker = process.env.FAKE_DOCKER_LOG + '.inspect-missed';
+      if (!fs.existsSync(marker)) {
+        fs.writeFileSync(marker, '1');
+        process.stderr.write('ERROR: ' + args[3] + ': manifest unknown: requested tag was not found\\n');
+        process.exit(1);
+      }
+    }
+    process.stdout.write(JSON.stringify(process.env.FAKE_INSPECT_DIGEST || '${DIGEST}') + '\\n');
+    process.exit(0);
+  };
+  const delay = Number(process.env.FAKE_INSPECT_DELAY_MS || 0);
+  if (delay > 0) setTimeout(inspect, delay); else inspect();
+  return;
 }
 process.exit(0);
 `,
@@ -112,6 +146,10 @@ process.exit(0);
     delete process.env.FAKE_BUILD_DELAY_MS;
     delete process.env.FAKE_IGNORE_SIGTERM;
     delete process.env.FAKE_REJECT_BUILDKIT_CA;
+    delete process.env.FAKE_INSPECT_MISSING_ONCE;
+    delete process.env.FAKE_INSPECT_ERROR;
+    delete process.env.FAKE_INSPECT_ERROR_ONCE;
+    delete process.env.FAKE_INSPECT_DELAY_MS;
     rmSync(directory, { recursive: true, force: true });
   });
 
@@ -180,6 +218,133 @@ process.exit(0);
     for (const record of records) {
       if (record.dockerConfig) expect(existsSync(record.dockerConfig)).toBe(false);
     }
+  });
+
+  it('adopts a content-addressed immutable tag without rebuilding it', async () => {
+    const result = await buildContainer({
+      context: contextPath,
+      imageName: 'gateway',
+      tag: 'sha-content',
+      existingTagPolicy: 'adopt',
+      registry: harbor({
+        registry: 'registry.example.test',
+        project: 'chirp',
+      }),
+    });
+
+    expect(result).toMatchObject({
+      imageUri: `registry.example.test/chirp/gateway@${DIGEST}`,
+      taggedImageUri: 'registry.example.test/chirp/gateway:sha-content',
+      digest: DIGEST,
+      pushed: true,
+    });
+    const log = readFileSync(logPath, 'utf8');
+    expect(log).toContain('"imagetools"');
+    expect(log).not.toContain('["buildx","build"');
+  });
+
+  it('builds an adoptable tag when the registry does not contain it', async () => {
+    process.env.FAKE_INSPECT_MISSING_ONCE = '1';
+    const result = await buildContainer({
+      context: contextPath,
+      imageName: 'gateway',
+      tag: 'sha-new',
+      existingTagPolicy: 'adopt',
+      registry: harbor({
+        registry: 'registry.example.test',
+        project: 'chirp',
+      }),
+    });
+
+    expect(result.digest).toBe(DIGEST);
+    expect(readFileSync(logPath, 'utf8')).toContain('["buildx","build"');
+  });
+
+  it('recognizes Buildx exact-tag not-found diagnostics without accepting ambiguous failures', async () => {
+    process.env.FAKE_INSPECT_ERROR_ONCE =
+      'ERROR: registry.example.test/chirp/gateway:sha-new: not found';
+    const result = await buildContainer({
+      context: contextPath,
+      imageName: 'gateway',
+      tag: 'sha-new',
+      existingTagPolicy: 'adopt',
+      registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+    });
+    expect(result.digest).toBe(DIGEST);
+    expect(readFileSync(logPath, 'utf8')).toContain('["buildx","build"');
+  });
+
+  it('rejects built-in context-only hashes as adoption identities', async () => {
+    await expect(
+      buildContainer({
+        context: contextPath,
+        imageName: 'gateway',
+        tag: 'content-hash',
+        existingTagPolicy: 'adopt',
+        registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+      })
+    ).rejects.toMatchObject({ code: 'UNSAFE_ADOPTION_TAG' });
+    await expect(
+      buildContainer({
+        context: contextPath,
+        imageName: 'gateway',
+        existingTagPolicy: 'adopt',
+        registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+      })
+    ).rejects.toMatchObject({ code: 'UNSAFE_ADOPTION_TAG' });
+    expect(existsSync(logPath)).toBe(false);
+  });
+
+  it('fails closed when registry inspection does not positively report a missing manifest', async () => {
+    for (const diagnostic of [
+      'ERROR: unauthorized: authentication required',
+      'ERROR: x509: certificate signed by unknown authority',
+      'ERROR: unexpected status from HEAD request: 503 Service Unavailable',
+    ]) {
+      process.env.FAKE_INSPECT_ERROR = diagnostic;
+      await expect(
+        buildContainer({
+          context: contextPath,
+          imageName: 'gateway',
+          tag: `sha-${diagnostic.length}`,
+          existingTagPolicy: 'adopt',
+          registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+        })
+      ).rejects.toMatchObject({ code: 'TAG_INSPECTION_FAILED' });
+    }
+    expect(readFileSync(logPath, 'utf8')).not.toContain('["buildx","build"');
+  });
+
+  it('does not classify an adversarial repository name as a missing manifest', async () => {
+    process.env.FAKE_INSPECT_ERROR = 'ERROR: unauthorized: authentication required';
+    await expect(
+      buildContainer({
+        context: contextPath,
+        imageName: 'manifest_unknown/gateway',
+        tag: 'sha-complete',
+        existingTagPolicy: 'adopt',
+        registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+      })
+    ).rejects.toMatchObject({ code: 'TAG_INSPECTION_FAILED' });
+    expect(readFileSync(logPath, 'utf8')).not.toContain('["buildx","build"');
+  });
+
+  it('normalizes cancellation during adoption inspection', async () => {
+    process.env.FAKE_INSPECT_DELAY_MS = '10000';
+    process.env.FAKE_IGNORE_SIGTERM = '1';
+    const abort = new AbortController();
+    const build = buildContainer({
+      context: contextPath,
+      imageName: 'gateway',
+      tag: 'sha-cancelled-inspect',
+      existingTagPolicy: 'adopt',
+      signal: abort.signal,
+      registry: harbor({ registry: 'registry.example.test', project: 'chirp' }),
+    });
+    await waitForDockerLog(logPath, '"imagetools"', 2_000);
+    abort.abort();
+    await expect(build).rejects.toMatchObject({ code: 'BUILD_CANCELLED' });
+    expect(readFileSync(logPath, 'utf8')).toContain('"imagetools"');
   });
 
   it('fails closed when BuildKit and the registry disagree about the manifest digest', async () => {
