@@ -515,7 +515,8 @@ export class ResourceRollbackManager {
   async deleteDeployedResource(
     resource: DeployedResource,
     timeout?: number,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    behavior: { waitForNamespaceDeletion?: boolean } = {}
   ): Promise<void> {
     throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
@@ -547,12 +548,21 @@ export class ResourceRollbackManager {
 
       // Namespace deletion is asynchronous and may be blocked by PVCs that
       // Kubernetes cannot garbage-collect until their volumes are released.
-      // DirectResourceFactory owns that lifecycle: it removes PVCs only for
-      // explicitly targeted Namespaces and waits for the Namespace 404. Do
-      // not consume the generic per-resource timeout here before that cleanup
-      // has had a chance to run.
-      if (resource.kind === 'Namespace') {
+      // DirectResourceFactory owns that lifecycle during graph rollback: it
+      // removes PVCs only for explicitly targeted Namespaces and then performs
+      // its own 404 gate. Standalone callers such as the Alchemy deployer do
+      // not have that second phase, so they opt into the same real-404 gate
+      // here and must not report the declaration deleted while the Namespace
+      // is still Terminating.
+      if (resource.kind === 'Namespace' && behavior.waitForNamespaceDeletion !== true) {
         return;
+      }
+      if (resource.kind === 'Namespace') {
+        await this.deleteNamespacePersistentVolumeClaims(
+          resource.name,
+          deleteLogger,
+          abortSignal
+        );
       }
 
       // Wait for resource to be deleted
@@ -590,6 +600,59 @@ export class ResourceRollbackManager {
     } catch (error: unknown) {
       deleteLogger.error('Failed to delete resource', ensureError(error));
       throw error;
+    }
+  }
+
+  /**
+   * A Namespace that is already terminating cannot admit new namespaced
+   * resources. Delete its snapshotted PVCs before waiting for the final 404 so
+   * StatefulSet/operator retention policies cannot strand the Namespace behind
+   * `kubernetes.io/pvc-protection`.
+   *
+   * Aggregate DirectResourceFactory rollback performs this same completion
+   * phase after its graph rollback. This path is for standalone resource
+   * deployers such as Alchemy, where this manager owns the complete delete.
+   */
+  private async deleteNamespacePersistentVolumeClaims(
+    namespace: string,
+    deleteLogger: ReturnType<typeof getComponentLogger>,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
+    throwIfAborted(abortSignal);
+    let result: {
+      items?: Array<{ metadata?: { name?: unknown } }>;
+    };
+    try {
+      result = (await this.k8sApi.list(
+        'v1',
+        'PersistentVolumeClaim',
+        namespace
+      )) as typeof result;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+
+    const names = (result.items ?? [])
+      .map((pvc) => pvc.metadata?.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0);
+    if (names.length > 0) {
+      deleteLogger.info('Deleting PVCs to complete Namespace deletion', {
+        namespace,
+        count: names.length,
+      });
+    }
+    for (const name of names) {
+      throwIfAborted(abortSignal);
+      try {
+        await this.k8sApi.delete({
+          apiVersion: 'v1',
+          kind: 'PersistentVolumeClaim',
+          metadata: { name, namespace },
+        });
+      } catch (error: unknown) {
+        if (!isNotFoundError(error)) throw error;
+      }
     }
   }
 
