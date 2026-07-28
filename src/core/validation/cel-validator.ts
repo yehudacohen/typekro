@@ -9,8 +9,68 @@
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
+import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { isStaticExpression, lookupNestedExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
+
+export interface StatusResourceIdentityContext {
+  readonly resourceIds: ReadonlySet<string>;
+  readonly resourceAliases: ReadonlyMap<string, string>;
+}
+
+export function getNestedCompositionIds(
+  statusMappings: Readonly<Record<string, unknown>>
+): ReadonlySet<string> {
+  const descriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionFns');
+  return descriptor?.value instanceof Map
+    ? new Set(
+        [...descriptor.value.keys()].filter((value): value is string => typeof value === 'string')
+      )
+    : new Set();
+}
+
+function deriveResourceIdAliases(resourceId: string): string[] {
+  const aliases: string[] = [];
+  for (const match of resourceId.matchAll(/\d+/g)) {
+    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
+    if (suffix && /^[A-Z]/.test(suffix)) {
+      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Build the canonical resource identity set used by status planning,
+ * serialization, and client-side hydration.
+ */
+export function createStatusResourceIdentityContext(
+  resources: Readonly<Record<string, KubernetesResource>>
+): StatusResourceIdentityContext {
+  const resourceIds = new Set<string>();
+  const resourceAliases = new Map<string, string>();
+
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    const resourceId = getResourceId(resource) ?? resourceKey;
+    resourceIds.add(resourceKey);
+    resourceIds.add(resourceId);
+    resourceAliases.set(resourceKey, resourceId);
+    resourceAliases.set(resourceId, resourceId);
+
+    for (const alias of new Set([
+      ...deriveResourceIdAliases(resourceKey),
+      ...deriveResourceIdAliases(resourceId),
+      ...(getMetadataField(resource, 'resourceAliases') ?? []),
+    ])) {
+      resourceIds.add(alias);
+      if (!resourceAliases.has(alias)) {
+        resourceAliases.set(alias, resourceId);
+      }
+    }
+  }
+
+  return { resourceIds, resourceAliases };
+}
 
 export interface CelValidationError {
   field: string;
@@ -93,7 +153,8 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
 function requiresKroResolution(
   value: unknown,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): boolean {
   const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
   const preserveVariables = new Set<string>();
@@ -125,7 +186,7 @@ function requiresKroResolution(
         ? lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel, false)
         : lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel);
       if (innerExpr !== undefined) {
-        return !isStaticExpression(innerExpr, nestedStatusCel, resourceIds);
+        return !isStaticExpression(innerExpr, nestedStatusCel, resourceIds, true);
       }
       // Nested ref with no entry in the table is conservatively dynamic. Do not
       // log during classification: later analysis may still recover an alias.
@@ -155,7 +216,17 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
         : value.expression;
-    return !isStaticExpression(normalizedExpression, nestedStatusCel, resourceIds);
+    const referencesNestedComposition = [...nestedCompositionIds].some((id) =>
+      new RegExp(`(^|[^\\w$])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.`).test(
+        normalizedExpression
+      )
+    );
+    return !isStaticExpression(
+      normalizedExpression,
+      nestedStatusCel,
+      resourceIds,
+      referencesNestedComposition
+    );
   }
 
   // Strings potentially containing __KUBERNETES_REF__ markers from
@@ -168,16 +239,30 @@ function requiresKroResolution(
       localResourceIds.length > 0
         ? remapVariableNames(value, localResourceIds, preserveVariables)
         : value;
-    return !isStaticExpression(normalizedValue, nestedStatusCel, resourceIds);
+    const referencesNestedComposition = [...nestedCompositionIds].some(
+      (id) =>
+        normalizedValue.includes(`__KUBERNETES_REF_${id}_`) ||
+        new RegExp(`(^|[^\\w$])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.`).test(
+          normalizedValue
+        )
+    );
+    return !isStaticExpression(
+      normalizedValue,
+      nestedStatusCel,
+      resourceIds,
+      referencesNestedComposition
+    );
   }
 
   if (Array.isArray(value)) {
-    return value.some((v) => requiresKroResolution(v, nestedStatusCel, resourceIds));
+    return value.some((v) =>
+      requiresKroResolution(v, nestedStatusCel, resourceIds, nestedCompositionIds)
+    );
   }
 
   if (typeof value === 'object' && value !== null) {
     return Object.values(value as Record<string, unknown>).some((v) =>
-      requiresKroResolution(v, nestedStatusCel, resourceIds)
+      requiresKroResolution(v, nestedStatusCel, resourceIds, nestedCompositionIds)
     );
   }
 
@@ -193,7 +278,8 @@ function requiresKroResolution(
 function separateNestedObject(
   obj: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): {
   staticPart: Record<string, unknown>;
   dynamicPart: Record<string, unknown>;
@@ -214,7 +300,8 @@ function separateNestedObject(
       const nested = separateNestedObject(
         value as Record<string, unknown>,
         nestedStatusCel,
-        resourceIds
+        resourceIds,
+        nestedCompositionIds
       );
 
       if (nested.hasStatic) {
@@ -223,7 +310,7 @@ function separateNestedObject(
       if (nested.hasDynamic) {
         dynamicPart[key] = nested.dynamicPart;
       }
-    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
+    } else if (requiresKroResolution(value, nestedStatusCel, resourceIds, nestedCompositionIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;
@@ -257,7 +344,8 @@ function separateNestedObject(
 export function separateStatusFields(
   statusMappings: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  nestedCompositionIds: ReadonlySet<string> = getNestedCompositionIds(statusMappings)
 ): {
   staticFields: Record<string, unknown>;
   dynamicFields: Record<string, unknown>;
@@ -295,7 +383,8 @@ export function separateStatusFields(
       const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(
         fieldValue as Record<string, unknown>,
         nestedStatusCel,
-        resourceIds
+        resourceIds,
+        nestedCompositionIds
       );
 
       if (hasStatic) {
@@ -304,7 +393,9 @@ export function separateStatusFields(
       if (hasDynamic) {
         dynamicFields[fieldName] = dynamicPart;
       }
-    } else if (requiresKroResolution(fieldValue, nestedStatusCel, resourceIds)) {
+    } else if (
+      requiresKroResolution(fieldValue, nestedStatusCel, resourceIds, nestedCompositionIds)
+    ) {
       dynamicFields[fieldName] = fieldValue;
     } else {
       staticFields[fieldName] = fieldValue;

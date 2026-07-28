@@ -154,6 +154,87 @@ describe('captured composition planning prototype', () => {
     );
   });
 
+  it('canonicalizes callback-key resource aliases in status projections', () => {
+    const composition = toResourceGraph(
+      {
+        name: 'planning-config-alias-status',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningConfigAliasStatus',
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ version: 'string' }),
+      },
+      (schema) => ({
+        contractResource: simple.ConfigMap({
+          id: 'installationContract',
+          name: schema.spec.name,
+          data: { version: '1.2.3' },
+        }),
+      }),
+      () => ({
+        version: Cel.expr<string>('contractResource.data.version'),
+      })
+    );
+
+    const plan = composition.plan!({ name: 'demo' }, { strict: true });
+
+    expect(plan.outputs.version).toEqual(
+      expect.objectContaining({
+        kind: 'expression',
+        expression: expect.objectContaining({
+          references: [
+            {
+              source: 'resource',
+              resourceId: 'installationContract',
+              fieldPath: 'data.version',
+            },
+          ],
+        }),
+      })
+    );
+  });
+
+  it('rejects status projections derived through sensitive Secret resource fields', () => {
+    const composition = toResourceGraph(
+      {
+        name: 'planning-secret-resource-status',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningSecretResourceStatus',
+        revision: '1',
+        spec: type({ name: 'string', token: 'string' }),
+        status: type({ token: 'string' }),
+      },
+      (schema) => ({
+        credentials: createResource(
+          {
+            id: 'credentials',
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: { name: schema.spec.name },
+            data: { token: schema.spec.token },
+          },
+          { factoryName: 'secret' }
+        ),
+      }),
+      () => ({
+        token: Cel.expr<string>('credentials.data.token'),
+      })
+    );
+
+    const plan = composition.plan!({ name: 'demo', token: 'plaintext' });
+
+    expect(plan.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'PLAN_STATUS_SENSITIVE',
+        severity: 'error',
+        path: '$.status.token',
+      })
+    );
+    expect(() => composition.plan!({ name: 'demo', token: 'plaintext' }, { strict: true })).toThrow(
+      'Strict semantic planning rejected the composition'
+    );
+  });
+
   it('preserves analyzer-owned references and source locations in expression IR', () => {
     const composition = toResourceGraph(
       {

@@ -16,7 +16,6 @@ import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getMetadataField, getResourceId } from '../metadata/index.js';
 import { createSchemaProxy } from '../references/index.js';
 import type {
   KroSimpleSchemaWithMetadata,
@@ -24,22 +23,15 @@ import type {
   TernaryConditional,
 } from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
-import { separateStatusFields } from '../validation/cel-validator.js';
+import {
+  createStatusResourceIdentityContext,
+  getNestedCompositionIds,
+  separateStatusFields,
+} from '../validation/cel-validator.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
 const SCHEMA_MARKER_PATTERN_SOURCE = KUBERNETES_REF_SCHEMA_MARKER_SOURCE;
-
-function deriveResourceIdAliases(resourceId: string): string[] {
-  const aliases: string[] = [];
-  for (const match of resourceId.matchAll(/\d+/g)) {
-    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
-    if (suffix && /^[A-Z]/.test(suffix)) {
-      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
-    }
-  }
-  return aliases;
-}
 
 // ---------------------------------------------------------------------------
 // Arktype JSON AST → Kro type helpers (private)
@@ -940,12 +932,7 @@ function probeAmbiguousStructuredFallbacks(
     // SimpleSchema cannot represent explicit null.
     const optionalPath = matchingAncestorPath(field, optionalFieldPaths);
     if (optionalPath === undefined) continue;
-    const probedResource = runProbe(
-      compositionFn,
-      specJson,
-      new Set([optionalPath]),
-      resourceId
-    );
+    const probedResource = runProbe(compositionFn, specJson, new Set([optionalPath]), resourceId);
 
     for (const candidate of candidates) {
       const probeRead = readProbeValueAtPath(proxyResource, probedResource, candidate);
@@ -1653,8 +1640,8 @@ export function arktypeToKroSchema(
   nestedStatusCel?: Record<string, string>,
   schemaFieldValidations?: Readonly<Record<string, string>>
 ): KroSimpleSchemaWithMetadata {
-  const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json).nullable
-    .values()
+  const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json)
+    .nullable.values()
     .next().value;
   if (nullableField !== undefined) {
     throw new TypeKroError(
@@ -1820,39 +1807,31 @@ export function arktypeToKroSchema(
   // Static = references only schema.spec.* or literal values → TypeKro runtime hydration
   // Classification is transitive through nestedStatusCel: a nested composition
   // reference whose inner analyzed value is schema-only/literal is treated as static.
-  const resourceIds = resources ? new Set<string>() : undefined;
-  const resourceAliases = resources ? new Map<string, string>() : undefined;
+  const resourceIdentityContext = resources
+    ? createStatusResourceIdentityContext(resources)
+    : undefined;
+  const resourceIds = resourceIdentityContext?.resourceIds;
+  const resourceAliases = resourceIdentityContext?.resourceAliases;
+  const nestedCompositionIds = statusMappings
+    ? getNestedCompositionIds(statusMappings)
+    : new Set<string>();
 
-  if (resources && resourceIds && resourceAliases) {
-    for (const [resourceKey, resource] of Object.entries(resources)) {
-      const resourceId = getResourceId(resource) ?? resourceKey;
-      resourceIds.add(resourceKey);
-      resourceIds.add(resourceId);
-      resourceAliases.set(resourceKey, resourceId);
-      resourceAliases.set(resourceId, resourceId);
-      for (const alias of new Set([
-        ...deriveResourceIdAliases(resourceKey),
-        ...deriveResourceIdAliases(resourceId),
-      ])) {
-        if (!resourceAliases.has(alias)) {
-          resourceAliases.set(alias, resourceId);
-        }
-      }
-
-      const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
-      if (aliases) {
-        for (const alias of aliases) {
-          resourceAliases.set(alias, resourceId);
-        }
-      }
-    }
-  }
-
-  const { dynamicFields } = separateStatusFields(userStatusMappings, nestedStatusCel, resourceIds);
+  const { dynamicFields } = separateStatusFields(
+    userStatusMappings,
+    nestedStatusCel,
+    resourceIds,
+    nestedCompositionIds
+  );
 
   const statusCelExpressions =
     Object.keys(dynamicFields).length > 0
-      ? serializeStatusMappingsToCel(dynamicFields, nestedStatusCel, resourceIds, resourceAliases)
+      ? serializeStatusMappingsToCel(
+          dynamicFields,
+          nestedStatusCel,
+          resourceIds ? new Set(resourceIds) : undefined,
+          resourceAliases,
+          nestedCompositionIds
+        )
       : {};
 
   // Extract just the version part for the schema (Kro expects v1alpha1, not kro.run/v1alpha1)

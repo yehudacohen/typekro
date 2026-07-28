@@ -265,6 +265,60 @@ describe('Status Field Generation', () => {
       expect(yaml).toContain('version: ${installationContract.data.version}');
       expect(yaml).toContain('digest: ${installationContract.data.digest}');
     });
+
+    it('canonicalizes callback keys for arbitrary top-level resource fields', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-callback-alias-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataCallbackAlias',
+          spec: type({ name: 'string' }),
+          status: type({ version: 'string' }),
+        },
+        (schema) => ({
+          contractResource: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'installationContract',
+            data: { version: '1.2.3' },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('contractResource.data.version'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${installationContract.data.version}');
+      expect(yaml).not.toContain('contractResource.data.version');
+    });
+
+    it('canonicalizes derived nested aliases for arbitrary top-level resource fields', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'config-data-derived-alias-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConfigDataDerivedAlias',
+          spec: type({ name: 'string' }),
+          status: type({ version: 'string' }),
+        },
+        (schema) => ({
+          outer1InstallationContract: simple.ConfigMap({
+            name: schema.spec.name,
+            id: 'outer1InstallationContract',
+            data: { version: '1.2.3' },
+          }),
+        }),
+        () => ({
+          version: Cel.expr<string>('installationContract.data.version'),
+        })
+      );
+
+      const yaml = graph.toYaml();
+
+      expect(yaml).toContain('version: ${outer1InstallationContract.data.version}');
+      expect(yaml).not.toContain('version: ${installationContract.data.version}');
+    });
   });
 
   // Note: Backward compatibility test removed - automatic schema reference fallbacks

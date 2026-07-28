@@ -213,7 +213,7 @@ function generateCelExpression(
       ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
       : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
     if (innerExpr !== undefined) {
-      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context);
+      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true);
     }
   }
 
@@ -407,11 +407,18 @@ function containsNoNonSchemaRefs(expr: string, resourceIds?: Iterable<string>): 
 export function isStaticExpression(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds?: Iterable<string>
+  resourceIds?: Iterable<string>,
+  resolveKnownNestedResourceRefs = false
 ): boolean {
-  const afterNesting = resolveNestedCompositionRefs(expr, nestedStatusCel);
+  const knownResourceIds = resourceIds ? new Set(resourceIds) : undefined;
+  const afterNesting = resolveNestedCompositionRefs(
+    expr,
+    nestedStatusCel,
+    knownResourceIds,
+    resolveKnownNestedResourceRefs
+  );
   const afterMarkers = normalizeMarkerString(afterNesting);
-  return containsNoNonSchemaRefs(afterMarkers, resourceIds);
+  return containsNoNonSchemaRefs(afterMarkers, knownResourceIds);
 }
 
 // ---------------------------------------------------------------------------
@@ -576,17 +583,29 @@ export function lookupNestedExpression(
 function resolveNestedCompositionRefs(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  resolveKnownNestedResourceRefs = true
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return expr;
   }
 
   let current = expr;
+  let allowKnownResourceSubstitution = resolveKnownNestedResourceRefs;
   for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
-    const next = substituteNestedRefsOnce(current, nestedStatusCel, resourceIds);
+    const next = substituteNestedRefsOnce(
+      current,
+      nestedStatusCel,
+      resourceIds,
+      allowKnownResourceSubstitution
+    );
     if (next === current) return current;
     current = next;
+    // Once a virtual nested-composition reference has been expanded, its
+    // analyzed expression may intentionally use a flattened child id that is
+    // also a concrete graph resource. Exact nested mappings are authoritative
+    // only inside that already-proven nested boundary.
+    allowKnownResourceSubstitution = true;
   }
   logger.warn('Nested composition resolution depth limit exceeded', {
     depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
@@ -610,7 +629,8 @@ export function inlineNestedStatusRefs(
 function substituteNestedRefsOnce(
   expr: string,
   nestedStatusCel: Record<string, string>,
-  resourceIds?: ReadonlySet<string>
+  resourceIds?: ReadonlySet<string>,
+  resolveKnownNestedResourceRefs = false
 ): string {
   const lambdaVars = collectLambdaVars(expr);
   // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
@@ -620,10 +640,10 @@ function substituteNestedRefsOnce(
   return expr.replace(pattern, (match, id: string, field: string) => {
     if (id === 'schema') return match;
     if (lambdaVars.has(id)) return match;
+    if (resourceIds?.has(id) && !resolveKnownNestedResourceRefs) return match;
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, field, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined) return `(${strictInnerExpr})`;
-      return match;
+      return strictInnerExpr === undefined ? match : `(${strictInnerExpr})`;
     }
     const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
     if (innerExpr !== undefined) return `(${innerExpr})`;
@@ -705,7 +725,12 @@ function innerExprToYamlSegment(
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
-  const resolved = resolveNestedCompositionRefs(innerExpr, nestedStatusCel, context?.resourceIds);
+  const resolved = resolveNestedCompositionRefs(
+    innerExpr,
+    nestedStatusCel,
+    context?.resourceIds,
+    true
+  );
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
     return convertKubernetesRefMarkersTocel(resolved, context);
@@ -749,10 +774,16 @@ function innerExprToYamlSegment(
 export function finalizeCelForKro(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
-  context?: SerializationContext
+  context?: SerializationContext,
+  resolveKnownNestedResourceRefs = true
 ): string {
   const resolved = normalizeCelArrayIndexPaths(
-    resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds)
+    resolveNestedCompositionRefs(
+      expr,
+      nestedStatusCel,
+      context?.resourceIds,
+      resolveKnownNestedResourceRefs
+    )
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
     return convertKubernetesRefMarkersTocel(resolved, context);
@@ -1733,7 +1764,8 @@ export function serializeStatusMappingsToCel(
   statusMappings: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
   resourceIds?: Set<string>,
-  resourceAliases?: ReadonlyMap<string, string>
+  resourceAliases?: ReadonlyMap<string, string>,
+  nestedCompositionIds: ReadonlySet<string> = new Set()
 ): Record<string, string | Record<string, unknown> | unknown[]> {
   logger.debug('Serializing status mappings to CEL', {
     fieldCount: Object.keys(statusMappings).length,
@@ -1763,10 +1795,7 @@ export function serializeStatusMappingsToCel(
 
       for (const [alias, resolvedId] of aliasEntries) {
         normalized = normalized
-          .replace(
-            new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.(?:status|spec|metadata)\\.)`, 'g'),
-            resolvedId
-          )
+          .replace(new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.)`, 'g'), resolvedId)
           .replace(
             new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
             `__KUBERNETES_REF_${resolvedId}_`
@@ -1809,10 +1838,21 @@ export function serializeStatusMappingsToCel(
    * Centralized here so the two branches don't drift on what "produce
    * KRO status CEL from a resolved expression" means.
    */
-  function statusFieldFromExpression(expr: string, rewriteSchemaRefs = true): string {
+  function statusFieldFromExpression(
+    expr: string,
+    rewriteSchemaRefs = true,
+    resolveKnownNestedResourceRefs = [...nestedCompositionIds].some((id) =>
+      new RegExp(`(^|[^\\w$])${escapeRegExpLiteral(id)}\\s*\\.`).test(expr)
+    )
+  ): string {
     const resolved = normalizeCelArrayIndexPaths(
       normalizeLocalResourceExpr(
-        resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+        resolveNestedCompositionRefs(
+          normalizeLocalResourceExpr(expr),
+          nestedStatusCel,
+          resourceIds,
+          resolveKnownNestedResourceRefs
+        )
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1840,7 +1880,7 @@ export function serializeStatusMappingsToCel(
         const fieldName = ref.fieldPath.replace(/^status\./, '');
         const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, nestedStatusCel);
         if (innerExpr !== undefined) {
-          return statusFieldFromExpression(innerExpr);
+          return statusFieldFromExpression(innerExpr, true, true);
         }
       }
 

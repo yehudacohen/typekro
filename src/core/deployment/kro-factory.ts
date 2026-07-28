@@ -137,7 +137,10 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import { validateStatusCelExpressions } from '../validation/cel-validator.js';
+import {
+  createStatusResourceIdentityContext,
+  validateStatusCelExpressions,
+} from '../validation/cel-validator.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import {
   blockerForRemainingResource,
@@ -4469,6 +4472,23 @@ export class KroResourceFactoryImpl<
           aspects: this.factoryOptions.aspects ?? [],
         });
 
+    // Semantic artifact adaptation canonicalizes graph-child keys. Preserve the
+    // authoring aliases on those reconstructed resources so status classification
+    // and emission resolve callback keys and derived nested aliases identically.
+    const authoredIdentities = createStatusResourceIdentityContext(this.resources);
+    const emittedIdentities = createStatusResourceIdentityContext(aspectResources);
+    for (const [resourceKey, resource] of Object.entries(aspectResources)) {
+      const emittedId = emittedIdentities.resourceAliases.get(resourceKey) ?? resourceKey;
+      const aliases = [...authoredIdentities.resourceAliases.entries()].flatMap(
+        ([alias, canonicalId]) => (canonicalId === emittedId && alias !== emittedId ? [alias] : [])
+      );
+      if (aliases.length > 0) {
+        setMetadataField(resource, 'resourceAliases', [
+          ...new Set([...(getMetadataField(resource, 'resourceAliases') ?? []), ...aliases]),
+        ]);
+      }
+    }
+
     // Strict CEL diagnostics gate: fail fast if the status CEL that is about
     // to be emitted references resources that are not part of this graph,
     // instead of shipping an RGD that KRO will mark Inactive on the cluster.
@@ -5406,7 +5426,8 @@ export class KroResourceFactoryImpl<
 
     // Use dynamic import to avoid circular dependencies
     const { separateStatusFields } = await import('../validation/cel-validator.js');
-    return separateStatusFields(this.statusMappings);
+    const { resourceIds } = createStatusResourceIdentityContext(this.resources);
+    return separateStatusFields(this.statusMappings, this.getNestedStatusCel(), resourceIds);
   }
 
   /**

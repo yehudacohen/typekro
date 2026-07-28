@@ -21,7 +21,11 @@ import '../../src/factories/kubernetes/config/secret.js';
 // HelmRelease is auto-registered when createResource() is called with kind: HelmRelease.
 // For test isolation, register it explicitly.
 import { registerFactory, getKindInfo } from '../../src/core/resources/factory-registry.js';
-registerFactory({ factoryName: 'HelmRelease', kind: 'HelmRelease', apiVersion: 'helm.toolkit.fluxcd.io/v2' });
+registerFactory({
+  factoryName: 'HelmRelease',
+  kind: 'HelmRelease',
+  apiVersion: 'helm.toolkit.fluxcd.io/v2',
+});
 import {
   analyzeStatusMappingTypes,
   analyzeValueType,
@@ -383,11 +387,7 @@ describe('detectAndPreserveCelExpressions', () => {
   test('does not treat a known resource id inside a literal suffix as dynamic', () => {
     const generatedName = makeCelExpr('string(schema.spec.name) + "-policy"');
 
-    const result = separateStatusFields(
-      { generatedName },
-      undefined,
-      new Set(['policy'])
-    );
+    const result = separateStatusFields({ generatedName }, undefined, new Set(['policy']));
 
     expect(result.staticFields).toEqual({ generatedName });
     expect(result.dynamicFields).toEqual({});
@@ -396,18 +396,28 @@ describe('detectAndPreserveCelExpressions', () => {
   test('keeps a known resource passed as a bare aggregate argument dynamic', () => {
     const count = makeCelExpr('size(workerDep)');
 
-    const result = separateStatusFields(
-      { count },
-      undefined,
-      new Set(['workerDep'])
-    );
+    const result = separateStatusFields({ count }, undefined, new Set(['workerDep']));
 
     expect(result.staticFields).toEqual({});
     expect(result.dynamicFields).toEqual({ count });
   });
 
+  test('does not substitute nested mappings over a known concrete resource identity', () => {
+    const ready = makeCelExpr('foo.status.ready');
+    const nestedStatusCel = {
+      '__nestedStatus:foo:ready': 'schema.spec.enabled',
+    };
+
+    const result = separateStatusFields({ ready }, nestedStatusCel, new Set(['foo']));
+
+    expect(result.staticFields).toEqual({});
+    expect(result.dynamicFields).toEqual({ ready });
+  });
+
   test('derives nested composition aliases without rewriting incidental numeric resource names', () => {
-    expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe('hydraService');
+    expect(deriveNestedCompositionResourceAlias('oryIdentityStack1HydraService')).toBe(
+      'hydraService'
+    );
     expect(deriveNestedCompositionResourceAlias('s3Bucket')).toBeUndefined();
   });
 
