@@ -16,6 +16,7 @@ import {
   OpenSearchOperatorBootstrapStatusSchema,
 } from '../types.js';
 import { openSearchHelmRepositoryBootstrap } from './repository.js';
+import { DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE } from '../constants.js';
 
 export const openSearchOperatorBootstrap = kubernetesComposition(
   {
@@ -25,7 +26,8 @@ export const openSearchOperatorBootstrap = kubernetesComposition(
     status: OpenSearchOperatorBootstrapStatusSchema,
   },
   (spec: OpenSearchOperatorBootstrapConfig) => {
-    const operatorNamespace = spec.namespace || 'opensearch-operator-system';
+    const operatorNamespace =
+      spec.namespace || DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE;
     const version = spec.version || DEFAULT_OPENSEARCH_OPERATOR_VERSION;
     const repositoryName =
       spec.repositoryName || DEFAULT_OPENSEARCH_OPERATOR_REPOSITORY_NAME;
@@ -64,7 +66,7 @@ export const openSearchOperatorBootstrap = kubernetesComposition(
     }
     return {
       ...helmReleaseConditionSummary(release),
-      version,
+      version: release.spec.chart.spec.version,
     };
   }
 );

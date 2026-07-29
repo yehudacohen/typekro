@@ -4,6 +4,7 @@ import { isNotFoundError } from '../../../src/core/deployment/k8s-helpers.js';
 import {
   createBunCompatibleCoreV1Api,
   createBunCompatibleCustomObjectsApi,
+  createBunCompatibleNetworkingV1Api,
 } from '../../../src/core/kubernetes/index.js';
 import {
   makeOpenSearchCluster,
@@ -154,7 +155,7 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
         ].map((name) => createTestNamespace(name, kubeConfig))
       ))
     );
-    const operatorFactory = openSearchOperatorBootstrap.factory('direct', {
+    const operatorFactory = openSearchOperatorBootstrap.factory('kro', {
       namespace: operatorControlNamespace,
       waitForReady: true,
       timeout: 900_000,
@@ -166,6 +167,23 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       shared: true,
     });
     expect(operator.status).toMatchObject({
+      ready: true,
+      failed: false,
+      phase: 'Ready',
+      version: '3.0.2',
+    });
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const instanceRaw = await customApi.getNamespacedCustomObject({
+      group: 'kro.run',
+      version: 'v1alpha1',
+      namespace: operatorControlNamespace,
+      plural: 'opensearchoperatorbootstraps',
+      name: 'opensearch-operator',
+    });
+    const instance = (
+      instanceRaw as { readonly body?: Record<string, unknown> }
+    ).body ?? instanceRaw;
+    expect(Reflect.get(instance, 'status')).toMatchObject({
       ready: true,
       failed: false,
       phase: 'Ready',
@@ -290,7 +308,16 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       kroNamespace,
       'kro-search'
     );
-    const factory = makeOpenSearchCluster().factory('kro', {
+    const factory = makeOpenSearchCluster({
+      profile: 'production',
+      networkPolicy: {
+        enabled: true,
+        operatorNamespace,
+        ingressNamespaceLabels: {
+          'kubernetes.io/metadata.name': kroControlNamespace,
+        },
+      },
+    }).factory('kro', {
       namespace: kroControlNamespace,
       waitForReady: true,
       timeout: 900_000,
@@ -352,6 +379,26 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
         availableNodes: 3,
         health: expect.stringMatching(/green|yellow/),
       });
+      const networkingApi =
+        createBunCompatibleNetworkingV1Api(kubeConfig);
+      const policy = await networkingApi.readNamespacedNetworkPolicy({
+        namespace: kroNamespace,
+        name: 'kro-search-default',
+      });
+      expect(policy.spec).toBeDefined();
+      const admittedNamespaces = policy.spec?.ingress
+        ?.flatMap((rule) => rule._from ?? [])
+        .flatMap((peer) =>
+          peer.namespaceSelector?.matchLabels?.[
+            'kubernetes.io/metadata.name'
+          ] ?? []
+        );
+      expect(admittedNamespaces).toEqual(
+        expect.arrayContaining([
+          operatorNamespace,
+          kroControlNamespace,
+        ])
+      );
     } catch (error) {
       testFailed = true;
       testError = error;

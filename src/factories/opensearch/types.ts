@@ -76,7 +76,7 @@ export const OpenSearchClusterConfigSchema = type({
       source: '"secret"',
       secretName: 'string > 0',
       adminSecretName: 'string > 0',
-      'adminDn?': 'string[]',
+      adminDn: '(string > 0)[] > 0',
     })
     .or({
       source: '"cert-manager"',
@@ -85,7 +85,7 @@ export const OpenSearchClusterConfigSchema = type({
       issuerName: 'string > 0',
       'issuerKind?': '"Issuer" | "ClusterIssuer"',
       dnsNames: 'string[] > 0',
-      'adminDn?': 'string[]',
+      adminDn: '(string > 0)[] > 0',
     }),
   'snapshots?': {
     repository: 'string > 0',
@@ -128,6 +128,13 @@ export interface OpenSearchClusterTopology {
   };
   readonly networkPolicy?: {
     readonly enabled: boolean;
+    /**
+     * Namespace containing the OpenSearch operator. Its health probes are
+     * always admitted independently of caller traffic.
+     *
+     * @default 'opensearch-operator-system'
+     */
+    readonly operatorNamespace?: string;
     readonly ingressNamespaceLabels?: Readonly<Record<string, string>>;
     readonly egressNamespaceLabels?: readonly Readonly<Record<string, string>>[];
     readonly egressCidrs?: readonly string[];
@@ -158,7 +165,7 @@ export interface OpenSearchClusterResourceConfig {
         readonly source: 'secret' | 'cert-manager';
         readonly secretName: string;
         readonly adminSecretName: string;
-        readonly adminDn?: readonly string[];
+        readonly adminDn: readonly string[];
       };
   readonly snapshots?: {
     readonly repository: string;
@@ -209,7 +216,7 @@ export interface OpenSearchClusterResourceSpec {
         | {
             readonly generate: false;
             readonly secret: { readonly name: string };
-            readonly adminDn?: readonly string[];
+            readonly adminDn: readonly string[];
           };
       readonly transport: {
         readonly generate: true;

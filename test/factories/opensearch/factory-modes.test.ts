@@ -113,6 +113,7 @@ describe('OpenSearch integration', () => {
         source: 'cert-manager',
         secretName: 'evidence-http-tls',
         adminSecretName: 'evidence-admin-tls',
+        adminDn: ['CN=opensearch-admin'],
         issuerName: 'platform-ca',
         issuerKind: 'ClusterIssuer',
         dnsNames: ['evidence.search.example.com'],
@@ -130,6 +131,12 @@ describe('OpenSearch integration', () => {
     expect(yaml).toContain('kind: Certificate');
     expect(yaml).toContain('secretName: evidence-http-tls');
     expect(yaml).toContain('kind: NetworkPolicy');
+    expect(yaml).toContain(
+      'kubernetes.io/metadata.name: opensearch-operator-system'
+    );
+    expect(yaml).toContain(
+      'kubernetes.io/metadata.name: application-system'
+    );
     expect(yaml).toContain('10.0.0.0/8');
     expect(yaml).toContain('minAvailable: 2');
     expect(yaml).toContain('repository-s3');
@@ -157,6 +164,7 @@ describe('OpenSearch integration', () => {
         source: 'secret',
         secretName: 'http-tls',
         adminSecretName: 'admin-tls',
+        adminDn: ['CN=opensearch-admin'],
       },
       snapshots: {
         repository: 'snapshots',
@@ -168,6 +176,9 @@ describe('OpenSearch integration', () => {
     expect(yaml).toContain('OpenSearchClusterInstallation');
     expect(yaml).not.toContain('__KUBERNETES_REF__');
     expect(yaml).toContain('${schema.spec.storage.size}');
+    expect(yaml).toContain(
+      "adminDn: '[]string | minItems=1 validation=\"size(self) > 0 && self.all(dn, size(dn) > 0)\"'"
+    );
     expect(yaml).toContain('${cluster.status.availableNodes}');
     expect(yaml).toContain('${cluster.status.health}');
     expect(yaml).toContain(
@@ -190,6 +201,7 @@ describe('OpenSearch integration', () => {
         source: 'secret',
         secretName: 'http-tls',
         adminSecretName: 'admin-tls',
+        adminDn: ['CN=opensearch-admin'],
       },
       snapshots: {
         repository: 'snapshots',
@@ -212,6 +224,64 @@ describe('OpenSearch integration', () => {
     expect(yaml).toContain('opensearch-operator-bootstrap');
     expect(yaml).toContain('opensearch-helm-repository');
     expect(yaml).toContain('3.0.2');
+    expect(yaml).toContain(
+      'version: ${operatorRelease.spec.chart.spec.version}'
+    );
     expect(instance).toContain('kind: OpenSearchOperatorBootstrap');
+  });
+
+  test('requires a non-empty external TLS admin DN in direct and KRO inputs', () => {
+    const direct = makeOpenSearchCluster({ tls: 'secret' }).factory(
+      'direct',
+      { namespace: 'typekro-system' }
+    );
+    expect(() =>
+      direct.toYaml({
+        name: 'search',
+        namespace: 'search-system',
+        storage: { size: '20Gi' },
+        tls: {
+          source: 'secret',
+          secretName: 'http-tls',
+          adminSecretName: 'admin-tls',
+          adminDn: [],
+        },
+      })
+    ).toThrow();
+
+    const kro = makeOpenSearchCluster({ tls: 'cert-manager' }).factory(
+      'kro',
+      { namespace: 'typekro-system' }
+    );
+    expect(() =>
+      kro.toYaml({
+        name: 'search',
+        namespace: 'search-system',
+        storage: { size: '20Gi' },
+        tls: {
+          source: 'cert-manager',
+          secretName: 'http-tls',
+          adminSecretName: 'admin-tls',
+          adminDn: [],
+          issuerName: 'platform-ca',
+          dnsNames: ['search.example.test'],
+        },
+      })
+    ).toThrow();
+  });
+
+  test('rejects an empty operator namespace in a NetworkPolicy topology', () => {
+    expect(() =>
+      makeOpenSearchCluster({
+        profile: 'production',
+        networkPolicy: {
+          enabled: true,
+          operatorNamespace: '',
+          ingressNamespaceLabels: {
+            'kubernetes.io/metadata.name': 'application-system',
+          },
+        },
+      })
+    ).toThrow(/operatorNamespace/);
   });
 });

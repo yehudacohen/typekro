@@ -36,6 +36,8 @@ await openSearchOperatorBootstrap.factory('kro', {
 
 The pinned default is the official `opensearch-operator` chart `3.0.2` from
 `https://opensearch-project.github.io/opensearch-k8s-operator/`.
+Direct and KRO bootstrap status both report the reconciled HelmRelease chart
+version alongside `ready`, `failed`, and `phase`.
 
 ## Development cluster
 
@@ -74,6 +76,9 @@ const search = makeOpenSearchCluster({
   },
   networkPolicy: {
     enabled: true,
+    // Defaults to opensearch-operator-system and is admitted separately from
+    // application traffic so operator health reconciliation remains live.
+    operatorNamespace: 'opensearch-operator-system',
     ingressNamespaceLabels: {
       'kubernetes.io/metadata.name': 'application-system',
     },
@@ -101,6 +106,7 @@ await search.factory('kro', {
     source: 'cert-manager',
     secretName: 'evidence-http-tls',
     adminSecretName: 'evidence-admin-tls',
+    adminDn: ['CN=opensearch-admin'],
     issuerName: 'platform-ca',
     issuerKind: 'ClusterIssuer',
     dnsNames: ['evidence.search.example.com'],
@@ -120,6 +126,11 @@ await search.factory('kro', {
 The operator installs `repository-s3`, maps the declared Secret keys into the
 OpenSearch keystore, and registers the S3 repository. Secret values never enter
 the `OpenSearchCluster` manifest.
+
+External TLS modes require a non-empty `adminDn` list matching the subject of
+the administrator certificate in `adminSecretName`. The production
+NetworkPolicy always admits the configured OpenSearch operator Namespace on the
+HTTP port in addition to the caller-selected application Namespace labels.
 
 ## Lifecycle
 

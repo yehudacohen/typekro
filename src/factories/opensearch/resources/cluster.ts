@@ -78,7 +78,7 @@ function compileOpenSearchClusterSpec(
           http: {
             generate: false as const,
             secret: { name: config.tls.secretName },
-            ...(config.tls.adminDn ? { adminDn: config.tls.adminDn } : {}),
+            adminDn: config.tls.adminDn,
           },
           transport: { generate: true as const, perNode: true as const },
         };

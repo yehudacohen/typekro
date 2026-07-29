@@ -6,5 +6,6 @@
  * certificate, and network-policy resources.
  */
 export * from './compositions/index.js';
+export * from './constants.js';
 export * from './resources/index.js';
 export * from './types.js';

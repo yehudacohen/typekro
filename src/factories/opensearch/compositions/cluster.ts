@@ -17,6 +17,7 @@ import type {
   OpenSearchClusterTopology,
 } from '../types.js';
 import { OpenSearchClusterStatusSchema } from '../types.js';
+import { DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE } from '../constants.js';
 
 const DEFAULT_OPENSEARCH_VERSION = '3.2.0';
 
@@ -35,6 +36,7 @@ interface ResolvedTopology {
     readonly maxUnavailable?: number;
   };
   readonly networkPolicy?: {
+    readonly operatorNamespace: string;
     readonly ingressNamespaceLabels: Readonly<Record<string, string>>;
     readonly egressNamespaceLabels: readonly Readonly<Record<string, string>>[];
     readonly egressCidrs: readonly string[];
@@ -125,12 +127,18 @@ function resolveTopology(options: OpenSearchClusterBuildOptions): ResolvedTopolo
   const networkPolicy =
     options.networkPolicy?.enabled === true
       ? {
+          operatorNamespace:
+            options.networkPolicy.operatorNamespace ??
+            DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE,
           ingressNamespaceLabels: options.networkPolicy.ingressNamespaceLabels ?? {},
           egressNamespaceLabels: options.networkPolicy.egressNamespaceLabels ?? [],
           egressCidrs: options.networkPolicy.egressCidrs ?? [],
         }
       : profile === 'production'
         ? {
+            operatorNamespace:
+              options.networkPolicy?.operatorNamespace ??
+              DEFAULT_OPENSEARCH_OPERATOR_NAMESPACE,
             ingressNamespaceLabels:
               options.networkPolicy?.ingressNamespaceLabels ?? {},
             egressNamespaceLabels:
@@ -138,6 +146,16 @@ function resolveTopology(options: OpenSearchClusterBuildOptions): ResolvedTopolo
             egressCidrs: options.networkPolicy?.egressCidrs ?? [],
           }
         : undefined;
+  if (
+    networkPolicy &&
+    !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/u.test(
+      networkPolicy.operatorNamespace
+    )
+  ) {
+    throw new Error(
+      'makeOpenSearchCluster networkPolicy.operatorNamespace must be a non-empty Kubernetes Namespace name.'
+    );
+  }
   if (
     profile === 'production' &&
     networkPolicy &&
@@ -188,7 +206,7 @@ function buildSpecSchema(topology: ResolvedTopology) {
       source: '"secret"',
       secretName: 'string > 0',
       adminSecretName: 'string > 0',
-      'adminDn?': 'string[]',
+      adminDn: '(string > 0)[] > 0',
     };
   } else {
     shape.tls = {
@@ -198,7 +216,7 @@ function buildSpecSchema(topology: ResolvedTopology) {
       issuerName: 'string > 0',
       'issuerKind?': '"Issuer" | "ClusterIssuer"',
       dnsNames: 'string[] > 0',
-      'adminDn?': 'string[]',
+      adminDn: '(string > 0)[] > 0',
     };
   }
   if (topology.snapshots) {
@@ -354,6 +372,21 @@ export function makeOpenSearchCluster<
                 _from: [
                   {
                     namespaceSelector: {
+                      matchLabels: {
+                        'kubernetes.io/metadata.name':
+                          topology.networkPolicy.operatorNamespace,
+                      },
+                    },
+                  },
+                ],
+                ports: [
+                  { protocol: 'TCP', port: OPENSEARCH_HTTP_PORT },
+                ],
+              },
+              {
+                _from: [
+                  {
+                    namespaceSelector: {
                       matchLabels:
                         topology.networkPolicy.ingressNamespaceLabels,
                     },
@@ -418,7 +451,15 @@ export function makeOpenSearchCluster<
           'has(cluster.spec.general.snapshotRepositories) && cluster.spec.general.snapshotRepositories.size() > 0 ? cluster.spec.general.snapshotRepositories[0].name : ""'
         ),
       };
-    }
+    },
+    topology.tls === 'generated'
+      ? undefined
+      : {
+          schemaFieldValidations: {
+            'tls.adminDn':
+              'size(self) > 0 && self.all(dn, size(dn) > 0)',
+          },
+        }
   ) as unknown as CallableComposition<
       OpenSearchClusterConfigFor<Options>,
       OpenSearchClusterStatus
@@ -434,7 +475,7 @@ function externalTls(
   readonly source: 'secret' | 'cert-manager';
   readonly secretName: string;
   readonly adminSecretName: string;
-  readonly adminDn?: readonly string[];
+  readonly adminDn: readonly string[];
 } {
   if (tls.source === 'generated') {
     throw new Error(
@@ -445,6 +486,6 @@ function externalTls(
     source,
     secretName: tls.secretName,
     adminSecretName: tls.adminSecretName,
-    ...(tls.adminDn ? { adminDn: tls.adminDn } : {}),
+    adminDn: tls.adminDn,
   };
 }
