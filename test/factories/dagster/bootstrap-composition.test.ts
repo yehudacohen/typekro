@@ -14,14 +14,30 @@ import {
 // Direct composition imports were rejected because `typekro/dagster` is the
 // approved user-facing seam.
 describe('Dagster bootstrap composition', () => {
+  /**
+   * A KRO SimpleSchema node: either a type string (`'string'`, `'object'`, `'[]object'`, …) or a nested map of
+   * fields. Recursive so nested reads stay typed — `Record<string, unknown>` would make every child `unknown`.
+   */
+  type SchemaNode = string | { readonly [field: string]: SchemaNode };
+
   /** Just enough of an RGD document to select one and read its declared schema types. */
   interface RgdDocument {
     kind?: string;
-    spec?: { schema?: { kind?: string; spec?: Record<string, unknown> } };
+    spec?: { schema?: { kind?: string; spec?: Record<string, SchemaNode> } };
   }
 
+  /** Read a nested field's declared type, e.g. `at(spec.postgresql, 'values')`. */
+  const at = (node: SchemaNode | undefined, ...path: string[]): SchemaNode | undefined => {
+    let cursor = node;
+    for (const key of path) {
+      if (typeof cursor !== 'object' || cursor === null) return undefined;
+      cursor = cursor[key];
+    }
+    return cursor;
+  };
+
   /** The RGD's `spec.schema.spec` — the declared CRD field types KRO admission enforces. */
-  const bootstrapSchemaSpec = (): Record<string, unknown> => {
+  const bootstrapSchemaSpec = (): Record<string, SchemaNode> => {
     const docs = loadAll(dagsterBootstrap.toYaml()) as RgdDocument[];
     // Select by SCHEMA kind: toYaml() emits two RGDs (the HelmRepository one first), so matching on
     // `kind: ResourceGraphDefinition` silently picks the wrong document.
@@ -176,9 +192,9 @@ describe('Dagster bootstrap composition', () => {
     expect(spec.values).toBe('object');
     // The per-subchart passthroughs. These are the ONLY route to bundled-subchart settings such as
     // postgresql `primary.persistence.enabled` or `nodeSelector`, none of which the convenience shapes model.
-    expect(spec.postgresql.values).toBe('object');
-    expect(spec.rabbitmq.values).toBe('object');
-    expect(spec.redis.values).toBe('object');
+    expect(at(spec.postgresql, 'values')).toBe('object');
+    expect(at(spec.rabbitmq, 'values')).toBe('object');
+    expect(at(spec.redis, 'values')).toBe('object');
   });
 
   it('Keep typed convenience fields typed — opaque `values` must not swallow the whole API', () => {
@@ -187,9 +203,9 @@ describe('Dagster bootstrap composition', () => {
     // Making `values` opaque is a deliberate narrowing of where schemalessness applies. The high-level
     // convenience API must stay strongly typed, or the CRD stops documenting anything.
     expect(spec.name).toBe('string');
-    expect(spec.postgresql.enabled).toBe('boolean');
-    expect(spec.postgresql.servicePort).toBe('integer');
-    expect(spec.postgresql.host).toBe('string');
+    expect(at(spec.postgresql, 'enabled')).toBe('boolean');
+    expect(at(spec.postgresql, 'servicePort')).toBe('integer');
+    expect(at(spec.postgresql, 'host')).toBe('string');
   });
 
   // The migration switch for the schemaless-`object` correction. It has to work at FACTORY level: the same
