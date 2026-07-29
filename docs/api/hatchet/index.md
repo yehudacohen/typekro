@@ -94,6 +94,13 @@ keysets. Its name is reported as `status.configurationSecret`. These are
 upstream CLI defaults and are intentionally independent of the Helm release
 name.
 
+Because both recovery Secret names are fixed by the upstream Hatchet CLI,
+TypeKro admits exactly one Hatchet installation in a Namespace and requires
+the canonical release name `hatchet`. A second installation with another name
+fails schema validation before any resources are applied. Deploy independent
+Hatchet control planes into independent Namespaces; sharing these Secrets
+would couple encryption, signing, and worker credentials across releases.
+
 ## Operational defaults
 
 The composition pins:
@@ -134,11 +141,11 @@ workers. An owned Namespace deletes them with the installation.
 
 The same rule applies independently to `repositoryNamespaceOwnership`.
 The default HelmRepository name includes a length-prefixed workload Namespace
-followed by the release name. The length prefix makes the tuple encoding
-injective: `team-a`/`worker` cannot collide with `team`/`a-worker`, even when
-both installations share a repository Namespace. Set `repositoryName` only
-when an explicit platform naming policy is required; explicit names must be
-unique within the repository Namespace.
+followed by the canonical release name. The length prefix keeps repository
+identity injective across workload Namespaces even when installations share a
+repository Namespace. Set `repositoryName` only when an explicit platform
+naming policy is required; explicit names must be unique within the repository
+Namespace.
 
 Delete through the factory so TypeKro preserves dependency order:
 

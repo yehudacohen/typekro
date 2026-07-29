@@ -176,7 +176,6 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
                 name: settings.metadata.name,
                 valuesKey: 'DATABASE_URL',
                 targetPath: 'config.databaseUrl',
-                literal: true,
               },
             ],
           }),
@@ -192,8 +191,29 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).toContain('name: ${schema.spec.hostname}');
     expect(yaml).toContain('valuesKey: DATABASE_URL');
     expect(yaml).toContain('targetPath: config.databaseUrl');
-    expect(yaml).toContain('literal: true');
+    expect(yaml).not.toContain('literal:');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
+  });
+
+  it('rejects Flux 2.9 literal values sources while the managed baseline is Flux 2.7.5', () => {
+    expect(() =>
+      helmRelease({
+        name: 'my-app',
+        chart: {
+          repository: 'https://charts.example.com',
+          name: 'my-chart',
+        },
+        valuesFrom: [
+          {
+            kind: 'Secret',
+            name: 'credentials',
+            valuesKey: 'DATABASE_URL',
+            targetPath: 'config.databaseUrl',
+            literal: true,
+          } as never,
+        ],
+      })
+    ).toThrow(/valuesFrom\.literal requires Flux 2\.9/);
   });
 
   it('rejects unsupported runtime-only leaves inside Helm values with a path-specific error', () => {

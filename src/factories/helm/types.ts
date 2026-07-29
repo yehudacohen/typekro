@@ -11,11 +11,10 @@ export interface HelmReleaseValuesFromSource {
   /** Helm values path receiving the source value. */
   targetPath?: string;
   /**
-   * Preserve the referenced bytes verbatim instead of interpreting Helm
-   * `--set` syntax. Requires Flux 2.9 or newer and has effect only with
-   * `targetPath`.
+   * Values projected through targetPath follow the Helm Controller baseline's
+   * `--set` parsing semantics. TypeKro does not expose Flux 2.9's `literal`
+   * field while its managed runtime remains on Flux 2.7.5.
    */
-  literal?: boolean;
   /** Allow reconciliation to continue when the source object or key is absent. */
   optional?: boolean;
 }

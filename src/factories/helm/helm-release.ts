@@ -137,6 +137,17 @@ export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObje
 export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
   config: HelmReleaseConfig<TValues>
 ): Enhanced<HelmReleaseSpec<TValues>, HelmReleaseStatus> {
+  if (
+    Array.isArray(config.valuesFrom) &&
+    config.valuesFrom.some(
+      (source) => typeof source === 'object' && source !== null && Object.hasOwn(source, 'literal')
+    )
+  ) {
+    throw new Error(
+      "HelmRelease valuesFrom.literal requires Flux 2.9, but TypeKro's managed Flux baseline is 2.7.5. Remove literal or manage a compatible Flux runtime explicitly."
+    );
+  }
+
   // Determine sourceRef — use explicit config or auto-detect from repository URL
   let sourceRefName: string;
   let sourceRefNamespace: string;
