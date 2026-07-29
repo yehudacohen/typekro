@@ -1,176 +1,232 @@
 /**
- * LIVE KRO ADMISSION test for the Dagster raw-Helm-`values` escape hatches.
+ * LIVE KRO ADMISSION coverage for schemaless (`object`) schema fields.
  *
- * Why this exists, specifically: the unit tests asserted that CEL strings like `schema.spec.postgresql.values`
- * appeared in the generated YAML. That is not the same claim. A field can be referenced by CEL and still be
- * DECLARED `string` in the RGD schema — in which case KRO admission silently PRUNES whatever object a caller
- * sent, the CEL resolves to nothing, and every offline test still passes. Both documented Dagster escape
- * hatches were broken that way, and it stayed invisible because nothing ever read a CR back from a cluster.
+ * Why this exists: the offline tests asserted that CEL strings like `schema.spec.postgresql.values` appeared
+ * in the generated YAML. That is a weaker claim than it looks. A field can be referenced by CEL and still be
+ * DECLARED `string` in the RGD schema — in which case admission drops whatever object a caller sent, the CEL
+ * resolves to nothing, and every offline test still passes. That is precisely how the Dagster escape hatches
+ * stayed broken, and it stayed invisible because nothing ever read a CR back from a cluster.
  *
- * So this test does the only thing that actually proves the contract: apply the RGD, submit a CR carrying
- * NESTED UNKNOWN structure (maps, booleans, numbers, arrays — none of it modelled by any convenience shape),
- * then read the admitted object back from the API server and assert the values survived.
- *
- * Worth knowing WHY this stayed hidden: the same defect surfaces differently per client. `kubectl apply` uses
- * STRICT decoding, so against the broken schema it fails loudly —
- *   `strict decoding error: unknown field "spec.values.postgresql"`
- * — which is the "rejected 422/BadRequest" people hit when poking by hand. TypeKro's own apply path is NOT
+ * The defect also surfaces differently per client, which is worth knowing: `kubectl apply` is STRICT-decoding
+ * and errors loudly (`strict decoding error: unknown field ...`), while TypeKro's own apply path is not
  * strict, so in production the identical mismatch was PRUNED IN SILENCE and the converge reported success.
- * This test deliberately drives kubectl, so a regression is a hard error rather than a quiet omission.
  *
- * Deliberately image-free: it never deploys Dagster, so it needs only a cluster with KRO. Run with
- * `bun test test/integration/dagster/values-admission.test.ts` against orbstack.
+ * SAFETY — this test deliberately never creates a Dagster INSTANCE. Applying the Dagster RGD only registers a
+ * CRD; creating a `DagsterBootstrap` CR would make KRO reconcile real HelmReleases, which is not something an
+ * admission test should do to a persistent cluster. So the two concerns are split:
+ *   1. Dagster: apply the RGD, read the REGISTERED CRD, assert the escape hatches are schemaless. No CRs.
+ *   2. Round-trip: a MINIMAL probe graph whose only resource is a ConfigMap, so a CR is harmless.
+ * Namespaces come from the shared harness (UID lease) and every created object is tracked and torn down with
+ * aggregated errors rather than swallowed ones.
  */
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import * as k8s from '@kubernetes/client-node';
+import { type } from 'arktype';
+import { ConfigMap } from '../../../src/factories/simple/index.js';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import { dagsterBootstrap } from '../../../src/factories/dagster/index.js';
-import { isClusterAvailable } from '../shared-kubeconfig.js';
+import { createBunCompatibleApiClient } from '../../../src/core/kubernetes/bun-api-client.js';
+import {
+  createCustomObjectsApiClient,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+  type TestNamespaceLease,
+} from '../shared-kubeconfig.js';
 
 setDefaultTimeout(300000);
 
 const clusterAvailable = await isClusterAvailable();
 const describeLiveOrSkip = clusterAvailable ? describe : describe.skip;
 
-// Unique per run: afterAll deletes the namespace with `--wait=false`, so a fixed name races against the
-// previous run's Terminating namespace (apply then fails with `namespaces ... not found`).
-const NAMESPACE = `typekro-values-admission-${Math.random().toString(36).slice(2, 8)}`;
-const INSTANCE = 'values-probe';
-
-/** `kubectl` against the ambient kubeconfig; returns stdout, throws with stderr on failure. */
-const kubectl = async (args: string[], stdin?: string): Promise<string> => {
-  const proc = Bun.spawn(['kubectl', ...args], {
-    stdin: stdin ? new TextEncoder().encode(stdin) : 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (code !== 0) throw new Error(`kubectl ${args.join(' ')} failed (${code}): ${err}`);
-  return out;
-};
+const RGD_GROUP = 'kro.run';
+const RGD_VERSION = 'v1alpha1';
+const RGD_PLURAL = 'resourcegraphdefinitions';
+const PROBE_KIND = 'ObjectSchemaProbe';
+const PROBE_RGD = 'object-schema-probe';
 
 /**
- * The structure a caller sends and admission must NOT strip. Chosen to cover what the old `string` typing
- * destroyed: nested maps, a boolean, a number, an array of objects, and a dotted key.
+ * The structure a caller sends and admission must NOT strip: nested maps, a boolean, a number, an array of
+ * objects, and a dotted key — everything the old `string` typing destroyed.
  */
 const PROBE_VALUES = {
   postgresql: {
-    // The exact settings that could not be expressed before — no convenience shape models these.
     primary: { persistence: { enabled: false }, nodeSelector: { 'kubernetes.io/os': 'linux' } },
     persistence: { enabled: false },
   },
   extraObjects: [{ kind: 'ConfigMap', metadata: { name: 'probe' } }],
   someNumber: 42,
   someBool: true,
-} as const;
+};
 
-describeLiveOrSkip('Dagster raw Helm values survive KRO admission', () => {
-  beforeAll(async () => {
-    await kubectl(['create', 'namespace', NAMESPACE]);
-    // Apply only the DagsterBootstrap RGD (the stream also carries the HelmRepository one; both are fine).
-    await kubectl(['apply', '-f', '-'], dagsterBootstrap.toYaml());
-    // Wait for KRO to accept the graph — a rejected RGD would make the CR apply fail confusingly.
-    await kubectl([
-      'wait',
-      'resourcegraphdefinition/dagster-bootstrap',
-      '--for=condition=GraphAccepted',
-      '--timeout=120s',
-    ]);
-    // GraphAccepted does NOT imply the CRD is registered and served — KRO creates it afterwards, so reading
-    // the CRD immediately races and sees NotFound. And `kubectl wait` ERRORS on a resource that does not
-    // exist yet rather than waiting for it, so poll for existence first, then wait for Established (the
-    // condition that actually means "the API server will accept objects of this kind").
-    for (let i = 0; i < 60; i++) {
-      const exists = await kubectl(['get', 'crd', 'dagsterbootstraps.kro.run', '--ignore-not-found', '-o', 'name']);
-      if (exists.trim()) break;
+/** Minimal graph: one schemaless `values` field, one harmless ConfigMap. No Dagster, no Helm. */
+const probeComposition = kubernetesComposition(
+  {
+    name: PROBE_RGD,
+    kind: PROBE_KIND,
+    spec: type({ name: 'string', appNamespace: 'string', 'values?': 'object' }),
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    ConfigMap({
+      name: `${spec.name}-probe`,
+      namespace: spec.appNamespace,
+      data: { role: 'probe' },
+      id: 'probeCfg',
+    });
+    return { ready: true };
+  }
+);
+
+describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
+  const kc = getIntegrationTestKubeConfig();
+  // Bun-compatible clients: a plain `kc.makeApiClient` fails TLS against a self-signed cluster CA under Bun
+  // (oven-sh/bun#10642), which is exactly what the harness factories exist to paper over.
+  const custom = createCustomObjectsApiClient(kc);
+  const apiext = createBunCompatibleApiClient(kc, k8s.ApiextensionsV1Api);
+  let lease: TestNamespaceLease | undefined;
+  /** Every object this test creates, newest first, so teardown is deterministic. */
+  const created: Array<{ what: string; remove: () => Promise<unknown> }> = [];
+
+  const applyRgd = async (yamlDoc: string): Promise<void> => {
+    for (const doc of k8s.loadAllYaml(yamlDoc)) {
+      const body = doc as { kind?: string; metadata?: { name?: string } };
+      if (body.kind !== 'ResourceGraphDefinition') continue;
+      const name = body.metadata?.name;
+      if (!name) continue;
+      await custom
+        .createClusterCustomObject({
+          group: RGD_GROUP,
+          version: RGD_VERSION,
+          plural: RGD_PLURAL,
+          body: body as object,
+        })
+        .catch(async (e: unknown) => {
+          // A leftover RGD from an earlier run carries an OLD schema, so "reuse on AlreadyExists" would
+          // silently assert against the wrong definition (and KRO refuses breaking CRD type changes on
+          // update anyway). Delete and recreate so the test always exercises the CURRENT schema.
+          if (!String(e).includes('AlreadyExists') && !String(e).includes('409')) throw e;
+          await custom.deleteClusterCustomObject({
+            group: RGD_GROUP,
+            version: RGD_VERSION,
+            plural: RGD_PLURAL,
+            name,
+          });
+          for (let i = 0; i < 60; i++) {
+            const gone = await custom
+              .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
+              .then(() => false)
+              .catch(() => true);
+            if (gone) break;
+            await Bun.sleep(1000);
+          }
+          await custom.createClusterCustomObject({
+            group: RGD_GROUP,
+            version: RGD_VERSION,
+            plural: RGD_PLURAL,
+            body: body as object,
+          });
+        });
+      created.push({
+        what: `rgd/${name}`,
+        remove: () =>
+          custom.deleteClusterCustomObject({
+            group: RGD_GROUP,
+            version: RGD_VERSION,
+            plural: RGD_PLURAL,
+            name,
+          }),
+      });
+    }
+  };
+
+  /** Poll until the CRD for `plural` is Established — KRO registers it AFTER the RGD is accepted. */
+  const waitForCrd = async (plural: string): Promise<k8s.V1CustomResourceDefinition> => {
+    const name = `${plural}.${RGD_GROUP}`;
+    for (let i = 0; i < 120; i++) {
+      const crd = await apiext.readCustomResourceDefinition({ name }).catch(() => undefined);
+      const established = crd?.status?.conditions?.some(
+        (c) => c.type === 'Established' && c.status === 'True'
+      );
+      if (crd && established) return crd;
       await Bun.sleep(1000);
     }
-    await kubectl([
-      'wait',
-      'crd/dagsterbootstraps.kro.run',
-      '--for=condition=Established',
-      '--timeout=120s',
-    ]);
+    throw new Error(`CRD ${name} did not become Established`);
+  };
+
+  beforeAll(async () => {
+    lease = await createTestNamespace(`typekro-obj-admission-${Math.random().toString(36).slice(2, 8)}`, kc);
+    await applyRgd(probeComposition.factory('kro').toYaml());
+    await applyRgd(dagsterBootstrap.toYaml());
+    await waitForCrd('objectschemaprobes');
+    await waitForCrd('dagsterbootstraps');
   });
 
   afterAll(async () => {
-    await kubectl([
-      'delete',
-      'dagsterbootstrap',
-      INSTANCE,
-      '-n',
-      NAMESPACE,
-      '--ignore-not-found',
-      '--wait=false',
-    ]).catch(() => {});
-    await kubectl(['delete', 'namespace', NAMESPACE, '--ignore-not-found', '--wait=false']).catch(
-      () => {}
-    );
+    // Aggregate rather than swallow: a teardown that hides its own failures is how clusters accumulate junk.
+    const failures: string[] = [];
+    for (const { what, remove } of created.reverse()) {
+      await remove().catch((e: unknown) => failures.push(`${what}: ${String(e)}`));
+    }
+    if (lease) {
+      await deleteTestNamespaceAndWait(lease, kc).catch((e: unknown) =>
+        failures.push(`namespace ${lease?.name}: ${String(e)}`)
+      );
+    }
+    if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
 
-  it('declares the escape hatches as schemaless `object` in the ADMITTED CRD', async () => {
-    // Read the CRD the API server actually registered, not the YAML we generated — this is what prunes.
-    const crd = JSON.parse(
-      await kubectl(['get', 'crd', 'dagsterbootstraps.kro.run', '-o', 'json'])
-    ) as {
-      spec: { versions: Array<{ schema: { openAPIV3Schema: any } }> };
-    };
-    const spec = crd.spec.versions[0]!.schema.openAPIV3Schema.properties.spec.properties;
+  it('registers the Dagster escape hatches as schemaless `object` in the CRD (no instances created)', async () => {
+    const crd = await apiext.readCustomResourceDefinition({ name: 'dagsterbootstraps.kro.run' });
+    const props = crd.spec.versions[0]?.schema?.openAPIV3Schema?.properties?.spec
+      ?.properties as Record<string, any>;
 
-    expect(spec.values.type).toBe('object');
-    expect(spec.values['x-kubernetes-preserve-unknown-fields']).toBe(true);
-    expect(spec.postgresql.properties.values.type).toBe('object');
-    expect(spec.postgresql.properties.values['x-kubernetes-preserve-unknown-fields']).toBe(true);
+    for (const path of [props.values, props.postgresql.properties.values]) {
+      expect(path.type).toBe('object');
+      expect(path['x-kubernetes-preserve-unknown-fields']).toBe(true);
+    }
+    // The typed convenience fields alongside them must stay typed, or the CRD documents nothing.
+    expect(props.postgresql.properties.enabled.type).toBe('boolean');
+    expect(props.name.type).toBe('string');
   });
 
-  it('preserves nested unknown values through admission (the regression that shipped)', async () => {
-    const cr = {
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'DagsterBootstrap',
-      metadata: { name: INSTANCE, namespace: NAMESPACE },
-      spec: { name: INSTANCE, namespace: NAMESPACE, values: PROBE_VALUES },
-    };
-    await kubectl(['apply', '-f', '-'], JSON.stringify(cr));
-
-    const admitted = JSON.parse(
-      await kubectl(['get', 'dagsterbootstrap', INSTANCE, '-n', NAMESPACE, '-o', 'json'])
-    ) as { spec: { values?: Record<string, unknown> } };
-
-    // Before the fix this read back as `{}` / absent: the whole subtree was pruned in silence.
-    expect(admitted.spec.values).toEqual(PROBE_VALUES);
-  });
-
-  it('preserves the per-subchart `postgresql.values` hatch too', async () => {
-    const cr = {
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'DagsterBootstrap',
-      metadata: { name: `${INSTANCE}-pg`, namespace: NAMESPACE },
-      spec: {
-        name: `${INSTANCE}-pg`,
-        namespace: NAMESPACE,
-        postgresql: { enabled: true, values: { primary: { persistence: { enabled: false } } } },
+  it('preserves nested unknown values through a real create/read round trip', async () => {
+    const namespace = lease!.name;
+    const name = 'probe-values';
+    await custom.createNamespacedCustomObject({
+      group: RGD_GROUP,
+      version: RGD_VERSION,
+      namespace,
+      plural: 'objectschemaprobes',
+      body: {
+        apiVersion: `${RGD_GROUP}/${RGD_VERSION}`,
+        kind: PROBE_KIND,
+        metadata: { name, namespace },
+        spec: { name, appNamespace: namespace, values: PROBE_VALUES },
       },
-    };
-    await kubectl(['apply', '-f', '-'], JSON.stringify(cr));
+    });
+    created.push({
+      what: `${PROBE_KIND}/${name}`,
+      remove: () =>
+        custom.deleteNamespacedCustomObject({
+          group: RGD_GROUP,
+          version: RGD_VERSION,
+          namespace,
+          plural: 'objectschemaprobes',
+          name,
+        }),
+    });
 
-    const admitted = JSON.parse(
-      await kubectl(['get', 'dagsterbootstrap', `${INSTANCE}-pg`, '-n', NAMESPACE, '-o', 'json'])
-    ) as { spec: { postgresql?: { enabled?: boolean; values?: Record<string, unknown> } } };
+    const admitted = (await custom.getNamespacedCustomObject({
+      group: RGD_GROUP,
+      version: RGD_VERSION,
+      namespace,
+      plural: 'objectschemaprobes',
+      name,
+    })) as { spec?: { values?: unknown } };
 
-    expect(admitted.spec.postgresql?.values).toEqual({ primary: { persistence: { enabled: false } } });
-    // The typed convenience field alongside it must still be typed, not swallowed by the opaque sibling.
-    expect(admitted.spec.postgresql?.enabled).toBe(true);
-
-    await kubectl([
-      'delete',
-      'dagsterbootstrap',
-      `${INSTANCE}-pg`,
-      '-n',
-      NAMESPACE,
-      '--ignore-not-found',
-      '--wait=false',
-    ]);
+    // Before the core fix this field was declared `string`, so the whole subtree was dropped in silence.
+    expect(admitted.spec?.values).toEqual(PROBE_VALUES);
   });
 });

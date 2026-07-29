@@ -414,19 +414,6 @@ const globalSchemaShape = {
   'dagsterInstanceConfigMap?': 'string',
 } as const;
 
-/** Official chart `serviceAccount` block — notably `annotations` (e.g. IRSA `eks.amazonaws.com/role-arn`). */
-const serviceAccountSchemaShape = {
-  'create?': 'boolean',
-  'name?': 'string',
-  // `Record<string,string>` rather than `object`: annotations ARE a string→string map, so the precise type
-  // is the right one — it documents the contract and rejects a non-string value at the boundary.
-  // (The previous rationale here said `object` "serializes to `type: string`". That was true, but it was
-  // describing the converter BUG this workaround was hiding: arktype renders a bare `type('object')` as the
-  // string "object", which the KRO type mapper had no case for and defaulted to `string`. Fixed in
-  // core/serialization/schema.ts — `object` now maps to KRO's schemaless `object`.)
-  'annotations?': 'Record<string, string>',
-} as const;
-
 // NOTE: there is deliberately NO arktype shape for the raw `values` escape hatch.
 //
 // It used to be a fully typed `helmValuesSchemaShape`, which made the field a CLOSED schema: KRO admission
@@ -439,6 +426,12 @@ const serviceAccountSchemaShape = {
 // `x-kubernetes-preserve-unknown-fields: true`), so whatever the caller sends reaches the HelmRelease.
 // Typed convenience stays at the high-level API (`postgresql`, `webserver`, `runLauncher`, …) and the
 // `DagsterHelmValues` TS interface still documents the common fields for authors.
+//
+// Removing the typed shape also retired its `serviceAccount` sub-shape, whose comment used to justify
+// `Record<string,string>` for annotations on the grounds that `object` "serializes to type: string". That was
+// this converter bug stated as if it were a rule. `Record<string,string>` would still be the RIGHT choice for
+// annotations on its own merits (they really are a string→string map) — but the reason given was wrong, and
+// worth flagging in case the same reasoning was copied elsewhere.
 
 /** Kubernetes Secret key reference used for Dagster sensitive chart values. */
 export interface DagsterSecretKeyRef {

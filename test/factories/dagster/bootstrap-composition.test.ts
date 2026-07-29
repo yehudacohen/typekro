@@ -14,14 +14,21 @@ import {
 // Direct composition imports were rejected because `typekro/dagster` is the
 // approved user-facing seam.
 describe('Dagster bootstrap composition', () => {
+  /** Just enough of an RGD document to select one and read its declared schema types. */
+  interface RgdDocument {
+    kind?: string;
+    spec?: { schema?: { kind?: string; spec?: Record<string, unknown> } };
+  }
+
   /** The RGD's `spec.schema.spec` — the declared CRD field types KRO admission enforces. */
-  const bootstrapSchemaSpec = (): Record<string, any> => {
-    const docs = loadAll(dagsterBootstrap.toYaml()) as Array<any>;
+  const bootstrapSchemaSpec = (): Record<string, unknown> => {
+    const docs = loadAll(dagsterBootstrap.toYaml()) as RgdDocument[];
     // Select by SCHEMA kind: toYaml() emits two RGDs (the HelmRepository one first), so matching on
     // `kind: ResourceGraphDefinition` silently picks the wrong document.
-    const rgd = docs.find((d) => d?.spec?.schema?.kind === 'DagsterBootstrap');
-    if (!rgd) throw new Error('no DagsterBootstrap RGD in dagsterBootstrap.toYaml()');
-    return rgd.spec.schema.spec as Record<string, any>;
+    const schemaSpec = docs.find((d) => d.spec?.schema?.kind === 'DagsterBootstrap')?.spec?.schema
+      ?.spec;
+    if (!schemaSpec) throw new Error('no DagsterBootstrap RGD in dagsterBootstrap.toYaml()');
+    return schemaSpec;
   };
 
   it('Accept valid Dagster bootstrap config through the config schema', () => {
