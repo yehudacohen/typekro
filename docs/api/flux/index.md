@@ -68,9 +68,20 @@ const release = helmRelease({
   values: {
     replicaCount: 3,
     image: { tag: 'v1.0.0' }
-  }
+  },
+  valuesFrom: [{
+    kind: 'Secret',
+    name: 'my-app-values',
+    valuesKey: 'databaseUrl',
+    targetPath: 'config.databaseUrl'
+  }]
 });
 ```
+
+`valuesFrom` exposes Flux's Secret/ConfigMap value projection without copying
+the source value into TypeKro state. Its `name`, `valuesKey`, and `targetPath`
+fields are graph-aware, so resources created or observed in the same
+composition can provide their names through ordinary TypeKro references.
 
 ## helmRepository()
 

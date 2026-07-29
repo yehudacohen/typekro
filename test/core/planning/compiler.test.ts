@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { getReadinessEvaluator, getResourceId } from '../../../src/core/metadata/index.js';
 import { resolvePortableReadinessStrategy } from '../../../src/core/readiness/index.js';
+import { Cel } from '../../../src/core/references/cel.js';
 import {
   artifactOutput,
   canonicalDigest,
@@ -255,6 +256,58 @@ describe('semantic artifact compilers', () => {
     expect(getReadinessEvaluator(manifest)?.(manifest)).toEqual({
       ready: true,
       message: 'ConfigMap is ready (configuration resource)',
+    });
+  });
+
+  it('evaluates CEL-derived external-reference namespaces in direct artifacts', () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'external-reference-namespace',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'ExternalReferenceNamespace',
+        spec: type({ name: 'string', 'namespace?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        externalRef<Record<string, never>, Record<string, never>>({
+          apiVersion: 'v1',
+          kind: 'Secret',
+          metadata: {
+            name: spec.name,
+            namespace: Cel.expr<string>(
+              'has(schema.spec.namespace) ? schema.spec.namespace : "fallback"'
+            ),
+          },
+          id: 'credentials',
+        });
+        return { ready: true };
+      }
+    );
+    const spec = { name: 'credentials', namespace: 'workloads' };
+    const artifacts = compileDirectArtifactPlan(composition.plan!(spec, { strict: true }));
+    const graph = directArtifactPlanToResourceGraph(artifacts, {
+      instanceName: 'credentials',
+      spec,
+      resolveReadinessStrategy: resolvePortableReadinessStrategy,
+    });
+
+    expect(graph.externalReferences?.[0]?.manifest.metadata).toMatchObject({
+      name: 'credentials',
+      namespace: 'workloads',
+    });
+
+    const fallbackSpec = { name: 'credentials' };
+    const fallbackArtifacts = compileDirectArtifactPlan(
+      composition.plan!(fallbackSpec, { strict: true })
+    );
+    const fallbackGraph = directArtifactPlanToResourceGraph(fallbackArtifacts, {
+      instanceName: 'credentials',
+      spec: fallbackSpec,
+      resolveReadinessStrategy: resolvePortableReadinessStrategy,
+    });
+    expect(fallbackGraph.externalReferences?.[0]?.manifest.metadata).toMatchObject({
+      name: 'credentials',
+      namespace: 'fallback',
     });
   });
 

@@ -1,5 +1,19 @@
 import type { TypeKroChartValues } from '../../core/types/common.js';
 
+/** A Flux HelmRelease values source. */
+export interface HelmReleaseValuesFromSource {
+  /** Kubernetes object kind containing the source value. */
+  kind: 'Secret' | 'ConfigMap';
+  /** Name of the source object in the HelmRelease namespace. */
+  name: string;
+  /** Source key. Defaults to `values.yaml` when `targetPath` is omitted. */
+  valuesKey?: string;
+  /** Helm values path receiving the source value. */
+  targetPath?: string;
+  /** Allow reconciliation to continue when the source object or key is absent. */
+  optional?: boolean;
+}
+
 // Helm Release Resource Types
 export interface HelmReleaseSpec<TValues extends object = Record<string, unknown>> {
   interval?: string;
@@ -20,6 +34,8 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
    * mixed templates, arrays, and plain objects are serialized recursively.
    */
   values?: TypeKroChartValues<TValues>;
+  /** Values loaded from Secrets or ConfigMaps by Flux. */
+  valuesFrom?: HelmReleaseValuesFromSource[];
   targetNamespace?: string;
   install?: {
     createNamespace?: boolean;

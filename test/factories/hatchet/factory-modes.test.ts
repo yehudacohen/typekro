@@ -1,0 +1,146 @@
+import { describe, expect, it } from 'bun:test';
+import { hatchetInstallation } from '../../../src/factories/hatchet/compositions/hatchet-installation.js';
+import {
+  DEFAULT_HATCHET_CHART_VERSION,
+  DEFAULT_HATCHET_SERVER_VERSION,
+} from '../../../src/factories/hatchet/resources/helm.js';
+
+function documents(yaml: string): string[] {
+  return yaml
+    .split(/^---$/m)
+    .map((document) => document.trim())
+    .filter(Boolean);
+}
+
+function kind(document: string): string | undefined {
+  return document.match(/^kind: (.+)$/m)?.[1];
+}
+
+const requiredConfig = {
+  name: 'hatchet',
+  namespace: 'workflow-system',
+  database: {
+    connectionSecret: { name: 'hatchet-db-app', key: 'uri' },
+  },
+  adminCredentialsSecret: {
+    name: 'hatchet-admin',
+    emailKey: 'email',
+    passwordKey: 'password',
+  },
+} as const;
+
+describe('Hatchet installation', () => {
+  it('emits the official chart with external state and Secret-backed values', () => {
+    const yaml = hatchetInstallation.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      ...requiredConfig,
+      replicas: { api: 2, engine: 3, frontend: 2 },
+      values: {
+        api: { resources: { requests: { cpu: '250m' } } },
+        postgres: { enabled: true },
+        rabbitmq: { enabled: true },
+      },
+    });
+    const docs = documents(yaml);
+
+    expect(docs.map(kind)).toContain('Namespace');
+    expect(docs.map(kind)).toContain('HelmRepository');
+    expect(docs.map(kind)).toContain('HelmRelease');
+    expect(docs.map(kind)).not.toContain('Secret');
+    expect(yaml).toContain('url: https://hatchet-dev.github.io/hatchet-charts');
+    expect(yaml).toContain('chart: hatchet-stack');
+    expect(yaml).toContain(`version: ${DEFAULT_HATCHET_CHART_VERSION}`);
+    expect(yaml).toContain(`tag: ${DEFAULT_HATCHET_SERVER_VERSION}`);
+    expect(yaml).toContain('valuesFrom:');
+    expect(yaml).toContain('name: hatchet-db-app');
+    expect(yaml).toContain('valuesKey: uri');
+    expect(yaml).toContain('targetPath: sharedConfig.env.DATABASE_URL');
+    expect(yaml).toContain('name: hatchet-admin');
+    expect(yaml).toContain('valuesKey: email');
+    expect(yaml).toContain('valuesKey: password');
+    expect(yaml).toMatch(/postgres:\s*\n\s+enabled: false/);
+    expect(yaml).toMatch(/rabbitmq:\s*\n\s+enabled: false/);
+    expect(yaml).toMatch(/api:\s*\n(?:.*\n)*?\s+replicaCount: 2/);
+    expect(yaml).toMatch(/engine:\s*\n\s+replicaCount: 3/);
+    expect(yaml).toContain('cpu: 250m');
+    expect(yaml).toMatch(/workerTokenJob:\s*\n\s+enabled: true/);
+    expect(yaml).toContain('remediateLastFailure: false');
+    expect(yaml).not.toContain('rollback');
+  });
+
+  it('supports externally owned workload and repository namespaces', () => {
+    const yaml = hatchetInstallation.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      ...requiredConfig,
+      namespaceOwnership: 'external',
+      repositoryNamespace: 'flux-system',
+      repositoryNamespaceOwnership: 'external',
+    });
+
+    expect(documents(yaml).map(kind)).not.toContain('Namespace');
+    expect(yaml).toContain('namespace: workflow-system');
+    expect(yaml).toContain('namespace: flux-system');
+  });
+
+  it('serializes the complete contract in KRO mode without embedding credentials', () => {
+    const factory = hatchetInstallation.factory('kro', {
+      namespace: 'typekro-system',
+    });
+    const rgd = factory.toYaml();
+
+    expect(rgd).toContain('kind: ResourceGraphDefinition');
+    expect(rgd).toContain('kind: HelmRelease');
+    expect(rgd).toContain('kind: HelmRepository');
+    expect(rgd).toContain('externalRef:');
+    expect(rgd).toContain('kind: Secret');
+    expect(rgd).toContain('${schema.spec.database.connectionSecret.name}');
+    expect(rgd).toContain('${schema.spec.adminCredentialsSecret.name}');
+    expect(rgd).toContain('valuesFrom:');
+    expect(rgd).toContain('targetPath: sharedConfig.env.DATABASE_URL');
+    expect(rgd).toContain('schema.spec.replicas.api');
+    expect(rgd).toContain('schema.spec.replicas.engine');
+    expect(rgd).toContain('postgres');
+    expect(rgd).toContain('rabbitmq');
+    expect(rgd).toContain('"enabled": false');
+    expect(rgd).toContain(
+      'chartVersion: ${hatchetMetadata.metadata.annotations["typekro.dev/chart-version"]}'
+    );
+    expect(rgd).toContain(
+      'workerTokenSecret: ${hatchetMetadata.metadata.annotations["typekro.dev/worker-token-secret"]}'
+    );
+    expect(rgd).toContain(
+      'configurationSecret: ${hatchetMetadata.metadata.annotations["typekro.dev/configuration-secret"]}'
+    );
+    expect(rgd).toContain('string(schema.spec.name) + "-config"');
+    expect(rgd).toContain('string(schema.spec.name) + "-client-config"');
+    expect(rgd).toContain('name: string | validation="size(self) > 0"');
+    expect(rgd).toContain(
+      'passwordKey: string | default="adminPassword" validation="size(self) > 0"'
+    );
+    expect(rgd).not.toContain('kind: Namespace');
+    expect(rgd).not.toContain('admin@example');
+
+    const instance = factory.toYaml(requiredConfig);
+    expect(instance).toContain('kind: HatchetInstallation');
+    expect(instance).toContain('name: hatchet');
+    expect(instance).toContain('name: hatchet-db-app');
+    expect(instance).toContain('name: hatchet-admin');
+  });
+
+  it('rejects empty direct-mode Secret references', () => {
+    const factory = hatchetInstallation.factory('direct', {
+      namespace: 'typekro-system',
+    });
+
+    expect(() =>
+      factory.toYaml({
+        ...requiredConfig,
+        database: { connectionSecret: { name: '' } },
+      })
+    ).toThrow();
+    expect(() =>
+      factory.toYaml({
+        ...requiredConfig,
+        adminCredentialsSecret: { name: '' },
+      })
+    ).toThrow();
+  });
+});

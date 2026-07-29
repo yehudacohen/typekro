@@ -160,6 +160,42 @@ export function materializeDirectArtifactManifest(
     );
   }
   const manifest = { ...(value as KubernetesResource), id: deployedId };
+  if (artifact.role === 'external-reference' && artifact.identity) {
+    const name = materializePlanValue(
+      artifact.identity.name,
+      options,
+      `$.resources.${artifact.id}.identity.name`
+    );
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new DirectArtifactRuntimeAdapterError(
+        `External reference ${artifact.id} did not materialize a Kubernetes name.`,
+        { artifactId: artifact.id }
+      );
+    }
+    const namespace = artifact.identity.namespace
+      ? materializePlanValue(
+          artifact.identity.namespace,
+          options,
+          `$.resources.${artifact.id}.identity.namespace`
+        )
+      : undefined;
+    if (namespace !== undefined && (typeof namespace !== 'string' || namespace.length === 0)) {
+      throw new DirectArtifactRuntimeAdapterError(
+        `External reference ${artifact.id} did not materialize a valid Kubernetes namespace.`,
+        { artifactId: artifact.id }
+      );
+    }
+    const metadata = {
+      ...manifest.metadata,
+      name,
+    };
+    if (namespace !== undefined) {
+      metadata.namespace = namespace;
+    } else {
+      delete metadata.namespace;
+    }
+    manifest.metadata = metadata;
+  }
   // Template overrides compensate for JavaScript branches that must remain
   // symbolic in a KRO template. Direct planning executes with a concrete spec,
   // so `desired` already contains the selected branch and is authoritative.

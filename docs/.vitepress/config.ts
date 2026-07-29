@@ -105,6 +105,7 @@ export default withMermaid(
               { text: 'SearXNG', link: '/api/searxng/' },
               { text: 'Valkey', link: '/api/valkey/' },
               { text: 'NATS / JetStream', link: '/api/nats/' },
+              { text: 'Hatchet', link: '/api/hatchet/' },
               { text: 'Web App Compositions', link: '/api/webapp/' },
             ],
           },

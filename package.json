@@ -110,6 +110,10 @@
       "import": "./dist/factories/nats/index.js",
       "types": "./dist/factories/nats/index.d.ts"
     },
+    "./hatchet": {
+      "import": "./dist/factories/hatchet/index.js",
+      "types": "./dist/factories/hatchet/index.d.ts"
+    },
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"

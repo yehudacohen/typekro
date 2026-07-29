@@ -14,11 +14,11 @@
  */
 
 import { getCurrentCompositionContext } from '../composition/context.js';
-import { getResourceId } from '../metadata/index.js';
+import { getResourceId, setMetadataField } from '../metadata/index.js';
 import { createResource } from '../proxy/create-resource.js';
 import { registerFactory } from '../resources/factory-registry.js';
-import type { Enhanced, KubernetesResource } from '../types.js';
 import type { RefOrValue } from '../types/references.js';
+import type { Enhanced, KubernetesResource } from '../types.js';
 
 // Self-register so the composition analyzer recognizes `externalRef(...)` calls
 // in the AST. The kind/apiVersion are placeholders — externalRef creates resources
@@ -141,6 +141,10 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   // Use existing createResource function to get Enhanced proxy
   // (createResource skips context registration for __externalRef resources)
   const enhanced = createResource<TSpec, TStatus>(resource, { scope: resolvedScope });
+  setMetadataField(enhanced, 'externalIdentity', {
+    name: resolvedName,
+    ...(resolvedNamespace !== undefined ? { namespace: resolvedNamespace } : {}),
+  });
 
   // Explicitly register with composition context so externalRef appears in Kro YAML.
   // This only happens when called directly from user code inside kubernetesComposition.

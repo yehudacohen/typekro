@@ -102,6 +102,28 @@ describe('Helm Readiness Evaluators', () => {
       });
     });
 
+    it('does not accept Ready before Flux publishes any observation for the generation', () => {
+      const resource = {
+        metadata: { name: 'test', generation: 3 },
+        status: {
+          conditions: [
+            {
+              type: 'Ready',
+              status: 'True',
+              message: 'The preceding release is still reported ready',
+            },
+          ],
+        },
+      };
+
+      expect(helmReleaseReadinessEvaluator(resource)).toEqual({
+        ready: false,
+        reason: 'GenerationNotObserved',
+        message: 'HelmRelease has not observed generation 3 yet',
+        details: { desiredGeneration: 3 },
+      });
+    });
+
     it('accepts Ready only after Flux observes the current generation', () => {
       const resource = {
         metadata: { name: 'test', generation: 3 },

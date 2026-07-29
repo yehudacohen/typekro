@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { mergeValuesExpression } from '../../../src/core/aspects/values-merge.js';
-import { toResourceGraph } from '../../../src/core/serialization/index.js';
 import { Cel } from '../../../src/core/references/cel.js';
-import { configMap } from '../../../src/factories/kubernetes/config/config-map.js';
+import { toResourceGraph } from '../../../src/core/serialization/index.js';
 import { helmRelease, simpleHelmChart } from '../../../src/factories/helm/index.js';
+import { configMap } from '../../../src/factories/kubernetes/config/config-map.js';
 
 describe('Helm Integration with TypeKro Magic Proxy System', () => {
   const TestSpecSchema = type({
@@ -144,6 +144,54 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).toContain('name: ${schema.spec.hostname}');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
     expect(yaml).not.toContain('[object Object]');
+  });
+
+  it('serializes graph-aware Flux valuesFrom sources', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-values-from',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      (schema) => {
+        const settings = configMap({
+          id: 'settings',
+          metadata: { name: schema.spec.hostname },
+          data: { DATABASE_URL: 'postgres://example' },
+        });
+
+        return {
+          settings,
+          app: helmRelease({
+            name: 'my-app',
+            chart: {
+              repository: 'https://charts.example.com',
+              name: 'my-chart',
+            },
+            valuesFrom: [
+              {
+                kind: 'ConfigMap',
+                name: settings.metadata.name,
+                valuesKey: 'DATABASE_URL',
+                targetPath: 'config.databaseUrl',
+              },
+            ],
+          }),
+        };
+      },
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+
+    expect(yaml).toContain('valuesFrom:');
+    expect(yaml).toContain('kind: ConfigMap');
+    expect(yaml).toContain('name: ${schema.spec.hostname}');
+    expect(yaml).toContain('valuesKey: DATABASE_URL');
+    expect(yaml).toContain('targetPath: config.databaseUrl');
+    expect(yaml).not.toContain('__KUBERNETES_REF_');
   });
 
   it('rejects unsupported runtime-only leaves inside Helm values with a path-specific error', () => {
@@ -301,7 +349,7 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
       .split('\n')
       .find((line) => line.includes('values: ') && line.includes('${'));
 
-    expect(valuesLine).toContain('values: \'${dyn(');
+    expect(valuesLine).toContain("values: '${dyn(");
     expect(valuesLine).toContain('schema.spec.legacyValues');
     expect(valuesLine).toContain('.merge(');
     expect(valuesLine).toContain('schema.spec.values');
@@ -445,10 +493,7 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
               host: schema.spec.hostname,
               omitted: undefined,
             },
-            env: [
-              { name: 'APP_HOST', value: schema.spec.hostname },
-              undefined,
-            ],
+            env: [{ name: 'APP_HOST', value: schema.spec.hostname }, undefined],
           },
         }),
       }),
@@ -689,8 +734,9 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     );
     // Both branches carry the same dyn-wrapped optional entry (present-branch merge + absent literal).
     expect(
-      valuesLine.match(/"celeryConfigSecretName": has\(schema\.spec\.secretName\) \? dyn\(schema\.spec\.secretName\) : omit\(\)/g)
-        ?.length
+      valuesLine.match(
+        /"celeryConfigSecretName": has\(schema\.spec\.secretName\) \? dyn\(schema\.spec\.secretName\) : omit\(\)/g
+      )?.length
     ).toBe(2);
   });
 });

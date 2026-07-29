@@ -94,15 +94,19 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
         typeof desiredGeneration === 'number'
           ? observedGenerations.filter((generation) => generation < desiredGeneration)
           : [];
-      if (typeof desiredGeneration === 'number' && staleGenerations.length > 0) {
+      if (
+        typeof desiredGeneration === 'number' &&
+        (observedGenerations.length === 0 || staleGenerations.length > 0)
+      ) {
         return {
           ready: false,
           reason: 'GenerationNotObserved',
           message: `${prefix}HelmRelease has not observed generation ${desiredGeneration} yet`,
           details: {
             desiredGeneration,
-            observedGeneration:
-              staleGenerations.length > 0 ? Math.max(...staleGenerations) : undefined,
+            ...(observedGenerations.length > 0
+              ? { observedGeneration: Math.max(...observedGenerations) }
+              : {}),
           },
         };
       }
