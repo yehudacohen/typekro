@@ -75,6 +75,23 @@ function getKroTypeFromJson(node: unknown): string {
       if (typeof nodeObj.max === 'number') markers.push(`maximum=${nodeObj.max}`);
       return markers.length > 0 ? `${baseType} | ${markers.join(' ')}` : baseType;
     }
+    if (nodeObj.domain === 'string') {
+      const markers: string[] = [];
+      if (typeof nodeObj.minLength === 'number') markers.push(`minLength=${nodeObj.minLength}`);
+      if (typeof nodeObj.maxLength === 'number') markers.push(`maxLength=${nodeObj.maxLength}`);
+      if (Array.isArray(nodeObj.pattern)) {
+        if (nodeObj.pattern.length > 1) {
+          throw new Error(
+            'KRO SimpleSchema supports one string pattern per field; combine intersecting ArkType patterns before serialization.',
+          );
+        }
+        const pattern = nodeObj.pattern[0];
+        if (typeof pattern === 'string') {
+          markers.push(`pattern="${pattern.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`);
+        }
+      }
+      return markers.length > 0 ? `string | ${markers.join(' ')}` : 'string';
+    }
     // Map / Record types — arktype represents `Record<string, V>` as
     // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
     // KRO SimpleSchema uses `map[string]<value-type>` notation for these.

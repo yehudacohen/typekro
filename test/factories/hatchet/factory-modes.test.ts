@@ -200,6 +200,35 @@ describe('Hatchet installation', () => {
     expect(second).not.toContain('name: team-a-hatchet');
   });
 
+  it('rejects Hatchet instance identities that cannot safely name Kubernetes resources', () => {
+    for (const name of ['Team A', 'UPPERCASE', 'a'.repeat(47)]) {
+      expect(() =>
+        hatchetInstallation.factory('direct').toYaml({
+          ...requiredConfig,
+          name,
+        })
+      ).toThrow();
+      expect(() =>
+        hatchetInstallation.factory('kro', {
+          namespace: 'typekro-system',
+        }).toYaml({
+          ...requiredConfig,
+          name,
+        })
+      ).toThrow();
+    }
+  });
+
+  it('projects the Hatchet DNS-1123 and suffix-safe bounds into the KRO schema', () => {
+    const yaml = hatchetInstallation.factory('kro', {
+      namespace: 'typekro-system',
+    }).toYaml();
+
+    expect(yaml).toContain(
+      'name: string | maxLength=46 pattern="^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"'
+    );
+  });
+
   it('rejects empty direct-mode Secret references', () => {
     const factory = hatchetInstallation.factory('direct', {
       namespace: 'typekro-system',

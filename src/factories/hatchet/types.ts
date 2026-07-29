@@ -6,6 +6,15 @@ const externalSecretShape = {
 } as const;
 
 /**
+ * The value is used as both the KRO instance name and as the prefix of
+ * `<name>-typekro-metadata`. Reserving the suffix keeps every generated
+ * Kubernetes name within the DNS-1123 label limit.
+ */
+const HatchetInstanceNameSchema = type(
+  /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/,
+).and('string <= 46');
+
+/**
  * External PostgreSQL authority consumed by Hatchet.
  *
  * The referenced Secret must live in the Hatchet namespace and contain a
@@ -21,7 +30,7 @@ export const HatchetInstallationConfigSchema = type({
    * internal name `hatchet` because its recovery Secret names are
    * namespace-global.
    */
-  name: 'string > 0',
+  name: HatchetInstanceNameSchema,
   'namespace?': 'string',
   'namespaceOwnership?': '"owned" | "external"',
   'chartVersion?': 'string',
