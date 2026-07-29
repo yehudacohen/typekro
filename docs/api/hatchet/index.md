@@ -133,11 +133,12 @@ Secrets explicitly only when permanently abandoning that database and its
 workers. An owned Namespace deletes them with the installation.
 
 The same rule applies independently to `repositoryNamespaceOwnership`.
-The default HelmRepository name includes the workload Namespace as well as the
-release name, so same-named installations that share a repository Namespace
-remain independently owned. Set `repositoryName` only when an explicit
-platform naming policy is required; explicit names must be unique within the
-repository Namespace.
+The default HelmRepository name includes a length-prefixed workload Namespace
+followed by the release name. The length prefix makes the tuple encoding
+injective: `team-a`/`worker` cannot collide with `team`/`a-worker`, even when
+both installations share a repository Namespace. Set `repositoryName` only
+when an explicit platform naming policy is required; explicit names must be
+unique within the repository Namespace.
 
 Delete through the factory so TypeKro preserves dependency order:
 

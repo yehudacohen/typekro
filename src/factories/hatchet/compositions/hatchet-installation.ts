@@ -53,10 +53,10 @@ export const hatchetInstallation = kubernetesComposition(
       : spec.namespaceOwnership !== 'external';
     const repositoryName = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
+          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(size(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")) + "-" + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
         )
       : (spec.repositoryName ??
-        `${targetNamespace}-${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
+        `${targetNamespace.length}-${targetNamespace}-${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
     const repositoryNamespace = graphMode
       ? Cel.expr<string>(
           'has(schema.spec.repositoryNamespace) ? schema.spec.repositoryNamespace : (has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")'

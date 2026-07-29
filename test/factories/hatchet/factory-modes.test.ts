@@ -64,7 +64,7 @@ describe('Hatchet installation', () => {
     expect(yaml).toContain('remediateLastFailure: false');
     expect(yaml).not.toContain('rollback');
     expect(yaml).not.toContain('__typekroValuesMerge');
-    expect(yaml).toContain('name: workflow-system-hatchet-hatchet');
+    expect(yaml).toContain('name: 15-workflow-system-hatchet-hatchet');
     expect(customValues).toEqual({
       api: { resources: { requests: { cpu: '250m' } } },
       postgres: { enabled: true },
@@ -102,10 +102,35 @@ describe('Hatchet installation', () => {
       repositoryNamespaceOwnership: 'external',
     });
 
-    expect(first).toContain('name: team-a-hatchet-hatchet');
-    expect(second).toContain('name: team-b-hatchet-hatchet');
-    expect(first).not.toContain('name: team-b-hatchet-hatchet');
-    expect(second).not.toContain('name: team-a-hatchet-hatchet');
+    expect(first).toContain('name: 6-team-a-hatchet-hatchet');
+    expect(second).toContain('name: 6-team-b-hatchet-hatchet');
+    expect(first).not.toContain('name: 6-team-b-hatchet-hatchet');
+    expect(second).not.toContain('name: 6-team-a-hatchet-hatchet');
+  });
+
+  it('length-prefixes the workload namespace so repository identity is injective', () => {
+    const factory = hatchetInstallation.factory('direct', {
+      namespace: 'typekro-system',
+    });
+    const first = factory.toYaml({
+      ...requiredConfig,
+      name: 'worker',
+      namespace: 'team-a',
+      repositoryNamespace: 'flux-system',
+      repositoryNamespaceOwnership: 'external',
+    });
+    const second = factory.toYaml({
+      ...requiredConfig,
+      name: 'a-worker',
+      namespace: 'team',
+      repositoryNamespace: 'flux-system',
+      repositoryNamespaceOwnership: 'external',
+    });
+
+    expect(first).toContain('name: 6-team-a-worker-hatchet');
+    expect(second).toContain('name: 4-team-a-worker-hatchet');
+    expect(first).not.toContain('name: 4-team-a-worker-hatchet');
+    expect(second).not.toContain('name: 6-team-a-worker-hatchet');
   });
 
   it('serializes the complete contract in KRO mode without embedding credentials', () => {
@@ -122,6 +147,9 @@ describe('Hatchet installation', () => {
     expect(rgd).toContain('${schema.spec.database.connectionSecret.name}');
     expect(rgd).toContain('${schema.spec.adminCredentialsSecret.name}');
     expect(rgd).toContain('envFrom');
+    expect(rgd).toContain(
+      'string(size(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system"))'
+    );
     expect(rgd).not.toContain('valuesFrom:');
     expect(rgd).not.toContain('literal: true');
     expect(rgd).toContain('schema.spec.replicas.api');
@@ -185,7 +213,7 @@ describe('Hatchet installation', () => {
     expect(yaml).toContain('typekro.dev/worker-token-secret: hatchet-client-config');
     expect(yaml).not.toContain('workflows-config');
     expect(yaml).not.toContain('workflows-client-config');
-    expect(yaml).toContain('name: workflow-system-workflows-hatchet');
+    expect(yaml).toContain('name: 15-workflow-system-workflows-hatchet');
   });
 
   it('does not advertise a worker-token Secret when the chart job is disabled', () => {
