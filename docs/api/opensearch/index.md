@@ -16,21 +16,22 @@ import {
   makeOpenSearchCluster,
   openSearchCluster,
   openSearchOperatorBootstrap,
+  openSearchOperatorInstallation,
 } from 'typekro/opensearch';
 ```
 
 ## Operator bootstrap
 
-Install the cluster-scoped operator once. Its Helm repository is singleton
-owned, and the operator Namespace and HelmRelease use the `cluster` lifecycle
-scope by default.
+Install the cluster-scoped operator once. The complete operator installation,
+including its Namespace and HelmRelease, is owned by a singleton
+`OpenSearchOperatorInstallation` in `typekro-singletons`. The bootstrap CR is
+only a consumer reference; deleting it cannot uninstall the shared operator.
 
 ```typescript
 await openSearchOperatorBootstrap.factory('kro', {
   namespace: 'typekro-system',
 }).deploy({
   name: 'opensearch-operator',
-  namespace: 'opensearch-operator-system',
 });
 ```
 
@@ -146,8 +147,22 @@ be represented:
 `external-retain` deliberately does not create the Namespace. StatefulSet PVC
 retention cannot survive deletion of an owned Namespace.
 
-Use `factory.deleteInstance()` for cluster and operator teardown. Shared
-operator infrastructure requires explicit `scopes: ['cluster']` deletion.
+Use `factory.deleteInstance()` for cluster teardown. Deleting an
+`openSearchOperatorBootstrap` instance removes only that shared reference.
+Explicit platform teardown uses the owner composition and stable singleton
+instance identity:
+
+```typescript
+await openSearchOperatorInstallation.factory('kro', {
+  namespace: 'typekro-singletons',
+}).deleteInstance('opensearch-operator');
+```
+
+Use `openSearchOperatorInstallation` directly only when the caller
+intentionally wants an installation-local operator whose instance deletion
+uninstalls the controller. Runtime `shared` flags are deliberately unsupported:
+KRO child ownership is fixed when the RGD is built, not by instance schema
+values.
 
 ## TLS
 

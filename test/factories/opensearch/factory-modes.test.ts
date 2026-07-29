@@ -4,6 +4,7 @@ import {
   makeOpenSearchCluster,
   openSearchCluster,
   openSearchOperatorBootstrap,
+  openSearchOperatorInstallation,
 } from '../../../src/factories/opensearch/index.js';
 import { openSearchClusterReadinessEvaluator } from '../../../src/factories/opensearch/resources/cluster.js';
 
@@ -37,16 +38,18 @@ describe('OpenSearch integration', () => {
   });
 
   test('emits a bounded development cluster in direct mode', () => {
-    const yaml = openSearchCluster.factory('direct', {
-      namespace: 'typekro-system',
-    }).toYaml({
-      name: 'search',
-      namespace: 'search-system',
-      storage: { size: '10Gi', storageClassName: 'local-path' },
-      tls: { source: 'generated' },
-      adminCredentialsSecret: { name: 'search-admin' },
-      dashboardCredentialsSecret: { name: 'search-dashboards' },
-    });
+    const yaml = openSearchCluster
+      .factory('direct', {
+        namespace: 'typekro-system',
+      })
+      .toYaml({
+        name: 'search',
+        namespace: 'search-system',
+        storage: { size: '10Gi', storageClassName: 'local-path' },
+        tls: { source: 'generated' },
+        adminCredentialsSecret: { name: 'search-admin' },
+        dashboardCredentialsSecret: { name: 'search-dashboards' },
+      });
     expect(yaml).toContain('apiVersion: opensearch.org/v1');
     expect(yaml).toContain('kind: OpenSearchCluster');
     expect(yaml).toContain('name: search-system');
@@ -60,21 +63,35 @@ describe('OpenSearch integration', () => {
   });
 
   test('rejects unsupported single-node topologies before deployment', () => {
-    expect(() => makeOpenSearchCluster({ nodes: 1 })).toThrow(
-      'requires at least three nodes'
+    expect(() => makeOpenSearchCluster({ nodes: 1 })).toThrow('requires at least three nodes');
+  });
+
+  test('rejects a single node pool without cluster-manager-capable nodes', () => {
+    expect(() => makeOpenSearchCluster({ roles: ['data'] })).toThrow(
+      'roles must include cluster_manager'
     );
   });
 
+  test('requires a PDB to preserve at least one node', () => {
+    expect(() =>
+      makeOpenSearchCluster({
+        podDisruptionBudget: { minAvailable: 0 },
+      })
+    ).toThrow('must preserve at least one available node');
+  });
+
   test('makes retained storage require an externally owned namespace by construction', () => {
-    const yaml = openSearchCluster.factory('direct', {
-      namespace: 'typekro-system',
-    }).toYaml({
-      name: 'retained',
-      namespace: 'retained-search',
-      lifecycle: 'external-retain',
-      storage: { size: '20Gi' },
-      tls: { source: 'generated' },
-    });
+    const yaml = openSearchCluster
+      .factory('direct', {
+        namespace: 'typekro-system',
+      })
+      .toYaml({
+        name: 'retained',
+        namespace: 'retained-search',
+        lifecycle: 'external-retain',
+        storage: { size: '20Gi' },
+        tls: { source: 'generated' },
+      });
     expect(
       documents(yaml).some(
         (document) =>
@@ -102,41 +119,39 @@ describe('OpenSearch integration', () => {
         egressCidrs: ['10.0.0.0/8'],
       },
     });
-    const yaml = cluster.factory('direct', {
-      namespace: 'typekro-system',
-    }).toYaml({
-      name: 'evidence',
-      namespace: 'search-system',
-      lifecycle: 'external-retain',
-      storage: { size: '100Gi', storageClassName: 'fast' },
-      tls: {
-        source: 'cert-manager',
-        secretName: 'evidence-http-tls',
-        adminSecretName: 'evidence-admin-tls',
-        adminDn: ['CN=opensearch-admin'],
-        issuerName: 'platform-ca',
-        issuerKind: 'ClusterIssuer',
-        dnsNames: ['evidence.search.example.com'],
-      },
-      snapshots: {
-        repository: 'snapshots',
-        bucket: 'evidence-search',
-        endpoint: 'https://s3.example.com',
-        credentialsSecret: {
-          name: 'snapshot-credentials',
+    const yaml = cluster
+      .factory('direct', {
+        namespace: 'typekro-system',
+      })
+      .toYaml({
+        name: 'evidence',
+        namespace: 'search-system',
+        lifecycle: 'external-retain',
+        storage: { size: '100Gi', storageClassName: 'fast' },
+        tls: {
+          source: 'cert-manager',
+          secretName: 'evidence-http-tls',
+          adminSecretName: 'evidence-admin-tls',
+          adminDn: ['CN=opensearch-admin'],
+          issuerName: 'platform-ca',
+          issuerKind: 'ClusterIssuer',
+          dnsNames: ['evidence.search.example.com'],
         },
-      },
-      monitoring: true,
-    });
+        snapshots: {
+          repository: 'snapshots',
+          bucket: 'evidence-search',
+          endpoint: 'https://s3.example.com',
+          credentialsSecret: {
+            name: 'snapshot-credentials',
+          },
+        },
+        monitoring: true,
+      });
     expect(yaml).toContain('kind: Certificate');
     expect(yaml).toContain('secretName: evidence-http-tls');
     expect(yaml).toContain('kind: NetworkPolicy');
-    expect(yaml).toContain(
-      'kubernetes.io/metadata.name: opensearch-operator-system'
-    );
-    expect(yaml).toContain(
-      'kubernetes.io/metadata.name: application-system'
-    );
+    expect(yaml).toContain('kubernetes.io/metadata.name: opensearch-operator-system');
+    expect(yaml).toContain('kubernetes.io/metadata.name: application-system');
     expect(yaml).toContain('10.0.0.0/8');
     expect(yaml).toContain('minAvailable: 2');
     expect(yaml).toContain('repository-s3');
@@ -177,16 +192,12 @@ describe('OpenSearch integration', () => {
     expect(yaml).not.toContain('__KUBERNETES_REF__');
     expect(yaml).toContain('${schema.spec.storage.size}');
     expect(yaml).toContain(
-      "adminDn: '[]string | minItems=1 validation=\"size(self) > 0 && self.all(dn, size(dn) > 0)\"'"
+      'adminDn: \'[]string | minItems=1 validation="size(self) > 0 && self.all(dn, size(dn) > 0)"\''
     );
     expect(yaml).toContain('${cluster.status.availableNodes}');
     expect(yaml).toContain('${cluster.status.health}');
-    expect(yaml).toContain(
-      'cluster.spec.security.config.adminCredentialsSecret.name != ""'
-    );
-    expect(yaml).toContain(
-      'cluster.spec.general.snapshotRepositories.size() > 0'
-    );
+    expect(yaml).toContain('cluster.spec.security.config.adminCredentialsSecret.name != ""');
+    expect(yaml).toContain('cluster.spec.general.snapshotRepositories.size() > 0');
     expect(yaml).toContain('credentialsSecret:');
     expect(yaml).toContain('snapshotRepository:');
     expect(instance).toContain('kind: OpenSearchClusterInstallation');
@@ -222,19 +233,52 @@ describe('OpenSearch integration', () => {
       name: 'opensearch-operator',
     });
     expect(yaml).toContain('opensearch-operator-bootstrap');
+    expect(yaml).toContain('opensearch-operator-installation');
     expect(yaml).toContain('opensearch-helm-repository');
     expect(yaml).toContain('3.0.2');
-    expect(yaml).toContain(
-      'version: ${operatorRelease.spec.chart.spec.version}'
-    );
+    expect(yaml).toContain('version: ${operatorRelease.spec.chart.spec.version}');
     expect(instance).toContain('kind: OpenSearchOperatorBootstrap');
+    expect(instance).toContain('kind: OpenSearchOperatorInstallation');
+    expect(instance).toContain('namespace: typekro-singletons');
+  });
+
+  test('exposes local operator ownership only through the explicit installation composition', () => {
+    const yaml = openSearchOperatorInstallation
+      .factory('kro', {
+        namespace: 'operator-control',
+      })
+      .toYaml({
+        name: 'local-opensearch-operator',
+        namespace: 'local-opensearch-operator-system',
+      });
+    expect(yaml).toContain('kind: OpenSearchOperatorInstallation');
+    expect(yaml).toContain('name: local-opensearch-operator-system');
+    expect(yaml).toContain('kind: OpenSearchHelmRepository');
+    expect(yaml).toContain('namespace: typekro-singletons');
+    expect(yaml).not.toContain('kind: OpenSearchOperatorBootstrap');
+  });
+
+  test('omits an all-namespace ingress rule when caller labels are absent', () => {
+    const yaml = makeOpenSearchCluster({
+      networkPolicy: { enabled: true },
+    })
+      .factory('direct', {
+        namespace: 'typekro-system',
+      })
+      .toYaml({
+        name: 'isolated',
+        namespace: 'isolated-search',
+        storage: { size: '20Gi' },
+        tls: { source: 'generated' },
+      });
+    expect(yaml).not.toContain('matchLabels: {}');
+    expect(yaml).toContain('kubernetes.io/metadata.name: opensearch-operator-system');
   });
 
   test('requires a non-empty external TLS admin DN in direct and KRO inputs', () => {
-    const direct = makeOpenSearchCluster({ tls: 'secret' }).factory(
-      'direct',
-      { namespace: 'typekro-system' }
-    );
+    const direct = makeOpenSearchCluster({ tls: 'secret' }).factory('direct', {
+      namespace: 'typekro-system',
+    });
     expect(() =>
       direct.toYaml({
         name: 'search',
@@ -249,10 +293,9 @@ describe('OpenSearch integration', () => {
       })
     ).toThrow();
 
-    const kro = makeOpenSearchCluster({ tls: 'cert-manager' }).factory(
-      'kro',
-      { namespace: 'typekro-system' }
-    );
+    const kro = makeOpenSearchCluster({ tls: 'cert-manager' }).factory('kro', {
+      namespace: 'typekro-system',
+    });
     expect(() =>
       kro.toYaml({
         name: 'search',

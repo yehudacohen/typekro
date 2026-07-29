@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, describe, expect, test, setDefaultTimeout } from 'bun:test';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { isNotFoundError } from '../../../src/core/deployment/k8s-helpers.js';
+import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
   createBunCompatibleCoreV1Api,
   createBunCompatibleCustomObjectsApi,
@@ -23,9 +23,7 @@ import {
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
-  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true'
-    ? describe
-    : describe.skip;
+  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 
 setDefaultTimeout(1_500_000);
 
@@ -80,9 +78,7 @@ async function deleteCredentials(
     deleteTestSecretAndWait(namespace, names.admin, kubeConfig),
     deleteTestSecretAndWait(namespace, names.dashboards, kubeConfig),
   ]);
-  const errors = results.flatMap((result) =>
-    result.status === 'rejected' ? [result.reason] : []
-  );
+  const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
   if (errors.length > 0) {
     throw new AggregateError(errors, `Credential cleanup failed in ${namespace}`);
   }
@@ -98,17 +94,13 @@ async function deleteDataPvcs(
     namespace,
   });
   const claims = listed.items.filter(
-    (claim) =>
-      claim.metadata?.labels?.['opensearch.org/opensearch-cluster'] ===
-      clusterName
+    (claim) => claim.metadata?.labels?.['opensearch.org/opensearch-cluster'] === clusterName
   );
   for (const claim of claims) {
     const name = claim.metadata?.name;
     const uid = claim.metadata?.uid;
     if (!name || !uid) {
-      throw new Error(
-        `Refusing OpenSearch PVC cleanup in ${namespace}: identity is incomplete`
-      );
+      throw new Error(`Refusing OpenSearch PVC cleanup in ${namespace}: identity is incomplete`);
     }
     try {
       await coreApi.deleteNamespacedPersistentVolumeClaim({
@@ -148,11 +140,9 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
     storageClass = await requireTestStorageClass({ kubeConfig });
     leases.push(
       ...(await Promise.all(
-        [
-          directNamespace,
-          kroControlNamespace,
-          kroNamespace,
-        ].map((name) => createTestNamespace(name, kubeConfig))
+        [directNamespace, kroControlNamespace, kroNamespace].map((name) =>
+          createTestNamespace(name, kubeConfig)
+        )
       ))
     );
     const operatorFactory = openSearchOperatorBootstrap.factory('kro', {
@@ -163,8 +153,6 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
     });
     const operator = await operatorFactory.deploy({
       name: 'opensearch-operator',
-      namespace: operatorNamespace,
-      shared: true,
     });
     expect(operator.status).toMatchObject({
       ready: true,
@@ -180,9 +168,8 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       plural: 'opensearchoperatorbootstraps',
       name: 'opensearch-operator',
     });
-    const instance = (
-      instanceRaw as { readonly body?: Record<string, unknown> }
-    ).body ?? instanceRaw;
+    const instance =
+      (instanceRaw as { readonly body?: Record<string, unknown> }).body ?? instanceRaw;
     expect(Reflect.get(instance, 'status')).toMatchObject({
       ready: true,
       failed: false,
@@ -200,9 +187,7 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       leases.map((lease) => deleteTestNamespaceAndWait(lease, kubeConfig))
     );
     errors.push(
-      ...namespaceResults.flatMap((result) =>
-        result.status === 'rejected' ? [result.reason] : []
-      )
+      ...namespaceResults.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
     );
     if (errors.length > 0) {
       throw new AggregateError(errors, 'OpenSearch integration cleanup failed');
@@ -210,11 +195,7 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
   });
 
   test('deploys, updates, reports complete status, and deletes in direct mode', async () => {
-    const credentials = await createCredentials(
-      kubeConfig,
-      directNamespace,
-      'direct-search'
-    );
+    const credentials = await createCredentials(kubeConfig, directNamespace, 'direct-search');
     const factory = makeOpenSearchCluster().factory('direct', {
       namespace: directNamespace,
       waitForReady: true,
@@ -249,9 +230,7 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       expect(deployed.status.endpoint).toBe(
         `https://direct-search.${directNamespace}.svc.cluster.local:9200`
       );
-      expect(deployed.status.credentialsSecret).toBe(
-        credentials.admin
-      );
+      expect(deployed.status.credentialsSecret).toBe(credentials.admin);
 
       const updated = await factory.deploy({
         name: 'direct-search',
@@ -282,32 +261,21 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       240_000
     ).catch((error) => cleanupErrors.push(error));
     if (cleanupErrors.length === 0) {
-      await deleteCredentials(
-        kubeConfig,
-        directNamespace,
-        credentials
-      ).catch((error) => cleanupErrors.push(error));
-      await deleteDataPvcs(
-        kubeConfig,
-        directNamespace,
-        'direct-search'
-      ).catch((error) => cleanupErrors.push(error));
+      await deleteCredentials(kubeConfig, directNamespace, credentials).catch((error) =>
+        cleanupErrors.push(error)
+      );
+      await deleteDataPvcs(kubeConfig, directNamespace, 'direct-search').catch((error) =>
+        cleanupErrors.push(error)
+      );
     }
-    const errors = [
-      ...(testFailed ? [testError] : []),
-      ...cleanupErrors,
-    ];
+    const errors = [...(testFailed ? [testError] : []), ...cleanupErrors];
     if (errors.length > 0) {
       throw new AggregateError(errors, 'Direct OpenSearch test failed');
     }
   });
 
   test('deploys an RGD, projects live status, and deletes through KRO finalization', async () => {
-    const credentials = await createCredentials(
-      kubeConfig,
-      kroNamespace,
-      'kro-search'
-    );
+    const credentials = await createCredentials(kubeConfig, kroNamespace, 'kro-search');
     const factory = makeOpenSearchCluster({
       profile: 'production',
       networkPolicy: {
@@ -355,9 +323,8 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
         plural: 'opensearchclusters',
         name: 'kro-search',
       });
-      const cluster = (
-        clusterRaw as { readonly body?: Record<string, unknown> }
-      ).body ?? clusterRaw;
+      const cluster =
+        (clusterRaw as { readonly body?: Record<string, unknown> }).body ?? clusterRaw;
       expect(Reflect.get(cluster, 'status')).toMatchObject({
         initialized: true,
         availableNodes: 3,
@@ -370,17 +337,15 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
         plural: 'opensearchclusterinstallations',
         name: 'kro-search',
       });
-      const instance = (
-        instanceRaw as { readonly body?: Record<string, unknown> }
-      ).body ?? instanceRaw;
+      const instance =
+        (instanceRaw as { readonly body?: Record<string, unknown> }).body ?? instanceRaw;
       expect(Reflect.get(instance, 'status')).toMatchObject({
         ready: true,
         phase: 'Ready',
         availableNodes: 3,
         health: expect.stringMatching(/green|yellow/),
       });
-      const networkingApi =
-        createBunCompatibleNetworkingV1Api(kubeConfig);
+      const networkingApi = createBunCompatibleNetworkingV1Api(kubeConfig);
       const policy = await networkingApi.readNamespacedNetworkPolicy({
         namespace: kroNamespace,
         name: 'kro-search-default',
@@ -388,16 +353,11 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       expect(policy.spec).toBeDefined();
       const admittedNamespaces = policy.spec?.ingress
         ?.flatMap((rule) => rule._from ?? [])
-        .flatMap((peer) =>
-          peer.namespaceSelector?.matchLabels?.[
-            'kubernetes.io/metadata.name'
-          ] ?? []
+        .flatMap(
+          (peer) => peer.namespaceSelector?.matchLabels?.['kubernetes.io/metadata.name'] ?? []
         );
       expect(admittedNamespaces).toEqual(
-        expect.arrayContaining([
-          operatorNamespace,
-          kroControlNamespace,
-        ])
+        expect.arrayContaining([operatorNamespace, kroControlNamespace])
       );
     } catch (error) {
       testFailed = true;
@@ -412,19 +372,14 @@ describeOrSkip('OpenSearch direct and KRO lifecycle', () => {
       240_000
     ).catch((error) => cleanupErrors.push(error));
     if (cleanupErrors.length === 0) {
-      await deleteCredentials(
-        kubeConfig,
-        kroNamespace,
-        credentials
-      ).catch((error) => cleanupErrors.push(error));
-      await deleteDataPvcs(kubeConfig, kroNamespace, 'kro-search').catch(
-        (error) => cleanupErrors.push(error)
+      await deleteCredentials(kubeConfig, kroNamespace, credentials).catch((error) =>
+        cleanupErrors.push(error)
+      );
+      await deleteDataPvcs(kubeConfig, kroNamespace, 'kro-search').catch((error) =>
+        cleanupErrors.push(error)
       );
     }
-    const errors = [
-      ...(testFailed ? [testError] : []),
-      ...cleanupErrors,
-    ];
+    const errors = [...(testFailed ? [testError] : []), ...cleanupErrors];
     if (errors.length > 0) {
       throw new AggregateError(errors, 'KRO OpenSearch test failed');
     }

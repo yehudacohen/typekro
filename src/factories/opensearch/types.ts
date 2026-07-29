@@ -3,17 +3,36 @@ import type { TypeKroChartValue } from '../../core/types/common.js';
 import type { Composable } from '../../core/types/index.js';
 
 export const OpenSearchOperatorBootstrapConfigSchema = type({
-  name: 'string',
-  'namespace?': 'string',
-  'version?': 'string',
-  'shared?': 'boolean',
-  'repositoryName?': 'string',
-  'repositoryNamespace?': 'string',
+  name: 'string > 0',
+  'namespace?': 'string > 0',
+  'version?': 'string > 0',
+  'repositoryName?': 'string > 0',
+  'repositoryNamespace?': 'string > 0',
   'customValues?': 'Record<string, unknown>',
 });
 
 export type OpenSearchOperatorBootstrapConfig =
   typeof OpenSearchOperatorBootstrapConfigSchema.infer;
+
+export const OpenSearchOperatorReferenceConfigSchema = type({
+  name: 'string > 0',
+});
+
+export type OpenSearchOperatorReferenceConfig =
+  typeof OpenSearchOperatorReferenceConfigSchema.infer;
+
+export interface OpenSearchOperatorBootstrapBuildOptions {
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly version?: string;
+  readonly repositoryName?: string;
+  readonly repositoryNamespace?: string;
+  /**
+   * Concrete build-time values for the singleton operator installation.
+   * Runtime schema references cannot participate in singleton ownership.
+   */
+  readonly customValues?: Record<string, unknown>;
+}
 
 export const OpenSearchOperatorBootstrapStatusSchema = type({
   ready: 'boolean',
@@ -239,9 +258,7 @@ export interface OpenSearchClusterResourceSpec {
         readonly accessModes: readonly ['ReadWriteOnce'];
       };
     };
-    readonly resources?: Composable<
-      NonNullable<OpenSearchClusterResourceConfig['resources']>
-    >;
+    readonly resources?: Composable<NonNullable<OpenSearchClusterResourceConfig['resources']>>;
     readonly pdb?: {
       readonly enable: true;
       readonly minAvailable?: number;
