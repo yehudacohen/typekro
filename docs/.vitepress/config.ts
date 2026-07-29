@@ -88,6 +88,7 @@ export default withMermaid(
               { text: 'Cilium', link: '/api/cilium/' },
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
               { text: 'ClickHouse', link: '/api/clickhouse/' },
+              { text: 'OpenSearch', link: '/api/opensearch/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },
               { text: 'Flux', link: '/api/flux/' },
               { text: 'Harbor', link: '/api/harbor/' },

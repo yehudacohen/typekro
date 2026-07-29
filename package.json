@@ -54,6 +54,10 @@
       "import": "./dist/factories/clickhouse/index.js",
       "types": "./dist/factories/clickhouse/index.d.ts"
     },
+    "./opensearch": {
+      "import": "./dist/factories/opensearch/index.js",
+      "types": "./dist/factories/opensearch/index.d.ts"
+    },
     "./flux": {
       "import": "./dist/factories/flux/index.js",
       "types": "./dist/factories/flux/index.d.ts"
