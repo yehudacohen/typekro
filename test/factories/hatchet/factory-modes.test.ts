@@ -108,16 +108,18 @@ describe('Hatchet installation', () => {
     expect(second).not.toContain('name: 6-team-a-hatchet-hatchet');
   });
 
-  it('admits only the canonical release name because upstream recovery Secrets are namespace-global', () => {
+  it('keeps the public instance identity separate from the fixed upstream release identity', () => {
     const factory = hatchetInstallation.factory('direct', {
       namespace: 'typekro-system',
     });
-    expect(() =>
-      factory.toYaml({
-        ...requiredConfig,
-        name: 'worker' as never,
-      })
-    ).toThrow();
+    const yaml = factory.toYaml({
+      ...requiredConfig,
+      name: 'team-a-control-plane',
+    });
+    expect(yaml).toContain('name: team-a-control-plane-typekro-metadata');
+    expect(yaml).toMatch(/kind: HelmRelease[\s\S]*?metadata:\s*\n\s+name: hatchet/);
+    expect(yaml).toContain('name: hatchet-shared-config');
+    expect(yaml).toContain('http://hatchet-api.workflow-system.svc:8080');
   });
 
   it('serializes the complete contract in KRO mode without embedding credentials', () => {
@@ -154,11 +156,11 @@ describe('Hatchet installation', () => {
       'configurationSecret: ${hatchetMetadata.metadata.annotations["typekro.dev/configuration-secret"]}'
     );
     expect(rgd).toContain(
-      'string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
+      'string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-hatchet-hatchet"'
     );
     expect(rgd).toContain('hatchet-config');
     expect(rgd).toContain('hatchet-client-config');
-    expect(rgd).toContain('name: string | enum="hatchet"');
+    expect(rgd).toContain('name: string | validation="size(self) > 0"');
     expect(rgd).not.toContain('kind: Namespace');
     expect(rgd).not.toContain('admin@example');
 
@@ -167,6 +169,35 @@ describe('Hatchet installation', () => {
     expect(instance).toContain('name: hatchet');
     expect(instance).toContain('name: hatchet-db-app');
     expect(instance).toContain('name: hatchet-admin');
+  });
+
+  it('renders independent KRO instances for separate workload namespaces', () => {
+    const factory = hatchetInstallation.factory('kro', {
+      namespace: 'typekro-system',
+    });
+    const first = factory.toYaml({
+      ...requiredConfig,
+      name: 'team-a-hatchet',
+      namespace: 'team-a',
+    });
+    const second = factory.toYaml({
+      ...requiredConfig,
+      name: 'team-b-hatchet',
+      namespace: 'team-b',
+    });
+
+    const firstInstance = documents(first).find(
+      (document) => kind(document) === 'HatchetInstallation'
+    );
+    const secondInstance = documents(second).find(
+      (document) => kind(document) === 'HatchetInstallation'
+    );
+    expect(firstInstance).toContain('name: team-a-hatchet');
+    expect(secondInstance).toContain('name: team-b-hatchet');
+    expect(first).toContain('namespace: team-a');
+    expect(second).toContain('namespace: team-b');
+    expect(first).not.toContain('name: team-b-hatchet');
+    expect(second).not.toContain('name: team-a-hatchet');
   });
 
   it('rejects empty direct-mode Secret references', () => {

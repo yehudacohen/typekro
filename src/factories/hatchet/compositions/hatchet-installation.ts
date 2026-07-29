@@ -21,6 +21,7 @@ import {
 } from '../types.js';
 
 const DEFAULT_HATCHET_NAMESPACE = 'hatchet-system';
+const HATCHET_RELEASE_NAME = 'hatchet';
 const HATCHET_CONFIGURATION_SECRET = 'hatchet-config';
 const HATCHET_WORKER_TOKEN_SECRET = 'hatchet-client-config';
 
@@ -53,10 +54,10 @@ export const hatchetInstallation = kubernetesComposition(
       : spec.namespaceOwnership !== 'external';
     const repositoryName = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(size(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")) + "-" + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
+          `has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(size(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")) + "-" + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-${HATCHET_RELEASE_NAME}-hatchet"`
         )
       : (spec.repositoryName ??
-        `${targetNamespace.length}-${targetNamespace}-${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
+        `${targetNamespace.length}-${targetNamespace}-${HATCHET_RELEASE_NAME}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
     const repositoryNamespace = graphMode
       ? Cel.expr<string>(
           'has(schema.spec.repositoryNamespace) ? schema.spec.repositoryNamespace : (has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")'
@@ -101,19 +102,19 @@ export const hatchetInstallation = kubernetesComposition(
       : (spec.workerTokenJob ?? true);
     const endpoint = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.serverUrl) ? schema.spec.serverUrl : "http://" + string(schema.spec.name) + "-api." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc:8080"'
+          `has(schema.spec.serverUrl) ? schema.spec.serverUrl : "http://${HATCHET_RELEASE_NAME}-api." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc:8080"`
         )
-      : (spec.serverUrl ?? `http://${spec.name}-api.${targetNamespace}.svc:8080`);
+      : (spec.serverUrl ?? `http://${HATCHET_RELEASE_NAME}-api.${targetNamespace}.svc:8080`);
     const grpcEndpoint = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.grpcBroadcastAddress) ? schema.spec.grpcBroadcastAddress : string(schema.spec.name) + "-engine." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc:7070"'
+          `has(schema.spec.grpcBroadcastAddress) ? schema.spec.grpcBroadcastAddress : "${HATCHET_RELEASE_NAME}-engine." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc:7070"`
         )
-      : (spec.grpcBroadcastAddress ?? `${spec.name}-engine.${targetNamespace}.svc:7070`);
+      : (spec.grpcBroadcastAddress ?? `${HATCHET_RELEASE_NAME}-engine.${targetNamespace}.svc:7070`);
     const cookieDomain = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.cookieDomain) ? schema.spec.cookieDomain : string(schema.spec.name) + "-api." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc"'
+          `has(schema.spec.cookieDomain) ? schema.spec.cookieDomain : "${HATCHET_RELEASE_NAME}-api." + string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + ".svc"`
         )
-      : (spec.cookieDomain ?? `${spec.name}-api.${targetNamespace}.svc`);
+      : (spec.cookieDomain ?? `${HATCHET_RELEASE_NAME}-api.${targetNamespace}.svc`);
     const cookieInsecure = graphMode
       ? Cel.expr<boolean>('!has(schema.spec.cookieInsecure) || schema.spec.cookieInsecure')
       : (spec.cookieInsecure ?? true);
@@ -128,9 +129,7 @@ export const hatchetInstallation = kubernetesComposition(
         ? HATCHET_WORKER_TOKEN_SECRET
         : '';
     const configurationSecret = HATCHET_CONFIGURATION_SECRET;
-    const sharedConfigSecret = graphMode
-      ? Cel.expr<string>('string(schema.spec.name) + "-shared-config"')
-      : `${spec.name}-shared-config`;
+    const sharedConfigSecret = `${HATCHET_RELEASE_NAME}-shared-config`;
     const externalEnvironment = [
       { secretRef: { name: sharedConfigSecret } },
       { secretRef: { name: spec.database.connectionSecret.name } },
@@ -264,7 +263,7 @@ export const hatchetInstallation = kubernetesComposition(
     const values = mergeHatchetValues(spec.values, protectedValues, graphMode);
     const release = hatchetHelmRelease({
       id: 'hatchetRelease',
-      name: spec.name,
+      name: HATCHET_RELEASE_NAME,
       namespace: targetNamespace,
       version: chartVersion,
       repositoryName,
@@ -303,6 +302,7 @@ export const hatchetInstallation = kubernetesComposition(
   },
   {
     schemaFieldValidations: {
+      name: 'size(self) > 0',
       'database.connectionSecret.name': 'size(self) > 0',
       'adminCredentialsSecret.name': 'size(self) > 0',
     },

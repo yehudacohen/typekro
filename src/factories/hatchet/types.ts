@@ -16,7 +16,12 @@ const externalDatabaseShape = {
 } as const;
 
 export const HatchetInstallationConfigSchema = type({
-  name: '"hatchet"',
+  /**
+   * TypeKro instance identity. The upstream Helm release remains the fixed
+   * internal name `hatchet` because its recovery Secret names are
+   * namespace-global.
+   */
+  name: 'string > 0',
   'namespace?': 'string',
   'namespaceOwnership?': '"owned" | "external"',
   'chartVersion?': 'string',

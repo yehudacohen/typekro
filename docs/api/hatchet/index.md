@@ -33,7 +33,7 @@ await factory.deploy({
 
 - an optional target Namespace;
 - an optional repository Namespace when it differs from the target;
-- one installation-scoped `<namespace>-<name>-hatchet` HelmRepository and the official
+- one installation-scoped `<length>-<namespace>-hatchet-hatchet` HelmRepository and the official
   `hatchet-stack` HelmRelease;
 - a non-sensitive metadata ConfigMap used for the complete public status
   contract.
@@ -95,11 +95,15 @@ upstream CLI defaults and are intentionally independent of the Helm release
 name.
 
 Because both recovery Secret names are fixed by the upstream Hatchet CLI,
-TypeKro admits exactly one Hatchet installation in a Namespace and requires
-the canonical release name `hatchet`. A second installation with another name
-fails schema validation before any resources are applied. Deploy independent
-Hatchet control planes into independent Namespaces; sharing these Secrets
-would couple encryption, signing, and worker credentials across releases.
+TypeKro admits exactly one Hatchet installation in a workload Namespace. The
+public `name` is the TypeKro instance identity, while the internal Helm release
+remains `hatchet`; this lets instances in separate workload Namespaces coexist
+in one KRO control Namespace without collapsing into one CR. A second instance
+targeting the same workload Namespace collides with the first instance's
+HelmRelease and recovery state and is rejected by Kubernetes/KRO ownership.
+Deploy independent Hatchet control planes into independent Namespaces; sharing
+these Secrets would couple encryption, signing, and worker credentials across
+releases.
 
 ## Operational defaults
 
