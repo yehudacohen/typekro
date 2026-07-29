@@ -21,6 +21,8 @@ import {
 } from '../types.js';
 
 const DEFAULT_HATCHET_NAMESPACE = 'hatchet-system';
+const HATCHET_CONFIGURATION_SECRET = 'hatchet-config';
+const HATCHET_WORKER_TOKEN_SECRET = 'hatchet-client-config';
 
 /**
  * Install the official Hatchet chart against an externally authoritative
@@ -50,8 +52,10 @@ export const hatchetInstallation = kubernetesComposition(
         )
       : spec.namespaceOwnership !== 'external';
     const repositoryName = graphMode
-      ? Cel.expr<string>('has(schema.spec.repositoryName) ? schema.spec.repositoryName : "hatchet"')
-      : (spec.repositoryName ?? DEFAULT_HATCHET_REPOSITORY_NAME);
+      ? Cel.expr<string>(
+          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(schema.spec.name) + "-hatchet"'
+        )
+      : (spec.repositoryName ?? `${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
     const repositoryNamespace = graphMode
       ? Cel.expr<string>(
           'has(schema.spec.repositoryNamespace) ? schema.spec.repositoryNamespace : (has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")'
@@ -116,11 +120,13 @@ export const hatchetInstallation = kubernetesComposition(
       ? Cel.expr<boolean>('!has(schema.spec.grpcInsecure) || schema.spec.grpcInsecure')
       : (spec.grpcInsecure ?? true);
     const workerTokenSecret = graphMode
-      ? Cel.expr<string>('string(schema.spec.name) + "-client-config"')
-      : `${spec.name}-client-config`;
-    const configurationSecret = graphMode
-      ? Cel.expr<string>('string(schema.spec.name) + "-config"')
-      : `${spec.name}-config`;
+      ? Cel.expr<string>(
+          `(!has(schema.spec.workerTokenJob) || schema.spec.workerTokenJob) ? "${HATCHET_WORKER_TOKEN_SECRET}" : ""`
+        )
+      : workerTokenJob
+        ? HATCHET_WORKER_TOKEN_SECRET
+        : '';
+    const configurationSecret = HATCHET_CONFIGURATION_SECRET;
 
     namespace({
       id: 'hatchetNamespace',
@@ -244,9 +250,7 @@ export const hatchetInstallation = kubernetesComposition(
       },
       caddy: { enabled: false },
     };
-    const values = spec.values
-      ? mergeValuesExpression(spec.values, protectedValues)
-      : protectedValues;
+    const values = mergeHatchetValues(spec.values, protectedValues, graphMode);
     const release = hatchetHelmRelease({
       id: 'hatchetRelease',
       name: spec.name,
@@ -261,18 +265,21 @@ export const hatchetInstallation = kubernetesComposition(
           name: spec.database.connectionSecret.name,
           valuesKey: spec.database.connectionSecret.key ?? 'uri',
           targetPath: 'sharedConfig.env.DATABASE_URL',
+          literal: true,
         },
         {
           kind: 'Secret',
           name: spec.adminCredentialsSecret.name,
           valuesKey: spec.adminCredentialsSecret.emailKey ?? 'adminEmail',
           targetPath: 'sharedConfig.defaultAdminEmail',
+          literal: true,
         },
         {
           kind: 'Secret',
           name: spec.adminCredentialsSecret.name,
           valuesKey: spec.adminCredentialsSecret.passwordKey ?? 'adminPassword',
           targetPath: 'sharedConfig.defaultAdminPassword',
+          literal: true,
         },
       ],
       values,
@@ -337,4 +344,50 @@ function validateSecretReferences(spec: HatchetInstallationConfig): void {
       throw new Error(`Hatchet ${path} must be non-empty when supplied.`);
     }
   }
+}
+
+function mergeHatchetValues(
+  customValues: HatchetInstallationConfig['values'],
+  protectedValues: Record<string, unknown>,
+  graphMode: boolean
+): HatchetInstallationConfig['values'] {
+  if (!customValues) return protectedValues;
+  if (graphMode || !isPlainObject(customValues)) {
+    return mergeValuesExpression(
+      customValues,
+      protectedValues
+    ) as HatchetInstallationConfig['values'];
+  }
+  const merged = cloneValue(customValues);
+  deepMerge(merged, protectedValues);
+  return merged;
+}
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(source)) {
+    const current = target[key];
+    if (isPlainObject(current) && isPlainObject(value)) {
+      deepMerge(current, value);
+    } else {
+      target[key] = cloneValue(value);
+    }
+  }
+}
+
+function cloneValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneValue(item)) as T;
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, cloneValue(nested)])
+    ) as T;
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

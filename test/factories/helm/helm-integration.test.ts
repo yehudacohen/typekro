@@ -176,6 +176,7 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
                 name: settings.metadata.name,
                 valuesKey: 'DATABASE_URL',
                 targetPath: 'config.databaseUrl',
+                literal: true,
               },
             ],
           }),
@@ -191,6 +192,7 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).toContain('name: ${schema.spec.hostname}');
     expect(yaml).toContain('valuesKey: DATABASE_URL');
     expect(yaml).toContain('targetPath: config.databaseUrl');
+    expect(yaml).toContain('literal: true');
     expect(yaml).not.toContain('__KUBERNETES_REF_');
   });
 

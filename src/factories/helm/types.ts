@@ -10,6 +10,12 @@ export interface HelmReleaseValuesFromSource {
   valuesKey?: string;
   /** Helm values path receiving the source value. */
   targetPath?: string;
+  /**
+   * Preserve the referenced bytes verbatim instead of interpreting Helm
+   * `--set` syntax. Requires Flux 2.9 or newer and has effect only with
+   * `targetPath`.
+   */
+  literal?: boolean;
   /** Allow reconciliation to continue when the source object or key is absent. */
   optional?: boolean;
 }

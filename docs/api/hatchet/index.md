@@ -36,7 +36,8 @@ await factory.deploy({
 
 - an optional target Namespace;
 - an optional repository Namespace when it differs from the target;
-- the official Hatchet HelmRepository and `hatchet-stack` HelmRelease;
+- one installation-scoped `<name>-hatchet` HelmRepository and the official
+  `hatchet-stack` HelmRelease;
 - a non-sensitive metadata ConfigMap used for the complete public status
   contract.
 
@@ -79,15 +80,22 @@ stringData:
   adminPassword: replace-me
 ```
 
-Flux reads these keys through `HelmRelease.spec.valuesFrom`. Secret values never
-appear in the generated RGD or HatchetInstallation instance.
+Flux reads these keys through `HelmRelease.spec.valuesFrom` with
+`literal: true`, so PostgreSQL URIs and credentials retain commas, brackets,
+dots, equals signs, and other Helm `--set` metacharacters verbatim. This
+requires Flux 2.9 or newer; the TypeKro runtime bootstrap defaults to that
+release. Secret values never appear in the generated RGD or
+HatchetInstallation instance.
 
-The official chart creates `<name>-client-config` with
-`HATCHET_CLIENT_TOKEN` when `workerTokenJob` is enabled. The generated Secret
-name is reported as `status.workerTokenSecret`.
+The official chart's `hatchet-admin` command creates `hatchet-client-config`
+with `HATCHET_CLIENT_TOKEN` when `workerTokenJob` is enabled. The Secret name is
+reported as `status.workerTokenSecret`; the field is empty when
+`workerTokenJob` is false.
 
-The chart also creates `<name>-config` with Hatchet's encryption and signing
-keysets. Its name is reported as `status.configurationSecret`.
+The chart also creates `hatchet-config` with Hatchet's encryption and signing
+keysets. Its name is reported as `status.configurationSecret`. These are
+upstream CLI defaults and are intentionally independent of the Helm release
+name.
 
 ## Operational defaults
 
@@ -121,7 +129,7 @@ when another platform composition owns it or when database retention must
 survive Hatchet installation deletion.
 
 When the Namespace is external, the official chart leaves
-`<name>-config` and `<name>-client-config` after uninstall. The configuration
+`hatchet-config` and `hatchet-client-config` after uninstall. The configuration
 Secret is recovery state for the retained Hatchet database, not an ordinary
 disposable chart artifact. Back up and retain it with the database. Delete both
 Secrets explicitly only when permanently abandoning that database and its

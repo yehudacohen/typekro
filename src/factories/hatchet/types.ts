@@ -86,6 +86,7 @@ export interface HatchetValuesFromSource {
   name: string;
   valuesKey?: string;
   targetPath?: string;
+  literal?: boolean;
   optional?: boolean;
 }
 
@@ -102,6 +103,7 @@ export const HatchetHelmReleaseConfigSchema = type({
     name: 'string',
     'valuesKey?': 'string',
     'targetPath?': 'string',
+    'literal?': 'boolean',
     'optional?': 'boolean',
   }).array(),
   'id?': 'string',

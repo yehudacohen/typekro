@@ -73,7 +73,8 @@ const release = helmRelease({
     kind: 'Secret',
     name: 'my-app-values',
     valuesKey: 'databaseUrl',
-    targetPath: 'config.databaseUrl'
+    targetPath: 'config.databaseUrl',
+    literal: true
   }]
 });
 ```
@@ -82,6 +83,9 @@ const release = helmRelease({
 the source value into TypeKro state. Its `name`, `valuesKey`, and `targetPath`
 fields are graph-aware, so resources created or observed in the same
 composition can provide their names through ordinary TypeKro references.
+Set `literal: true` with `targetPath` when arbitrary Secret or ConfigMap bytes
+must not be interpreted as Helm `--set` syntax. Literal values require Flux
+2.9 or newer; the managed TypeKro runtime bootstrap uses a compatible release.
 
 ## helmRepository()
 

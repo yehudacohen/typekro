@@ -44,6 +44,7 @@ export type RbacMode = 'cluster-admin' | 'scoped' | { clusterRoleRef: string };
 
 export interface TypeKroRuntimeConfig {
   namespace?: string;
+  /** @default 'v2.9.0' */
   fluxVersion?: string;
   kroVersion?: string;
   /**

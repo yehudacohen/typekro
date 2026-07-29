@@ -42,7 +42,7 @@ The bootstrap deploys:
 ```typescript
 interface TypeKroRuntimeConfig {
   namespace?: string;     // Target namespace (default: 'flux-system')
-  fluxVersion?: string;   // Flux version (default: 'v2.7.5')
+  fluxVersion?: string;   // Flux version (default: 'v2.9.0')
   kroVersion?: string;    // Kro version (default: '0.9.2')
   rbac?: RbacMode;        // Flux controller RBAC mode (default: 'cluster-admin')
 }
@@ -65,7 +65,7 @@ TypeKro requires KRO `0.9.2+` because generated ResourceGraphDefinitions use the
 ```typescript
 const runtime = typeKroRuntimeBootstrap({
   namespace: 'flux-system',
-  fluxVersion: 'v2.7.5',
+  fluxVersion: 'v2.9.0',
   kroVersion: '0.9.2',
   rbac: 'scoped',
 });
