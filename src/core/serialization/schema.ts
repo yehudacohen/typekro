@@ -87,6 +87,7 @@ function getKroTypeFromJson(node: unknown): string {
         }
         const pattern = nodeObj.pattern[0];
         if (typeof pattern === 'string') {
+          assertKubernetesRegexPattern(pattern);
           markers.push(`pattern="${pattern.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`);
         }
       }
@@ -154,6 +155,82 @@ function getKroTypeFromJson(node: unknown): string {
   }
 
   return 'string';
+}
+
+/**
+ * Kubernetes validates OpenAPI patterns with RE2. ArkType accepts JavaScript
+ * regular expressions, whose grammar additionally includes constructs that
+ * the API server rejects. Fail during generation instead of emitting a CRD
+ * that can never be admitted.
+ */
+function assertKubernetesRegexPattern(pattern: string): void {
+  let inCharacterClass = false;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === '[' && !inCharacterClass) {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === ']' && inCharacterClass) {
+      inCharacterClass = false;
+      continue;
+    }
+    if (character !== '\\') continue;
+    const escaped = pattern[index + 1];
+    if (!inCharacterClass && escaped && /[1-9]/.test(escaped)) {
+      throw unsupportedKubernetesRegex(pattern, `numeric backreference \\${escaped}`);
+    }
+    if (!inCharacterClass && escaped === 'k' && pattern[index + 2] === '<') {
+      throw unsupportedKubernetesRegex(pattern, 'named backreference \\k<...>');
+    }
+    index += 1;
+  }
+  inCharacterClass = false;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (character === '[' && !inCharacterClass) {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === ']' && inCharacterClass) {
+      inCharacterClass = false;
+      continue;
+    }
+    if (inCharacterClass) continue;
+    if (character === '(' && pattern[index + 1] === '?') {
+      const group = pattern.slice(index, index + 4);
+      if (!group.startsWith('(?:')) {
+        const label = group.startsWith('(?=')
+          ? 'positive lookahead'
+          : group.startsWith('(?!')
+            ? 'negative lookahead'
+            : group.startsWith('(?<=')
+              ? 'positive lookbehind'
+              : group.startsWith('(?<!')
+                ? 'negative lookbehind'
+                : group.startsWith('(?>')
+                  ? 'atomic group'
+                  : 'JavaScript-specific group';
+        throw unsupportedKubernetesRegex(pattern, label);
+      }
+    }
+    if (character === '+' && pattern[index - 1] !== '\\') {
+      const previous = pattern[index - 1];
+      if (previous === '*' || previous === '+' || previous === '?' || previous === '}') {
+        throw unsupportedKubernetesRegex(pattern, 'possessive quantifier');
+      }
+    }
+  }
+}
+
+function unsupportedKubernetesRegex(pattern: string, construct: string): Error {
+  return new Error(
+    `ArkType pattern ${JSON.stringify(pattern)} uses ${construct}, which Kubernetes RE2 validation does not support. Use an RE2-compatible pattern before generating a KRO schema.`,
+  );
 }
 
 /**
