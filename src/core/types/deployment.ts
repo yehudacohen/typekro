@@ -670,6 +670,27 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
    */
   instanceNamespace?: string;
 
+  /**
+   * Stamp `kro.run/allow-breaking-changes: "true"` on the generated ResourceGraphDefinition, authorizing KRO
+   * to apply a CRD schema change it would otherwise refuse.
+   *
+   * WHY THIS EXISTS AT FACTORY LEVEL. The same flag is available as a *composition* option, but a consumer of
+   * a SHIPPED composition (`dagsterBootstrap`, `apisixBootstrap`, …) cannot reach that — the composition is
+   * defined inside TypeKro. Without a factory-level switch there is no way to migrate an already-deployed RGD.
+   *
+   * WHEN YOU NEED IT. KRO refuses breaking CRD updates, and the refusal is EASY TO MISS: `kubectl apply`
+   * reports success, the RGD reports `Ready=True`, and only the controller log says
+   * `cannot update CRD ...: breaking changes detected`. The registered CRD silently keeps its old schema, so
+   * an upgrade appears to land while nothing changed. Set this for the one converge that performs the
+   * migration, then remove it.
+   *
+   * Scoped to a single factory deliberately — do not turn it on globally. It disables a real safety check, and
+   * a schema change that is genuinely lossy (narrowing a type, dropping a field) can strand existing CRs.
+   *
+   * @default false
+   */
+  allowBreakingChanges?: boolean;
+
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 

@@ -192,6 +192,21 @@ describe('Dagster bootstrap composition', () => {
     expect(spec.postgresql.host).toBe('string');
   });
 
+  // The migration switch for the schemaless-`object` correction. It has to work at FACTORY level: the same
+  // option exists on a composition, but `dagsterBootstrap`'s composition is defined inside TypeKro, so a
+  // consumer cannot reach it — leaving no way to authorize the one-off CRD schema change KRO otherwise
+  // refuses (silently: apply succeeds, RGD reports Ready, CRD keeps its old schema).
+  it('Stamps kro.run/allow-breaking-changes only when the factory opts in', () => {
+    expect(dagsterBootstrap.toYaml()).not.toContain('allow-breaking-changes');
+    expect(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml()).toContain(
+      'kro.run/allow-breaking-changes'
+    );
+    // Off by default: a safety check should never be disabled by merely passing other options.
+    expect(dagsterBootstrap.factory('kro', { namespace: 'dagster' }).toYaml()).not.toContain(
+      'allow-breaking-changes'
+    );
+  });
+
   it('Preserve graph-aware Helm values in ResourceGraphDefinition YAML without raw markers', () => {
     const yaml = dagsterBootstrap.toYaml();
 

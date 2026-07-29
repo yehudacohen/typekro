@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by
+  arktype as the string `"object"`, which the KRO type mapper had no case for, so it fell through to the
+  `string` default. Every schemaless-object field was therefore declared `string` in the generated RGD and KRO
+  admission dropped whatever object a caller sent. `object[]` is fixed by the same change (the array branch
+  recurses). Affects any factory using `type('object')` for passthrough config — Dagster, APISIX, Ory,
+  ClickHouse — not just Dagster.
+- **Dagster's raw `values` escape hatch is genuinely opaque.** It had been assigned the fully typed
+  `helmValuesSchemaShape`, making a CLOSED schema out of a field documented as *raw official chart values*; its
+  `postgresql` sub-shape reused the convenience shape, so bundled-subchart settings (`primary.*`,
+  `nodeSelector`, `persistence`) were unreachable through either documented route. Typed convenience remains on
+  the high-level API (`postgresql`, `webserver`, `runLauncher`, …).
+
+### Added
+
+- **`allowBreakingChanges` factory option.** Stamps `kro.run/allow-breaking-changes: "true"` on the generated
+  RGD. The same option already existed at composition level, but a consumer of a SHIPPED composition
+  (`dagsterBootstrap`, `apisixBootstrap`, …) cannot reach that, so there was no way to migrate an
+  already-deployed RGD. Off by default.
+
+### ⚠️ UPGRADE NOTE — existing deployments need one authorized converge
+
+The `object` correction changes the DECLARED TYPE of existing RGD fields (52 of them in the Dagster RGD alone).
+KRO refuses breaking CRD updates, **and the refusal is silent**: the apply succeeds, the RGD reports
+`Ready=True`, and the registered CRD keeps its OLD schema. The only evidence is a controller log line:
+
+```
+cannot update CRD <plural>.kro.run: breaking changes detected: Type changed from string to object; ...
+```
+
+So an upgrade can appear to land while nothing changed and values continue to be pruned. To migrate, authorize
+it for the one converge that performs the change:
+
+```ts
+myComposition.factory('kro', { allowBreakingChanges: true })
+```
+
+then drop the option again. Verify with:
+
+```
+kubectl get crd <plural>.kro.run \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type}'
+```
+
+It should print `object`. Deleting and recreating the RGD also works (KRO re-registers the CRD from scratch)
+but destroys existing custom resources, so prefer the annotation. Do not enable it globally: it disables a real
+safety check, and a genuinely lossy change (narrowing a type, dropping a field) can strand existing CRs.
+
 ## [0.21.0] - 2026-07-02
 
 ### Added

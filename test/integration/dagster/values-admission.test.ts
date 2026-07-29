@@ -87,7 +87,12 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
   const apiext = createBunCompatibleApiClient(kc, k8s.ApiextensionsV1Api);
   let lease: TestNamespaceLease | undefined;
   /** Every object this test creates, newest first, so teardown is deterministic. */
-  const created: Array<{ what: string; remove: () => Promise<unknown> }> = [];
+  const created: Array<{
+    what: string;
+    remove: () => Promise<unknown>;
+    /** Present for custom resources: polled until the object is really gone (finalizers settled). */
+    gone?: () => Promise<boolean>;
+  }> = [];
 
   const applyRgd = async (yamlDoc: string): Promise<void> => {
     for (const doc of k8s.loadAllYaml(yamlDoc)) {
@@ -141,50 +146,99 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     }
   };
 
-  /** Poll until the CRD for `plural` is Established — KRO registers it AFTER the RGD is accepted. */
-  const waitForCrd = async (plural: string): Promise<k8s.V1CustomResourceDefinition> => {
-    const name = `${plural}.${RGD_GROUP}`;
-    for (let i = 0; i < 120; i++) {
-      const crd = await apiext.readCustomResourceDefinition({ name }).catch(() => undefined);
-      const established = crd?.status?.conditions?.some(
-        (c) => c.type === 'Established' && c.status === 'True'
-      );
-      if (crd && established) return crd;
+  /** `spec.schema.openAPIV3Schema.properties.spec.properties` of a registered CRD, if it exists yet. */
+  const crdSpecProps = async (plural: string): Promise<Record<string, any> | undefined> =>
+    apiext
+      .readCustomResourceDefinition({ name: `${plural}.${RGD_GROUP}` })
+      .then((crd) => {
+        const established = crd.status?.conditions?.some(
+          (c) => c.type === 'Established' && c.status === 'True'
+        );
+        if (!established) return undefined;
+        return crd.spec.versions[0]?.schema?.openAPIV3Schema?.properties?.spec?.properties as
+          | Record<string, any>
+          | undefined;
+      })
+      .catch(() => undefined);
+
+  /**
+   * Wait until the CRD for `plural` is Established AND its `spec.values` has converged to `object`.
+   *
+   * KRO registers and updates CRDs ASYNCHRONOUSLY after accepting an RGD, so waiting on Established alone
+   * returns instantly against a CRD left by an earlier run and the assertions then read a stale schema. Note
+   * this cannot wait on a new uid or a bumped resourceVersion either: KRO updates the CRD IN PLACE, and when
+   * the schema is already correct it performs no write at all — both signals would hang.
+   *
+   * Waiting on one field is not the same as asserting the contract: the tests below check the
+   * preserve-unknown flags, the per-subchart hatch, the typed siblings, and a real CR round trip.
+   */
+  const waitForConvergedCrd = async (plural: string): Promise<Record<string, any>> => {
+    for (let i = 0; i < 180; i++) {
+      const props = await crdSpecProps(plural);
+      if (props?.values?.type === 'object') return props;
       await Bun.sleep(1000);
     }
-    throw new Error(`CRD ${name} did not become Established`);
+    throw new Error(`CRD ${plural}.${RGD_GROUP} never converged to a schemaless \`values\``);
   };
 
   beforeAll(async () => {
     lease = await createTestNamespace(`typekro-obj-admission-${Math.random().toString(36).slice(2, 8)}`, kc);
     await applyRgd(probeComposition.factory('kro').toYaml());
-    await applyRgd(dagsterBootstrap.toYaml());
-    await waitForCrd('objectschemaprobes');
-    await waitForCrd('dagsterbootstraps');
+    // Apply WITH the migration flag: a `dagsterbootstraps` CRD left by an older TypeKro carries `string`
+    // types, and KRO refuses the breaking update SILENTLY (RGD still reports Ready). Without authorizing it
+    // the assertions below would read a stale schema and fail for the wrong reason.
+    await applyRgd(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml());
+    await waitForConvergedCrd('objectschemaprobes');
+    await waitForConvergedCrd('dagsterbootstraps');
   });
 
   afterAll(async () => {
-    // Aggregate rather than swallow: a teardown that hides its own failures is how clusters accumulate junk.
+    // ORDER MATTERS, and getting it wrong hangs for the full timeout. Custom resources must be gone —
+    // finalizers settled — BEFORE their CRD is removed; deleting the CRD first strands the finalizer and the
+    // namespace can then never terminate. So: CRs (and wait), then the namespace, then the RGDs, then the CRD
+    // this test owns. Failures are aggregated rather than swallowed.
     const failures: string[] = [];
-    for (const { what, remove } of created.reverse()) {
+
+    for (const { what, remove, gone } of created.filter((c) => c.gone).reverse()) {
       await remove().catch((e: unknown) => failures.push(`${what}: ${String(e)}`));
+      let settled = false;
+      for (let i = 0; i < 60 && !settled; i++) {
+        settled = await gone!();
+        if (!settled) await Bun.sleep(1000);
+      }
+      if (!settled) failures.push(`${what}: still present after delete (finalizer pending?)`);
     }
+
     if (lease) {
       await deleteTestNamespaceAndWait(lease, kc).catch((e: unknown) =>
         failures.push(`namespace ${lease?.name}: ${String(e)}`)
       );
     }
+
+    for (const { what, remove } of created.filter((c) => !c.gone).reverse()) {
+      await remove().catch((e: unknown) => failures.push(`${what}: ${String(e)}`));
+    }
+
+    // Deleting an RGD does NOT reap the CRD KRO registered for it, so remove it explicitly or every run
+    // leaves one behind. Only the PROBE kind — deliberately not dagsterbootstraps, which on a persistent
+    // cluster may hold real instances this test knows nothing about and only updated.
+    await apiext
+      .deleteCustomResourceDefinition({ name: `objectschemaprobes.${RGD_GROUP}` })
+      .catch((e: unknown) => failures.push(`crd/objectschemaprobes.${RGD_GROUP}: ${String(e)}`));
+
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
 
   it('registers the Dagster escape hatches as schemaless `object` in the CRD (no instances created)', async () => {
-    const crd = await apiext.readCustomResourceDefinition({ name: 'dagsterbootstraps.kro.run' });
-    const props = crd.spec.versions[0]?.schema?.openAPIV3Schema?.properties?.spec
-      ?.properties as Record<string, any>;
+    const props = await waitForConvergedCrd('dagsterbootstraps');
 
     for (const path of [props.values, props.postgresql.properties.values]) {
       expect(path.type).toBe('object');
-      expect(path['x-kubernetes-preserve-unknown-fields']).toBe(true);
+      // The generated client deserializes the wire field `x-kubernetes-preserve-unknown-fields` to
+      // `x_kubernetes_preserve_unknown_fields`; accept either so this does not break on a client bump.
+      const preserveUnknown =
+        path.x_kubernetes_preserve_unknown_fields ?? path['x-kubernetes-preserve-unknown-fields'];
+      expect(preserveUnknown).toBe(true);
     }
     // The typed convenience fields alongside them must stay typed, or the CRD documents nothing.
     expect(props.postgresql.properties.enabled.type).toBe('boolean');
@@ -216,6 +270,17 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
           plural: 'objectschemaprobes',
           name,
         }),
+      gone: () =>
+        custom
+          .getNamespacedCustomObject({
+            group: RGD_GROUP,
+            version: RGD_VERSION,
+            namespace,
+            plural: 'objectschemaprobes',
+            name,
+          })
+          .then(() => false)
+          .catch(() => true),
     });
 
     const admitted = (await custom.getNamespacedCustomObject({
