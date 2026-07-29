@@ -37,24 +37,28 @@ export function openSearchClusterReadinessEvaluator(liveResource: unknown): Reso
     };
   }
   const expectedNodes =
-    observed?.spec?.nodePools.reduce(
-      (total, pool) => total + pool.replicas,
-      0
-    ) ?? 1;
+    observed?.spec?.nodePools.reduce((total, pool) => total + pool.replicas, 0) ?? 1;
+  const expectedVersion = observed?.spec?.general.version;
+  const observedVersion = status.version;
   const ready =
     status.initialized === true &&
     (status.availableNodes ?? 0) >= expectedNodes &&
-    ['green', 'yellow'].includes(status.health?.toLowerCase() ?? '');
+    ['green', 'yellow'].includes(status.health?.toLowerCase() ?? '') &&
+    typeof expectedVersion === 'string' &&
+    observedVersion === expectedVersion;
   return ready
     ? {
         ready: true,
         reason: 'ClusterReady',
-        message: `${status.availableNodes ?? 0} nodes available; health=${status.health}`,
+        message: `${status.availableNodes ?? 0} nodes available; health=${status.health}; version=${observedVersion}`,
       }
     : {
         ready: false,
-        reason: status.phase || 'ClusterProgressing',
-        message: `${status.availableNodes ?? 0} nodes available; health=${status.health ?? 'unknown'}`,
+        reason:
+          expectedVersion && observedVersion && observedVersion !== expectedVersion
+            ? 'VersionProgressing'
+            : status.phase || 'ClusterProgressing',
+        message: `${status.availableNodes ?? 0} nodes available; health=${status.health ?? 'unknown'}; version=${observedVersion ?? 'unknown'}; desiredVersion=${expectedVersion ?? 'unknown'}`,
       };
 }
 
@@ -98,10 +102,8 @@ function compileOpenSearchClusterSpec(
                 secret: {
                   name: snapshot.credentialsSecret.name,
                   keyMappings: {
-                    [snapshot.credentialsSecret.accessKeyKey]:
-                      's3.client.default.access_key',
-                    [snapshot.credentialsSecret.secretKeyKey]:
-                      's3.client.default.secret_key',
+                    [snapshot.credentialsSecret.accessKeyKey]: 's3.client.default.access_key',
+                    [snapshot.credentialsSecret.secretKeyKey]: 's3.client.default.secret_key',
                   },
                 },
               },
@@ -136,8 +138,7 @@ function compileOpenSearchClusterSpec(
       enable: false,
       ...(config.dashboardCredentialsSecret
         ? {
-            opensearchCredentialsSecret:
-              config.dashboardCredentialsSecret,
+            opensearchCredentialsSecret: config.dashboardCredentialsSecret,
           }
         : {}),
     },

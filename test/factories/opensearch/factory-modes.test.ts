@@ -18,23 +18,52 @@ function documents(yaml: string): Record<string, unknown>[] {
 describe('OpenSearch integration', () => {
   test('waits for every declared node before reporting direct readiness', () => {
     const progressing = openSearchClusterReadinessEvaluator({
-      spec: { nodePools: [{ replicas: 3 }] },
+      spec: {
+        general: { version: '3.2.0' },
+        nodePools: [{ replicas: 3 }],
+      },
       status: {
         initialized: true,
         availableNodes: 1,
         health: 'yellow',
+        version: '3.2.0',
       },
     });
     const ready = openSearchClusterReadinessEvaluator({
-      spec: { nodePools: [{ replicas: 3 }] },
+      spec: {
+        general: { version: '3.2.0' },
+        nodePools: [{ replicas: 3 }],
+      },
       status: {
         initialized: true,
         availableNodes: 3,
         health: 'green',
+        version: '3.2.0',
       },
     });
     expect(progressing.ready).toBe(false);
     expect(ready.ready).toBe(true);
+  });
+
+  test('waits for the operator-observed version before completing an upgrade', () => {
+    const stale = openSearchClusterReadinessEvaluator({
+      spec: {
+        general: { version: '3.2.0' },
+        nodePools: [{ replicas: 3 }],
+      },
+      status: {
+        initialized: true,
+        availableNodes: 3,
+        health: 'green',
+        version: '3.1.0',
+      },
+    });
+    expect(stale).toMatchObject({
+      ready: false,
+      reason: 'VersionProgressing',
+    });
+    expect(stale.message).toContain('version=3.1.0');
+    expect(stale.message).toContain('desiredVersion=3.2.0');
   });
 
   test('emits a bounded development cluster in direct mode', () => {
@@ -196,6 +225,9 @@ describe('OpenSearch integration', () => {
     );
     expect(yaml).toContain('${cluster.status.availableNodes}');
     expect(yaml).toContain('${cluster.status.health}');
+    expect(yaml).toContain('${cluster.status.version}');
+    expect(yaml).toContain('cluster.status.version == cluster.spec.general.version');
+    expect(yaml).not.toContain('version: ${cluster.spec.general.version}');
     expect(yaml).toContain('cluster.spec.security.config.adminCredentialsSecret.name != ""');
     expect(yaml).toContain('cluster.spec.general.snapshotRepositories.size() > 0');
     expect(yaml).toContain('credentialsSecret:');

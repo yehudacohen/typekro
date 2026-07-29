@@ -412,19 +412,19 @@ export function makeOpenSearchCluster<
         'cluster.status.componentsStatus.exists(c, c.status == "Failed" || c.status == "Error")'
       );
       const ready = Cel.expr<boolean>(
-        `cluster.status.initialized == true && cluster.status.availableNodes >= ${topology.nodes} && (cluster.status.health == "green" || cluster.status.health == "yellow")`
+        `cluster.status.initialized == true && cluster.status.availableNodes >= ${topology.nodes} && (cluster.status.health == "green" || cluster.status.health == "yellow") && cluster.status.version == cluster.spec.general.version`
       );
       return {
         ready,
         failed,
         phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-          `cluster.status.componentsStatus.exists(c, c.status == "Failed" || c.status == "Error") ? "Failed" : (cluster.status.initialized == true && cluster.status.availableNodes >= ${topology.nodes} && (cluster.status.health == "green" || cluster.status.health == "yellow") ? "Ready" : "Installing")`
+          `cluster.status.componentsStatus.exists(c, c.status == "Failed" || c.status == "Error") ? "Failed" : (cluster.status.initialized == true && cluster.status.availableNodes >= ${topology.nodes} && (cluster.status.health == "green" || cluster.status.health == "yellow") && cluster.status.version == cluster.spec.general.version ? "Ready" : "Installing")`
         ),
         endpoint: `https://${cluster.spec.general.serviceName}.${cluster.metadata.namespace}.svc.cluster.local:${OPENSEARCH_HTTP_PORT}`,
         credentialsSecret: Cel.expr<string>(
           `has(cluster.spec.security.config.adminCredentialsSecret) && cluster.spec.security.config.adminCredentialsSecret.name != "" ? cluster.spec.security.config.adminCredentialsSecret.name : string(cluster.metadata.name) + "-admin-password"`
         ),
-        version: cluster.spec.general.version,
+        version: cluster.status.version,
         availableNodes: cluster.status.availableNodes,
         health: cluster.status.health,
         snapshotRepository: Cel.expr<string>(
