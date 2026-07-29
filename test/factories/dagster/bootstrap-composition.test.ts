@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { load } from 'js-yaml';
+import { load, loadAll } from 'js-yaml';
 import {
   dagsterBootstrap,
   dagsterHelmRepositoryBootstrap,
@@ -14,6 +14,16 @@ import {
 // Direct composition imports were rejected because `typekro/dagster` is the
 // approved user-facing seam.
 describe('Dagster bootstrap composition', () => {
+  /** The RGD's `spec.schema.spec` — the declared CRD field types KRO admission enforces. */
+  const bootstrapSchemaSpec = (): Record<string, any> => {
+    const docs = loadAll(dagsterBootstrap.toYaml()) as Array<any>;
+    // Select by SCHEMA kind: toYaml() emits two RGDs (the HelmRepository one first), so matching on
+    // `kind: ResourceGraphDefinition` silently picks the wrong document.
+    const rgd = docs.find((d) => d?.spec?.schema?.kind === 'DagsterBootstrap');
+    if (!rgd) throw new Error('no DagsterBootstrap RGD in dagsterBootstrap.toYaml()');
+    return rgd.spec.schema.spec as Record<string, any>;
+  };
+
   it('Accept valid Dagster bootstrap config through the config schema', () => {
     const result = DagsterBootstrapConfigSchema({
       name: 'analytics',
@@ -146,6 +156,33 @@ describe('Dagster bootstrap composition', () => {
     expect(instanceBundle).toContain('namespace: typekro-singletons');
     expect(instanceBundle).toContain('typekro.io/singleton-spec-fingerprint');
     expect(instanceBundle).toContain('kind: DagsterBootstrap');
+  });
+
+  // The escape hatches must be SCHEMALESS in the RGD. Asserting the CEL reference exists (as the test
+  // below does) is not enough: a field can be referenced and still be typed `string`, in which case KRO
+  // admission PRUNES whatever object the caller sent and the reference resolves to nothing. That is exactly
+  // how both documented Dagster passthroughs stayed broken while tests passed — so assert the TYPE.
+  it('Declare every raw Helm values escape hatch as KRO `object`, not `string`', () => {
+    const spec = bootstrapSchemaSpec();
+
+    // The top-level chart-values passthrough.
+    expect(spec.values).toBe('object');
+    // The per-subchart passthroughs. These are the ONLY route to bundled-subchart settings such as
+    // postgresql `primary.persistence.enabled` or `nodeSelector`, none of which the convenience shapes model.
+    expect(spec.postgresql.values).toBe('object');
+    expect(spec.rabbitmq.values).toBe('object');
+    expect(spec.redis.values).toBe('object');
+  });
+
+  it('Keep typed convenience fields typed — opaque `values` must not swallow the whole API', () => {
+    const spec = bootstrapSchemaSpec();
+
+    // Making `values` opaque is a deliberate narrowing of where schemalessness applies. The high-level
+    // convenience API must stay strongly typed, or the CRD stops documenting anything.
+    expect(spec.name).toBe('string');
+    expect(spec.postgresql.enabled).toBe('boolean');
+    expect(spec.postgresql.servicePort).toBe('integer');
+    expect(spec.postgresql.host).toBe('string');
   });
 
   it('Preserve graph-aware Helm values in ResourceGraphDefinition YAML without raw markers', () => {

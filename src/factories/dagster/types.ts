@@ -418,36 +418,27 @@ const globalSchemaShape = {
 const serviceAccountSchemaShape = {
   'create?': 'boolean',
   'name?': 'string',
-  // Record<string,string> (not objectMapSchema/`object`) so the generated CRD field is an object map with
-  // string values — `object` serializes to `type: string`, which k8s rejects for an annotations map (422).
+  // `Record<string,string>` rather than `object`: annotations ARE a string→string map, so the precise type
+  // is the right one — it documents the contract and rejects a non-string value at the boundary.
+  // (The previous rationale here said `object` "serializes to `type: string`". That was true, but it was
+  // describing the converter BUG this workaround was hiding: arktype renders a bare `type('object')` as the
+  // string "object", which the KRO type mapper had no case for and defaulted to `string`. Fixed in
+  // core/serialization/schema.ts — `object` now maps to KRO's schemaless `object`.)
   'annotations?': 'Record<string, string>',
 } as const;
 
-const helmValuesSchemaShape = {
-  ...globalSchemaShape,
-  'global?': globalSchemaShape,
-  'serviceAccount?': serviceAccountSchemaShape,
-  'nameOverride?': 'string',
-  'fullnameOverride?': 'string',
-  'rbacEnabled?': 'boolean',
-  'imagePullSecrets?': namedRefSchema.array(),
-  'dagsterWebserver?': webserverSchemaShape,
-  'dagsterDaemon?': daemonSchemaShape,
-  'dagster-user-deployments?': userDeploymentsSchemaShape,
-  'postgresql?': postgresqlSchemaShape,
-  'generatePostgresqlPasswordSecret?': 'boolean',
-  'generateCeleryConfigSecret?': 'boolean',
-  'rabbitmq?': rabbitmqSchemaShape,
-  'redis?': redisSchemaShape,
-  'runLauncher?': runLauncherSchemaShape,
-  'scheduler?': schedulerSchemaShape,
-  'computeLogManager?': computeLogManagerSchemaShape,
-  'flower?': flowerSchemaShape,
-  'ingress?': ingressSchemaShape,
-  'pythonLogs?': objectMapSchema,
-  'busybox?': objectMapSchema,
-  'extraManifests?': 'unknown[]',
-} as const;
+// NOTE: there is deliberately NO arktype shape for the raw `values` escape hatch.
+//
+// It used to be a fully typed `helmValuesSchemaShape`, which made the field a CLOSED schema: KRO admission
+// pruned any chart value the shape didn't model, silently. That defeated the field's entire purpose — it is
+// advertised as "raw official chart values", i.e. arbitrary. Notably its `postgresql` sub-shape reused the
+// TypeKro CONVENIENCE shape, so bundled-postgres subchart settings (`primary.*`, `nodeSelector`,
+// `persistence`) could never be set through either documented route.
+//
+// `values` is now `objectMapSchema` (`type('object')` → KRO `object`, i.e. schemaless with
+// `x-kubernetes-preserve-unknown-fields: true`), so whatever the caller sends reaches the HelmRelease.
+// Typed convenience stays at the high-level API (`postgresql`, `webserver`, `runLauncher`, …) and the
+// `DagsterHelmValues` TS interface still documents the common fields for authors.
 
 /** Kubernetes Secret key reference used for Dagster sensitive chart values. */
 export interface DagsterSecretKeyRef {
@@ -892,7 +883,7 @@ export const DagsterBootstrapConfigSchema = type({
   'rabbitmq?': rabbitmqSchemaShape,
   'redis?': redisSchemaShape,
   'global?': globalSchemaShape,
-  'values?': helmValuesSchemaShape,
+  'values?': objectMapSchema,
 });
 
 /** Configuration for deploying Dagster through the bootstrap composition. */
@@ -1010,7 +1001,7 @@ export const DagsterHelmReleaseConfigSchema = type({
   'version?': 'string',
   'repositoryName?': 'string',
   'repositoryNamespace?': 'string',
-  'values?': helmValuesSchemaShape,
+  'values?': objectMapSchema,
   'id?': 'string',
 });
 
