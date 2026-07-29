@@ -39,7 +39,7 @@ describe('KRO string pattern serialization', () => {
       /(?<!foo)bar/,
     ]) {
       expect(() => rgd(type(pattern))).toThrow(
-        /Kubernetes RE2 validation does not support/,
+        /not compatible with Kubernetes RE2 validation/,
       );
     }
   });
@@ -47,9 +47,29 @@ describe('KRO string pattern serialization', () => {
   it('fails before emission for numeric and named backreferences', () => {
     for (const pattern of [/^(a)\1$/, /^(?<value>a)\k<value>$/]) {
       expect(() => rgd(type(pattern))).toThrow(
-        /backreference.*Kubernetes RE2 validation does not support/,
+        /not compatible with Kubernetes RE2 validation/,
       );
     }
+  });
+
+  it('fails before emission for JavaScript escapes rejected by Kubernetes RE2', () => {
+    expect(() => rgd(type(/^\u0061$/))).toThrow(
+      /invalid escape sequence.*\\u/,
+    );
+  });
+
+  it('fails closed for flagged ArkType patterns instead of discarding them', () => {
+    expect(() => rgd(type(/foo/i))).toThrow(
+      /uses JavaScript flags "i".*cannot preserve/,
+    );
+  });
+
+  it('preserves constraints on array elements and on the array itself', () => {
+    const schema = type({ names: 'string > 0[] > 0' });
+
+    expect(rgdObject(schema)).toContain(
+      "names: '[]string | minLength=1 | minItems=1'",
+    );
   });
 });
 
@@ -69,5 +89,17 @@ function rgd(nameSchema: Type<string>): string {
       });
       return { ready: true };
     },
+  ).factory('kro').toYaml();
+}
+
+function rgdObject(schema: Type<object>): string {
+  return kubernetesComposition(
+    {
+      name: 'string-pattern-object-test',
+      kind: 'StringPatternObjectTest',
+      spec: schema,
+      status: type({ ready: 'boolean' }),
+    },
+    () => ({ ready: true }),
   ).factory('kro').toYaml();
 }
