@@ -1,25 +1,18 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue } from '../../core/types/common.js';
 
-const secretValueRefShape = {
+const externalSecretShape = {
   name: 'string',
-  'key?': 'string',
 } as const;
 
 /**
  * External PostgreSQL authority consumed by Hatchet.
  *
- * The referenced Secret must live in the Hatchet namespace. Its value is a
- * complete PostgreSQL URI and remains outside the ResourceGraphDefinition.
+ * The referenced Secret must live in the Hatchet namespace and contain a
+ * `DATABASE_URL` key. It remains outside the ResourceGraphDefinition.
  */
 const externalDatabaseShape = {
-  connectionSecret: secretValueRefShape,
-} as const;
-
-const adminCredentialsShape = {
-  name: 'string',
-  'emailKey?': 'string',
-  'passwordKey?': 'string',
+  connectionSecret: externalSecretShape,
 } as const;
 
 export const HatchetInstallationConfigSchema = type({
@@ -33,7 +26,7 @@ export const HatchetInstallationConfigSchema = type({
   'repositoryNamespaceOwnership?': '"owned" | "external"',
   'repositoryUrl?': 'string',
   database: externalDatabaseShape,
-  adminCredentialsSecret: adminCredentialsShape,
+  adminCredentialsSecret: externalSecretShape,
   'replicas?': {
     'api?': 'number.integer >= 1',
     'engine?': 'number.integer >= 1',

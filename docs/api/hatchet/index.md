@@ -19,13 +19,10 @@ await factory.deploy({
   database: {
     connectionSecret: {
       name: 'hatchet-db-app',
-      key: 'uri',
     },
   },
   adminCredentialsSecret: {
     name: 'hatchet-admin',
-    emailKey: 'adminEmail',
-    passwordKey: 'adminPassword',
   },
 });
 ```
@@ -36,7 +33,7 @@ await factory.deploy({
 
 - an optional target Namespace;
 - an optional repository Namespace when it differs from the target;
-- one installation-scoped `<name>-hatchet` HelmRepository and the official
+- one installation-scoped `<namespace>-<name>-hatchet` HelmRepository and the official
   `hatchet-stack` HelmRelease;
 - a non-sensitive metadata ConfigMap used for the complete public status
   contract.
@@ -64,7 +61,7 @@ metadata:
   name: hatchet-db-app
   namespace: workflow-system
 stringData:
-  uri: postgres://app:password@hatchet-db-rw:5432/hatchet?sslmode=require
+  DATABASE_URL: postgres://app:password@hatchet-db-rw:5432/hatchet?sslmode=require
 ```
 
 The administrator Secret contains the bootstrap account:
@@ -76,16 +73,16 @@ metadata:
   name: hatchet-admin
   namespace: workflow-system
 stringData:
-  adminEmail: operator@example.com
-  adminPassword: replace-me
+  ADMIN_EMAIL: operator@example.com
+  ADMIN_PASSWORD: replace-me
 ```
 
-Flux reads these keys through `HelmRelease.spec.valuesFrom` with
-`literal: true`, so PostgreSQL URIs and credentials retain commas, brackets,
-dots, equals signs, and other Helm `--set` metacharacters verbatim. This
-requires Flux 2.9 or newer; the TypeKro runtime bootstrap defaults to that
-release. Secret values never appear in the generated RGD or
-HatchetInstallation instance.
+The composition appends both Secrets to the official chart's `api.envFrom` and
+`engine.envFrom` lists after the chart-generated shared configuration Secret.
+This preserves every credential byte without Helm `--set` interpretation and
+works with TypeKro's Flux 2.7.5 baseline. The fixed key names are the
+environment variables consumed by Hatchet. Secret values never appear in Helm
+values, the generated RGD, or the HatchetInstallation instance.
 
 The official chart's `hatchet-admin` command creates `hatchet-client-config`
 with `HATCHET_CLIENT_TOKEN` when `workerTokenJob` is enabled. The Secret name is
@@ -136,6 +133,11 @@ Secrets explicitly only when permanently abandoning that database and its
 workers. An owned Namespace deletes them with the installation.
 
 The same rule applies independently to `repositoryNamespaceOwnership`.
+The default HelmRepository name includes the workload Namespace as well as the
+release name, so same-named installations that share a repository Namespace
+remain independently owned. Set `repositoryName` only when an explicit
+platform naming policy is required; explicit names must be unique within the
+repository Namespace.
 
 Delete through the factory so TypeKro preserves dependency order:
 

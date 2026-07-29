@@ -20,12 +20,10 @@ const requiredConfig = {
   name: 'hatchet',
   namespace: 'workflow-system',
   database: {
-    connectionSecret: { name: 'hatchet-db-app', key: 'uri' },
+    connectionSecret: { name: 'hatchet-db-app' },
   },
   adminCredentialsSecret: {
     name: 'hatchet-admin',
-    emailKey: 'email',
-    passwordKey: 'password',
   },
 } as const;
 
@@ -51,24 +49,22 @@ describe('Hatchet installation', () => {
     expect(yaml).toContain('chart: hatchet-stack');
     expect(yaml).toContain(`version: ${DEFAULT_HATCHET_CHART_VERSION}`);
     expect(yaml).toContain(`tag: ${DEFAULT_HATCHET_SERVER_VERSION}`);
-    expect(yaml).toContain('valuesFrom:');
     expect(yaml).toContain('name: hatchet-db-app');
-    expect(yaml).toContain('valuesKey: uri');
-    expect(yaml).toContain('targetPath: sharedConfig.env.DATABASE_URL');
-    expect(yaml).toContain('literal: true');
     expect(yaml).toContain('name: hatchet-admin');
-    expect(yaml).toContain('valuesKey: email');
-    expect(yaml).toContain('valuesKey: password');
+    expect(yaml).toContain('envFrom:');
+    expect(yaml).toContain('name: hatchet-shared-config');
+    expect(yaml).not.toContain('valuesFrom:');
+    expect(yaml).not.toContain('literal: true');
     expect(yaml).toMatch(/postgres:\s*\n\s+enabled: false/);
     expect(yaml).toMatch(/rabbitmq:\s*\n\s+enabled: false/);
     expect(yaml).toMatch(/api:\s*\n(?:.*\n)*?\s+replicaCount: 2/);
-    expect(yaml).toMatch(/engine:\s*\n\s+replicaCount: 3/);
+    expect(yaml).toMatch(/engine:\s*\n(?:.*\n)*?\s+replicaCount: 3/);
     expect(yaml).toContain('cpu: 250m');
     expect(yaml).toMatch(/workerTokenJob:\s*\n\s+enabled: true/);
     expect(yaml).toContain('remediateLastFailure: false');
     expect(yaml).not.toContain('rollback');
     expect(yaml).not.toContain('__typekroValuesMerge');
-    expect(yaml).toContain('name: hatchet-hatchet');
+    expect(yaml).toContain('name: workflow-system-hatchet-hatchet');
     expect(customValues).toEqual({
       api: { resources: { requests: { cpu: '250m' } } },
       postgres: { enabled: true },
@@ -89,27 +85,27 @@ describe('Hatchet installation', () => {
     expect(yaml).toContain('namespace: flux-system');
   });
 
-  it('gives every installation an isolated default repository identity', () => {
+  it('gives same-named installations in different namespaces isolated repositories', () => {
     const factory = hatchetInstallation.factory('direct', {
       namespace: 'typekro-system',
     });
     const first = factory.toYaml({
       ...requiredConfig,
-      name: 'workflows-a',
+      namespace: 'team-a',
       repositoryNamespace: 'flux-system',
       repositoryNamespaceOwnership: 'external',
     });
     const second = factory.toYaml({
       ...requiredConfig,
-      name: 'workflows-b',
+      namespace: 'team-b',
       repositoryNamespace: 'flux-system',
       repositoryNamespaceOwnership: 'external',
     });
 
-    expect(first).toContain('name: workflows-a-hatchet');
-    expect(second).toContain('name: workflows-b-hatchet');
-    expect(first).not.toContain('name: workflows-b-hatchet');
-    expect(second).not.toContain('name: workflows-a-hatchet');
+    expect(first).toContain('name: team-a-hatchet-hatchet');
+    expect(second).toContain('name: team-b-hatchet-hatchet');
+    expect(first).not.toContain('name: team-b-hatchet-hatchet');
+    expect(second).not.toContain('name: team-a-hatchet-hatchet');
   });
 
   it('serializes the complete contract in KRO mode without embedding credentials', () => {
@@ -125,9 +121,9 @@ describe('Hatchet installation', () => {
     expect(rgd).toContain('kind: Secret');
     expect(rgd).toContain('${schema.spec.database.connectionSecret.name}');
     expect(rgd).toContain('${schema.spec.adminCredentialsSecret.name}');
-    expect(rgd).toContain('valuesFrom:');
-    expect(rgd).toContain('targetPath: sharedConfig.env.DATABASE_URL');
-    expect(rgd).toContain('literal: true');
+    expect(rgd).toContain('envFrom');
+    expect(rgd).not.toContain('valuesFrom:');
+    expect(rgd).not.toContain('literal: true');
     expect(rgd).toContain('schema.spec.replicas.api');
     expect(rgd).toContain('schema.spec.replicas.engine');
     expect(rgd).toContain('postgres');
@@ -142,13 +138,12 @@ describe('Hatchet installation', () => {
     expect(rgd).toContain(
       'configurationSecret: ${hatchetMetadata.metadata.annotations["typekro.dev/configuration-secret"]}'
     );
-    expect(rgd).toContain('string(schema.spec.name) + "-hatchet"');
+    expect(rgd).toContain(
+      'string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
+    );
     expect(rgd).toContain('hatchet-config');
     expect(rgd).toContain('hatchet-client-config');
     expect(rgd).toContain('name: string | validation="size(self) > 0"');
-    expect(rgd).toContain(
-      'passwordKey: string | default="adminPassword" validation="size(self) > 0"'
-    );
     expect(rgd).not.toContain('kind: Namespace');
     expect(rgd).not.toContain('admin@example');
 
@@ -190,7 +185,7 @@ describe('Hatchet installation', () => {
     expect(yaml).toContain('typekro.dev/worker-token-secret: hatchet-client-config');
     expect(yaml).not.toContain('workflows-config');
     expect(yaml).not.toContain('workflows-client-config');
-    expect(yaml).toContain('name: workflows-hatchet');
+    expect(yaml).toContain('name: workflow-system-workflows-hatchet');
   });
 
   it('does not advertise a worker-token Secret when the chart job is disabled', () => {

@@ -30,8 +30,8 @@ const HATCHET_WORKER_TOKEN_SECRET = 'hatchet-client-config';
  *
  * The composition deliberately disables the bundled PostgreSQL and RabbitMQ
  * charts. The database and admin credentials remain in external Kubernetes
- * Secrets and reach Flux through `valuesFrom`; they are never copied into the
- * KRO instance or ResourceGraphDefinition.
+ * Secrets and are mounted into Hatchet with chart-native `envFrom`; they are
+ * never copied into Helm values, the KRO instance, or ResourceGraphDefinition.
  */
 export const hatchetInstallation = kubernetesComposition(
   {
@@ -53,9 +53,10 @@ export const hatchetInstallation = kubernetesComposition(
       : spec.namespaceOwnership !== 'external';
     const repositoryName = graphMode
       ? Cel.expr<string>(
-          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(schema.spec.name) + "-hatchet"'
+          'has(schema.spec.repositoryName) ? schema.spec.repositoryName : string(has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system") + "-" + string(schema.spec.name) + "-hatchet"'
         )
-      : (spec.repositoryName ?? `${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
+      : (spec.repositoryName ??
+        `${targetNamespace}-${spec.name}-${DEFAULT_HATCHET_REPOSITORY_NAME}`);
     const repositoryNamespace = graphMode
       ? Cel.expr<string>(
           'has(schema.spec.repositoryNamespace) ? schema.spec.repositoryNamespace : (has(schema.spec.namespace) ? schema.spec.namespace : "hatchet-system")'
@@ -127,6 +128,14 @@ export const hatchetInstallation = kubernetesComposition(
         ? HATCHET_WORKER_TOKEN_SECRET
         : '';
     const configurationSecret = HATCHET_CONFIGURATION_SECRET;
+    const sharedConfigSecret = graphMode
+      ? Cel.expr<string>('string(schema.spec.name) + "-shared-config"')
+      : `${spec.name}-shared-config`;
+    const externalEnvironment = [
+      { secretRef: { name: sharedConfigSecret } },
+      { secretRef: { name: spec.database.connectionSecret.name } },
+      { secretRef: { name: spec.adminCredentialsSecret.name } },
+    ];
 
     namespace({
       id: 'hatchetNamespace',
@@ -216,9 +225,7 @@ export const hatchetInstallation = kubernetesComposition(
 
     const protectedValues = {
       global: {
-        sharedConfigSecretName: graphMode
-          ? Cel.expr<string>('string(schema.spec.name) + "-shared-config"')
-          : `${spec.name}-shared-config`,
+        sharedConfigSecretName: sharedConfigSecret,
       },
       sharedConfig: {
         image: { tag: serverVersion },
@@ -242,8 +249,12 @@ export const hatchetInstallation = kubernetesComposition(
       api: {
         replicaCount: apiReplicas,
         workerTokenJob: { enabled: workerTokenJob },
+        envFrom: externalEnvironment,
       },
-      engine: { replicaCount: engineReplicas },
+      engine: {
+        replicaCount: engineReplicas,
+        envFrom: externalEnvironment,
+      },
       frontend: {
         enabled: dashboardEnabled,
         replicaCount: frontendReplicas,
@@ -259,29 +270,6 @@ export const hatchetInstallation = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
-      valuesFrom: [
-        {
-          kind: 'Secret',
-          name: spec.database.connectionSecret.name,
-          valuesKey: spec.database.connectionSecret.key ?? 'uri',
-          targetPath: 'sharedConfig.env.DATABASE_URL',
-          literal: true,
-        },
-        {
-          kind: 'Secret',
-          name: spec.adminCredentialsSecret.name,
-          valuesKey: spec.adminCredentialsSecret.emailKey ?? 'adminEmail',
-          targetPath: 'sharedConfig.defaultAdminEmail',
-          literal: true,
-        },
-        {
-          kind: 'Secret',
-          name: spec.adminCredentialsSecret.name,
-          valuesKey: spec.adminCredentialsSecret.passwordKey ?? 'adminPassword',
-          targetPath: 'sharedConfig.defaultAdminPassword',
-          literal: true,
-        },
-      ],
       values,
     });
     release.dependsOn(repository);
@@ -316,10 +304,7 @@ export const hatchetInstallation = kubernetesComposition(
   {
     schemaFieldValidations: {
       'database.connectionSecret.name': 'size(self) > 0',
-      'database.connectionSecret.key': 'size(self) > 0',
       'adminCredentialsSecret.name': 'size(self) > 0',
-      'adminCredentialsSecret.emailKey': 'size(self) > 0',
-      'adminCredentialsSecret.passwordKey': 'size(self) > 0',
     },
   }
 );
@@ -329,19 +314,9 @@ function validateSecretReferences(spec: HatchetInstallationConfig): void {
     ['database.connectionSecret.name', spec.database.connectionSecret.name],
     ['adminCredentialsSecret.name', spec.adminCredentialsSecret.name],
   ] as const;
-  const optional = [
-    ['database.connectionSecret.key', spec.database.connectionSecret.key],
-    ['adminCredentialsSecret.emailKey', spec.adminCredentialsSecret.emailKey],
-    ['adminCredentialsSecret.passwordKey', spec.adminCredentialsSecret.passwordKey],
-  ] as const;
   for (const [path, value] of required) {
     if (value.trim().length === 0) {
       throw new Error(`Hatchet ${path} must be a non-empty Secret reference.`);
-    }
-  }
-  for (const [path, value] of optional) {
-    if (value !== undefined && value.trim().length === 0) {
-      throw new Error(`Hatchet ${path} must be non-empty when supplied.`);
     }
   }
 }

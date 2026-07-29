@@ -218,29 +218,24 @@ async function assertLiveHelmContract(namespace: string, dashboardEnabled: boole
         image: { tag: DEFAULT_HATCHET_SERVER_VERSION },
         env: { SERVER_MSGQUEUE_KIND: 'postgres' },
       },
+      api: {
+        envFrom: [
+          { secretRef: { name: 'hatchet-shared-config' } },
+          { secretRef: { name: expect.stringContaining('hatchet-db-env-') } },
+          { secretRef: { name: expect.stringContaining('hatchet-admin-') } },
+        ],
+      },
+      engine: {
+        envFrom: [
+          { secretRef: { name: 'hatchet-shared-config' } },
+          { secretRef: { name: expect.stringContaining('hatchet-db-env-') } },
+          { secretRef: { name: expect.stringContaining('hatchet-admin-') } },
+        ],
+      },
       frontend: { enabled: dashboardEnabled },
     },
-    valuesFrom: [
-      {
-        kind: 'Secret',
-        name: expect.stringContaining('hatchet-db-'),
-        valuesKey: 'uri',
-        targetPath: 'sharedConfig.env.DATABASE_URL',
-      },
-      {
-        kind: 'Secret',
-        name: expect.stringContaining('hatchet-admin-'),
-        valuesKey: 'adminEmail',
-        targetPath: 'sharedConfig.defaultAdminEmail',
-      },
-      {
-        kind: 'Secret',
-        name: expect.stringContaining('hatchet-admin-'),
-        valuesKey: 'adminPassword',
-        targetPath: 'sharedConfig.defaultAdminPassword',
-      },
-    ],
   });
+  expect(spec).not.toHaveProperty('valuesFrom');
   const generation = release.metadata?.generation;
   const observedGeneration =
     status && typeof status === 'object' ? Reflect.get(status, 'observedGeneration') : undefined;
@@ -288,9 +283,36 @@ async function prepareAdminSecret(namespace: string, name: string): Promise<Reso
       metadata: { name },
       type: 'Opaque',
       stringData: {
-        adminEmail: `typekro-${runId}@example.test`,
-        adminPassword: `TypeKro-${runId}-Hatchet`,
+        ADMIN_EMAIL: `typekro-${runId}@example.test`,
+        ADMIN_PASSWORD: `TypeKro-${runId}-Hatchet`,
       },
+    },
+  });
+  const uid = secret.metadata?.uid;
+  if (!uid) {
+    throw new Error(`Created Secret ${namespace}/${name} has no UID`);
+  }
+  return {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: { namespace, name, uid },
+  };
+}
+
+async function prepareDatabaseEnvironmentSecret(
+  namespace: string,
+  sourceName: string,
+  name: string
+): Promise<ResourceIdentity> {
+  const uri = await waitForSecretValue(namespace, sourceName, 'uri', 60_000);
+  const secret = await createCoreV1ApiClient(
+    getIntegrationTestKubeConfig()
+  ).createNamespacedSecret({
+    namespace,
+    body: {
+      metadata: { name },
+      type: 'Opaque',
+      stringData: { DATABASE_URL: uri },
     },
   });
   const uid = secret.metadata?.uid;
@@ -338,6 +360,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   const controlNamespace = `tk-hatchet-control-${suffix}`.slice(0, 63);
   const targetNamespace = `tk-hatchet-${suffix}`.slice(0, 63);
   const clusterName = `hatchet-db-${mode}`;
+  const databaseSecret = `hatchet-db-env-${mode}`;
   const adminSecret = `hatchet-admin-${mode}`;
   const kubeConfig = getIntegrationTestKubeConfig();
   const storageClass = await requireTestStorageClass({ kubeConfig });
@@ -350,6 +373,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   let controlLease: TestNamespaceLease | undefined;
   let targetLease: TestNamespaceLease | undefined;
   let databaseFixture: ResourceIdentity | undefined;
+  let databaseSecretFixture: ResourceIdentity | undefined;
   let adminFixture: ResourceIdentity | undefined;
   let retainedRecoveryArtifacts: ResourceIdentity[] = [];
   let testFailure: Error | undefined;
@@ -358,6 +382,11 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
     controlLease = await createTestNamespace(controlNamespace, kubeConfig);
     targetLease = await createTestNamespace(targetNamespace, kubeConfig);
     databaseFixture = await prepareDatabase(targetNamespace, clusterName, storageClass);
+    databaseSecretFixture = await prepareDatabaseEnvironmentSecret(
+      targetNamespace,
+      `${clusterName}-app`,
+      databaseSecret
+    );
     adminFixture = await prepareAdminSecret(targetNamespace, adminSecret);
 
     const expectedEndpoint = `http://hatchet-api.${targetNamespace}.svc:8080`;
@@ -368,7 +397,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       namespaceOwnership: 'external',
       repositoryNamespaceOwnership: 'external',
       database: {
-        connectionSecret: { name: `${clusterName}-app`, key: 'uri' },
+        connectionSecret: { name: databaseSecret },
       },
       adminCredentialsSecret: { name: adminSecret },
       dashboard: true,
@@ -407,7 +436,7 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
       namespaceOwnership: 'external',
       repositoryNamespaceOwnership: 'external',
       database: {
-        connectionSecret: { name: `${clusterName}-app`, key: 'uri' },
+        connectionSecret: { name: databaseSecret },
       },
       adminCredentialsSecret: { name: adminSecret },
       dashboard: false,
@@ -454,6 +483,13 @@ async function proveMode(mode: 'direct' | 'kro'): Promise<void> {
   if (databaseFixture) {
     try {
       await deleteTestResourceAndWait(databaseFixture, kubeConfig, 300_000);
+    } catch (error: unknown) {
+      cleanupFailures.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  if (databaseSecretFixture) {
+    try {
+      await deleteTestResourceAndWait(databaseSecretFixture, kubeConfig, 60_000);
     } catch (error: unknown) {
       cleanupFailures.push(error instanceof Error ? error : new Error(String(error)));
     }
