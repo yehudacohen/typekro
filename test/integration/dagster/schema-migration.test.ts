@@ -42,8 +42,13 @@ const RGD_PLURAL = 'resourcegraphdefinitions';
  */
 const RUN_ID = Math.random().toString(36).slice(2, 8);
 const RGD_NAME = `schema-migration-probe-${RUN_ID}`;
-const CR_PLURAL = `schemamigrationprobes${RUN_ID}`;
 const CR_KIND = `SchemaMigrationProbe${RUN_ID}`;
+/**
+ * DERIVED, never hand-written: KRO builds the CRD plural as `kind.toLowerCase() + 's'`. Hand-building it put
+ * the `s` before the run suffix (`…probes<id>` vs KRO's `…probe<id>s`), so every CRD lookup missed and the
+ * fixture timed out waiting for a schema that was registered under the other name.
+ */
+const CR_PLURAL = `${CR_KIND.toLowerCase()}s`;
 
 /** An RGD declaring `values` as the type given — the only difference between legacy and corrected. */
 const rgd = (valuesType: 'string' | 'object', allowBreaking: boolean): object => ({

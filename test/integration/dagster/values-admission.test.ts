@@ -174,8 +174,12 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
 
       // Suffix BOTH identities: the RGD name (what we create) and the schema kind (what KRO derives the CRD
       // plural from). Leaving either shared would collide with a real deployment.
-      const name = `${originalName}-${RUN_ID}`;
-      const kind = `${originalKind}${RUN_ID}`;
+      //
+      // Idempotent: the probe composition already declares run-unique identities (PROBE_RGD/PROBE_KIND, which
+      // the CR assertions below also reference), so suffixing unconditionally double-suffixed the kind and the
+      // API rejected the CR with `must be ObjectSchemaProbe<id><id>`.
+      const name = originalName.endsWith(`-${RUN_ID}`) ? originalName : `${originalName}-${RUN_ID}`;
+      const kind = originalKind.endsWith(RUN_ID) ? originalKind : `${originalKind}${RUN_ID}`;
       const unique = {
         ...body,
         metadata: { ...(body.metadata ?? {}), name },
