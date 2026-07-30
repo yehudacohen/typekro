@@ -317,7 +317,11 @@ function alchemyArtifactOutputs(
  */
 async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  dependencies: {
+    migrateLegacyArtifactBindings?: typeof migrateLegacyKroArtifactBindingCrd;
+    kubeConfigForMigration?: () => KubeConfig;
+  } = {}
 ): Promise<TypeKroResource<T>> {
   abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
@@ -404,8 +408,11 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       effectiveProps.deploymentStrategy === 'kro' &&
       (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
     ) {
-      await migrateLegacyKroArtifactBindingCrd(
-        _createClientProvider(effectiveProps, 'artifact-binding-migration'),
+      await (
+        dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd
+      )(
+        dependencies.kubeConfigForMigration?.() ??
+          _createClientProvider(effectiveProps, 'artifact-binding-migration'),
         resourceForDeploy as unknown as KubernetesResource
       );
     }
@@ -428,6 +435,13 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
     await dispose();
   }
 }
+
+/**
+ * Exercise the complete Alchemy reconcile path while substituting only the
+ * cluster migration operation. Kept test-only so production callers continue
+ * through the Effect provider above.
+ */
+export const deployKroResourceForTest = deployKroResource;
 
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 

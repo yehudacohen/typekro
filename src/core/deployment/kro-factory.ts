@@ -2110,6 +2110,12 @@ export class KroResourceFactoryImpl<
         ) {
           await member.factory.runKroPrerequisiteHook(deploymentEngine, undefined, abortSignal);
           await member.factory.addRgdSchemaStatusPruneMarkers(resource);
+          // Keep the semantic artifact-bundle path equivalent to the legacy
+          // ensureRGDDeployed() path. Existing v0.32 instances may still have a
+          // topology-specific generated CRD even when the desired RGD already
+          // carries the stable map schema, so this must run before the RGD is
+          // applied on every resumable deploy.
+          await member.factory.migrateLegacyArtifactBindings(resource);
           const rgdFactory =
             member.factory.rgdProvider ??
             (await import('../../factories/kro/resource-graph-definition.js'))

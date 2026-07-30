@@ -568,6 +568,62 @@ function getPrivateMethod(
 }
 
 describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
+  it('runs artifact-binding migration through the public semantic factory.deploy path', async () => {
+    const composition = kubernetesComposition(
+      {
+        name: 'artifactMigrationPath',
+        apiVersion: 'tests.typekro.dev/v1alpha1',
+        kind: 'ArtifactMigrationPath',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      () => ({ ready: true })
+    );
+    const factory = composition.factory('kro', {
+      namespace: 'tests',
+      kubeConfig: createMockKubeConfig(),
+      waitForReady: false,
+    });
+    const internals = factory as unknown as Record<string, unknown>;
+    const events: string[] = [];
+    internals.assertNoPreHoistNamespaceConflict = async () => undefined;
+    internals.ensureTargetNamespace = async () => undefined;
+    internals.addRgdSchemaStatusPruneMarkers = async () => undefined;
+    internals.migrateLegacyArtifactBindings = async () => {
+      events.push('migrate');
+    };
+    internals.createEnhancedProxy = async (spec: TestSpec) => ({
+      apiVersion: 'tests.typekro.dev/v1alpha1',
+      kind: 'ArtifactMigrationPath',
+      metadata: { name: spec.name, namespace: 'tests' },
+      spec,
+      status: { ready: true },
+    });
+
+    const proto = DirectDeploymentEngine.prototype as unknown as Record<string, unknown>;
+    const originalDeployResource = proto.deployResource;
+    const originalWaitForCRDByKindAndGroup = proto.waitForCRDByKindAndGroup;
+    const originalDispose = proto.dispose;
+    proto.deployResource = async (resource: KubernetesResource) => {
+      events.push(`deploy:${resource.kind}`);
+      return { manifest: resource, liveManifest: resource };
+    };
+    proto.waitForCRDByKindAndGroup = async () => ({ plural: 'artifactmigrationpaths' });
+    proto.dispose = async () => undefined;
+
+    try {
+      await factory.deploy({ name: 'demo' });
+      expect(events).toContain('migrate');
+      expect(events.indexOf('migrate')).toBeLessThan(
+        events.indexOf('deploy:ResourceGraphDefinition')
+      );
+    } finally {
+      proto.deployResource = originalDeployResource;
+      proto.waitForCRDByKindAndGroup = originalWaitForCRDByKindAndGroup;
+      proto.dispose = originalDispose;
+    }
+  });
+
   it('disposes the RGD deployment engine after successful deployment', async () => {
     const factory = makeFactory('rgdDispose');
     (factory as unknown as Record<string, unknown>).getKubeConfig = () => ({

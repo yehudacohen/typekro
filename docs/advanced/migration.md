@@ -18,9 +18,7 @@ KRO's reviewed breaking-change annotation:
 ```typescript
 const migrationFactory = application.factory('kro', {
   namespace: 'application-system',
-  compositionOptions: {
-    allowBreakingChanges: true,
-  },
+  allowBreakingChanges: true,
 });
 
 await Bun.write('application-artifact-binding-migration.yaml', migrationFactory.toYaml());
