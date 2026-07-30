@@ -457,10 +457,11 @@ async function captureKnownControllerDescendants(
         metadata: { name: target.name, namespace },
       });
     } catch (error: unknown) {
-      const statusCode =
-        (error as { statusCode?: number; body?: { code?: number } }).statusCode ??
-        (error as { body?: { code?: number } }).body?.code;
-      if (statusCode === 404) continue;
+      // @kubernetes/client-node 1.x's KubernetesObjectApi can expose a 404
+      // only through its message and a serialized `body` string. Reuse the
+      // shared cross-version classifier so an already-absent Job is valid
+      // teardown evidence rather than a false discovery failure.
+      if (isNotFoundError(error)) continue;
       throw error;
     }
     const uid = live.metadata?.uid;
