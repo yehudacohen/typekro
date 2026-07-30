@@ -383,6 +383,9 @@ function inspectSchemaPath(
     }
     return inspectSchemaPath(node.items, segments, index + 1);
   }
+  if (node.kind === 'map') {
+    return inspectSchemaPath(node.values, segments, index + 1);
+  }
   if (node.kind !== 'object') return { recognized: false, optional: false };
   const property = node.properties.find((candidate) => candidate.name === segment);
   if (!property) return { recognized: false, optional: false };

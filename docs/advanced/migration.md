@@ -2,6 +2,48 @@
 
 Migrate to TypeKro from existing infrastructure tools incrementally.
 
+## Upgrade v0.32 artifact-backed KRO graphs
+
+TypeKro releases after v0.32 store compiler-provided artifact bindings in a
+topology-independent nested string map. The persisted values keep the same
+`requirement -> output -> value` shape, but KRO classifies the generated CRD
+schema change from v0.32's fixed hashed properties to a map as breaking.
+
+`factory.deploy()` and Alchemy perform this one-time broadening automatically
+and resume safely if the process stops between the RGD and CRD writes. GitOps
+rendering is cluster-free, so `toYaml()` cannot inspect or migrate the live
+generated CRD. A v0.32 artifact-backed RGD must therefore be upgraded once with
+KRO's reviewed breaking-change annotation:
+
+```typescript
+const migrationFactory = application.factory('kro', {
+  namespace: 'application-system',
+  allowBreakingChanges: true,
+});
+
+await Bun.write('application-artifact-binding-migration.yaml', migrationFactory.toYaml());
+```
+
+Before applying the render, back up the RGD and its instances. Then:
+
+1. Server-side dry-run the migration render.
+2. Apply it and wait for the RGD's current generation to report
+   `GraphAccepted=True`, `KindReady=True`, and `Ready=True`.
+3. Inspect the generated CRD and confirm
+   `spec.typekroArtifactBindings` is an object whose values are objects whose
+   values are strings (`additionalProperties` at both map levels).
+4. Confirm every existing instance and child resource remains ready.
+5. Remove the one-time annotation and return to the normal render:
+
+   ```bash
+   kubectl annotate resourcegraphdefinition <rgd-name> kro.run/allow-breaking-changes-
+   kubectl apply --server-side -f application.yaml
+   ```
+
+Do not leave `kro.run/allow-breaking-changes=true` on routine GitOps output. It
+weakens KRO's general schema-evolution guard and is intended only for this
+known, value-preserving v0.32 transition.
+
 ## From Raw YAML
 
 Use `YamlFile()` to include existing manifests while adding new TypeKro resources:

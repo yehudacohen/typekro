@@ -141,6 +141,9 @@ function schemaNode(value: unknown, path: string): asserts value is SchemaNodeIR
     case 'array':
       schemaNode(node.items, `${path}.items`);
       return;
+    case 'map':
+      schemaNode(node.values, `${path}.values`);
+      return;
     case 'object': {
       const names = new Set<string>();
       array(node.properties, `${path}.properties`).forEach((propertyValue, index) => {

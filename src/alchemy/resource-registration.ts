@@ -24,6 +24,7 @@ import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
+import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -197,11 +198,7 @@ export function materializeAlchemyResources(
   kroResource: typeof KroResource,
   declarations: readonly AlchemyResourceDeclaration[],
   options: MaterializeAlchemyResourcesOptions = {}
-): Effect.Effect<
-  Record<string, KroResourceR>,
-  never,
-  ProviderMod.Provider<KroResourceR>
-> {
+): Effect.Effect<Record<string, KroResourceR>, never, ProviderMod.Provider<KroResourceR>> {
   return Effect.gen(function* () {
     // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
     // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
@@ -320,7 +317,11 @@ function alchemyArtifactOutputs(
  */
 async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  dependencies: {
+    migrateLegacyArtifactBindings?: typeof migrateLegacyKroArtifactBindingCrd;
+    kubeConfigForMigration?: () => KubeConfig;
+  } = {}
 ): Promise<TypeKroResource<T>> {
   abortSignal?.throwIfAborted();
   const logger = getComponentLogger('alchemy-deployment').child({ alchemyType: KRO_RESOURCE_TYPE });
@@ -403,6 +404,18 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       copyResourceMetadata(resourceForDeploy, wrapped);
       resourceForDeploy = wrapped;
     }
+    if (
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
+    ) {
+      await (
+        dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd
+      )(
+        dependencies.kubeConfigForMigration?.() ??
+          _createClientProvider(effectiveProps, 'artifact-binding-migration'),
+        resourceForDeploy as unknown as KubernetesResource
+      );
+    }
     const deployProps =
       resourceForDeploy === effectiveProps.resource
         ? effectiveProps
@@ -422,6 +435,13 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
     await dispose();
   }
 }
+
+/**
+ * Exercise the complete Alchemy reconcile path while substituting only the
+ * cluster migration operation. Kept test-only so production callers continue
+ * through the Effect provider above.
+ */
+export const deployKroResourceForTest = deployKroResource;
 
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 

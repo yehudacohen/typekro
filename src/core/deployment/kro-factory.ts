@@ -74,11 +74,9 @@ import {
   type KroArtifactPlan,
   type KroSupportingArtifact,
   type KroSupportingArtifactCompilerInput,
-  kroArtifactOutputField,
   kroArtifactPlanToGraphResources,
   kroArtifactPlanToInstanceResource,
   kroArtifactPlanToSupportingResources,
-  kroArtifactRequirementField,
   lowerPlanValue,
   mapPlanValueSensitiveBindings,
   materializeKroArtifactBundleOperation,
@@ -153,6 +151,7 @@ import {
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
+import { migrateLegacyKroArtifactBindingCrd } from './kro-artifact-binding-migration.js';
 import { assertKroInstanceSpecPreserved } from './kro-instance-admission.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
@@ -2112,6 +2111,12 @@ export class KroResourceFactoryImpl<
         ) {
           await member.factory.runKroPrerequisiteHook(deploymentEngine, undefined, abortSignal);
           await member.factory.addRgdSchemaStatusPruneMarkers(resource);
+          // Keep the semantic artifact-bundle path equivalent to the legacy
+          // ensureRGDDeployed() path. Existing v0.32 instances may still have a
+          // topology-specific generated CRD even when the desired RGD already
+          // carries the stable map schema, so this must run before the RGD is
+          // applied on every resumable deploy.
+          await member.factory.migrateLegacyArtifactBindings(resource);
           const rgdFactory =
             member.factory.rgdProvider ??
             (await import('../../factories/kro/resource-graph-definition.js'))
@@ -4506,21 +4511,7 @@ export class KroResourceFactoryImpl<
       (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
         ?.schemaFieldValidations
     );
-    const artifactOutputUses = this.kroArtifactOutputUses();
-    if (artifactOutputUses.length > 0) {
-      const byRequirement = new Map<string, ArtifactOutputUse[]>();
-      for (const use of artifactOutputUses) {
-        const current = byRequirement.get(use.requirementId) ?? [];
-        current.push(use);
-        byRequirement.set(use.requirementId, current);
-      }
-      kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = Object.fromEntries(
-        [...byRequirement.entries()].map(([requirementId, uses]) => [
-          kroArtifactRequirementField(requirementId),
-          Object.fromEntries(uses.map((use) => [kroArtifactOutputField(use.output), 'string'])),
-        ])
-      );
-    }
+    kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]map[string]string';
 
     // Attach nested status CEL mappings as non-enumerable property so
     // serializeResourceGraphToYaml can inline virtual composition IDs.
@@ -4589,21 +4580,6 @@ export class KroResourceFactoryImpl<
     this.assertNoDanglingHoistedReferences(JSON.stringify(rgdManifest), new Set(hoistIds.keys()));
 
     return rgdManifest;
-  }
-
-  private kroArtifactOutputUses(): readonly ArtifactOutputUse[] {
-    const capture = this.factoryOptions.semanticCapture;
-    if (!capture) return [];
-    const configuredPlan = this.factoryOptions.plan ?? {};
-    const plan = capture.planTemplate({
-      ...configuredPlan,
-      aspects: configuredPlan.aspects ?? this.factoryOptions.aspects ?? [],
-    });
-    return collectArtifactOutputUses({
-      nodes: plan.nodes,
-      outputs: plan.outputs,
-      representationRequirements: plan.representationRequirements,
-    });
   }
 
   private buildRgdYaml(spec?: TSpec): string {
@@ -4745,6 +4721,10 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  private async migrateLegacyArtifactBindings(rgdManifest: k8s.KubernetesObject): Promise<void> {
+    await migrateLegacyKroArtifactBindingCrd(this.getKubeConfig(), rgdManifest);
+  }
+
   /**
    * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine.
    *
@@ -4785,6 +4765,7 @@ export class KroResourceFactoryImpl<
     };
 
     await this.addRgdSchemaStatusPruneMarkers(rgdWithMetadata);
+    await this.migrateLegacyArtifactBindings(rgdWithMetadata);
 
     // Create Enhanced RGD with readiness evaluator
     const rgdFactory =
@@ -5780,7 +5761,15 @@ export class KroResourceFactoryImpl<
       instanceNameOverride: instanceName,
       ...(singletonSpecFingerprint ? { singletonSpecFingerprint } : {}),
     });
-    if (!compilation) return legacyManifest;
+    if (!compilation) {
+      return {
+        ...legacyManifest,
+        spec: {
+          ...(spec as Record<string, unknown>),
+          [KRO_ARTIFACT_BINDINGS_SPEC_FIELD]: {},
+        } as TSpec,
+      };
+    }
     return kroArtifactPlanToInstanceResource(compilation.artifacts, {
       sensitive: compilation.sensitiveBindings,
     }) as {

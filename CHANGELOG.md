@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- KRO artifact bindings now use a topology-independent nested string-map
+  schema, so adding or removing generated artifact outputs no longer changes
+  the application CRD. Imperative and Alchemy deployments automatically migrate
+  the released v0.32 fixed-property schema and resume interrupted migrations.
+  GitOps users with existing v0.32 artifact-backed instances must follow the
+  one-time `allowBreakingChanges` procedure in the migration guide before
+  applying normal generated YAML.
+
 ### Fixed
 
 - **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by

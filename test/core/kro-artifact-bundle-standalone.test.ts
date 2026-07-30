@@ -43,6 +43,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'assertNoPreHoistNamespaceConflict', async () => {});
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
+    replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
     replace(factoryPrototype, 'dispose', async () => {});
     replace(
       enginePrototype,
@@ -96,6 +97,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'getSingletonOwnerInstancesForDriftCheck', async () => []);
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
+    replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(factoryPrototype, 'createEnhancedProxy', async (spec: unknown, name: string) => ({
@@ -202,6 +204,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'assertNoPreHoistNamespaceConflict', async () => {});
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
+    replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(factoryPrototype, 'createEnhancedProxy', async (spec: unknown, name: string) => ({
@@ -268,6 +271,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'assertNoPreHoistNamespaceConflict', async () => {});
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
+    replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(
