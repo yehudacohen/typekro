@@ -44,11 +44,12 @@ const RUN_ID = Math.random().toString(36).slice(2, 8);
 const RGD_NAME = `schema-migration-probe-${RUN_ID}`;
 const CR_KIND = `SchemaMigrationProbe${RUN_ID}`;
 /**
- * DERIVED, never hand-written: KRO builds the CRD plural as `kind.toLowerCase() + 's'`. Hand-building it put
- * the `s` before the run suffix (`…probes<id>` vs KRO's `…probe<id>s`), so every CRD lookup missed and the
- * fixture timed out waiting for a schema that was registered under the other name.
+ * DISCOVERED from the cluster, never derived. KRO pluralises the kind with real English rules, not `+ 's'`:
+ * with a random run suffix, `…probea32l9o` becomes `…probea32l9oes`, so any client-side guess is correct only
+ * for some suffixes — the fixture was flaky by construction and leaked the CRD its teardown couldn't find.
+ * Resolved in `beforeAll` once KRO has registered the CRD.
  */
-const CR_PLURAL = `${CR_KIND.toLowerCase()}s`;
+let CR_PLURAL = '';
 
 /** An RGD declaring `values` as the type given — the only difference between legacy and corrected. */
 const rgd = (valuesType: 'string' | 'object', allowBreaking: boolean): object => ({
@@ -136,6 +137,24 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
     return false;
   };
 
+  /**
+   * Find the CRD plural KRO registered for {@link CR_KIND} by MATCHING `spec.names.kind` — authoritative,
+   * unlike client-side pluralisation. Polls because KRO registers the CRD asynchronously after the RGD.
+   */
+  const discoverCrPlural = async (): Promise<string> => {
+    for (let i = 0; i < 60; i++) {
+      const found = await apiext
+        .listCustomResourceDefinition()
+        .then((list) =>
+          list.items.find((c) => c.spec.group === GROUP && c.spec.names.kind === CR_KIND)?.spec.names.plural
+        )
+        .catch(() => undefined);
+      if (found) return found;
+      await Bun.sleep(1000);
+    }
+    throw new Error(`KRO never registered a CRD for kind ${CR_KIND} in group ${GROUP}`);
+  };
+
   /** True only for a definitive 404. Any other error is NOT evidence of absence. */
   const isNotFound = (e: unknown): boolean => {
     const code = (e as { code?: number })?.code
@@ -171,22 +190,15 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
   };
 
   beforeAll(async () => {
-    // Start from a clean slate so "the CRD still says string" cannot be an artifact of a previous run.
-    await custom
-      .deleteClusterCustomObject({ group: GROUP, version: VERSION, plural: RGD_PLURAL, name: RGD_NAME })
-      .catch(() => {});
-    await apiext
-      .deleteCustomResourceDefinition({ name: `${CR_PLURAL}.${GROUP}` })
-      .catch(() => {});
-    for (let i = 0; i < 60; i++) {
-      if ((await registeredValuesType()) === undefined) break;
-      await Bun.sleep(1000);
-    }
+    // No pre-delete: the identity is RUN-UNIQUE, so there is nothing from a previous run to clear, and
+    // unconditionally deleting a fixed name is what let concurrent runs destroy each other's fixtures.
     // Seed the legacy state WITH the annotation. Reverting `object` back to `string` is itself a breaking
     // change, so if a previous run left the CRD at `object` (KRO's GC of the CRD can lag the RGD delete) an
     // un-annotated seed would be refused and the fixture would never establish. The annotation here is
     // fixture setup — the behaviour under test is the UN-annotated upgrade in the first `it`.
     await applyRgd(rgd('string', true));
+    // Resolve the plural from the cluster before any CRD read — every helper below keys off it.
+    CR_PLURAL = await discoverCrPlural();
     expect(await waitForValuesType('string')).toBe(true);
   });
 

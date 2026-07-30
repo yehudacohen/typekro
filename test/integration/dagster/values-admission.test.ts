@@ -54,8 +54,12 @@ const RGD_PLURAL = 'resourcegraphdefinitions';
 const RUN_ID = Math.random().toString(36).slice(2, 8);
 const PROBE_KIND = `ObjectSchemaProbe${RUN_ID}`;
 const PROBE_RGD = `object-schema-probe-${RUN_ID}`;
-/** KRO derives the CRD plural from the schema kind, lowercased. */
-const pluralFor = (kind: string): string => `${kind.toLowerCase()}s`;
+/**
+ * The CRD plural is DISCOVERED from the cluster, never derived. KRO pluralises the schema kind with real
+ * English rules, not `+ 's'`: a kind ending in `o` becomes `oes` (potato→potatoes). Since the run suffix is
+ * random, guessing made these fixtures pass or fail depending on its last character — `…probexrjqu1s` worked,
+ * `…probea32l9oes` did not, and the mismatch leaked the CRD teardown then failed to find.
+ */
 
 /**
  * The structure a caller sends and admission must NOT strip: nested maps, a boolean, a number, an array of
@@ -100,6 +104,8 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
   /** CRD plurals KRO registers for this run's unique kinds; resolved in `beforeAll`. */
   let probePlural = '';
   let dagsterPlural = '';
+  /** EVERY plural this run registered — teardown must delete all of them, not only the asserted ones. */
+  const registeredPlurals: string[] = [];
   /** Every object this test creates, newest first, so teardown is deterministic. */
   const created: Array<{
     what: string;
@@ -144,6 +150,24 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
       await Bun.sleep(1000);
     }
     return false;
+  };
+
+  /**
+   * Find the CRD plural KRO registered for `kind` by MATCHING `spec.names.kind` — authoritative, unlike any
+   * client-side pluralisation. Polls because KRO registers the CRD asynchronously after accepting the RGD.
+   */
+  const discoverPlural = async (kind: string): Promise<string> => {
+    for (let i = 0; i < 60; i++) {
+      const found = await apiext
+        .listCustomResourceDefinition()
+        .then((list) =>
+          list.items.find((c) => c.spec.group === RGD_GROUP && c.spec.names.kind === kind)?.spec.names.plural
+        )
+        .catch(() => undefined);
+      if (found) return found;
+      await Bun.sleep(1000);
+    }
+    throw new Error(`KRO never registered a CRD for kind ${kind} in group ${RGD_GROUP}`);
   };
 
   /**
@@ -216,7 +240,8 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
             name,
           }),
       });
-      plurals.push(pluralFor(kind));
+      const plural = await discoverPlural(kind);
+      plurals.push(plural);
     }
     return plurals;
   };
@@ -267,6 +292,11 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     const dagsterPlurals = await applyRgd(
       dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml()
     );
+    // EVERY plural the bundle registers must be retained for teardown, not just the one the assertions read.
+    // The bundle contains TWO RGDs (bootstrap + the HelmRepository singleton), so each run registers two CRDs;
+    // deleting an RGD does not reap its CRD, so keeping only the bootstrap plural leaked
+    // `dagsterhelmrepository<id>s.kro.run` on every run.
+    registeredPlurals.push(...probePlurals, ...dagsterPlurals);
     // The bootstrap RGD is the one declaring the schemaless `values` hatches the assertions read.
     dagsterPlural = dagsterPlurals.find((pl) => pl.startsWith('dagsterbootstrap')) ?? '';
     if (!dagsterPlural) throw new Error(`no dagsterbootstraps plural in ${dagsterPlurals.join(', ')}`);
@@ -313,7 +343,7 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
 
     // Deleting an RGD does NOT reap the CRD KRO registered for it. Both kinds are run-unique, so this run
     // owns both and can remove them without touching any shared definition.
-    for (const plural of [probePlural, dagsterPlural].filter(Boolean)) {
+    for (const plural of [...new Set(registeredPlurals.filter(Boolean))]) {
       const crd = `${plural}.${RGD_GROUP}`;
       await apiext
         .deleteCustomResourceDefinition({ name: crd })
@@ -379,7 +409,9 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
             name,
           })
           .then(() => false)
-          .catch(() => true),
+          // 404-only, same as the RGD/CRD waits: a transient API error must NOT be read as "settled", or
+          // teardown proceeds to delete the namespace, RGD and CRD while this CR's finalizer is still active.
+          .catch((e: unknown) => isNotFound(e)),
     });
 
     const admitted = (await custom.getNamespacedCustomObject({
