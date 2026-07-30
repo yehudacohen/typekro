@@ -1914,7 +1914,7 @@ async function isFluxReady(namespace = 'flux-system', kc?: k8s.KubeConfig): Prom
 export interface EnsureFluxOptions {
   /** Namespace to install Flux in (default: 'flux-system') */
   namespace?: string;
-  /** Flux version (default: 'v2.7.5') */
+  /** Flux version (default: 'v2.9.0') */
   version?: string;
   /** Timeout for waiting for Flux to be ready (default: 300000ms) */
   timeout?: number;
@@ -1936,7 +1936,7 @@ export interface EnsureFluxOptions {
 export async function ensureFluxInstalled(options: EnsureFluxOptions = {}): Promise<void> {
   const {
     namespace = 'flux-system',
-    version = 'v2.7.5',
+    version = 'v2.9.0',
     timeout = 300000,
     kubeConfig,
     verbose = true,

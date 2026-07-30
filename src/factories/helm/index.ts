@@ -32,4 +32,8 @@ export type { HelmReleaseConditionSummary, HelmReleasePhase } from './status.js'
 export { helmReleaseConditionSummary } from './status.js';
 
 // types.ts
-export type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
+export type {
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+  HelmReleaseValuesFromSource,
+} from './types.js';

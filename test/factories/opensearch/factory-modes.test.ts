@@ -221,7 +221,7 @@ describe('OpenSearch integration', () => {
     expect(yaml).not.toContain('__KUBERNETES_REF__');
     expect(yaml).toContain('${schema.spec.storage.size}');
     expect(yaml).toContain(
-      'adminDn: \'[]string | minItems=1 validation="size(self) > 0 && self.all(dn, size(dn) > 0)"\''
+      'adminDn: \'[]string | minLength=1 | minItems=1 validation="size(self) > 0 && self.all(dn, size(dn) > 0)"\''
     );
     expect(yaml).toContain('${cluster.status.availableNodes}');
     expect(yaml).toContain('${cluster.status.health}');

@@ -68,9 +68,25 @@ const release = helmRelease({
   values: {
     replicaCount: 3,
     image: { tag: 'v1.0.0' }
-  }
+  },
+  valuesFrom: [{
+    kind: 'Secret',
+    name: 'my-app-values',
+    valuesKey: 'databaseUrl',
+    targetPath: 'config.databaseUrl'
+  }]
 });
 ```
+
+`valuesFrom` exposes Flux's Secret/ConfigMap value projection without copying
+the source value into TypeKro state. Its `name`, `valuesKey`, and `targetPath`
+fields are graph-aware, so resources created or observed in the same
+composition can provide their names through ordinary TypeKro references.
+Values projected through `targetPath` use Helm `--set` parsing semantics under
+the managed Flux 2.7.5 baseline. TypeKro intentionally withholds Flux 2.9's
+`literal` field until the managed runtime and Kubernetes compatibility baseline
+can move together. Use chart-native `envFrom` or mounted files for arbitrary
+Secret bytes; do not route credentials with punctuation through `targetPath`.
 
 ## helmRepository()
 

@@ -50,7 +50,6 @@ import {
 export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // Use a specific stable Flux version by default to avoid schema validation issues
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
-  // v2.7.5 is the latest stable version with fixes for schema validation issues
   const fluxVersion = config.fluxVersion || 'v2.7.5';
   // KRO 0.9.2+ is REQUIRED — the TypeKro serialization pipeline emits
   // `${has(...) ? ... : omit()}` conditionals for optional spec fields

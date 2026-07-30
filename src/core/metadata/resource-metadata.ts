@@ -17,6 +17,7 @@ import type { ResourceAspectMetadata } from '../aspects/types.js';
 import type { ArtifactApplyPolicy } from '../planning/artifacts.js';
 import type { ReadinessStrategyIdentity } from '../planning/types.js';
 import type { ResourceStatus } from '../types/kubernetes.js';
+import type { RefOrValue } from '../types/references.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +50,18 @@ export interface ResourceMetadata {
    * material remains sensitive and is redacted into bindings by the planner.
    */
   secretMaterial?: 'public-placeholder';
+  /**
+   * Unserialized authoring identity for an external reference.
+   *
+   * Enhanced resource proxy reads may render CEL expressions as `${...}`
+   * markers. Planning retains the original values here so direct execution can
+   * evaluate them against the concrete instance spec instead of treating those
+   * markers as literal Kubernetes names.
+   */
+  externalIdentity?: {
+    name: RefOrValue<string>;
+    namespace?: RefOrValue<string>;
+  };
   /** Original resource identifier for cross-resource references */
   resourceId?: string;
   /** Local resource IDs that should resolve to this emitted resource ID. */

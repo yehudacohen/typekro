@@ -7,6 +7,7 @@
  */
 
 import type { Type } from 'arktype';
+import { RE2JS } from 're2js';
 import { KUBERNETES_REF_SCHEMA_MARKER_SOURCE } from '../../shared/brands.js';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { pascalCase } from '../../utils/string.js';
@@ -75,6 +76,31 @@ function getKroTypeFromJson(node: unknown): string {
       if (typeof nodeObj.max === 'number') markers.push(`maximum=${nodeObj.max}`);
       return markers.length > 0 ? `${baseType} | ${markers.join(' ')}` : baseType;
     }
+    if (nodeObj.domain === 'string') {
+      const markers: string[] = [];
+      if (typeof nodeObj.minLength === 'number') markers.push(`minLength=${nodeObj.minLength}`);
+      if (typeof nodeObj.maxLength === 'number') markers.push(`maxLength=${nodeObj.maxLength}`);
+      if (Array.isArray(nodeObj.pattern)) {
+        if (nodeObj.pattern.length > 1) {
+          throw new Error(
+            'KRO SimpleSchema supports one string pattern per field; combine intersecting ArkType patterns before serialization.',
+          );
+        }
+        const pattern = nodeObj.pattern[0];
+        if (typeof pattern === 'string') {
+          markers.push(`pattern="${kubernetesRegexPattern(pattern)}"`);
+        } else if (isArkTypeFlaggedPattern(pattern)) {
+          throw new Error(
+            `ArkType pattern ${JSON.stringify(pattern.rule)} uses JavaScript flags ${JSON.stringify(pattern.flags)}, which KRO SimpleSchema cannot preserve. Use an unflagged RE2-compatible pattern before generating a KRO schema.`,
+          );
+        } else if (pattern !== undefined) {
+          throw new Error(
+            `ArkType emitted an unsupported string-pattern representation ${JSON.stringify(pattern)}. TypeKro refuses to omit the constraint while generating a KRO schema.`,
+          );
+        }
+      }
+      return markers.length > 0 ? `string | ${markers.join(' ')}` : 'string';
+    }
     // Map / Record types — arktype represents `Record<string, V>` as
     // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
     // KRO SimpleSchema uses `map[string]<value-type>` notation for these.
@@ -137,6 +163,36 @@ function getKroTypeFromJson(node: unknown): string {
   }
 
   return 'string';
+}
+
+/**
+ * Kubernetes validates OpenAPI patterns with RE2. ArkType accepts JavaScript
+ * regular expressions, whose grammar additionally includes constructs that
+ * the API server rejects. Fail during generation instead of emitting a CRD
+ * that can never be admitted.
+ */
+function kubernetesRegexPattern(pattern: string): string {
+  try {
+    RE2JS.compile(pattern);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `ArkType pattern ${JSON.stringify(pattern)} is not compatible with Kubernetes RE2 validation: ${reason}`,
+    );
+  }
+  return pattern.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+function isArkTypeFlaggedPattern(
+  value: unknown,
+): value is { readonly rule: string; readonly flags: string } {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && typeof Reflect.get(value, 'rule') === 'string'
+    && typeof Reflect.get(value, 'flags') === 'string',
+  );
 }
 
 /**

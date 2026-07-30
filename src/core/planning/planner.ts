@@ -1,10 +1,10 @@
+import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import {
   isCelExpression,
   isKubernetesRef,
   isMixedTemplate,
   isResourceReference,
 } from '../../utils/type-guards.js';
-import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identifiers.js';
 import { applyAspects } from '../aspects/apply.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { TypeKroError } from '../errors.js';
@@ -1118,8 +1118,11 @@ function purityDiagnostics(source: string): PlanDiagnostic[] {
 }
 
 function resourceIdentity(resource: KubernetesResource, specSchema: SchemaIR): KubernetesIdentity {
-  const name = lowerPlanValue(resource.metadata?.name, { specSchema }).value;
-  const namespace = resource.metadata?.namespace;
+  const externalIdentity = getMetadataField(resource, 'externalIdentity');
+  const name = lowerPlanValue(externalIdentity?.name ?? resource.metadata?.name, {
+    specSchema,
+  }).value;
+  const namespace = externalIdentity?.namespace ?? resource.metadata?.namespace;
   const declaredScope = getResourceScope(resource);
   return {
     apiVersion: resource.apiVersion,
@@ -1535,7 +1538,14 @@ function buildResourceNodes(
     const logicalId = getResourceId(resource) ?? fallbackId;
     if (nodes.some((node) => node.id === logicalId)) return;
     referenceIdToLogical.set(logicalId, logicalId);
-    const canonicalized = canonicalizeResource(resource, diagnostics);
+    // External references are observed rather than authored desired state.
+    // Running factory canonicalizers against them is both unnecessary and
+    // ambiguous when several factories share the referenced GVK (notably
+    // Secret). Preserve their declared identity exactly.
+    const canonicalized =
+      Reflect.get(resource, '__externalRef') === true
+        ? { resource, canonicalizers: [] }
+        : canonicalizeResource(resource, diagnostics);
     representationRequirements.push(
       ...factoryRepresentationRequirements(resource, logicalId, diagnostics)
     );

@@ -3,14 +3,22 @@ import {
   WELL_KNOWN_HELM_REPOSITORIES,
 } from '../../core/config/defaults.js';
 import { getComponentLogger } from '../../core/logging/index.js';
+import type {
+  TypeKroChartValue,
+  TypeKroValue,
+  TypeKroValueTreeObject,
+} from '../../core/types/common.js';
 import type { Enhanced } from '../../core/types/index.js';
-import type { TypeKroChartValue, TypeKroValueTreeObject } from '../../core/types/common.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
+import type { HelmReleaseSpec, HelmReleaseStatus, HelmReleaseValuesFromSource } from './types.js';
 
-type HelmReleaseAuthoringSpec<TValues extends object> = Omit<HelmReleaseSpec<TValues>, 'values'> & {
+type HelmReleaseAuthoringSpec<TValues extends object> = Omit<
+  HelmReleaseSpec<TValues>,
+  'values' | 'valuesFrom'
+> & {
   values?: TypeKroChartValue<TValues>;
+  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
 };
 
 export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObject> {
@@ -40,6 +48,11 @@ export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObje
    * mixed-template strings, arrays, and plain objects recursively.
    */
   values?: TypeKroChartValue<TValues>;
+  /**
+   * Flux values sources. Each field remains graph-aware, so a Secret or
+   * ConfigMap created in the same composition can supply its generated name.
+   */
+  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
   /**
    * Flux install policy. The supplied fields override TypeKro's bounded retry
    * defaults; nested remediation fields are merged rather than replaced.
@@ -124,6 +137,17 @@ export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObje
 export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
   config: HelmReleaseConfig<TValues>
 ): Enhanced<HelmReleaseSpec<TValues>, HelmReleaseStatus> {
+  if (
+    Array.isArray(config.valuesFrom) &&
+    config.valuesFrom.some(
+      (source) => typeof source === 'object' && source !== null && Object.hasOwn(source, 'literal')
+    )
+  ) {
+    throw new Error(
+      "HelmRelease valuesFrom.literal requires Flux 2.9, but TypeKro's managed Flux baseline is 2.7.5. Remove literal or manage a compatible Flux runtime explicitly."
+    );
+  }
+
   // Determine sourceRef — use explicit config or auto-detect from repository URL
   let sourceRefName: string;
   let sourceRefNamespace: string;
@@ -212,6 +236,7 @@ export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
         },
       },
       ...(config.driftDetection && { driftDetection: config.driftDetection }),
+      ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator) as Enhanced<

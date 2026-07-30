@@ -34,12 +34,17 @@ export * from './flux/index.js';
 // HARBOR REGISTRY ECOSYSTEM
 // =============================================================================
 export * as harbor from './harbor/index.js';
+// =============================================================================
+// HATCHET DURABLE WORKFLOW ECOSYSTEM
+// =============================================================================
+export * as hatchet from './hatchet/index.js';
 export type {
   HelmReleaseConditionSummary,
   HelmReleaseConfig,
   HelmReleasePhase,
   HelmReleaseSpec,
   HelmReleaseStatus,
+  HelmReleaseValuesFromSource,
   HelmRepositoryConfig,
   HelmRepositorySpec,
   HelmRepositoryStatus,

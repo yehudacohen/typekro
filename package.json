@@ -110,6 +110,10 @@
       "import": "./dist/factories/nats/index.js",
       "types": "./dist/factories/nats/index.d.ts"
     },
+    "./hatchet": {
+      "import": "./dist/factories/hatchet/index.js",
+      "types": "./dist/factories/hatchet/index.d.ts"
+    },
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"
@@ -222,7 +226,8 @@
     "estraverse": "^5.3.0",
     "ignore": "^7.0.5",
     "js-yaml": "4.1.0",
-    "pino": "^9.8.0"
+    "pino": "^9.8.0",
+    "re2js": "2.8.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.1.3",
