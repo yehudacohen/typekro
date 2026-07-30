@@ -131,6 +131,40 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
     return false;
   };
 
+  /** True only for a definitive 404. Any other error is NOT evidence of absence. */
+  const isNotFound = (e: unknown): boolean => {
+    const code = (e as { code?: number })?.code
+      ?? (e as { statusCode?: number })?.statusCode
+      ?? (e as { response?: { statusCode?: number } })?.response?.statusCode;
+    return code === 404 || /\b404\b|NotFound/.test(String(e));
+  };
+
+  /** Poll until the probe RGD is definitively gone; false on timeout so the caller fails. */
+  const waitForRgdAbsent = async (): Promise<boolean> => {
+    for (let i = 0; i < 60; i++) {
+      const state = await custom
+        .getClusterCustomObject({ group: GROUP, version: VERSION, plural: RGD_PLURAL, name: RGD_NAME })
+        .then(() => 'present' as const)
+        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
+      if (state === 'absent') return true;
+      await Bun.sleep(1000);
+    }
+    return false;
+  };
+
+  /** Same contract for the generated CRD. */
+  const waitForCrdAbsent = async (name: string): Promise<boolean> => {
+    for (let i = 0; i < 60; i++) {
+      const state = await apiext
+        .readCustomResourceDefinition({ name })
+        .then(() => 'present' as const)
+        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
+      if (state === 'absent') return true;
+      await Bun.sleep(1000);
+    }
+    return false;
+  };
+
   beforeAll(async () => {
     // Start from a clean slate so "the CRD still says string" cannot be an artifact of a previous run.
     await custom
@@ -159,19 +193,23 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
     // WAIT for the RGD to actually be gone before touching its CRD. Delete them back-to-back and KRO, still
     // reconciling the not-yet-observed RGD deletion, simply RE-REGISTERS the CRD — leaving one behind on
     // every run.
-    for (let i = 0; i < 60; i++) {
-      const stillThere = await custom
-        .getClusterCustomObject({ group: GROUP, version: VERSION, plural: RGD_PLURAL, name: RGD_NAME })
-        .then(() => true)
-        .catch(() => false);
-      if (!stillThere) break;
-      await Bun.sleep(1000);
+    //
+    // Absence must be proven by a 404. Treating ANY error as absence (the previous `.catch(() => false)`)
+    // meant a transient API failure read as "gone": cleanup would proceed to delete the CRD while the RGD was
+    // still there, KRO would re-register it, and the test would report success having leaked the CRD. A
+    // timeout is likewise a FAILURE, not a shrug.
+    if (!(await waitForRgdAbsent())) {
+      failures.push(`rgd/${RGD_NAME}: not confirmed absent (delete stuck, or the API never returned 404)`);
     }
     // Deleting the RGD does NOT reap the CRD KRO registered for it, so remove it explicitly or every run
-    // leaves one behind. Safe to delete unconditionally: this kind is owned solely by this test.
-    await apiext
-      .deleteCustomResourceDefinition({ name: `${CR_PLURAL}.${GROUP}` })
-      .catch((e: unknown) => failures.push(`crd/${CR_PLURAL}.${GROUP}: ${String(e)}`));
+    // leaves one behind. Safe to delete unconditionally: this kind is run-unique and owned solely by this run.
+    const crdName = `${CR_PLURAL}.${GROUP}`;
+    await apiext.deleteCustomResourceDefinition({ name: crdName }).catch((e: unknown) => {
+      if (!isNotFound(e)) failures.push(`crd/${crdName}: ${String(e)}`);
+    });
+    if (!(await waitForCrdAbsent(crdName))) {
+      failures.push(`crd/${crdName}: not confirmed absent (KRO may have re-registered it)`);
+    }
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
 

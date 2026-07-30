@@ -43,8 +43,19 @@ const describeLiveOrSkip = clusterAvailable ? describe : describe.skip;
 const RGD_GROUP = 'kro.run';
 const RGD_VERSION = 'v1alpha1';
 const RGD_PLURAL = 'resourcegraphdefinitions';
-const PROBE_KIND = 'ObjectSchemaProbe';
-const PROBE_RGD = 'object-schema-probe';
+/**
+ * RUN-UNIQUE identities. Nothing this fixture applies may share a name with a real deployment: a shared
+ * cluster's `dagster-bootstrap` / `dagster-helm-repository` RGDs serve live Dagster instances, and rewriting
+ * one migrates the CRD those instances depend on (this bundle carries `allow-breaking-changes`) and discards
+ * labels/annotations owned by whatever system manages it. `resourceVersion` guards concurrent WRITES; it says
+ * nothing about OWNERSHIP. So the live admission coverage runs against a uniquely-named probe copy of the
+ * real generated bundle, and `applyRgd` fails closed if a name it is about to create already exists.
+ */
+const RUN_ID = Math.random().toString(36).slice(2, 8);
+const PROBE_KIND = `ObjectSchemaProbe${RUN_ID}`;
+const PROBE_RGD = `object-schema-probe-${RUN_ID}`;
+/** KRO derives the CRD plural from the schema kind, lowercased. */
+const pluralFor = (kind: string): string => `${kind.toLowerCase()}s`;
 
 /**
  * The structure a caller sends and admission must NOT strip: nested maps, a boolean, a number, an array of
@@ -86,6 +97,9 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
   const custom = createCustomObjectsApiClient(kc);
   const apiext = createBunCompatibleApiClient(kc, k8s.ApiextensionsV1Api);
   let lease: TestNamespaceLease | undefined;
+  /** CRD plurals KRO registers for this run's unique kinds; resolved in `beforeAll`. */
+  let probePlural = '';
+  let dagsterPlural = '';
   /** Every object this test creates, newest first, so teardown is deterministic. */
   const created: Array<{
     what: string;
@@ -94,82 +108,99 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     gone?: () => Promise<boolean>;
   }> = [];
 
-  /** Poll until an RGD is really gone (KRO finalizers settled). Bounded so a stuck delete fails loudly. */
+  /** True only for a definitive 404. Any other error is NOT evidence of absence. */
+  const isNotFound = (e: unknown): boolean => {
+    const code = (e as { code?: number; statusCode?: number; response?: { statusCode?: number } })?.code
+      ?? (e as { statusCode?: number })?.statusCode
+      ?? (e as { response?: { statusCode?: number } })?.response?.statusCode;
+    return code === 404 || /\b404\b|NotFound/.test(String(e));
+  };
+
+  /**
+   * Poll until an RGD is definitively gone. Returns false on timeout so callers FAIL rather than proceed —
+   * treating a transient API error as absence would let teardown delete the CRD while KRO can still see the
+   * RGD, and KRO would then re-register the CRD after the test reported success.
+   */
   const waitForRgdAbsent = async (name: string): Promise<boolean> => {
     for (let i = 0; i < 60; i++) {
-      const gone = await custom
+      const state = await custom
         .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
-        .then(() => false)
-        .catch(() => true);
-      if (gone) return true;
+        .then(() => 'present' as const)
+        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
+      if (state === 'absent') return true;
+      await Bun.sleep(1000);
+    }
+    return false;
+  };
+
+  /** Same contract for a CRD: only a 404 proves absence, and a timeout is a failure. */
+  const waitForCrdAbsent = async (name: string): Promise<boolean> => {
+    for (let i = 0; i < 60; i++) {
+      const state = await apiext
+        .readCustomResourceDefinition({ name })
+        .then(() => 'present' as const)
+        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
+      if (state === 'absent') return true;
       await Bun.sleep(1000);
     }
     return false;
   };
 
   /**
-   * Apply the RGDs in a rendered bundle.
+   * Apply the RGDs in a rendered bundle under RUN-UNIQUE identities, and report the CRD plurals they will
+   * register.
    *
-   * `ownership` decides what may happen to an RGD that ALREADY EXISTS, and it is a safety boundary, not a
-   * style choice:
+   * Every `metadata.name` and `spec.schema.kind` is suffixed with {@link RUN_ID}, so this fixture can only
+   * ever create objects belonging to this run. That is what makes the live coverage safe on a shared cluster:
+   * the assertions still exercise the REAL generated schema (same `object` typings, same preserve-unknown
+   * flags, same KRO admission path), just under a throwaway kind that no deployment depends on.
    *
-   * - `'test-owned'` — the name is unique to this test (see PROBE_RGD). A leftover from an earlier run
-   *   carries an OLD schema, so reusing it would silently assert against the wrong definition; delete and
-   *   recreate, and register it for teardown.
-   * - `'shared'` — the name is PRODUCTION-shaped (`dagster-bootstrap` and its HelmRepository singleton). On a
-   *   persistent cluster these definitions serve real Dagster instances, so this test must never delete
-   *   them: it UPDATES in place (which is all the assertions need — KRO re-registers the CRD from the new
-   *   schema) and never registers them for teardown. Deleting them previously took out the shared
-   *   HelmRepository singleton, breaking every Dagster release pointing at it.
+   * It also FAILS CLOSED: if a name it is about to create already exists, it aborts instead of adopting or
+   * overwriting. With a unique suffix that should be unreachable, so hitting it means an assumption broke —
+   * which is exactly when silently rewriting somebody else's definition would do the most damage.
    */
-  const applyRgd = async (yamlDoc: string, ownership: 'test-owned' | 'shared'): Promise<void> => {
+  const applyRgd = async (yamlDoc: string): Promise<string[]> => {
+    const plurals: string[] = [];
     for (const doc of k8s.loadAllYaml(yamlDoc)) {
-      const body = doc as { kind?: string; metadata?: { name?: string } };
+      const body = doc as {
+        kind?: string;
+        metadata?: { name?: string };
+        spec?: { schema?: { kind?: string } };
+      };
       if (body.kind !== 'ResourceGraphDefinition') continue;
-      const name = body.metadata?.name;
-      if (!name) continue;
+      const originalName = body.metadata?.name;
+      const originalKind = body.spec?.schema?.kind;
+      if (!originalName || !originalKind) continue;
 
-      const existing = await custom
+      // Suffix BOTH identities: the RGD name (what we create) and the schema kind (what KRO derives the CRD
+      // plural from). Leaving either shared would collide with a real deployment.
+      const name = `${originalName}-${RUN_ID}`;
+      const kind = `${originalKind}${RUN_ID}`;
+      const unique = {
+        ...body,
+        metadata: { ...(body.metadata ?? {}), name },
+        spec: { ...(body.spec ?? {}), schema: { ...(body.spec?.schema ?? {}), kind } },
+      };
+
+      const exists = await custom
         .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
-        .then((o) => o as { metadata?: { resourceVersion?: string } })
-        .catch(() => undefined);
-
-      if (existing && ownership === 'shared') {
-        // Update in place — never delete somebody else's definition. `resourceVersion` makes this a
-        // compare-and-swap, so a concurrent writer surfaces as a conflict instead of being clobbered.
-        await custom.replaceClusterCustomObject({
-          group: RGD_GROUP,
-          version: RGD_VERSION,
-          plural: RGD_PLURAL,
-          name,
-          body: {
-            ...(body as object),
-            metadata: {
-              ...(body.metadata ?? {}),
-              resourceVersion: existing.metadata?.resourceVersion,
-            },
-          } as object,
+        .then(() => true)
+        .catch((e: unknown) => {
+          if (isNotFound(e)) return false;
+          throw e; // an API failure is not evidence the name is free
         });
-        continue; // deliberately NOT registered for teardown: this run did not create it
-      }
-
-      if (existing) {
-        // test-owned leftover: its schema is stale and KRO refuses breaking CRD type changes on update,
-        // so delete and recreate to exercise the CURRENT schema.
-        await custom.deleteClusterCustomObject({
-          group: RGD_GROUP,
-          version: RGD_VERSION,
-          plural: RGD_PLURAL,
-          name,
-        });
-        await waitForRgdAbsent(name);
+      if (exists) {
+        throw new Error(
+          `rgd/${name} already exists; refusing to adopt or overwrite it. This fixture only ever creates ` +
+            `run-unique names, so a collision means the naming assumption broke — investigate before rerunning.`
+        );
       }
 
       await custom.createClusterCustomObject({
         group: RGD_GROUP,
         version: RGD_VERSION,
         plural: RGD_PLURAL,
-        body: body as object,
+        body: unique as object,
       });
       created.push({
         what: `rgd/${name}`,
@@ -181,7 +212,9 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
             name,
           }),
       });
+      plurals.push(pluralFor(kind));
     }
+    return plurals;
   };
 
   /** `spec.schema.openAPIV3Schema.properties.spec.properties` of a registered CRD, if it exists yet. */
@@ -221,13 +254,20 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
 
   beforeAll(async () => {
     lease = await createTestNamespace(`typekro-obj-admission-${Math.random().toString(36).slice(2, 8)}`, kc);
-    await applyRgd(probeComposition.factory('kro').toYaml(), 'test-owned');
-    // Apply WITH the migration flag: a `dagsterbootstraps` CRD left by an older TypeKro carries `string`
-    // types, and KRO refuses the breaking update SILENTLY (RGD still reports Ready). Without authorizing it
-    // the assertions below would read a stale schema and fail for the wrong reason.
-    await applyRgd(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml(), 'shared');
-    await waitForConvergedCrd('objectschemaprobes');
-    await waitForConvergedCrd('dagsterbootstraps');
+    const probePlurals = await applyRgd(probeComposition.factory('kro').toYaml());
+    probePlural = probePlurals[0] ?? '';
+    if (!probePlural) throw new Error('probe RGD registered no CRD plural');
+    // `allowBreakingChanges` is retained because the bundle under test carries it — and it is precisely why
+    // this must run under a run-unique kind: applied to the SHARED `dagsterbootstraps` CRD it would migrate
+    // the schema real Dagster instances depend on.
+    const dagsterPlurals = await applyRgd(
+      dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml()
+    );
+    // The bootstrap RGD is the one declaring the schemaless `values` hatches the assertions read.
+    dagsterPlural = dagsterPlurals.find((pl) => pl.startsWith('dagsterbootstrap')) ?? '';
+    if (!dagsterPlural) throw new Error(`no dagsterbootstraps plural in ${dagsterPlurals.join(', ')}`);
+    await waitForConvergedCrd(probePlural);
+    await waitForConvergedCrd(dagsterPlural);
   });
 
   afterAll(async () => {
@@ -258,37 +298,34 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     }
 
     // The RGD must be GONE before its CRD is removed. Deleting the CRD while KRO can still observe the RGD
-    // lets KRO re-register the CRD, leaving the very object this teardown just removed — the same race the
-    // migration fixture documents. So: wait out the RGD, then delete the CRD, then confirm it stayed gone.
+    // lets KRO re-register it, leaving behind the object this teardown just removed. Absence is proven by a
+    // 404 only — a transient API error is not evidence — and a timeout is an explicit failure.
     for (const { what } of created.filter((c) => !c.gone && c.what.startsWith('rgd/'))) {
       const name = what.slice('rgd/'.length);
-      if (!(await waitForRgdAbsent(name))) failures.push(`${what}: still present after delete`);
+      if (!(await waitForRgdAbsent(name))) {
+        failures.push(`${what}: not confirmed absent (delete stuck, or the API never returned 404)`);
+      }
     }
 
-    // Deleting an RGD does NOT reap the CRD KRO registered for it, so remove it explicitly or every run
-    // leaves one behind. Only the PROBE kind — deliberately not dagsterbootstraps, which on a persistent
-    // cluster may hold real instances this test knows nothing about and only updated.
-    await apiext
-      .deleteCustomResourceDefinition({ name: `objectschemaprobes.${RGD_GROUP}` })
-      .catch((e: unknown) => failures.push(`crd/objectschemaprobes.${RGD_GROUP}: ${String(e)}`));
-
-    let crdGone = false;
-    for (let i = 0; i < 60 && !crdGone; i++) {
-      crdGone = await apiext
-        .readCustomResourceDefinition({ name: `objectschemaprobes.${RGD_GROUP}` })
-        .then(() => false)
-        .catch(() => true);
-      if (!crdGone) await Bun.sleep(1000);
-    }
-    if (!crdGone) {
-      failures.push(`crd/objectschemaprobes.${RGD_GROUP}: still present (KRO may have re-registered it)`);
+    // Deleting an RGD does NOT reap the CRD KRO registered for it. Both kinds are run-unique, so this run
+    // owns both and can remove them without touching any shared definition.
+    for (const plural of [probePlural, dagsterPlural].filter(Boolean)) {
+      const crd = `${plural}.${RGD_GROUP}`;
+      await apiext
+        .deleteCustomResourceDefinition({ name: crd })
+        .catch((e: unknown) => {
+          if (!isNotFound(e)) failures.push(`crd/${crd}: ${String(e)}`);
+        });
+      if (!(await waitForCrdAbsent(crd))) {
+        failures.push(`crd/${crd}: not confirmed absent (KRO may have re-registered it)`);
+      }
     }
 
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
 
   it('registers the Dagster escape hatches as schemaless `object` in the CRD (no instances created)', async () => {
-    const props = await waitForConvergedCrd('dagsterbootstraps');
+    const props = await waitForConvergedCrd(dagsterPlural);
 
     for (const path of [props.values, props.postgresql.properties.values]) {
       expect(path.type).toBe('object');
@@ -310,7 +347,7 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
       group: RGD_GROUP,
       version: RGD_VERSION,
       namespace,
-      plural: 'objectschemaprobes',
+      plural: probePlural,
       body: {
         apiVersion: `${RGD_GROUP}/${RGD_VERSION}`,
         kind: PROBE_KIND,
@@ -325,7 +362,7 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
           group: RGD_GROUP,
           version: RGD_VERSION,
           namespace,
-          plural: 'objectschemaprobes',
+          plural: probePlural,
           name,
         }),
       gone: () =>
@@ -334,7 +371,7 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
             group: RGD_GROUP,
             version: RGD_VERSION,
             namespace,
-            plural: 'objectschemaprobes',
+            plural: probePlural,
             name,
           })
           .then(() => false)
@@ -345,7 +382,7 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
       group: RGD_GROUP,
       version: RGD_VERSION,
       namespace,
-      plural: 'objectschemaprobes',
+      plural: probePlural,
       name,
     })) as { spec?: { values?: unknown } };
 
