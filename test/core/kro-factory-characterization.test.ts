@@ -479,6 +479,21 @@ function makeFlexibleFactory(
 }
 
 describe('KroResourceFactory: reserved provider bindings', () => {
+  it('keeps provider binding storage present and empty without artifact outputs', () => {
+    const factory = makeFactory('stableEmptyBindingsApp');
+    const rgd = yaml.load(factory.toYaml()) as {
+      spec?: { schema?: { spec?: Record<string, unknown> } };
+    };
+    expect(rgd.spec?.schema?.spec?.typekroArtifactBindings).toBe(
+      'map[string]map[string]string'
+    );
+
+    const instance = yaml.load(factory.toYaml({ name: 'demo', replicas: 1 })) as {
+      spec?: Record<string, unknown>;
+    };
+    expect(instance.spec?.typekroArtifactBindings).toEqual({});
+  });
+
   it('rejects schemas that claim TypeKro provider binding storage', () => {
     const schema = makeSchema({
       spec: type({
@@ -1069,8 +1084,11 @@ describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
       nested: { image_tag: 'v1', replicas: 2 },
     };
     const yamlText = factory.toYaml(spec);
-    const parsed = yaml.load(yamlText) as { spec: typeof spec };
-    expect(parsed.spec).toEqual(spec);
+    const parsed = yaml.load(yamlText) as { spec: Record<string, unknown> };
+    expect(parsed.spec).toEqual({
+      ...spec,
+      typekroArtifactBindings: {},
+    });
   });
 });
 

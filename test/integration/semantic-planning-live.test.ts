@@ -6,7 +6,12 @@ import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { createEventMonitor } from '../../src/core/deployment/event-monitor.js';
+import {
+  kroArtifactOutputField,
+  kroArtifactRequirementField,
+} from '../../src/core/planning/values.js';
 import type { ResourceDeletionResult } from '../../src/core/types/deployment.js';
+import { artifactOutput } from '../../src/experimental-planning.js';
 import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
 import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
 import { job } from '../../src/factories/kubernetes/workloads/job.js';
@@ -349,6 +354,234 @@ describeOrSkip('semantic planning live acceptance', () => {
       );
     }
 
+    if (testError !== undefined) throw testError;
+  }, 300_000);
+
+  it('upgrades v0.32 artifact-backed instances without changing their persisted value shape', async () => {
+    const group = `artifact-upgrade-${runToken}.typekro.dev`;
+    const apiVersion = `${group}/v1alpha1`;
+    const kind = `ArtifactUpgrade${runToken}`;
+    const rgdName = `artifact-upgrade-${runToken}`;
+    const instanceName = `artifact-upgrade-${runToken}`;
+    const requirementField = kroArtifactRequirementField('build');
+    const outputField = kroArtifactOutputField('image');
+    const graph = kubernetesComposition(
+      {
+        name: rgdName,
+        apiVersion,
+        kind,
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        configMap({
+          id: 'artifactConfig',
+          metadata: { name: spec.name, namespace },
+          data: { image: artifactOutput('build', 'image') },
+        });
+        return { ready: true };
+      }
+    );
+    const plan = {
+      inputs: {
+        build: {
+          kind: 'artifact' as const,
+          requirement: {
+            id: 'build',
+            kind: 'container-image',
+            descriptor: { kind: 'literal' as const, value: instanceName },
+            outputs: ['image'],
+          },
+        },
+      },
+    };
+    const factory = graph.factory('kro', {
+      namespace,
+      kubeConfig,
+      timeout: 180_000,
+      waitForReady: true,
+      plan,
+    });
+    const renderFactory = graph.factory('kro', {
+      namespace,
+      timeout: 180_000,
+      waitForReady: true,
+      plan,
+    });
+    const declarations = await renderFactory.toAlchemyResources({ name: instanceName });
+    const rgdDeclaration = declarations.find(
+      (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
+    );
+    if (!rgdDeclaration) throw new Error('Expected an RGD declaration');
+    const upgradedRgd = JSON.parse(
+      JSON.stringify(rgdDeclaration.props.resource)
+    ) as k8s.KubernetesObject & {
+      spec?: { schema?: { spec?: Record<string, unknown> } };
+    };
+    const newBindingSchema = upgradedRgd.spec?.schema?.spec?.typekroArtifactBindings;
+    expect(newBindingSchema).toBe('map[string]map[string]string');
+
+    // This is the exact persisted shape emitted by v0.32.0: topology-specific
+    // object schema and two nested hashed keys in every instance.
+    const v032Rgd = structuredClone(upgradedRgd);
+    if (!v032Rgd.spec?.schema?.spec) throw new Error('Expected a KRO spec schema');
+    v032Rgd.spec.schema.spec.typekroArtifactBindings = {
+      [requirementField]: { [outputField]: 'string' },
+    };
+    const instance = (
+      image: string
+    ): k8s.KubernetesObject & {
+      spec: {
+        name: string;
+        typekroArtifactBindings: Record<string, Record<string, string>>;
+      };
+    } => ({
+      apiVersion,
+      kind,
+      metadata: { name: instanceName, namespace },
+      spec: {
+        name: instanceName,
+        typekroArtifactBindings: {
+          [requirementField]: { [outputField]: image },
+        },
+      },
+    });
+    const rgdIdentity = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: rgdName },
+    };
+
+    let testError: unknown;
+    try {
+      await objectApi.create(v032Rgd);
+      await waitUntil('the v0.32 artifact RGD and generated CRD', async () => {
+        try {
+          const liveRgd = (await objectApi.read(rgdIdentity)) as {
+            status?: { conditions?: Array<{ type?: string; status?: string }> };
+          };
+          const graphAccepted = liveRgd.status?.conditions?.some(
+            (condition) => condition.type === 'GraphAccepted' && condition.status === 'True'
+          );
+          if (!graphAccepted) return false;
+          const crd = await findGeneratedCrd(objectApi, group, kind);
+          return crd.status?.conditions?.some(
+            (condition) => condition.type === 'Established' && condition.status === 'True'
+          ) === true;
+        } catch {
+          return false;
+        }
+      });
+
+      await objectApi.create(instance('registry.example/app:v1'));
+      await waitUntil('the v0.32-bound child value', async () => {
+        try {
+          const child = (await objectApi.read({
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: instanceName, namespace },
+          })) as { data?: { image?: string } };
+          return child.data?.image === 'registry.example/app:v1';
+        } catch {
+          return false;
+        }
+      });
+
+      await objectApi.patch(
+        upgradedRgd,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'application/merge-patch+json'
+      );
+      await waitUntil('the topology-independent artifact schema', async () => {
+        try {
+          const live = (await objectApi.read(rgdIdentity)) as {
+            spec?: { schema?: { spec?: Record<string, unknown> } };
+            status?: { conditions?: Array<{ type?: string; status?: string }> };
+          };
+          return (
+            live.spec?.schema?.spec?.typekroArtifactBindings ===
+              'map[string]map[string]string' &&
+            live.status?.conditions?.some(
+              (condition) => condition.type === 'GraphAccepted' && condition.status === 'True'
+            ) === true
+          );
+        } catch {
+          return false;
+        }
+      });
+
+      await objectApi.patch(
+        instance('registry.example/app:v2'),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'application/merge-patch+json'
+      );
+      await waitUntil('the upgraded artifact binding value', async () => {
+        try {
+          const child = (await objectApi.read({
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: instanceName, namespace },
+          })) as { data?: { image?: string } };
+          return child.data?.image === 'registry.example/app:v2';
+        } catch {
+          return false;
+        }
+      });
+
+      const admitted = (await objectApi.read({
+        apiVersion,
+        kind,
+        metadata: { name: instanceName, namespace },
+      })) as {
+        spec?: {
+          typekroArtifactBindings?: Record<string, Record<string, string>>;
+        };
+      };
+      expect(admitted.spec?.typekroArtifactBindings).toEqual({
+        [requirementField]: { [outputField]: 'registry.example/app:v2' },
+      });
+    } catch (error: unknown) {
+      testError = error;
+    }
+
+    const cleanupErrors: unknown[] = [];
+    await deleteTestFactoryInstanceAndRecoverNamespaces(
+      factory,
+      instanceName,
+      [],
+      kubeConfig,
+      60_000
+    ).catch((error) => cleanupErrors.push(error));
+    await deleteTestResourceAndWait(rgdIdentity, kubeConfig, 60_000).catch((error) =>
+      cleanupErrors.push(error)
+    );
+    const generatedCrd = await findGeneratedCrd(objectApi, group, kind).catch(() => undefined);
+    if (generatedCrd?.metadata?.name) {
+      await deleteGeneratedCrdAndWait(
+        {
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: generatedCrd.metadata.name },
+        },
+        apiVersion,
+        kind,
+        kubeConfig
+      ).catch((error) => cleanupErrors.push(error));
+    }
+
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        testError === undefined ? cleanupErrors : [testError, ...cleanupErrors],
+        'KRO v0.32 artifact-binding upgrade test or cleanup failed'
+      );
+    }
     if (testError !== undefined) throw testError;
   }, 300_000);
 

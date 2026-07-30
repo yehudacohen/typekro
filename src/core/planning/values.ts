@@ -143,17 +143,6 @@ export function kroArtifactOutputField(output: string): string {
 }
 
 /**
- * Stable key for one provider output in the flat KRO artifact-binding map.
- *
- * Hashing the pair rather than concatenating its members makes the identity
- * injective across otherwise ambiguous requirement/output tuples. The map
- * schema remains constant as provider topology changes.
- */
-export function kroArtifactBindingField(requirementId: string, output: string): string {
-  return `b_${canonicalDigest({ requirementId, output }).replace(/[^a-zA-Z0-9]/g, '')}`;
-}
-
-/**
  * Find every cross-provider artifact output used by a canonical value or artifact DTO.
  * Sensitivity follows the nearest `sensitive-value` envelope so durable hosts can redact
  * only the outputs that actually carry secret material.

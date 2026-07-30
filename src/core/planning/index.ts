@@ -97,7 +97,6 @@ export {
   expressionIR,
   externalInput,
   KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
-  kroArtifactBindingField,
   kroArtifactOutputField,
   kroArtifactRequirementField,
   lowerPlanValue,

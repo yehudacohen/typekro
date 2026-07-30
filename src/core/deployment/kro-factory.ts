@@ -4503,10 +4503,7 @@ export class KroResourceFactoryImpl<
       (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
         ?.schemaFieldValidations
     );
-    const artifactOutputUses = this.kroArtifactOutputUses();
-    if (artifactOutputUses.length > 0) {
-      kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]string';
-    }
+    kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]map[string]string';
 
     // Attach nested status CEL mappings as non-enumerable property so
     // serializeResourceGraphToYaml can inline virtual composition IDs.
@@ -4575,21 +4572,6 @@ export class KroResourceFactoryImpl<
     this.assertNoDanglingHoistedReferences(JSON.stringify(rgdManifest), new Set(hoistIds.keys()));
 
     return rgdManifest;
-  }
-
-  private kroArtifactOutputUses(): readonly ArtifactOutputUse[] {
-    const capture = this.factoryOptions.semanticCapture;
-    if (!capture) return [];
-    const configuredPlan = this.factoryOptions.plan ?? {};
-    const plan = capture.planTemplate({
-      ...configuredPlan,
-      aspects: configuredPlan.aspects ?? this.factoryOptions.aspects ?? [],
-    });
-    return collectArtifactOutputUses({
-      nodes: plan.nodes,
-      outputs: plan.outputs,
-      representationRequirements: plan.representationRequirements,
-    });
   }
 
   private buildRgdYaml(spec?: TSpec): string {
@@ -5766,7 +5748,15 @@ export class KroResourceFactoryImpl<
       instanceNameOverride: instanceName,
       ...(singletonSpecFingerprint ? { singletonSpecFingerprint } : {}),
     });
-    if (!compilation) return legacyManifest;
+    if (!compilation) {
+      return {
+        ...legacyManifest,
+        spec: {
+          ...(spec as Record<string, unknown>),
+          [KRO_ARTIFACT_BINDINGS_SPEC_FIELD]: {},
+        } as TSpec,
+      };
+    }
     return kroArtifactPlanToInstanceResource(compilation.artifacts, {
       sensitive: compilation.sensitiveBindings,
     }) as {

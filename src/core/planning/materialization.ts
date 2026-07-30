@@ -5,7 +5,8 @@ import { TypeKroError } from '../errors.js';
 import type { ExpressionReferenceIR, PlanValue } from './types.js';
 import {
   KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
-  kroArtifactBindingField,
+  kroArtifactOutputField,
+  kroArtifactRequirementField,
 } from './values.js';
 
 /** Explicit bindings supplied after pure planning and before artifact execution. */
@@ -692,7 +693,7 @@ function materializeKro(value: PlanValue, path: string): unknown | typeof OMIT {
     case 'artifact-output':
       return runtimeReference(
         '__schema__',
-        `spec.${KRO_ARTIFACT_BINDINGS_SPEC_FIELD}.${kroArtifactBindingField(value.requirementId, value.output)}`
+        `spec.${KRO_ARTIFACT_BINDINGS_SPEC_FIELD}.${kroArtifactRequirementField(value.requirementId)}.${kroArtifactOutputField(value.output)}`
       );
   }
 }

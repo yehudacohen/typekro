@@ -31,7 +31,8 @@ import type {
 import {
   collectArtifactOutputUses,
   KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
-  kroArtifactBindingField,
+  kroArtifactOutputField,
+  kroArtifactRequirementField,
 } from './values.js';
 
 const KRO_RESERVED_STATUS_FIELDS = new Set(['conditions', 'state', 'observedGeneration']);
@@ -121,34 +122,47 @@ function kroReservedSpecDiagnostics(
 }
 
 function kroArtifactBindingValue(uses: readonly ArtifactOutputUse[]): PlanValue {
+  const byRequirement = new Map<string, ArtifactOutputUse[]>();
+  for (const use of uses) {
+    const current = byRequirement.get(use.requirementId) ?? [];
+    current.push(use);
+    byRequirement.set(use.requirementId, current);
+  }
   return objectValue(
     Object.fromEntries(
-      uses.map((use) => {
-        const output: PlanValue = {
-          kind: 'artifact-output',
-          requirementId: use.requirementId,
-          output: use.output,
-        };
-        return [
-          kroArtifactBindingField(use.requirementId, use.output),
-          use.sensitive ? { kind: 'sensitive-value', value: output } : output,
-        ];
-      })
+      [...byRequirement.entries()].map(([requirementId, requirementUses]) => [
+        kroArtifactRequirementField(requirementId),
+        objectValue(
+          Object.fromEntries(
+            requirementUses.map((use) => {
+              const output: PlanValue = {
+                kind: 'artifact-output',
+                requirementId: use.requirementId,
+                output: use.output,
+              };
+              return [
+                kroArtifactOutputField(use.output),
+                use.sensitive ? { kind: 'sensitive-value', value: output } : output,
+              ];
+            })
+          )
+        ),
+      ])
     )
   );
 }
 
-function kroSpecSchemaWithArtifactBindings(
-  schema: SchemaIR,
-  uses: readonly ArtifactOutputUse[]
-): SchemaIR {
-  if (uses.length === 0 || schema.root.kind !== 'object') return schema;
+function kroSpecSchemaWithArtifactBindings(schema: SchemaIR): SchemaIR {
+  if (schema.root.kind !== 'object') return schema;
   const bindingProperty = {
     name: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
     required: true,
     schema: {
       kind: 'map' as const,
-      values: { kind: 'primitive' as const, type: 'string' as const },
+      values: {
+        kind: 'map' as const,
+        values: { kind: 'primitive' as const, type: 'string' as const },
+      },
     },
   };
   const root = {
@@ -575,7 +589,7 @@ export function compileKroArtifactPlan(
     root: {
       apiVersion: plan.composition.apiVersion,
       kind: plan.composition.kind,
-      specSchema: kroSpecSchemaWithArtifactBindings(plan.schemas.spec, artifactOutputUses),
+      specSchema: kroSpecSchemaWithArtifactBindings(plan.schemas.spec),
       persistedStatusSchema: plan.status.persistedSchema,
     },
     children: graphChildren,
@@ -606,7 +620,7 @@ export function compileKroArtifactPlan(
     scope: 'namespaced',
   };
   const instanceSpec =
-    artifactOutputUses.length > 0
+    plan.schemas.spec.root.kind === 'object'
       ? withObjectField(
           options.instance?.spec ?? plan.spec,
           KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
