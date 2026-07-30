@@ -21,6 +21,7 @@ import * as k8s from '@kubernetes/client-node';
 import { createBunCompatibleApiClient } from '../../../src/core/kubernetes/bun-api-client.js';
 import {
   createCustomObjectsApiClient,
+  deleteGeneratedCrdAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from '../shared-kubeconfig.js';
@@ -176,19 +177,6 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
     return false;
   };
 
-  /** Same contract for the generated CRD. */
-  const waitForCrdAbsent = async (name: string): Promise<boolean> => {
-    for (let i = 0; i < 60; i++) {
-      const state = await apiext
-        .readCustomResourceDefinition({ name })
-        .then(() => 'present' as const)
-        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
-      if (state === 'absent') return true;
-      await Bun.sleep(1000);
-    }
-    return false;
-  };
-
   beforeAll(async () => {
     // No pre-delete: the identity is RUN-UNIQUE, so there is nothing from a previous run to clear, and
     // unconditionally deleting a fixed name is what let concurrent runs destroy each other's fixtures.
@@ -220,13 +208,21 @@ describeLiveOrSkip('migrating an existing RGD from `string` to schemaless `objec
     }
     // Deleting the RGD does NOT reap the CRD KRO registered for it, so remove it explicitly or every run
     // leaves one behind. Safe to delete unconditionally: this kind is run-unique and owned solely by this run.
+    // On a persistent OrbStack cluster an emptied CRD can hang on
+    // `customresourcecleanup.apiextensions.k8s.io`, so a plain delete-then-wait fails the hook and leaves the
+    // CRD Terminating. The shared harness helper owns that recovery and is FAIL-CLOSED: it clears the
+    // finalizer only after listing CR_KIND and proving zero instances remain.
     const crdName = `${CR_PLURAL}.${GROUP}`;
-    await apiext.deleteCustomResourceDefinition({ name: crdName }).catch((e: unknown) => {
-      if (!isNotFound(e)) failures.push(`crd/${crdName}: ${String(e)}`);
-    });
-    if (!(await waitForCrdAbsent(crdName))) {
-      failures.push(`crd/${crdName}: not confirmed absent (KRO may have re-registered it)`);
-    }
+    await deleteGeneratedCrdAndWait(
+      {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: crdName },
+      },
+      `${GROUP}/${VERSION}`,
+      CR_KIND,
+      kc
+    ).catch((e: unknown) => failures.push(`crd/${crdName}: ${String(e)}`));
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
 

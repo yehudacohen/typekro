@@ -29,6 +29,7 @@ import { createBunCompatibleApiClient } from '../../../src/core/kubernetes/bun-a
 import {
   createCustomObjectsApiClient,
   createTestNamespace,
+  deleteGeneratedCrdAndWait,
   deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -60,6 +61,12 @@ const PROBE_RGD = `object-schema-probe-${RUN_ID}`;
  * random, guessing made these fixtures pass or fail depending on its last character — `…probexrjqu1s` worked,
  * `…probea32l9oes` did not, and the mismatch leaked the CRD teardown then failed to find.
  */
+
+/** A kind this run registered, with the CRD plural KRO chose for it. */
+interface GeneratedKind {
+  readonly kind: string;
+  readonly plural: string;
+}
 
 /**
  * The structure a caller sends and admission must NOT strip: nested maps, a boolean, a number, an array of
@@ -104,8 +111,11 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
   /** CRD plurals KRO registers for this run's unique kinds; resolved in `beforeAll`. */
   let probePlural = '';
   let dagsterPlural = '';
-  /** EVERY plural this run registered — teardown must delete all of them, not only the asserted ones. */
-  const registeredPlurals: string[] = [];
+  /**
+   * EVERY kind/plural this run registered. The plural names the CRD to delete; the KIND is what
+   * `deleteGeneratedCrdAndWait` lists to prove zero instances remain before it touches a finalizer.
+   */
+  const registeredKinds: GeneratedKind[] = [];
   /** Every object this test creates, newest first, so teardown is deterministic. */
   const created: Array<{
     what: string;
@@ -131,19 +141,6 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     for (let i = 0; i < 60; i++) {
       const state = await custom
         .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
-        .then(() => 'present' as const)
-        .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
-      if (state === 'absent') return true;
-      await Bun.sleep(1000);
-    }
-    return false;
-  };
-
-  /** Same contract for a CRD: only a 404 proves absence, and a timeout is a failure. */
-  const waitForCrdAbsent = async (name: string): Promise<boolean> => {
-    for (let i = 0; i < 60; i++) {
-      const state = await apiext
-        .readCustomResourceDefinition({ name })
         .then(() => 'present' as const)
         .catch((e: unknown) => (isNotFound(e) ? ('absent' as const) : ('unknown' as const)));
       if (state === 'absent') return true;
@@ -183,8 +180,8 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
    * overwriting. With a unique suffix that should be unreachable, so hitting it means an assumption broke —
    * which is exactly when silently rewriting somebody else's definition would do the most damage.
    */
-  const applyRgd = async (yamlDoc: string): Promise<string[]> => {
-    const plurals: string[] = [];
+  const applyRgd = async (yamlDoc: string): Promise<GeneratedKind[]> => {
+    const generated: GeneratedKind[] = [];
     for (const doc of k8s.loadAllYaml(yamlDoc)) {
       const body = doc as {
         kind?: string;
@@ -240,10 +237,9 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
             name,
           }),
       });
-      const plural = await discoverPlural(kind);
-      plurals.push(plural);
+      generated.push({ kind, plural: await discoverPlural(kind) });
     }
-    return plurals;
+    return generated;
   };
 
   /** `spec.schema.openAPIV3Schema.properties.spec.properties` of a registered CRD, if it exists yet. */
@@ -283,23 +279,25 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
 
   beforeAll(async () => {
     lease = await createTestNamespace(`typekro-obj-admission-${Math.random().toString(36).slice(2, 8)}`, kc);
-    const probePlurals = await applyRgd(probeComposition.factory('kro').toYaml());
-    probePlural = probePlurals[0] ?? '';
+    const probeGenerated = await applyRgd(probeComposition.factory('kro').toYaml());
+    probePlural = probeGenerated[0]?.plural ?? '';
     if (!probePlural) throw new Error('probe RGD registered no CRD plural');
     // `allowBreakingChanges` is retained because the bundle under test carries it — and it is precisely why
     // this must run under a run-unique kind: applied to the SHARED `dagsterbootstraps` CRD it would migrate
     // the schema real Dagster instances depend on.
-    const dagsterPlurals = await applyRgd(
+    const dagsterGenerated = await applyRgd(
       dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml()
     );
     // EVERY plural the bundle registers must be retained for teardown, not just the one the assertions read.
     // The bundle contains TWO RGDs (bootstrap + the HelmRepository singleton), so each run registers two CRDs;
     // deleting an RGD does not reap its CRD, so keeping only the bootstrap plural leaked
     // `dagsterhelmrepository<id>s.kro.run` on every run.
-    registeredPlurals.push(...probePlurals, ...dagsterPlurals);
+    registeredKinds.push(...probeGenerated, ...dagsterGenerated);
     // The bootstrap RGD is the one declaring the schemaless `values` hatches the assertions read.
-    dagsterPlural = dagsterPlurals.find((pl) => pl.startsWith('dagsterbootstrap')) ?? '';
-    if (!dagsterPlural) throw new Error(`no dagsterbootstraps plural in ${dagsterPlurals.join(', ')}`);
+    dagsterPlural = dagsterGenerated.find((g) => g.plural.startsWith('dagsterbootstrap'))?.plural ?? '';
+    if (!dagsterPlural) {
+      throw new Error(`no dagsterbootstraps plural in ${dagsterGenerated.map((g) => g.plural).join(', ')}`);
+    }
     await waitForConvergedCrd(probePlural);
     await waitForConvergedCrd(dagsterPlural);
   });
@@ -341,18 +339,22 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
       }
     }
 
-    // Deleting an RGD does NOT reap the CRD KRO registered for it. Both kinds are run-unique, so this run
-    // owns both and can remove them without touching any shared definition.
-    for (const plural of [...new Set(registeredPlurals.filter(Boolean))]) {
-      const crd = `${plural}.${RGD_GROUP}`;
-      await apiext
-        .deleteCustomResourceDefinition({ name: crd })
-        .catch((e: unknown) => {
-          if (!isNotFound(e)) failures.push(`crd/${crd}: ${String(e)}`);
-        });
-      if (!(await waitForCrdAbsent(crd))) {
-        failures.push(`crd/${crd}: not confirmed absent (KRO may have re-registered it)`);
-      }
+    // Deleting an RGD does NOT reap the CRD KRO registered for it, and on a persistent OrbStack cluster an
+    // emptied CRD can hang on `customresourcecleanup.apiextensions.k8s.io` — a plain delete-then-wait then
+    // fails the hook and leaves the CRD Terminating. The shared harness helper owns that recovery and is
+    // FAIL-CLOSED: it only clears the finalizer after listing the kind and proving zero instances remain,
+    // which is why the KIND is retained next to the plural.
+    for (const { kind, plural } of registeredKinds) {
+      await deleteGeneratedCrdAndWait(
+        {
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: `${plural}.${RGD_GROUP}` },
+        },
+        `${RGD_GROUP}/${RGD_VERSION}`,
+        kind,
+        kc
+      ).catch((e: unknown) => failures.push(`crd/${plural}.${RGD_GROUP}: ${String(e)}`));
     }
 
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
