@@ -1913,6 +1913,7 @@ export function serializeStatusMappingsToCel(
     if (value && typeof value === 'object') {
       const nestedExpressions: Record<string, unknown> = {};
       for (const [key, nestedValue] of Object.entries(value)) {
+        if (nestedValue === undefined) continue;
         nestedExpressions[key] = serializeValue(nestedValue);
       }
       return nestedExpressions;
@@ -1947,7 +1948,7 @@ export function serializeStatusMappingsToCel(
   for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
     // Skip internal metadata fields — these are consumed during
     // serialization, not emitted as status fields.
-    if (fieldName.startsWith('__')) continue;
+    if (fieldName.startsWith('__') || fieldValue === undefined) continue;
     celExpressions[fieldName] = serializeValue(fieldValue);
   }
 

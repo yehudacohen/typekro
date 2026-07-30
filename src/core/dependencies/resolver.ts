@@ -521,15 +521,24 @@ export class DependencyResolver {
    */
   private parseCelReferences(expression: string): KubernetesRef[] {
     const refs: KubernetesRef[] = [];
+    const searchableExpression = maskCelStringLiterals(expression);
+    const lambdaVariables = collectCelLambdaVariables(searchableExpression);
 
-    // Simple regex to find resource references in CEL expressions
     // Pattern: resourceId.section.field (e.g., database.status.endpoint)
     const refPattern =
       /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
-    let match: RegExpExecArray | null = refPattern.exec(expression);
+    let match: RegExpExecArray | null = refPattern.exec(searchableExpression);
 
     while (match !== null) {
       const [, resourceId, section, field] = match;
+      if (!resourceId || !section || !field) {
+        match = refPattern.exec(searchableExpression);
+        continue;
+      }
+      if (lambdaVariables.has(resourceId)) {
+        match = refPattern.exec(searchableExpression);
+        continue;
+      }
 
       refs.push({
         [KUBERNETES_REF_BRAND]: true,
@@ -537,7 +546,7 @@ export class DependencyResolver {
         fieldPath: `${section}.${field}`,
       } as KubernetesRef);
 
-      match = refPattern.exec(expression);
+      match = refPattern.exec(searchableExpression);
     }
 
     return refs;
@@ -662,6 +671,46 @@ export class DependencyResolver {
   findTerminalResources(graph: DependencyGraph): string[] {
     return graph.getLeafNodes();
   }
+}
+
+/**
+ * Preserve offsets while hiding quoted CEL data from the resource scanner.
+ * Hostnames, URLs, scripts, and arbitrary payload strings must not become
+ * dependency edges merely because they contain dotted identifiers.
+ */
+function maskCelStringLiterals(expression: string): string {
+  const characters = [...expression];
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let index = 0; index < characters.length; index += 1) {
+    const character = characters[index];
+    if (quote === undefined) {
+      if (character === '"' || character === "'") {
+        quote = character;
+        characters[index] = ' ';
+      }
+      continue;
+    }
+    characters[index] = ' ';
+    if (escaped) {
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === quote) {
+      quote = undefined;
+    }
+  }
+  return characters.join('');
+}
+
+function collectCelLambdaVariables(expression: string): Set<string> {
+  const variables = new Set<string>(['each']);
+  const macroPattern =
+    /\.(?:all|exists|exists_one|map|filter)\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/g;
+  for (const match of expression.matchAll(macroPattern)) {
+    if (match[1]) variables.add(match[1]);
+  }
+  return variables;
 }
 
 export interface DeploymentPlan {

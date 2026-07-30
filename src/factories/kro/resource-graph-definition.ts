@@ -98,25 +98,37 @@ const resourceGraphDefinitionReadinessEvaluator = registerPortableReadinessEvalu
       const failedCondition = currentConditions.find(
         (condition: KubernetesCondition) => condition && condition.status === 'False'
       );
-      if (status.state === 'failed' || failedCondition) {
+      const stateFailed = String(status.state ?? '').toLowerCase() === 'failed';
+      if (stateFailed || failedCondition) {
         const rejected = currentConditions.find(
           (condition: KubernetesCondition) =>
             condition?.status === 'False' && /accepted/i.test(condition?.type ?? '')
         );
-        const cause = rejected ?? failedCondition;
-        if (rejected) {
+        const deterministicFailure = currentConditions.find(
+          (condition: KubernetesCondition) =>
+            condition?.status === 'False' &&
+            (condition.type === 'GraphAccepted' ||
+              (/^(KindReady|Ready)$/u.test(condition.type ?? '') &&
+                /^(Failed|Invalid|Rejected|Error)$/iu.test(condition.reason ?? '')))
+        );
+        const terminal =
+          stateFailed ||
+          rejected !== undefined ||
+          deterministicFailure !== undefined;
+        const cause = rejected ?? deterministicFailure ?? failedCondition;
+        if (terminal) {
           rgdLogger.warn('ResourceGraphDefinition was rejected by Kro (terminal)', {
             name: liveRGD?.metadata?.name,
-            type: rejected.type,
-            reason: rejected.reason,
-            message: rejected.message,
+            type: cause?.type,
+            reason: cause?.reason,
+            message: cause?.message,
           });
         }
         return {
           ready: false,
           reason: 'RGDProcessingFailed',
           message: `RGD processing failed: ${cause?.message || 'Unknown error'}`,
-          ...(rejected ? { terminal: true } : {}),
+          ...(terminal ? { terminal: true } : {}),
           details: {
             state: status.state,
             generation,
