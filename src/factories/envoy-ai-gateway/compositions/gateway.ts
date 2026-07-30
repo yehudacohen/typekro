@@ -11,6 +11,7 @@ import {
   DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME,
   DEFAULT_ENVOY_AI_GATEWAY_LISTENER_PORT,
   DEFAULT_ENVOY_AI_GATEWAY_VERSION,
+  DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME,
 } from '../constants.js';
 import {
   envoyAIGatewayRoute,
@@ -513,6 +514,7 @@ function currentConditionExpression(resourceId: string): string {
 function policyAcceptedExpression(resourceId: string): string {
   return (
     `has(${resourceId}.status.ancestors) && ${resourceId}.status.ancestors.exists(a, ` +
+    `has(a.controllerName) && a.controllerName == "${DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME}" && ` +
     'has(a.conditions) && a.conditions.exists(c, ' +
     'c.type == "Accepted" && c.status == "True" && ' +
     `${currentConditionExpression(resourceId)}))`
@@ -522,6 +524,7 @@ function policyAcceptedExpression(resourceId: string): string {
 function policyFailedExpression(resourceId: string): string {
   return (
     `has(${resourceId}.status.ancestors) && ${resourceId}.status.ancestors.exists(a, ` +
+    `has(a.controllerName) && a.controllerName == "${DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME}" && ` +
     'has(a.conditions) && a.conditions.exists(c, ' +
     '((c.type == "Accepted" || c.type == "ResolvedRefs") && c.status == "False") && ' +
     `${currentConditionExpression(resourceId)}))`
@@ -794,7 +797,10 @@ function validateRateLimit(
   }
   return {
     redisUrl: rateLimit.redisUrl,
-    rules: rateLimit.rules.map((rule) => ({ ...rule })),
+    rules: rateLimit.rules.map((rule) => ({
+      ...rule,
+      cost: rule.cost ?? 'total-tokens',
+    })),
   };
 }
 

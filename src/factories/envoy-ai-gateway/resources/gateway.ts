@@ -3,6 +3,7 @@ import { registerPortableReadinessEvaluator } from '../../../core/readiness/inde
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import {
+  DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME,
   ENVOY_AI_GATEWAY_API_VERSION,
   ENVOY_GATEWAY_API_VERSION,
   GATEWAY_API_TLS_POLICY_VERSION,
@@ -24,8 +25,6 @@ import type {
   KubernetesCondition,
   MCPRouteSpec,
 } from '../types.js';
-
-const ENVOY_GATEWAY_CONTROLLER_NAME = 'gateway.envoyproxy.io/gatewayclass-controller';
 
 interface NamespacedResourceConfig<TSpec extends object> {
   readonly name: string;
@@ -160,7 +159,7 @@ export function envoyGatewayPolicyReadinessEvaluator(liveResource: unknown): Res
     | undefined;
   const generation = resource?.metadata?.generation;
   const conditions = (resource?.status?.ancestors ?? [])
-    .filter((ancestor) => ancestor.controllerName === ENVOY_GATEWAY_CONTROLLER_NAME)
+    .filter((ancestor) => ancestor.controllerName === DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME)
     .flatMap((ancestor) => ancestor.conditions ?? []);
   const rejected = conditions.find(
     (condition) =>

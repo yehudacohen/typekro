@@ -451,6 +451,35 @@ describe('Envoy AI Gateway integration', () => {
     );
   });
 
+  test('defaults omitted rate-limit costs to total token accounting', () => {
+    const gateway = makeEnvoyAIGateway({
+      profile: 'development',
+      providers: [
+        {
+          name: 'local',
+          kind: 'openai-compatible',
+          hostname: 'mock-ai.default.svc.cluster.local',
+          tls: false,
+        },
+      ],
+      models: [{ model: 'fast', targets: [{ provider: 'local' }] }],
+      rateLimit: {
+        redisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
+        rules: [{ requests: 100_000, unit: 'Hour' }],
+      },
+    });
+
+    const yaml = gateway.factory('kro', { namespace: 'typekro-system' }).toYaml();
+    expect(yaml).toContain('namespace: io.envoy.ai_gateway');
+    expect(yaml).toContain('key: llm_total_token');
+  });
+
+  test('filters KRO policy readiness by the Envoy Gateway controller', () => {
+    const yaml = localGateway().factory('kro', { namespace: 'typekro-system' }).toYaml();
+
+    expect(yaml).toContain('a.controllerName == "gateway.envoyproxy.io/gatewayclass-controller"');
+  });
+
   test('rejects token rate limits whose request-cost dimension was removed', () => {
     expect(() =>
       makeEnvoyAIGateway({

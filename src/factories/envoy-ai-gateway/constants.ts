@@ -7,6 +7,8 @@ export const DEFAULT_ENVOY_PROXY_REPOSITORY_NAME = 'envoyproxy-helm';
 export const DEFAULT_ENVOY_PROXY_REPOSITORY_URL = 'oci://docker.io/envoyproxy';
 export const DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME = 'envoy-ai-gateway';
 export const DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE = 'ai-gateway-controller';
+export const DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME =
+  'gateway.envoyproxy.io/gatewayclass-controller';
 export const DEFAULT_ENVOY_AI_GATEWAY_LISTENER_PORT = 8080;
 
 export const ENVOY_AI_GATEWAY_API_VERSION = 'aigateway.envoyproxy.io/v1beta1';
