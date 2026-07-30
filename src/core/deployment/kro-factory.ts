@@ -74,11 +74,9 @@ import {
   type KroArtifactPlan,
   type KroSupportingArtifact,
   type KroSupportingArtifactCompilerInput,
-  kroArtifactOutputField,
   kroArtifactPlanToGraphResources,
   kroArtifactPlanToInstanceResource,
   kroArtifactPlanToSupportingResources,
-  kroArtifactRequirementField,
   lowerPlanValue,
   mapPlanValueSensitiveBindings,
   materializeKroArtifactBundleOperation,
@@ -4507,18 +4505,7 @@ export class KroResourceFactoryImpl<
     );
     const artifactOutputUses = this.kroArtifactOutputUses();
     if (artifactOutputUses.length > 0) {
-      const byRequirement = new Map<string, ArtifactOutputUse[]>();
-      for (const use of artifactOutputUses) {
-        const current = byRequirement.get(use.requirementId) ?? [];
-        current.push(use);
-        byRequirement.set(use.requirementId, current);
-      }
-      kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = Object.fromEntries(
-        [...byRequirement.entries()].map(([requirementId, uses]) => [
-          kroArtifactRequirementField(requirementId),
-          Object.fromEntries(uses.map((use) => [kroArtifactOutputField(use.output), 'string'])),
-        ])
-      );
+      kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]string';
     }
 
     // Attach nested status CEL mappings as non-enumerable property so

@@ -31,8 +31,7 @@ import type {
 import {
   collectArtifactOutputUses,
   KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
-  kroArtifactOutputField,
-  kroArtifactRequirementField,
+  kroArtifactBindingField,
 } from './values.js';
 
 const KRO_RESERVED_STATUS_FIELDS = new Set(['conditions', 'state', 'observedGeneration']);
@@ -122,32 +121,19 @@ function kroReservedSpecDiagnostics(
 }
 
 function kroArtifactBindingValue(uses: readonly ArtifactOutputUse[]): PlanValue {
-  const byRequirement = new Map<string, ArtifactOutputUse[]>();
-  for (const use of uses) {
-    const current = byRequirement.get(use.requirementId) ?? [];
-    current.push(use);
-    byRequirement.set(use.requirementId, current);
-  }
   return objectValue(
     Object.fromEntries(
-      [...byRequirement.entries()].map(([requirementId, requirementUses]) => [
-        kroArtifactRequirementField(requirementId),
-        objectValue(
-          Object.fromEntries(
-            requirementUses.map((use) => {
-              const output: PlanValue = {
-                kind: 'artifact-output',
-                requirementId: use.requirementId,
-                output: use.output,
-              };
-              return [
-                kroArtifactOutputField(use.output),
-                use.sensitive ? { kind: 'sensitive-value', value: output } : output,
-              ];
-            })
-          )
-        ),
-      ])
+      uses.map((use) => {
+        const output: PlanValue = {
+          kind: 'artifact-output',
+          requirementId: use.requirementId,
+          output: use.output,
+        };
+        return [
+          kroArtifactBindingField(use.requirementId, use.output),
+          use.sensitive ? { kind: 'sensitive-value', value: output } : output,
+        ];
+      })
     )
   );
 }
@@ -157,29 +143,12 @@ function kroSpecSchemaWithArtifactBindings(
   uses: readonly ArtifactOutputUse[]
 ): SchemaIR {
   if (uses.length === 0 || schema.root.kind !== 'object') return schema;
-  const byRequirement = new Map<string, ArtifactOutputUse[]>();
-  for (const use of uses) {
-    const current = byRequirement.get(use.requirementId) ?? [];
-    current.push(use);
-    byRequirement.set(use.requirementId, current);
-  }
   const bindingProperty = {
     name: KRO_ARTIFACT_BINDINGS_SPEC_FIELD,
     required: true,
     schema: {
-      kind: 'object' as const,
-      properties: [...byRequirement.entries()].map(([requirementId, requirementUses]) => ({
-        name: kroArtifactRequirementField(requirementId),
-        required: true,
-        schema: {
-          kind: 'object' as const,
-          properties: requirementUses.map((use) => ({
-            name: kroArtifactOutputField(use.output),
-            required: true,
-            schema: { kind: 'primitive' as const, type: 'string' as const },
-          })),
-        },
-      })),
+      kind: 'map' as const,
+      values: { kind: 'primitive' as const, type: 'string' as const },
     },
   };
   const root = {

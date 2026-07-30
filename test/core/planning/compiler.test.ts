@@ -612,6 +612,138 @@ describe('semantic artifact compilers', () => {
     expect(JSON.stringify(artifacts)).toContain('nested-user-owned');
   });
 
+  it('keeps the KRO artifact-binding schema stable as provider topology changes', () => {
+    const definition = {
+      name: 'stable-kro-artifact-bindings',
+      apiVersion: 'testing.typekro.dev/v1alpha1',
+      kind: 'StableKroArtifactBindings',
+      revision: '1',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    } as const;
+    const oneOutput = kubernetesComposition(definition, (spec) => {
+      simple.ConfigMap({
+        id: 'config',
+        name: spec.name,
+        data: { image: artifactOutput('build', 'image') },
+      });
+      return { ready: true };
+    });
+    const twoOutputs = kubernetesComposition(definition, (spec) => {
+      simple.ConfigMap({
+        id: 'config',
+        name: spec.name,
+        data: {
+          image: artifactOutput('build', 'image'),
+          endpoint: artifactOutput('service', 'endpoint'),
+        },
+      });
+      return { ready: true };
+    });
+    const firstPlan = oneOutput.plan!(
+      { name: 'demo' },
+      {
+        inputs: {
+          build: {
+            kind: 'artifact',
+            requirement: {
+              id: 'build',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['image'],
+            },
+          },
+        },
+      }
+    );
+    const secondPlan = twoOutputs.plan!(
+      { name: 'demo' },
+      {
+        inputs: {
+          build: {
+            kind: 'artifact',
+            requirement: {
+              id: 'build',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['image'],
+            },
+          },
+          service: {
+            kind: 'artifact',
+            requirement: {
+              id: 'service',
+              kind: 'service-endpoint',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['endpoint'],
+            },
+          },
+        },
+      }
+    );
+    const compile = (plan: typeof firstPlan) =>
+      compileKroArtifactPlan(plan, {
+        instance: {
+          name: lowerPlanValue('demo').value,
+          namespace: lowerPlanValue('apps').value,
+          spec: lowerPlanValue({ name: 'demo' }).value,
+        },
+      });
+    const first = compile(firstPlan);
+    const second = compile(secondPlan);
+    const bindingSchema = (artifacts: typeof first) => {
+      const rgd = artifacts.resources.find(
+        (resource) => resource.role === 'resource-graph-definition'
+      );
+      if (!rgd || rgd.role !== 'resource-graph-definition') {
+        throw new Error('Expected a resource graph definition artifact');
+      }
+      const root = rgd.graph.root.specSchema.root;
+      if (root.kind !== 'object') throw new Error('Expected an object spec schema');
+      const property = root.properties.find(
+        (property) => property.name === 'typekroArtifactBindings'
+      );
+      if (!property) throw new Error('Expected the reserved artifact-binding schema');
+      return property.schema;
+    };
+
+    expect(bindingSchema(first)).toEqual({
+      kind: 'map',
+      values: { kind: 'primitive', type: 'string' },
+    });
+    expect(bindingSchema(second)).toEqual(bindingSchema(first));
+
+    const firstInstance = kroArtifactPlanToInstanceResource(first, {
+      artifactOutputs: { build: { image: 'registry.example/demo:v1' } },
+    });
+    const secondInstance = kroArtifactPlanToInstanceResource(second, {
+      artifactOutputs: {
+        build: { image: 'registry.example/demo:v1' },
+        service: { endpoint: 'https://service.example' },
+      },
+    });
+    const firstBindings = Reflect.get(firstInstance, 'spec');
+    const secondBindings = Reflect.get(secondInstance, 'spec');
+    if (
+      !firstBindings ||
+      typeof firstBindings !== 'object' ||
+      !secondBindings ||
+      typeof secondBindings !== 'object'
+    ) {
+      throw new Error('Expected materialized instance specs');
+    }
+    expect(Object.keys(Reflect.get(firstBindings, 'typekroArtifactBindings'))).toHaveLength(1);
+    expect(Object.keys(Reflect.get(secondBindings, 'typekroArtifactBindings'))).toHaveLength(2);
+    const materializedGraph = kroArtifactPlanToGraphResources(first);
+    const config = materializedGraph.config;
+    if (!config) throw new Error('Expected the materialized config resource');
+    const data = Reflect.get(config, 'data');
+    if (!data) throw new Error('Expected the materialized config data');
+    const imageReference = Reflect.get(data, 'image');
+    expect(String(imageReference)).toContain('spec.typekroArtifactBindings.b_');
+    expect(String(imageReference)).not.toContain('spec.typekroArtifactBindings.r_');
+  });
+
   it('round-trips and topologically orders a complete KRO outer artifact bundle', () => {
     const plan = compilerFixture.plan!({ name: 'demo', namespace: 'apps' }, { strict: true });
     const artifacts = compileKroArtifactPlan(plan, {
