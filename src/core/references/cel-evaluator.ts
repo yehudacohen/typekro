@@ -28,6 +28,11 @@ import { ensureError, TypeKroError } from '../errors.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import { CelEvaluationError } from '../types/references.js';
 import type { CelExpression, KubernetesRef } from '../types.js';
+import {
+  collectCelLambdaScopes,
+  isCelLambdaLocalAt,
+  maskCelStringLiterals,
+} from './cel-lexical-scanner.js';
 
 export class CelEvaluator {
   /**
@@ -182,7 +187,8 @@ export class CelEvaluator {
     expression: string
   ): Array<{ resourceId: string; fieldPath: string }> {
     const refs: Array<{ resourceId: string; fieldPath: string }> = [];
-    const searchableExpression = this.maskStringLiterals(expression);
+    const searchableExpression = maskCelStringLiterals(expression);
+    const lambdaScopes = collectCelLambdaScopes(searchableExpression);
 
     // Pattern to match resource references: resourceId.section.field
     const refPattern = /(\w+)\.(\w+)\.(\w+(?:\[\d+\])?(?:\.\w+)*)/g;
@@ -190,7 +196,12 @@ export class CelEvaluator {
 
     while (match !== null) {
       const [, resourceId, section, fieldPath] = match;
-      if (resourceId && section && fieldPath) {
+      if (
+        resourceId &&
+        section &&
+        fieldPath &&
+        !isCelLambdaLocalAt(resourceId, match.index, lambdaScopes)
+      ) {
         refs.push({
           resourceId,
           fieldPath: `${section}.${fieldPath}`,
@@ -200,38 +211,6 @@ export class CelEvaluator {
     }
 
     return refs;
-  }
-
-  /**
-   * Preserve expression offsets while hiding quoted CEL text from the resource-reference scanner.
-   * A dotted URL or hostname inside a string literal is data, not a resource path.
-   */
-  private maskStringLiterals(expression: string): string {
-    const chars = [...expression];
-    let quote: '"' | "'" | undefined;
-    let escaped = false;
-
-    for (let index = 0; index < chars.length; index += 1) {
-      const char = chars[index];
-      if (quote === undefined) {
-        if (char === '"' || char === "'") {
-          quote = char;
-          chars[index] = ' ';
-        }
-        continue;
-      }
-
-      chars[index] = ' ';
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === quote) {
-        quote = undefined;
-      }
-    }
-
-    return chars.join('');
   }
 
   /**

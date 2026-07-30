@@ -447,7 +447,12 @@ function defaultValue(
     !isCelExpression(fallback);
   const selectedValue = hasStructuredLiteralFallback ? `dyn(${celValue})` : celValue;
   const selectedFallback = hasStructuredLiteralFallback ? `dyn(${fallbackCel})` : fallbackCel;
-  const expression = `${guard} && ${celValue} != null ? ${selectedValue} : ${selectedFallback}`;
+  // KRO's CEL checker rejects `typedScalar != null` even though the runtime
+  // nullish contract is intentional. Widen only the null comparison to dyn;
+  // the selected branch retains its original static type (or the structured
+  // widening above) and direct-mode evaluators treat dyn as identity.
+  const expression =
+    `${guard} && dyn(${celValue}) != null ? ${selectedValue} : ${selectedFallback}`;
 
   return {
     [CEL_EXPRESSION_BRAND]: true,

@@ -30,6 +30,10 @@
       "import": "./dist/factories/harbor/index.js",
       "types": "./dist/factories/harbor/index.d.ts"
     },
+    "./envoy-ai-gateway": {
+      "import": "./dist/factories/envoy-ai-gateway/index.js",
+      "types": "./dist/factories/envoy-ai-gateway/index.d.ts"
+    },
     "./kro": {
       "import": "./dist/factories/kro/index.js",
       "types": "./dist/factories/kro/index.d.ts"

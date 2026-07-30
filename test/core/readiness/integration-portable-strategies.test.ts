@@ -7,6 +7,11 @@ import {
   resolvePortableReadinessStrategy,
 } from '../../../src/core/readiness/portable-strategies.js';
 import type { ReadinessEvaluator } from '../../../src/core/types/kubernetes.js';
+import {
+  ciliumClusterwideNetworkPolicyReadinessEvaluator,
+  ciliumNetworkPolicyReadinessEvaluator,
+} from '../../../src/factories/cilium/resources/networking.js';
+import { envoyGatewayPolicyReadinessEvaluator } from '../../../src/factories/envoy-ai-gateway/resources/gateway.js';
 import { gitRepository } from '../../../src/factories/flux/git-repository.js';
 import { kustomization } from '../../../src/factories/flux/kustomize/kustomization.js';
 import { helmRelease } from '../../../src/factories/helm/helm-release.js';
@@ -20,10 +25,6 @@ import {
   createHelmTestReadinessEvaluator,
   createHelmTimeoutReadinessEvaluator,
 } from '../../../src/factories/helm/readiness-evaluators.js';
-import {
-  ciliumClusterwideNetworkPolicyReadinessEvaluator,
-  ciliumNetworkPolicyReadinessEvaluator,
-} from '../../../src/factories/cilium/resources/networking.js';
 import { kroCustomResource } from '../../../src/factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../src/factories/kro/resource-graph-definition.js';
 import { namespace } from '../../../src/factories/kubernetes/core/namespace.js';
@@ -171,6 +172,31 @@ describe('integration readiness portability', () => {
       });
       expect(getPortableReadinessStrategy(evaluator)).toBeUndefined();
     }
+  });
+
+  it('round-trips Envoy Gateway policy readiness without losing terminal failures', () => {
+    expectPortableRoundTrip(
+      envoyGatewayPolicyReadinessEvaluator,
+      {
+        metadata: { generation: 2 },
+        status: {
+          ancestors: [
+            {
+              controllerName: 'gateway.envoyproxy.io/gatewayclass-controller',
+              conditions: [
+                {
+                  type: 'ResolvedRefs',
+                  status: 'False',
+                  reason: 'InvalidReference',
+                  observedGeneration: 2,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      'typekro.readiness.envoy-ai-gateway.policy'
+    );
   });
 
   it('round-trips parameterized Kubernetes workload and Service readiness', () => {

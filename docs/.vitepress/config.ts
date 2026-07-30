@@ -89,6 +89,7 @@ export default withMermaid(
               { text: 'Cert-Manager', link: '/api/cert-manager/' },
               { text: 'ClickHouse', link: '/api/clickhouse/' },
               { text: 'OpenSearch', link: '/api/opensearch/' },
+              { text: 'Envoy AI Gateway', link: '/api/envoy-ai-gateway/' },
               { text: 'CloudNativePG', link: '/api/cnpg/' },
               { text: 'Flux', link: '/api/flux/' },
               { text: 'Harbor', link: '/api/harbor/' },

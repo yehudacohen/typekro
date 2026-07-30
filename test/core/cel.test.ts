@@ -233,7 +233,7 @@ describe('CEL Expression Builder', () => {
       const managed = Cel.expr<boolean>(mode, ' == "managed"');
 
       expect(managed.expression).toBe(
-        '(has(schema.spec.dependencySources.hydra.database.dsn.mode) && (schema.spec.dependencySources.hydra.database.dsn.mode) != null ? (schema.spec.dependencySources.hydra.database.dsn.mode) : "managed") == "managed"'
+        '(has(schema.spec.dependencySources.hydra.database.dsn.mode) && dyn((schema.spec.dependencySources.hydra.database.dsn.mode)) != null ? (schema.spec.dependencySources.hydra.database.dsn.mode) : "managed") == "managed"'
       );
     });
   });

@@ -43,9 +43,56 @@ describe('RGD readiness terminal detection', () => {
 
   it('does NOT mark a transient non-acceptance False condition terminal', () => {
     const r = evaluator()(
-      liveRGD([{ type: 'SomethingSyncing', status: 'False', message: 'still syncing', observedGeneration: 2 }])
+      liveRGD([
+        {
+          type: 'SomethingSyncing',
+          status: 'False',
+          message: 'still syncing',
+          observedGeneration: 2,
+        },
+      ])
     );
     expect(r.ready).toBe(false);
     expect(r.terminal).toBeUndefined();
+  });
+
+  it('does NOT mark Ready=False while Kro is progressing terminal', () => {
+    const r = evaluator()(
+      liveRGD([
+        {
+          type: 'Ready',
+          status: 'False',
+          reason: 'Progressing',
+          message: 'waiting for the generated CRD',
+          observedGeneration: 2,
+        },
+      ])
+    );
+    expect(r.ready).toBe(false);
+    expect(r.terminal).toBeUndefined();
+  });
+
+  it('marks deterministic KindReady schema migration failures terminal', () => {
+    const r = evaluator()(
+      liveRGD([
+        { type: 'GraphAccepted', status: 'True', observedGeneration: 2 },
+        {
+          type: 'KindReady',
+          status: 'False',
+          reason: 'Failed',
+          message: 'cannot update CRD: breaking changes detected: MinLength constraint 1 was added',
+          observedGeneration: 2,
+        },
+        {
+          type: 'Ready',
+          status: 'False',
+          reason: 'Failed',
+          observedGeneration: 2,
+        },
+      ])
+    );
+    expect(r.ready).toBe(false);
+    expect(r.terminal).toBe(true);
+    expect(r.message).toContain('breaking changes detected');
   });
 });

@@ -201,6 +201,149 @@ describe('DependencyResolver', () => {
       expect(warnings).toEqual([]);
     });
 
+    it('ignores dotted string data and lambda-local fields in CEL dependency scans', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression:
+              '"ai-gateway-controller.system.svc.cluster.local" + ' +
+              'items.status.conditions.exists(c, c.status.ready)',
+          },
+        },
+      });
+      const items = createMockResource({
+        id: 'items',
+        metadata: { name: 'items' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, items]);
+
+      expect(graph.getDependencies('app')).toEqual(['items']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('keeps escaped and single-quoted CEL string contents out of dependency analysis', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression:
+              '"escaped \\"fake.status.ready\\"" + ' + "'single.spec.value' + real.status.ready",
+          },
+        },
+      });
+      const real = createMockResource({
+        id: 'real',
+        metadata: { name: 'real' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, real]);
+
+      expect(graph.getDependencies('app')).toEqual(['real']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('does not turn CEL macro variables into graph resources', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression:
+              'items.status.conditions.all(condition, condition.status.ready) && ' +
+              'items.status.conditions.exists_one(candidate, candidate.spec.enabled) && ' +
+              'items.status.conditions.map(entry, entry.metadata.name).size() > 0',
+          },
+        },
+      });
+      const items = createMockResource({
+        id: 'items',
+        metadata: { name: 'items' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, items]);
+
+      expect(graph.getDependencies('app')).toEqual(['items']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('masks lambda variables only inside their lexical macro body', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'items.status.conditions.exists(db, db.status.ready) && db.status.ready',
+          },
+        },
+      });
+      const items = createMockResource({
+        id: 'items',
+        metadata: { name: 'items' },
+      });
+      const db = createMockResource({
+        id: 'db',
+        metadata: { name: 'db' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, items, db]);
+
+      expect(graph.getDependencies('app').sort()).toEqual(['db', 'items']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('does not reserve conventional lambda names outside a macro', () => {
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'each.status.ready',
+          },
+        },
+      });
+      const each = createMockResource({
+        id: 'each',
+        metadata: { name: 'each' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, each]);
+
+      expect(graph.getDependencies('app')).toEqual(['each']);
+    });
+
     it('should handle nested references in complex objects', () => {
       const resources = [
         createMockResource({

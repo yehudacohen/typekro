@@ -10,6 +10,11 @@ import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constant
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField, getResourceId } from '../metadata/index.js';
+import {
+  collectCelLambdaScopes,
+  isCelLambdaLocalAt,
+  maskCelStringLiterals,
+} from '../references/cel-lexical-scanner.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
@@ -521,15 +526,24 @@ export class DependencyResolver {
    */
   private parseCelReferences(expression: string): KubernetesRef[] {
     const refs: KubernetesRef[] = [];
+    const searchableExpression = maskCelStringLiterals(expression);
+    const lambdaScopes = collectCelLambdaScopes(searchableExpression);
 
-    // Simple regex to find resource references in CEL expressions
     // Pattern: resourceId.section.field (e.g., database.status.endpoint)
     const refPattern =
       /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
-    let match: RegExpExecArray | null = refPattern.exec(expression);
+    let match: RegExpExecArray | null = refPattern.exec(searchableExpression);
 
     while (match !== null) {
       const [, resourceId, section, field] = match;
+      if (!resourceId || !section || !field) {
+        match = refPattern.exec(searchableExpression);
+        continue;
+      }
+      if (isCelLambdaLocalAt(resourceId, match.index, lambdaScopes)) {
+        match = refPattern.exec(searchableExpression);
+        continue;
+      }
 
       refs.push({
         [KUBERNETES_REF_BRAND]: true,
@@ -537,7 +551,7 @@ export class DependencyResolver {
         fieldPath: `${section}.${field}`,
       } as KubernetesRef);
 
-      match = refPattern.exec(expression);
+      match = refPattern.exec(searchableExpression);
     }
 
     return refs;
