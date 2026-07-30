@@ -4571,6 +4571,12 @@ export class KroResourceFactoryImpl<
       {
         ...(this.factoryOptions.compositionOptions as SerializationOptions | undefined),
         namespace: this.namespace,
+        // Factory-level override. The composition option of the same name is unreachable for a consumer of a
+        // SHIPPED composition (its definition lives in TypeKro), so without this there is no way to authorize
+        // the one-off CRD schema migration KRO would otherwise silently refuse.
+        ...(this.factoryOptions.allowBreakingChanges === undefined
+          ? {}
+          : { allowBreakingChanges: this.factoryOptions.allowBreakingChanges }),
       },
       kroSchema
     );
@@ -4600,10 +4606,12 @@ export class KroResourceFactoryImpl<
   }
 
   private buildRgdYaml(spec?: TSpec): string {
-    return serializeResourceGraphDefinitionToYaml(
-      this.buildRgdManifest(spec),
-      this.factoryOptions.compositionOptions as SerializationOptions | undefined
-    );
+    return serializeResourceGraphDefinitionToYaml(this.buildRgdManifest(spec), {
+      ...(this.factoryOptions.compositionOptions as SerializationOptions | undefined),
+      ...(this.factoryOptions.allowBreakingChanges === undefined
+        ? {}
+        : { allowBreakingChanges: this.factoryOptions.allowBreakingChanges }),
+    });
   }
 
   /**

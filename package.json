@@ -153,7 +153,7 @@
     "test:packed-imports": "node scripts/test-packed-imports.mjs",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
-    "test:integration:dagster": "bun test test/integration/dagster/bootstrap-composition.test.ts --timeout 900000",
+    "test:integration:dagster": "bun test test/integration/dagster/ --timeout 900000",
     "test:integration:required": "REQUIRE_CLUSTER_TESTS=true ./scripts/run-integration-tests.sh",
     "test:integration:debug": "DEBUG_MODE=true ./scripts/run-integration-tests.sh",
     "typecheck": "bun run typecheck:lib && bun run typecheck:examples && bun run typecheck:tests",

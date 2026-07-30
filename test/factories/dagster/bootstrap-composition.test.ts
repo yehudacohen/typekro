@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { load } from 'js-yaml';
+import { load, loadAll } from 'js-yaml';
 import {
   dagsterBootstrap,
   dagsterHelmRepositoryBootstrap,
@@ -14,6 +14,39 @@ import {
 // Direct composition imports were rejected because `typekro/dagster` is the
 // approved user-facing seam.
 describe('Dagster bootstrap composition', () => {
+  /**
+   * A KRO SimpleSchema node: either a type string (`'string'`, `'object'`, `'[]object'`, …) or a nested map of
+   * fields. Recursive so nested reads stay typed — `Record<string, unknown>` would make every child `unknown`.
+   */
+  type SchemaNode = string | { readonly [field: string]: SchemaNode };
+
+  /** Just enough of an RGD document to select one and read its declared schema types. */
+  interface RgdDocument {
+    kind?: string;
+    spec?: { schema?: { kind?: string; spec?: Record<string, SchemaNode> } };
+  }
+
+  /** Read a nested field's declared type, e.g. `at(spec.postgresql, 'values')`. */
+  const at = (node: SchemaNode | undefined, ...path: string[]): SchemaNode | undefined => {
+    let cursor = node;
+    for (const key of path) {
+      if (typeof cursor !== 'object' || cursor === null) return undefined;
+      cursor = cursor[key];
+    }
+    return cursor;
+  };
+
+  /** The RGD's `spec.schema.spec` — the declared CRD field types KRO admission enforces. */
+  const bootstrapSchemaSpec = (): Record<string, SchemaNode> => {
+    const docs = loadAll(dagsterBootstrap.toYaml()) as RgdDocument[];
+    // Select by SCHEMA kind: toYaml() emits two RGDs (the HelmRepository one first), so matching on
+    // `kind: ResourceGraphDefinition` silently picks the wrong document.
+    const schemaSpec = docs.find((d) => d.spec?.schema?.kind === 'DagsterBootstrap')?.spec?.schema
+      ?.spec;
+    if (!schemaSpec) throw new Error('no DagsterBootstrap RGD in dagsterBootstrap.toYaml()');
+    return schemaSpec;
+  };
+
   it('Accept valid Dagster bootstrap config through the config schema', () => {
     const result = DagsterBootstrapConfigSchema({
       name: 'analytics',
@@ -146,6 +179,48 @@ describe('Dagster bootstrap composition', () => {
     expect(instanceBundle).toContain('namespace: typekro-singletons');
     expect(instanceBundle).toContain('typekro.io/singleton-spec-fingerprint');
     expect(instanceBundle).toContain('kind: DagsterBootstrap');
+  });
+
+  // The escape hatches must be SCHEMALESS in the RGD. Asserting the CEL reference exists (as the test
+  // below does) is not enough: a field can be referenced and still be typed `string`, in which case KRO
+  // admission PRUNES whatever object the caller sent and the reference resolves to nothing. That is exactly
+  // how both documented Dagster passthroughs stayed broken while tests passed — so assert the TYPE.
+  it('Declare every raw Helm values escape hatch as KRO `object`, not `string`', () => {
+    const spec = bootstrapSchemaSpec();
+
+    // The top-level chart-values passthrough.
+    expect(spec.values).toBe('object');
+    // The per-subchart passthroughs. These are the ONLY route to bundled-subchart settings such as
+    // postgresql `primary.persistence.enabled` or `nodeSelector`, none of which the convenience shapes model.
+    expect(at(spec.postgresql, 'values')).toBe('object');
+    expect(at(spec.rabbitmq, 'values')).toBe('object');
+    expect(at(spec.redis, 'values')).toBe('object');
+  });
+
+  it('Keep typed convenience fields typed — opaque `values` must not swallow the whole API', () => {
+    const spec = bootstrapSchemaSpec();
+
+    // Making `values` opaque is a deliberate narrowing of where schemalessness applies. The high-level
+    // convenience API must stay strongly typed, or the CRD stops documenting anything.
+    expect(spec.name).toBe('string');
+    expect(at(spec.postgresql, 'enabled')).toBe('boolean');
+    expect(at(spec.postgresql, 'servicePort')).toBe('integer');
+    expect(at(spec.postgresql, 'host')).toBe('string');
+  });
+
+  // The migration switch for the schemaless-`object` correction. It has to work at FACTORY level: the same
+  // option exists on a composition, but `dagsterBootstrap`'s composition is defined inside TypeKro, so a
+  // consumer cannot reach it — leaving no way to authorize the one-off CRD schema change KRO otherwise
+  // refuses (silently: apply succeeds, RGD reports Ready, CRD keeps its old schema).
+  it('Stamps kro.run/allow-breaking-changes only when the factory opts in', () => {
+    expect(dagsterBootstrap.toYaml()).not.toContain('allow-breaking-changes');
+    expect(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml()).toContain(
+      'kro.run/allow-breaking-changes'
+    );
+    // Off by default: a safety check should never be disabled by merely passing other options.
+    expect(dagsterBootstrap.factory('kro', { namespace: 'dagster' }).toYaml()).not.toContain(
+      'allow-breaking-changes'
+    );
   });
 
   it('Preserve graph-aware Helm values in ResourceGraphDefinition YAML without raw markers', () => {

@@ -159,6 +159,18 @@ function getKroTypeFromJson(node: unknown): string {
       case 'string':
       case 'boolean':
         return node;
+      // Arktype represents a bare `type('object')` as the STRING "object" (not as
+      // `{ domain: "object" }`, which the object branch above already handles). Omitting it here fell
+      // through to the `'string'` default, so every schemaless-object field was declared `string` in the
+      // RGD — and KRO admission then PRUNED any real object a caller sent, silently. That is what made
+      // Dagster's documented Helm `values` escape hatches unusable, and it affects every factory using
+      // `type('object')` for passthrough config. KRO models `object` as schemaless (`type: object` with
+      // `x-kubernetes-preserve-unknown-fields: true`), which is exactly the representation needed.
+      //
+      // `object[]` needs no separate case: the array branch above recurses through here, so a
+      // `sequence` of "object" now yields `[]object`.
+      case 'object':
+        return 'object';
     }
   }
 
