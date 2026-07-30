@@ -13,6 +13,7 @@ import { getComponentLogger } from '../../src/core/logging/index.js';
 import { Cel } from '../../src/core/references/cel.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { job } from '../../src/factories/kubernetes/workloads/job.js';
 import { createMockKubeConfig } from '../utils/mock-factories.js';
 
 /**
@@ -46,6 +47,32 @@ function makeFactory(factoryName: string, workloadNs: string) {
     { name: factoryName, kind: 'MultiGate', spec: MultiSpec, status: MultiStatus },
     (spec) => {
       namespace({ id: 'ownedNamespace', metadata: { name: Cel.expr(spec.namespace) as string } });
+      return { ready: true };
+    }
+  );
+  return composition.factory('kro', {
+    namespace: workloadNs,
+    timeout: 250,
+    kubeConfig: createMockKubeConfig(),
+  });
+}
+
+function makeJobFactory(factoryName: string, workloadNs: string) {
+  const composition = kubernetesComposition(
+    { name: factoryName, kind: 'MultiGate', spec: MultiSpec, status: MultiStatus },
+    () => {
+      job({
+        id: 'migration',
+        metadata: { name: 'migration', namespace: workloadNs },
+        spec: {
+          template: {
+            spec: {
+              restartPolicy: 'Never',
+              containers: [{ name: 'migration', image: 'busybox:1.36.1' }],
+            },
+          },
+        },
+      });
       return { ready: true };
     }
   );
@@ -375,6 +402,46 @@ describe('#2 [P1] deleteInstance preserves a namespace a REMAINING instance shar
     expect(result.retained).toEqual(
       expect.arrayContaining([expect.objectContaining({ policy: 'shared-instance' })])
     );
+  });
+
+  it('treats an already-absent Job reported by client-node 1.x as drained', async () => {
+    const factory = makeJobFactory('v7-missing-job', 'app-ns');
+    const { api, ops } = makeMockApi({
+      crBody: {
+        spec: { name: 'a', namespace: 'app-ns' },
+        metadata: { annotations: { [HOISTED_NAMESPACES_ANNOTATION]: '[]' } },
+      },
+    });
+    const objectApi = api as typeof api & {
+      read: (obj: { kind?: string; metadata?: { name?: string } }) => Promise<unknown>;
+    };
+    const baseRead = objectApi.read;
+    objectApi.read = async (obj) => {
+      if (obj.kind === 'Job') {
+        const error = new Error(
+          'HTTP-Code: 404\nMessage: Unsuccessful HTTP Request'
+        ) as Error & { body?: string };
+        error.body = JSON.stringify({
+          kind: 'Status',
+          status: 'Failure',
+          reason: 'NotFound',
+          code: 404,
+        });
+        throw error;
+      }
+      return baseRead(obj);
+    };
+    wire(factory, objectApi, { remaining: [] });
+
+    const result = await factory.deleteInstance('a');
+
+    expect(ops).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ op: 'delete', kind: 'MultiGate', name: 'a' }),
+      ])
+    );
+    expect(result.status).toBe('complete');
+    expect(result.blockers).toEqual([]);
   });
 
   it('deleting the LAST instance CLEANS the shared namespace (no remaining instance records it)', async () => {
