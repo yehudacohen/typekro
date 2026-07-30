@@ -33,9 +33,17 @@ const describeLiveOrSkip = clusterAvailable ? describe : describe.skip;
 const GROUP = 'kro.run';
 const VERSION = 'v1alpha1';
 const RGD_PLURAL = 'resourcegraphdefinitions';
-const RGD_NAME = 'schema-migration-probe';
-const CR_PLURAL = 'schemamigrationprobes';
-const CR_KIND = 'SchemaMigrationProbe';
+/**
+ * RUN-UNIQUE identity. A fixed name made this fixture destructively ADOPT whatever was already on the
+ * cluster under that name: setup unconditionally deleted the RGD and its generated CRD (swallowing errors),
+ * so two concurrent runs — or a run overlapping an interrupted earlier one — would delete each other's
+ * resources with no ownership evidence. Suffixing every identity means a run can only ever touch objects it
+ * created, and the pre-delete below is a no-op belt-and-braces rather than a landmine.
+ */
+const RUN_ID = Math.random().toString(36).slice(2, 8);
+const RGD_NAME = `schema-migration-probe-${RUN_ID}`;
+const CR_PLURAL = `schemamigrationprobes${RUN_ID}`;
+const CR_KIND = `SchemaMigrationProbe${RUN_ID}`;
 
 /** An RGD declaring `values` as the type given — the only difference between legacy and corrected. */
 const rgd = (valuesType: 'string' | 'object', allowBreaking: boolean): object => ({

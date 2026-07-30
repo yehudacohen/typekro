@@ -94,45 +94,83 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
     gone?: () => Promise<boolean>;
   }> = [];
 
-  const applyRgd = async (yamlDoc: string): Promise<void> => {
+  /** Poll until an RGD is really gone (KRO finalizers settled). Bounded so a stuck delete fails loudly. */
+  const waitForRgdAbsent = async (name: string): Promise<boolean> => {
+    for (let i = 0; i < 60; i++) {
+      const gone = await custom
+        .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
+        .then(() => false)
+        .catch(() => true);
+      if (gone) return true;
+      await Bun.sleep(1000);
+    }
+    return false;
+  };
+
+  /**
+   * Apply the RGDs in a rendered bundle.
+   *
+   * `ownership` decides what may happen to an RGD that ALREADY EXISTS, and it is a safety boundary, not a
+   * style choice:
+   *
+   * - `'test-owned'` — the name is unique to this test (see PROBE_RGD). A leftover from an earlier run
+   *   carries an OLD schema, so reusing it would silently assert against the wrong definition; delete and
+   *   recreate, and register it for teardown.
+   * - `'shared'` — the name is PRODUCTION-shaped (`dagster-bootstrap` and its HelmRepository singleton). On a
+   *   persistent cluster these definitions serve real Dagster instances, so this test must never delete
+   *   them: it UPDATES in place (which is all the assertions need — KRO re-registers the CRD from the new
+   *   schema) and never registers them for teardown. Deleting them previously took out the shared
+   *   HelmRepository singleton, breaking every Dagster release pointing at it.
+   */
+  const applyRgd = async (yamlDoc: string, ownership: 'test-owned' | 'shared'): Promise<void> => {
     for (const doc of k8s.loadAllYaml(yamlDoc)) {
       const body = doc as { kind?: string; metadata?: { name?: string } };
       if (body.kind !== 'ResourceGraphDefinition') continue;
       const name = body.metadata?.name;
       if (!name) continue;
-      await custom
-        .createClusterCustomObject({
+
+      const existing = await custom
+        .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
+        .then((o) => o as { metadata?: { resourceVersion?: string } })
+        .catch(() => undefined);
+
+      if (existing && ownership === 'shared') {
+        // Update in place — never delete somebody else's definition. `resourceVersion` makes this a
+        // compare-and-swap, so a concurrent writer surfaces as a conflict instead of being clobbered.
+        await custom.replaceClusterCustomObject({
           group: RGD_GROUP,
           version: RGD_VERSION,
           plural: RGD_PLURAL,
-          body: body as object,
-        })
-        .catch(async (e: unknown) => {
-          // A leftover RGD from an earlier run carries an OLD schema, so "reuse on AlreadyExists" would
-          // silently assert against the wrong definition (and KRO refuses breaking CRD type changes on
-          // update anyway). Delete and recreate so the test always exercises the CURRENT schema.
-          if (!String(e).includes('AlreadyExists') && !String(e).includes('409')) throw e;
-          await custom.deleteClusterCustomObject({
-            group: RGD_GROUP,
-            version: RGD_VERSION,
-            plural: RGD_PLURAL,
-            name,
-          });
-          for (let i = 0; i < 60; i++) {
-            const gone = await custom
-              .getClusterCustomObject({ group: RGD_GROUP, version: RGD_VERSION, plural: RGD_PLURAL, name })
-              .then(() => false)
-              .catch(() => true);
-            if (gone) break;
-            await Bun.sleep(1000);
-          }
-          await custom.createClusterCustomObject({
-            group: RGD_GROUP,
-            version: RGD_VERSION,
-            plural: RGD_PLURAL,
-            body: body as object,
-          });
+          name,
+          body: {
+            ...(body as object),
+            metadata: {
+              ...(body.metadata ?? {}),
+              resourceVersion: existing.metadata?.resourceVersion,
+            },
+          } as object,
         });
+        continue; // deliberately NOT registered for teardown: this run did not create it
+      }
+
+      if (existing) {
+        // test-owned leftover: its schema is stale and KRO refuses breaking CRD type changes on update,
+        // so delete and recreate to exercise the CURRENT schema.
+        await custom.deleteClusterCustomObject({
+          group: RGD_GROUP,
+          version: RGD_VERSION,
+          plural: RGD_PLURAL,
+          name,
+        });
+        await waitForRgdAbsent(name);
+      }
+
+      await custom.createClusterCustomObject({
+        group: RGD_GROUP,
+        version: RGD_VERSION,
+        plural: RGD_PLURAL,
+        body: body as object,
+      });
       created.push({
         what: `rgd/${name}`,
         remove: () =>
@@ -183,11 +221,11 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
 
   beforeAll(async () => {
     lease = await createTestNamespace(`typekro-obj-admission-${Math.random().toString(36).slice(2, 8)}`, kc);
-    await applyRgd(probeComposition.factory('kro').toYaml());
+    await applyRgd(probeComposition.factory('kro').toYaml(), 'test-owned');
     // Apply WITH the migration flag: a `dagsterbootstraps` CRD left by an older TypeKro carries `string`
     // types, and KRO refuses the breaking update SILENTLY (RGD still reports Ready). Without authorizing it
     // the assertions below would read a stale schema and fail for the wrong reason.
-    await applyRgd(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml());
+    await applyRgd(dagsterBootstrap.factory('kro', { allowBreakingChanges: true }).toYaml(), 'shared');
     await waitForConvergedCrd('objectschemaprobes');
     await waitForConvergedCrd('dagsterbootstraps');
   });
@@ -219,12 +257,32 @@ describeLiveOrSkip('schemaless object fields survive KRO admission', () => {
       await remove().catch((e: unknown) => failures.push(`${what}: ${String(e)}`));
     }
 
+    // The RGD must be GONE before its CRD is removed. Deleting the CRD while KRO can still observe the RGD
+    // lets KRO re-register the CRD, leaving the very object this teardown just removed — the same race the
+    // migration fixture documents. So: wait out the RGD, then delete the CRD, then confirm it stayed gone.
+    for (const { what } of created.filter((c) => !c.gone && c.what.startsWith('rgd/'))) {
+      const name = what.slice('rgd/'.length);
+      if (!(await waitForRgdAbsent(name))) failures.push(`${what}: still present after delete`);
+    }
+
     // Deleting an RGD does NOT reap the CRD KRO registered for it, so remove it explicitly or every run
     // leaves one behind. Only the PROBE kind — deliberately not dagsterbootstraps, which on a persistent
     // cluster may hold real instances this test knows nothing about and only updated.
     await apiext
       .deleteCustomResourceDefinition({ name: `objectschemaprobes.${RGD_GROUP}` })
       .catch((e: unknown) => failures.push(`crd/objectschemaprobes.${RGD_GROUP}: ${String(e)}`));
+
+    let crdGone = false;
+    for (let i = 0; i < 60 && !crdGone; i++) {
+      crdGone = await apiext
+        .readCustomResourceDefinition({ name: `objectschemaprobes.${RGD_GROUP}` })
+        .then(() => false)
+        .catch(() => true);
+      if (!crdGone) await Bun.sleep(1000);
+    }
+    if (!crdGone) {
+      failures.push(`crd/objectschemaprobes.${RGD_GROUP}: still present (KRO may have re-registered it)`);
+    }
 
     if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join('\n')}`);
   });
