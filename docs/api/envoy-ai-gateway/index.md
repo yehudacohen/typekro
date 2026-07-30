@@ -34,6 +34,14 @@ fields:
 
 ```typescript
 const inference = makeEnvoyAIGateway({
+  profile: 'production',
+  platform: {
+    // Secret/envoy-ai-gateway-mcp-seed must exist in the AI Gateway
+    // controller namespace and contain an unpadded base64url `seed`.
+    mcpSessionEncryptionSeedSecret: {
+      name: 'envoy-ai-gateway-mcp-seed',
+    },
+  },
   providers: [
     {
       name: 'reasoning-primary',
@@ -102,6 +110,12 @@ Global token or request budgets use Envoy Gateway's global rate-limit service:
 
 ```typescript
 const limited = makeEnvoyAIGateway({
+  profile: 'production',
+  platform: {
+    mcpSessionEncryptionSeedSecret: {
+      name: 'envoy-ai-gateway-mcp-seed',
+    },
+  },
   providers,
   models,
   rateLimit: {
@@ -128,6 +142,10 @@ the singleton installation fingerprint. Two application graphs cannot
 silently reconfigure the same shared platform with different rate-limit
 backends.
 
+`rateLimitRedisUrl` is deliberately a build-time platform option, not a field
+on the installation CR. A shared controller's Redis backend is topology, and
+changing an application instance must not silently rewire that singleton.
+
 ## Shared platform lifecycle
 
 Application gateways reference one singleton platform owner. Deleting an
@@ -137,7 +155,12 @@ Gateway controller.
 Use the explicit installation only for deliberate platform teardown:
 
 ```typescript
-await makeEnvoyAIGatewayPlatformInstallation()
+await makeEnvoyAIGatewayPlatformInstallation({
+  profile: 'production',
+  mcpSessionEncryptionSeedSecret: {
+    name: 'envoy-ai-gateway-mcp-seed',
+  },
+})
   .factory('kro', {
     namespace: 'typekro-singletons',
   })
@@ -162,6 +185,18 @@ Application-facing MCP catalogs, authorization, protocol-version admission,
 and operation execution remain responsibilities of the consuming framework;
 the TypeKro factory only owns Kubernetes routing resources.
 
+The upstream chart ships a publicly known MCP session-encryption seed.
+TypeKro's production profile therefore fails closed unless
+`mcpSessionEncryptionSeedSecret` identifies an externally managed Secret in
+the AI Gateway controller namespace. Its key (default `seed`) must contain an
+unpredictable, unpadded base64url value (`[A-Za-z0-9_-]+`). That alphabet is
+deliberately safe under Flux 2.7's `targetPath`/Helm `--set` parsing. Flux
+projects the key to the exact `controller.mcp.sessionEncryption.seed` path, so
+a missing Secret or key fails reconciliation instead of falling back to the
+upstream known default. The seed never enters TypeKro YAML or singleton state,
+and inline production overrides are rejected. The development profile retains
+the upstream convenience default and must not be used for production traffic.
+
 ## Status
 
 Direct and KRO factories expose the same complete status:
@@ -182,5 +217,8 @@ Direct and KRO factories expose the same complete status:
 ```
 
 Readiness requires the current observed generation for the platform,
-`GatewayConfig`, `Gateway`, route, and every provider policy. Stale successful
-conditions from an earlier generation cannot complete an update.
+`GatewayConfig`, `Gateway`, route, and every provider policy whenever the
+upstream controller supplies `observedGeneration`. Envoy AI Gateway v0.6 can
+omit that field on its Condition-shaped v1beta1 status; TypeKro accepts the
+condition only in that documented sparse case. A present stale generation
+cannot complete or fail an update.

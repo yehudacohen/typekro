@@ -95,6 +95,26 @@ describe('Envoy AI Gateway integration', () => {
         },
       })
     ).toMatchObject({ ready: true });
+
+    expect(
+      envoyAIAcceptedReadinessEvaluator({
+        metadata: { generation: 2 },
+        status: {
+          conditions: [
+            {
+              type: 'NotAccepted',
+              status: 'True',
+              observedGeneration: 1,
+            },
+            {
+              type: 'Accepted',
+              status: 'True',
+              observedGeneration: 2,
+            },
+          ],
+        },
+      })
+    ).toMatchObject({ ready: true });
   });
 
   test('requires both current Gateway acceptance and programming', () => {
@@ -147,6 +167,87 @@ describe('Envoy AI Gateway integration', () => {
     expect(yaml).not.toContain('__typekro');
   });
 
+  test('gates route and provider status on the observed generation when available', () => {
+    const yaml = localGateway().factory('kro', { namespace: 'typekro-system' }).toYaml();
+    const gateway = rgd(yaml, 'envoy-ai-gateway');
+    const status = record(record(gateway.spec).schema).status;
+    const serializedStatus = JSON.stringify(status);
+
+    expect(serializedStatus).toContain(
+      'has(c.observedGeneration) ? c.observedGeneration == route.metadata.generation : true'
+    );
+    expect(serializedStatus).toMatch(
+      /has\(c\.observedGeneration\) \? c\.observedGeneration == providerLocal[a-f0-9]{10}AIServiceBackend\.metadata\.generation : true/u
+    );
+  });
+
+  test('keeps distinct hyphenated provider names as distinct graph resources', () => {
+    const gateway = makeEnvoyAIGateway({
+      profile: 'development',
+      providers: [
+        {
+          name: 'a-b',
+          kind: 'openai-compatible',
+          hostname: 'first.default.svc.cluster.local',
+          tls: false,
+        },
+        {
+          name: 'a--b',
+          kind: 'openai-compatible',
+          hostname: 'second.default.svc.cluster.local',
+          tls: false,
+        },
+      ],
+      models: [
+        {
+          model: 'fast',
+          targets: [
+            { provider: 'a-b', model: 'first' },
+            { provider: 'a--b', model: 'second' },
+          ],
+        },
+      ],
+    });
+    const yaml = gateway.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      name: 'collision-proof',
+      namespace: 'application-owned',
+      lifecycle: 'external',
+    });
+    const rendered = documents(yaml);
+
+    expect(rendered.filter((document) => document.kind === 'Backend')).toHaveLength(2);
+    expect(rendered.filter((document) => document.kind === 'AIServiceBackend')).toHaveLength(2);
+    expect(yaml).toContain('first.default.svc.cluster.local');
+    expect(yaml).toContain('second.default.svc.cluster.local');
+  });
+
+  test('rejects ports outside the Kubernetes service-port range', () => {
+    expect(() =>
+      makeEnvoyAIGateway({
+        profile: 'development',
+        providers: [
+          {
+            name: 'invalid',
+            kind: 'openai-compatible',
+            hostname: 'invalid.default.svc.cluster.local',
+            port: 70_000,
+            tls: false,
+          },
+        ],
+        models: [{ model: 'fast', targets: [{ provider: 'invalid' }] }],
+      })
+    ).toThrow(/1 through 65535/);
+
+    expect(() =>
+      localGateway().factory('direct', { namespace: 'typekro-system' }).toYaml({
+        name: 'invalid-listener',
+        namespace: 'application-owned',
+        lifecycle: 'external',
+        listenerPort: 70_000,
+      })
+    ).toThrow();
+  });
+
   test('supports externally owned application namespaces', () => {
     const yaml = localGateway().factory('direct', { namespace: 'typekro-system' }).toYaml({
       name: 'external',
@@ -165,6 +266,7 @@ describe('Envoy AI Gateway integration', () => {
 
   test('renders provider credentials, TLS, weighting, priority, and fallback', () => {
     const gateway = makeEnvoyAIGateway({
+      profile: 'development',
       providers: [
         {
           name: 'openai',
@@ -207,6 +309,7 @@ describe('Envoy AI Gateway integration', () => {
 
   test('renders token accounting and rate limiting without leaking provider details', () => {
     const gateway = makeEnvoyAIGateway({
+      profile: 'development',
       providers: [
         {
           name: 'local',
@@ -327,6 +430,9 @@ describe('Envoy AI Gateway integration', () => {
     const before = structuredClone(customValues);
     const platform = makeEnvoyAIGatewayPlatformInstallation({
       profile: 'production',
+      mcpSessionEncryptionSeedSecret: {
+        name: 'envoy-ai-gateway-mcp-seed',
+      },
       envoyGatewayValues: customValues,
       aiGatewayValues: {
         extProc: { enableRedaction: false },
@@ -347,9 +453,67 @@ describe('Envoy AI Gateway integration', () => {
     );
     expect(yaml).toContain('port: 1063');
     expect(yaml).toContain('enableRedaction: true');
+    expect(yaml).toContain('name: envoy-ai-gateway-mcp-seed');
+    expect(yaml).toContain('valuesKey: seed');
+    expect(yaml).toContain('targetPath: controller.mcp.sessionEncryption.seed');
+    expect(yaml).not.toContain('default-insecure-seed');
     expect(yaml).not.toContain('enableRedaction: false');
     expect(yaml).not.toContain('invalid.example/controller');
     expect(yaml).not.toContain('hostname: invalid.example');
+  });
+
+  test('fails closed when production MCP session encryption has no Secret source', () => {
+    expect(() =>
+      makeEnvoyAIGatewayPlatformInstallation({
+        profile: 'production',
+      })
+    ).toThrow(/mcpSessionEncryptionSeedSecret/);
+
+    expect(() =>
+      makeEnvoyAIGateway({
+        profile: 'production',
+        providers: [
+          {
+            name: 'local',
+            kind: 'openai-compatible',
+            hostname: 'mock-ai.default.svc.cluster.local',
+            tls: false,
+          },
+        ],
+        models: [{ model: 'fast', targets: [{ provider: 'local' }] }],
+      })
+    ).toThrow(/mcpSessionEncryptionSeedSecret/);
+
+    expect(() =>
+      makeEnvoyAIGatewayPlatformInstallation({
+        profile: 'production',
+        mcpSessionEncryptionSeedSecret: { name: 'managed-seed' },
+        aiGatewayValues: {
+          controller: {
+            mcp: {
+              sessionEncryption: {
+                seed: 'inline-secret',
+              },
+            },
+          },
+        },
+      })
+    ).toThrow(/must come from mcpSessionEncryptionSeedSecret/);
+  });
+
+  test('keeps singleton Redis topology out of the runtime installation spec', () => {
+    const platform = makeEnvoyAIGatewayPlatformInstallation({
+      profile: 'production',
+      rateLimitRedisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
+      mcpSessionEncryptionSeedSecret: { name: 'managed-seed' },
+    });
+    const yaml = platform.factory('kro', { namespace: 'typekro-system' }).toYaml();
+    const definition = rgd(yaml, 'envoy-ai-gateway-platform-installation');
+    const schema = record(record(definition.spec).schema);
+
+    expect(record(schema.spec)).not.toHaveProperty('rateLimitRedisUrl');
+    expect(yaml).toContain('valkey.valkey-system.svc.cluster.local:6379');
+    expect(yaml).toContain('targetPath: controller.mcp.sessionEncryption.seed');
   });
 
   test('keeps shared platform ownership outside application graphs', () => {
@@ -374,6 +538,7 @@ describe('Envoy AI Gateway integration', () => {
     const spec = record(gateway.spec);
     const schema = record(spec.schema);
     const status = record(schema.status);
+    const schemaSpec = record(schema.spec);
     const resources = JSON.stringify(spec.resources);
 
     expect(resources).toContain('"apiVersion":"aigateway.envoyproxy.io/v1beta1"');
@@ -395,6 +560,7 @@ describe('Envoy AI Gateway integration', () => {
     expect(String(status.endpoint)).toContain('size(gateway.status.addresses)');
     expect(String(status.endpoint)).not.toContain('.size()');
     expect(status).toHaveProperty('aiGatewayVersion', '${gatewayContract.data.aiGatewayVersion}');
+    expect(schemaSpec).toHaveProperty('listenerPort', 'integer | minimum=1 maximum=65535');
     expect(String(status.ready)).toContain('observedGeneration');
     expect(String(status.failed)).toContain('observedGeneration');
   });

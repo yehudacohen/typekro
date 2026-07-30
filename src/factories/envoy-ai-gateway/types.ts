@@ -1,10 +1,10 @@
 import { type } from 'arktype';
-import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { TypeKroChartValue, TypeKroValue } from '../../core/types/common.js';
+import type { HelmReleaseValuesFromSource } from '../helm/types.js';
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
-const kubernetesDnsLabel = type(
-  /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/,
-).and('string <= 63');
+const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
+const kubernetesPort = type('number.integer >= 1').and('number <= 65535');
 
 export const EnvoyAIGatewayPlatformInstallationSpecSchema = type({
   name: kubernetesName,
@@ -15,7 +15,6 @@ export const EnvoyAIGatewayPlatformInstallationSpecSchema = type({
   'repositoryName?': kubernetesDnsLabel,
   'repositoryNamespace?': kubernetesDnsLabel,
   'gatewayClassName?': kubernetesDnsLabel,
-  'rateLimitRedisUrl?': 'string > 0',
   'configurationDigest?': 'string > 0',
 });
 
@@ -62,6 +61,18 @@ export interface EnvoyAIGatewayPlatformBuildOptions {
   readonly gatewayClassName?: string;
   /** Envoy Gateway global rate-limit service Redis endpoint, without a URL scheme. */
   readonly rateLimitRedisUrl?: string;
+  /**
+   * Secret-backed Envoy AI Gateway MCP session-encryption seed.
+   *
+   * The Secret must exist in the AI Gateway controller namespace. Production
+   * profiles require this source so the upstream known default can never be
+   * used accidentally.
+   */
+  readonly mcpSessionEncryptionSeedSecret?: {
+    readonly name: string;
+    /** Key containing an unpadded base64url seed. @default 'seed' */
+    readonly key?: string;
+  };
   /** Concrete build-time values merged before protected compatibility pins. */
   readonly envoyGatewayValues?: Record<string, unknown>;
   /** Concrete build-time values merged before protected compatibility pins. */
@@ -77,6 +88,7 @@ export interface EnvoyGatewayHelmReleaseConfig {
   readonly repositoryName: string;
   readonly repositoryNamespace: string;
   readonly values: TypeKroChartValue<Record<string, unknown>>;
+  readonly valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
   readonly id?: string;
 }
 
@@ -180,11 +192,7 @@ export type EnvoyAILLMRequestCost =
       readonly cel: string;
     };
 
-export type EnvoyAIRateLimitUnit =
-  | 'Second'
-  | 'Minute'
-  | 'Hour'
-  | 'Day';
+export type EnvoyAIRateLimitUnit = 'Second' | 'Minute' | 'Hour' | 'Day';
 
 export type EnvoyAITokenCost =
   | 'input-tokens'
@@ -234,7 +242,7 @@ export const EnvoyAIGatewaySpecSchema = type({
   name: kubernetesName,
   namespace: kubernetesDnsLabel,
   'lifecycle?': '"owned" | "external"',
-  'listenerPort?': 'number.integer >= 1',
+  'listenerPort?': kubernetesPort,
 });
 
 export type EnvoyAIGatewaySpec = typeof EnvoyAIGatewaySpecSchema.infer;
@@ -312,11 +320,7 @@ export interface EnvoyBackendSpec {
   }[];
 }
 
-export type EnvoyAIBackendSchema =
-  | 'OpenAI'
-  | 'Anthropic'
-  | 'AWSBedrock'
-  | 'AWSAnthropic';
+export type EnvoyAIBackendSchema = 'OpenAI' | 'Anthropic' | 'AWSBedrock' | 'AWSAnthropic';
 
 export interface AIServiceBackendSpec {
   readonly schema: {

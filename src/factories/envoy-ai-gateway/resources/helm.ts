@@ -13,7 +13,7 @@ import { DEFAULT_ENVOY_PROXY_REPOSITORY_URL } from '../constants.js';
 import type { EnvoyGatewayHelmReleaseConfig } from '../types.js';
 
 export function envoyProxyHelmRepository(
-  config: Omit<HelmRepositoryConfig, 'url' | 'type'> & { readonly url?: string },
+  config: Omit<HelmRepositoryConfig, 'url' | 'type'> & { readonly url?: string }
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
     ...config,
@@ -23,26 +23,26 @@ export function envoyProxyHelmRepository(
 }
 
 export function envoyGatewayHelmRelease(
-  config: EnvoyGatewayHelmReleaseConfig,
+  config: EnvoyGatewayHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec<Record<string, unknown>>, HelmReleaseStatus> {
   return envoyHelmRelease(config, 'gateway-helm');
 }
 
 export function envoyAIGatewayCrdsHelmRelease(
-  config: EnvoyGatewayHelmReleaseConfig,
+  config: EnvoyGatewayHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec<Record<string, unknown>>, HelmReleaseStatus> {
   return envoyHelmRelease(config, 'ai-gateway-crds-helm');
 }
 
 export function envoyAIGatewayControllerHelmRelease(
-  config: EnvoyGatewayHelmReleaseConfig,
+  config: EnvoyGatewayHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec<Record<string, unknown>>, HelmReleaseStatus> {
   return envoyHelmRelease(config, 'ai-gateway-helm');
 }
 
 function envoyHelmRelease(
   config: EnvoyGatewayHelmReleaseConfig,
-  chart: string,
+  chart: string
 ): Enhanced<HelmReleaseSpec<Record<string, unknown>>, HelmReleaseStatus> {
   return helmRelease<Record<string, unknown>>({
     name: config.name,
@@ -57,6 +57,7 @@ function envoyHelmRelease(
       namespace: config.repositoryNamespace,
     },
     values: config.values as TypeKroChartValue<Record<string, unknown>>,
+    ...(config.valuesFrom ? { valuesFrom: config.valuesFrom } : {}),
     install: {
       timeout: '15m',
       remediation: {

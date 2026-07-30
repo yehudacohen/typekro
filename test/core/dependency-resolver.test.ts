@@ -245,8 +245,7 @@ describe('DependencyResolver', () => {
           value: {
             [CEL_EXPRESSION_BRAND]: true,
             expression:
-              '"escaped \\"fake.status.ready\\"" + ' +
-              "'single.spec.value' + real.status.ready",
+              '"escaped \\"fake.status.ready\\"" + ' + "'single.spec.value' + real.status.ready",
           },
         },
       });
@@ -290,6 +289,59 @@ describe('DependencyResolver', () => {
 
       expect(graph.getDependencies('app')).toEqual(['items']);
       expect(warnings).toEqual([]);
+    });
+
+    it('masks lambda variables only inside their lexical macro body', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'items.status.conditions.exists(db, db.status.ready) && db.status.ready',
+          },
+        },
+      });
+      const items = createMockResource({
+        id: 'items',
+        metadata: { name: 'items' },
+      });
+      const db = createMockResource({
+        id: 'db',
+        metadata: { name: 'db' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, items, db]);
+
+      expect(graph.getDependencies('app').sort()).toEqual(['db', 'items']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('does not reserve conventional lambda names outside a macro', () => {
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'each.status.ready',
+          },
+        },
+      });
+      const each = createMockResource({
+        id: 'each',
+        metadata: { name: 'each' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, each]);
+
+      expect(graph.getDependencies('app')).toEqual(['each']);
     });
 
     it('should handle nested references in complex objects', () => {

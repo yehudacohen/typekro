@@ -40,7 +40,7 @@ interface ClusterResourceConfig<TSpec extends object> {
 function conditionReadiness(
   liveResource: unknown,
   acceptedType: string,
-  rejectedTypes: readonly string[],
+  rejectedTypes: readonly string[]
 ): ResourceStatus {
   const resource = liveResource as
     | {
@@ -51,8 +51,12 @@ function conditionReadiness(
       }
     | undefined;
   const conditions = resource?.status?.conditions ?? [];
+  const generation = resource?.metadata?.generation;
   const rejected = conditions.find(
-    (condition) => rejectedTypes.includes(condition.type) && condition.status === 'True',
+    (condition) =>
+      rejectedTypes.includes(condition.type) &&
+      condition.status === 'True' &&
+      conditionIsCurrent(condition, generation)
   );
   if (rejected) {
     return {
@@ -62,7 +66,7 @@ function conditionReadiness(
     };
   }
   const accepted = conditions.find((condition) => condition.type === acceptedType);
-  const current = conditionIsCurrent(accepted, resource?.metadata?.generation);
+  const current = conditionIsCurrent(accepted, generation);
   if (accepted?.status === 'True' && current) {
     return {
       ready: true,
@@ -81,17 +85,14 @@ function conditionReadiness(
 
 function conditionIsCurrent(
   condition: KubernetesCondition | undefined,
-  generation: number | undefined,
+  generation: number | undefined
 ): boolean {
   if (generation === undefined) return true;
   // Envoy AI Gateway v0.6 emits Condition-shaped entries without
   // observedGeneration on its v1beta1 resources. Preserve strict freshness
   // whenever the controller supplies it, while accepting the controller's
   // documented sparse condition shape when it cannot.
-  return (
-    condition?.observedGeneration === undefined ||
-    condition.observedGeneration === generation
-  );
+  return condition?.observedGeneration === undefined || condition.observedGeneration === generation;
 }
 
 export function envoyAIAcceptedReadinessEvaluator(liveResource: unknown): ResourceStatus {
@@ -110,9 +111,12 @@ export function envoyGatewayReadinessEvaluator(liveResource: unknown): ResourceS
       }
     | undefined;
   const conditions = resource?.status?.conditions ?? [];
+  const generation = resource?.metadata?.generation;
   const rejected = conditions.find(
     (condition) =>
-      ['Accepted', 'Programmed'].includes(condition.type) && condition.status === 'False',
+      ['Accepted', 'Programmed'].includes(condition.type) &&
+      condition.status === 'False' &&
+      conditionIsCurrent(condition, generation)
   );
   if (rejected) {
     return {
@@ -123,7 +127,6 @@ export function envoyGatewayReadinessEvaluator(liveResource: unknown): ResourceS
   }
   const accepted = conditions.find((condition) => condition.type === 'Accepted');
   const programmed = conditions.find((condition) => condition.type === 'Programmed');
-  const generation = resource?.metadata?.generation;
   const ready =
     accepted?.status === 'True' &&
     programmed?.status === 'True' &&
@@ -148,21 +151,21 @@ export function envoyGatewayReadinessEvaluator(liveResource: unknown): ResourceS
 registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.accepted',
   '1',
-  envoyAIAcceptedReadinessEvaluator,
+  envoyAIAcceptedReadinessEvaluator
 );
 registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.gateway-class',
   '1',
-  envoyGatewayClassReadinessEvaluator,
+  envoyGatewayClassReadinessEvaluator
 );
 registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.gateway',
   '1',
-  envoyGatewayReadinessEvaluator,
+  envoyGatewayReadinessEvaluator
 );
 
 export function envoyGatewayClass(
-  config: ClusterResourceConfig<GatewayClassSpec>,
+  config: ClusterResourceConfig<GatewayClassSpec>
 ): Enhanced<GatewayClassSpec, AcceptedResourceStatus> {
   return createResource<GatewayClassSpec, AcceptedResourceStatus>(
     {
@@ -175,18 +178,18 @@ export function envoyGatewayClass(
       spec: config.spec,
       ...(config.id ? { id: config.id } : {}),
     },
-    { scope: 'cluster' },
+    { scope: 'cluster' }
   ).withReadinessEvaluator(envoyGatewayClassReadinessEvaluator);
 }
 
 export function envoyGatewayConfig(
-  config: NamespacedResourceConfig<GatewayConfigSpec>,
+  config: NamespacedResourceConfig<GatewayConfigSpec>
 ): Enhanced<GatewayConfigSpec, AcceptedResourceStatus> {
   return acceptedResource('GatewayConfig', ENVOY_AI_GATEWAY_API_VERSION, config);
 }
 
 export function envoyGateway(
-  config: NamespacedResourceConfig<GatewaySpec>,
+  config: NamespacedResourceConfig<GatewaySpec>
 ): Enhanced<GatewaySpec, GatewayObservedStatus> {
   return createResource<GatewaySpec, GatewayObservedStatus>(
     {
@@ -203,76 +206,76 @@ export function envoyGateway(
       spec: config.spec,
       ...(config.id ? { id: config.id } : {}),
     },
-    { scope: 'namespaced' },
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(envoyGatewayReadinessEvaluator);
 }
 
 export function envoyBackend(
-  config: NamespacedResourceConfig<EnvoyBackendSpec>,
+  config: NamespacedResourceConfig<EnvoyBackendSpec>
 ): Enhanced<EnvoyBackendSpec, Record<string, never>> {
   return createResource<EnvoyBackendSpec, Record<string, never>>(
     resourceDefinition('Backend', ENVOY_GATEWAY_API_VERSION, config),
-    { scope: 'namespaced' },
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(createAlwaysReadyEvaluator('Backend'));
 }
 
 export function envoyAIServiceBackend(
-  config: NamespacedResourceConfig<AIServiceBackendSpec>,
+  config: NamespacedResourceConfig<AIServiceBackendSpec>
 ): Enhanced<AIServiceBackendSpec, AcceptedResourceStatus> {
   return acceptedResource('AIServiceBackend', ENVOY_AI_GATEWAY_API_VERSION, config);
 }
 
 export function envoyBackendSecurityPolicy(
-  config: NamespacedResourceConfig<BackendSecurityPolicySpec>,
+  config: NamespacedResourceConfig<BackendSecurityPolicySpec>
 ): Enhanced<BackendSecurityPolicySpec, AcceptedResourceStatus> {
   return acceptedResource('BackendSecurityPolicy', ENVOY_AI_GATEWAY_API_VERSION, config);
 }
 
 export function envoyBackendTLSPolicy(
-  config: NamespacedResourceConfig<BackendTLSPolicySpec>,
+  config: NamespacedResourceConfig<BackendTLSPolicySpec>
 ): Enhanced<BackendTLSPolicySpec, Record<string, never>> {
   return createResource<BackendTLSPolicySpec, Record<string, never>>(
     resourceDefinition('BackendTLSPolicy', GATEWAY_API_TLS_POLICY_VERSION, config),
-    { scope: 'namespaced' },
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(createAlwaysReadyEvaluator('BackendTLSPolicy'));
 }
 
 export function envoyAIGatewayRoute(
-  config: NamespacedResourceConfig<AIGatewayRouteSpec>,
+  config: NamespacedResourceConfig<AIGatewayRouteSpec>
 ): Enhanced<AIGatewayRouteSpec, AcceptedResourceStatus> {
   return acceptedResource('AIGatewayRoute', ENVOY_AI_GATEWAY_API_VERSION, config);
 }
 
 export function envoyMCPRoute(
-  config: NamespacedResourceConfig<MCPRouteSpec>,
+  config: NamespacedResourceConfig<MCPRouteSpec>
 ): Enhanced<MCPRouteSpec, AcceptedResourceStatus> {
   return acceptedResource('MCPRoute', ENVOY_AI_GATEWAY_API_VERSION, config);
 }
 
 export function envoyBackendTrafficPolicy(
-  config: NamespacedResourceConfig<BackendTrafficPolicySpec>,
+  config: NamespacedResourceConfig<BackendTrafficPolicySpec>
 ): Enhanced<BackendTrafficPolicySpec, Record<string, never>> {
   return createResource<BackendTrafficPolicySpec, Record<string, never>>(
     resourceDefinition('BackendTrafficPolicy', ENVOY_GATEWAY_API_VERSION, config),
-    { scope: 'namespaced' },
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(createAlwaysReadyEvaluator('BackendTrafficPolicy'));
 }
 
 function acceptedResource<TSpec extends object>(
   kind: string,
   apiVersion: string,
-  config: NamespacedResourceConfig<TSpec>,
+  config: NamespacedResourceConfig<TSpec>
 ): Enhanced<TSpec, AcceptedResourceStatus> {
   return createResource<TSpec, AcceptedResourceStatus>(
     resourceDefinition(kind, apiVersion, config),
-    { scope: 'namespaced' },
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(envoyAIAcceptedReadinessEvaluator);
 }
 
 function resourceDefinition<TSpec extends object>(
   kind: string,
   apiVersion: string,
-  config: NamespacedResourceConfig<TSpec>,
+  config: NamespacedResourceConfig<TSpec>
 ) {
   return {
     apiVersion,

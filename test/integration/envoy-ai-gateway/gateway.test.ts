@@ -1,50 +1,34 @@
-import {
-  afterAll,
-  beforeAll,
-  describe,
-  expect,
-  setDefaultTimeout,
-  test,
-} from 'bun:test';
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import {
-  createBunCompatibleCustomObjectsApi,
-} from '../../../src/core/kubernetes/index.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
 import { makeEnvoyAIGateway } from '../../../src/factories/envoy-ai-gateway/index.js';
 import {
   captureTestNamespaceLease,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
   createTestNamespace,
+  deleteGeneratedCrdAndWait,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
   deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
+  isNotFoundError,
   type ResourceIdentity,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
-  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true'
-    ? describe
-    : describe.skip;
+  clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
 const runId = crypto.randomUUID().slice(0, 8);
 const requestedMode = process.env.TYPEKRO_AI_GATEWAY_MODE;
-if (
-  requestedMode !== undefined &&
-  requestedMode !== 'kro' &&
-  requestedMode !== 'direct'
-) {
-  throw new Error(
-    'TYPEKRO_AI_GATEWAY_MODE must be either "kro" or "direct".',
-  );
+if (requestedMode !== undefined && requestedMode !== 'kro' && requestedMode !== 'direct') {
+  throw new Error('TYPEKRO_AI_GATEWAY_MODE must be either "kro" or "direct".');
 }
 const liveModes =
-  requestedMode === undefined
-    ? (['kro', 'direct'] as const)
-    : ([requestedMode] as const);
+  requestedMode === undefined ? (['kro', 'direct'] as const) : ([requestedMode] as const);
 
 setDefaultTimeout(1_500_000);
 
@@ -90,7 +74,7 @@ HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 
 async function installMockProvider(
   namespace: string,
-  kubeConfig: k8s.KubeConfig,
+  kubeConfig: k8s.KubeConfig
 ): Promise<readonly ResourceIdentity[]> {
   const appsApi = createAppsV1ApiClient(kubeConfig);
   const coreApi = createCoreV1ApiClient(kubeConfig);
@@ -182,7 +166,7 @@ async function installMockProvider(
 async function waitForPodCompletion(
   namespace: string,
   name: string,
-  kubeConfig: k8s.KubeConfig,
+  kubeConfig: k8s.KubeConfig
 ): Promise<void> {
   const coreApi = createCoreV1ApiClient(kubeConfig);
   const deadline = Date.now() + 180_000;
@@ -204,7 +188,7 @@ async function probeGateway(
   namespace: string,
   name: string,
   endpoint: string,
-  kubeConfig: k8s.KubeConfig,
+  kubeConfig: k8s.KubeConfig
 ): Promise<string> {
   const coreApi = createCoreV1ApiClient(kubeConfig);
   const pod = await coreApi.createNamespacedPod({
@@ -252,7 +236,7 @@ async function probeGateway(
         kind: 'Pod',
         metadata: { namespace, name, uid },
       },
-      kubeConfig,
+      kubeConfig
     );
   }
 }
@@ -265,6 +249,50 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
   let mockResources: readonly ResourceIdentity[] = [];
 
   beforeAll(async () => {
+    // This test deliberately reuses the public fixed RGD name. Fail closed if
+    // any instance exists, then reset both the definition and generated CRD so
+    // a schema from an earlier draft cannot make current admission misleading.
+    const objectApi = createKubernetesObjectApiClient(kubeConfig);
+    let existingInstances: Awaited<ReturnType<typeof objectApi.list>>['items'] = [];
+    let generatedCrdExists = true;
+    try {
+      await objectApi.read({
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'envoyaigateways.kro.run' },
+      });
+    } catch (error: unknown) {
+      if (!isNotFoundError(error)) throw error;
+      generatedCrdExists = false;
+    }
+    if (generatedCrdExists) {
+      existingInstances = (await objectApi.list('kro.run/v1alpha1', 'EnvoyAIGateway')).items;
+    }
+    if (existingInstances.length > 0) {
+      throw new Error(
+        `Refusing to reset the EnvoyAIGateway live-test definition while ${existingInstances.length} instance(s) remain.`
+      );
+    }
+    await deleteTestResourceAndWait(
+      {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'envoy-ai-gateway' },
+      },
+      kubeConfig,
+      60_000
+    );
+    await deleteGeneratedCrdAndWait(
+      {
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: 'envoyaigateways.kro.run' },
+      },
+      'kro.run/v1alpha1',
+      'EnvoyAIGateway',
+      kubeConfig
+    );
+
     mockLease = await createTestNamespace(mockNamespace, kubeConfig);
     mockResources = await installMockProvider(mockNamespace, kubeConfig);
   });
@@ -341,17 +369,15 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
             controlNamespace,
             `${mode}-probe-1`,
             deployed.status.endpoint,
-            kubeConfig,
-          ),
+            kubeConfig
+          )
         ) as {
           model?: string;
           choices?: Array<{ message?: { content?: string } }>;
           usage?: { total_tokens?: number };
         };
         expect(firstResponse.model).toBe('mock-fast');
-        expect(firstResponse.choices?.[0]?.message?.content).toContain(
-          'TypeKro Envoy AI Gateway',
-        );
+        expect(firstResponse.choices?.[0]?.message?.content).toContain('TypeKro Envoy AI Gateway');
         expect(firstResponse.usage?.total_tokens).toBe(10);
 
         const updated = await factory.deploy({
@@ -377,8 +403,7 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
             name: `${mode}-gateway`,
           });
           const instance =
-            (instanceRaw as { readonly body?: Record<string, unknown> }).body ??
-            instanceRaw;
+            (instanceRaw as { readonly body?: Record<string, unknown> }).body ?? instanceRaw;
           expect(Reflect.get(instance, 'status')).toMatchObject({
             ready: true,
             failed: false,
@@ -393,10 +418,9 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
         }
       } catch (error) {
         testError = error;
-        gatewayLease ??= await captureTestNamespaceLease(
-          gatewayNamespace,
-          kubeConfig,
-        ).catch(() => undefined);
+        gatewayLease ??= await captureTestNamespaceLease(gatewayNamespace, kubeConfig).catch(
+          () => undefined
+        );
       }
 
       const cleanupErrors: unknown[] = [];
@@ -405,10 +429,10 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
         `${mode}-gateway`,
         gatewayLease ? [gatewayLease] : [],
         kubeConfig,
-        360_000,
+        360_000
       ).catch((error) => cleanupErrors.push(error));
       await deleteTestNamespaceAndWait(controlLease, kubeConfig).catch((error) =>
-        cleanupErrors.push(error),
+        cleanupErrors.push(error)
       );
       const errors = [...(testError ? [testError] : []), ...cleanupErrors];
       if (errors.length > 0) {

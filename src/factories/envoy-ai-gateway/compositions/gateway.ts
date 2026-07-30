@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -33,10 +34,7 @@ import type {
   EnvoyAIRateLimit,
   EnvoyAITokenCost,
 } from '../types.js';
-import {
-  EnvoyAIGatewaySpecSchema,
-  EnvoyAIGatewayStatusSchema,
-} from '../types.js';
+import { EnvoyAIGatewaySpecSchema, EnvoyAIGatewayStatusSchema } from '../types.js';
 import { makeEnvoyAIGatewayPlatformBootstrap } from './platform.js';
 
 interface ResolvedProvider {
@@ -79,21 +77,17 @@ interface ProviderResource {
  * identity, namespace lifecycle, and listener port remain deploy-time values.
  */
 export function makeEnvoyAIGateway(
-  options: EnvoyAIGatewayBuildOptions,
+  options: EnvoyAIGatewayBuildOptions
 ): CallableComposition<EnvoyAIGatewaySpec, EnvoyAIGatewayStatus> {
   const providers = validateAndResolveProviders(options.providers);
   validateModels(options, providers);
   const rateLimit = validateRateLimit(options.rateLimit);
-  const requestCosts = validateRequestCosts(
-    options.requestCosts ?? defaultRequestCosts(),
-  );
-  const platformOptions = platformOptionsForGateway(options.platform, rateLimit);
-  const platform = makeEnvoyAIGatewayPlatformBootstrap(platformOptions);
+  const requestCosts = validateRequestCosts(options.requestCosts ?? defaultRequestCosts());
   const profile = options.profile ?? 'production';
-  const gatewayClassName =
-    platformOptions.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME;
-  const aiGatewayVersion =
-    platformOptions.aiGatewayVersion ?? DEFAULT_ENVOY_AI_GATEWAY_VERSION;
+  const platformOptions = platformOptionsForGateway(options.platform, rateLimit, profile);
+  const platform = makeEnvoyAIGatewayPlatformBootstrap(platformOptions);
+  const gatewayClassName = platformOptions.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME;
+  const aiGatewayVersion = platformOptions.aiGatewayVersion ?? DEFAULT_ENVOY_AI_GATEWAY_VERSION;
 
   return kubernetesComposition(
     {
@@ -118,9 +112,7 @@ export function makeEnvoyAIGateway(
       });
       if (isKubernetesRef(spec.name)) {
         setIncludeWhen(gatewayNamespace, [
-          Cel.expr<boolean>(
-            '!has(schema.spec.lifecycle) || schema.spec.lifecycle == "owned"',
-          ),
+          Cel.expr<boolean>('!has(schema.spec.lifecycle) || schema.spec.lifecycle == "owned"'),
         ]);
       } else if (lifecycle === 'external') {
         setIncludeWhen(gatewayNamespace, [false]);
@@ -151,12 +143,7 @@ export function makeEnvoyAIGateway(
       const gatewayConfig = envoyGatewayConfig({
         name: spec.name,
         namespace: spec.namespace,
-        spec: gatewayConfigSpec(
-          options,
-          profile,
-          aiGatewayVersion,
-          requestCosts,
-        ),
+        spec: gatewayConfigSpec(options, profile, aiGatewayVersion, requestCosts),
         id: 'gatewayConfig',
       });
 
@@ -177,10 +164,7 @@ export function makeEnvoyAIGateway(
       });
       gateway.dependsOn(gatewayConfig);
 
-      const backendResources = new Map<
-        string,
-        ReturnType<typeof envoyAIServiceBackend>
-      >();
+      const backendResources = new Map<string, ReturnType<typeof envoyAIServiceBackend>>();
       const providerResources: ProviderResource[] = [];
       const readinessResources: ProviderResource[] = [];
       for (const provider of providers) {
@@ -232,7 +216,7 @@ export function makeEnvoyAIGateway(
           provider,
           spec.namespace,
           backendName,
-          `${resourceId}SecurityPolicy`,
+          `${resourceId}SecurityPolicy`
         );
         if (securityPolicy) {
           securityPolicy.dependsOn(aiBackend);
@@ -292,7 +276,7 @@ export function makeEnvoyAIGateway(
               const backend = backendResources.get(target.provider);
               if (!backend) {
                 throw new Error(
-                  `Envoy AI Gateway model ${model.model} references unknown provider ${target.provider}.`,
+                  `Envoy AI Gateway model ${model.model} references unknown provider ${target.provider}.`
                 );
               }
               return {
@@ -339,11 +323,7 @@ export function makeEnvoyAIGateway(
               retryOn: {
                 httpStatusCodes: [...(retry.retryStatusCodes ?? [429, 500, 502, 503, 504])],
                 triggers: [
-                  ...(retry.triggers ?? [
-                    'connect-failure',
-                    'retriable-status-codes',
-                    'reset',
-                  ]),
+                  ...(retry.triggers ?? ['connect-failure', 'retriable-status-codes', 'reset']),
                 ],
               },
             },
@@ -418,15 +398,15 @@ export function makeEnvoyAIGateway(
         'gateway.status.conditions.exists(c, c.type == "Accepted" && c.status == "True" && ' +
           'c.observedGeneration == gateway.metadata.generation) && ' +
           'gateway.status.conditions.exists(c, c.type == "Programmed" && c.status == "True" && ' +
-          'c.observedGeneration == gateway.metadata.generation)',
+          'c.observedGeneration == gateway.metadata.generation)'
       );
       const readinessExpressions = readinessResources.map((resource) =>
-        acceptedExpressionFor(resource),
+        acceptedExpressionFor(resource)
       );
       const allProvidersAccepted = Cel.expr<boolean>(
         readinessExpressions.length === 0
           ? 'true'
-          : readinessExpressions.map(({ expression }) => `(${expression})`).join(' && '),
+          : readinessExpressions.map(({ expression }) => `(${expression})`).join(' && ')
       );
       const anyProviderFailed = Cel.expr<boolean>(
         readinessResources.length === 0
@@ -436,75 +416,76 @@ export function makeEnvoyAIGateway(
                 (resource) =>
                   `${resourceIdForStatus(resource)}.status.conditions.exists(c, ` +
                   '((c.type == "NotAccepted" && c.status == "True") || ' +
-                  '(c.type == "Accepted" && c.status == "False")))',
+                  '(c.type == "Accepted" && c.status == "False")) && ' +
+                  currentConditionExpression(resourceIdForStatus(resource)) +
+                  ')'
               )
               .map((expression) => `(${expression})`)
-              .join(' || '),
+              .join(' || ')
       );
       const gatewayFailed = Cel.expr<boolean>(
         'gateway.status.conditions.exists(c, ' +
           '(c.type == "Accepted" || c.type == "Programmed") && c.status == "False" && ' +
-          'c.observedGeneration == gateway.metadata.generation)',
+          'c.observedGeneration == gateway.metadata.generation)'
       );
       const routeFailed = Cel.expr<boolean>(
         'route.status.conditions.exists(c, ' +
           '((c.type == "NotAccepted" && c.status == "True") || ' +
-          '(c.type == "Accepted" && c.status == "False")))',
+          '(c.type == "Accepted" && c.status == "False")) && ' +
+          currentConditionExpression('route') +
+          ')'
       );
       const platformReady = Cel.expr<boolean>(platformOwner.status.ready);
       const platformFailed = Cel.expr<boolean>(platformOwner.status.failed);
       const failed = Cel.expr<boolean>(
         `(${platformFailed.expression}) || (${gatewayFailed.expression}) || ` +
-          `(${routeFailed.expression}) || (${anyProviderFailed.expression})`,
+          `(${routeFailed.expression}) || (${anyProviderFailed.expression})`
       );
       const ready = Cel.expr<boolean>(
         `(${platformReady.expression}) && (${gatewayConfigAccepted.expression}) && ` +
           `(${gatewayProgrammed.expression}) && (${routeAccepted.expression}) && ` +
-          `(${allProvidersAccepted.expression})`,
+          `(${allProvidersAccepted.expression})`
       );
       const acceptedProviderCount = Cel.expr<number>(
         providerResources
           .map((resource) => acceptedExpressionFor(resource))
           .map(({ expression }) => `(${expression} ? 1 : 0)`)
-          .join(' + '),
+          .join(' + ')
       );
       return {
         ready,
         failed,
         phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`,
+          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`
         ),
         endpoint: Cel.expr<string>(
           'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + ' +
             'string(gateway.status.addresses[0].value) + ":" + ' +
-            'string(gateway.spec.listeners[0].port) : ""',
+            'string(gateway.spec.listeners[0].port) : ""'
         ),
-        gatewayClassName: Cel.expr<string>(
-          'gatewayContract.data.gatewayClassName',
-        ),
-        providerCount: Cel.expr<number>(
-          'int(gatewayContract.data.providerCount)',
-        ),
+        gatewayClassName: Cel.expr<string>('gatewayContract.data.gatewayClassName'),
+        providerCount: Cel.expr<number>('int(gatewayContract.data.providerCount)'),
         acceptedProviderCount,
         routeAccepted,
         gatewayProgrammed,
-        aiGatewayVersion: Cel.expr<string>(
-          'gatewayContract.data.aiGatewayVersion',
-        ),
+        aiGatewayVersion: Cel.expr<string>('gatewayContract.data.aiGatewayVersion'),
       };
-    },
+    }
   ) as CallableComposition<EnvoyAIGatewaySpec, EnvoyAIGatewayStatus>;
 }
 
 function acceptedExpression(resourceId: string): ReturnType<typeof Cel.expr<boolean>> {
   return Cel.expr<boolean>(
-    `${resourceId}.status.conditions.exists(c, c.type == "Accepted" && c.status == "True")`,
+    `${resourceId}.status.conditions.exists(c, c.type == "Accepted" && c.status == "True" && ` +
+      `${currentConditionExpression(resourceId)})`
   );
 }
 
-function acceptedExpressionFor(
-  resource: ProviderResource,
-): ReturnType<typeof Cel.expr<boolean>> {
+function currentConditionExpression(resourceId: string): string {
+  return `(has(c.observedGeneration) ? c.observedGeneration == ${resourceId}.metadata.generation : true)`;
+}
+
+function acceptedExpressionFor(resource: ProviderResource): ReturnType<typeof Cel.expr<boolean>> {
   return acceptedExpression(resourceIdForStatus(resource));
 }
 
@@ -516,7 +497,7 @@ function providerSecurityPolicy(
   provider: ResolvedProvider,
   namespace: string,
   backendName: string,
-  id: string,
+  id: string
 ) {
   const targetRefs = [
     {
@@ -581,7 +562,7 @@ function gatewayConfigSpec(
   options: EnvoyAIGatewayBuildOptions,
   profile: 'development' | 'production',
   platformVersion: string,
-  requestCosts: readonly EnvoyAILLMRequestCost[],
+  requestCosts: readonly EnvoyAILLMRequestCost[]
 ) {
   const environment = [
     {
@@ -614,6 +595,7 @@ function gatewayConfigSpec(
 function platformOptionsForGateway(
   platform: EnvoyAIGatewayPlatformBuildOptions | undefined,
   rateLimit: EnvoyAIRateLimit | undefined,
+  profile: 'development' | 'production'
 ): EnvoyAIGatewayPlatformBuildOptions {
   if (
     rateLimit &&
@@ -621,11 +603,12 @@ function platformOptionsForGateway(
     platform.rateLimitRedisUrl !== rateLimit.redisUrl
   ) {
     throw new Error(
-      'Envoy AI Gateway rateLimit.redisUrl conflicts with platform.rateLimitRedisUrl.',
+      'Envoy AI Gateway rateLimit.redisUrl conflicts with platform.rateLimitRedisUrl.'
     );
   }
   return {
     ...platform,
+    profile: platform?.profile ?? profile,
     ...(rateLimit ? { rateLimitRedisUrl: rateLimit.redisUrl } : {}),
   };
 }
@@ -645,30 +628,25 @@ function defaultRequestCosts(): readonly EnvoyAILLMRequestCost[] {
 }
 
 function validateRequestCosts(
-  costs: readonly EnvoyAILLMRequestCost[],
+  costs: readonly EnvoyAILLMRequestCost[]
 ): readonly EnvoyAILLMRequestCost[] {
   if (costs.length > 36) {
     throw new Error('Envoy AI Gateway supports at most 36 request-cost dimensions.');
   }
   const metadataKeys = new Set<string>();
   for (const cost of costs) {
-    if (
-      cost.metadataKey.length === 0 ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cost.metadataKey)
-    ) {
+    if (cost.metadataKey.length === 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cost.metadataKey)) {
       throw new Error(
-        `Envoy AI Gateway request-cost metadata key ${JSON.stringify(cost.metadataKey)} must be a non-empty identifier.`,
+        `Envoy AI Gateway request-cost metadata key ${JSON.stringify(cost.metadataKey)} must be a non-empty identifier.`
       );
     }
     if (metadataKeys.has(cost.metadataKey)) {
-      throw new Error(
-        `Duplicate Envoy AI Gateway request-cost metadata key ${cost.metadataKey}.`,
-      );
+      throw new Error(`Duplicate Envoy AI Gateway request-cost metadata key ${cost.metadataKey}.`);
     }
     metadataKeys.add(cost.metadataKey);
     if (cost.type === 'CEL' && cost.cel.trim().length === 0) {
       throw new Error(
-        `Envoy AI Gateway CEL request cost ${cost.metadataKey} requires a non-empty expression.`,
+        `Envoy AI Gateway CEL request cost ${cost.metadataKey} requires a non-empty expression.`
       );
     }
   }
@@ -676,15 +654,12 @@ function validateRequestCosts(
 }
 
 function validateRateLimit(
-  rateLimit: EnvoyAIGatewayBuildOptions['rateLimit'],
+  rateLimit: EnvoyAIGatewayBuildOptions['rateLimit']
 ): EnvoyAIRateLimit | undefined {
   if (!rateLimit) return undefined;
-  if (
-    rateLimit.redisUrl.trim().length === 0 ||
-    rateLimit.redisUrl.includes('://')
-  ) {
+  if (rateLimit.redisUrl.trim().length === 0 || rateLimit.redisUrl.includes('://')) {
     throw new Error(
-      'Envoy AI Gateway rateLimit.redisUrl must be a non-empty host:port endpoint without a URL scheme.',
+      'Envoy AI Gateway rateLimit.redisUrl must be a non-empty host:port endpoint without a URL scheme.'
     );
   }
   if (rateLimit.rules.length === 0) {
@@ -695,13 +670,11 @@ function validateRateLimit(
   }
   for (const rule of rateLimit.rules) {
     if (!Number.isSafeInteger(rule.requests) || rule.requests <= 0) {
-      throw new Error(
-        'Envoy AI Gateway rate-limit requests must be positive safe integers.',
-      );
+      throw new Error('Envoy AI Gateway rate-limit requests must be positive safe integers.');
     }
     if (rule.identityHeader !== undefined && rule.identityHeader.trim().length === 0) {
       throw new Error(
-        'Envoy AI Gateway rate-limit identityHeader must be non-empty when supplied.',
+        'Envoy AI Gateway rate-limit identityHeader must be non-empty when supplied.'
       );
     }
   }
@@ -729,7 +702,7 @@ function metadataKeyForTokenCost(cost: EnvoyAITokenCost): string {
 }
 
 function validateAndResolveProviders(
-  providers: readonly EnvoyAIProvider[],
+  providers: readonly EnvoyAIProvider[]
 ): readonly ResolvedProvider[] {
   if (providers.length === 0) {
     throw new Error('makeEnvoyAIGateway requires at least one provider.');
@@ -745,10 +718,12 @@ function validateAndResolveProviders(
     }
     names.add(provider.name);
     if (provider.kind === 'openai') {
+      const port = provider.port ?? 443;
+      assertKubernetesPort(`provider ${provider.name}`, port);
       return {
         name: provider.name,
         hostname: provider.hostname ?? 'api.openai.com',
-        port: provider.port ?? 443,
+        port,
         tls: provider.tls ?? true,
         schema: 'OpenAI',
         ...(provider.prefix ? { prefix: provider.prefix } : {}),
@@ -762,10 +737,12 @@ function validateAndResolveProviders(
       };
     }
     if (provider.kind === 'anthropic') {
+      const port = provider.port ?? 443;
+      assertKubernetesPort(`provider ${provider.name}`, port);
       return {
         name: provider.name,
         hostname: provider.hostname ?? 'api.anthropic.com',
-        port: provider.port ?? 443,
+        port,
         tls: provider.tls ?? true,
         schema: 'Anthropic',
         security: {
@@ -805,10 +782,12 @@ function validateAndResolveProviders(
               },
       };
     }
+    const port = provider.port ?? (provider.tls === false ? 80 : 443);
+    assertKubernetesPort(`provider ${provider.name}`, port);
     return {
       name: provider.name,
       hostname: provider.hostname,
-      port: provider.port ?? (provider.tls === false ? 80 : 443),
+      port,
       tls: provider.tls ?? true,
       schema: 'OpenAI',
       ...(provider.prefix ? { prefix: provider.prefix } : {}),
@@ -827,7 +806,7 @@ function validateAndResolveProviders(
 
 function validateModels(
   options: EnvoyAIGatewayBuildOptions,
-  providers: readonly ResolvedProvider[],
+  providers: readonly ResolvedProvider[]
 ): void {
   if (options.models.length === 0) {
     throw new Error('makeEnvoyAIGateway requires at least one logical model.');
@@ -851,7 +830,7 @@ function validateModels(
     for (const target of model.targets) {
       if (!providerNames.has(target.provider)) {
         throw new Error(
-          `Envoy AI Gateway model ${model.model} references unknown provider ${target.provider}.`,
+          `Envoy AI Gateway model ${model.model} references unknown provider ${target.provider}.`
         );
       }
       if (
@@ -859,7 +838,7 @@ function validateModels(
         (!Number.isSafeInteger(target.weight) || target.weight < 0)
       ) {
         throw new Error(
-          `Envoy AI Gateway model ${model.model} target weights must be non-negative integers.`,
+          `Envoy AI Gateway model ${model.model} target weights must be non-negative integers.`
         );
       }
       if (
@@ -867,7 +846,7 @@ function validateModels(
         (!Number.isSafeInteger(target.priority) || target.priority < 0)
       ) {
         throw new Error(
-          `Envoy AI Gateway model ${model.model} target priorities must be non-negative integers.`,
+          `Envoy AI Gateway model ${model.model} target priorities must be non-negative integers.`
         );
       }
     }
@@ -881,14 +860,25 @@ function assertTopologyName(label: string, value: string, maximumLength: number)
     !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/u.test(value)
   ) {
     throw new Error(
-      `Envoy AI Gateway ${label} name ${JSON.stringify(value)} must be a DNS-1123 label no longer than ${maximumLength} characters.`,
+      `Envoy AI Gateway ${label} name ${JSON.stringify(value)} must be a DNS-1123 label no longer than ${maximumLength} characters.`
+    );
+  }
+}
+
+function assertKubernetesPort(label: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) {
+    throw new Error(
+      `Envoy AI Gateway ${label} port ${String(value)} must be an integer from 1 through 65535.`
     );
   }
 }
 
 function providerResourceId(name: string): string {
-  return `provider${name
+  const readable = name
     .split('-')
+    .filter((part) => part.length > 0)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join('')}`;
+    .join('');
+  const digest = createHash('sha256').update(name, 'utf8').digest('hex').slice(0, 10);
+  return `provider${readable}${digest}`;
 }

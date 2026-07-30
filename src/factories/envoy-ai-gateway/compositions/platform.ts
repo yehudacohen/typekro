@@ -3,10 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { singletonSpecFingerprintAnnotationValue } from '../../../core/deployment/singleton-owner-drift.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton, stableSerialize } from '../../../core/singleton/singleton.js';
-import {
-  isCelExpression,
-  isKubernetesRef,
-} from '../../../utils/type-guards.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -40,9 +37,10 @@ import { envoyProxyHelmRepositoryBootstrap } from './repository.js';
  * chart values; deploy-time spec controls identity and pinned versions.
  */
 export function makeEnvoyAIGatewayPlatformInstallation(
-  options: EnvoyAIGatewayPlatformBuildOptions = {},
+  options: EnvoyAIGatewayPlatformBuildOptions = {}
 ) {
   const profile = options.profile ?? 'production';
+  const mcpSessionEncryptionSeedSecret = validateMcpSessionEncryptionSeedSecret(options, profile);
   return kubernetesComposition(
     {
       name: 'envoy-ai-gateway-platform-installation',
@@ -53,31 +51,26 @@ export function makeEnvoyAIGatewayPlatformInstallation(
     (spec: EnvoyAIGatewayPlatformInstallationSpec) => {
       const envoyGatewayNamespace = defaultString(
         spec.envoyGatewayNamespace,
-        DEFAULT_ENVOY_GATEWAY_NAMESPACE,
+        DEFAULT_ENVOY_GATEWAY_NAMESPACE
       );
       const aiGatewayNamespace = defaultString(
         spec.aiGatewayNamespace,
-        DEFAULT_ENVOY_AI_GATEWAY_NAMESPACE,
+        DEFAULT_ENVOY_AI_GATEWAY_NAMESPACE
       );
       const envoyGatewayVersion = defaultString(
         spec.envoyGatewayVersion,
-        DEFAULT_ENVOY_GATEWAY_VERSION,
+        DEFAULT_ENVOY_GATEWAY_VERSION
       );
       const aiGatewayVersion = defaultString(
         spec.aiGatewayVersion,
-        DEFAULT_ENVOY_AI_GATEWAY_VERSION,
+        DEFAULT_ENVOY_AI_GATEWAY_VERSION
       );
       const repositoryName = defaultString(
         spec.repositoryName,
-        DEFAULT_ENVOY_PROXY_REPOSITORY_NAME,
+        DEFAULT_ENVOY_PROXY_REPOSITORY_NAME
       );
-      const repositoryNamespace = defaultString(
-        spec.repositoryNamespace,
-        DEFAULT_FLUX_NAMESPACE,
-      );
-      const rateLimitRedisUrl = options.rateLimitRedisUrl
-        ? defaultString(spec.rateLimitRedisUrl, options.rateLimitRedisUrl)
-        : undefined;
+      const repositoryNamespace = defaultString(spec.repositoryNamespace, DEFAULT_FLUX_NAMESPACE);
+      const rateLimitRedisUrl = options.rateLimitRedisUrl;
 
       namespace({
         metadata: {
@@ -102,7 +95,7 @@ export function makeEnvoyAIGatewayPlatformInstallation(
         data: {
           gatewayClassName: defaultString(
             spec.gatewayClassName,
-            DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME,
+            DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME
           ),
         },
         id: 'platformContract',
@@ -126,7 +119,7 @@ export function makeEnvoyAIGatewayPlatformInstallation(
           aiGatewayNamespace,
           profile,
           options.envoyGatewayValues,
-          rateLimitRedisUrl,
+          rateLimitRedisUrl
         ),
         id: 'envoyGatewayRelease',
       });
@@ -145,11 +138,19 @@ export function makeEnvoyAIGatewayPlatformInstallation(
         version: aiGatewayVersion,
         repositoryName,
         repositoryNamespace,
-        values: protectedAIGatewayValues(
-          envoyGatewayNamespace,
-          profile,
-          options.aiGatewayValues,
-        ),
+        values: protectedAIGatewayValues(envoyGatewayNamespace, profile, options.aiGatewayValues),
+        ...(mcpSessionEncryptionSeedSecret
+          ? {
+              valuesFrom: [
+                {
+                  kind: 'Secret' as const,
+                  name: mcpSessionEncryptionSeedSecret.name,
+                  valuesKey: mcpSessionEncryptionSeedSecret.key,
+                  targetPath: 'controller.mcp.sessionEncryption.seed',
+                },
+              ],
+            }
+          : {}),
         id: 'aiGatewayControllerRelease',
       });
       controllerRelease.dependsOn(crdsRelease);
@@ -159,31 +160,29 @@ export function makeEnvoyAIGatewayPlatformInstallation(
       const failed = Cel.expr<boolean>(
         `${releaseFailed('envoyGatewayRelease')} || ` +
           `${releaseFailed('aiGatewayCrdsRelease')} || ` +
-          `${releaseFailed('aiGatewayControllerRelease')}`,
+          `${releaseFailed('aiGatewayControllerRelease')}`
       );
       const ready = Cel.expr<boolean>(
         `(${repositoryReady.expression}) && ` +
           `${releaseReady('envoyGatewayRelease')} && ` +
           `${releaseReady('aiGatewayCrdsRelease')} && ` +
-          `${releaseReady('aiGatewayControllerRelease')}`,
+          `${releaseReady('aiGatewayControllerRelease')}`
       );
       return {
         ready,
         failed,
         phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`,
+          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`
         ),
         envoyGatewayVersion: envoyRelease.spec.chart.spec.version,
         aiGatewayVersion: controllerRelease.spec.chart.spec.version,
-        gatewayClassName: Cel.expr<string>(
-          'platformContract.data.gatewayClassName',
-        ),
+        gatewayClassName: Cel.expr<string>('platformContract.data.gatewayClassName'),
         controllerService: Cel.expr<string>(
           `"${DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE}." + ` +
-            'string(aiGatewayControllerRelease.metadata.namespace) + ".svc.cluster.local"',
+            'string(aiGatewayControllerRelease.metadata.namespace) + ".svc.cluster.local"'
         ),
       };
-    },
+    }
   );
 }
 
@@ -191,26 +190,23 @@ export function makeEnvoyAIGatewayPlatformInstallation(
  * Explicitly owned installation. Deleting an instance uninstalls the platform;
  * application graphs should consume the singleton bootstrap below.
  */
-export const envoyAIGatewayPlatformInstallation =
-  makeEnvoyAIGatewayPlatformInstallation();
+export const envoyAIGatewayPlatformInstallation = makeEnvoyAIGatewayPlatformInstallation({
+  profile: 'development',
+});
 
 export function makeEnvoyAIGatewayPlatformBootstrap(
-  options: EnvoyAIGatewayPlatformBuildOptions = {},
+  options: EnvoyAIGatewayPlatformBuildOptions = {}
 ) {
   const installationGraph = makeEnvoyAIGatewayPlatformInstallation(options);
   const installation: EnvoyAIGatewayPlatformInstallationSpec = {
     name: options.name ?? 'envoy-ai-gateway',
-    envoyGatewayNamespace:
-      options.envoyGatewayNamespace ?? DEFAULT_ENVOY_GATEWAY_NAMESPACE,
+    envoyGatewayNamespace: options.envoyGatewayNamespace ?? DEFAULT_ENVOY_GATEWAY_NAMESPACE,
     aiGatewayNamespace: options.aiGatewayNamespace ?? DEFAULT_ENVOY_AI_GATEWAY_NAMESPACE,
     envoyGatewayVersion: options.envoyGatewayVersion ?? DEFAULT_ENVOY_GATEWAY_VERSION,
     aiGatewayVersion: options.aiGatewayVersion ?? DEFAULT_ENVOY_AI_GATEWAY_VERSION,
     repositoryName: options.repositoryName ?? DEFAULT_ENVOY_PROXY_REPOSITORY_NAME,
     repositoryNamespace: options.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
     gatewayClassName: options.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME,
-    ...(options.rateLimitRedisUrl
-      ? { rateLimitRedisUrl: options.rateLimitRedisUrl }
-      : {}),
     configurationDigest: platformConfigurationDigest(options),
   };
   return kubernetesComposition(
@@ -225,8 +221,7 @@ export function makeEnvoyAIGatewayPlatformBootstrap(
         id: 'envoy-ai-gateway-platform',
         spec: installation,
       });
-      const gatewayClassName =
-        options.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME;
+      const gatewayClassName = options.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME;
       const gatewayClass = envoyGatewayClass({
         name: gatewayClassName,
         spec: {
@@ -239,47 +234,46 @@ export function makeEnvoyAIGatewayPlatformBootstrap(
       const ownerFailed = Cel.expr<boolean>(owner.status.failed);
       const gatewayClassReady = Cel.expr<boolean>(
         'gatewayClass.status.conditions.exists(c, c.type == "Accepted" && ' +
-          'c.status == "True" && c.observedGeneration == gatewayClass.metadata.generation)',
+          'c.status == "True" && c.observedGeneration == gatewayClass.metadata.generation)'
       );
       const gatewayClassFailed = Cel.expr<boolean>(
         'gatewayClass.status.conditions.exists(c, c.type == "Accepted" && ' +
-          'c.status == "False" && c.observedGeneration == gatewayClass.metadata.generation)',
+          'c.status == "False" && c.observedGeneration == gatewayClass.metadata.generation)'
       );
       const failed = Cel.expr<boolean>(
-        `(${ownerFailed.expression}) || (${gatewayClassFailed.expression})`,
+        `(${ownerFailed.expression}) || (${gatewayClassFailed.expression})`
       );
       const ready = Cel.expr<boolean>(
-        `(${ownerReady.expression}) && (${gatewayClassReady.expression})`,
+        `(${ownerReady.expression}) && (${gatewayClassReady.expression})`
       );
       return {
         ready,
         failed,
         phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`,
+          `${failed.expression} ? "Failed" : (${ready.expression} ? "Ready" : "Installing")`
         ),
         envoyGatewayVersion: owner.status.envoyGatewayVersion,
         aiGatewayVersion: owner.status.aiGatewayVersion,
         gatewayClassName: Cel.expr<string>('gatewayClass.metadata.name'),
         controllerService: owner.status.controllerService,
       };
-    },
+    }
   );
 }
 
-export const envoyAIGatewayPlatformBootstrap =
-  makeEnvoyAIGatewayPlatformBootstrap();
+export const envoyAIGatewayPlatformBootstrap = makeEnvoyAIGatewayPlatformBootstrap({
+  profile: 'development',
+});
 
 function defaultString(value: string | undefined, fallback: string): string {
-  return isKubernetesRef(value)
-    ? (Cel.default(value, fallback) as string)
-    : (value ?? fallback);
+  return isKubernetesRef(value) ? (Cel.default(value, fallback) as string) : (value ?? fallback);
 }
 
 function protectedEnvoyGatewayValues(
   aiGatewayNamespace: string,
   profile: 'development' | 'production',
   customValues?: Record<string, unknown>,
-  rateLimitRedisUrl?: string,
+  rateLimitRedisUrl?: string
 ): Record<string, unknown> {
   const defaults =
     profile === 'production'
@@ -295,71 +289,67 @@ function protectedEnvoyGatewayValues(
           },
         }
       : {};
-  return mergeObjects(
-    mergeObjects(defaults, customValues),
-    {
-      config: {
-        envoyGateway: {
-          gateway: {
-            controllerName: 'gateway.envoyproxy.io/gatewayclass-controller',
-          },
-          provider: { type: 'Kubernetes' },
-          ...(rateLimitRedisUrl
-            ? {
-                rateLimit: {
-                  backend: {
-                    type: 'Redis',
-                    redis: { url: rateLimitRedisUrl },
-                  },
+  return mergeObjects(mergeObjects(defaults, customValues), {
+    config: {
+      envoyGateway: {
+        gateway: {
+          controllerName: 'gateway.envoyproxy.io/gatewayclass-controller',
+        },
+        provider: { type: 'Kubernetes' },
+        ...(rateLimitRedisUrl
+          ? {
+              rateLimit: {
+                backend: {
+                  type: 'Redis',
+                  redis: { url: rateLimitRedisUrl },
                 },
-              }
-            : {}),
-          extensionApis: {
-            enableEnvoyPatchPolicy: true,
-            enableBackend: true,
-          },
-          extensionManager: {
-            hooks: {
-              xdsTranslator: {
-                translation: {
-                  listener: { includeAll: true },
-                  route: { includeAll: true },
-                  cluster: { includeAll: true },
-                  secret: { includeAll: true },
-                },
-                post: ['Translation', 'Cluster', 'Route'],
               },
+            }
+          : {}),
+        extensionApis: {
+          enableEnvoyPatchPolicy: true,
+          enableBackend: true,
+        },
+        extensionManager: {
+          hooks: {
+            xdsTranslator: {
+              translation: {
+                listener: { includeAll: true },
+                route: { includeAll: true },
+                cluster: { includeAll: true },
+                secret: { includeAll: true },
+              },
+              post: ['Translation', 'Cluster', 'Route'],
             },
-            service: {
-              fqdn: {
-                hostname: serviceHostname(aiGatewayNamespace),
-                port: 1063,
-              },
+          },
+          service: {
+            fqdn: {
+              hostname: serviceHostname(aiGatewayNamespace),
+              port: 1063,
             },
           },
         },
       },
     },
-  );
+  });
 }
 
-function platformConfigurationDigest(
-  options: EnvoyAIGatewayPlatformBuildOptions,
-): string {
+function platformConfigurationDigest(options: EnvoyAIGatewayPlatformBuildOptions): string {
   return singletonSpecFingerprintAnnotationValue(
     stableSerialize({
       profile: options.profile ?? 'production',
       envoyGatewayValues: options.envoyGatewayValues ?? {},
       aiGatewayValues: options.aiGatewayValues ?? {},
       rateLimitRedisUrl: options.rateLimitRedisUrl ?? null,
-    }),
+      mcpSessionEncryptionSeedSecret: options.mcpSessionEncryptionSeedSecret ?? null,
+    })
   );
 }
 
 function protectedAIGatewayValues(
   envoyGatewayNamespace: string,
   profile: 'development' | 'production',
-  customValues?: Record<string, unknown>,
+  customValues?: Record<string, unknown>
 ): Record<string, unknown> {
   const defaults = {
     extProc: {
@@ -377,25 +367,74 @@ function protectedAIGatewayValues(
           : {},
     },
   };
-  return mergeObjects(
-    mergeObjects(defaults, customValues),
-    {
-      ...(profile === 'production'
-        ? { extProc: { enableRedaction: true } }
-        : {}),
-      controller: {
-        fullnameOverride: DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE,
-      },
-      envoyGateway: {
-        namespace: envoyGatewayNamespace,
-      },
+  return mergeObjects(mergeObjects(defaults, customValues), {
+    ...(profile === 'production' ? { extProc: { enableRedaction: true } } : {}),
+    controller: {
+      fullnameOverride: DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE,
     },
-  );
+    envoyGateway: {
+      namespace: envoyGatewayNamespace,
+    },
+  });
+}
+
+function validateMcpSessionEncryptionSeedSecret(
+  options: EnvoyAIGatewayPlatformBuildOptions,
+  profile: 'development' | 'production'
+): { readonly name: string; readonly key: string } | undefined {
+  const source = options.mcpSessionEncryptionSeedSecret;
+  const configuredSeed = readNestedValue(options.aiGatewayValues, [
+    'controller',
+    'mcp',
+    'sessionEncryption',
+    'seed',
+  ]);
+  if (profile === 'production' && configuredSeed !== undefined) {
+    throw new Error(
+      'Production Envoy AI Gateway MCP sessionEncryption.seed must come from mcpSessionEncryptionSeedSecret, not inline chart values.'
+    );
+  }
+  if (!source) {
+    if (profile === 'production') {
+      throw new Error(
+        'Production Envoy AI Gateway requires mcpSessionEncryptionSeedSecret so MCP session encryption never uses the upstream known default.'
+      );
+    }
+    return undefined;
+  }
+  if (
+    source.name.length === 0 ||
+    source.name.length > 253 ||
+    !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/u.test(source.name)
+  ) {
+    throw new Error(
+      `Envoy AI Gateway MCP seed Secret name ${JSON.stringify(source.name)} must be a valid Kubernetes object name.`
+    );
+  }
+  const key = source.key ?? 'seed';
+  if (key.length === 0 || key.length > 253 || !/^[-._a-zA-Z0-9]+$/u.test(key)) {
+    throw new Error(
+      'Envoy AI Gateway MCP seed Secret key must be a valid Kubernetes Secret data key.'
+    );
+  }
+  return { name: source.name, key };
+}
+
+function readNestedValue(
+  value: Record<string, unknown> | undefined,
+  path: readonly string[]
+): unknown {
+  let current: unknown = value;
+  for (const segment of path) {
+    if (!isPlainObject(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
 }
 
 function mergeObjects(
   base: Record<string, unknown>,
-  overlay?: Record<string, unknown>,
+  overlay?: Record<string, unknown>
 ): Record<string, unknown> {
   const result = cloneObject(base);
   if (!overlay) return result;
@@ -410,9 +449,7 @@ function mergeObjects(
 }
 
 function cloneObject(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, cloneValue(child)]),
-  );
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cloneValue(child)]));
 }
 
 function cloneValue(value: unknown): unknown {
@@ -426,7 +463,7 @@ function serviceHostname(namespaceName: string): string {
   if (isCelExpression(namespaceName)) {
     return Cel.expr<string>(
       `"${DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE}." + ` +
-        `string(${namespaceName.expression}) + ".svc.cluster.local"`,
+        `string(${namespaceName.expression}) + ".svc.cluster.local"`
     ) as string;
   }
   return `${DEFAULT_ENVOY_AI_GATEWAY_CONTROLLER_SERVICE}.${namespaceName}.svc.cluster.local`;
@@ -438,7 +475,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
       typeof value === 'object' &&
       !Array.isArray(value) &&
       !isCelExpression(value) &&
-      !isKubernetesRef(value),
+      !isKubernetesRef(value)
   );
 }
 
@@ -451,11 +488,15 @@ function platformLabels(component: string): Record<string, string> {
 }
 
 function releaseReady(resourceId: string): string {
-  return `${resourceId}.status.conditions.exists(c, c.type == "Ready" && ` +
-    `c.status == "True" && c.observedGeneration == ${resourceId}.metadata.generation)`;
+  return (
+    `${resourceId}.status.conditions.exists(c, c.type == "Ready" && ` +
+    `c.status == "True" && c.observedGeneration == ${resourceId}.metadata.generation)`
+  );
 }
 
 function releaseFailed(resourceId: string): string {
-  return `${resourceId}.status.conditions.exists(c, c.type == "Ready" && ` +
-    `c.status == "False" && c.observedGeneration == ${resourceId}.metadata.generation)`;
+  return (
+    `${resourceId}.status.conditions.exists(c, c.type == "Ready" && ` +
+    `c.status == "False" && c.observedGeneration == ${resourceId}.metadata.generation)`
+  );
 }
