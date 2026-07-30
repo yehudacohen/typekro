@@ -10,6 +10,11 @@ import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constant
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getMetadataField, getResourceId } from '../metadata/index.js';
+import {
+  collectCelLambdaScopes,
+  isCelLambdaLocalAt,
+  maskCelStringLiterals,
+} from '../references/cel-lexical-scanner.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
@@ -671,126 +676,6 @@ export class DependencyResolver {
   findTerminalResources(graph: DependencyGraph): string[] {
     return graph.getLeafNodes();
   }
-}
-
-/**
- * Preserve offsets while hiding quoted CEL data from the resource scanner.
- * Hostnames, URLs, scripts, and arbitrary payload strings must not become
- * dependency edges merely because they contain dotted identifiers.
- */
-function maskCelStringLiterals(expression: string): string {
-  const characters = [...expression];
-  let quote: '"' | "'" | undefined;
-  let escaped = false;
-  for (let index = 0; index < characters.length; index += 1) {
-    const character = characters[index];
-    if (quote === undefined) {
-      if (character === '"' || character === "'") {
-        quote = character;
-        characters[index] = ' ';
-      }
-      continue;
-    }
-    characters[index] = ' ';
-    if (escaped) {
-      escaped = false;
-    } else if (character === '\\') {
-      escaped = true;
-    } else if (character === quote) {
-      quote = undefined;
-    }
-  }
-  return characters.join('');
-}
-
-interface CelLambdaScope {
-  readonly variable: string;
-  readonly bodyStart: number;
-  readonly bodyEnd: number;
-}
-
-/**
- * Locate the lexical body of CEL collection macros.
- *
- * Lambda identifiers are local only after the macro's first argument and
- * before its matching close parenthesis. Treating them as expression-global
- * loses real resource dependencies when a resource happens to share a lambda
- * name, and hard-coding conventional names such as `each` has the same flaw.
- */
-function collectCelLambdaScopes(expression: string): CelLambdaScope[] {
-  const scopes: CelLambdaScope[] = [];
-  const macroPattern = /\.(?:all|exists|exists_one|map|filter)\s*\(/g;
-  let match: RegExpExecArray | null = macroPattern.exec(expression);
-
-  while (match !== null) {
-    const openParen = expression.indexOf('(', match.index);
-    const parsed = parseCelMacroArguments(expression, openParen);
-    if (parsed) {
-      const variable = expression.slice(parsed.firstArgumentStart, parsed.firstArgumentEnd).trim();
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(variable)) {
-        scopes.push({
-          variable,
-          bodyStart: parsed.bodyStart,
-          bodyEnd: parsed.closeParen,
-        });
-      }
-    }
-    match = macroPattern.exec(expression);
-  }
-  return scopes;
-}
-
-function parseCelMacroArguments(
-  expression: string,
-  openParen: number
-):
-  | {
-      readonly firstArgumentStart: number;
-      readonly firstArgumentEnd: number;
-      readonly bodyStart: number;
-      readonly closeParen: number;
-    }
-  | undefined {
-  if (openParen < 0 || expression[openParen] !== '(') return undefined;
-
-  const stack: string[] = ['('];
-  let firstComma: number | undefined;
-  for (let index = openParen + 1; index < expression.length; index += 1) {
-    const character = expression[index];
-    if (character === '(' || character === '[' || character === '{') {
-      stack.push(character);
-      continue;
-    }
-    if (character === ')' || character === ']' || character === '}') {
-      const expected = character === ')' ? '(' : character === ']' ? '[' : '{';
-      if (stack.at(-1) !== expected) return undefined;
-      stack.pop();
-      if (stack.length === 0) {
-        if (firstComma === undefined) return undefined;
-        return {
-          firstArgumentStart: openParen + 1,
-          firstArgumentEnd: firstComma,
-          bodyStart: firstComma + 1,
-          closeParen: index,
-        };
-      }
-      continue;
-    }
-    if (character === ',' && stack.length === 1 && firstComma === undefined) {
-      firstComma = index;
-    }
-  }
-  return undefined;
-}
-
-function isCelLambdaLocalAt(
-  identifier: string,
-  offset: number,
-  scopes: readonly CelLambdaScope[]
-): boolean {
-  return scopes.some(
-    (scope) => scope.variable === identifier && offset >= scope.bodyStart && offset < scope.bodyEnd
-  );
 }
 
 export interface DeploymentPlan {

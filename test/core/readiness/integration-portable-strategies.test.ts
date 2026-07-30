@@ -24,6 +24,9 @@ import {
   ciliumClusterwideNetworkPolicyReadinessEvaluator,
   ciliumNetworkPolicyReadinessEvaluator,
 } from '../../../src/factories/cilium/resources/networking.js';
+import {
+  envoyGatewayPolicyReadinessEvaluator,
+} from '../../../src/factories/envoy-ai-gateway/resources/gateway.js';
 import { kroCustomResource } from '../../../src/factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../src/factories/kro/resource-graph-definition.js';
 import { namespace } from '../../../src/factories/kubernetes/core/namespace.js';
@@ -171,6 +174,30 @@ describe('integration readiness portability', () => {
       });
       expect(getPortableReadinessStrategy(evaluator)).toBeUndefined();
     }
+  });
+
+  it('round-trips Envoy Gateway policy readiness without losing terminal failures', () => {
+    expectPortableRoundTrip(
+      envoyGatewayPolicyReadinessEvaluator,
+      {
+        metadata: { generation: 2 },
+        status: {
+          ancestors: [
+            {
+              conditions: [
+                {
+                  type: 'ResolvedRefs',
+                  status: 'False',
+                  reason: 'InvalidReference',
+                  observedGeneration: 2,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      'typekro.readiness.envoy-ai-gateway.policy'
+    );
   });
 
   it('round-trips parameterized Kubernetes workload and Service readiness', () => {

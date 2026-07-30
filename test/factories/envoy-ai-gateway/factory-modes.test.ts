@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   envoyAIAcceptedReadinessEvaluator,
   envoyAIGatewayPlatformBootstrap,
+  envoyGatewayPolicyReadinessEvaluator,
   envoyMCPRoute,
   envoyGatewayReadinessEvaluator,
   makeEnvoyAIGateway,
@@ -142,6 +143,56 @@ describe('Envoy AI Gateway integration', () => {
       ready: true,
       reason: 'GatewayProgrammed',
     });
+  });
+
+  test('requires current policy acceptance and fails fast on rejected policy status', () => {
+    expect(
+      envoyGatewayPolicyReadinessEvaluator({
+        metadata: { generation: 3 },
+        status: {
+          ancestors: [
+            {
+              conditions: [
+                {
+                  type: 'Accepted',
+                  status: 'False',
+                  reason: 'TargetNotFound',
+                  observedGeneration: 3,
+                },
+              ],
+            },
+          ],
+        },
+      })
+    ).toMatchObject({
+      ready: false,
+      terminal: true,
+      reason: 'TargetNotFound',
+    });
+
+    expect(
+      envoyGatewayPolicyReadinessEvaluator({
+        metadata: { generation: 3 },
+        status: {
+          ancestors: [
+            {
+              conditions: [
+                {
+                  type: 'Accepted',
+                  status: 'False',
+                  observedGeneration: 2,
+                },
+                {
+                  type: 'Accepted',
+                  status: 'True',
+                  observedGeneration: 3,
+                },
+              ],
+            },
+          ],
+        },
+      })
+    ).toMatchObject({ ready: true });
   });
 
   test('renders a complete direct gateway with desired platform configuration', () => {
@@ -501,6 +552,26 @@ describe('Envoy AI Gateway integration', () => {
     ).toThrow(/must come from mcpSessionEncryptionSeedSecret/);
   });
 
+  test('rejects a nested platform profile that weakens or conflicts with the gateway profile', () => {
+    expect(() =>
+      makeEnvoyAIGateway({
+        profile: 'production',
+        platform: {
+          profile: 'development',
+          mcpSessionEncryptionSeedSecret: { name: 'managed-seed' },
+        },
+        providers: [
+          {
+            name: 'local',
+            kind: 'openai-compatible',
+            hostname: 'mock-ai.default.svc.cluster.local',
+          },
+        ],
+        models: [{ model: 'fast', targets: [{ provider: 'local' }] }],
+      })
+    ).toThrow(/profile production conflicts with nested platform profile development/);
+  });
+
   test('keeps singleton Redis topology out of the runtime installation spec', () => {
     const platform = makeEnvoyAIGatewayPlatformInstallation({
       profile: 'production',
@@ -563,6 +634,8 @@ describe('Envoy AI Gateway integration', () => {
     expect(schemaSpec).toHaveProperty('listenerPort', 'integer | minimum=1 maximum=65535');
     expect(String(status.ready)).toContain('observedGeneration');
     expect(String(status.failed)).toContain('observedGeneration');
+    expect(String(status.ready)).toContain('retryPolicy.status.ancestors');
+    expect(String(status.failed)).toContain('retryPolicy.status.ancestors');
   });
 
   test('rejects invalid provider topology before rendering either mode', () => {

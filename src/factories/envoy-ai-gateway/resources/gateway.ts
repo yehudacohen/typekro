@@ -19,6 +19,7 @@ import type {
   GatewayClassSpec,
   GatewayConfigSpec,
   GatewayObservedStatus,
+  GatewayPolicyObservedStatus,
   GatewaySpec,
   KubernetesCondition,
   MCPRouteSpec,
@@ -148,6 +149,50 @@ export function envoyGatewayReadinessEvaluator(liveResource: unknown): ResourceS
       };
 }
 
+export function envoyGatewayPolicyReadinessEvaluator(liveResource: unknown): ResourceStatus {
+  const resource = liveResource as
+    | {
+        readonly metadata?: { readonly generation?: number };
+        readonly status?: GatewayPolicyObservedStatus;
+      }
+    | undefined;
+  const generation = resource?.metadata?.generation;
+  const conditions = (resource?.status?.ancestors ?? []).flatMap(
+    (ancestor) => ancestor.conditions ?? []
+  );
+  const rejected = conditions.find(
+    (condition) =>
+      ((condition.type === 'Accepted' && condition.status === 'False') ||
+        (condition.type === 'ResolvedRefs' && condition.status === 'False')) &&
+      conditionIsCurrent(condition, generation)
+  );
+  if (rejected) {
+    return {
+      ready: false,
+      terminal: true,
+      reason: rejected.reason ?? `${rejected.type}False`,
+      message: rejected.message ?? `${rejected.type} is False`,
+    };
+  }
+  const accepted = conditions.find(
+    (condition) =>
+      condition.type === 'Accepted' &&
+      condition.status === 'True' &&
+      conditionIsCurrent(condition, generation)
+  );
+  return accepted
+    ? {
+        ready: true,
+        reason: accepted.reason ?? 'Accepted',
+        message: accepted.message ?? 'Policy is accepted',
+      }
+    : {
+        ready: false,
+        reason: 'Reconciling',
+        message: 'Policy has not been accepted for the current resource generation',
+      };
+}
+
 registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.accepted',
   '1',
@@ -162,6 +207,11 @@ registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.gateway',
   '1',
   envoyGatewayReadinessEvaluator
+);
+registerPortableReadinessEvaluator(
+  'typekro.readiness.envoy-ai-gateway.policy',
+  '1',
+  envoyGatewayPolicyReadinessEvaluator
 );
 
 export function envoyGatewayClass(
@@ -233,11 +283,11 @@ export function envoyBackendSecurityPolicy(
 
 export function envoyBackendTLSPolicy(
   config: NamespacedResourceConfig<BackendTLSPolicySpec>
-): Enhanced<BackendTLSPolicySpec, Record<string, never>> {
-  return createResource<BackendTLSPolicySpec, Record<string, never>>(
+): Enhanced<BackendTLSPolicySpec, GatewayPolicyObservedStatus> {
+  return createResource<BackendTLSPolicySpec, GatewayPolicyObservedStatus>(
     resourceDefinition('BackendTLSPolicy', GATEWAY_API_TLS_POLICY_VERSION, config),
     { scope: 'namespaced' }
-  ).withReadinessEvaluator(createAlwaysReadyEvaluator('BackendTLSPolicy'));
+  ).withReadinessEvaluator(envoyGatewayPolicyReadinessEvaluator);
 }
 
 export function envoyAIGatewayRoute(
@@ -254,11 +304,11 @@ export function envoyMCPRoute(
 
 export function envoyBackendTrafficPolicy(
   config: NamespacedResourceConfig<BackendTrafficPolicySpec>
-): Enhanced<BackendTrafficPolicySpec, Record<string, never>> {
-  return createResource<BackendTrafficPolicySpec, Record<string, never>>(
+): Enhanced<BackendTrafficPolicySpec, GatewayPolicyObservedStatus> {
+  return createResource<BackendTrafficPolicySpec, GatewayPolicyObservedStatus>(
     resourceDefinition('BackendTrafficPolicy', ENVOY_GATEWAY_API_VERSION, config),
     { scope: 'namespaced' }
-  ).withReadinessEvaluator(createAlwaysReadyEvaluator('BackendTrafficPolicy'));
+  ).withReadinessEvaluator(envoyGatewayPolicyReadinessEvaluator);
 }
 
 function acceptedResource<TSpec extends object>(

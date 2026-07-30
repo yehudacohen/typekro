@@ -71,6 +71,10 @@ interface ProviderResource {
   readonly resourceId: string;
 }
 
+interface PolicyResource {
+  readonly resourceId: string;
+}
+
 /**
  * Build one OpenAI-compatible internal gateway over a fixed, type-safe provider
  * and logical-model topology. Provider graph shape is build-time; instance
@@ -167,6 +171,7 @@ export function makeEnvoyAIGateway(
       const backendResources = new Map<string, ReturnType<typeof envoyAIServiceBackend>>();
       const providerResources: ProviderResource[] = [];
       const readinessResources: ProviderResource[] = [];
+      const policyResources: PolicyResource[] = [];
       for (const provider of providers) {
         const resourceId = providerResourceId(provider.name);
         const backendName = `${spec.name}-${provider.name}`;
@@ -246,6 +251,7 @@ export function makeEnvoyAIGateway(
             id: `${resourceId}TLSPolicy`,
           });
           tlsPolicy.dependsOn(backend);
+          policyResources.push({ resourceId: `${resourceId}TLSPolicy` });
         }
       }
 
@@ -331,6 +337,7 @@ export function makeEnvoyAIGateway(
           id: 'retryPolicy',
         });
         policy.dependsOn(route);
+        policyResources.push({ resourceId: 'retryPolicy' });
       }
       if (rateLimit) {
         const policy = envoyBackendTrafficPolicy({
@@ -390,6 +397,7 @@ export function makeEnvoyAIGateway(
           id: 'rateLimitPolicy',
         });
         policy.dependsOn(gateway);
+        policyResources.push({ resourceId: 'rateLimitPolicy' });
       }
 
       const gatewayConfigAccepted = acceptedExpression('gatewayConfig');
@@ -423,6 +431,20 @@ export function makeEnvoyAIGateway(
               .map((expression) => `(${expression})`)
               .join(' || ')
       );
+      const allPoliciesAccepted = Cel.expr<boolean>(
+        policyResources.length === 0
+          ? 'true'
+          : policyResources
+              .map(({ resourceId }) => `(${policyAcceptedExpression(resourceId)})`)
+              .join(' && ')
+      );
+      const anyPolicyFailed = Cel.expr<boolean>(
+        policyResources.length === 0
+          ? 'false'
+          : policyResources
+              .map(({ resourceId }) => `(${policyFailedExpression(resourceId)})`)
+              .join(' || ')
+      );
       const gatewayFailed = Cel.expr<boolean>(
         'gateway.status.conditions.exists(c, ' +
           '(c.type == "Accepted" || c.type == "Programmed") && c.status == "False" && ' +
@@ -439,12 +461,13 @@ export function makeEnvoyAIGateway(
       const platformFailed = Cel.expr<boolean>(platformOwner.status.failed);
       const failed = Cel.expr<boolean>(
         `(${platformFailed.expression}) || (${gatewayFailed.expression}) || ` +
-          `(${routeFailed.expression}) || (${anyProviderFailed.expression})`
+          `(${routeFailed.expression}) || (${anyProviderFailed.expression}) || ` +
+          `(${anyPolicyFailed.expression})`
       );
       const ready = Cel.expr<boolean>(
-        `(${platformReady.expression}) && (${gatewayConfigAccepted.expression}) && ` +
+          `(${platformReady.expression}) && (${gatewayConfigAccepted.expression}) && ` +
           `(${gatewayProgrammed.expression}) && (${routeAccepted.expression}) && ` +
-          `(${allProvidersAccepted.expression})`
+          `(${allProvidersAccepted.expression}) && (${allPoliciesAccepted.expression})`
       );
       const acceptedProviderCount = Cel.expr<number>(
         providerResources
@@ -483,6 +506,24 @@ function acceptedExpression(resourceId: string): ReturnType<typeof Cel.expr<bool
 
 function currentConditionExpression(resourceId: string): string {
   return `(has(c.observedGeneration) ? c.observedGeneration == ${resourceId}.metadata.generation : true)`;
+}
+
+function policyAcceptedExpression(resourceId: string): string {
+  return (
+    `has(${resourceId}.status.ancestors) && ${resourceId}.status.ancestors.exists(a, ` +
+    'has(a.conditions) && a.conditions.exists(c, ' +
+    'c.type == "Accepted" && c.status == "True" && ' +
+    `${currentConditionExpression(resourceId)}))`
+  );
+}
+
+function policyFailedExpression(resourceId: string): string {
+  return (
+    `has(${resourceId}.status.ancestors) && ${resourceId}.status.ancestors.exists(a, ` +
+    'has(a.conditions) && a.conditions.exists(c, ' +
+    '((c.type == "Accepted" || c.type == "ResolvedRefs") && c.status == "False") && ' +
+    `${currentConditionExpression(resourceId)}))`
+  );
 }
 
 function acceptedExpressionFor(resource: ProviderResource): ReturnType<typeof Cel.expr<boolean>> {
@@ -597,6 +638,11 @@ function platformOptionsForGateway(
   rateLimit: EnvoyAIRateLimit | undefined,
   profile: 'development' | 'production'
 ): EnvoyAIGatewayPlatformBuildOptions {
+  if (platform?.profile && platform.profile !== profile) {
+    throw new Error(
+      `Envoy AI Gateway profile ${profile} conflicts with nested platform profile ${platform.profile}.`
+    );
+  }
   if (
     rateLimit &&
     platform?.rateLimitRedisUrl &&
@@ -608,7 +654,7 @@ function platformOptionsForGateway(
   }
   return {
     ...platform,
-    profile: platform?.profile ?? profile,
+    profile,
     ...(rateLimit ? { rateLimitRedisUrl: rateLimit.redisUrl } : {}),
   };
 }

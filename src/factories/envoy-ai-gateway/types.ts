@@ -282,6 +282,12 @@ export interface GatewayObservedStatus {
   readonly conditions?: readonly KubernetesCondition[];
 }
 
+export interface GatewayPolicyObservedStatus {
+  readonly ancestors?: readonly {
+    readonly conditions?: readonly KubernetesCondition[];
+  }[];
+}
+
 export interface GatewayConfigSpec {
   readonly extProc?: {
     readonly kubernetes?: {

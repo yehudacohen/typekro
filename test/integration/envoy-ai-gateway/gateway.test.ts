@@ -6,15 +6,12 @@ import {
   captureTestNamespaceLease,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
-  createKubernetesObjectApiClient,
   createTestNamespace,
-  deleteGeneratedCrdAndWait,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
   deleteTestResourceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
-  isNotFoundError,
   type ResourceIdentity,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
@@ -249,50 +246,6 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
   let mockResources: readonly ResourceIdentity[] = [];
 
   beforeAll(async () => {
-    // This test deliberately reuses the public fixed RGD name. Fail closed if
-    // any instance exists, then reset both the definition and generated CRD so
-    // a schema from an earlier draft cannot make current admission misleading.
-    const objectApi = createKubernetesObjectApiClient(kubeConfig);
-    let existingInstances: Awaited<ReturnType<typeof objectApi.list>>['items'] = [];
-    let generatedCrdExists = true;
-    try {
-      await objectApi.read({
-        apiVersion: 'apiextensions.k8s.io/v1',
-        kind: 'CustomResourceDefinition',
-        metadata: { name: 'envoyaigateways.kro.run' },
-      });
-    } catch (error: unknown) {
-      if (!isNotFoundError(error)) throw error;
-      generatedCrdExists = false;
-    }
-    if (generatedCrdExists) {
-      existingInstances = (await objectApi.list('kro.run/v1alpha1', 'EnvoyAIGateway')).items;
-    }
-    if (existingInstances.length > 0) {
-      throw new Error(
-        `Refusing to reset the EnvoyAIGateway live-test definition while ${existingInstances.length} instance(s) remain.`
-      );
-    }
-    await deleteTestResourceAndWait(
-      {
-        apiVersion: 'kro.run/v1alpha1',
-        kind: 'ResourceGraphDefinition',
-        metadata: { name: 'envoy-ai-gateway' },
-      },
-      kubeConfig,
-      60_000
-    );
-    await deleteGeneratedCrdAndWait(
-      {
-        apiVersion: 'apiextensions.k8s.io/v1',
-        kind: 'CustomResourceDefinition',
-        metadata: { name: 'envoyaigateways.kro.run' },
-      },
-      'kro.run/v1alpha1',
-      'EnvoyAIGateway',
-      kubeConfig
-    );
-
     mockLease = await createTestNamespace(mockNamespace, kubeConfig);
     mockResources = await installMockProvider(mockNamespace, kubeConfig);
   });

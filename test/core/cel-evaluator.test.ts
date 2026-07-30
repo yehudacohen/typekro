@@ -81,6 +81,35 @@ describe('CelEvaluator', () => {
       expect(await evaluator.parse(expression)(context)).toBe(true);
     });
 
+    it('evaluates nested collection bindings without resolving lambda locals as resources', async () => {
+      context.resources.set('retryPolicy', {
+        metadata: { generation: 3 },
+        status: {
+          ancestors: [
+            {
+              conditions: [
+                {
+                  type: 'Accepted',
+                  status: 'True',
+                  observedGeneration: 3,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const expression = {
+        [CEL_EXPRESSION_BRAND]: true as const,
+        expression:
+          'has(retryPolicy.status.ancestors) && retryPolicy.status.ancestors.exists(a, ' +
+          'has(a.conditions) && a.conditions.exists(c, c.type == "Accepted" && ' +
+          'c.status == "True" && c.observedGeneration == retryPolicy.metadata.generation))',
+      };
+
+      expect(await evaluator.evaluate(expression, context)).toBe(true);
+      expect(await evaluator.parse(expression)(context)).toBe(true);
+    });
+
     it('should evaluate expressions with variables', async () => {
       context.variables = { x: 10, y: 5 };
 
@@ -337,6 +366,22 @@ describe('CelEvaluator', () => {
         resourceId: 'deployment',
         fieldPath: 'spec.template.metadata.labels.app',
       });
+    });
+
+    it('keeps real resources while excluding nested CEL lambda variables', () => {
+      const extractResourceReferences = (
+        evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).extractResourceReferences!.bind(evaluator);
+
+      const refs = extractResourceReferences(
+        'retryPolicy.status.ancestors.exists(a, a.conditions.exists(c, c.status == "True")) ' +
+          '&& database.status.ready'
+      ) as unknown[];
+
+      expect(refs).toEqual([
+        { resourceId: 'retryPolicy', fieldPath: 'status.ancestors.exists' },
+        { resourceId: 'database', fieldPath: 'status.ready' },
+      ]);
     });
   });
 
