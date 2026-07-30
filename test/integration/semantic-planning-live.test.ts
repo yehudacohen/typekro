@@ -611,6 +611,47 @@ describeOrSkip('semantic planning live acceptance', () => {
         }
       });
 
+      // Reproduce an interruption after the stable RGD write but before the
+      // generated CRD migration. A retry must inspect the CRD rather than
+      // treating the already-stable live RGD as proof that migration finished.
+      await objectApi.patch(
+        upgradedRgd,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'application/merge-patch+json'
+      );
+      await waitUntil('the interrupted artifact migration state', async () => {
+        try {
+          const live = (await objectApi.read(rgdIdentity)) as {
+            metadata?: { generation?: number };
+            spec?: { schema?: { spec?: Record<string, unknown> } };
+            status?: {
+              conditions?: Array<{
+                type?: string;
+                status?: string;
+                observedGeneration?: number;
+              }>;
+            };
+          };
+          const generation = live.metadata?.generation;
+          const crd = await findGeneratedCrd(objectApi, group, kind);
+          return (
+            live.spec?.schema?.spec?.typekroArtifactBindings === 'map[string]map[string]string' &&
+            typeof generation === 'number' &&
+            live.status?.conditions?.some(
+              (condition) =>
+                condition.type === 'KindReady' &&
+                condition.status === 'False' &&
+                condition.observedGeneration === generation
+            ) === true &&
+            !isNestedStringMapSchema(generatedCrdPropertySchema(crd, 'typekroArtifactBindings'))
+          );
+        } catch {
+          return false;
+        }
+      });
       await migrateLegacyKroArtifactBindingCrd(kubeConfig, upgradedRgd);
       let lastUpgradeObservation: unknown;
       try {
