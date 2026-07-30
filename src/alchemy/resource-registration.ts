@@ -24,6 +24,7 @@ import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
+import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -197,11 +198,7 @@ export function materializeAlchemyResources(
   kroResource: typeof KroResource,
   declarations: readonly AlchemyResourceDeclaration[],
   options: MaterializeAlchemyResourcesOptions = {}
-): Effect.Effect<
-  Record<string, KroResourceR>,
-  never,
-  ProviderMod.Provider<KroResourceR>
-> {
+): Effect.Effect<Record<string, KroResourceR>, never, ProviderMod.Provider<KroResourceR>> {
   return Effect.gen(function* () {
     // Keyed by declaration id → the instantiated alchemy resource HANDLE (what `Output.of` consumes
     // and what carries the dependency edge); its resolved attributes are a `TypeKroResource`.
@@ -402,6 +399,15 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       }) as unknown as T;
       copyResourceMetadata(resourceForDeploy, wrapped);
       resourceForDeploy = wrapped;
+    }
+    if (
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
+    ) {
+      await migrateLegacyKroArtifactBindingCrd(
+        _createClientProvider(effectiveProps, 'artifact-binding-migration'),
+        resourceForDeploy as unknown as KubernetesResource
+      );
     }
     const deployProps =
       resourceForDeploy === effectiveProps.resource

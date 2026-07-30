@@ -6,6 +6,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { createEventMonitor } from '../../src/core/deployment/event-monitor.js';
+import { migrateLegacyKroArtifactBindingCrd } from '../../src/core/deployment/kro-artifact-binding-migration.js';
 import {
   kroArtifactOutputField,
   kroArtifactRequirementField,
@@ -49,12 +50,30 @@ async function waitUntil(
   throw new Error(`Timed out waiting for ${description} after ${timeoutMs}ms`);
 }
 
+class GeneratedCrdNotFoundError extends Error {
+  constructor(group: string, kind: string) {
+    super(`Generated CRD for ${group}/${kind} was not found`);
+    this.name = 'GeneratedCrdNotFoundError';
+  }
+}
+
 async function findGeneratedCrd(
   api: k8s.KubernetesObjectApi,
   group: string,
   kind: string
 ): Promise<{
   metadata?: { name?: string; deletionTimestamp?: string };
+  spec?: {
+    versions?: Array<{
+      name?: string;
+      storage?: boolean;
+      schema?: {
+        openAPIV3Schema?: {
+          properties?: Record<string, unknown>;
+        };
+      };
+    }>;
+  };
   status?: { conditions?: Array<{ type?: string; status?: string }> };
 }> {
   const result = (await api.list(
@@ -63,15 +82,83 @@ async function findGeneratedCrd(
   )) as unknown as {
     items?: Array<{
       metadata?: { name?: string; deletionTimestamp?: string };
-      spec?: { group?: string; names?: { kind?: string } };
+      spec?: {
+        group?: string;
+        names?: { kind?: string };
+        versions?: Array<{
+          name?: string;
+          storage?: boolean;
+          schema?: {
+            openAPIV3Schema?: {
+              properties?: Record<string, unknown>;
+            };
+          };
+        }>;
+      };
       status?: { conditions?: Array<{ type?: string; status?: string }> };
     }>;
   };
   const crd = result.items?.find(
     (candidate) => candidate.spec?.group === group && candidate.spec?.names?.kind === kind
   );
-  if (!crd) throw new Error(`Generated CRD for ${group}/${kind} was not found`);
+  if (!crd) throw new GeneratedCrdNotFoundError(group, kind);
   return crd;
+}
+
+function generatedCrdPropertySchema(
+  crd: Awaited<ReturnType<typeof findGeneratedCrd>>,
+  property: string
+): unknown {
+  const version =
+    crd.spec?.versions?.find((candidate) => candidate.storage) ?? crd.spec?.versions?.[0];
+  const rootProperties = version?.schema?.openAPIV3Schema?.properties;
+  const specSchema = rootProperties?.spec;
+  if (!specSchema || typeof specSchema !== 'object') return undefined;
+  const specProperties = Reflect.get(specSchema, 'properties');
+  return specProperties && typeof specProperties === 'object'
+    ? Reflect.get(specProperties, property)
+    : undefined;
+}
+
+function isNestedStringMapSchema(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'type') !== 'object') {
+    return false;
+  }
+  const outerValues = Reflect.get(value, 'additionalProperties');
+  if (
+    !outerValues ||
+    typeof outerValues !== 'object' ||
+    Reflect.get(outerValues, 'type') !== 'object'
+  ) {
+    return false;
+  }
+  const innerValues = Reflect.get(outerValues, 'additionalProperties');
+  return Boolean(
+    innerValues && typeof innerValues === 'object' && Reflect.get(innerValues, 'type') === 'string'
+  );
+}
+
+function currentGraphAccepted(resource: {
+  metadata?: { generation?: number };
+  status?: {
+    conditions?: Array<{
+      type?: string;
+      status?: string;
+      observedGeneration?: number;
+    }>;
+  };
+}): boolean {
+  const generation = resource.metadata?.generation;
+  return (
+    typeof generation === 'number' &&
+    resource.status?.conditions?.some(
+      (condition) =>
+        condition.type === 'GraphAccepted' &&
+        condition.status === 'True' &&
+        typeof condition.observedGeneration === 'number' &&
+        condition.observedGeneration >= generation
+    ) === true
+  );
 }
 
 function managerOwnsConfigMapKey(
@@ -364,26 +451,31 @@ describeOrSkip('semantic planning live acceptance', () => {
     const rgdName = `artifact-upgrade-${runToken}`;
     const instanceName = `artifact-upgrade-${runToken}`;
     const requirementField = kroArtifactRequirementField('build');
-    const outputField = kroArtifactOutputField('image');
-    const graph = kubernetesComposition(
-      {
-        name: rgdName,
-        apiVersion,
-        kind,
-        revision: '1',
-        spec: type({ name: 'string' }),
-        status: type({ ready: 'boolean' }),
-      },
-      (spec) => {
-        configMap({
-          id: 'artifactConfig',
-          metadata: { name: spec.name, namespace },
-          data: { image: artifactOutput('build', 'image') },
-        });
-        return { ready: true };
-      }
-    );
-    const plan = {
+    const imageOutputField = kroArtifactOutputField('image');
+    const digestOutputField = kroArtifactOutputField('digest');
+    const composition = (includeDigest: boolean) =>
+      kubernetesComposition(
+        {
+          name: rgdName,
+          apiVersion,
+          kind,
+          revision: '1',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          configMap({
+            id: 'artifactConfig',
+            metadata: { name: spec.name, namespace },
+            data: {
+              image: artifactOutput('build', 'image'),
+              ...(includeDigest ? { digest: artifactOutput('build', 'digest') } : {}),
+            },
+          });
+          return { ready: true };
+        }
+      );
+    const artifactPlan = (outputs: readonly string[]) => ({
       inputs: {
         build: {
           kind: 'artifact' as const,
@@ -391,31 +483,37 @@ describeOrSkip('semantic planning live acceptance', () => {
             id: 'build',
             kind: 'container-image',
             descriptor: { kind: 'literal' as const, value: instanceName },
-            outputs: ['image'],
+            outputs,
           },
         },
       },
-    };
-    const factory = graph.factory('kro', {
+    });
+    const v032Graph = composition(false);
+    const upgradedGraph = composition(true);
+    const v032Plan = artifactPlan(['image']);
+    const upgradedPlan = artifactPlan(['image', 'digest']);
+    const factory = upgradedGraph.factory('kro', {
       namespace,
       kubeConfig,
       timeout: 180_000,
       waitForReady: true,
-      plan,
+      plan: upgradedPlan,
     });
-    const renderFactory = graph.factory('kro', {
+    const upgradedRenderFactory = upgradedGraph.factory('kro', {
       namespace,
       timeout: 180_000,
       waitForReady: true,
-      plan,
+      plan: upgradedPlan,
     });
-    const declarations = await renderFactory.toAlchemyResources({ name: instanceName });
-    const rgdDeclaration = declarations.find(
+    const upgradedDeclarations = await upgradedRenderFactory.toAlchemyResources({
+      name: instanceName,
+    });
+    const upgradedRgdDeclaration = upgradedDeclarations.find(
       (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
     );
-    if (!rgdDeclaration) throw new Error('Expected an RGD declaration');
+    if (!upgradedRgdDeclaration) throw new Error('Expected an upgraded RGD declaration');
     const upgradedRgd = JSON.parse(
-      JSON.stringify(rgdDeclaration.props.resource)
+      JSON.stringify(upgradedRgdDeclaration.props.resource)
     ) as k8s.KubernetesObject & {
       spec?: { schema?: { spec?: Record<string, unknown> } };
     };
@@ -424,13 +522,29 @@ describeOrSkip('semantic planning live acceptance', () => {
 
     // This is the exact persisted shape emitted by v0.32.0: topology-specific
     // object schema and two nested hashed keys in every instance.
-    const v032Rgd = structuredClone(upgradedRgd);
+    const v032RenderFactory = v032Graph.factory('kro', {
+      namespace,
+      timeout: 180_000,
+      waitForReady: true,
+      plan: v032Plan,
+    });
+    const v032Declarations = await v032RenderFactory.toAlchemyResources({
+      name: instanceName,
+    });
+    const v032RgdDeclaration = v032Declarations.find(
+      (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
+    );
+    if (!v032RgdDeclaration) throw new Error('Expected a v0.32 RGD declaration');
+    const v032Rgd = JSON.parse(
+      JSON.stringify(v032RgdDeclaration.props.resource)
+    ) as typeof upgradedRgd;
     if (!v032Rgd.spec?.schema?.spec) throw new Error('Expected a KRO spec schema');
     v032Rgd.spec.schema.spec.typekroArtifactBindings = {
-      [requirementField]: { [outputField]: 'string' },
+      [requirementField]: { [imageOutputField]: 'string' },
     };
     const instance = (
-      image: string
+      image: string,
+      digest?: string
     ): k8s.KubernetesObject & {
       spec: {
         name: string;
@@ -443,7 +557,10 @@ describeOrSkip('semantic planning live acceptance', () => {
       spec: {
         name: instanceName,
         typekroArtifactBindings: {
-          [requirementField]: { [outputField]: image },
+          [requirementField]: {
+            [imageOutputField]: image,
+            ...(digest ? { [digestOutputField]: digest } : {}),
+          },
         },
       },
     });
@@ -459,16 +576,22 @@ describeOrSkip('semantic planning live acceptance', () => {
       await waitUntil('the v0.32 artifact RGD and generated CRD', async () => {
         try {
           const liveRgd = (await objectApi.read(rgdIdentity)) as {
-            status?: { conditions?: Array<{ type?: string; status?: string }> };
+            metadata?: { generation?: number };
+            status?: {
+              conditions?: Array<{
+                type?: string;
+                status?: string;
+                observedGeneration?: number;
+              }>;
+            };
           };
-          const graphAccepted = liveRgd.status?.conditions?.some(
-            (condition) => condition.type === 'GraphAccepted' && condition.status === 'True'
-          );
-          if (!graphAccepted) return false;
+          if (!currentGraphAccepted(liveRgd)) return false;
           const crd = await findGeneratedCrd(objectApi, group, kind);
-          return crd.status?.conditions?.some(
-            (condition) => condition.type === 'Established' && condition.status === 'True'
-          ) === true;
+          return (
+            crd.status?.conditions?.some(
+              (condition) => condition.type === 'Established' && condition.status === 'True'
+            ) === true
+          );
         } catch {
           return false;
         }
@@ -488,34 +611,58 @@ describeOrSkip('semantic planning live acceptance', () => {
         }
       });
 
-      await objectApi.patch(
-        upgradedRgd,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        'application/merge-patch+json'
-      );
-      await waitUntil('the topology-independent artifact schema', async () => {
-        try {
-          const live = (await objectApi.read(rgdIdentity)) as {
-            spec?: { schema?: { spec?: Record<string, unknown> } };
-            status?: { conditions?: Array<{ type?: string; status?: string }> };
-          };
-          return (
-            live.spec?.schema?.spec?.typekroArtifactBindings ===
-              'map[string]map[string]string' &&
-            live.status?.conditions?.some(
-              (condition) => condition.type === 'GraphAccepted' && condition.status === 'True'
-            ) === true
-          );
-        } catch {
-          return false;
-        }
-      });
+      await migrateLegacyKroArtifactBindingCrd(kubeConfig, upgradedRgd);
+      let lastUpgradeObservation: unknown;
+      try {
+        await waitUntil(
+          'the topology-independent artifact schema',
+          async () => {
+            try {
+              const live = (await objectApi.read(rgdIdentity)) as {
+                metadata?: { generation?: number };
+                spec?: { schema?: { spec?: Record<string, unknown> } };
+                status?: {
+                  conditions?: Array<{
+                    type?: string;
+                    status?: string;
+                    observedGeneration?: number;
+                  }>;
+                };
+              };
+              const crd = await findGeneratedCrd(objectApi, group, kind);
+              const bindingSchema = generatedCrdPropertySchema(crd, 'typekroArtifactBindings');
+              lastUpgradeObservation = {
+                generation: live.metadata?.generation,
+                conditions: live.status?.conditions,
+                rgdBindingSchema: live.spec?.schema?.spec?.typekroArtifactBindings,
+                generatedCrdBindingSchema: bindingSchema,
+              };
+              return (
+                live.spec?.schema?.spec?.typekroArtifactBindings ===
+                  'map[string]map[string]string' &&
+                currentGraphAccepted(live) &&
+                isNestedStringMapSchema(bindingSchema)
+              );
+            } catch (error: unknown) {
+              lastUpgradeObservation = {
+                error: error instanceof Error ? error.message : String(error),
+              };
+              return false;
+            }
+          },
+          120_000
+        );
+      } catch (error: unknown) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; last observation: ${JSON.stringify(lastUpgradeObservation)}`
+        );
+      }
 
       await objectApi.patch(
-        instance('registry.example/app:v2'),
+        instance(
+          'registry.example/app:v2',
+          'sha256:2222222222222222222222222222222222222222222222222222222222222222'
+        ),
         undefined,
         undefined,
         undefined,
@@ -528,8 +675,12 @@ describeOrSkip('semantic planning live acceptance', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: instanceName, namespace },
-          })) as { data?: { image?: string } };
-          return child.data?.image === 'registry.example/app:v2';
+          })) as { data?: { image?: string; digest?: string } };
+          return (
+            child.data?.image === 'registry.example/app:v2' &&
+            child.data?.digest ===
+              'sha256:2222222222222222222222222222222222222222222222222222222222222222'
+          );
         } catch {
           return false;
         }
@@ -545,7 +696,11 @@ describeOrSkip('semantic planning live acceptance', () => {
         };
       };
       expect(admitted.spec?.typekroArtifactBindings).toEqual({
-        [requirementField]: { [outputField]: 'registry.example/app:v2' },
+        [requirementField]: {
+          [imageOutputField]: 'registry.example/app:v2',
+          [digestOutputField]:
+            'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+        },
       });
     } catch (error: unknown) {
       testError = error;
@@ -562,7 +717,14 @@ describeOrSkip('semantic planning live acceptance', () => {
     await deleteTestResourceAndWait(rgdIdentity, kubeConfig, 60_000).catch((error) =>
       cleanupErrors.push(error)
     );
-    const generatedCrd = await findGeneratedCrd(objectApi, group, kind).catch(() => undefined);
+    let generatedCrd: Awaited<ReturnType<typeof findGeneratedCrd>> | undefined;
+    try {
+      generatedCrd = await findGeneratedCrd(objectApi, group, kind);
+    } catch (error: unknown) {
+      if (!(error instanceof GeneratedCrdNotFoundError)) {
+        cleanupErrors.push(error);
+      }
+    }
     if (generatedCrd?.metadata?.name) {
       await deleteGeneratedCrdAndWait(
         {
@@ -574,6 +736,18 @@ describeOrSkip('semantic planning live acceptance', () => {
         kind,
         kubeConfig
       ).catch((error) => cleanupErrors.push(error));
+    }
+    try {
+      const retainedCrd = await findGeneratedCrd(objectApi, group, kind);
+      cleanupErrors.push(
+        new Error(
+          `Generated CRD ${retainedCrd.metadata?.name ?? `${group}/${kind}`} remained after cleanup`
+        )
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof GeneratedCrdNotFoundError)) {
+        cleanupErrors.push(error);
+      }
     }
 
     if (cleanupErrors.length > 0) {

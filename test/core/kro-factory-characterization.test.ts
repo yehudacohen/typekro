@@ -484,9 +484,7 @@ describe('KroResourceFactory: reserved provider bindings', () => {
     const rgd = yaml.load(factory.toYaml()) as {
       spec?: { schema?: { spec?: Record<string, unknown> } };
     };
-    expect(rgd.spec?.schema?.spec?.typekroArtifactBindings).toBe(
-      'map[string]map[string]string'
-    );
+    expect(rgd.spec?.schema?.spec?.typekroArtifactBindings).toBe('map[string]map[string]string');
 
     const instance = yaml.load(factory.toYaml({ name: 'demo', replicas: 1 })) as {
       spec?: Record<string, unknown>;
@@ -587,6 +585,8 @@ describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
     proto.dispose = async () => {
       disposed = true;
     };
+    (factory as unknown as Record<string, unknown>).migrateLegacyArtifactBindings = async () =>
+      undefined;
 
     try {
       const ensureRGDDeployed = getPrivateMethod(

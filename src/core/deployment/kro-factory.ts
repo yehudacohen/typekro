@@ -151,6 +151,7 @@ import {
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
+import { migrateLegacyKroArtifactBindingCrd } from './kro-artifact-binding-migration.js';
 import { assertKroInstanceSpecPreserved } from './kro-instance-admission.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
@@ -4713,6 +4714,10 @@ export class KroResourceFactoryImpl<
     }
   }
 
+  private async migrateLegacyArtifactBindings(rgdManifest: k8s.KubernetesObject): Promise<void> {
+    await migrateLegacyKroArtifactBindingCrd(this.getKubeConfig(), rgdManifest);
+  }
+
   /**
    * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine.
    *
@@ -4753,6 +4758,7 @@ export class KroResourceFactoryImpl<
     };
 
     await this.addRgdSchemaStatusPruneMarkers(rgdWithMetadata);
+    await this.migrateLegacyArtifactBindings(rgdWithMetadata);
 
     // Create Enhanced RGD with readiness evaluator
     const rgdFactory =
