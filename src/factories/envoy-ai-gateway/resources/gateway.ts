@@ -25,6 +25,8 @@ import type {
   MCPRouteSpec,
 } from '../types.js';
 
+const ENVOY_GATEWAY_CONTROLLER_NAME = 'gateway.envoyproxy.io/gatewayclass-controller';
+
 interface NamespacedResourceConfig<TSpec extends object> {
   readonly name: string;
   readonly namespace: string;
@@ -157,9 +159,9 @@ export function envoyGatewayPolicyReadinessEvaluator(liveResource: unknown): Res
       }
     | undefined;
   const generation = resource?.metadata?.generation;
-  const conditions = (resource?.status?.ancestors ?? []).flatMap(
-    (ancestor) => ancestor.conditions ?? []
-  );
+  const conditions = (resource?.status?.ancestors ?? [])
+    .filter((ancestor) => ancestor.controllerName === ENVOY_GATEWAY_CONTROLLER_NAME)
+    .flatMap((ancestor) => ancestor.conditions ?? []);
   const rejected = conditions.find(
     (condition) =>
       ((condition.type === 'Accepted' && condition.status === 'False') ||

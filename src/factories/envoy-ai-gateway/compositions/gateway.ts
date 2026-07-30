@@ -24,13 +24,13 @@ import {
 } from '../resources/gateway.js';
 import type {
   AcceptedResourceStatus,
-  EnvoyAIGatewayPlatformBuildOptions,
   BackendSecurityPolicySpec,
   EnvoyAIGatewayBuildOptions,
+  EnvoyAIGatewayPlatformBuildOptions,
   EnvoyAIGatewaySpec,
   EnvoyAIGatewayStatus,
-  EnvoyAIProvider,
   EnvoyAILLMRequestCost,
+  EnvoyAIProvider,
   EnvoyAIRateLimit,
   EnvoyAITokenCost,
 } from '../types.js';
@@ -87,6 +87,8 @@ export function makeEnvoyAIGateway(
   validateModels(options, providers);
   const rateLimit = validateRateLimit(options.rateLimit);
   const requestCosts = validateRequestCosts(options.requestCosts ?? defaultRequestCosts());
+  const tokenCostMetadataKeys = resolveTokenCostMetadataKeys(requestCosts);
+  validateRateLimitMetadataReferences(rateLimit, tokenCostMetadataKeys);
   const profile = options.profile ?? 'production';
   const platformOptions = platformOptionsForGateway(options.platform, rateLimit, profile);
   const platform = makeEnvoyAIGatewayPlatformBootstrap(platformOptions);
@@ -384,7 +386,7 @@ export function makeEnvoyAIGateway(
                             from: 'Metadata',
                             metadata: {
                               namespace: 'io.envoy.ai_gateway',
-                              key: metadataKeyForTokenCost(rule.cost),
+                              key: requiredTokenCostMetadataKey(tokenCostMetadataKeys, rule.cost),
                             },
                           },
                         },
@@ -465,7 +467,7 @@ export function makeEnvoyAIGateway(
           `(${anyPolicyFailed.expression})`
       );
       const ready = Cel.expr<boolean>(
-          `(${platformReady.expression}) && (${gatewayConfigAccepted.expression}) && ` +
+        `(${platformReady.expression}) && (${gatewayConfigAccepted.expression}) && ` +
           `(${gatewayProgrammed.expression}) && (${routeAccepted.expression}) && ` +
           `(${allProvidersAccepted.expression}) && (${allPoliciesAccepted.expression})`
       );
@@ -680,6 +682,7 @@ function validateRequestCosts(
     throw new Error('Envoy AI Gateway supports at most 36 request-cost dimensions.');
   }
   const metadataKeys = new Set<string>();
+  const builtInTypes = new Set<Exclude<EnvoyAILLMRequestCost['type'], 'CEL'>>();
   for (const cost of costs) {
     if (cost.metadataKey.length === 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cost.metadataKey)) {
       throw new Error(
@@ -690,6 +693,12 @@ function validateRequestCosts(
       throw new Error(`Duplicate Envoy AI Gateway request-cost metadata key ${cost.metadataKey}.`);
     }
     metadataKeys.add(cost.metadataKey);
+    if (cost.type !== 'CEL') {
+      if (builtInTypes.has(cost.type)) {
+        throw new Error(`Duplicate Envoy AI Gateway request-cost type ${cost.type}.`);
+      }
+      builtInTypes.add(cost.type);
+    }
     if (cost.type === 'CEL' && cost.cel.trim().length === 0) {
       throw new Error(
         `Envoy AI Gateway CEL request cost ${cost.metadataKey} requires a non-empty expression.`
@@ -697,6 +706,65 @@ function validateRequestCosts(
     }
   }
   return costs.map((cost) => ({ ...cost }));
+}
+
+function resolveTokenCostMetadataKeys(
+  requestCosts: readonly EnvoyAILLMRequestCost[]
+): ReadonlyMap<EnvoyAITokenCost, string> {
+  const byType = new Map(
+    requestCosts
+      .filter(
+        (
+          cost
+        ): cost is Extract<
+          EnvoyAILLMRequestCost,
+          { type: Exclude<EnvoyAILLMRequestCost['type'], 'CEL'> }
+        > => cost.type !== 'CEL'
+      )
+      .map((cost) => [cost.type, cost.metadataKey] as const)
+  );
+  return new Map(
+    (
+      [
+        ['input-tokens', 'InputToken'],
+        ['output-tokens', 'OutputToken'],
+        ['total-tokens', 'TotalToken'],
+        ['cached-input-tokens', 'CachedInputToken'],
+        ['cache-creation-input-tokens', 'CacheCreationInputToken'],
+        ['reasoning-tokens', 'ReasoningToken'],
+      ] as const
+    ).flatMap(([tokenCost, requestCostType]) => {
+      const metadataKey = byType.get(requestCostType);
+      return metadataKey ? [[tokenCost, metadataKey] as const] : [];
+    })
+  );
+}
+
+function validateRateLimitMetadataReferences(
+  rateLimit: EnvoyAIRateLimit | undefined,
+  metadataKeys: ReadonlyMap<EnvoyAITokenCost, string>
+): void {
+  for (const rule of rateLimit?.rules ?? []) {
+    if (!rule.cost || rule.cost === 'request') continue;
+    if (!metadataKeys.has(rule.cost)) {
+      throw new Error(
+        `Envoy AI Gateway rate-limit cost ${rule.cost} requires a matching requestCosts dimension.`
+      );
+    }
+  }
+}
+
+function requiredTokenCostMetadataKey(
+  metadataKeys: ReadonlyMap<EnvoyAITokenCost, string>,
+  cost: EnvoyAITokenCost
+): string {
+  const metadataKey = metadataKeys.get(cost);
+  if (!metadataKey) {
+    throw new Error(
+      `Envoy AI Gateway rate-limit cost ${cost} requires a matching requestCosts dimension.`
+    );
+  }
+  return metadataKey;
 }
 
 function validateRateLimit(
@@ -728,23 +796,6 @@ function validateRateLimit(
     redisUrl: rateLimit.redisUrl,
     rules: rateLimit.rules.map((rule) => ({ ...rule })),
   };
-}
-
-function metadataKeyForTokenCost(cost: EnvoyAITokenCost): string {
-  switch (cost) {
-    case 'input-tokens':
-      return 'llm_input_token';
-    case 'output-tokens':
-      return 'llm_output_token';
-    case 'total-tokens':
-      return 'llm_total_token';
-    case 'cached-input-tokens':
-      return 'llm_cached_input_token';
-    case 'cache-creation-input-tokens':
-      return 'llm_cache_creation_input_token';
-    case 'reasoning-tokens':
-      return 'llm_reasoning_token';
-  }
 }
 
 function validateAndResolveProviders(

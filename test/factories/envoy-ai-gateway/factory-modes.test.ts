@@ -4,8 +4,8 @@ import {
   envoyAIAcceptedReadinessEvaluator,
   envoyAIGatewayPlatformBootstrap,
   envoyGatewayPolicyReadinessEvaluator,
-  envoyMCPRoute,
   envoyGatewayReadinessEvaluator,
+  envoyMCPRoute,
   makeEnvoyAIGateway,
   makeEnvoyAIGatewayPlatformInstallation,
 } from '../../../src/factories/envoy-ai-gateway/index.js';
@@ -152,6 +152,7 @@ describe('Envoy AI Gateway integration', () => {
         status: {
           ancestors: [
             {
+              controllerName: 'gateway.envoyproxy.io/gatewayclass-controller',
               conditions: [
                 {
                   type: 'Accepted',
@@ -176,6 +177,7 @@ describe('Envoy AI Gateway integration', () => {
         status: {
           ancestors: [
             {
+              controllerName: 'gateway.envoyproxy.io/gatewayclass-controller',
               conditions: [
                 {
                   type: 'Accepted',
@@ -193,6 +195,26 @@ describe('Envoy AI Gateway integration', () => {
         },
       })
     ).toMatchObject({ ready: true });
+
+    expect(
+      envoyGatewayPolicyReadinessEvaluator({
+        metadata: { generation: 3 },
+        status: {
+          ancestors: [
+            {
+              controllerName: 'unrelated.example/controller',
+              conditions: [
+                {
+                  type: 'Accepted',
+                  status: 'True',
+                  observedGeneration: 3,
+                },
+              ],
+            },
+          ],
+        },
+      })
+    ).toMatchObject({ ready: false, reason: 'Reconciling' });
   });
 
   test('renders a complete direct gateway with desired platform configuration', () => {
@@ -403,6 +425,52 @@ describe('Envoy AI Gateway integration', () => {
     expect(yaml).toContain('key: llm_total_token');
     expect(yaml).toContain('valkey.valkey-system.svc.cluster.local:6379');
     expect(yaml).toContain('configurationDigest: fnv64:');
+  });
+
+  test('binds token rate limits to the configured request-cost metadata key', () => {
+    const gateway = makeEnvoyAIGateway({
+      profile: 'development',
+      providers: [
+        {
+          name: 'local',
+          kind: 'openai-compatible',
+          hostname: 'mock-ai.default.svc.cluster.local',
+          tls: false,
+        },
+      ],
+      models: [{ model: 'fast', targets: [{ provider: 'local' }] }],
+      requestCosts: [{ metadataKey: 'tenant_total_tokens', type: 'TotalToken' }],
+      rateLimit: {
+        redisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
+        rules: [{ requests: 100_000, unit: 'Hour', cost: 'total-tokens' }],
+      },
+    });
+
+    expect(gateway.factory('kro', { namespace: 'typekro-system' }).toYaml()).toContain(
+      'key: tenant_total_tokens'
+    );
+  });
+
+  test('rejects token rate limits whose request-cost dimension was removed', () => {
+    expect(() =>
+      makeEnvoyAIGateway({
+        profile: 'development',
+        providers: [
+          {
+            name: 'local',
+            kind: 'openai-compatible',
+            hostname: 'mock-ai.default.svc.cluster.local',
+            tls: false,
+          },
+        ],
+        models: [{ model: 'fast', targets: [{ provider: 'local' }] }],
+        requestCosts: [{ metadataKey: 'input_only', type: 'InputToken' }],
+        rateLimit: {
+          redisUrl: 'valkey.valkey-system.svc.cluster.local:6379',
+          rules: [{ requests: 100_000, unit: 'Hour', cost: 'total-tokens' }],
+        },
+      })
+    ).toThrow('requires a matching requestCosts dimension');
   });
 
   test('exposes the reviewed v1beta1 MCPRoute resource seam', () => {

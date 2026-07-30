@@ -284,6 +284,7 @@ export interface GatewayObservedStatus {
 
 export interface GatewayPolicyObservedStatus {
   readonly ancestors?: readonly {
+    readonly controllerName?: string;
     readonly conditions?: readonly KubernetesCondition[];
   }[];
 }

@@ -382,7 +382,8 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
         `${mode}-gateway`,
         gatewayLease ? [gatewayLease] : [],
         kubeConfig,
-        360_000
+        360_000,
+        mode === 'direct' ? { scopes: ['cluster'] } : {}
       ).catch((error) => cleanupErrors.push(error));
       await deleteTestNamespaceAndWait(controlLease, kubeConfig).catch((error) =>
         cleanupErrors.push(error)
