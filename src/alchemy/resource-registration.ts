@@ -132,6 +132,22 @@ export type KroResourceR = ResourceT<
  */
 export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE);
 
+function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>(
+  olds: TypeKroResourceProps<T>,
+  news: Input<TypeKroResourceProps<T>>
+): boolean {
+  if (typeof news !== 'object' || news === null || !('namespace' in news)) {
+    return false;
+  }
+  const namespace: unknown = Reflect.get(news, 'namespace');
+  return (
+    Diff.isResolved(namespace) && typeof namespace === 'string' && olds.namespace !== namespace
+  );
+}
+
+/** Test hook for namespace-stable replacement decisions with unresolved sibling inputs. */
+export const shouldReplaceKroResourceNamespaceForTest = shouldReplaceKroResourceNamespace;
+
 /**
  * The provider `Layer` that backs {@link KroResource}. Merge into the runtime's providers
  * (alongside the cloud providers) so reconcile/delete run. `reconcile` is the single
@@ -151,7 +167,7 @@ export const kroProvider = ProviderMod.effect(
     // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
     list: () => Effect.succeed([]),
     diff: Effect.fn(function* ({ olds, news, output }) {
-      if (Diff.isResolved(news) && olds.namespace !== news.namespace) {
+      if (shouldReplaceKroResourceNamespace(olds, news)) {
         return { action: 'replace' as const };
       }
       return yield* Effect.tryPromise({
@@ -159,9 +175,12 @@ export const kroProvider = ProviderMod.effect(
         catch: ensureError,
       });
     }),
-    reconcile: Effect.fn(function* ({ news }) {
+    reconcile: Effect.fn(function* ({ news, output }) {
       return yield* Effect.tryPromise({
-        try: (abortSignal) => deployKroResource(news, abortSignal),
+        try: async (abortSignal) => {
+          await waitForPersistedIdentityDeletion(news, output, abortSignal);
+          return deployKroResource(news, abortSignal);
+        },
         catch: ensureError,
       });
     }),
@@ -419,9 +438,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       effectiveProps.deploymentStrategy === 'kro' &&
       (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
     ) {
-      await (
-        dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd
-      )(
+      await (dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd)(
         dependencies.kubeConfigForMigration?.() ??
           _createClientProvider(effectiveProps, 'artifact-binding-migration'),
         resourceForDeploy as unknown as KubernetesResource
@@ -458,6 +475,83 @@ interface KroResourceIdentityReader {
   read(resource: KubernetesResource): Promise<KubernetesResource>;
 }
 
+function persistedKroResourceIdentity(
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined
+): KubernetesResource | undefined {
+  const prior = output?.deployedResource;
+  if (!prior) return undefined;
+  const name = prior.metadata?.name;
+  if (typeof name !== 'string' || name.length === 0) return undefined;
+  return {
+    apiVersion: prior.apiVersion,
+    kind: prior.kind,
+    metadata: {
+      name,
+      ...(prior.metadata?.namespace ? { namespace: prior.metadata.namespace } : {}),
+    },
+  };
+}
+
+function identityReader(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  reader: KroResourceIdentityReader | undefined,
+  phase: string
+): KroResourceIdentityReader {
+  if (reader) return reader;
+  const provider = _createClientProvider(props, phase);
+  const api = createBunCompatibleKubernetesObjectApi(provider);
+  return {
+    read: async (resource: KubernetesResource) =>
+      (await api.read(resource as Parameters<typeof api.read>[0])) as KubernetesResource,
+  };
+}
+
+interface PersistedIdentityDeletionWaitDependencies {
+  reader?: KroResourceIdentityReader;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  pollIntervalMs?: number;
+}
+
+async function waitForPersistedIdentityDeletion(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
+  abortSignal?: AbortSignal,
+  dependencies: PersistedIdentityDeletionWaitDependencies = {}
+): Promise<void> {
+  const identity = persistedKroResourceIdentity(output);
+  if (!identity) return;
+  const reader = identityReader(props, dependencies.reader, 'alchemy-terminating-identity');
+  const sleep = dependencies.sleep ?? Bun.sleep;
+  const now = dependencies.now ?? Date.now;
+  const pollIntervalMs = dependencies.pollIntervalMs ?? 500;
+  const deadline = now() + (props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT);
+
+  while (true) {
+    abortSignal?.throwIfAborted();
+    try {
+      const live = await reader.read(identity);
+      if (!live.metadata?.deletionTimestamp) return;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return;
+      throw new Error(
+        `Alchemy terminating-identity check could not read ${identity.apiVersion}/${identity.kind} ` +
+          `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
+          `${identity.metadata.name}: ${ensureError(error).message}`
+      );
+    }
+
+    if (now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for terminating ${identity.apiVersion}/${identity.kind} ` +
+          `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
+          `${identity.metadata.name} to disappear before reconciliation`
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
 /**
  * Check persisted Alchemy state against the Kubernetes API before Alchemy
  * decides that an unchanged TypeKro resource is a no-op.
@@ -475,29 +569,9 @@ async function detectKroResourceIdentityDrift(
   reader?: KroResourceIdentityReader
 ): Promise<{ readonly action: 'update' } | undefined> {
   const prior = output?.deployedResource;
-  if (!prior) return { action: 'update' };
-  const identity: KubernetesResource = {
-    apiVersion: prior.apiVersion,
-    kind: prior.kind,
-    metadata: {
-      name: prior.metadata?.name ?? '',
-      ...(prior.metadata?.namespace
-        ? { namespace: prior.metadata.namespace }
-        : {}),
-    },
-  };
-  if (!identity.metadata.name) return { action: 'update' };
-
-  const liveReader = reader ?? (() => {
-    const provider = _createClientProvider(props, 'alchemy-drift-check');
-    const api = createBunCompatibleKubernetesObjectApi(provider);
-    return {
-      read: async (resource: KubernetesResource) =>
-        (await api.read(
-          resource as Parameters<typeof api.read>[0],
-        )) as KubernetesResource,
-    };
-  })();
+  const identity = persistedKroResourceIdentity(output);
+  if (!prior || !identity) return { action: 'update' };
+  const liveReader = identityReader(props, reader, 'alchemy-drift-check');
 
   let live: KubernetesResource;
   try {
@@ -505,19 +579,15 @@ async function detectKroResourceIdentityDrift(
   } catch (error: unknown) {
     if (isNotFoundError(error)) return { action: 'update' };
     throw new Error(
-      `Alchemy drift check could not read ${identity.apiVersion}/${identity.kind} `
-      + `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}`
-      + `${identity.metadata.name}: ${ensureError(error).message}`,
+      `Alchemy drift check could not read ${identity.apiVersion}/${identity.kind} ` +
+        `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
+        `${identity.metadata.name}: ${ensureError(error).message}`
     );
   }
 
   const priorUid = prior.metadata?.uid;
   const liveUid = live.metadata?.uid;
-  if (
-    typeof priorUid === 'string'
-    && typeof liveUid === 'string'
-    && priorUid !== liveUid
-  ) {
+  if (typeof priorUid === 'string' && typeof liveUid === 'string' && priorUid !== liveUid) {
     return { action: 'update' };
   }
   if (live.metadata?.deletionTimestamp) return { action: 'update' };
@@ -526,8 +596,10 @@ async function detectKroResourceIdentityDrift(
 }
 
 /** Test hook for persisted-state Kubernetes drift decisions. */
-export const detectKroResourceIdentityDriftForTest =
-  detectKroResourceIdentityDrift;
+export const detectKroResourceIdentityDriftForTest = detectKroResourceIdentityDrift;
+
+/** Test hook for terminating persisted-identity reconciliation. */
+export const waitForPersistedIdentityDeletionForTest = waitForPersistedIdentityDeletion;
 
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 

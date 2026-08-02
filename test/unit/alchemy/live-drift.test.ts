@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'bun:test';
+import * as Diff from 'alchemy/Diff';
+import type { Input } from 'alchemy/Input';
+import * as Output from 'alchemy/Output';
 import {
   detectKroResourceIdentityDriftForTest,
+  shouldReplaceKroResourceNamespaceForTest,
+  waitForPersistedIdentityDeletionForTest,
 } from '../../../src/alchemy/resource-registration.js';
-import type {
-  TypeKroResource,
-  TypeKroResourceProps,
-} from '../../../src/alchemy/types.js';
-import type {
-  Enhanced,
-  KubernetesResource,
-} from '../../../src/core/types/kubernetes.js';
+import type { TypeKroResource, TypeKroResourceProps } from '../../../src/alchemy/types.js';
+import type { Enhanced, KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
 type Resource = Enhanced<unknown, unknown>;
 
@@ -53,7 +52,7 @@ describe('Alchemy persisted TypeKro resource drift', () => {
             controllerObservation: 'changed-after-readiness',
           },
         }),
-      }),
+      })
     ).resolves.toBeUndefined();
   });
 
@@ -63,7 +62,7 @@ describe('Alchemy persisted TypeKro resource drift', () => {
         read: async () => {
           throw Object.assign(new Error('not found'), { statusCode: 404 });
         },
-      }),
+      })
     ).resolves.toEqual({ action: 'update' });
   });
 
@@ -74,7 +73,7 @@ describe('Alchemy persisted TypeKro resource drift', () => {
           ...deployed,
           metadata: { ...deployed.metadata, uid: 'uid-2' },
         }),
-      }),
+      })
     ).resolves.toEqual({ action: 'update' });
 
     await expect(
@@ -86,8 +85,75 @@ describe('Alchemy persisted TypeKro resource drift', () => {
             deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
           },
         }),
-      }),
+      })
     ).resolves.toEqual({ action: 'update' });
+  });
+
+  it('waits for a terminating persisted identity to reach 404 before reconciliation', async () => {
+    let reads = 0;
+    let sleeps = 0;
+    await waitForPersistedIdentityDeletionForTest(props, output, undefined, {
+      reader: {
+        read: async () => {
+          reads += 1;
+          if (reads === 1) {
+            return {
+              ...deployed,
+              metadata: {
+                ...deployed.metadata,
+                deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
+              },
+            };
+          }
+          throw Object.assign(new Error('not found'), { statusCode: 404 });
+        },
+      },
+      sleep: async () => {
+        sleeps += 1;
+      },
+    });
+    expect(reads).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  it('fails rather than reporting success while a persisted identity remains terminating', async () => {
+    await expect(
+      waitForPersistedIdentityDeletionForTest(
+        {
+          ...props,
+          options: { timeout: 0 },
+        },
+        output,
+        undefined,
+        {
+          reader: {
+            read: async () => ({
+              ...deployed,
+              metadata: {
+                ...deployed.metadata,
+                deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
+              },
+            }),
+          },
+        }
+      )
+    ).rejects.toThrow(
+      'Timed out waiting for terminating v1/Namespace application-system to disappear before reconciliation'
+    );
+  });
+
+  it('replaces a changed namespace even when a sibling input is unresolved', () => {
+    const news: Input<TypeKroResourceProps<Resource>> = {
+      ...props,
+      namespace: 'replacement-system',
+      artifactOutputs: {
+        image: {
+          digest: Output.asOutput('sha256:pending'),
+        },
+      },
+    };
+    expect(Diff.isResolved(news)).toBe(false);
+    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
   });
 
   it('fails closed when Kubernetes cannot prove live state', async () => {
@@ -96,9 +162,9 @@ describe('Alchemy persisted TypeKro resource drift', () => {
         read: async () => {
           throw Object.assign(new Error('forbidden'), { statusCode: 403 });
         },
-      }),
+      })
     ).rejects.toThrow(
-      'Alchemy drift check could not read v1/Namespace application-system: forbidden',
+      'Alchemy drift check could not read v1/Namespace application-system: forbidden'
     );
   });
 });
