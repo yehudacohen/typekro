@@ -15,6 +15,7 @@
  */
 
 import type { KubeConfig } from '@kubernetes/client-node';
+import * as Diff from 'alchemy/Diff';
 import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
 import * as ProviderMod from 'alchemy/Provider';
@@ -25,6 +26,7 @@ import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
+import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -148,6 +150,15 @@ export const kroProvider = ProviderMod.effect(
     // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
     // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
     list: () => Effect.succeed([]),
+    diff: Effect.fn(function* ({ olds, news, output }) {
+      if (Diff.isResolved(news) && olds.namespace !== news.namespace) {
+        return { action: 'replace' as const };
+      }
+      return yield* Effect.tryPromise({
+        try: () => detectKroResourceIdentityDrift(olds, output),
+        catch: ensureError,
+      });
+    }),
     reconcile: Effect.fn(function* ({ news }) {
       return yield* Effect.tryPromise({
         try: (abortSignal) => deployKroResource(news, abortSignal),
@@ -442,6 +453,81 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
  * through the Effect provider above.
  */
 export const deployKroResourceForTest = deployKroResource;
+
+interface KroResourceIdentityReader {
+  read(resource: KubernetesResource): Promise<KubernetesResource>;
+}
+
+/**
+ * Check persisted Alchemy state against the Kubernetes API before Alchemy
+ * decides that an unchanged TypeKro resource is a no-op.
+ *
+ * Alchemy invokes provider.read() only when state is absent. This diff check
+ * closes the complementary persisted-state case: an out-of-band deletion,
+ * replacement, or in-progress deletion must drive the normal convergent
+ * reconcile path. Authored desired-property changes remain Alchemy's normal
+ * prop-diff responsibility; controller-owned status evolution stays a no-op.
+ * A non-404 read failure is never evidence of drift absence and fails closed.
+ */
+async function detectKroResourceIdentityDrift(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
+  reader?: KroResourceIdentityReader
+): Promise<{ readonly action: 'update' } | undefined> {
+  const prior = output?.deployedResource;
+  if (!prior) return { action: 'update' };
+  const identity: KubernetesResource = {
+    apiVersion: prior.apiVersion,
+    kind: prior.kind,
+    metadata: {
+      name: prior.metadata?.name ?? '',
+      ...(prior.metadata?.namespace
+        ? { namespace: prior.metadata.namespace }
+        : {}),
+    },
+  };
+  if (!identity.metadata.name) return { action: 'update' };
+
+  const liveReader = reader ?? (() => {
+    const provider = _createClientProvider(props, 'alchemy-drift-check');
+    const api = createBunCompatibleKubernetesObjectApi(provider);
+    return {
+      read: async (resource: KubernetesResource) =>
+        (await api.read(
+          resource as Parameters<typeof api.read>[0],
+        )) as KubernetesResource,
+    };
+  })();
+
+  let live: KubernetesResource;
+  try {
+    live = await liveReader.read(identity);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return { action: 'update' };
+    throw new Error(
+      `Alchemy drift check could not read ${identity.apiVersion}/${identity.kind} `
+      + `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}`
+      + `${identity.metadata.name}: ${ensureError(error).message}`,
+    );
+  }
+
+  const priorUid = prior.metadata?.uid;
+  const liveUid = live.metadata?.uid;
+  if (
+    typeof priorUid === 'string'
+    && typeof liveUid === 'string'
+    && priorUid !== liveUid
+  ) {
+    return { action: 'update' };
+  }
+  if (live.metadata?.deletionTimestamp) return { action: 'update' };
+
+  return undefined;
+}
+
+/** Test hook for persisted-state Kubernetes drift decisions. */
+export const detectKroResourceIdentityDriftForTest =
+  detectKroResourceIdentityDrift;
 
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 
