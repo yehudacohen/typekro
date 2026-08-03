@@ -11,14 +11,20 @@ import type {
 import type { Enhanced } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
-import type { HelmReleaseSpec, HelmReleaseStatus, HelmReleaseValuesFromSource } from './types.js';
+import type {
+  HelmReleasePostRenderer,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+  HelmReleaseValuesFromSource,
+} from './types.js';
 
 type HelmReleaseAuthoringSpec<TValues extends object> = Omit<
   HelmReleaseSpec<TValues>,
-  'values' | 'valuesFrom'
+  'values' | 'valuesFrom' | 'postRenderers'
 > & {
   values?: TypeKroChartValue<TValues>;
   valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
+  postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
 };
 
 export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObject> {
@@ -53,6 +59,11 @@ export interface HelmReleaseConfig<TValues extends object = TypeKroValueTreeObje
    * ConfigMap created in the same composition can supply its generated name.
    */
   valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
+  /**
+   * Flux Kustomize transformations applied after Helm rendering. Patch targets
+   * remain graph-aware, allowing generated names to be selected in KRO mode.
+   */
+  postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /**
    * Flux install policy. The supplied fields override TypeKro's bounded retry
    * defaults; nested remediation fields are merged rather than replaced.
@@ -237,6 +248,7 @@ export function helmRelease<TValues extends object = TypeKroValueTreeObject>(
       },
       ...(config.driftDetection && { driftDetection: config.driftDetection }),
       ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
+      ...(config.postRenderers && { postRenderers: config.postRenderers }),
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator) as Enhanced<

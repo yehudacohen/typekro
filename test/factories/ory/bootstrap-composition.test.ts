@@ -206,6 +206,16 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('schema.spec.oathkeeper.values');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values))');
     expect(yaml).toContain('OATHKEEPER_MUTATOR_ID_TOKEN_JWKS');
+    expect(yaml).toContain('postRenderers:');
+    expect(yaml).toContain('name: ${string(schema.spec.name)}-hydra');
+    expect(yaml).toContain('name: ${string(schema.spec.name)}-kratos');
+    expect(yaml).toContain('name: ${string(schema.spec.name)}-kratos-courier');
+    expect(yaml).toContain('kind: StatefulSet');
+    expect(yaml).toContain('name: kratos-courier');
+    expect(yaml).toContain('name: SECRETS_SYSTEM');
+    expect(yaml).toContain('name: SECRETS_COOKIE');
+    expect(yaml).toContain('name: SECRETS_CIPHER');
+    expect(yaml).toContain('$patch: delete');
     expect(yaml).toContain('customReadinessProbe');
     expect(yaml).toContain('customStartupProbe');
     expect(yaml).toContain('/health/alive');
@@ -285,6 +295,10 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('managedAccessRules: false');
     expect(yaml).toContain("access-rules.json: '[]'");
     expect(yaml).toContain('path: /health/alive');
+    expect(yaml).toContain('postRenderers:');
+    expect(yaml).toContain('name: identity-test-hydra');
+    expect(yaml).toContain('name: identity-test-kratos');
+    expect(yaml).toContain('$patch: delete');
     expect(yaml).toContain('kind: OAuth2Client');
     expect(yaml).toContain('kind: Rule');
     expect(yaml).toContain('apiVersion: hydra.ory.sh/v1alpha1');

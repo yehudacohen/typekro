@@ -92,6 +92,44 @@ function withChartValuesOverlay<T extends object>(values: T, overlay: object): T
   return deepMergeKnownValues(values, overlay) as T;
 }
 
+function removeChartOwnedSecretEnv(
+  kind: 'Deployment' | 'StatefulSet',
+  releaseName: string,
+  containerName: 'hydra' | 'kratos' | 'kratos-courier',
+  names: string[]
+) {
+  return {
+    kustomize: {
+      patches: [
+        {
+          target: {
+            group: 'apps',
+            version: 'v1',
+            kind,
+            name: releaseName,
+          },
+          patch: [
+            'apiVersion: apps/v1',
+            `kind: ${kind}`,
+            'metadata:',
+            '  name: ignored-by-target-selector',
+            'spec:',
+            '  template:',
+            '    spec:',
+            '      containers:',
+            `        - name: ${containerName}`,
+            '          env:',
+            ...names.flatMap((name) => [
+              `            - name: ${name}`,
+              '              $patch: delete',
+            ]),
+          ].join('\n'),
+        },
+      ],
+    },
+  };
+}
+
 function oathkeeperProbeValues(): Record<string, unknown> {
   const aliveProbe = {
     httpGet: {
@@ -433,6 +471,11 @@ export const oryIdentityStack = kubernetesComposition(
         'hydra-maester',
         values.hydraMaester
       ),
+      postRenderers: [
+        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-hydra`, 'hydra', [
+          'SECRETS_SYSTEM',
+        ]),
+      ],
     });
 
     const kratos = kratosHelmRelease({
@@ -443,6 +486,18 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: values.kratos,
+      postRenderers: [
+        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-kratos`, 'kratos', [
+          'SECRETS_COOKIE',
+          'SECRETS_CIPHER',
+        ]),
+        removeChartOwnedSecretEnv(
+          'StatefulSet',
+          `${typedSpec.name}-kratos-courier`,
+          'kratos-courier',
+          ['SECRETS_COOKIE', 'SECRETS_CIPHER']
+        ),
+      ],
     });
 
     const keto = ketoHelmRelease({

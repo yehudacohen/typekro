@@ -122,6 +122,12 @@ await platform.deploy({
 });
 ```
 
+TypeKro currently pins Hydra Maester `v0.0.39` for the bounded
+single-namespace mode because upstream `v0.0.40+` watches `OAuth2Client`
+resources cluster-wide despite receiving `--namespace`. Callers may override
+the subchart image through `maester.hydraValues.image` after upstream publishes
+a compatible fix.
+
 On existing clusters, set `managed.databaseStorageClass` explicitly when managed databases are
 enabled. TypeKro applies it to all three CNPG clusters in both direct and KRO modes.
 

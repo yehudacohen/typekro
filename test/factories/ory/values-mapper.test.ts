@@ -122,6 +122,7 @@ describe('Ory Helm values mapper', () => {
       default_browser_return_url: 'http://identity-test-kratos-public.ory-test.svc.cluster.local',
     });
     expect(values.hydraMaester.singleNamespaceMode).toBe(true);
+    expect(values.hydraMaester.image?.tag).toBe('v0.0.39');
     expect(values.oathkeeperMaester.singleNamespaceMode).toBe(true);
     expect(values.oathkeeper.oathkeeper?.managedAccessRules).toBe(false);
   });

@@ -216,6 +216,8 @@ interface HelmReleaseConfig {
     version?: string;      // Chart version
   };
   values?: Record<string, any>;
+  valuesFrom?: HelmReleaseValuesFromSource[];
+  postRenderers?: HelmReleasePostRenderer[];
 }
 ```
 

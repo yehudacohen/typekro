@@ -26,9 +26,13 @@ import type {
   KroResourceFactory,
   PublicFactoryOptions,
 } from '../../core/types/index.js';
-import type { TypeKroChartValue } from '../../core/types/common.js';
+import type { TypeKroChartValue, TypeKroValue } from '../../core/types/common.js';
 import type { HelmRepositorySpec, HelmRepositoryStatus } from '../helm/helm-repository.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../helm/types.js';
+import type {
+  HelmReleasePostRenderer,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+} from '../helm/types.js';
 import type { ResourceRequirements } from '../cert-manager/types.js';
 import type {
   OAuth2ClientConfig,
@@ -708,6 +712,8 @@ export interface OryHelmReleaseConfigBase<TValues extends object> {
   interval?: string;
   /** Graph-aware chart values serialized recursively by TypeKro. */
   values?: TypeKroChartValue<TValues>;
+  /** Transformations applied after Helm renders the chart. */
+  postRenderers?: TypeKroValue<HelmReleasePostRenderer>[];
   /** TypeKro composition resource id. */
   id?: string;
 }
