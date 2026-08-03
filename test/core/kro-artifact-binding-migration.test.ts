@@ -29,8 +29,8 @@ function desiredRgd(): KubernetesObject {
 
 function legacyCrd(resourceVersion: string): KubernetesObject {
   return {
-    apiVersion: 'apiextensions.k8s.io/v1',
-    kind: 'CustomResourceDefinition',
+    // Match KubernetesObjectApi list deserialization: TypeMeta may be omitted
+    // from each returned item even though the list endpoint determines it.
     metadata: {
       name: 'applications.application.example',
       resourceVersion,
@@ -88,26 +88,26 @@ describe('KRO artifact-binding migration', () => {
       .mockResolvedValueOnce({ items: [legacyCrd('10')] })
       .mockResolvedValueOnce({ items: [legacyCrd('11')] });
     const crdVersions: string[] = [];
-    const patch = mock(async (resource: KubernetesObject) => {
-      if (resource.kind === 'CustomResourceDefinition') {
-        crdVersions.push(resource.metadata?.resourceVersion ?? '');
-        if (crdVersions.length === 1) {
-          throw { statusCode: 409, message: 'conflict' };
-        }
+    const patch = mock(async (resource: KubernetesObject) => resource);
+    const replace = mock(async (resource: KubernetesObject) => {
+      crdVersions.push(resource.metadata?.resourceVersion ?? '');
+      if (crdVersions.length === 1) {
+        throw { statusCode: 409, message: 'conflict' };
       }
       return resource;
     });
 
     await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desiredRgd(), {
-      api: { read, list, patch } as never,
+      api: { read, list, patch, replace } as never,
     });
 
     expect(crdVersions).toEqual(['10', '11']);
     expect(list).toHaveBeenCalledTimes(2);
-    const crdPatches = patch.mock.calls
-      .map(([resource]) => resource as KubernetesObject)
-      .filter((resource: KubernetesObject) => resource.kind === 'CustomResourceDefinition');
-    const finalCrdPatch = crdPatches[crdPatches.length - 1];
+    const finalCrdPatch = replace.mock.calls.at(-1)?.[0] as KubernetesObject | undefined;
+    expect(finalCrdPatch).toMatchObject({
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+    });
     const versions = Reflect.get(
       Reflect.get(finalCrdPatch ?? {}, 'spec') ?? {},
       'versions'

@@ -499,6 +499,12 @@ describe('DirectResourceFactory', () => {
             id: 'shared-owner',
             spec: { name: 'shared-owner' },
           });
+          simple.ConfigMap({
+            id: 'consumerConfig',
+            name: 'consumer',
+            namespace: 'apps',
+            data: { role: 'application-resource' },
+          });
           return { ready: shared.status.ready };
         }
       );
@@ -507,9 +513,13 @@ describe('DirectResourceFactory', () => {
         .factory('direct', { namespace: 'apps' })
         .toAlchemyResources({ name: 'consumer' });
 
-      expect(declarations).toHaveLength(1);
-      expect(declarations[0]?.props.resource.kind).toBe('ConfigMap');
-      expect(declarations[0]?.props.resource.metadata).toMatchObject({
+      expect(declarations).toHaveLength(2);
+      const singletonDeclaration = declarations.find((declaration) => declaration.props.retain);
+      const consumerDeclaration = declarations.find(
+        (declaration) => declaration.props.resourceId === 'consumerConfig'
+      );
+      expect(singletonDeclaration?.props.resource.kind).toBe('ConfigMap');
+      expect(singletonDeclaration?.props.resource.metadata).toMatchObject({
         name: 'shared-owner',
         namespace: 'typekro-singletons',
         annotations: {
@@ -518,11 +528,11 @@ describe('DirectResourceFactory', () => {
           ),
         },
       });
-      expect(declarations[0]?.props.retain).toBe(true);
-      expect(declarations[0]?.props.resourceId).toContain('ownerConfig');
-      expect(declarations[0]?.props.artifactExecutionRecord).toBeString();
+      expect(singletonDeclaration?.props.retain).toBe(true);
+      expect(singletonDeclaration?.props.resourceId).toContain('ownerConfig');
+      expect(singletonDeclaration?.props.artifactExecutionRecord).toBeString();
       const rehydrated = resourceFromDirectArtifactRecordForTest(
-        declarations[0]!.props
+        singletonDeclaration!.props
       );
       expect(rehydrated?.metadata.annotations).toEqual(
         expect.objectContaining({
@@ -531,8 +541,15 @@ describe('DirectResourceFactory', () => {
           ),
         })
       );
-      expect(getReadinessEvaluator(declarations[0]!.props.resource)).toBeFunction();
+      expect(getReadinessEvaluator(singletonDeclaration!.props.resource)).toBeFunction();
       expect(getReadinessEvaluator(rehydrated!)).toBeFunction();
+
+      const consumerRecord = decodeDirectArtifactExecutionRecord(
+        consumerDeclaration!.props.artifactExecutionRecord!
+      );
+      expect(consumerRecord.dependencies).toEqual([]);
+      expect(consumerDeclaration?.dependsOn).toEqual([]);
+      expect(consumerDeclaration?.schedulingDependsOn).toEqual([singletonDeclaration!.id]);
     });
 
     it('persists an explicitly authored resource namespace instead of the factory default', async () => {
