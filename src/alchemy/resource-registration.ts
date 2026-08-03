@@ -25,9 +25,9 @@ import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
-import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
-import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
 import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
+import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
+import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -145,11 +145,13 @@ function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>
     return false;
   }
   const namespace: unknown = Reflect.get(news, 'namespace');
-  // Namespace is part of a namespaced resource's Kubernetes identity. Alchemy resolves
-  // Outputs only after diffing, so an upstream-provided namespace cannot be compared with
-  // persisted state here. Treat that uncertainty as replacement: an in-place update could
-  // create the new identity while orphaning the old object outside Alchemy state.
-  if (!Diff.isResolved(namespace)) return true;
+  // Namespace is part of a namespaced resource's Kubernetes identity. When it
+  // is unresolved at plan time, defer the identity decision until reconcile:
+  // the upstream output is concrete there and can be compared with the
+  // persisted live identity. Treating uncertainty as replacement is unsafe
+  // because create-before-delete replacement can delete a freshly updated
+  // same-identity resource.
+  if (!Diff.isResolved(namespace)) return false;
   return typeof namespace === 'string' && olds.namespace !== namespace;
 }
 
@@ -186,6 +188,16 @@ export const kroProvider = ProviderMod.effect(
     reconcile: Effect.fn(function* ({ news, output }) {
       return yield* Effect.tryPromise({
         try: async (abortSignal) => {
+          const persistedNamespace = persistedKroResourceNamespace(output);
+          if (persistedNamespace !== undefined && persistedNamespace !== news.namespace) {
+            const previous = propsFromOutput(output);
+            if (!previous) {
+              throw new Error(
+                `Alchemy cannot replace the prior Kubernetes identity in namespace ${persistedNamespace}: persisted delete properties are unavailable`
+              );
+            }
+            await deleteKroResource(previous, abortSignal);
+          }
           await waitForPersistedIdentityDeletion(news, output, abortSignal);
           return deployKroResource(news, abortSignal);
         },
@@ -500,6 +512,12 @@ function persistedKroResourceIdentity(
   };
 }
 
+function persistedKroResourceNamespace(
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined
+): string | undefined {
+  return output?.deployedResource.metadata?.namespace ?? output?.namespace;
+}
+
 function identityReader(
   props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
   reader: KroResourceIdentityReader | undefined,
@@ -591,12 +609,7 @@ async function waitForPersistedIdentityDeletion(
 
     if (now() >= deadline) {
       const resource = deletionIdentityFromLive(identity, lastLive ?? identity);
-      throw new ResourceReplacementTimeoutError(
-        resource.name,
-        resource.kind,
-        timeout,
-        resource
-      );
+      throw new ResourceReplacementTimeoutError(resource.name, resource.kind, timeout, resource);
     }
     await sleep(pollIntervalMs);
   }

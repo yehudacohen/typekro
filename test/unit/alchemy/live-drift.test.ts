@@ -183,13 +183,13 @@ describe('Alchemy persisted TypeKro resource drift', () => {
     expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
   });
 
-  it('conservatively replaces when the namespace itself is an unresolved output', () => {
+  it('defers an unresolved namespace identity decision until reconciliation', () => {
     const news: Input<TypeKroResourceProps<Resource>> = {
       ...props,
       namespace: Output.asOutput('replacement-system'),
     };
     expect(Diff.isResolved(news.namespace)).toBe(false);
-    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
+    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(false);
   });
 
   it('fails closed when Kubernetes cannot prove live state', async () => {

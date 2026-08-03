@@ -32,8 +32,8 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 type NamespaceSourceResource = AlchemyResource<
   'TypeKro.Test.NamespaceSource',
-  { namespace: string },
-  { namespace: string }
+  { namespace: string; revision?: string },
+  { namespace: string; revision?: string }
 >;
 
 const NamespaceSource = defineAlchemyResource<NamespaceSourceResource>(
@@ -42,7 +42,11 @@ const NamespaceSource = defineAlchemyResource<NamespaceSourceResource>(
 const namespaceSourceProvider = Provider.succeed(NamespaceSource, {
   read: ({ output }) => Effect.succeed(output),
   list: () => Effect.succeed([]),
-  reconcile: ({ news }) => Effect.succeed({ namespace: news.namespace }),
+  reconcile: ({ news }) =>
+    Effect.succeed({
+      namespace: news.namespace,
+      ...(news.revision ? { revision: news.revision } : {}),
+    }),
   delete: () => Effect.void,
 });
 
@@ -323,7 +327,7 @@ describeOrSkip('Alchemy persisted-state live drift (e2e)', () => {
       await expect(objectApi.read(firstIdentity)).resolves.toBeDefined();
 
       const plan = await run(scratch.plan(secondDeclaration));
-      expect(Object.values(plan.resources).some((resource) => resource.action === 'replace')).toBe(
+      expect(Object.values(plan.resources).some((resource) => resource.action === 'update')).toBe(
         true
       );
 
@@ -335,5 +339,96 @@ describeOrSkip('Alchemy persisted-state live drift (e2e)', () => {
     }
 
     await waitForResourceAbsent(secondIdentity, kubeConfig);
+  });
+
+  it('preserves an updated resource when an unresolved namespace resolves to the same identity', async () => {
+    const token = crypto.randomUUID().slice(0, 8);
+    const namespace = `tk-alchemy-ns-stable-${token}`;
+    const name = `tk-alchemy-output-stable-${token}`;
+    const kubeConfig = getIntegrationTestKubeConfig();
+    const objectApi = createKubernetesObjectApiClient(kubeConfig);
+    const namespaceLease = await createTestNamespace(namespace, kubeConfig);
+    const providers = Layer.mergeAll(kroProvider, namespaceSourceProvider);
+    const options = { providers };
+    const scratch = Test.scratchStack(options, `tk-alchemy-output-stable-${token}`);
+    const declarationFor = (revision: string) =>
+      Effect.gen(function* () {
+        const source = yield* NamespaceSource('targetNamespace', {
+          namespace,
+          revision,
+        });
+        return yield* KroResource('applicationContract', {
+          resource: simple.ConfigMap({
+            name,
+            namespace: source.namespace as unknown as string,
+            data: {
+              contract: 'same-output-namespace-must-preserve-updated-resource',
+              revision: source.revision as unknown as string,
+            },
+          }),
+          namespace: source.namespace,
+          deploymentStrategy: 'direct',
+          kubeConfigOptions: { loadFromDefault: true },
+        });
+      });
+    const run = <A>(effect: Effect.Effect<A, unknown, unknown>): Promise<A> =>
+      Test.run(effect as never, options as never) as Promise<A>;
+    const firstDeclaration = declarationFor('one');
+    const secondDeclaration = declarationFor('two');
+    const identity = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { namespace, name },
+    };
+    const cleanup = async (): Promise<void> => {
+      const cleanupErrors: unknown[] = [];
+      try {
+        await run(scratch.destroy());
+      } catch (error: unknown) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
+      } catch (error: unknown) {
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          cleanupErrors,
+          'Failed to clean up stable namespace-output drift test'
+        );
+      }
+    };
+
+    try {
+      await run(scratch.deploy(firstDeclaration));
+      const first = await objectApi.read(identity);
+      const firstUid = first.metadata?.uid;
+      expect(firstUid).toBeString();
+      if (!firstUid) {
+        throw new Error(`ConfigMap ${namespace}/${name} did not receive a Kubernetes UID`);
+      }
+      expect((first as { data?: Record<string, string> }).data?.revision).toBe('one');
+
+      const plan = await run(scratch.plan(secondDeclaration));
+      expect(Object.values(plan.resources).some((resource) => resource.action === 'update')).toBe(
+        true
+      );
+
+      await run(scratch.deploy(secondDeclaration));
+      const updated = await objectApi.read(identity);
+      expect(updated.metadata?.uid).toBeString();
+      expect(updated.metadata?.uid).toBe(firstUid);
+      expect((updated as { data?: Record<string, string> }).data?.revision).toBe('two');
+
+      const convergedPlan = await run(scratch.plan(secondDeclaration));
+      expect(
+        Object.values(convergedPlan.resources).every((resource) => resource.action === 'noop')
+      ).toBe(true);
+    } finally {
+      await cleanup();
+    }
+
+    await waitForResourceAbsent(identity, kubeConfig);
   });
 });
