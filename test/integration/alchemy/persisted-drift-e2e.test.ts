@@ -431,4 +431,92 @@ describeOrSkip('Alchemy persisted-state live drift (e2e)', () => {
 
     await waitForResourceAbsent(identity, kubeConfig);
   });
+
+  it('preserves a cross-namespace resource when only its data changes', async () => {
+    const token = crypto.randomUUID().slice(0, 8);
+    const resourceNamespace = `tk-alchemy-cross-ns-${token}`;
+    const factoryNamespace = 'default';
+    const name = `tk-alchemy-cross-resource-${token}`;
+    const kubeConfig = getIntegrationTestKubeConfig();
+    const objectApi = createKubernetesObjectApiClient(kubeConfig);
+    const namespaceLease = await createTestNamespace(resourceNamespace, kubeConfig);
+    const options = { providers: kroProvider };
+    const scratch = Test.scratchStack(options, `tk-alchemy-cross-ns-${token}`);
+    const declarationFor = (revision: string) =>
+      Effect.gen(function* () {
+        return yield* KroResource('applicationContract', {
+          resource: simple.ConfigMap({
+            name,
+            namespace: resourceNamespace,
+            data: {
+              contract: 'factory-namespace-is-not-resource-identity',
+              revision,
+            },
+          }),
+          namespace: factoryNamespace,
+          deploymentStrategy: 'direct',
+          kubeConfigOptions: { loadFromDefault: true },
+        });
+      });
+    const run = <A>(effect: Effect.Effect<A, unknown, unknown>): Promise<A> =>
+      Test.run(effect as never, options as never) as Promise<A>;
+    const firstDeclaration = declarationFor('one');
+    const secondDeclaration = declarationFor('two');
+    const identity = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { namespace: resourceNamespace, name },
+    };
+    const cleanup = async (): Promise<void> => {
+      const cleanupErrors: unknown[] = [];
+      try {
+        await run(scratch.destroy());
+      } catch (error: unknown) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await deleteTestNamespaceAndWait(namespaceLease, kubeConfig);
+      } catch (error: unknown) {
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          cleanupErrors,
+          'Failed to clean up cross-namespace identity test'
+        );
+      }
+    };
+
+    try {
+      await run(scratch.deploy(firstDeclaration));
+      const first = await objectApi.read(identity);
+      const firstUid = first.metadata?.uid;
+      expect(firstUid).toBeString();
+      if (!firstUid) {
+        throw new Error(
+          `ConfigMap ${resourceNamespace}/${name} did not receive a Kubernetes UID`
+        );
+      }
+      expect((first as { data?: Record<string, string> }).data?.revision).toBe('one');
+
+      const plan = await run(scratch.plan(secondDeclaration));
+      expect(Object.values(plan.resources).some((resource) => resource.action === 'update')).toBe(
+        true
+      );
+
+      await run(scratch.deploy(secondDeclaration));
+      const updated = await objectApi.read(identity);
+      expect(updated.metadata?.uid).toBe(firstUid);
+      expect((updated as { data?: Record<string, string> }).data?.revision).toBe('two');
+
+      const convergedPlan = await run(scratch.plan(secondDeclaration));
+      expect(
+        Object.values(convergedPlan.resources).every((resource) => resource.action === 'noop')
+      ).toBe(true);
+    } finally {
+      await cleanup();
+    }
+
+    await waitForResourceAbsent(identity, kubeConfig);
+  });
 });

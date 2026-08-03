@@ -4,7 +4,7 @@ import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
 import {
   detectKroResourceIdentityDriftForTest,
-  shouldReplaceKroResourceNamespaceForTest,
+  shouldReplaceKroResourceIdentityForTest,
   waitForPersistedIdentityDeletionForTest,
 } from '../../../src/alchemy/resource-registration.js';
 import type { TypeKroResource, TypeKroResourceProps } from '../../../src/alchemy/types.js';
@@ -170,8 +170,32 @@ describe('Alchemy persisted TypeKro resource drift', () => {
   });
 
   it('replaces a changed namespace even when a sibling input is unresolved', () => {
+    const authored = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: 'application-contract' },
+    } as unknown as Resource;
+    const deployedConfigMap = {
+      ...authored,
+      metadata: {
+        ...authored.metadata,
+        namespace: 'default',
+        uid: 'uid-config-map',
+      },
+    } as unknown as Resource;
+    const oldProps = {
+      resource: authored,
+      namespace: 'default',
+      deploymentStrategy: 'direct' as const,
+    };
+    const oldOutput = {
+      ...oldProps,
+      deployedResource: deployedConfigMap,
+      ready: true,
+      deployedAt: 1,
+    };
     const news: Input<TypeKroResourceProps<Resource>> = {
-      ...props,
+      ...oldProps,
       namespace: 'replacement-system',
       artifactOutputs: {
         image: {
@@ -180,7 +204,9 @@ describe('Alchemy persisted TypeKro resource drift', () => {
       },
     };
     expect(Diff.isResolved(news)).toBe(false);
-    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
+    expect(
+      shouldReplaceKroResourceIdentityForTest(oldProps, news, oldOutput)
+    ).toBe(true);
   });
 
   it('defers an unresolved namespace identity decision until reconciliation', () => {
@@ -189,7 +215,7 @@ describe('Alchemy persisted TypeKro resource drift', () => {
       namespace: Output.asOutput('replacement-system'),
     };
     expect(Diff.isResolved(news.namespace)).toBe(false);
-    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(false);
+    expect(shouldReplaceKroResourceIdentityForTest(props, news)).toBe(false);
   });
 
   it('does not replace when corrected declaration state matches the persisted live namespace', () => {
@@ -219,7 +245,76 @@ describe('Alchemy persisted TypeKro resource drift', () => {
     };
 
     expect(
-      shouldReplaceKroResourceNamespaceForTest(legacyProps, corrected, persistedOutput)
+      shouldReplaceKroResourceIdentityForTest(legacyProps, corrected, persistedOutput)
+    ).toBe(false);
+  });
+
+  it('does not mistake a factory namespace for an explicitly namespaced resource identity', () => {
+    const namespacedResource = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: {
+        name: 'cross-namespace-contract',
+        namespace: 'application-system',
+        uid: 'uid-cross-namespace',
+      },
+      data: { revision: 'one' },
+    } as unknown as Resource;
+    const crossNamespaceProps = {
+      resource: namespacedResource,
+      namespace: 'default',
+      deploymentStrategy: 'direct' as const,
+    };
+    const persistedOutput = {
+      ...crossNamespaceProps,
+      deployedResource: namespacedResource,
+      ready: true,
+      deployedAt: 1,
+    };
+    const updated = {
+      ...crossNamespaceProps,
+      resource: {
+        ...namespacedResource,
+        data: { revision: 'two' },
+      },
+    };
+
+    expect(
+      shouldReplaceKroResourceIdentityForTest(
+        crossNamespaceProps,
+        updated,
+        persistedOutput
+      )
+    ).toBe(false);
+  });
+
+  it('does not assign a factory namespace to a cluster-scoped identity', () => {
+    const clusterResource = {
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: {
+        name: 'application-system',
+        uid: 'uid-cluster-scoped',
+      },
+    } as Resource;
+    const clusterProps = {
+      resource: clusterResource,
+      namespace: 'default',
+      deploymentStrategy: 'direct' as const,
+    };
+    const persistedOutput = {
+      ...clusterProps,
+      deployedResource: clusterResource,
+      ready: true,
+      deployedAt: 1,
+    };
+
+    expect(
+      shouldReplaceKroResourceIdentityForTest(
+        clusterProps,
+        { ...clusterProps, namespace: 'other-default' },
+        persistedOutput
+      )
     ).toBe(false);
   });
 

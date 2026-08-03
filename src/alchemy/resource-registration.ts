@@ -137,34 +137,102 @@ export type KroResourceR = ResourceT<
  */
 export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE);
 
-function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>(
-  olds: TypeKroResourceProps<T>,
+interface KroResourceIdentity {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly name: string;
+  readonly namespace?: string;
+}
+
+function inputResourceIdentityField(
+  value: unknown
+): string | undefined | typeof UNRESOLVED_IDENTITY {
+  if (value === undefined) return undefined;
+  if (!Diff.isResolved(value)) return UNRESOLVED_IDENTITY;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+const UNRESOLVED_IDENTITY = Symbol('unresolved-kro-resource-identity');
+
+function desiredKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
+  news: Input<TypeKroResourceProps<T>>,
+  output?: TypeKroResource<T>
+): KroResourceIdentity | undefined | typeof UNRESOLVED_IDENTITY {
+  if (typeof news !== 'object' || news === null || !('resource' in news)) {
+    return undefined;
+  }
+  const resource = Reflect.get(news, 'resource');
+  if (typeof resource !== 'object' || resource === null) return undefined;
+  const metadata = Reflect.get(resource, 'metadata');
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const apiVersion = inputResourceIdentityField(Reflect.get(resource, 'apiVersion'));
+  const kind = inputResourceIdentityField(Reflect.get(resource, 'kind'));
+  const name = inputResourceIdentityField(Reflect.get(metadata, 'name'));
+  if (
+    apiVersion === UNRESOLVED_IDENTITY ||
+    kind === UNRESOLVED_IDENTITY ||
+    name === UNRESOLVED_IDENTITY
+  ) {
+    return UNRESOLVED_IDENTITY;
+  }
+  if (!apiVersion || !kind || !name) return undefined;
+
+  const persisted = persistedKroResourceIdentity(output);
+  let namespace: string | undefined;
+  if (persisted && persisted.metadata.namespace === undefined) {
+    // The API server is authoritative for scope. A factory/deployment
+    // namespace is execution context only and must never become part of a
+    // cluster-scoped resource identity.
+    namespace = undefined;
+  } else {
+    const explicitNamespace = inputResourceIdentityField(
+      Reflect.get(metadata, 'namespace')
+    );
+    if (explicitNamespace === UNRESOLVED_IDENTITY) return UNRESOLVED_IDENTITY;
+    if (explicitNamespace) {
+      namespace = explicitNamespace;
+    } else if (persisted?.metadata.namespace !== undefined) {
+      const factoryNamespace =
+        typeof news === 'object' && news !== null && 'namespace' in news
+          ? inputResourceIdentityField(Reflect.get(news, 'namespace'))
+          : undefined;
+      if (factoryNamespace === UNRESOLVED_IDENTITY) return UNRESOLVED_IDENTITY;
+      namespace = factoryNamespace;
+    }
+  }
+  return { apiVersion, kind, name, ...(namespace ? { namespace } : {}) };
+}
+
+function sameKroResourceIdentity(
+  left: KubernetesResource,
+  right: KroResourceIdentity
+): boolean {
+  return (
+    left.apiVersion === right.apiVersion &&
+    left.kind === right.kind &&
+    left.metadata.name === right.name &&
+    left.metadata.namespace === right.namespace
+  );
+}
+
+function shouldReplaceKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
+  _olds: TypeKroResourceProps<T>,
   news: Input<TypeKroResourceProps<T>>,
   output?: TypeKroResource<T>
 ): boolean {
-  if (typeof news !== 'object' || news === null || !('namespace' in news)) {
-    return false;
-  }
-  const namespace: unknown = Reflect.get(news, 'namespace');
-  // Namespace is part of a namespaced resource's Kubernetes identity. When it
-  // is unresolved at plan time, defer the identity decision until reconcile:
-  // the upstream output is concrete there and can be compared with the
-  // persisted live identity. Treating uncertainty as replacement is unsafe
-  // because create-before-delete replacement can delete a freshly updated
-  // same-identity resource.
-  if (!Diff.isResolved(namespace)) return false;
-  // Persisted live identity is stronger evidence than the previous input.
-  // Older direct-factory declarations stored the factory default here even
-  // when the manifest was explicitly namespaced elsewhere. Treating that
-  // corrected state as a namespace move would replace an unchanged
-  // Kubernetes identity and can strand a failed Flux release.
-  const persistedNamespace =
-    output?.deployedResource.metadata?.namespace ?? output?.namespace ?? olds.namespace;
-  return typeof namespace === 'string' && persistedNamespace !== namespace;
+  const persisted = persistedKroResourceIdentity(output);
+  if (!persisted) return false;
+  const desired = desiredKroResourceIdentity(news, output);
+  // Identity fields can contain Alchemy Outputs. Defer uncertain identity
+  // decisions until reconcile, where every input has been resolved. Treating
+  // uncertainty as replacement is unsafe because create-before-delete can
+  // delete a freshly updated same-identity object.
+  if (!desired || desired === UNRESOLVED_IDENTITY) return false;
+  return !sameKroResourceIdentity(persisted, desired);
 }
 
-/** Test hook for namespace-stable replacement decisions with unresolved sibling inputs. */
-export const shouldReplaceKroResourceNamespaceForTest = shouldReplaceKroResourceNamespace;
+/** Test hook for identity-stable replacement decisions with unresolved sibling inputs. */
+export const shouldReplaceKroResourceIdentityForTest = shouldReplaceKroResourceIdentity;
 
 /**
  * The provider `Layer` that backs {@link KroResource}. Merge into the runtime's providers
@@ -185,7 +253,7 @@ export const kroProvider = ProviderMod.effect(
     // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
     list: () => Effect.succeed([]),
     diff: Effect.fn(function* ({ olds, news, output }) {
-      if (shouldReplaceKroResourceNamespace(olds, news, output)) {
+      if (shouldReplaceKroResourceIdentity(olds, news, output)) {
         return { action: 'replace' as const };
       }
       return yield* Effect.tryPromise({
@@ -196,12 +264,20 @@ export const kroProvider = ProviderMod.effect(
     reconcile: Effect.fn(function* ({ news, output }) {
       return yield* Effect.tryPromise({
         try: async (abortSignal) => {
-          const persistedNamespace = persistedKroResourceNamespace(output);
-          if (persistedNamespace !== undefined && persistedNamespace !== news.namespace) {
+          const persistedIdentity = persistedKroResourceIdentity(output);
+          const desiredIdentity = desiredKroResourceIdentity(news, output);
+          if (
+            persistedIdentity &&
+            desiredIdentity &&
+            desiredIdentity !== UNRESOLVED_IDENTITY &&
+            !sameKroResourceIdentity(persistedIdentity, desiredIdentity)
+          ) {
             const previous = propsFromOutput(output);
             if (!previous) {
               throw new Error(
-                `Alchemy cannot replace the prior Kubernetes identity in namespace ${persistedNamespace}: persisted delete properties are unavailable`
+                `Alchemy cannot replace prior Kubernetes identity ${persistedIdentity.apiVersion}/${persistedIdentity.kind} ` +
+                  `${persistedIdentity.metadata.namespace ? `${persistedIdentity.metadata.namespace}/` : ''}` +
+                  `${persistedIdentity.metadata.name}: persisted delete properties are unavailable`
               );
             }
             await deleteKroResource(previous, abortSignal);
@@ -518,12 +594,6 @@ function persistedKroResourceIdentity(
       ...(prior.metadata?.namespace ? { namespace: prior.metadata.namespace } : {}),
     },
   };
-}
-
-function persistedKroResourceNamespace(
-  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined
-): string | undefined {
-  return output?.deployedResource.metadata?.namespace ?? output?.namespace;
 }
 
 function identityReader(
