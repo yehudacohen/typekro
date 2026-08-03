@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Portable direct-plan materialization now evaluates KRO's `dyn()` type
   widening as runtime identity, matching the other direct CEL evaluators and
   preserving structured defaults inside recursively materialized owners.
+- Envoy AI Gateway platform installations can declare their controller
+  namespaces externally owned, allowing a parent Alchemy graph to establish a
+  generated credential before the platform Helm releases without competing
+  Namespace owners.
 - **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by
   arktype as the string `"object"`, which the KRO type mapper had no case for, so it fell through to the
   `string` default. Every schemaless-object field was therefore declared `string` in the generated RGD and KRO

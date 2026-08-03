@@ -649,6 +649,24 @@ describe('Envoy AI Gateway integration', () => {
     ).toThrow(/must come from mcpSessionEncryptionSeedSecret/);
   });
 
+  test('supports externally owned platform namespaces for parent deployment graphs', () => {
+    const platform = makeEnvoyAIGatewayPlatformInstallation({
+      profile: 'production',
+      namespaceOwnership: 'external',
+      mcpSessionEncryptionSeedSecret: { name: 'managed-seed' },
+    });
+    const yaml = platform.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      name: 'envoy-ai',
+      namespaceOwnership: 'external',
+    });
+
+    expect(
+      documents(yaml).filter((document) => document.kind === 'Namespace')
+    ).toEqual([]);
+    expect(yaml).toContain('namespace: envoy-gateway-system');
+    expect(yaml).toContain('namespace: envoy-ai-gateway-system');
+  });
+
   test('rejects a nested platform profile that weakens or conflicts with the gateway profile', () => {
     expect(() =>
       makeEnvoyAIGateway({

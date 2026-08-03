@@ -14,6 +14,7 @@ export const EnvoyAIGatewayPlatformInstallationSpecSchema = type({
   'aiGatewayVersion?': 'string > 0',
   'repositoryName?': kubernetesDnsLabel,
   'repositoryNamespace?': kubernetesDnsLabel,
+  'namespaceOwnership?': '"owned" | "external"',
   'gatewayClassName?': kubernetesDnsLabel,
   'configurationDigest?': 'string > 0',
 });
@@ -58,6 +59,12 @@ export interface EnvoyAIGatewayPlatformBuildOptions {
   readonly aiGatewayVersion?: string;
   readonly repositoryName?: string;
   readonly repositoryNamespace?: string;
+  /**
+   * Lifecycle of the Envoy Gateway and AI Gateway controller namespaces.
+   * Use `external` when a parent deployment graph establishes them.
+   * @default 'owned'
+   */
+  readonly namespaceOwnership?: 'owned' | 'external';
   readonly gatewayClassName?: string;
   /** Envoy Gateway global rate-limit service Redis endpoint, without a URL scheme. */
   readonly rateLimitRedisUrl?: string;
