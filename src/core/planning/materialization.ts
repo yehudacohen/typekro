@@ -561,6 +561,13 @@ function materialize(
                 }
               );
             }
+            if (specReferences.length > 0 && bindings.spec === undefined) {
+              throw new PlanMaterializationError(
+                `Spec binding is required to evaluate ${segment.expression.expression}.`,
+                path,
+                { expression: segment.expression.expression }
+              );
+            }
           }
           const canEvaluate =
             segment.expression.language === 'portable-cel' &&
@@ -594,6 +601,14 @@ function materialize(
           if (resolved === OMIT) return OMIT;
           renderedSegments.push(String(resolved));
           continue;
+        }
+        if (segment.source === 'spec' && bindings.resources !== undefined) {
+          if (segment.optional === true) return OMIT;
+          throw new PlanMaterializationError(
+            `Spec binding is required to resolve ${segment.fieldPath}.`,
+            path,
+            { fieldPath: segment.fieldPath }
+          );
         }
         if (
           segment.source === 'resource' &&

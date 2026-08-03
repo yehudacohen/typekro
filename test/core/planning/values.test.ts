@@ -242,6 +242,54 @@ describe('PlanValue and ExpressionIR', () => {
     expect(materializePlanValue(template, { resources: {} })).toBeUndefined();
   });
 
+  it('fails closed on missing spec bindings during concrete template hydration', () => {
+    const referenceTemplate = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'reference' as const,
+          source: 'spec' as const,
+          fieldPath: 'label',
+        },
+      ],
+    };
+    const expressionTemplate = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(schema.spec.label)'),
+        },
+      ],
+    };
+
+    expect(() => materializePlanValue(referenceTemplate, { resources: {} })).toThrow(
+      'Spec binding is required to resolve label'
+    );
+    expect(() => materializePlanValue(expressionTemplate, { resources: {} })).toThrow(
+      'Spec binding is required to evaluate string(schema.spec.label)'
+    );
+  });
+
+  it('omits optional spec template references during concrete hydration without spec bindings', () => {
+    const template = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'reference' as const,
+          source: 'spec' as const,
+          fieldPath: 'label',
+          optional: true as const,
+        },
+      ],
+    };
+
+    expect(materializePlanValue(template, { resources: {} })).toBeUndefined();
+  });
+
   it('preserves resource references when live bindings are not supplied', () => {
     const value = {
       kind: 'reference' as const,
