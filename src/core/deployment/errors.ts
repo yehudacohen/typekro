@@ -6,7 +6,11 @@
  */
 
 import { TypeKroError } from '../errors.js';
-import type { DeployedResource, ResourceDeletionResult } from '../types/deployment.js';
+import type {
+  DeletionResourceIdentity,
+  DeployedResource,
+  ResourceDeletionResult,
+} from '../types/deployment.js';
 
 // =============================================================================
 // DEPLOYMENT ERROR CLASSES
@@ -103,16 +107,39 @@ export class ServerSideApplyConflictError extends TypeKroError {
 
 /** Replacement cannot proceed until Kubernetes confirms that the old object is absent. */
 export class ResourceReplacementTimeoutError extends TypeKroError {
-  constructor(resourceName: string, resourceKind: string, timeout: number) {
+  constructor(
+    resourceName: string,
+    resourceKind: string,
+    timeout: number,
+    public readonly resource?: DeletionResourceIdentity
+  ) {
+    const namespacePrefix = resource?.namespace ? `${resource.namespace}/` : '';
+    const uid = resource?.uid ? ` UID ${resource.uid}` : '';
+    const deletionTimestamp = resource?.deletionTimestamp
+      ? ` deletion requested at ${resource.deletionTimestamp}`
+      : '';
+    const finalizers = resource?.finalizers?.length
+      ? ` blocking finalizers: ${resource.finalizers.join(', ')}`
+      : '';
+    const owners = resource?.owners?.length
+      ? ` owners: ${resource.owners
+          .map(
+            (owner) =>
+              `${owner.apiVersion}/${owner.kind} ${owner.name}${owner.uid ? ` (${owner.uid})` : ''}`
+          )
+          .join(', ')}`
+      : '';
     super(
-      `Timeout after ${timeout}ms waiting to replace ${resourceKind}/${resourceName}; the previous object still exists.`,
+      `Timeout after ${timeout}ms waiting to replace ${resourceKind}/${namespacePrefix}${resourceName}; ` +
+        `the previous object still exists.${uid}${deletionTimestamp}${finalizers}${owners}`,
       'RESOURCE_REPLACEMENT_TIMEOUT',
       {
         resourceName,
         resourceKind,
         timeoutMs: timeout,
+        ...(resource ? { resource } : {}),
         suggestions: [
-          `Inspect ${resourceKind}/${resourceName} for deletionTimestamp and blocking finalizers`,
+          `Inspect ${resourceKind}/${namespacePrefix}${resourceName} for deletionTimestamp and blocking finalizers`,
           'Increase DeploymentOptions.timeout if deletion is making legitimate progress',
         ],
       }

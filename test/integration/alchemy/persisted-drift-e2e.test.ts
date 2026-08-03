@@ -7,13 +7,18 @@
  * drive its ordinary convergent reconcile, then return to a real no-op.
  */
 import { describe, expect, it, setDefaultTimeout } from 'bun:test';
+import * as Provider from 'alchemy/Provider';
+import type { Resource as AlchemyResource } from 'alchemy/Resource';
+import { Resource as defineAlchemyResource } from 'alchemy/Resource';
 import * as Test from 'alchemy/Test/Core';
-import { Effect } from 'effect';
+import { Effect, Layer } from 'effect';
 import { KroResource, kroProvider } from '../../../src/alchemy/index.js';
 import { simple } from '../../../src/index.js';
 import {
   createCoreV1ApiClient,
   createKubernetesObjectApiClient,
+  createTestNamespace,
+  deleteTestNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
   isNotFoundError,
@@ -24,6 +29,22 @@ setDefaultTimeout(300_000);
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
+
+type NamespaceSourceResource = AlchemyResource<
+  'TypeKro.Test.NamespaceSource',
+  { namespace: string },
+  { namespace: string }
+>;
+
+const NamespaceSource = defineAlchemyResource<NamespaceSourceResource>(
+  'TypeKro.Test.NamespaceSource'
+);
+const namespaceSourceProvider = Provider.succeed(NamespaceSource, {
+  read: ({ output }) => Effect.succeed(output),
+  list: () => Effect.succeed([]),
+  reconcile: ({ news }) => Effect.succeed({ namespace: news.namespace }),
+  delete: () => Effect.void,
+});
 
 describeOrSkip('Alchemy persisted-state live drift (e2e)', () => {
   it('recreates an externally deleted direct resource and then plans noop', async () => {
@@ -236,5 +257,83 @@ describeOrSkip('Alchemy persisted-state live drift (e2e)', () => {
     }
 
     await waitForResourceAbsent(identity, kubeConfig);
+  });
+
+  it('replaces a namespaced identity when its namespace is supplied by an unresolved output', async () => {
+    const token = crypto.randomUUID().slice(0, 8);
+    const firstNamespace = `tk-alchemy-ns-old-${token}`;
+    const secondNamespace = `tk-alchemy-ns-new-${token}`;
+    const name = `tk-alchemy-output-ns-${token}`;
+    const kubeConfig = getIntegrationTestKubeConfig();
+    const objectApi = createKubernetesObjectApiClient(kubeConfig);
+    const firstLease = await createTestNamespace(firstNamespace, kubeConfig);
+    const secondLease = await createTestNamespace(secondNamespace, kubeConfig);
+    const providers = Layer.mergeAll(kroProvider, namespaceSourceProvider);
+    const options = { providers };
+    const scratch = Test.scratchStack(options, `tk-alchemy-output-ns-${token}`);
+    const declarationFor = (namespace: string) =>
+      Effect.gen(function* () {
+        const source = yield* NamespaceSource('targetNamespace', { namespace });
+        return yield* KroResource('applicationContract', {
+          resource: simple.ConfigMap({
+            name,
+            namespace: source.namespace as unknown as string,
+            data: { contract: 'namespace-output-must-replace-identity' },
+          }),
+          namespace: source.namespace,
+          deploymentStrategy: 'direct',
+          kubeConfigOptions: { loadFromDefault: true },
+        });
+      });
+    const run = <A>(effect: Effect.Effect<A, unknown, unknown>): Promise<A> =>
+      Test.run(effect as never, options as never) as Promise<A>;
+    const firstDeclaration = declarationFor(firstNamespace);
+    const secondDeclaration = declarationFor(secondNamespace);
+    const firstIdentity = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { namespace: firstNamespace, name },
+    };
+    const secondIdentity = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { namespace: secondNamespace, name },
+    };
+    const cleanup = async (): Promise<void> => {
+      const cleanupErrors: unknown[] = [];
+      try {
+        await run(scratch.destroy());
+      } catch (error: unknown) {
+        cleanupErrors.push(error);
+      }
+      for (const lease of [firstLease, secondLease]) {
+        try {
+          await deleteTestNamespaceAndWait(lease, kubeConfig);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(cleanupErrors, 'Failed to clean up namespace-output drift test');
+      }
+    };
+
+    try {
+      await run(scratch.deploy(firstDeclaration));
+      await expect(objectApi.read(firstIdentity)).resolves.toBeDefined();
+
+      const plan = await run(scratch.plan(secondDeclaration));
+      expect(Object.values(plan.resources).some((resource) => resource.action === 'replace')).toBe(
+        true
+      );
+
+      await run(scratch.deploy(secondDeclaration));
+      await waitForResourceAbsent(firstIdentity, kubeConfig);
+      await expect(objectApi.read(secondIdentity)).resolves.toBeDefined();
+    } finally {
+      await cleanup();
+    }
+
+    await waitForResourceAbsent(secondIdentity, kubeConfig);
   });
 });

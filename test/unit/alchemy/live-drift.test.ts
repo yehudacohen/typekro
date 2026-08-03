@@ -117,28 +117,55 @@ describe('Alchemy persisted TypeKro resource drift', () => {
   });
 
   it('fails rather than reporting success while a persisted identity remains terminating', async () => {
-    await expect(
-      waitForPersistedIdentityDeletionForTest(
-        {
-          ...props,
-          options: { timeout: 0 },
+    const owner = {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      name: 'namespace-owner',
+      uid: 'owner-uid',
+      controller: true,
+    };
+    const promise = waitForPersistedIdentityDeletionForTest(
+      {
+        ...props,
+        options: { timeout: 0 },
+      },
+      output,
+      undefined,
+      {
+        reader: {
+          read: async () => ({
+            ...deployed,
+            metadata: {
+              ...deployed.metadata,
+              deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
+              finalizers: ['tests.typekro.dev/hold-termination'],
+              ownerReferences: [owner],
+            },
+          }),
         },
-        output,
-        undefined,
-        {
-          reader: {
-            read: async () => ({
-              ...deployed,
-              metadata: {
-                ...deployed.metadata,
-                deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
-              },
-            }),
-          },
-        }
-      )
-    ).rejects.toThrow(
-      'Timed out waiting for terminating v1/Namespace application-system to disappear before reconciliation'
+      }
+    );
+    await expect(promise).rejects.toMatchObject({
+      name: 'ResourceReplacementTimeoutError',
+      code: 'RESOURCE_REPLACEMENT_TIMEOUT',
+      resource: {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        name: 'application-system',
+        uid: 'uid-1',
+        deletionTimestamp: '2026-08-02T00:00:00.000Z',
+        finalizers: ['tests.typekro.dev/hold-termination'],
+        owners: [owner],
+      },
+      context: {
+        resource: {
+          uid: 'uid-1',
+          finalizers: ['tests.typekro.dev/hold-termination'],
+        },
+      },
+    });
+    await expect(promise).rejects.toThrow(
+      'blocking finalizers: tests.typekro.dev/hold-termination'
     );
   });
 
@@ -153,6 +180,15 @@ describe('Alchemy persisted TypeKro resource drift', () => {
       },
     };
     expect(Diff.isResolved(news)).toBe(false);
+    expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
+  });
+
+  it('conservatively replaces when the namespace itself is an unresolved output', () => {
+    const news: Input<TypeKroResourceProps<Resource>> = {
+      ...props,
+      namespace: Output.asOutput('replacement-system'),
+    };
+    expect(Diff.isResolved(news.namespace)).toBe(false);
     expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(true);
   });
 

@@ -27,6 +27,7 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
 import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
+import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -66,7 +67,11 @@ import {
   planValueSensitiveBindingNames,
 } from '../core/planning/index.js';
 import { resolvePortableReadinessStrategy } from '../core/readiness/portable-strategies.js';
-import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
+import type {
+  DeletionResourceIdentity,
+  DeployedResource,
+  DeploymentOptions,
+} from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
   DirectTypeKroDeployer,
@@ -140,9 +145,12 @@ function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>
     return false;
   }
   const namespace: unknown = Reflect.get(news, 'namespace');
-  return (
-    Diff.isResolved(namespace) && typeof namespace === 'string' && olds.namespace !== namespace
-  );
+  // Namespace is part of a namespaced resource's Kubernetes identity. Alchemy resolves
+  // Outputs only after diffing, so an upstream-provided namespace cannot be compared with
+  // persisted state here. Treat that uncertainty as replacement: an in-place update could
+  // create the new identity while orphaning the old object outside Alchemy state.
+  if (!Diff.isResolved(namespace)) return true;
+  return typeof namespace === 'string' && olds.namespace !== namespace;
 }
 
 /** Test hook for namespace-stable replacement decisions with unresolved sibling inputs. */
@@ -513,6 +521,43 @@ interface PersistedIdentityDeletionWaitDependencies {
   pollIntervalMs?: number;
 }
 
+function deletionIdentityFromLive(
+  identity: KubernetesResource,
+  live: KubernetesResource
+): DeletionResourceIdentity {
+  const metadata = live.metadata;
+  const deletionTimestamp = metadata?.deletionTimestamp;
+  return {
+    apiVersion: live.apiVersion || identity.apiVersion,
+    kind: live.kind || identity.kind,
+    name: metadata?.name || identity.metadata.name || '<unknown>',
+    ...(metadata?.namespace || identity.metadata.namespace
+      ? { namespace: metadata?.namespace || identity.metadata.namespace }
+      : {}),
+    ...(metadata?.uid ? { uid: metadata.uid } : {}),
+    ...(deletionTimestamp
+      ? {
+          deletionTimestamp:
+            deletionTimestamp instanceof Date
+              ? deletionTimestamp.toISOString()
+              : String(deletionTimestamp),
+        }
+      : {}),
+    ...(metadata?.finalizers?.length ? { finalizers: [...metadata.finalizers] } : {}),
+    ...(metadata?.ownerReferences?.length
+      ? {
+          owners: metadata.ownerReferences.map((owner) => ({
+            apiVersion: owner.apiVersion,
+            kind: owner.kind,
+            name: owner.name,
+            ...(owner.uid ? { uid: owner.uid } : {}),
+            ...(owner.controller !== undefined ? { controller: owner.controller } : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
 async function waitForPersistedIdentityDeletion(
   props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
   output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
@@ -525,12 +570,15 @@ async function waitForPersistedIdentityDeletion(
   const sleep = dependencies.sleep ?? Bun.sleep;
   const now = dependencies.now ?? Date.now;
   const pollIntervalMs = dependencies.pollIntervalMs ?? 500;
-  const deadline = now() + (props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT);
+  const timeout = props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
+  const deadline = now() + timeout;
+  let lastLive: KubernetesResource | undefined;
 
   while (true) {
     abortSignal?.throwIfAborted();
     try {
       const live = await reader.read(identity);
+      lastLive = live;
       if (!live.metadata?.deletionTimestamp) return;
     } catch (error: unknown) {
       if (isNotFoundError(error)) return;
@@ -542,10 +590,12 @@ async function waitForPersistedIdentityDeletion(
     }
 
     if (now() >= deadline) {
-      throw new Error(
-        `Timed out waiting for terminating ${identity.apiVersion}/${identity.kind} ` +
-          `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
-          `${identity.metadata.name} to disappear before reconciliation`
+      const resource = deletionIdentityFromLive(identity, lastLive ?? identity);
+      throw new ResourceReplacementTimeoutError(
+        resource.name,
+        resource.kind,
+        timeout,
+        resource
       );
     }
     await sleep(pollIntervalMs);
