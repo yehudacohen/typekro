@@ -180,6 +180,28 @@ describe('NATS and JetStream factories', () => {
     expect(external).not.toContain('typekro.io/kro-instance-namespace');
   });
 
+  it('orders the repository before both releases in direct Alchemy materialization', async () => {
+    const declarations = await natsBootstrap
+      .factory('direct', { namespace: 'typekro-system', waitForReady: false })
+      .toAlchemyResources({
+        name: 'application-events',
+        namespace: 'application-system',
+        namespaceOwnership: 'external',
+      });
+    const byResourceId = new Map(
+      declarations.map((declaration) => [declaration.props.resourceId, declaration]),
+    );
+    const repository = byResourceId.get('natsHelmRepository');
+    const server = byResourceId.get('natsHelmRelease');
+    const controller = byResourceId.get('nackHelmRelease');
+
+    expect(repository).toBeDefined();
+    expect(server?.dependsOn).toContain(repository?.id);
+    expect(controller?.dependsOn).toContain(repository?.id);
+    expect(declarations.indexOf(repository!)).toBeLessThan(declarations.indexOf(server!));
+    expect(declarations.indexOf(repository!)).toBeLessThan(declarations.indexOf(controller!));
+  });
+
   it('rejects non-positive and fractional replica counts', () => {
     const factory = natsBootstrap.factory('direct', { namespace: 'typekro-system' });
     expect(() => factory.toYaml({ name: 'nats', replicas: 0 })).toThrow();

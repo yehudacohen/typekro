@@ -132,8 +132,12 @@ export const natsBootstrap = kubernetesComposition(
       chart: 'nats',
       version: spec.version ?? DEFAULT_NATS_VERSION,
       values: serverValues,
-      repositoryName,
-      repositoryNamespace,
+      // Carry the repository proxy through sourceRef instead of repeating its
+      // concrete identity. TypeKro can then preserve the real dependency in
+      // direct Alchemy materialization: repository before releases on create,
+      // releases before repository on destroy.
+      repositoryName: _repository.metadata.name,
+      repositoryNamespace: _repository.metadata.namespace,
       repositoryUrl,
     });
     const controller = natsHelmRelease({
@@ -143,10 +147,12 @@ export const natsBootstrap = kubernetesComposition(
       chart: 'nack',
       version: spec.nackVersion ?? DEFAULT_NACK_VERSION,
       values: nackValues,
-      repositoryName,
-      repositoryNamespace,
+      repositoryName: _repository.metadata.name,
+      repositoryNamespace: _repository.metadata.namespace,
       repositoryUrl,
     });
+    server.dependsOn(_repository);
+    controller.dependsOn(_repository);
     return {
       ...helmReleaseConditionSummary(server, controller),
       serverVersion: spec.version ?? DEFAULT_NATS_VERSION,
