@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Direct Alchemy singleton owners now gate consumer scheduling through a dedicated barrier instead
+  of being injected into each consumer's canonical live-resource dependencies. This preserves
+  singleton readiness ordering without making direct artifact execution records fail dependency
+  parity during materialization.
+- Automatic KRO artifact-binding migration now replaces the complete generated CRD with
+  resource-version concurrency rather than sending a partial merge patch through
+  `KubernetesObjectApi`. This avoids the client serializer's `data is not iterable` failure while
+  retaining restart-safe conflict retries.
 - Semantic planning now represents ArkType's explicitly open `object` and
   `object[]` nodes—including root `type('object')` schemas and ordinary or
   `ignore` undeclared-key policies—without falsely opening `reject`/`delete`

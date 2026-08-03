@@ -174,6 +174,16 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
   dependencies?: TypeKroResource<Enhanced<unknown, unknown>>[];
 
   /**
+   * Alchemy-only ordering inputs which must resolve before this resource is reconciled but are not
+   * semantic dependencies of the Kubernetes operation. Singleton owners use this channel so their
+   * readiness orders consumers without being injected into the consumer's canonical direct
+   * execution record or live-resource bindings.
+   *
+   * Populated by {@link materializeAlchemyResources}; callers should not set it by hand.
+   */
+  schedulingBarrier?: boolean;
+
+  /**
    * Optional deployment options
    */
   options?: Partial<Omit<DeploymentOptions, 'mode' | 'namespace'>>;
@@ -200,6 +210,12 @@ export interface AlchemyResourceDeclaration {
    * these into alchemy `Output` dependencies (ordering + direct-mode reference resolution).
    */
   readonly dependsOn: readonly string[];
+  /**
+   * Declaration ids that gate Alchemy scheduling only. Unlike {@link dependsOn}, these resources
+   * are not exposed to direct-mode reference resolution and therefore are not required to appear
+   * in the canonical artifact execution record.
+   */
+  readonly schedulingDependsOn?: readonly string[];
   /** External provider requirements consumed by this declaration. */
   readonly artifactRequirements?: readonly ArtifactRequirement[];
   /** Exact outputs used by this declaration, including sensitivity taint. */

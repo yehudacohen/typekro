@@ -65,6 +65,20 @@ describe('materializeAlchemyResources', () => {
     expect(bCall?.props.dependencies).toBeDefined();
   });
 
+  it('wires scheduling-only edges without exposing them as live-resource dependencies', async () => {
+    const { fake, calls } = makeFakeKroResource();
+    await Effect.runPromise(
+      materializeAlchemyResources(fake, [
+        decl('owner'),
+        { ...decl('consumer'), schedulingDependsOn: ['owner'] },
+      ]) as Effect.Effect<unknown>
+    );
+
+    const consumer = calls.find((call) => call.id === 'consumer');
+    expect(consumer?.props.schedulingBarrier).toBeDefined();
+    expect('dependencies' in (consumer?.props ?? {})).toBe(false);
+  });
+
   it('throws loudly when a dependsOn id is not (yet) instantiated (out-of-order/unknown)', async () => {
     const { fake } = makeFakeKroResource();
     // 'b' lists 'a' but 'a' comes AFTER it → 'a' handle not present when 'b' is materialized.

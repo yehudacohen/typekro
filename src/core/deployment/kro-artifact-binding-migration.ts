@@ -7,7 +7,7 @@ const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
 const MAX_CRD_PATCH_ATTEMPTS = 5;
 type MigrationApi = Pick<
   ReturnType<typeof createBunCompatibleKubernetesObjectApi>,
-  'read' | 'list' | 'patch'
+  'read' | 'list' | 'patch' | 'replace'
 >;
 
 interface ResourceGraphDefinition extends KubernetesObject {
@@ -262,24 +262,23 @@ export async function migrateLegacyKroArtifactBindingCrd(
     }
 
     try {
-      await api.patch(
-        {
-          apiVersion: 'apiextensions.k8s.io/v1',
-          kind: 'CustomResourceDefinition',
-          metadata: {
-            name: crd.metadata.name,
-            ...(crd.metadata.resourceVersion
-              ? { resourceVersion: crd.metadata.resourceVersion }
-              : {}),
-          },
-          spec: { versions },
+      // KubernetesObjectApi.patch() asks @kubernetes/client-node to serialize this typed CRD as
+      // JSON Patch, even when a merge-patch content type is supplied. A partial CRD object then
+      // fails inside ObjectSerializer ("data is not iterable") before reaching Kubernetes.
+      // Replace the complete object read above instead. resourceVersion provides optimistic
+      // concurrency and the retry loop re-reads on conflict, preserving restart safety.
+      await api.replace({
+        ...crd,
+        // KubernetesObjectApi list deserialization does not consistently retain TypeMeta on
+        // individual CRD items. A generic replacement requires it even though the list endpoint
+        // and returned spec already identify the resource type.
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        spec: {
+          ...crd.spec,
+          versions,
         },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        'application/merge-patch+json'
-      );
+      });
       await requestRgdReconcile(api, rgdName);
       return;
     } catch (error: unknown) {

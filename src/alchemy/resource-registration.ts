@@ -343,7 +343,7 @@ export function materializeAlchemyResources(
           `materializeAlchemyResources: duplicate declaration id '${decl.id}' in one materialization call.`
         );
       }
-      const deps = decl.dependsOn.map((id) => {
+      const dependencyHandle = (id: string) => {
         const handle = handles[id];
         if (!handle) {
           // Declarations must be topologically ordered so every dependency is instantiated first.
@@ -355,7 +355,9 @@ export function materializeAlchemyResources(
           );
         }
         return handle;
-      });
+      };
+      const deps = decl.dependsOn.map(dependencyHandle);
+      const schedulingDeps = (decl.schedulingDependsOn ?? []).map(dependencyHandle);
       const artifactRequirements =
         decl.artifactRequirements ?? decl.props.artifactRequirements ?? [];
       const artifactOutputUses = decl.artifactOutputUses ?? decl.props.artifactOutputUses ?? [];
@@ -368,6 +370,17 @@ export function materializeAlchemyResources(
       const props = {
         ...decl.props,
         ...(deps.length > 0 ? { dependencies: Output.all(...deps.map((d) => Output.of(d))) } : {}),
+        ...(schedulingDeps.length > 0
+          ? {
+              // Resolve every scheduling handle, but persist only a stable scalar. The barrier
+              // creates Alchemy edges without copying unrelated singleton outputs into consumer
+              // state or direct artifact materialization.
+              schedulingBarrier: Output.map(
+                Output.all(...schedulingDeps.map((dependency) => Output.of(dependency))),
+                () => true
+              ),
+            }
+          : {}),
         ...(artifactOutputs ? { artifactOutputs } : {}),
       };
       // Cast: `props` carries an `Output` for `dependencies` that the `KroResource` constructor

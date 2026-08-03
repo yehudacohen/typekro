@@ -1810,7 +1810,10 @@ export class DirectResourceFactoryImpl<
       ...singletonDeclarations,
       ...applicationDeclarations.map((declaration) => ({
         ...declaration,
-        dependsOn: [...new Set([...singletonIds, ...declaration.dependsOn])],
+        // Singleton owners gate Alchemy scheduling, but are not canonical dependencies of every
+        // consumer Kubernetes operation. Keeping this edge separate preserves the compiled direct
+        // execution record while still waiting for singleton readiness before reconciliation.
+        schedulingDependsOn: singletonIds,
       })),
     ];
   }
