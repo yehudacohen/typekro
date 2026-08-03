@@ -657,7 +657,6 @@ describe('Envoy AI Gateway integration', () => {
     });
     const yaml = platform.factory('direct', { namespace: 'typekro-system' }).toYaml({
       name: 'envoy-ai',
-      namespaceOwnership: 'external',
     });
 
     expect(
@@ -665,6 +664,22 @@ describe('Envoy AI Gateway integration', () => {
     ).toEqual([]);
     expect(yaml).toContain('namespace: envoy-gateway-system');
     expect(yaml).toContain('namespace: envoy-ai-gateway-system');
+  });
+
+  test('lets the installation spec override the build-time namespace ownership default', () => {
+    const platform = makeEnvoyAIGatewayPlatformInstallation({
+      profile: 'production',
+      namespaceOwnership: 'external',
+      mcpSessionEncryptionSeedSecret: { name: 'managed-seed' },
+    });
+    const yaml = platform.factory('direct', { namespace: 'typekro-system' }).toYaml({
+      name: 'envoy-ai',
+      namespaceOwnership: 'owned',
+    });
+
+    expect(
+      documents(yaml).filter((document) => document.kind === 'Namespace')
+    ).toHaveLength(2);
   });
 
   test('rejects a nested platform profile that weakens or conflicts with the gateway profile', () => {

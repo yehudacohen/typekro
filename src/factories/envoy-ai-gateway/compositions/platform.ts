@@ -72,11 +72,14 @@ export function makeEnvoyAIGatewayPlatformInstallation(
       );
       const repositoryNamespace = defaultString(spec.repositoryNamespace, DEFAULT_FLUX_NAMESPACE);
       const rateLimitRedisUrl = options.rateLimitRedisUrl;
+      const defaultNamespaceOwnership = options.namespaceOwnership ?? 'owned';
       const ownsNamespaces = graphMode
         ? Cel.expr<boolean>(
-            '!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"'
+            `has(schema.spec.namespaceOwnership) ? ` +
+              `schema.spec.namespaceOwnership == "owned" : ` +
+              `${defaultNamespaceOwnership === 'owned'}`
           )
-        : spec.namespaceOwnership !== 'external';
+        : (spec.namespaceOwnership ?? defaultNamespaceOwnership) !== 'external';
 
       namespace({
         metadata: {

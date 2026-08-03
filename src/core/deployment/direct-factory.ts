@@ -1240,9 +1240,36 @@ export class DirectResourceFactoryImpl<
       readonly sensitiveBindings?: Readonly<Record<string, unknown>>;
       readonly staticYamlOptions?: StaticYamlMaterializationOptions;
       readonly preserveArtifactOutputs?: boolean;
+      /**
+       * Singleton ownership is part of the desired Kubernetes object, not
+       * provider-only decoration. Include it before semantic compilation so
+       * the canonical execution record and every rehydrated apply preserve
+       * the same drift identity.
+       */
+      readonly singletonSpecFingerprint?: string;
     } = {}
   ): DirectArtifactExecution {
-    const legacyGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const capturedGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const legacyGraph = options.singletonSpecFingerprint
+      ? {
+          ...capturedGraph,
+          resources: capturedGraph.resources.map(({ id, manifest }) => {
+            const decorated = {
+              ...manifest,
+              metadata: {
+                ...manifest.metadata,
+                annotations: {
+                  ...manifest.metadata.annotations,
+                  [SINGLETON_SPEC_FINGERPRINT_ANNOTATION]:
+                    options.singletonSpecFingerprint as string,
+                },
+              },
+            } as typeof manifest;
+            copyResourceMetadata(manifest, decorated);
+            return { id, manifest: decorated };
+          }),
+        }
+      : capturedGraph;
     const capture = this.factoryOptions.semanticCapture;
     if (!capture) return { graph: legacyGraph };
 
@@ -1519,6 +1546,9 @@ export class DirectResourceFactoryImpl<
     const singletonDeclarations = await this.singletonAlchemyDeclarations(spec);
     const execution = this.createArtifactExecutionForInstance(spec, opts?.instanceNameOverride, {
       preserveArtifactOutputs: true,
+      ...(opts?.singletonSpecFingerprint
+        ? { singletonSpecFingerprint: opts.singletonSpecFingerprint }
+        : {}),
     });
     this.assertExecutionCapabilities(execution, { host: 'alchemy', output: 'live' });
     const graph = execution.graph;
@@ -1677,7 +1707,7 @@ export class DirectResourceFactoryImpl<
         strategy?.kind === 'runtime-binding' && evaluator
           ? { [strategy.binding]: evaluator }
           : undefined;
-      let declarationResource =
+      const declarationResource =
         materialization &&
         ((sensitiveBindings && Object.keys(sensitiveBindings).length > 0) ||
           artifactOutputUses.length > 0)
@@ -1722,18 +1752,6 @@ export class DirectResourceFactoryImpl<
             : node.resource;
       if (declarationResource !== node.resource) {
         copyResourceMetadata(node.resource, declarationResource);
-      }
-      if (opts?.singletonSpecFingerprint) {
-        declarationResource = {
-          ...declarationResource,
-          metadata: {
-            ...declarationResource.metadata,
-            annotations: {
-              ...declarationResource.metadata.annotations,
-              [SINGLETON_SPEC_FINGERPRINT_ANNOTATION]: opts.singletonSpecFingerprint,
-            },
-          },
-        } as Enhanced<unknown, unknown>;
       }
       const dependsOn = graph.dependencyGraph
         .getDependencies(graphId)

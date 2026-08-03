@@ -1,9 +1,55 @@
 import { describe, expect, it } from 'bun:test';
 import { oryIdentityStack } from '../../../src/factories/ory/index.js';
-import { OryIdentityStackConfigSchema, OryIdentityStackStatusSchema } from '../../../src/factories/ory/types.js';
+import {
+  OryIdentityStackConfigSchema,
+  OryIdentityStackStatusSchema,
+} from '../../../src/factories/ory/types.js';
 
 function endpoint(url: string, host: string, port: number) {
   return { url, scheme: 'http', host, port };
+}
+
+function managedIdentityConfig(namespaceOwnership: 'owned' | 'external') {
+  return {
+    name: 'identity-test',
+    namespace: 'ory-test',
+    namespaceOwnership,
+    dependencySources: {
+      hydra: {
+        database: { dsn: { mode: 'managed', resourceName: 'identity-test-hydra-db' } },
+        systemSecret: {
+          mode: 'managed',
+          secretName: 'identity-test-hydra-secrets',
+          secretKey: 'system',
+        },
+      },
+      kratos: {
+        database: { dsn: { mode: 'managed', resourceName: 'identity-test-kratos-db' } },
+        secrets: {
+          cookie: {
+            mode: 'managed',
+            secretName: 'identity-test-kratos-secrets',
+            secretKey: 'cookie',
+          },
+          cipher: {
+            mode: 'managed',
+            secretName: 'identity-test-kratos-secrets',
+            secretKey: 'cipher',
+          },
+        },
+      },
+      keto: {
+        database: { dsn: { mode: 'managed', resourceName: 'identity-test-keto-db' } },
+      },
+      oathkeeper: {
+        mutatorIdTokenJwks: {
+          mode: 'managed',
+          secretName: 'identity-test-oathkeeper-secrets',
+          secretKey: 'jwks',
+        },
+      },
+    },
+  } as const;
 }
 
 // Test decision: keep this file focused on Ory-only Helm wiring. Graph-managed
@@ -114,6 +160,36 @@ describe('Ory identity stack composition', () => {
     expect(yaml).not.toContain('schema.spec.resources');
     expect(yaml).not.toContain('__typekroSchemaKey');
     expect(yaml).not.toContain('undefined');
+  });
+
+  it('materializes KRO namespace ownership outside the RGD lifecycle', async () => {
+    const factory = oryIdentityStack.factory('kro', { namespace: 'typekro-system' });
+    const owned = managedIdentityConfig('owned');
+    const external = managedIdentityConfig('external');
+    const ownedDeclarations = await factory.toAlchemyResources(owned);
+    const externalDeclarations = await factory.toAlchemyResources(external);
+
+    expect(
+      ownedDeclarations.filter((declaration) => declaration.props.resource.kind === 'Namespace')
+    ).toEqual([
+      expect.objectContaining({
+        props: expect.objectContaining({
+          resource: expect.objectContaining({
+            metadata: expect.objectContaining({ name: 'ory-test' }),
+          }),
+          namespaceEmptyGate: true,
+        }),
+      }),
+    ]);
+    expect(
+      externalDeclarations.filter((declaration) => declaration.props.resource.kind === 'Namespace')
+    ).toEqual([]);
+    expect(factory.toYaml(owned)).toContain(
+      'typekro.io/hoisted-namespaces: \'["ory-test"]\''
+    );
+    expect(factory.toYaml(external)).toContain(
+      "typekro.io/hoisted-namespaces: '[]'"
+    );
   });
 
   it('Merges graph-mode Ory whole-object Helm values through Kro map merge', () => {

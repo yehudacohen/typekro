@@ -12,6 +12,8 @@ import {
   singleton,
   toResourceGraph,
 } from '../../src/index.js';
+import { resourceFromDirectArtifactRecordForTest } from '../../src/alchemy/resource-registration.js';
+import { getReadinessEvaluator } from '../../src/core/metadata/index.js';
 import { decodeDirectArtifactExecutionRecord } from '../../src/experimental-planning.js';
 
 describe('DirectResourceFactory', () => {
@@ -471,12 +473,16 @@ describe('DirectResourceFactory', () => {
           status: type({ ready: 'boolean' }),
         },
         (ownerSpec) => {
-          simple.ConfigMap({
+          const config = simple.ConfigMap({
             id: 'ownerConfig',
             name: ownerSpec.name,
             namespace: 'typekro-singletons',
             data: { installed: 'true' },
           });
+          config.withReadinessEvaluator((resource) => ({
+            ready: resource.data?.installed === 'true',
+            message: 'runtime-bound singleton readiness',
+          }));
           return { ready: true };
         }
       );
@@ -515,6 +521,18 @@ describe('DirectResourceFactory', () => {
       expect(declarations[0]?.props.retain).toBe(true);
       expect(declarations[0]?.props.resourceId).toContain('ownerConfig');
       expect(declarations[0]?.props.artifactExecutionRecord).toBeString();
+      const rehydrated = resourceFromDirectArtifactRecordForTest(
+        declarations[0]!.props
+      );
+      expect(rehydrated?.metadata.annotations).toEqual(
+        expect.objectContaining({
+          'typekro.io/singleton-spec-fingerprint': expect.stringMatching(
+            /^fnv64:[a-f0-9]{16}$/
+          ),
+        })
+      );
+      expect(getReadinessEvaluator(declarations[0]!.props.resource)).toBeFunction();
+      expect(getReadinessEvaluator(rehydrated!)).toBeFunction();
     });
 
     it('persists an explicitly authored resource namespace instead of the factory default', async () => {

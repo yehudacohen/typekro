@@ -383,20 +383,23 @@ export const oryIdentityStack = kubernetesComposition(
       });
     }
 
-    if (concreteSpec && typedSpec.namespaceOwnership !== 'external') {
-      namespace({
-        id: 'oryNamespace',
-        metadata: {
-          name: resolvedNamespace,
-          labels: {
-            'app.kubernetes.io/name': 'ory-identity-stack',
-            'app.kubernetes.io/instance': typedSpec.name,
-            'app.kubernetes.io/version': resolvedVersion,
-            'app.kubernetes.io/managed-by': 'typekro',
-          },
+    const ownsNamespace = concreteSpec
+      ? typedSpec.namespaceOwnership !== 'external'
+      : Cel.expr<boolean>(
+          '!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"'
+        );
+    namespace({
+      id: 'oryNamespace',
+      metadata: {
+        name: resolvedNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'ory-identity-stack',
+          'app.kubernetes.io/instance': typedSpec.name,
+          'app.kubernetes.io/version': resolvedVersion,
+          'app.kubernetes.io/managed-by': 'typekro',
         },
-      });
-    }
+      },
+    }).withIncludeWhen(ownsNamespace);
 
     const _oryHelmRepository = oryHelmRepository({
       id: 'oryHelmRepository',
