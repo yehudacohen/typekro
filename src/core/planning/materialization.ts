@@ -302,6 +302,10 @@ function evaluatePortableExpression(
             ? Object.keys(value).length
             : 0,
       has: (value: unknown) => value !== undefined && value !== null,
+      // KRO uses dyn() for static type widening. Portable direct execution
+      // preserves the same expression and therefore treats it as runtime
+      // identity, matching the direct/schema CEL evaluators.
+      dyn: (value: unknown) => value,
       concat: (...values: unknown[]) => values.join(''),
     });
   } catch (error: unknown) {

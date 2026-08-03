@@ -112,6 +112,22 @@ describe('PlanValue and ExpressionIR', () => {
     expect(materializePlanValue(value, { spec: { enabled: false } })).toBe(false);
   });
 
+  it('treats KRO dyn type widening as identity during portable direct materialization', () => {
+    const value = {
+      kind: 'expression' as const,
+      expression: expressionIR(
+        'has(schema.spec.repositoryName) && dyn(schema.spec.repositoryName) != null ? schema.spec.repositoryName : "envoyproxy-helm"'
+      ),
+    };
+
+    expect(materializePlanValue(value, { spec: {} })).toBe('envoyproxy-helm');
+    expect(
+      materializePlanValue(value, {
+        spec: { repositoryName: 'custom-repository' },
+      })
+    ).toBe('custom-repository');
+  });
+
   it('derives references from parsed CEL rather than matching text inside literals', () => {
     const expression = expressionIR(
       '"deployment.status.notAReference" + schema.spec.name + service.metadata.name'

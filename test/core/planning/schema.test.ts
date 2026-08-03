@@ -52,6 +52,7 @@ describe('SchemaIR portable profile', () => {
     expect(result.diagnostics).toEqual([]);
     expect(result.root).toEqual({
       kind: 'object',
+      additionalProperties: true,
       properties: [
         {
           name: 'items',
@@ -76,6 +77,45 @@ describe('SchemaIR portable profile', () => {
         },
       ],
     });
+  });
+
+  it('preserves root open-object and undeclared-key policies', () => {
+    expect(schemaToIR(type('object'), { strict: true }).root).toEqual({
+      kind: 'object',
+      properties: [],
+      additionalProperties: true,
+    });
+    expect(
+      schemaToIR(type({ value: 'string' }).onUndeclaredKey('ignore'), {
+        strict: true,
+      }).root
+    ).toEqual({
+      kind: 'object',
+      properties: [
+        {
+          name: 'value',
+          required: true,
+          schema: { kind: 'primitive', type: 'string' },
+        },
+      ],
+      additionalProperties: true,
+    });
+    for (const policy of ['reject', 'delete'] as const) {
+      expect(
+        schemaToIR(type({ value: 'string' }).onUndeclaredKey(policy), {
+          strict: true,
+        }).root
+      ).toEqual({
+        kind: 'object',
+        properties: [
+          {
+            name: 'value',
+            required: true,
+            schema: { kind: 'primitive', type: 'string' },
+          },
+        ],
+      });
+    }
   });
 
   it('diagnoses constructs outside the portable profile before execution', () => {

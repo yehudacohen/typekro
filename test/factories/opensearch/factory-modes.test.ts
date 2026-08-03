@@ -274,6 +274,31 @@ describe('OpenSearch integration', () => {
     expect(instance).toContain('namespace: typekro-singletons');
   });
 
+  test('emits the complete shared operator installation through direct Alchemy', async () => {
+    const declarations = await openSearchOperatorBootstrap
+      .factory('direct', {
+        namespace: 'application-control',
+        waitForReady: false,
+      })
+      .toAlchemyResources({ name: 'opensearch-operator' });
+
+    expect(
+      declarations.map((declaration) => declaration.props.resource.kind)
+    ).toEqual(['HelmRepository', 'Namespace', 'HelmRelease']);
+    expect(declarations.every((declaration) => declaration.props.retain)).toBe(
+      true
+    );
+    expect(
+      declarations.find(
+        (declaration) =>
+          declaration.props.resource.kind === 'HelmRepository'
+      )?.props.resource.metadata
+    ).toMatchObject({
+      name: 'opensearch-operator',
+      namespace: 'flux-system',
+    });
+  });
+
   test('exposes local operator ownership only through the explicit installation composition', () => {
     const yaml = openSearchOperatorInstallation
       .factory('kro', {
