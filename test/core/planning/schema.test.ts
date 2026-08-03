@@ -40,6 +40,84 @@ describe('SchemaIR portable profile', () => {
     expect(left.digest).toBe(right.digest);
   });
 
+  it('preserves explicitly open object and collection element schemas', () => {
+    const result = schemaToIR(
+      type({
+        payload: 'object',
+        items: 'object[]',
+      }),
+      { strict: true }
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.root).toEqual({
+      kind: 'object',
+      additionalProperties: true,
+      properties: [
+        {
+          name: 'items',
+          required: true,
+          schema: {
+            kind: 'array',
+            items: {
+              kind: 'object',
+              properties: [],
+              additionalProperties: true,
+            },
+          },
+        },
+        {
+          name: 'payload',
+          required: true,
+          schema: {
+            kind: 'object',
+            properties: [],
+            additionalProperties: true,
+          },
+        },
+      ],
+    });
+  });
+
+  it('preserves root open-object and undeclared-key policies', () => {
+    expect(schemaToIR(type('object'), { strict: true }).root).toEqual({
+      kind: 'object',
+      properties: [],
+      additionalProperties: true,
+    });
+    expect(
+      schemaToIR(type({ value: 'string' }).onUndeclaredKey('ignore'), {
+        strict: true,
+      }).root
+    ).toEqual({
+      kind: 'object',
+      properties: [
+        {
+          name: 'value',
+          required: true,
+          schema: { kind: 'primitive', type: 'string' },
+        },
+      ],
+      additionalProperties: true,
+    });
+    for (const policy of ['reject', 'delete'] as const) {
+      expect(
+        schemaToIR(type({ value: 'string' }).onUndeclaredKey(policy), {
+          strict: true,
+        }).root
+      ).toEqual({
+        kind: 'object',
+        properties: [
+          {
+            name: 'value',
+            required: true,
+            schema: { kind: 'primitive', type: 'string' },
+          },
+        ],
+      });
+    }
+  });
+
   it('diagnoses constructs outside the portable profile before execution', () => {
     const unsupported = { json: { domain: 'symbol' } };
 

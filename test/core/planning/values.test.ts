@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-
-import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
-
 import {
   artifactOutput,
   decodePlanValue,
@@ -12,12 +9,14 @@ import {
   expressionIR,
   externalInput,
   lowerPlanValue,
+  materializePlanOutputs,
   materializePlanValue,
   planExpression,
   resolveStaticYamlSensitiveBindings,
   schemaToIR,
   sensitiveValue,
 } from '../../../src/core/planning/index.js';
+import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
 
 describe('PlanValue and ExpressionIR', () => {
   it('preserves arrays, object order independence, and omitted values', () => {
@@ -110,6 +109,201 @@ describe('PlanValue and ExpressionIR', () => {
     expect(materializePlanValue(value, { spec: {} })).toBe(true);
     expect(materializePlanValue(value, { spec: { enabled: true } })).toBe(true);
     expect(materializePlanValue(value, { spec: { enabled: false } })).toBe(false);
+  });
+
+  it('treats KRO dyn type widening as identity during portable direct materialization', () => {
+    const value = {
+      kind: 'expression' as const,
+      expression: expressionIR(
+        'has(schema.spec.repositoryName) && dyn(schema.spec.repositoryName) != null ? schema.spec.repositoryName : "envoyproxy-helm"'
+      ),
+    };
+
+    expect(materializePlanValue(value, { spec: {} })).toBe('envoyproxy-helm');
+    expect(
+      materializePlanValue(value, {
+        spec: { repositoryName: 'custom-repository' },
+      })
+    ).toBe('custom-repository');
+  });
+
+  it('hydrates composition outputs from live resources without re-running the closure', () => {
+    const outputs = {
+      endpoint: {
+        kind: 'expression' as const,
+        expression: expressionIR(
+          'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + string(gateway.status.addresses[0].value) + ":" + string(gateway.spec.listeners[0].port) : ""'
+        ),
+      },
+      observedName: {
+        kind: 'reference' as const,
+        source: 'resource' as const,
+        resourceId: 'gateway',
+        fieldPath: 'metadata.name',
+      },
+      advertised: {
+        kind: 'template' as const,
+        segments: [
+          { kind: 'literal' as const, value: 'gateway=' },
+          {
+            kind: 'reference' as const,
+            source: 'resource' as const,
+            resourceId: 'gateway',
+            fieldPath: 'metadata.name',
+          },
+        ],
+      },
+    };
+
+    expect(
+      materializePlanOutputs(outputs, {
+        resources: {
+          gateway: {
+            metadata: { name: 'inference' },
+            spec: { listeners: [{ port: 8080 }] },
+            status: { addresses: [{ value: '10.0.0.12' }] },
+          },
+        },
+      })
+    ).toEqual({
+      advertised: 'gateway=inference',
+      endpoint: 'http://10.0.0.12:8080',
+      observedName: 'inference',
+    });
+  });
+
+  it('hydrates resource-backed template expressions from complete live bindings', () => {
+    const value = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'replicas=' },
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(deployment.status.readyReplicas)'),
+        },
+      ],
+    };
+
+    expect(
+      materializePlanValue(value, {
+        resources: {
+          deployment: { status: { readyReplicas: 3 } },
+        },
+      })
+    ).toBe('replicas=3');
+  });
+
+  it('fails closed when a complete live-resource binding omits a required producer', () => {
+    const required = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'deployment',
+      fieldPath: 'status.readyReplicas',
+    };
+    const expressionTemplate = {
+      kind: 'template' as const,
+      segments: [
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(deployment.status.readyReplicas)'),
+        },
+      ],
+    };
+    const expression = {
+      kind: 'expression' as const,
+      expression: expressionIR('deployment.status.readyReplicas'),
+    };
+
+    expect(() => materializePlanValue(required, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+    expect(() => materializePlanValue(expression, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+    expect(() => materializePlanValue(expressionTemplate, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+  });
+
+  it('omits optional resource references absent from complete live bindings', () => {
+    const optional = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'optionalService',
+      fieldPath: 'status.endpoint',
+      optional: true as const,
+    };
+    const template = {
+      kind: 'template' as const,
+      segments: [{ kind: 'literal' as const, value: 'endpoint=' }, optional],
+    };
+
+    expect(materializePlanValue(optional, { resources: {} })).toBeUndefined();
+    expect(materializePlanValue(template, { resources: {} })).toBeUndefined();
+  });
+
+  it('fails closed on missing spec bindings during concrete template hydration', () => {
+    const referenceTemplate = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'reference' as const,
+          source: 'spec' as const,
+          fieldPath: 'label',
+        },
+      ],
+    };
+    const expressionTemplate = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(schema.spec.label)'),
+        },
+      ],
+    };
+
+    expect(() => materializePlanValue(referenceTemplate, { resources: {} })).toThrow(
+      'Spec binding is required to resolve label'
+    );
+    expect(() => materializePlanValue(expressionTemplate, { resources: {} })).toThrow(
+      'Spec binding is required to evaluate string(schema.spec.label)'
+    );
+  });
+
+  it('omits optional spec template references during concrete hydration without spec bindings', () => {
+    const template = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'label=' },
+        {
+          kind: 'reference' as const,
+          source: 'spec' as const,
+          fieldPath: 'label',
+          optional: true as const,
+        },
+      ],
+    };
+
+    expect(materializePlanValue(template, { resources: {} })).toBeUndefined();
+  });
+
+  it('preserves resource references when live bindings are not supplied', () => {
+    const value = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'service',
+      fieldPath: 'metadata.name',
+    };
+
+    expect(materializePlanValue(value)).toEqual(
+      expect.objectContaining({
+        resourceId: 'service',
+        fieldPath: 'metadata.name',
+      })
+    );
   });
 
   it('derives references from parsed CEL rather than matching text inside literals', () => {

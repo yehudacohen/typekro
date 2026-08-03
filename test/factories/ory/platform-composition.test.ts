@@ -276,6 +276,39 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).not.toContain('${${');
   });
 
+  it('produces a strict semantic plan for the managed platform contract', () => {
+    const spec = {
+      name: 'identity-start-identity',
+      namespace: 'identity-start-system',
+      shared: true,
+      managed: {
+        databases: true,
+        secrets: true,
+        routes: false,
+        sampleUpstream: false,
+        courierSes: false,
+      },
+    } as const;
+
+    if (!oryPlatformStack.inspect || !oryPlatformStack.plan) {
+      throw new Error('Ory platform composition must expose semantic planning.');
+    }
+    const inspection = oryPlatformStack.inspect();
+    const plan = oryPlatformStack.plan(spec, { strict: true });
+    const errors = [...inspection.diagnostics, ...plan.diagnostics].filter(
+      (diagnostic) => diagnostic.severity === 'error'
+    );
+
+    expect(errors).toEqual([]);
+    expect(
+      plan.diagnostics.filter(
+        (diagnostic) =>
+          diagnostic.code === 'PLAN_FACTORY_PROVENANCE_AMBIGUOUS' ||
+          diagnostic.code === 'SCHEMA_IR_UNSUPPORTED'
+      )
+    ).toEqual([]);
+  });
+
   it('Reject disabled managed dependencies unless external replacements are supplied', async () => {
     const factory = oryPlatformStack.factory('direct', { namespace: 'ory-system' });
 

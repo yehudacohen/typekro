@@ -63,6 +63,7 @@ export {
 export {
   collectPlanValueSensitiveBindings,
   mapPlanValueSensitiveBindings,
+  materializePlanOutputs,
   materializePlanValue,
   materializePlanValueForKro,
   type PlanMaterializationBindings,

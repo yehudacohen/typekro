@@ -1,9 +1,9 @@
-import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import {
   isValuesMergeExpression,
   mergeValuesExpression,
   type ValuesMergeExpression,
 } from '../../../core/aspects/values-merge.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
@@ -12,12 +12,12 @@ import {
   hydraHelmRelease,
   ketoHelmRelease,
   kratosHelmRelease,
-  oathkeeperHelmRelease,
   ORY_CHART_VERSION,
+  oathkeeperHelmRelease,
   oryHelmRepository,
 } from '../resources/helm.js';
-import { oauth2Client } from '../resources/oauth2-client.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
+import { oauth2Client } from '../resources/oauth2-client.js';
 import {
   type OryDependencySource,
   type OryEndpointStatus,
@@ -92,6 +92,69 @@ function withChartValuesOverlay<T extends object>(values: T, overlay: object): T
   return deepMergeKnownValues(values, overlay) as T;
 }
 
+/**
+ * The external-secret post-renderers address chart workloads and containers
+ * by name. Keep those names stack-owned even when callers pass raw chart
+ * values so the security patch cannot silently miss its target.
+ *
+ * Graph-mode values merges must append this overlay last: placing it in the
+ * base would let a schema-provided values overlay restore an unsafe chart
+ * naming override at reconciliation time.
+ */
+function withStackOwnedChartNames<T extends object>(
+  values: T,
+  chartName: 'hydra' | 'kratos',
+  releaseName: string
+): T {
+  const protectedNames = {
+    nameOverride: chartName,
+    fullnameOverride: releaseName,
+  };
+  return (
+    isValuesMergeExpression(values)
+      ? mergeValuesExpression(values, protectedNames)
+      : deepMergeKnownValues(values, protectedNames)
+  ) as T;
+}
+
+function removeChartOwnedSecretEnv(
+  kind: 'Deployment' | 'StatefulSet',
+  releaseName: string,
+  containerName: 'hydra' | 'kratos' | 'kratos-courier',
+  names: string[]
+) {
+  return {
+    kustomize: {
+      patches: [
+        {
+          target: {
+            group: 'apps',
+            version: 'v1',
+            kind,
+            name: releaseName,
+          },
+          patch: [
+            'apiVersion: apps/v1',
+            `kind: ${kind}`,
+            'metadata:',
+            '  name: ignored-by-target-selector',
+            'spec:',
+            '  template:',
+            '    spec:',
+            '      containers:',
+            `        - name: ${containerName}`,
+            '          env:',
+            ...names.flatMap((name) => [
+              `            - name: ${name}`,
+              '              $patch: delete',
+            ]),
+          ].join('\n'),
+        },
+      ],
+    },
+  };
+}
+
 function oathkeeperProbeValues(): Record<string, unknown> {
   const aliveProbe = {
     httpGet: {
@@ -140,6 +203,7 @@ function graphSafeConfig(
     return defined({
       name: config.name,
       namespace: config.namespace,
+      namespaceOwnership: config.namespaceOwnership,
       version: config.version,
       dependencySources: config.dependencySources,
       shared: config.shared,
@@ -201,14 +265,20 @@ function graphSafeConfig(
   };
 }
 
-function defaultManagedDependencySources(name: string): OryIdentityStackConfig['dependencySources'] {
+function defaultManagedDependencySources(
+  name: string
+): OryIdentityStackConfig['dependencySources'] {
   return {
     hydra: {
-      database: { dsn: { mode: 'managed', resourceName: `${name}-hydra-db-app`, secretKey: 'uri' } },
+      database: {
+        dsn: { mode: 'managed', resourceName: `${name}-hydra-db-app`, secretKey: 'uri' },
+      },
       systemSecret: { mode: 'managed', secretName: `${name}-hydra-secrets`, secretKey: 'system' },
     },
     kratos: {
-      database: { dsn: { mode: 'managed', resourceName: `${name}-kratos-db-app`, secretKey: 'uri' } },
+      database: {
+        dsn: { mode: 'managed', resourceName: `${name}-kratos-db-app`, secretKey: 'uri' },
+      },
       secrets: {
         cookie: { mode: 'managed', secretName: `${name}-kratos-secrets`, secretKey: 'cookie' },
         cipher: { mode: 'managed', secretName: `${name}-kratos-secrets`, secretKey: 'cipher' },
@@ -252,7 +322,10 @@ function mergeDependencySource(
   }) as OryDependencySource;
 }
 
-function defaulted<T extends string>(explicit: T | undefined, fallback: T | undefined): T | undefined {
+function defaulted<T extends string>(
+  explicit: T | undefined,
+  fallback: T | undefined
+): T | undefined {
   if (explicit === undefined) return fallback;
   if (fallback !== undefined && isKubernetesRef(explicit)) {
     return Cel.default(explicit, fallback) as T;
@@ -298,7 +371,10 @@ function mergeDependencySourceDefaults(
         url: mergeDependencySource(defaults.kratos?.publicBaseUrl?.url, kratos?.publicBaseUrl?.url),
       }),
       browserBaseUrl: defined({
-        url: mergeDependencySource(defaults.kratos?.browserBaseUrl?.url, kratos?.browserBaseUrl?.url),
+        url: mergeDependencySource(
+          defaults.kratos?.browserBaseUrl?.url,
+          kratos?.browserBaseUrl?.url
+        ),
       }),
       secrets: defined({
         cookie: mergeDependencySource(defaults.kratos?.secrets?.cookie, kratos?.secrets?.cookie),
@@ -314,7 +390,10 @@ function mergeDependencySourceDefaults(
     }),
     oathkeeper: defined({
       proxyRoute: defined({
-        url: mergeDependencySource(defaults.oathkeeper?.proxyRoute?.url, oathkeeper?.proxyRoute?.url),
+        url: mergeDependencySource(
+          defaults.oathkeeper?.proxyRoute?.url,
+          oathkeeper?.proxyRoute?.url
+        ),
       }),
       apiRoute: defined({
         url: mergeDependencySource(defaults.oathkeeper?.apiRoute?.url, oathkeeper?.apiRoute?.url),
@@ -322,8 +401,10 @@ function mergeDependencySourceDefaults(
       upstream: defined({
         url: mergeDependencySource(defaults.oathkeeper?.upstream?.url, oathkeeper?.upstream?.url),
       }),
-      mutatorIdTokenJwks:
-        mergeDependencySource(defaults.oathkeeper?.mutatorIdTokenJwks, oathkeeper?.mutatorIdTokenJwks),
+      mutatorIdTokenJwks: mergeDependencySource(
+        defaults.oathkeeper?.mutatorIdTokenJwks,
+        oathkeeper?.mutatorIdTokenJwks
+      ),
     }),
     courier: mergeDependencySource(defaults.courier, explicit?.courier),
   });
@@ -356,12 +437,9 @@ export const oryIdentityStack = kubernetesComposition(
     const resolvedVersion = typedSpec.version ?? ORY_CHART_VERSION;
     const concreteSpec =
       !isSchemaSpec(typedSpec) &&
-      ![
-        typedSpec.name,
-        typedSpec.namespace,
-        typedSpec.version,
-        typedSpec.dependencySources,
-      ].some((value) => isKubernetesRef(value));
+      ![typedSpec.name, typedSpec.namespace, typedSpec.version, typedSpec.dependencySources].some(
+        (value) => isKubernetesRef(value)
+      );
     const graphSpec = graphSafeConfig(typedSpec, !concreteSpec);
     const graphFallbackSpec = graphSpec;
     const graphDependencySources = mergeDependencySourceDefaults(
@@ -381,21 +459,29 @@ export const oryIdentityStack = kubernetesComposition(
         version: resolvedVersion,
       });
     }
+    values = {
+      ...values,
+      hydra: withStackOwnedChartNames(values.hydra, 'hydra', `${typedSpec.name}-hydra`),
+      kratos: withStackOwnedChartNames(values.kratos, 'kratos', `${typedSpec.name}-kratos`),
+    };
 
-    if (concreteSpec) {
-      namespace({
-        id: 'oryNamespace',
-        metadata: {
-          name: resolvedNamespace,
-          labels: {
-            'app.kubernetes.io/name': 'ory-identity-stack',
-            'app.kubernetes.io/instance': typedSpec.name,
-            'app.kubernetes.io/version': resolvedVersion,
-            'app.kubernetes.io/managed-by': 'typekro',
-          },
+    const ownsNamespace = concreteSpec
+      ? typedSpec.namespaceOwnership !== 'external'
+      : Cel.expr<boolean>(
+          '!has(schema.spec.namespaceOwnership) || schema.spec.namespaceOwnership == "owned"'
+        );
+    namespace({
+      id: 'oryNamespace',
+      metadata: {
+        name: resolvedNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'ory-identity-stack',
+          'app.kubernetes.io/instance': typedSpec.name,
+          'app.kubernetes.io/version': resolvedVersion,
+          'app.kubernetes.io/managed-by': 'typekro',
         },
-      });
-    }
+      },
+    }).withIncludeWhen(ownsNamespace);
 
     const _oryHelmRepository = oryHelmRepository({
       id: 'oryHelmRepository',
@@ -424,11 +510,12 @@ export const oryIdentityStack = kubernetesComposition(
       version: resolvedVersion,
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
-      values: withMaesterSubchartValues(
-        values.hydra,
-        'hydra-maester',
-        values.hydraMaester
-      ),
+      values: withMaesterSubchartValues(values.hydra, 'hydra-maester', values.hydraMaester),
+      postRenderers: [
+        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-hydra`, 'hydra', [
+          'SECRETS_SYSTEM',
+        ]),
+      ],
     });
 
     const kratos = kratosHelmRelease({
@@ -439,6 +526,18 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: values.kratos,
+      postRenderers: [
+        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-kratos`, 'kratos', [
+          'SECRETS_COOKIE',
+          'SECRETS_CIPHER',
+        ]),
+        removeChartOwnedSecretEnv(
+          'StatefulSet',
+          `${typedSpec.name}-kratos-courier`,
+          'kratos-courier',
+          ['SECRETS_COOKIE', 'SECRETS_CIPHER']
+        ),
+      ],
     });
 
     const keto = ketoHelmRelease({

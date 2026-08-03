@@ -195,6 +195,54 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
     expect(yaml).not.toContain('__KUBERNETES_REF_');
   });
 
+  it('serializes graph-aware Flux post-renderer patch targets', () => {
+    const graph = toResourceGraph(
+      {
+        name: 'helm-post-renderers',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'TestApp',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      (schema) => ({
+        app: helmRelease({
+          name: 'my-app',
+          chart: {
+            repository: 'https://charts.example.com',
+            name: 'my-chart',
+          },
+          postRenderers: [
+            {
+              kustomize: {
+                patches: [
+                  {
+                    target: {
+                      group: 'apps',
+                      version: 'v1',
+                      kind: 'Deployment',
+                      name: schema.spec.hostname,
+                    },
+                    patch: '- op: remove\n  path: /metadata/annotations/legacy',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+      () => ({ ready: true })
+    );
+
+    const yaml = graph.toYaml();
+
+    expect(yaml).toContain('postRenderers:');
+    expect(yaml).toContain('kustomize:');
+    expect(yaml).toContain('patches:');
+    expect(yaml).toContain('name: ${schema.spec.hostname}');
+    expect(yaml).toContain('/metadata/annotations/legacy');
+    expect(yaml).not.toContain('__KUBERNETES_REF_');
+  });
+
   it('rejects Flux 2.9 literal values sources while the managed baseline is Flux 2.7.5', () => {
     expect(() =>
       helmRelease({

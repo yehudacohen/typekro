@@ -19,6 +19,39 @@ export interface HelmReleaseValuesFromSource {
   optional?: boolean;
 }
 
+/** Select Kubernetes resources for a Flux Kustomize post-render patch. */
+export interface HelmReleasePostRendererPatchTarget {
+  group?: string;
+  version?: string;
+  kind?: string;
+  name?: string;
+  namespace?: string;
+  labelSelector?: string;
+  annotationSelector?: string;
+}
+
+/** An inline strategic-merge or JSON 6902 patch applied after Helm rendering. */
+export interface HelmReleasePostRendererPatch {
+  patch: string;
+  target?: HelmReleasePostRendererPatchTarget;
+}
+
+/** Rewrite an image reference after Helm rendering. */
+export interface HelmReleasePostRendererImage {
+  name: string;
+  newName?: string;
+  newTag?: string;
+  digest?: string;
+}
+
+/** Flux Kustomize post-renderer configuration. */
+export interface HelmReleasePostRenderer {
+  kustomize: {
+    patches?: HelmReleasePostRendererPatch[];
+    images?: HelmReleasePostRendererImage[];
+  };
+}
+
 // Helm Release Resource Types
 export interface HelmReleaseSpec<TValues extends object = Record<string, unknown>> {
   interval?: string;
@@ -41,6 +74,8 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
   values?: TypeKroChartValues<TValues>;
   /** Values loaded from Secrets or ConfigMaps by Flux. */
   valuesFrom?: HelmReleaseValuesFromSource[];
+  /** Kustomize transformations applied by Flux after Helm renders the chart. */
+  postRenderers?: HelmReleasePostRenderer[];
   targetNamespace?: string;
   install?: {
     createNamespace?: boolean;

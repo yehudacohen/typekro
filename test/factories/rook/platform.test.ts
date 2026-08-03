@@ -173,6 +173,28 @@ describe('official Rook Ceph cluster chart platform', () => {
     expectCleanYaml(yaml);
   });
 
+  it('keeps the object store behind the executable cluster release lifecycle edge', async () => {
+    const declarations = await rookCephSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toAlchemyResources({
+        name: 'rook-local',
+        profile: 'single-node-development',
+        namespace: 'ceph-data',
+        operatorNamespace: 'ceph-operator',
+        storageClassName: 'local-path',
+        bucketStorageClassName: 'harbor-retain',
+      });
+    const clusterRelease = declarations.find(
+      (declaration) => declaration.props.resourceId === 'clusterRelease'
+    );
+    const objectStore = declarations.find(
+      (declaration) => declaration.props.resourceId === 'objectStore'
+    );
+
+    expect(clusterRelease).toBeDefined();
+    expect(objectStore?.dependsOn).toContain(clusterRelease?.id);
+  });
+
   it('generates a KRO graph with complete public status and graph-aware defaults', () => {
     const yaml = rookCephSingleNodePlatform
       .factory('kro', { namespace: 'typekro-control' })

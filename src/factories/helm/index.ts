@@ -33,6 +33,10 @@ export { helmReleaseConditionSummary } from './status.js';
 
 // types.ts
 export type {
+  HelmReleasePostRenderer,
+  HelmReleasePostRendererImage,
+  HelmReleasePostRendererPatch,
+  HelmReleasePostRendererPatchTarget,
   HelmReleaseSpec,
   HelmReleaseStatus,
   HelmReleaseValuesFromSource,

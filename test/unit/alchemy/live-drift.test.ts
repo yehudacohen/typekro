@@ -116,6 +116,29 @@ describe('Alchemy persisted TypeKro resource drift', () => {
     expect(sleeps).toBe(1);
   });
 
+  it('uses a runtime-neutral default wait while a terminating identity disappears', async () => {
+    let reads = 0;
+    await waitForPersistedIdentityDeletionForTest(props, output, undefined, {
+      reader: {
+        read: async () => {
+          reads += 1;
+          if (reads === 1) {
+            return {
+              ...deployed,
+              metadata: {
+                ...deployed.metadata,
+                deletionTimestamp: new Date('2026-08-02T00:00:00.000Z'),
+              },
+            };
+          }
+          throw Object.assign(new Error('not found'), { statusCode: 404 });
+        },
+      },
+      pollIntervalMs: 0,
+    });
+    expect(reads).toBe(2);
+  });
+
   it('fails rather than reporting success while a persisted identity remains terminating', async () => {
     const owner = {
       apiVersion: 'apps/v1',

@@ -105,6 +105,13 @@ function lowerSchemaNode(value: unknown, path: string, state: SchemaLoweringStat
     if (value === 'string' || value === 'number' || value === 'boolean' || value === 'unknown') {
       return { kind: 'primitive', type: value };
     }
+    if (value === 'object') {
+      return {
+        kind: 'object',
+        properties: [],
+        additionalProperties: true,
+      };
+    }
     if (value === 'null') return { kind: 'primitive', type: 'null' };
     return unsupportedSchemaNode(value, path, state, `Unsupported ArkType string node ${value}`);
   }
@@ -143,7 +150,16 @@ function lowerSchemaNode(value: unknown, path: string, state: SchemaLoweringStat
       ...schemaProperties(Reflect.get(value, 'required'), true, `${path}.required`, state),
       ...schemaProperties(Reflect.get(value, 'optional'), false, `${path}.optional`, state),
     ].sort((left, right) => left.name.localeCompare(right.name));
-    return { kind: 'object', properties };
+    const undeclared = Reflect.get(value, 'undeclared');
+    return {
+      kind: 'object',
+      properties,
+      // ArkType omits `undeclared` for both its ordinary passthrough policy
+      // and explicit `ignore`. Only reject/delete describe a closed shape.
+      ...(undeclared === 'reject' || undeclared === 'delete'
+        ? {}
+        : { additionalProperties: true }),
+    };
   }
 
   if (domain === 'string' || domain === 'number' || domain === 'boolean') {

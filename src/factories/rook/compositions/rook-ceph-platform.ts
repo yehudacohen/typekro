@@ -136,6 +136,11 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       id: 'objectStore',
     });
     objectStore.dependsOn(cluster);
+    // `cluster` is an observed prerequisite rather than an applied graph node.
+    // Preserve the executable lifecycle edge explicitly so direct/Alchemy
+    // teardown removes the object store before deleting the HelmRelease that
+    // owns the CephCluster and its finalizer.
+    objectStore.dependsOn(clusterRelease);
     const bucketStorageClass = rookBucketStorageClass({
       name: bucketStorageClassName,
       objectStoreName,
@@ -266,6 +271,7 @@ export const rookCephProductionPlatform = kubernetesComposition(
       id: 'objectStore',
     });
     objectStore.dependsOn(cluster);
+    objectStore.dependsOn(clusterRelease);
     const bucketStorageClass = rookBucketStorageClass({
       name: bucketStorageClassName,
       objectStoreName,
@@ -390,6 +396,7 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       id: 'objectStore',
     });
     objectStore.dependsOn(cluster);
+    objectStore.dependsOn(clusterRelease);
     const bucketStorageClass = rookBucketStorageClass({
       name: bucketStorageClassName,
       objectStoreName,

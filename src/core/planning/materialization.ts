@@ -12,6 +12,16 @@ import {
 /** Explicit bindings supplied after pure planning and before artifact execution. */
 export interface PlanMaterializationBindings {
   readonly spec?: unknown;
+  /**
+   * Live Kubernetes resources keyed by their canonical composition resource id.
+   *
+   * Ordinary direct artifact materialization omits this map and preserves
+   * resource references for the deployment engine. Composition-output
+   * materialization supplies it after Alchemy has reconciled the complete
+   * resource graph, allowing the exact same PlanValue to hydrate a concrete
+   * result without re-running the authoring closure.
+   */
+  readonly resources?: Readonly<Record<string, unknown>>;
   readonly sensitive?: Readonly<Record<string, unknown>>;
   readonly externalInputs?: Readonly<Record<string, unknown>>;
   readonly artifactOutputs?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
@@ -281,6 +291,7 @@ function evaluatePortableExpression(
       if (guarded) ensureEvaluationPath(specContext, reference.fieldPath);
     }
     const context: Record<string, unknown> = {
+      ...(bindings.resources ?? {}),
       schema: { spec: specContext },
       ...(bindings.locals ?? {}),
     };
@@ -302,6 +313,10 @@ function evaluatePortableExpression(
             ? Object.keys(value).length
             : 0,
       has: (value: unknown) => value !== undefined && value !== null,
+      // KRO uses dyn() for static type widening. Portable direct execution
+      // preserves the same expression and therefore treats it as runtime
+      // identity, matching the direct/schema CEL evaluators.
+      dyn: (value: unknown) => value,
       concat: (...values: unknown[]) => values.join(''),
     });
   } catch (error: unknown) {
@@ -442,6 +457,22 @@ function materialize(
       if (!value.resourceId) {
         throw new PlanMaterializationError(`Resource reference has no producer id.`, path);
       }
+      if (Object.hasOwn(bindings.resources ?? {}, value.resourceId)) {
+        return readPath(
+          bindings.resources?.[value.resourceId],
+          value.fieldPath,
+          path,
+          value.optional === true
+        );
+      }
+      if (bindings.resources !== undefined) {
+        if (value.optional === true) return OMIT;
+        throw new PlanMaterializationError(
+          `Required resource binding ${value.resourceId} is not present in materialization input.`,
+          path,
+          { resourceId: value.resourceId, fieldPath: value.fieldPath }
+        );
+      }
       return runtimeReference(
         bindings.resourceIds?.[value.resourceId] ?? value.resourceId,
         value.fieldPath,
@@ -457,7 +488,29 @@ function materialize(
           { language: value.expression.language }
         );
       }
-      if (value.expression.references.some((reference) => reference.source === 'resource')) {
+      if (bindings.resources !== undefined) {
+        const missingResource = value.expression.references.find(
+          (reference) =>
+            reference.source === 'resource' &&
+            (!reference.resourceId ||
+              !Object.hasOwn(bindings.resources ?? {}, reference.resourceId))
+        );
+        if (missingResource) {
+          throw new PlanMaterializationError(
+            `Required resource binding ${missingResource.resourceId ?? '<unknown>'} is not present in materialization input.`,
+            path,
+            {
+              resourceId: missingResource.resourceId ?? '<unknown>',
+              fieldPath: missingResource.fieldPath,
+              expression: value.expression.expression,
+            }
+          );
+        }
+      }
+      if (
+        value.expression.references.some((reference) => reference.source === 'resource') &&
+        bindings.resources === undefined
+      ) {
         return runtimeExpression(value.expression.expression);
       }
       if (
@@ -485,10 +538,42 @@ function materialize(
           continue;
         }
         if (segment.kind === 'expression') {
-          const onlySpecReferences = segment.expression.references.every(
+          const resourceReferences = segment.expression.references.filter(
+            (reference) => reference.source === 'resource'
+          );
+          const specReferences = segment.expression.references.filter(
             (reference) => reference.source === 'spec'
           );
-          if (bindings.spec !== undefined && onlySpecReferences) {
+          if (bindings.resources !== undefined) {
+            const missingResource = resourceReferences.find(
+              (reference) =>
+                !reference.resourceId ||
+                !Object.hasOwn(bindings.resources ?? {}, reference.resourceId)
+            );
+            if (missingResource) {
+              throw new PlanMaterializationError(
+                `Required resource binding ${missingResource.resourceId ?? '<unknown>'} is not present in materialization input.`,
+                path,
+                {
+                  resourceId: missingResource.resourceId ?? '<unknown>',
+                  fieldPath: missingResource.fieldPath,
+                  expression: segment.expression.expression,
+                }
+              );
+            }
+            if (specReferences.length > 0 && bindings.spec === undefined) {
+              throw new PlanMaterializationError(
+                `Spec binding is required to evaluate ${segment.expression.expression}.`,
+                path,
+                { expression: segment.expression.expression }
+              );
+            }
+          }
+          const canEvaluate =
+            segment.expression.language === 'portable-cel' &&
+            (resourceReferences.length === 0 || bindings.resources !== undefined) &&
+            (specReferences.length === 0 || bindings.spec !== undefined);
+          if (canEvaluate) {
             renderedSegments.push(
               String(
                 evaluatePortableExpression(
@@ -516,6 +601,40 @@ function materialize(
           if (resolved === OMIT) return OMIT;
           renderedSegments.push(String(resolved));
           continue;
+        }
+        if (segment.source === 'spec' && bindings.resources !== undefined) {
+          if (segment.optional === true) return OMIT;
+          throw new PlanMaterializationError(
+            `Spec binding is required to resolve ${segment.fieldPath}.`,
+            path,
+            { fieldPath: segment.fieldPath }
+          );
+        }
+        if (
+          segment.source === 'resource' &&
+          segment.resourceId &&
+          Object.hasOwn(bindings.resources ?? {}, segment.resourceId)
+        ) {
+          const resolved = readPath(
+            bindings.resources?.[segment.resourceId],
+            segment.fieldPath,
+            path,
+            segment.optional === true
+          );
+          if (resolved === OMIT) return OMIT;
+          renderedSegments.push(String(resolved));
+          continue;
+        }
+        if (segment.source === 'resource' && bindings.resources !== undefined) {
+          if (segment.optional === true) return OMIT;
+          throw new PlanMaterializationError(
+            `Required resource binding ${segment.resourceId ?? '<unknown>'} is not present in materialization input.`,
+            path,
+            {
+              resourceId: segment.resourceId ?? '<unknown>',
+              fieldPath: segment.fieldPath,
+            }
+          );
         }
         renderedSegments.push(
           markerString(
@@ -572,6 +691,29 @@ export function materializePlanValue(
 ): unknown {
   const result = materialize(value, bindings, path);
   return result === OMIT ? undefined : result;
+}
+
+/**
+ * Hydrate a composition's canonical output map from concrete bindings.
+ *
+ * This is deliberately a planning/runtime seam rather than an Alchemy helper:
+ * TypeKro owns the meaning of PlanValue, while deployment backends own how
+ * live resources and provider outputs become available. Keeping the evaluator
+ * here guarantees direct factories, KRO status, and Alchemy composition
+ * outputs share one authored expression contract.
+ */
+export function materializePlanOutputs(
+  outputs: Readonly<Record<string, PlanValue>>,
+  bindings: PlanMaterializationBindings = {}
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.keys(outputs)
+      .sort()
+      .map((name) => [
+        name,
+        materializePlanValue(outputs[name] as PlanValue, bindings, `$.outputs.${name}`),
+      ])
+  );
 }
 
 /**

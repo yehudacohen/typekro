@@ -58,5 +58,7 @@ export function secret(resource: V1Secret & { id?: string }): Enhanced<SecretSpe
     kind: 'Secret',
     metadata: resource.metadata ?? { name: 'unnamed-secret' },
     // Note: No spec field - Secrets have data/stringData/type/immutable at root level
-  }).withReadinessEvaluator(createAlwaysReadyEvaluator<V1Secret>('Secret'));
+  }, { factoryName: 'secret' }).withReadinessEvaluator(
+    createAlwaysReadyEvaluator<V1Secret>('Secret')
+  );
 }

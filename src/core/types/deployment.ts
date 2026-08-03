@@ -932,7 +932,7 @@ export interface DirectResourceFactory<
    */
   toAlchemyResources(
     spec: TSpec,
-    opts?: { instanceNameOverride?: string }
+    opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]>;
 }
 

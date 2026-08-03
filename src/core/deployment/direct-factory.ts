@@ -116,6 +116,7 @@ import {
   assertNoDiscoveredSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
+import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import { DirectDeploymentStrategy } from './strategies/index.js';
 
 interface DirectArtifactExecution {
@@ -1239,9 +1240,36 @@ export class DirectResourceFactoryImpl<
       readonly sensitiveBindings?: Readonly<Record<string, unknown>>;
       readonly staticYamlOptions?: StaticYamlMaterializationOptions;
       readonly preserveArtifactOutputs?: boolean;
+      /**
+       * Singleton ownership is part of the desired Kubernetes object, not
+       * provider-only decoration. Include it before semantic compilation so
+       * the canonical execution record and every rehydrated apply preserve
+       * the same drift identity.
+       */
+      readonly singletonSpecFingerprint?: string;
     } = {}
   ): DirectArtifactExecution {
-    const legacyGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const capturedGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const legacyGraph = options.singletonSpecFingerprint
+      ? {
+          ...capturedGraph,
+          resources: capturedGraph.resources.map(({ id, manifest }) => {
+            const decorated = {
+              ...manifest,
+              metadata: {
+                ...manifest.metadata,
+                annotations: {
+                  ...manifest.metadata.annotations,
+                  [SINGLETON_SPEC_FINGERPRINT_ANNOTATION]:
+                    options.singletonSpecFingerprint as string,
+                },
+              },
+            } as typeof manifest;
+            copyResourceMetadata(manifest, decorated);
+            return { id, manifest: decorated };
+          }),
+        }
+      : capturedGraph;
     const capture = this.factoryOptions.semanticCapture;
     if (!capture) return { graph: legacyGraph };
 
@@ -1513,10 +1541,14 @@ export class DirectResourceFactoryImpl<
    */
   async toAlchemyResources(
     spec: TSpec,
-    opts?: { instanceNameOverride?: string }
+    opts?: { instanceNameOverride?: string; singletonSpecFingerprint?: string }
   ): Promise<AlchemyResourceDeclaration[]> {
+    const singletonDeclarations = await this.singletonAlchemyDeclarations(spec);
     const execution = this.createArtifactExecutionForInstance(spec, opts?.instanceNameOverride, {
       preserveArtifactOutputs: true,
+      ...(opts?.singletonSpecFingerprint
+        ? { singletonSpecFingerprint: opts.singletonSpecFingerprint }
+        : {}),
     });
     this.assertExecutionCapabilities(execution, { host: 'alchemy', output: 'live' });
     const graph = execution.graph;
@@ -1636,7 +1668,7 @@ export class DirectResourceFactoryImpl<
     // authoritative ordering rather than reinterpreting serialized manifest strings.
     const ordered = graph.dependencyGraph.getTopologicalOrder();
 
-    return ordered.flatMap((graphId) => {
+    const applicationDeclarations = ordered.flatMap((graphId) => {
       const node = byGraphId.get(graphId);
       if (!node) return [];
       const artifact = artifactByLogicalId.get(node.logicalId);
@@ -1758,6 +1790,83 @@ export class DirectResourceFactoryImpl<
         },
       };
     });
+    if (singletonDeclarations.length === 0) return applicationDeclarations;
+
+    const singletonIds = singletonDeclarations.map((declaration) => declaration.id);
+    const applicationIds = new Set(applicationDeclarations.map((declaration) => declaration.id));
+    const collision = singletonDeclarations.find((declaration) =>
+      applicationIds.has(declaration.id)
+    );
+    if (collision) {
+      throw new ValidationError(
+        `Direct Alchemy singleton declaration ${collision.id} collides with an application resource. ` +
+          `Singleton owners and consumers must have distinct declaration identities.`,
+        this.schemaDefinition.kind,
+        this.name,
+        'alchemy'
+      );
+    }
+    return [
+      ...singletonDeclarations,
+      ...applicationDeclarations.map((declaration) => ({
+        ...declaration,
+        dependsOn: [...new Set([...singletonIds, ...declaration.dependsOn])],
+      })),
+    ];
+  }
+
+  private async singletonAlchemyDeclarations(
+    spec: TSpec
+  ): Promise<AlchemyResourceDeclaration[]> {
+    const definitions = this.discoverSingletonDefinitions(spec);
+    if (definitions.length === 0) return [];
+
+    const declarations = new Map<string, AlchemyResourceDeclaration>();
+    for (const definition of definitions) {
+      const ownerFactory = definition.composition.factory('direct', {
+        namespace: definition.registryNamespace,
+        waitForReady: true,
+        ...(this.factoryOptions.timeout !== undefined
+          ? { timeout: this.factoryOptions.timeout }
+          : {}),
+        ...(this.factoryOptions.kubeConfig !== undefined
+          ? { kubeConfig: this.factoryOptions.kubeConfig }
+          : {}),
+        ...(this.factoryOptions.alchemyKubeConfig !== undefined
+          ? { alchemyKubeConfig: this.factoryOptions.alchemyKubeConfig }
+          : {}),
+        ...(this.factoryOptions.skipTLSVerify !== undefined
+          ? { skipTLSVerify: this.factoryOptions.skipTLSVerify }
+          : {}),
+        ...(this.factoryOptions.applyPolicy !== undefined
+          ? { applyPolicy: this.factoryOptions.applyPolicy }
+          : {}),
+      }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
+      const ownerDeclarations = await ownerFactory.toAlchemyResources(definition.spec, {
+        instanceNameOverride: getSingletonInstanceName(definition.id),
+        singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(
+          definition.specFingerprint
+        ),
+      });
+      for (const declaration of ownerDeclarations) {
+        const retained = {
+          ...declaration,
+          props: { ...declaration.props, retain: true },
+        };
+        const existing = declarations.get(retained.id);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(retained)) {
+          throw new ValidationError(
+            `Direct Alchemy singleton declarations disagree on ${retained.id}. ` +
+              `A shared singleton identity must resolve to one canonical resource graph.`,
+            this.schemaDefinition.kind,
+            definition.id,
+            'alchemy'
+          );
+        }
+        declarations.set(retained.id, retained);
+      }
+    }
+    return [...declarations.values()];
   }
 
   /**
@@ -2514,7 +2623,7 @@ export class DirectResourceFactoryImpl<
     }
   }
 
-  private async ensureSingletonOwners(spec: TSpec, operationSignal?: AbortSignal): Promise<void> {
+  private discoverSingletonDefinitions(spec: TSpec): SingletonDefinitionRecord[] {
     const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
 
     if (this.factoryOptions.compositionFn) {
@@ -2534,9 +2643,16 @@ export class DirectResourceFactoryImpl<
       }
     }
 
-    if (discoveredSingletons.size === 0) return;
+    return [...discoveredSingletons.values()].sort((left, right) =>
+      left.key.localeCompare(right.key)
+    );
+  }
 
-    for (const definition of discoveredSingletons.values()) {
+  private async ensureSingletonOwners(spec: TSpec, operationSignal?: AbortSignal): Promise<void> {
+    const discoveredSingletons = this.discoverSingletonDefinitions(spec);
+    if (discoveredSingletons.length === 0) return;
+
+    for (const definition of discoveredSingletons) {
       await this.ensureTargetNamespace(definition.registryNamespace, operationSignal);
 
       const singletonInstanceName = getSingletonInstanceName(definition.id);

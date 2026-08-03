@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Semantic planning now represents ArkType's explicitly open `object` and
+  `object[]` nodes—including root `type('object')` schemas and ordinary or
+  `ignore` undeclared-key policies—without falsely opening `reject`/`delete`
+  shapes. The Kubernetes Secret factory also records its exact
+  lowercase factory provenance, so managed Ory platform compositions produce
+  valid strict plans when both `Secret` registrations are loaded.
+- Direct Alchemy declarations now recursively materialize singleton-owner
+  compositions, preserve their spec fingerprints, order consumers after the
+  complete owner graph, and retain shared owner resources. Compositions whose
+  entire direct surface is a singleton reference, such as the shared
+  OpenSearch operator bootstrap, no longer report a successful empty plan.
+- Portable direct-plan materialization now evaluates KRO's `dyn()` type
+  widening as runtime identity, matching the other direct CEL evaluators and
+  preserving structured defaults inside recursively materialized owners.
+- Envoy AI Gateway platform installations can declare their controller
+  namespaces externally owned, allowing a parent Alchemy graph to establish a
+  generated credential before the platform Helm releases without competing
+  Namespace owners.
+- Ory identity and platform stacks can declare their target namespace
+  externally owned when a parent deployment graph is the lifecycle authority.
 - **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by
   arktype as the string `"object"`, which the KRO type mapper had no case for, so it fell through to the
   `string` default. Every schemaless-object field was therefore declared `string` in the generated RGD and KRO

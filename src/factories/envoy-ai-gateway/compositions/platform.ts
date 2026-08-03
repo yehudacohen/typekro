@@ -49,6 +49,7 @@ export function makeEnvoyAIGatewayPlatformInstallation(
       status: EnvoyAIGatewayPlatformStatusSchema,
     },
     (spec: EnvoyAIGatewayPlatformInstallationSpec) => {
+      const graphMode = isKubernetesRef(spec.name);
       const envoyGatewayNamespace = defaultString(
         spec.envoyGatewayNamespace,
         DEFAULT_ENVOY_GATEWAY_NAMESPACE
@@ -71,6 +72,14 @@ export function makeEnvoyAIGatewayPlatformInstallation(
       );
       const repositoryNamespace = defaultString(spec.repositoryNamespace, DEFAULT_FLUX_NAMESPACE);
       const rateLimitRedisUrl = options.rateLimitRedisUrl;
+      const defaultNamespaceOwnership = options.namespaceOwnership ?? 'owned';
+      const ownsNamespaces = graphMode
+        ? Cel.expr<boolean>(
+            `has(schema.spec.namespaceOwnership) ? ` +
+              `schema.spec.namespaceOwnership == "owned" : ` +
+              `${defaultNamespaceOwnership === 'owned'}`
+          )
+        : (spec.namespaceOwnership ?? defaultNamespaceOwnership) !== 'external';
 
       namespace({
         metadata: {
@@ -78,14 +87,14 @@ export function makeEnvoyAIGatewayPlatformInstallation(
           labels: platformLabels('envoy-gateway'),
         },
         id: 'envoyGatewayNamespace',
-      });
+      }).withIncludeWhen(ownsNamespaces);
       namespace({
         metadata: {
           name: aiGatewayNamespace,
           labels: platformLabels('envoy-ai-gateway'),
         },
         id: 'aiGatewayNamespace',
-      });
+      }).withIncludeWhen(ownsNamespaces);
       configMap({
         metadata: {
           name: `${spec.name}-platform-contract`,
@@ -206,6 +215,7 @@ export function makeEnvoyAIGatewayPlatformBootstrap(
     aiGatewayVersion: options.aiGatewayVersion ?? DEFAULT_ENVOY_AI_GATEWAY_VERSION,
     repositoryName: options.repositoryName ?? DEFAULT_ENVOY_PROXY_REPOSITORY_NAME,
     repositoryNamespace: options.repositoryNamespace ?? DEFAULT_FLUX_NAMESPACE,
+    namespaceOwnership: options.namespaceOwnership ?? 'owned',
     gatewayClassName: options.gatewayClassName ?? DEFAULT_ENVOY_AI_GATEWAY_CLASS_NAME,
     configurationDigest: platformConfigurationDigest(options),
   };
@@ -341,6 +351,7 @@ function platformConfigurationDigest(options: EnvoyAIGatewayPlatformBuildOptions
       envoyGatewayValues: options.envoyGatewayValues ?? {},
       aiGatewayValues: options.aiGatewayValues ?? {},
       rateLimitRedisUrl: options.rateLimitRedisUrl ?? null,
+      namespaceOwnership: options.namespaceOwnership ?? 'owned',
       mcpSessionEncryptionSeedSecret: options.mcpSessionEncryptionSeedSecret ?? null,
     })
   );

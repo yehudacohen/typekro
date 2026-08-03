@@ -29,6 +29,11 @@ import type {
   OryValueSource,
 } from '../types.js';
 
+// Hydra Maester v0.0.40+ regressed namespaced cache scoping even when the
+// chart passes --namespace. Keep the last known-good controller until the
+// upstream fix for ory/hydra-maester#252 is released.
+const HYDRA_MAESTER_SINGLE_NAMESPACE_IMAGE_TAG = 'v0.0.39';
+
 function hasValueSource(source: OryValueSource | undefined): boolean {
   return !!source && (('secretRef' in source && !!source.secretRef.name && !!source.secretRef.key) || ('value' in source && source.value.length > 0));
 }
@@ -640,6 +645,7 @@ export const mapOryConfigToHelmValues: OryHelmValuesMapper = (config) => {
     hydraMaester: mergeValues<OryHydraMaesterChartValues>(
       compact<OryHydraMaesterChartValues>({
         singleNamespaceMode: resolvedConfig.maester?.hydra?.singleNamespaceMode ?? true,
+        image: { tag: HYDRA_MAESTER_SINGLE_NAMESPACE_IMAGE_TAG },
         enabledNamespaces: resolvedConfig.maester?.hydra?.enabledNamespaces,
         serviceMonitor: resolvedConfig.maester?.hydra?.serviceMonitor,
       }),

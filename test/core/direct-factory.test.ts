@@ -4,7 +4,16 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, createResource, simple, toResourceGraph } from '../../src/index.js';
+import {
+  Cel,
+  createResource,
+  kubernetesComposition,
+  simple,
+  singleton,
+  toResourceGraph,
+} from '../../src/index.js';
+import { resourceFromDirectArtifactRecordForTest } from '../../src/alchemy/resource-registration.js';
+import { getReadinessEvaluator } from '../../src/core/metadata/index.js';
 import { decodeDirectArtifactExecutionRecord } from '../../src/experimental-planning.js';
 
 describe('DirectResourceFactory', () => {
@@ -452,6 +461,78 @@ describe('DirectResourceFactory', () => {
       }
       // Distinct alchemy ids per resource (independent state entries).
       expect(decls[0]!.id).not.toBe(decls[1]!.id);
+    });
+
+    it('emits singleton-owner resources when Alchemy is the direct deployment authority', async () => {
+      const owner = kubernetesComposition(
+        {
+          name: 'direct-alchemy-singleton-owner',
+          apiVersion: 'testing.typekro.dev/v1alpha1',
+          kind: 'DirectAlchemySingletonOwner',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (ownerSpec) => {
+          const config = simple.ConfigMap({
+            id: 'ownerConfig',
+            name: ownerSpec.name,
+            namespace: 'typekro-singletons',
+            data: { installed: 'true' },
+          });
+          config.withReadinessEvaluator((resource) => ({
+            ready: resource.data?.installed === 'true',
+            message: 'runtime-bound singleton readiness',
+          }));
+          return { ready: true };
+        }
+      );
+      const consumer = kubernetesComposition(
+        {
+          name: 'direct-alchemy-singleton-consumer',
+          apiVersion: 'testing.typekro.dev/v1alpha1',
+          kind: 'DirectAlchemySingletonConsumer',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        () => {
+          const shared = singleton(owner, {
+            id: 'shared-owner',
+            spec: { name: 'shared-owner' },
+          });
+          return { ready: shared.status.ready };
+        }
+      );
+
+      const declarations = await consumer
+        .factory('direct', { namespace: 'apps' })
+        .toAlchemyResources({ name: 'consumer' });
+
+      expect(declarations).toHaveLength(1);
+      expect(declarations[0]?.props.resource.kind).toBe('ConfigMap');
+      expect(declarations[0]?.props.resource.metadata).toMatchObject({
+        name: 'shared-owner',
+        namespace: 'typekro-singletons',
+        annotations: {
+          'typekro.io/singleton-spec-fingerprint': expect.stringMatching(
+            /^fnv64:[a-f0-9]{16}$/
+          ),
+        },
+      });
+      expect(declarations[0]?.props.retain).toBe(true);
+      expect(declarations[0]?.props.resourceId).toContain('ownerConfig');
+      expect(declarations[0]?.props.artifactExecutionRecord).toBeString();
+      const rehydrated = resourceFromDirectArtifactRecordForTest(
+        declarations[0]!.props
+      );
+      expect(rehydrated?.metadata.annotations).toEqual(
+        expect.objectContaining({
+          'typekro.io/singleton-spec-fingerprint': expect.stringMatching(
+            /^fnv64:[a-f0-9]{16}$/
+          ),
+        })
+      );
+      expect(getReadinessEvaluator(declarations[0]!.props.resource)).toBeFunction();
+      expect(getReadinessEvaluator(rehydrated!)).toBeFunction();
     });
 
     it('persists an explicitly authored resource namespace instead of the factory default', async () => {

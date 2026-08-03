@@ -145,6 +145,15 @@ function schemaNode(value: unknown, path: string): asserts value is SchemaNodeIR
       schemaNode(node.values, `${path}.values`);
       return;
     case 'object': {
+      if (
+        node.additionalProperties !== undefined &&
+        node.additionalProperties !== true
+      ) {
+        throw new DesiredStatePlanDecodeError(
+          `Invalid additionalProperties flag at ${path}.`,
+          `${path}.additionalProperties`
+        );
+      }
       const names = new Set<string>();
       array(node.properties, `${path}.properties`).forEach((propertyValue, index) => {
         const property = record(propertyValue, `${path}.properties[${index}]`);

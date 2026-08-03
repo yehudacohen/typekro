@@ -176,7 +176,12 @@ export type SchemaNodeIR =
   | { readonly kind: 'literal'; readonly value: PlanPrimitive }
   | { readonly kind: 'array'; readonly items: SchemaNodeIR }
   | { readonly kind: 'map'; readonly values: SchemaNodeIR }
-  | { readonly kind: 'object'; readonly properties: readonly SchemaPropertyIR[] }
+  | {
+      readonly kind: 'object';
+      readonly properties: readonly SchemaPropertyIR[];
+      /** The schema accepts keys beyond the explicitly described properties. */
+      readonly additionalProperties?: true;
+    }
   | { readonly kind: 'union'; readonly variants: readonly SchemaNodeIR[] }
   | { readonly kind: 'unsupported'; readonly description: string; readonly raw: PlanValue };
 

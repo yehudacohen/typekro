@@ -74,6 +74,14 @@ const release = helmRelease({
     name: 'my-app-values',
     valuesKey: 'databaseUrl',
     targetPath: 'config.databaseUrl'
+  }],
+  postRenderers: [{
+    kustomize: {
+      patches: [{
+        target: { group: 'apps', version: 'v1', kind: 'Deployment', name: 'my-app' },
+        patch: '- op: remove\n  path: /metadata/annotations/legacy'
+      }]
+    }
   }]
 });
 ```
@@ -87,6 +95,12 @@ the managed Flux 2.7.5 baseline. TypeKro intentionally withholds Flux 2.9's
 `literal` field until the managed runtime and Kubernetes compatibility baseline
 can move together. Use chart-native `envFrom` or mounted files for arbitrary
 Secret bytes; do not route credentials with punctuation through `targetPath`.
+
+`postRenderers` exposes Flux's Kustomize post-rendering boundary for
+strategic-merge and JSON 6902 patches. Patch targets are graph-aware, so their
+names and namespaces may come from schema or resource references. Prefer
+chart-native values for ordinary configuration; use post-rendering when an
+upstream chart cannot express a required manifest transformation.
 
 ## helmRepository()
 
