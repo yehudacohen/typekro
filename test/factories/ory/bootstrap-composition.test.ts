@@ -60,18 +60,33 @@ describe('Ory identity stack composition', () => {
       name: 'identity',
       dependencySources: {
         hydra: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'hydra' } } } },
-          systemSecret: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'hydra-system' } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'hydra' } } },
+          },
+          systemSecret: {
+            mode: 'external',
+            value: { secretRef: { name: 'ory-secrets', key: 'hydra-system' } },
+          },
         },
         kratos: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'kratos' } } },
+          },
           secrets: {
-            cookie: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } } },
-            cipher: { mode: 'external', value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } } },
+            cookie: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+            },
+            cipher: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
+            },
           },
         },
         keto: {
-          database: { dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'keto' } } } },
+          database: {
+            dsn: { mode: 'external', value: { secretRef: { name: 'ory-dsns', key: 'keto' } } },
+          },
         },
         oathkeeper: {
           mutatorIdTokenJwks: {
@@ -110,14 +125,46 @@ describe('Ory identity stack composition', () => {
       components: { hydra: true, kratos: true, keto: true, oathkeeper: true },
       maester: { hydra: true, oathkeeper: true },
       endpoints: {
-        hydraPublic: endpoint('http://hydra-public.ory-system.svc.cluster.local:4444', 'hydra-public.ory-system.svc.cluster.local', 4444),
-        hydraAdmin: endpoint('http://hydra-admin.ory-system.svc.cluster.local:4445', 'hydra-admin.ory-system.svc.cluster.local', 4445),
-        kratosPublic: endpoint('http://kratos-public.ory-system.svc.cluster.local:4433', 'kratos-public.ory-system.svc.cluster.local', 4433),
-        kratosAdmin: endpoint('http://kratos-admin.ory-system.svc.cluster.local:4434', 'kratos-admin.ory-system.svc.cluster.local', 4434),
-        ketoRead: endpoint('http://keto-read.ory-system.svc.cluster.local:4466', 'keto-read.ory-system.svc.cluster.local', 4466),
-        ketoWrite: endpoint('http://keto-write.ory-system.svc.cluster.local:4467', 'keto-write.ory-system.svc.cluster.local', 4467),
-        oathkeeperProxy: endpoint('http://oathkeeper-proxy.ory-system.svc.cluster.local:4455', 'oathkeeper-proxy.ory-system.svc.cluster.local', 4455),
-        oathkeeperApi: endpoint('http://oathkeeper-api.ory-system.svc.cluster.local:4456', 'oathkeeper-api.ory-system.svc.cluster.local', 4456),
+        hydraPublic: endpoint(
+          'http://hydra-public.ory-system.svc.cluster.local:4444',
+          'hydra-public.ory-system.svc.cluster.local',
+          4444
+        ),
+        hydraAdmin: endpoint(
+          'http://hydra-admin.ory-system.svc.cluster.local:4445',
+          'hydra-admin.ory-system.svc.cluster.local',
+          4445
+        ),
+        kratosPublic: endpoint(
+          'http://kratos-public.ory-system.svc.cluster.local:4433',
+          'kratos-public.ory-system.svc.cluster.local',
+          4433
+        ),
+        kratosAdmin: endpoint(
+          'http://kratos-admin.ory-system.svc.cluster.local:4434',
+          'kratos-admin.ory-system.svc.cluster.local',
+          4434
+        ),
+        ketoRead: endpoint(
+          'http://keto-read.ory-system.svc.cluster.local:4466',
+          'keto-read.ory-system.svc.cluster.local',
+          4466
+        ),
+        ketoWrite: endpoint(
+          'http://keto-write.ory-system.svc.cluster.local:4467',
+          'keto-write.ory-system.svc.cluster.local',
+          4467
+        ),
+        oathkeeperProxy: endpoint(
+          'http://oathkeeper-proxy.ory-system.svc.cluster.local:4455',
+          'oathkeeper-proxy.ory-system.svc.cluster.local',
+          4455
+        ),
+        oathkeeperApi: endpoint(
+          'http://oathkeeper-api.ory-system.svc.cluster.local:4456',
+          'oathkeeper-api.ory-system.svc.cluster.local',
+          4456
+        ),
       },
       version: '0.62.0',
     });
@@ -184,19 +231,15 @@ describe('Ory identity stack composition', () => {
     expect(
       externalDeclarations.filter((declaration) => declaration.props.resource.kind === 'Namespace')
     ).toEqual([]);
-    expect(factory.toYaml(owned)).toContain(
-      'typekro.io/hoisted-namespaces: \'["ory-test"]\''
-    );
-    expect(factory.toYaml(external)).toContain(
-      "typekro.io/hoisted-namespaces: '[]'"
-    );
+    expect(factory.toYaml(owned)).toContain('typekro.io/hoisted-namespaces: \'["ory-test"]\'');
+    expect(factory.toYaml(external)).toContain("typekro.io/hoisted-namespaces: '[]'");
   });
 
   it('Merges graph-mode Ory whole-object Helm values through Kro map merge', () => {
     const yaml = oryIdentityStack.toYaml();
 
     expect(yaml).toContain('schema.spec.global');
-    expect(yaml).toContain('${dyn(((has(schema.spec.hydra) && has(schema.spec.hydra.values)');
+    expect(yaml).toContain('${dyn((((has(schema.spec.hydra) && has(schema.spec.hydra.values)');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values)) : {}).merge');
     expect(yaml).toContain('["deployment"]).merge');
     expect(yaml).toContain('["hydra"]).merge');
@@ -205,6 +248,10 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('schema.spec.keto.values');
     expect(yaml).toContain('schema.spec.oathkeeper.values');
     expect(yaml).toContain('json.unmarshal(json.marshal(schema.spec.hydra.values))');
+    expect(yaml).toContain('"fullnameOverride": string(schema.spec.name) + "-hydra"');
+    expect(yaml).toContain('"nameOverride": "hydra"');
+    expect(yaml).toContain('"fullnameOverride": string(schema.spec.name) + "-kratos"');
+    expect(yaml).toContain('"nameOverride": "kratos"');
     expect(yaml).toContain('OATHKEEPER_MUTATOR_ID_TOKEN_JWKS');
     expect(yaml).toContain('postRenderers:');
     expect(yaml).toContain('name: ${string(schema.spec.name)}-hydra');
@@ -224,6 +271,82 @@ describe('Ory identity stack composition', () => {
     expect(yaml).not.toContain('[object Object]');
   });
 
+  it('keeps external-secret post-renderers aligned when raw chart naming overrides are supplied', async () => {
+    const factory = oryIdentityStack.factory('direct', { namespace: 'ory-test' });
+    const base = managedIdentityConfig('external');
+    const config = {
+      ...base,
+      dependencySources: {
+        ...base.dependencySources,
+        hydra: {
+          database: {
+            dsn: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-dsns', key: 'hydra' } },
+            },
+          },
+          systemSecret: {
+            mode: 'external',
+            value: { secretRef: { name: 'ory-secrets', key: 'hydra-system' } },
+          },
+        },
+        kratos: {
+          database: {
+            dsn: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-dsns', key: 'kratos' } },
+            },
+          },
+          secrets: {
+            cookie: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cookie' } },
+            },
+            cipher: {
+              mode: 'external',
+              value: { secretRef: { name: 'ory-secrets', key: 'kratos-cipher' } },
+            },
+          },
+        },
+      },
+      hydra: {
+        values: {
+          nameOverride: 'unsafe-hydra-name',
+          fullnameOverride: 'unsafe-hydra-fullname',
+        },
+      },
+      kratos: {
+        values: {
+          nameOverride: 'unsafe-kratos-name',
+          fullnameOverride: 'unsafe-kratos-fullname',
+        },
+      },
+    } as const;
+    const direct = await factory.toYaml(config);
+    const kro = oryIdentityStack.toYaml();
+
+    expect(direct).toContain('nameOverride: hydra');
+    expect(direct).toContain('fullnameOverride: identity-test-hydra');
+    expect(direct).toContain('nameOverride: kratos');
+    expect(direct).toContain('fullnameOverride: identity-test-kratos');
+    expect(direct).not.toContain('unsafe-hydra-name');
+    expect(direct).not.toContain('unsafe-hydra-fullname');
+    expect(direct).not.toContain('unsafe-kratos-name');
+    expect(direct).not.toContain('unsafe-kratos-fullname');
+    expect(direct).toContain('name: ory-secrets');
+    expect(direct).toContain('name: identity-test-hydra');
+    expect(direct).toContain('name: identity-test-kratos');
+    expect(direct).toContain('name: identity-test-kratos-courier');
+
+    expect(kro).toContain('"fullnameOverride": string(schema.spec.name) + "-hydra"');
+    expect(kro).toContain('"nameOverride": "hydra"');
+    expect(kro).toContain('"fullnameOverride": string(schema.spec.name) + "-kratos"');
+    expect(kro).toContain('"nameOverride": "kratos"');
+    expect(kro).toContain('name: ${string(schema.spec.name)}-hydra');
+    expect(kro).toContain('name: ${string(schema.spec.name)}-kratos');
+    expect(kro).toContain('name: ${string(schema.spec.name)}-kratos-courier');
+  });
+
   it('Generate direct-mode YAML for managed local dependency sources with starter OAuth2Client and Rule resources', async () => {
     const factory = oryIdentityStack.factory('direct', { namespace: 'ory-test' });
     const yaml = await factory.toYaml({
@@ -232,13 +355,25 @@ describe('Ory identity stack composition', () => {
       dependencySources: {
         hydra: {
           database: { dsn: { mode: 'managed', resourceName: 'identity-test-hydra-db' } },
-          systemSecret: { mode: 'managed', secretName: 'identity-test-hydra-secrets', secretKey: 'system' },
+          systemSecret: {
+            mode: 'managed',
+            secretName: 'identity-test-hydra-secrets',
+            secretKey: 'system',
+          },
         },
         kratos: {
           database: { dsn: { mode: 'managed', resourceName: 'identity-test-kratos-db' } },
           secrets: {
-            cookie: { mode: 'managed', secretName: 'identity-test-kratos-secrets', secretKey: 'cookie' },
-            cipher: { mode: 'managed', secretName: 'identity-test-kratos-secrets', secretKey: 'cipher' },
+            cookie: {
+              mode: 'managed',
+              secretName: 'identity-test-kratos-secrets',
+              secretKey: 'cookie',
+            },
+            cipher: {
+              mode: 'managed',
+              secretName: 'identity-test-kratos-secrets',
+              secretKey: 'cipher',
+            },
           },
         },
         keto: {
@@ -315,13 +450,25 @@ describe('Ory identity stack composition', () => {
       dependencySources: {
         hydra: {
           database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-hydra-db' } },
-          systemSecret: { mode: 'managed', secretName: 'identity-values-test-hydra-secrets', secretKey: 'system' },
+          systemSecret: {
+            mode: 'managed',
+            secretName: 'identity-values-test-hydra-secrets',
+            secretKey: 'system',
+          },
         },
         kratos: {
           database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-kratos-db' } },
           secrets: {
-            cookie: { mode: 'managed', secretName: 'identity-values-test-kratos-secrets', secretKey: 'cookie' },
-            cipher: { mode: 'managed', secretName: 'identity-values-test-kratos-secrets', secretKey: 'cipher' },
+            cookie: {
+              mode: 'managed',
+              secretName: 'identity-values-test-kratos-secrets',
+              secretKey: 'cookie',
+            },
+            cipher: {
+              mode: 'managed',
+              secretName: 'identity-values-test-kratos-secrets',
+              secretKey: 'cipher',
+            },
           },
         },
         keto: {
@@ -361,5 +508,4 @@ describe('Ory identity stack composition', () => {
     expect(yaml).not.toContain('kind: Namespace');
     expect(yaml).toContain('namespace: ory-test');
   });
-
 });

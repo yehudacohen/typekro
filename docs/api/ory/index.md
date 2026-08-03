@@ -91,6 +91,13 @@ await stack.deploy({
 
 Explicit literal value sources are supported for controlled environments, but TypeKro rejects unsafe literals supplied through unapproved chart escape hatches.
 
+`oryIdentityStack` owns the Hydra and Kratos workload names used by its
+external-secret post-renderers. It therefore protects `nameOverride` and
+`fullnameOverride` from raw chart-value overrides in both direct and KRO
+modes. Use the lower-level `hydraHelmRelease` or `kratosHelmRelease` wrappers
+when custom chart naming is required and the caller also owns the resulting
+secret-environment wiring.
+
 Use `kratos.identitySchema` to replace Kratos' default mounted identity schema in both direct and KRO modes. TypeKro mounts it as `identity.default.schema.json` and wires `kratos.config.identity.schemas` to the matching default ref, so custom schema content does not require duplicate filename/ref configuration.
 
 ## Managed Local Platform

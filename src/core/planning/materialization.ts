@@ -465,6 +465,14 @@ function materialize(
           value.optional === true
         );
       }
+      if (bindings.resources !== undefined) {
+        if (value.optional === true) return OMIT;
+        throw new PlanMaterializationError(
+          `Required resource binding ${value.resourceId} is not present in materialization input.`,
+          path,
+          { resourceId: value.resourceId, fieldPath: value.fieldPath }
+        );
+      }
       return runtimeReference(
         bindings.resourceIds?.[value.resourceId] ?? value.resourceId,
         value.fieldPath,
@@ -479,6 +487,25 @@ function materialize(
           path,
           { language: value.expression.language }
         );
+      }
+      if (bindings.resources !== undefined) {
+        const missingResource = value.expression.references.find(
+          (reference) =>
+            reference.source === 'resource' &&
+            (!reference.resourceId ||
+              !Object.hasOwn(bindings.resources ?? {}, reference.resourceId))
+        );
+        if (missingResource) {
+          throw new PlanMaterializationError(
+            `Required resource binding ${missingResource.resourceId ?? '<unknown>'} is not present in materialization input.`,
+            path,
+            {
+              resourceId: missingResource.resourceId ?? '<unknown>',
+              fieldPath: missingResource.fieldPath,
+              expression: value.expression.expression,
+            }
+          );
+        }
       }
       if (
         value.expression.references.some((reference) => reference.source === 'resource') &&
@@ -511,10 +538,35 @@ function materialize(
           continue;
         }
         if (segment.kind === 'expression') {
-          const onlySpecReferences = segment.expression.references.every(
+          const resourceReferences = segment.expression.references.filter(
+            (reference) => reference.source === 'resource'
+          );
+          const specReferences = segment.expression.references.filter(
             (reference) => reference.source === 'spec'
           );
-          if (bindings.spec !== undefined && onlySpecReferences) {
+          if (bindings.resources !== undefined) {
+            const missingResource = resourceReferences.find(
+              (reference) =>
+                !reference.resourceId ||
+                !Object.hasOwn(bindings.resources ?? {}, reference.resourceId)
+            );
+            if (missingResource) {
+              throw new PlanMaterializationError(
+                `Required resource binding ${missingResource.resourceId ?? '<unknown>'} is not present in materialization input.`,
+                path,
+                {
+                  resourceId: missingResource.resourceId ?? '<unknown>',
+                  fieldPath: missingResource.fieldPath,
+                  expression: segment.expression.expression,
+                }
+              );
+            }
+          }
+          const canEvaluate =
+            segment.expression.language === 'portable-cel' &&
+            (resourceReferences.length === 0 || bindings.resources !== undefined) &&
+            (specReferences.length === 0 || bindings.spec !== undefined);
+          if (canEvaluate) {
             renderedSegments.push(
               String(
                 evaluatePortableExpression(
@@ -557,6 +609,17 @@ function materialize(
           if (resolved === OMIT) return OMIT;
           renderedSegments.push(String(resolved));
           continue;
+        }
+        if (segment.source === 'resource' && bindings.resources !== undefined) {
+          if (segment.optional === true) return OMIT;
+          throw new PlanMaterializationError(
+            `Required resource binding ${segment.resourceId ?? '<unknown>'} is not present in materialization input.`,
+            path,
+            {
+              resourceId: segment.resourceId ?? '<unknown>',
+              fieldPath: segment.fieldPath,
+            }
+          );
         }
         renderedSegments.push(
           markerString(

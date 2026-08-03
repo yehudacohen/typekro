@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-
-import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
-
 import {
   artifactOutput,
   decodePlanValue,
@@ -19,6 +16,7 @@ import {
   schemaToIR,
   sensitiveValue,
 } from '../../../src/core/planning/index.js';
+import { createSchemaProxy } from '../../../src/core/references/schema-proxy.js';
 
 describe('PlanValue and ExpressionIR', () => {
   it('preserves arrays, object order independence, and omitted values', () => {
@@ -172,6 +170,76 @@ describe('PlanValue and ExpressionIR', () => {
       endpoint: 'http://10.0.0.12:8080',
       observedName: 'inference',
     });
+  });
+
+  it('hydrates resource-backed template expressions from complete live bindings', () => {
+    const value = {
+      kind: 'template' as const,
+      segments: [
+        { kind: 'literal' as const, value: 'replicas=' },
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(deployment.status.readyReplicas)'),
+        },
+      ],
+    };
+
+    expect(
+      materializePlanValue(value, {
+        resources: {
+          deployment: { status: { readyReplicas: 3 } },
+        },
+      })
+    ).toBe('replicas=3');
+  });
+
+  it('fails closed when a complete live-resource binding omits a required producer', () => {
+    const required = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'deployment',
+      fieldPath: 'status.readyReplicas',
+    };
+    const expressionTemplate = {
+      kind: 'template' as const,
+      segments: [
+        {
+          kind: 'expression' as const,
+          expression: expressionIR('string(deployment.status.readyReplicas)'),
+        },
+      ],
+    };
+    const expression = {
+      kind: 'expression' as const,
+      expression: expressionIR('deployment.status.readyReplicas'),
+    };
+
+    expect(() => materializePlanValue(required, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+    expect(() => materializePlanValue(expression, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+    expect(() => materializePlanValue(expressionTemplate, { resources: {} })).toThrow(
+      'Required resource binding deployment'
+    );
+  });
+
+  it('omits optional resource references absent from complete live bindings', () => {
+    const optional = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'optionalService',
+      fieldPath: 'status.endpoint',
+      optional: true as const,
+    };
+    const template = {
+      kind: 'template' as const,
+      segments: [{ kind: 'literal' as const, value: 'endpoint=' }, optional],
+    };
+
+    expect(materializePlanValue(optional, { resources: {} })).toBeUndefined();
+    expect(materializePlanValue(template, { resources: {} })).toBeUndefined();
   });
 
   it('preserves resource references when live bindings are not supplied', () => {
