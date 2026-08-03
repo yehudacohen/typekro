@@ -12,6 +12,16 @@ import {
 /** Explicit bindings supplied after pure planning and before artifact execution. */
 export interface PlanMaterializationBindings {
   readonly spec?: unknown;
+  /**
+   * Live Kubernetes resources keyed by their canonical composition resource id.
+   *
+   * Ordinary direct artifact materialization omits this map and preserves
+   * resource references for the deployment engine. Composition-output
+   * materialization supplies it after Alchemy has reconciled the complete
+   * resource graph, allowing the exact same PlanValue to hydrate a concrete
+   * result without re-running the authoring closure.
+   */
+  readonly resources?: Readonly<Record<string, unknown>>;
   readonly sensitive?: Readonly<Record<string, unknown>>;
   readonly externalInputs?: Readonly<Record<string, unknown>>;
   readonly artifactOutputs?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
@@ -281,6 +291,7 @@ function evaluatePortableExpression(
       if (guarded) ensureEvaluationPath(specContext, reference.fieldPath);
     }
     const context: Record<string, unknown> = {
+      ...(bindings.resources ?? {}),
       schema: { spec: specContext },
       ...(bindings.locals ?? {}),
     };
@@ -446,6 +457,14 @@ function materialize(
       if (!value.resourceId) {
         throw new PlanMaterializationError(`Resource reference has no producer id.`, path);
       }
+      if (Object.hasOwn(bindings.resources ?? {}, value.resourceId)) {
+        return readPath(
+          bindings.resources?.[value.resourceId],
+          value.fieldPath,
+          path,
+          value.optional === true
+        );
+      }
       return runtimeReference(
         bindings.resourceIds?.[value.resourceId] ?? value.resourceId,
         value.fieldPath,
@@ -461,7 +480,10 @@ function materialize(
           { language: value.expression.language }
         );
       }
-      if (value.expression.references.some((reference) => reference.source === 'resource')) {
+      if (
+        value.expression.references.some((reference) => reference.source === 'resource') &&
+        bindings.resources === undefined
+      ) {
         return runtimeExpression(value.expression.expression);
       }
       if (
@@ -516,6 +538,21 @@ function materialize(
             path,
             segment.optional === true,
             bindings.iterationItems
+          );
+          if (resolved === OMIT) return OMIT;
+          renderedSegments.push(String(resolved));
+          continue;
+        }
+        if (
+          segment.source === 'resource' &&
+          segment.resourceId &&
+          Object.hasOwn(bindings.resources ?? {}, segment.resourceId)
+        ) {
+          const resolved = readPath(
+            bindings.resources?.[segment.resourceId],
+            segment.fieldPath,
+            path,
+            segment.optional === true
           );
           if (resolved === OMIT) return OMIT;
           renderedSegments.push(String(resolved));
@@ -576,6 +613,29 @@ export function materializePlanValue(
 ): unknown {
   const result = materialize(value, bindings, path);
   return result === OMIT ? undefined : result;
+}
+
+/**
+ * Hydrate a composition's canonical output map from concrete bindings.
+ *
+ * This is deliberately a planning/runtime seam rather than an Alchemy helper:
+ * TypeKro owns the meaning of PlanValue, while deployment backends own how
+ * live resources and provider outputs become available. Keeping the evaluator
+ * here guarantees direct factories, KRO status, and Alchemy composition
+ * outputs share one authored expression contract.
+ */
+export function materializePlanOutputs(
+  outputs: Readonly<Record<string, PlanValue>>,
+  bindings: PlanMaterializationBindings = {}
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.keys(outputs)
+      .sort()
+      .map((name) => [
+        name,
+        materializePlanValue(outputs[name] as PlanValue, bindings, `$.outputs.${name}`),
+      ])
+  );
 }
 
 /**

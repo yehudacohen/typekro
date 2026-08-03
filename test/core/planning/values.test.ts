@@ -12,6 +12,7 @@ import {
   expressionIR,
   externalInput,
   lowerPlanValue,
+  materializePlanOutputs,
   materializePlanValue,
   planExpression,
   resolveStaticYamlSensitiveBindings,
@@ -126,6 +127,67 @@ describe('PlanValue and ExpressionIR', () => {
         spec: { repositoryName: 'custom-repository' },
       })
     ).toBe('custom-repository');
+  });
+
+  it('hydrates composition outputs from live resources without re-running the closure', () => {
+    const outputs = {
+      endpoint: {
+        kind: 'expression' as const,
+        expression: expressionIR(
+          'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + string(gateway.status.addresses[0].value) + ":" + string(gateway.spec.listeners[0].port) : ""'
+        ),
+      },
+      observedName: {
+        kind: 'reference' as const,
+        source: 'resource' as const,
+        resourceId: 'gateway',
+        fieldPath: 'metadata.name',
+      },
+      advertised: {
+        kind: 'template' as const,
+        segments: [
+          { kind: 'literal' as const, value: 'gateway=' },
+          {
+            kind: 'reference' as const,
+            source: 'resource' as const,
+            resourceId: 'gateway',
+            fieldPath: 'metadata.name',
+          },
+        ],
+      },
+    };
+
+    expect(
+      materializePlanOutputs(outputs, {
+        resources: {
+          gateway: {
+            metadata: { name: 'inference' },
+            spec: { listeners: [{ port: 8080 }] },
+            status: { addresses: [{ value: '10.0.0.12' }] },
+          },
+        },
+      })
+    ).toEqual({
+      advertised: 'gateway=inference',
+      endpoint: 'http://10.0.0.12:8080',
+      observedName: 'inference',
+    });
+  });
+
+  it('preserves resource references when live bindings are not supplied', () => {
+    const value = {
+      kind: 'reference' as const,
+      source: 'resource' as const,
+      resourceId: 'service',
+      fieldPath: 'metadata.name',
+    };
+
+    expect(materializePlanValue(value)).toEqual(
+      expect.objectContaining({
+        resourceId: 'service',
+        fieldPath: 'metadata.name',
+      })
+    );
   });
 
   it('derives references from parsed CEL rather than matching text inside literals', () => {

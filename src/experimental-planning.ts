@@ -126,6 +126,7 @@ export {
   lowerPlanValue,
   mapPlanValueSensitiveBindings,
   materializeKroArtifactBundleOperation,
+  materializePlanOutputs,
   materializePlanValue,
   mergeKroArtifactBundleOperations,
   orderKroArtifactBundleOperations,
