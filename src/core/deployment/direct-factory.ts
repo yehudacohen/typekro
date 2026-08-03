@@ -2924,7 +2924,7 @@ function directAlchemyKubernetesIdentity(
       ? undefined
       : resource.metadata?.namespace ?? factoryNamespace;
   const identity = {
-    apiVersion: resource.apiVersion,
+    group: kubernetesApiGroup(resource.apiVersion),
     kind: resource.kind,
     name: resource.metadata?.name,
     namespace,
@@ -2932,9 +2932,14 @@ function directAlchemyKubernetesIdentity(
   return {
     key: JSON.stringify(identity),
     display:
-      `${identity.apiVersion}/${identity.kind} ` +
+      `${resource.apiVersion}/${identity.kind} ` +
       `${namespace ? `${namespace}/` : ''}${identity.name ?? '<unnamed>'}`,
   };
+}
+
+function kubernetesApiGroup(apiVersion: string): string {
+  const separator = apiVersion.indexOf('/');
+  return separator === -1 ? '' : apiVersion.slice(0, separator);
 }
 
 /**

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { Cel, createResource, simple, toResourceGraph } from '../../src/index.js';
 import { decodeDirectArtifactExecutionRecord } from '../../src/experimental-planning.js';
 
 describe('DirectResourceFactory', () => {
@@ -568,6 +568,46 @@ describe('DirectResourceFactory', () => {
 
       await expect(factory.toAlchemyResources(spec)).rejects.toThrow(
         /same Kubernetes object.*firstSharedConfig.*secondSharedConfig.*exactly one Alchemy owner/
+      );
+    });
+
+    it('treats served versions in one API group as the same Kubernetes identity', async () => {
+      const versionSkew = toResourceGraph(
+        {
+          name: 'version-skew-kubernetes-identity',
+          apiVersion: 'v1alpha1',
+          kind: 'VersionSkewKubernetesIdentity',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          alpha: createResource({
+            id: 'alphaWidget',
+            apiVersion: 'widgets.example.com/v1alpha1',
+            kind: 'Widget',
+            metadata: { name: 'shared-name', namespace: 'namespace-a' },
+            spec: { owner: 'alpha' },
+          }).withReadinessEvaluator(() => ({ ready: true })),
+          beta: createResource({
+            id: 'betaWidget',
+            apiVersion: 'widgets.example.com/v1beta1',
+            kind: 'Widget',
+            metadata: { name: 'shared-name', namespace: 'namespace-a' },
+            spec: { owner: 'beta' },
+          }).withReadinessEvaluator(() => ({ ready: true })),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://version-skew-kubernetes-identity',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await versionSkew.factory('direct', {
+        namespace: 'control-plane',
+      });
+
+      await expect(factory.toAlchemyResources(spec)).rejects.toThrow(
+        /same Kubernetes object.*alphaWidget.*betaWidget.*exactly one Alchemy owner/
       );
     });
 
