@@ -5,6 +5,7 @@
  * internal dependency resolution engine, without requiring the Kro controller.
  */
 
+import { createHash } from 'node:crypto';
 import * as yaml from 'js-yaml';
 import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import { createAlchemyResourceId } from '../../alchemy/utilities.js';
@@ -1563,12 +1564,67 @@ export class DirectResourceFactoryImpl<
     );
     const Redacted =
       hasSensitiveBindings || hasSecretPayload ? await import('effect/Redacted') : undefined;
-    for (const { id: graphId, manifest } of graph.resources) {
+    const nodeCandidates = graph.resources.map(({ id: graphId, manifest }) => {
       const resource = ensureReadinessEvaluator(manifest as Enhanced<unknown, unknown>);
-      byGraphId.set(graphId, {
+      const identity = directAlchemyKubernetesIdentity(resource, this.namespace);
+      return {
+        graphId,
         resource,
-        alchemyId: createAlchemyResourceId(resource, this.namespace),
+        identity,
+        legacyAlchemyId: createAlchemyResourceId(resource, this.namespace),
         logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
+      };
+    });
+    const candidateByKubernetesIdentity = new Map<
+      string,
+      (typeof nodeCandidates)[number]
+    >();
+    for (const candidate of nodeCandidates) {
+      const existing = candidateByKubernetesIdentity.get(candidate.identity.key);
+      if (existing) {
+        throw new ValidationError(
+          `Direct Alchemy materialization cannot assign two graph nodes to the same Kubernetes ` +
+            `object ${candidate.identity.display}: ${existing.logicalId} and ${candidate.logicalId}. ` +
+            `Each live Kubernetes identity must have exactly one Alchemy owner.`,
+          candidate.resource.kind,
+          candidate.logicalId,
+          'metadata'
+        );
+      }
+      candidateByKubernetesIdentity.set(candidate.identity.key, candidate);
+    }
+    const legacyAlchemyIdCounts = new Map<string, number>();
+    for (const candidate of nodeCandidates) {
+      legacyAlchemyIdCounts.set(
+        candidate.legacyAlchemyId,
+        (legacyAlchemyIdCounts.get(candidate.legacyAlchemyId) ?? 0) + 1
+      );
+    }
+    const assignedAlchemyIds = new Set<string>();
+    for (const candidate of nodeCandidates) {
+      const alchemyId =
+        legacyAlchemyIdCounts.get(candidate.legacyAlchemyId) === 1
+          ? candidate.legacyAlchemyId
+          : disambiguatedAlchemyResourceId(
+              candidate.legacyAlchemyId,
+              candidate.identity.key
+            );
+      if (assignedAlchemyIds.has(alchemyId)) {
+        throw new ValidationError(
+          `Direct Alchemy materialization could not derive a unique declaration ID for ` +
+            `${candidate.resource.apiVersion}/${candidate.resource.kind} ` +
+            `${candidate.resource.metadata?.namespace ? `${candidate.resource.metadata.namespace}/` : ''}` +
+            `${candidate.resource.metadata?.name ?? '<unnamed>'}. Give each graph resource a distinct explicit id.`,
+          candidate.resource.kind,
+          candidate.logicalId,
+          'id'
+        );
+      }
+      assignedAlchemyIds.add(alchemyId);
+      byGraphId.set(candidate.graphId, {
+        resource: candidate.resource,
+        alchemyId,
+        logicalId: candidate.logicalId,
       });
     }
 
@@ -1689,7 +1745,13 @@ export class DirectResourceFactoryImpl<
                 ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
               }
             : {}),
-          namespace: this.namespace,
+          // Alchemy persists this field as the deployed Kubernetes identity
+          // namespace. A direct composition may author resources outside the
+          // factory's default namespace, so carrying only `this.namespace`
+          // makes drift reconciliation compare against the wrong identity.
+          // Match the KRO artifact emitter: prefer the concrete manifest
+          // namespace and use the factory namespace only as its default.
+          namespace: declarationResource.metadata.namespace ?? this.namespace,
           deploymentStrategy: 'direct' as const,
           kubeConfigOptions,
           options: { waitForReady, ...(timeout !== undefined && { timeout }) },
@@ -2832,6 +2894,52 @@ function findUnresolvedReferences(
   }
 
   return refs;
+}
+
+/**
+ * Preserve the historical declaration ID for every non-colliding resource.
+ * A collision means no prior Alchemy stack could have materialized the set, so
+ * it is safe to add an identity suffix only at that boundary.
+ */
+function disambiguatedAlchemyResourceId(
+  legacyId: string,
+  canonicalKubernetesIdentity: string
+): string {
+  const suffix = createHash('sha256')
+    .update(canonicalKubernetesIdentity, 'utf8')
+    .digest('hex')
+    .slice(0, 12);
+  return `${legacyId}Identity${suffix}`;
+}
+
+function directAlchemyKubernetesIdentity(
+  resource: Enhanced<unknown, unknown>,
+  factoryNamespace: string
+): {
+  readonly key: string;
+  readonly display: string;
+} {
+  const namespace =
+    getMetadataField(resource, 'scope') === 'cluster'
+      ? undefined
+      : resource.metadata?.namespace ?? factoryNamespace;
+  const identity = {
+    group: kubernetesApiGroup(resource.apiVersion),
+    kind: resource.kind,
+    name: resource.metadata?.name,
+    namespace,
+  };
+  return {
+    key: JSON.stringify(identity),
+    display:
+      `${resource.apiVersion}/${identity.kind} ` +
+      `${namespace ? `${namespace}/` : ''}${identity.name ?? '<unnamed>'}`,
+  };
+}
+
+function kubernetesApiGroup(apiVersion: string): string {
+  const separator = apiVersion.indexOf('/');
+  return separator === -1 ? '' : apiVersion.slice(0, separator);
 }
 
 /**

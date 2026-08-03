@@ -15,6 +15,7 @@
  */
 
 import type { KubeConfig } from '@kubernetes/client-node';
+import * as Diff from 'alchemy/Diff';
 import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
 import * as ProviderMod from 'alchemy/Provider';
@@ -24,6 +25,8 @@ import { Effect } from 'effect';
 import * as Redacted from 'effect/Redacted';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
+import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
+import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
 import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
 import {
   decideNamespaceOwnershipCreateFirst,
@@ -64,7 +67,11 @@ import {
   planValueSensitiveBindingNames,
 } from '../core/planning/index.js';
 import { resolvePortableReadinessStrategy } from '../core/readiness/portable-strategies.js';
-import type { DeployedResource, DeploymentOptions } from '../core/types/deployment.js';
+import type {
+  DeletionResourceIdentity,
+  DeployedResource,
+  DeploymentOptions,
+} from '../core/types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import {
   DirectTypeKroDeployer,
@@ -130,6 +137,103 @@ export type KroResourceR = ResourceT<
  */
 export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE);
 
+interface KroResourceIdentity {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly name: string;
+  readonly namespace?: string;
+}
+
+function inputResourceIdentityField(
+  value: unknown
+): string | undefined | typeof UNRESOLVED_IDENTITY {
+  if (value === undefined) return undefined;
+  if (!Diff.isResolved(value)) return UNRESOLVED_IDENTITY;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+const UNRESOLVED_IDENTITY = Symbol('unresolved-kro-resource-identity');
+
+function desiredKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
+  news: Input<TypeKroResourceProps<T>>,
+  output?: TypeKroResource<T>
+): KroResourceIdentity | undefined | typeof UNRESOLVED_IDENTITY {
+  if (typeof news !== 'object' || news === null || !('resource' in news)) {
+    return undefined;
+  }
+  const resource = Reflect.get(news, 'resource');
+  if (typeof resource !== 'object' || resource === null) return undefined;
+  const metadata = Reflect.get(resource, 'metadata');
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const apiVersion = inputResourceIdentityField(Reflect.get(resource, 'apiVersion'));
+  const kind = inputResourceIdentityField(Reflect.get(resource, 'kind'));
+  const name = inputResourceIdentityField(Reflect.get(metadata, 'name'));
+  if (
+    apiVersion === UNRESOLVED_IDENTITY ||
+    kind === UNRESOLVED_IDENTITY ||
+    name === UNRESOLVED_IDENTITY
+  ) {
+    return UNRESOLVED_IDENTITY;
+  }
+  if (!apiVersion || !kind || !name) return undefined;
+
+  const persisted = persistedKroResourceIdentity(output);
+  let namespace: string | undefined;
+  if (persisted && persisted.metadata.namespace === undefined) {
+    // The API server is authoritative for scope. A factory/deployment
+    // namespace is execution context only and must never become part of a
+    // cluster-scoped resource identity.
+    namespace = undefined;
+  } else {
+    const explicitNamespace = inputResourceIdentityField(
+      Reflect.get(metadata, 'namespace')
+    );
+    if (explicitNamespace === UNRESOLVED_IDENTITY) return UNRESOLVED_IDENTITY;
+    if (explicitNamespace) {
+      namespace = explicitNamespace;
+    } else if (persisted?.metadata.namespace !== undefined) {
+      const factoryNamespace =
+        typeof news === 'object' && news !== null && 'namespace' in news
+          ? inputResourceIdentityField(Reflect.get(news, 'namespace'))
+          : undefined;
+      if (factoryNamespace === UNRESOLVED_IDENTITY) return UNRESOLVED_IDENTITY;
+      namespace = factoryNamespace;
+    }
+  }
+  return { apiVersion, kind, name, ...(namespace ? { namespace } : {}) };
+}
+
+function sameKroResourceIdentity(
+  left: KubernetesResource,
+  right: KroResourceIdentity
+): boolean {
+  return (
+    left.apiVersion === right.apiVersion &&
+    left.kind === right.kind &&
+    left.metadata.name === right.name &&
+    left.metadata.namespace === right.namespace
+  );
+}
+
+function shouldReplaceKroResourceIdentity<T extends Enhanced<unknown, unknown>>(
+  _olds: TypeKroResourceProps<T>,
+  news: Input<TypeKroResourceProps<T>>,
+  output?: TypeKroResource<T>
+): boolean {
+  const persisted = persistedKroResourceIdentity(output);
+  if (!persisted) return false;
+  const desired = desiredKroResourceIdentity(news, output);
+  // Identity fields can contain Alchemy Outputs. Defer uncertain identity
+  // decisions until reconcile, where every input has been resolved. Treating
+  // uncertainty as replacement is unsafe because create-before-delete can
+  // delete a freshly updated same-identity object.
+  if (!desired || desired === UNRESOLVED_IDENTITY) return false;
+  return !sameKroResourceIdentity(persisted, desired);
+}
+
+/** Test hook for identity-stable replacement decisions with unresolved sibling inputs. */
+export const shouldReplaceKroResourceIdentityForTest = shouldReplaceKroResourceIdentity;
+
 /**
  * The provider `Layer` that backs {@link KroResource}. Merge into the runtime's providers
  * (alongside the cloud providers) so reconcile/delete run. `reconcile` is the single
@@ -148,9 +252,39 @@ export const kroProvider = ProviderMod.effect(
     // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
     // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
     list: () => Effect.succeed([]),
-    reconcile: Effect.fn(function* ({ news }) {
+    diff: Effect.fn(function* ({ olds, news, output }) {
+      if (shouldReplaceKroResourceIdentity(olds, news, output)) {
+        return { action: 'replace' as const };
+      }
       return yield* Effect.tryPromise({
-        try: (abortSignal) => deployKroResource(news, abortSignal),
+        try: () => detectKroResourceIdentityDrift(olds, output),
+        catch: ensureError,
+      });
+    }),
+    reconcile: Effect.fn(function* ({ news, output }) {
+      return yield* Effect.tryPromise({
+        try: async (abortSignal) => {
+          const persistedIdentity = persistedKroResourceIdentity(output);
+          const desiredIdentity = desiredKroResourceIdentity(news, output);
+          if (
+            persistedIdentity &&
+            desiredIdentity &&
+            desiredIdentity !== UNRESOLVED_IDENTITY &&
+            !sameKroResourceIdentity(persistedIdentity, desiredIdentity)
+          ) {
+            const previous = propsFromOutput(output);
+            if (!previous) {
+              throw new Error(
+                `Alchemy cannot replace prior Kubernetes identity ${persistedIdentity.apiVersion}/${persistedIdentity.kind} ` +
+                  `${persistedIdentity.metadata.namespace ? `${persistedIdentity.metadata.namespace}/` : ''}` +
+                  `${persistedIdentity.metadata.name}: persisted delete properties are unavailable`
+              );
+            }
+            await deleteKroResource(previous, abortSignal);
+          }
+          await waitForPersistedIdentityDeletion(news, output, abortSignal);
+          return deployKroResource(news, abortSignal);
+        },
         catch: ensureError,
       });
     }),
@@ -408,9 +542,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       effectiveProps.deploymentStrategy === 'kro' &&
       (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
     ) {
-      await (
-        dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd
-      )(
+      await (dependencies.migrateLegacyArtifactBindings ?? migrateLegacyKroArtifactBindingCrd)(
         dependencies.kubeConfigForMigration?.() ??
           _createClientProvider(effectiveProps, 'artifact-binding-migration'),
         resourceForDeploy as unknown as KubernetesResource
@@ -442,6 +574,173 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
  * through the Effect provider above.
  */
 export const deployKroResourceForTest = deployKroResource;
+
+interface KroResourceIdentityReader {
+  read(resource: KubernetesResource): Promise<KubernetesResource>;
+}
+
+function persistedKroResourceIdentity(
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined
+): KubernetesResource | undefined {
+  const prior = output?.deployedResource;
+  if (!prior) return undefined;
+  const name = prior.metadata?.name;
+  if (typeof name !== 'string' || name.length === 0) return undefined;
+  return {
+    apiVersion: prior.apiVersion,
+    kind: prior.kind,
+    metadata: {
+      name,
+      ...(prior.metadata?.namespace ? { namespace: prior.metadata.namespace } : {}),
+    },
+  };
+}
+
+function identityReader(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  reader: KroResourceIdentityReader | undefined,
+  phase: string
+): KroResourceIdentityReader {
+  if (reader) return reader;
+  const provider = _createClientProvider(props, phase);
+  const api = createBunCompatibleKubernetesObjectApi(provider);
+  return {
+    read: async (resource: KubernetesResource) =>
+      (await api.read(resource as Parameters<typeof api.read>[0])) as KubernetesResource,
+  };
+}
+
+interface PersistedIdentityDeletionWaitDependencies {
+  reader?: KroResourceIdentityReader;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  pollIntervalMs?: number;
+}
+
+function deletionIdentityFromLive(
+  identity: KubernetesResource,
+  live: KubernetesResource
+): DeletionResourceIdentity {
+  const metadata = live.metadata;
+  const deletionTimestamp = metadata?.deletionTimestamp;
+  return {
+    apiVersion: live.apiVersion || identity.apiVersion,
+    kind: live.kind || identity.kind,
+    name: metadata?.name || identity.metadata.name || '<unknown>',
+    ...(metadata?.namespace || identity.metadata.namespace
+      ? { namespace: metadata?.namespace || identity.metadata.namespace }
+      : {}),
+    ...(metadata?.uid ? { uid: metadata.uid } : {}),
+    ...(deletionTimestamp
+      ? {
+          deletionTimestamp:
+            deletionTimestamp instanceof Date
+              ? deletionTimestamp.toISOString()
+              : String(deletionTimestamp),
+        }
+      : {}),
+    ...(metadata?.finalizers?.length ? { finalizers: [...metadata.finalizers] } : {}),
+    ...(metadata?.ownerReferences?.length
+      ? {
+          owners: metadata.ownerReferences.map((owner) => ({
+            apiVersion: owner.apiVersion,
+            kind: owner.kind,
+            name: owner.name,
+            ...(owner.uid ? { uid: owner.uid } : {}),
+            ...(owner.controller !== undefined ? { controller: owner.controller } : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
+async function waitForPersistedIdentityDeletion(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
+  abortSignal?: AbortSignal,
+  dependencies: PersistedIdentityDeletionWaitDependencies = {}
+): Promise<void> {
+  const identity = persistedKroResourceIdentity(output);
+  if (!identity) return;
+  const reader = identityReader(props, dependencies.reader, 'alchemy-terminating-identity');
+  const sleep = dependencies.sleep ?? Bun.sleep;
+  const now = dependencies.now ?? Date.now;
+  const pollIntervalMs = dependencies.pollIntervalMs ?? 500;
+  const timeout = props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
+  const deadline = now() + timeout;
+  let lastLive: KubernetesResource | undefined;
+
+  while (true) {
+    abortSignal?.throwIfAborted();
+    try {
+      const live = await reader.read(identity);
+      lastLive = live;
+      if (!live.metadata?.deletionTimestamp) return;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return;
+      throw new Error(
+        `Alchemy terminating-identity check could not read ${identity.apiVersion}/${identity.kind} ` +
+          `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
+          `${identity.metadata.name}: ${ensureError(error).message}`
+      );
+    }
+
+    if (now() >= deadline) {
+      const resource = deletionIdentityFromLive(identity, lastLive ?? identity);
+      throw new ResourceReplacementTimeoutError(resource.name, resource.kind, timeout, resource);
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
+/**
+ * Check persisted Alchemy state against the Kubernetes API before Alchemy
+ * decides that an unchanged TypeKro resource is a no-op.
+ *
+ * Alchemy invokes provider.read() only when state is absent. This diff check
+ * closes the complementary persisted-state case: an out-of-band deletion,
+ * replacement, or in-progress deletion must drive the normal convergent
+ * reconcile path. Authored desired-property changes remain Alchemy's normal
+ * prop-diff responsibility; controller-owned status evolution stays a no-op.
+ * A non-404 read failure is never evidence of drift absence and fails closed.
+ */
+async function detectKroResourceIdentityDrift(
+  props: TypeKroResourceProps<Enhanced<unknown, unknown>>,
+  output: TypeKroResource<Enhanced<unknown, unknown>> | undefined,
+  reader?: KroResourceIdentityReader
+): Promise<{ readonly action: 'update' } | undefined> {
+  const prior = output?.deployedResource;
+  const identity = persistedKroResourceIdentity(output);
+  if (!prior || !identity) return { action: 'update' };
+  const liveReader = identityReader(props, reader, 'alchemy-drift-check');
+
+  let live: KubernetesResource;
+  try {
+    live = await liveReader.read(identity);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) return { action: 'update' };
+    throw new Error(
+      `Alchemy drift check could not read ${identity.apiVersion}/${identity.kind} ` +
+        `${identity.metadata.namespace ? `${identity.metadata.namespace}/` : ''}` +
+        `${identity.metadata.name}: ${ensureError(error).message}`
+    );
+  }
+
+  const priorUid = prior.metadata?.uid;
+  const liveUid = live.metadata?.uid;
+  if (typeof priorUid === 'string' && typeof liveUid === 'string' && priorUid !== liveUid) {
+    return { action: 'update' };
+  }
+  if (live.metadata?.deletionTimestamp) return { action: 'update' };
+
+  return undefined;
+}
+
+/** Test hook for persisted-state Kubernetes drift decisions. */
+export const detectKroResourceIdentityDriftForTest = detectKroResourceIdentityDrift;
+
+/** Test hook for terminating persisted-identity reconciliation. */
+export const waitForPersistedIdentityDeletionForTest = waitForPersistedIdentityDeletion;
 
 export { singletonDriftVerdict } from '../core/deployment/singleton-owner-drift.js';
 

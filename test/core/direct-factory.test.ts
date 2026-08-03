@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { Cel, createResource, simple, toResourceGraph } from '../../src/index.js';
 import { decodeDirectArtifactExecutionRecord } from '../../src/experimental-planning.js';
 
 describe('DirectResourceFactory', () => {
@@ -452,6 +452,163 @@ describe('DirectResourceFactory', () => {
       }
       // Distinct alchemy ids per resource (independent state entries).
       expect(decls[0]!.id).not.toBe(decls[1]!.id);
+    });
+
+    it('persists an explicitly authored resource namespace instead of the factory default', async () => {
+      const crossNamespace = toResourceGraph(
+        {
+          name: 'cross-namespace',
+          apiVersion: 'v1alpha1',
+          kind: 'CrossNamespace',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        (schema) => ({
+          config: simple.ConfigMap({
+            name: Cel.template('%s-config', schema.spec.name),
+            namespace: 'workloads',
+            data: { contract: 'manifest-namespace-is-the-deployed-identity' },
+            id: 'crossNamespaceConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://cross-namespace',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await crossNamespace.factory('direct', {
+        namespace: 'control-plane',
+      });
+      const [declaration] = await factory.toAlchemyResources(spec);
+
+      expect(declaration?.props.resource.metadata.namespace).toBe('workloads');
+      expect(declaration?.props.namespace).toBe('workloads');
+      expect(declaration?.id).not.toContain('Identity');
+    });
+
+    it('disambiguates only colliding legacy IDs with the authored Kubernetes identity', async () => {
+      const crossNamespace = toResourceGraph(
+        {
+          name: 'cross-namespace-collision',
+          apiVersion: 'v1alpha1',
+          kind: 'CrossNamespaceCollision',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          first: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { identity: 'namespace-a/shared-name' },
+            id: 'firstSharedConfig',
+          }),
+          second: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-b',
+            data: { identity: 'namespace-b/shared-name' },
+            id: 'secondSharedConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://cross-namespace-collision',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await crossNamespace.factory('direct', {
+        namespace: 'control-plane',
+      });
+      const first = await factory.toAlchemyResources(spec);
+      const second = await factory.toAlchemyResources(spec);
+
+      expect(first).toHaveLength(2);
+      expect(new Set(first.map((declaration) => declaration.id)).size).toBe(2);
+      expect(first.map((declaration) => declaration.id)).toEqual(
+        second.map((declaration) => declaration.id)
+      );
+      expect(first.every((declaration) => declaration.id.includes('Identity'))).toBe(true);
+      expect(
+        first.map((declaration) => declaration.props.resource.metadata.namespace).sort()
+      ).toEqual(['namespace-a', 'namespace-b']);
+    });
+
+    it('rejects multiple graph nodes that target one canonical Kubernetes identity', async () => {
+      const duplicateIdentity = toResourceGraph(
+        {
+          name: 'duplicate-kubernetes-identity',
+          apiVersion: 'v1alpha1',
+          kind: 'DuplicateKubernetesIdentity',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          first: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { owner: 'first' },
+            id: 'firstSharedConfig',
+          }),
+          second: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { owner: 'second' },
+            id: 'secondSharedConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://duplicate-kubernetes-identity',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await duplicateIdentity.factory('direct', {
+        namespace: 'control-plane',
+      });
+
+      await expect(factory.toAlchemyResources(spec)).rejects.toThrow(
+        /same Kubernetes object.*firstSharedConfig.*secondSharedConfig.*exactly one Alchemy owner/
+      );
+    });
+
+    it('treats served versions in one API group as the same Kubernetes identity', async () => {
+      const versionSkew = toResourceGraph(
+        {
+          name: 'version-skew-kubernetes-identity',
+          apiVersion: 'v1alpha1',
+          kind: 'VersionSkewKubernetesIdentity',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          alpha: createResource({
+            id: 'alphaWidget',
+            apiVersion: 'widgets.example.com/v1alpha1',
+            kind: 'Widget',
+            metadata: { name: 'shared-name', namespace: 'namespace-a' },
+            spec: { owner: 'alpha' },
+          }).withReadinessEvaluator(() => ({ ready: true })),
+          beta: createResource({
+            id: 'betaWidget',
+            apiVersion: 'widgets.example.com/v1beta1',
+            kind: 'Widget',
+            metadata: { name: 'shared-name', namespace: 'namespace-a' },
+            spec: { owner: 'beta' },
+          }).withReadinessEvaluator(() => ({ ready: true })),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://version-skew-kubernetes-identity',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await versionSkew.factory('direct', {
+        namespace: 'control-plane',
+      });
+
+      await expect(factory.toAlchemyResources(spec)).rejects.toThrow(
+        /same Kubernetes object.*alphaWidget.*betaWidget.*exactly one Alchemy owner/
+      );
     });
 
     it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {
