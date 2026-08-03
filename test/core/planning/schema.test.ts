@@ -40,6 +40,44 @@ describe('SchemaIR portable profile', () => {
     expect(left.digest).toBe(right.digest);
   });
 
+  it('preserves explicitly open object and collection element schemas', () => {
+    const result = schemaToIR(
+      type({
+        payload: 'object',
+        items: 'object[]',
+      }),
+      { strict: true }
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.root).toEqual({
+      kind: 'object',
+      properties: [
+        {
+          name: 'items',
+          required: true,
+          schema: {
+            kind: 'array',
+            items: {
+              kind: 'object',
+              properties: [],
+              additionalProperties: true,
+            },
+          },
+        },
+        {
+          name: 'payload',
+          required: true,
+          schema: {
+            kind: 'object',
+            properties: [],
+            additionalProperties: true,
+          },
+        },
+      ],
+    });
+  });
+
   it('diagnoses constructs outside the portable profile before execution', () => {
     const unsupported = { json: { domain: 'symbol' } };
 

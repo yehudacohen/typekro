@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Semantic planning now represents ArkType's explicitly open `object` and
+  `object[]` nodes instead of rejecting chart-value passthrough fields as
+  unsupported. The Kubernetes Secret factory also records its exact
+  lowercase factory provenance, so managed Ory platform compositions produce
+  valid strict plans when both `Secret` registrations are loaded.
 - **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by
   arktype as the string `"object"`, which the KRO type mapper had no case for, so it fell through to the
   `string` default. Every schemaless-object field was therefore declared `string` in the generated RGD and KRO

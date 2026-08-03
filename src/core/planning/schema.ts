@@ -105,6 +105,13 @@ function lowerSchemaNode(value: unknown, path: string, state: SchemaLoweringStat
     if (value === 'string' || value === 'number' || value === 'boolean' || value === 'unknown') {
       return { kind: 'primitive', type: value };
     }
+    if (value === 'object') {
+      return {
+        kind: 'object',
+        properties: [],
+        additionalProperties: true,
+      };
+    }
     if (value === 'null') return { kind: 'primitive', type: 'null' };
     return unsupportedSchemaNode(value, path, state, `Unsupported ArkType string node ${value}`);
   }
