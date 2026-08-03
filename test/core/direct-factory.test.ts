@@ -533,6 +533,44 @@ describe('DirectResourceFactory', () => {
       ).toEqual(['namespace-a', 'namespace-b']);
     });
 
+    it('rejects multiple graph nodes that target one canonical Kubernetes identity', async () => {
+      const duplicateIdentity = toResourceGraph(
+        {
+          name: 'duplicate-kubernetes-identity',
+          apiVersion: 'v1alpha1',
+          kind: 'DuplicateKubernetesIdentity',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          first: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { owner: 'first' },
+            id: 'firstSharedConfig',
+          }),
+          second: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { owner: 'second' },
+            id: 'secondSharedConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://duplicate-kubernetes-identity',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await duplicateIdentity.factory('direct', {
+        namespace: 'control-plane',
+      });
+
+      await expect(factory.toAlchemyResources(spec)).rejects.toThrow(
+        /same Kubernetes object.*firstSharedConfig.*secondSharedConfig.*exactly one Alchemy owner/
+      );
+    });
+
     it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {
       const composition = makeGraph();
       const plan = composition.plan!(spec, { strict: true });

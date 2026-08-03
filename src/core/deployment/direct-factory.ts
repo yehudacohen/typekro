@@ -1566,13 +1566,33 @@ export class DirectResourceFactoryImpl<
       hasSensitiveBindings || hasSecretPayload ? await import('effect/Redacted') : undefined;
     const nodeCandidates = graph.resources.map(({ id: graphId, manifest }) => {
       const resource = ensureReadinessEvaluator(manifest as Enhanced<unknown, unknown>);
+      const identity = directAlchemyKubernetesIdentity(resource, this.namespace);
       return {
         graphId,
         resource,
+        identity,
         legacyAlchemyId: createAlchemyResourceId(resource, this.namespace),
         logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
       };
     });
+    const candidateByKubernetesIdentity = new Map<
+      string,
+      (typeof nodeCandidates)[number]
+    >();
+    for (const candidate of nodeCandidates) {
+      const existing = candidateByKubernetesIdentity.get(candidate.identity.key);
+      if (existing) {
+        throw new ValidationError(
+          `Direct Alchemy materialization cannot assign two graph nodes to the same Kubernetes ` +
+            `object ${candidate.identity.display}: ${existing.logicalId} and ${candidate.logicalId}. ` +
+            `Each live Kubernetes identity must have exactly one Alchemy owner.`,
+          candidate.resource.kind,
+          candidate.logicalId,
+          'metadata'
+        );
+      }
+      candidateByKubernetesIdentity.set(candidate.identity.key, candidate);
+    }
     const legacyAlchemyIdCounts = new Map<string, number>();
     for (const candidate of nodeCandidates) {
       legacyAlchemyIdCounts.set(
@@ -1587,8 +1607,7 @@ export class DirectResourceFactoryImpl<
           ? candidate.legacyAlchemyId
           : disambiguatedAlchemyResourceId(
               candidate.legacyAlchemyId,
-              candidate.resource,
-              candidate.logicalId
+              candidate.identity.key
             );
       if (assignedAlchemyIds.has(alchemyId)) {
         throw new ValidationError(
@@ -2884,18 +2903,38 @@ function findUnresolvedReferences(
  */
 function disambiguatedAlchemyResourceId(
   legacyId: string,
-  resource: Enhanced<unknown, unknown>,
-  logicalId: string
+  canonicalKubernetesIdentity: string
 ): string {
-  const identity = JSON.stringify({
+  const suffix = createHash('sha256')
+    .update(canonicalKubernetesIdentity, 'utf8')
+    .digest('hex')
+    .slice(0, 12);
+  return `${legacyId}Identity${suffix}`;
+}
+
+function directAlchemyKubernetesIdentity(
+  resource: Enhanced<unknown, unknown>,
+  factoryNamespace: string
+): {
+  readonly key: string;
+  readonly display: string;
+} {
+  const namespace =
+    getMetadataField(resource, 'scope') === 'cluster'
+      ? undefined
+      : resource.metadata?.namespace ?? factoryNamespace;
+  const identity = {
     apiVersion: resource.apiVersion,
     kind: resource.kind,
     name: resource.metadata?.name,
-    namespace: resource.metadata?.namespace,
-    logicalId,
-  });
-  const suffix = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 12);
-  return `${legacyId}Identity${suffix}`;
+    namespace,
+  };
+  return {
+    key: JSON.stringify(identity),
+    display:
+      `${identity.apiVersion}/${identity.kind} ` +
+      `${namespace ? `${namespace}/` : ''}${identity.name ?? '<unnamed>'}`,
+  };
 }
 
 /**
