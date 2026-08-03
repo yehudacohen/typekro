@@ -1689,7 +1689,13 @@ export class DirectResourceFactoryImpl<
                 ...(artifactOutputUses.length > 0 ? { artifactOutputUses } : {}),
               }
             : {}),
-          namespace: this.namespace,
+          // Alchemy persists this field as the deployed Kubernetes identity
+          // namespace. A direct composition may author resources outside the
+          // factory's default namespace, so carrying only `this.namespace`
+          // makes drift reconciliation compare against the wrong identity.
+          // Match the KRO artifact emitter: prefer the concrete manifest
+          // namespace and use the factory namespace only as its default.
+          namespace: declarationResource.metadata.namespace ?? this.namespace,
           deploymentStrategy: 'direct' as const,
           kubeConfigOptions,
           options: { waitForReady, ...(timeout !== undefined && { timeout }) },

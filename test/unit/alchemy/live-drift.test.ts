@@ -192,6 +192,37 @@ describe('Alchemy persisted TypeKro resource drift', () => {
     expect(shouldReplaceKroResourceNamespaceForTest(props, news)).toBe(false);
   });
 
+  it('does not replace when corrected declaration state matches the persisted live namespace', () => {
+    const namespacedResource = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: {
+        name: 'application-contract',
+        namespace: 'application-system',
+        uid: 'uid-config',
+      },
+    } as Resource;
+    const legacyProps = {
+      resource: namespacedResource,
+      namespace: 'default',
+      deploymentStrategy: 'direct' as const,
+    };
+    const persistedOutput = {
+      ...legacyProps,
+      deployedResource: namespacedResource,
+      ready: true,
+      deployedAt: 1,
+    };
+    const corrected = {
+      ...legacyProps,
+      namespace: 'application-system',
+    };
+
+    expect(
+      shouldReplaceKroResourceNamespaceForTest(legacyProps, corrected, persistedOutput)
+    ).toBe(false);
+  });
+
   it('fails closed when Kubernetes cannot prove live state', async () => {
     await expect(
       detectKroResourceIdentityDriftForTest(props, output, {

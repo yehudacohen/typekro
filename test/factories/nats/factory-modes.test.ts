@@ -87,7 +87,7 @@ describe('NATS and JetStream factories', () => {
     expect(yaml).toContain('url: nats://nats.nats-system.svc:4222');
     expect(yaml).toContain('fullnameOverride: nats');
     expect(yaml).toMatch(
-      /persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Retain\s*\n\s+whenScaled: Retain/
+      /statefulSet:\s*\n\s+merge:\s*\n\s+spec:\s*\n\s+persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Retain\s*\n\s+whenScaled: Retain/
     );
 
     const ephemeral = natsBootstrap.factory('direct', { namespace: 'typekro-system' }).toYaml({
@@ -96,7 +96,7 @@ describe('NATS and JetStream factories', () => {
       pvcRetentionPolicy: 'delete',
     });
     expect(ephemeral).toMatch(
-      /persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Delete\s*\n\s+whenScaled: Retain/
+      /statefulSet:\s*\n\s+merge:\s*\n\s+spec:\s*\n\s+persistentVolumeClaimRetentionPolicy:\s*\n\s+whenDeleted: Delete\s*\n\s+whenScaled: Retain/
     );
 
     const externallyOwnedNamespace = natsBootstrap

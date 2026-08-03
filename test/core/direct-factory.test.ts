@@ -454,6 +454,38 @@ describe('DirectResourceFactory', () => {
       expect(decls[0]!.id).not.toBe(decls[1]!.id);
     });
 
+    it('persists an explicitly authored resource namespace instead of the factory default', async () => {
+      const crossNamespace = toResourceGraph(
+        {
+          name: 'cross-namespace',
+          apiVersion: 'v1alpha1',
+          kind: 'CrossNamespace',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        (schema) => ({
+          config: simple.ConfigMap({
+            name: Cel.template('%s-config', schema.spec.name),
+            namespace: 'workloads',
+            data: { contract: 'manifest-namespace-is-the-deployed-identity' },
+            id: 'crossNamespaceConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://cross-namespace',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await crossNamespace.factory('direct', {
+        namespace: 'control-plane',
+      });
+      const [declaration] = await factory.toAlchemyResources(spec);
+
+      expect(declaration?.props.resource.metadata.namespace).toBe('workloads');
+      expect(declaration?.props.namespace).toBe('workloads');
+    });
+
     it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {
       const composition = makeGraph();
       const plan = composition.plan!(spec, { strict: true });

@@ -83,9 +83,16 @@ export const natsBootstrap = kubernetesComposition(
       natsBox: { enabled: true },
       statefulSet: {
         merge: {
-          persistentVolumeClaimRetentionPolicy: {
-            whenDeleted: pvcWhenDeleted,
-            whenScaled: 'Retain',
+          // The official chart merges this object into the StatefulSet root,
+          // so Kubernetes spec fields must remain nested below `spec`.
+          // Emitting the retention policy directly below `merge` produces an
+          // invalid top-level StatefulSet field that Flux cannot server-side
+          // apply.
+          spec: {
+            persistentVolumeClaimRetentionPolicy: {
+              whenDeleted: pvcWhenDeleted,
+              whenScaled: 'Retain',
+            },
           },
         },
       },

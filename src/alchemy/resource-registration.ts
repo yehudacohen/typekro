@@ -139,7 +139,8 @@ export const KroResource = ResourceMod.Resource<KroResourceR>(KRO_RESOURCE_TYPE)
 
 function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>(
   olds: TypeKroResourceProps<T>,
-  news: Input<TypeKroResourceProps<T>>
+  news: Input<TypeKroResourceProps<T>>,
+  output?: TypeKroResource<T>
 ): boolean {
   if (typeof news !== 'object' || news === null || !('namespace' in news)) {
     return false;
@@ -152,7 +153,14 @@ function shouldReplaceKroResourceNamespace<T extends Enhanced<unknown, unknown>>
   // because create-before-delete replacement can delete a freshly updated
   // same-identity resource.
   if (!Diff.isResolved(namespace)) return false;
-  return typeof namespace === 'string' && olds.namespace !== namespace;
+  // Persisted live identity is stronger evidence than the previous input.
+  // Older direct-factory declarations stored the factory default here even
+  // when the manifest was explicitly namespaced elsewhere. Treating that
+  // corrected state as a namespace move would replace an unchanged
+  // Kubernetes identity and can strand a failed Flux release.
+  const persistedNamespace =
+    output?.deployedResource.metadata?.namespace ?? output?.namespace ?? olds.namespace;
+  return typeof namespace === 'string' && persistedNamespace !== namespace;
 }
 
 /** Test hook for namespace-stable replacement decisions with unresolved sibling inputs. */
@@ -177,7 +185,7 @@ export const kroProvider = ProviderMod.effect(
     // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
     list: () => Effect.succeed([]),
     diff: Effect.fn(function* ({ olds, news, output }) {
-      if (shouldReplaceKroResourceNamespace(olds, news)) {
+      if (shouldReplaceKroResourceNamespace(olds, news, output)) {
         return { action: 'replace' as const };
       }
       return yield* Effect.tryPromise({
