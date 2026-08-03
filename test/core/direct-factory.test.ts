@@ -484,6 +484,53 @@ describe('DirectResourceFactory', () => {
 
       expect(declaration?.props.resource.metadata.namespace).toBe('workloads');
       expect(declaration?.props.namespace).toBe('workloads');
+      expect(declaration?.id).not.toContain('Identity');
+    });
+
+    it('disambiguates only colliding legacy IDs with the authored Kubernetes identity', async () => {
+      const crossNamespace = toResourceGraph(
+        {
+          name: 'cross-namespace-collision',
+          apiVersion: 'v1alpha1',
+          kind: 'CrossNamespaceCollision',
+          spec: WebAppSpecSchema,
+          status: WebAppStatusSchema,
+        },
+        () => ({
+          first: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-a',
+            data: { identity: 'namespace-a/shared-name' },
+            id: 'firstSharedConfig',
+          }),
+          second: simple.ConfigMap({
+            name: 'shared-name',
+            namespace: 'namespace-b',
+            data: { identity: 'namespace-b/shared-name' },
+            id: 'secondSharedConfig',
+          }),
+        }),
+        () => ({
+          phase: 'running' as const,
+          url: 'http://cross-namespace-collision',
+          readyReplicas: 1,
+        })
+      );
+      const factory = await crossNamespace.factory('direct', {
+        namespace: 'control-plane',
+      });
+      const first = await factory.toAlchemyResources(spec);
+      const second = await factory.toAlchemyResources(spec);
+
+      expect(first).toHaveLength(2);
+      expect(new Set(first.map((declaration) => declaration.id)).size).toBe(2);
+      expect(first.map((declaration) => declaration.id)).toEqual(
+        second.map((declaration) => declaration.id)
+      );
+      expect(first.every((declaration) => declaration.id.includes('Identity'))).toBe(true);
+      expect(
+        first.map((declaration) => declaration.props.resource.metadata.namespace).sort()
+      ).toEqual(['namespace-a', 'namespace-b']);
     });
 
     it('topologically orders declarations and wires dependsOn from the dependency graph', async () => {

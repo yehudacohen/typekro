@@ -5,6 +5,7 @@
  * internal dependency resolution engine, without requiring the Kro controller.
  */
 
+import { createHash } from 'node:crypto';
 import * as yaml from 'js-yaml';
 import type { AlchemyResourceDeclaration } from '../../alchemy/types.js';
 import { createAlchemyResourceId } from '../../alchemy/utilities.js';
@@ -1563,12 +1564,48 @@ export class DirectResourceFactoryImpl<
     );
     const Redacted =
       hasSensitiveBindings || hasSecretPayload ? await import('effect/Redacted') : undefined;
-    for (const { id: graphId, manifest } of graph.resources) {
+    const nodeCandidates = graph.resources.map(({ id: graphId, manifest }) => {
       const resource = ensureReadinessEvaluator(manifest as Enhanced<unknown, unknown>);
-      byGraphId.set(graphId, {
+      return {
+        graphId,
         resource,
-        alchemyId: createAlchemyResourceId(resource, this.namespace),
+        legacyAlchemyId: createAlchemyResourceId(resource, this.namespace),
         logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
+      };
+    });
+    const legacyAlchemyIdCounts = new Map<string, number>();
+    for (const candidate of nodeCandidates) {
+      legacyAlchemyIdCounts.set(
+        candidate.legacyAlchemyId,
+        (legacyAlchemyIdCounts.get(candidate.legacyAlchemyId) ?? 0) + 1
+      );
+    }
+    const assignedAlchemyIds = new Set<string>();
+    for (const candidate of nodeCandidates) {
+      const alchemyId =
+        legacyAlchemyIdCounts.get(candidate.legacyAlchemyId) === 1
+          ? candidate.legacyAlchemyId
+          : disambiguatedAlchemyResourceId(
+              candidate.legacyAlchemyId,
+              candidate.resource,
+              candidate.logicalId
+            );
+      if (assignedAlchemyIds.has(alchemyId)) {
+        throw new ValidationError(
+          `Direct Alchemy materialization could not derive a unique declaration ID for ` +
+            `${candidate.resource.apiVersion}/${candidate.resource.kind} ` +
+            `${candidate.resource.metadata?.namespace ? `${candidate.resource.metadata.namespace}/` : ''}` +
+            `${candidate.resource.metadata?.name ?? '<unnamed>'}. Give each graph resource a distinct explicit id.`,
+          candidate.resource.kind,
+          candidate.logicalId,
+          'id'
+        );
+      }
+      assignedAlchemyIds.add(alchemyId);
+      byGraphId.set(candidate.graphId, {
+        resource: candidate.resource,
+        alchemyId,
+        logicalId: candidate.logicalId,
       });
     }
 
@@ -2838,6 +2875,27 @@ function findUnresolvedReferences(
   }
 
   return refs;
+}
+
+/**
+ * Preserve the historical declaration ID for every non-colliding resource.
+ * A collision means no prior Alchemy stack could have materialized the set, so
+ * it is safe to add an identity suffix only at that boundary.
+ */
+function disambiguatedAlchemyResourceId(
+  legacyId: string,
+  resource: Enhanced<unknown, unknown>,
+  logicalId: string
+): string {
+  const identity = JSON.stringify({
+    apiVersion: resource.apiVersion,
+    kind: resource.kind,
+    name: resource.metadata?.name,
+    namespace: resource.metadata?.namespace,
+    logicalId,
+  });
+  const suffix = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 12);
+  return `${legacyId}Identity${suffix}`;
 }
 
 /**
