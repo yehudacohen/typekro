@@ -10,6 +10,7 @@ describe('Effect runtime architecture boundary', () => {
     expect(provider).toContain('Effect.tryPromise');
     expect(provider).not.toMatch(/Effect\.run(?:Promise|Fork|Sync)/);
     expect(provider).not.toContain('ManagedRuntime');
+    expect(provider).not.toContain('Bun.sleep');
   });
 
   it('keeps the standalone Effect runtime lazy and behind factory facades', async () => {

@@ -663,7 +663,9 @@ async function waitForPersistedIdentityDeletion(
   const identity = persistedKroResourceIdentity(output);
   if (!identity) return;
   const reader = identityReader(props, dependencies.reader, 'alchemy-terminating-identity');
-  const sleep = dependencies.sleep ?? Bun.sleep;
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const now = dependencies.now ?? Date.now;
   const pollIntervalMs = dependencies.pollIntervalMs ?? 500;
   const timeout = props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT;
