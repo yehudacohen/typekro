@@ -344,6 +344,12 @@ export interface OryIdentityStackConfig {
   name: string;
   /** Target namespace for Ory services and Maester resources. */
   namespace?: string;
+  /**
+   * Lifecycle of the target namespace. Use `external` when a parent
+   * deployment graph establishes it.
+   * @default 'owned'
+   */
+  namespaceOwnership?: 'owned' | 'external';
   /** Ory chart version. Defaults to the pinned `0.62.0` contract. */
   version?: string;
   /** Explicit external or graph-managed dependency sources. */
@@ -1370,6 +1376,7 @@ const oathkeeperRuleConfigSchema = type({
 export const OryIdentityStackConfigSchema = type({
   name: 'string',
   'namespace?': 'string',
+  'namespaceOwnership?': '"owned" | "external"',
   'version?': 'string',
   'dependencySources?': oryDependencySourceConfigSchema,
   'shared?': 'boolean',

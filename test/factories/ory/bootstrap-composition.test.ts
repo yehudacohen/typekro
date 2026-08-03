@@ -221,6 +221,7 @@ describe('Ory identity stack composition', () => {
     const yaml = await factory.toYaml({
       name: 'identity-values-test',
       namespace: 'ory-test',
+      namespaceOwnership: 'external',
       dependencySources: {
         hydra: {
           database: { dsn: { mode: 'managed', resourceName: 'identity-values-test-hydra-db' } },
@@ -267,6 +268,8 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('level: debug');
     expect(yaml).toContain('replicaCount: 1');
     expect(yaml).not.toContain('customValues');
+    expect(yaml).not.toContain('kind: Namespace');
+    expect(yaml).toContain('namespace: ory-test');
   });
 
 });

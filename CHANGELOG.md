@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespaces externally owned, allowing a parent Alchemy graph to establish a
   generated credential before the platform Helm releases without competing
   Namespace owners.
+- Ory identity and platform stacks can declare their target namespace
+  externally owned when a parent deployment graph is the lifecycle authority.
 - **Arktype `object` now maps to KRO `object` instead of `string`.** A bare `type('object')` is represented by
   arktype as the string `"object"`, which the KRO type mapper had no case for, so it fell through to the
   `string` default. Every schemaless-object field was therefore declared `string` in the generated RGD and KRO

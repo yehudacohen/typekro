@@ -140,6 +140,7 @@ function graphSafeConfig(
     return defined({
       name: config.name,
       namespace: config.namespace,
+      namespaceOwnership: config.namespaceOwnership,
       version: config.version,
       dependencySources: config.dependencySources,
       shared: config.shared,
@@ -382,7 +383,7 @@ export const oryIdentityStack = kubernetesComposition(
       });
     }
 
-    if (concreteSpec) {
+    if (concreteSpec && typedSpec.namespaceOwnership !== 'external') {
       namespace({
         id: 'oryNamespace',
         metadata: {
