@@ -24,7 +24,7 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import type { V1Secret } from '@kubernetes/client-node';
+import type { KubernetesObject, V1Secret } from '@kubernetes/client-node';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
@@ -34,6 +34,7 @@ import {
   harbor as harborRegistry,
   kubernetesSecretRegistryCredentials,
 } from '../../../src/core/containers/index.js';
+import { patchResourceWithCorrectContentType } from '../../../src/core/deployment/k8s-helpers.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
   createHarborKubernetesStore,
@@ -511,10 +512,12 @@ describeOrSkip(
       // Restart one official Harbor component and prove bounded recovery.
       const appsApi = createAppsV1ApiClient(kubeConfig);
       const deploymentName = `${installationName}-core`;
-      await appsApi.patchNamespacedDeployment({
-        name: deploymentName,
-        namespace: harborNamespace,
-        body: {
+      await patchResourceWithCorrectContentType(
+        createKubernetesObjectApiClient(kubeConfig),
+        {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: deploymentName, namespace: harborNamespace },
           spec: {
             template: {
               metadata: {
@@ -522,8 +525,9 @@ describeOrSkip(
               },
             },
           },
-        },
-      });
+        } as KubernetesObject,
+        'strategic'
+      );
       const restartDeadline = Date.now() + 300_000;
       let deploymentReady = false;
       while (Date.now() < restartDeadline) {
