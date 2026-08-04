@@ -117,11 +117,55 @@ function withStackOwnedChartNames<T extends object>(
   ) as T;
 }
 
-function removeChartOwnedSecretEnv(
+interface OrySecretEnvReplacement {
+  readonly name: string;
+  readonly secretName: unknown;
+  readonly secretKey: unknown;
+}
+
+function secretEnvReplacement(
+  values: unknown,
+  target: 'deployment' | 'statefulSet',
+  name: string
+): OrySecretEnvReplacement | undefined {
+  if (isValuesMergeExpression(values)) {
+    return secretEnvReplacement(values.base, target, name);
+  }
+  if (!isPlainObject(values)) return undefined;
+  const workload = values[target];
+  if (!isPlainObject(workload) || !Array.isArray(workload.extraEnv)) return undefined;
+  const entry = workload.extraEnv.find(
+    (candidate) => isPlainObject(candidate) && candidate.name === name
+  );
+  if (!isPlainObject(entry) || !isPlainObject(entry.valueFrom)) return undefined;
+  const secretKeyRef = entry.valueFrom.secretKeyRef;
+  if (
+    !isPlainObject(secretKeyRef) ||
+    secretKeyRef.name === undefined ||
+    secretKeyRef.key === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    name,
+    secretName: secretKeyRef.name,
+    secretKey: secretKeyRef.key,
+  };
+}
+
+/**
+ * The Ory charts add their generated-Secret environment entries before
+ * `deployment.extraEnv` / `statefulSet.extraEnv`. A delete-by-name strategic
+ * merge patch removes both entries because `name` is the list merge key,
+ * including the external replacement TypeKro authored. Replace the merge-keyed
+ * entry instead: Kustomize collapses duplicates to one environment variable
+ * whose value comes from the declared external Secret.
+ */
+function replaceChartOwnedSecretEnv(
   kind: 'Deployment' | 'StatefulSet',
   releaseName: string,
   containerName: 'hydra' | 'kratos' | 'kratos-courier',
-  names: string[]
+  replacements: readonly OrySecretEnvReplacement[]
 ) {
   return {
     kustomize: {
@@ -144,9 +188,12 @@ function removeChartOwnedSecretEnv(
             '      containers:',
             `        - name: ${containerName}`,
             '          env:',
-            ...names.flatMap((name) => [
-              `            - name: ${name}`,
-              '              $patch: delete',
+            ...replacements.flatMap((replacement) => [
+              `            - name: ${replacement.name}`,
+              '              valueFrom:',
+              '                secretKeyRef:',
+              `                  name: ${String(replacement.secretName)}`,
+              `                  key: ${String(replacement.secretKey)}`,
             ]),
           ].join('\n'),
         },
@@ -511,13 +558,25 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: withMaesterSubchartValues(values.hydra, 'hydra-maester', values.hydraMaester),
-      postRenderers: [
-        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-hydra`, 'hydra', [
-          'SECRETS_SYSTEM',
-        ]),
-      ],
+      postRenderers: (() => {
+        const system = secretEnvReplacement(values.hydra, 'deployment', 'SECRETS_SYSTEM');
+        return system
+          ? [
+              replaceChartOwnedSecretEnv(
+                'Deployment',
+                `${typedSpec.name}-hydra`,
+                'hydra',
+                [system]
+              ),
+            ]
+          : [];
+      })(),
     });
 
+    const kratosSecretReplacements = ['SECRETS_COOKIE', 'SECRETS_CIPHER'].flatMap((name) => {
+      const replacement = secretEnvReplacement(values.kratos, 'deployment', name);
+      return replacement ? [replacement] : [];
+    });
     const kratos = kratosHelmRelease({
       id: 'kratosHelmRelease',
       name: `${typedSpec.name}-kratos`,
@@ -526,18 +585,23 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: values.kratos,
-      postRenderers: [
-        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-kratos`, 'kratos', [
-          'SECRETS_COOKIE',
-          'SECRETS_CIPHER',
-        ]),
-        removeChartOwnedSecretEnv(
-          'StatefulSet',
-          `${typedSpec.name}-kratos-courier`,
-          'kratos-courier',
-          ['SECRETS_COOKIE', 'SECRETS_CIPHER']
-        ),
-      ],
+      postRenderers:
+        kratosSecretReplacements.length > 0
+          ? [
+              replaceChartOwnedSecretEnv(
+                'Deployment',
+                `${typedSpec.name}-kratos`,
+                'kratos',
+                kratosSecretReplacements
+              ),
+              replaceChartOwnedSecretEnv(
+                'StatefulSet',
+                `${typedSpec.name}-kratos-courier`,
+                'kratos-courier',
+                kratosSecretReplacements
+              ),
+            ]
+          : [],
     });
 
     const keto = ketoHelmRelease({

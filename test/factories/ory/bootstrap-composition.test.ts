@@ -262,7 +262,9 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('name: SECRETS_SYSTEM');
     expect(yaml).toContain('name: SECRETS_COOKIE');
     expect(yaml).toContain('name: SECRETS_CIPHER');
-    expect(yaml).toContain('$patch: delete');
+    expect(yaml).not.toContain('$patch: delete');
+    expect(yaml).toContain('valueFrom:');
+    expect(yaml).toContain('secretKeyRef:');
     expect(yaml).toContain('customReadinessProbe');
     expect(yaml).toContain('customStartupProbe');
     expect(yaml).toContain('/health/alive');
@@ -433,7 +435,12 @@ describe('Ory identity stack composition', () => {
     expect(yaml).toContain('postRenderers:');
     expect(yaml).toContain('name: identity-test-hydra');
     expect(yaml).toContain('name: identity-test-kratos');
-    expect(yaml).toContain('$patch: delete');
+    expect(yaml).not.toContain('$patch: delete');
+    expect(yaml).toContain('name: identity-test-hydra-secrets');
+    expect(yaml).toContain('key: system');
+    expect(yaml).toContain('name: identity-test-kratos-secrets');
+    expect(yaml).toContain('key: cookie');
+    expect(yaml).toContain('key: cipher');
     expect(yaml).toContain('kind: OAuth2Client');
     expect(yaml).toContain('kind: Rule');
     expect(yaml).toContain('apiVersion: hydra.ory.sh/v1alpha1');
