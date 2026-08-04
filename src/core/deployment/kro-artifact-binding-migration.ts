@@ -7,7 +7,7 @@ const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
 const MAX_CRD_PATCH_ATTEMPTS = 5;
 type MigrationApi = Pick<
   ReturnType<typeof createBunCompatibleKubernetesObjectApi>,
-  'read' | 'list' | 'patch' | 'replace'
+  'read' | 'list' | 'replace'
 >;
 
 interface ResourceGraphDefinition extends KubernetesObject {
@@ -138,23 +138,77 @@ function needsRgdReconcileRetry(rgd: ResourceGraphDefinition): boolean {
   );
 }
 
-async function requestRgdReconcile(api: MigrationApi, rgdName: string): Promise<void> {
-  await api.patch(
-    {
+async function replaceRgdWithRetry(
+  api: MigrationApi,
+  rgdName: string,
+  desired: ResourceGraphDefinition | undefined,
+  initialLive?: ResourceGraphDefinition
+): Promise<ResourceGraphDefinition> {
+  let live =
+    initialLive ??
+    ((await api.read({
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: rgdName },
+    })) as ResourceGraphDefinition);
+  for (let attempt = 1; attempt <= MAX_CRD_PATCH_ATTEMPTS; attempt += 1) {
+    const resourceVersion = live.metadata?.resourceVersion;
+    if (!resourceVersion) {
+      throw new Error(
+        `Cannot safely replace ResourceGraphDefinition ${rgdName}: the live resource has no resourceVersion`
+      );
+    }
+    const { status: _status, ...writableLive } = live;
+    const replacement: ResourceGraphDefinition = {
+      ...writableLive,
+      ...desired,
       apiVersion: 'kro.run/v1alpha1',
       kind: 'ResourceGraphDefinition',
       metadata: {
+        ...live.metadata,
+        ...desired?.metadata,
+        name: rgdName,
+        resourceVersion,
+      },
+      ...(desired?.spec ? { spec: desired.spec } : {}),
+    };
+    try {
+      return (await api.replace(replacement)) as ResourceGraphDefinition;
+    } catch (error: unknown) {
+      if (statusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
+        throw new Error(
+          `Could not replace ResourceGraphDefinition ${rgdName} after ${attempt} attempt${attempt === 1 ? '' : 's'}: ${ensureError(error).message}`
+        );
+      }
+      live = (await api.read({
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: rgdName },
+      })) as ResourceGraphDefinition;
+    }
+  }
+  throw new Error(`Could not replace ResourceGraphDefinition ${rgdName}`);
+}
+
+async function requestRgdReconcile(api: MigrationApi, rgdName: string): Promise<void> {
+  const live = (await api.read({
+    apiVersion: 'kro.run/v1alpha1',
+    kind: 'ResourceGraphDefinition',
+    metadata: { name: rgdName },
+  })) as ResourceGraphDefinition;
+  await replaceRgdWithRetry(
+    api,
+    rgdName,
+    {
+      metadata: {
         name: rgdName,
         annotations: {
+          ...live.metadata?.annotations,
           'typekro.io/artifact-binding-migration-retry': new Date().toISOString(),
         },
       },
     },
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    'application/merge-patch+json'
+    live
   );
 }
 
@@ -221,14 +275,7 @@ export async function migrateLegacyKroArtifactBindingCrd(
   // Applying the desired RGD first may briefly produce KindReady=False; the CRD
   // broadening below removes that incompatibility and the normal deployment
   // readiness gate waits for the same generation to become ready.
-  await api.patch(
-    desiredRgd,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    'application/merge-patch+json'
-  );
+  liveRgd = await replaceRgdWithRetry(api, rgdName, desiredRgd, liveRgd);
 
   for (let attempt = 1; attempt <= MAX_CRD_PATCH_ATTEMPTS; attempt += 1) {
     const crd = await findGeneratedCrd(api, group, kind);
