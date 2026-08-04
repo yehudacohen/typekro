@@ -263,12 +263,7 @@ export async function migrateLegacyKroArtifactBindingCrd(
 
   const group =
     desiredRgd.spec.schema.group ??
-    (apiVersion.includes('/') ? apiVersion.slice(0, apiVersion.lastIndexOf('/')) : undefined);
-  if (!group) {
-    throw new Error(
-      `Cannot migrate artifact bindings for ${rgdName}: the desired RGD schema has no API group`
-    );
-  }
+    (apiVersion.includes('/') ? apiVersion.slice(0, apiVersion.lastIndexOf('/')) : 'kro.run');
   // Put the desired RGD in place before broadening the generated CRD. If the
   // legacy RGD remains live, KRO can immediately reconcile and restore its old
   // topology-shaped schema between this patch and the caller's normal apply.

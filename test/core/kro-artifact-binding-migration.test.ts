@@ -27,6 +27,16 @@ function desiredRgd(): KubernetesObject {
   } as unknown as KubernetesObject;
 }
 
+function defaultGroupDesiredRgd(): KubernetesObject {
+  const resource = structuredClone(desiredRgd());
+  const schema = Reflect.get(Reflect.get(resource, 'spec'), 'schema') as Record<
+    string,
+    unknown
+  >;
+  Reflect.deleteProperty(schema, 'group');
+  return resource;
+}
+
 function legacyCrd(resourceVersion: string): KubernetesObject {
   return {
     // Match KubernetesObjectApi list deserialization: TypeMeta may be omitted
@@ -70,6 +80,34 @@ function legacyCrd(resourceVersion: string): KubernetesObject {
 }
 
 describe('KRO artifact-binding migration', () => {
+  test('uses KRO default group when the RGD schema declares a version only', async () => {
+    const desired = defaultGroupDesiredRgd();
+    const live = structuredClone(desired);
+    live.metadata = {
+      name: 'application',
+      generation: 1,
+      resourceVersion: '20',
+    };
+    const crd = legacyCrd('10');
+    const crdSpec = Reflect.get(crd, 'spec') as Record<string, unknown>;
+    crdSpec.group = 'kro.run';
+    crd.metadata = {
+      ...crd.metadata,
+      name: 'applications.kro.run',
+    };
+    const list = mock(async () => ({ items: [crd] }));
+
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desired, {
+      api: {
+        read: mock(async () => live),
+        list,
+        replace: mock(async (resource: KubernetesObject) => resource),
+      } as never,
+    });
+
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
   test('retries complete RGD replacements and never serializes them as generic patches', async () => {
     let readCount = 0;
     const read = mock(async () => ({

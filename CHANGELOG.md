@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic KRO artifact-binding migration now replaces the complete generated CRD with
   resource-version concurrency rather than sending a partial merge patch through
   `KubernetesObjectApi`. This avoids the client serializer's `data is not iterable` failure while
-  retaining restart-safe conflict retries.
+  retaining restart-safe conflict retries. Version-only schemas correctly resolve to KRO's default
+  `kro.run` API group during migration.
 - Artifact-binding migration now also replaces the complete ResourceGraphDefinition with
   resource-version concurrency. This avoids the same client serializer failure when an RGD update
   contains array-valued resources, while preserving live metadata and omitting status.
