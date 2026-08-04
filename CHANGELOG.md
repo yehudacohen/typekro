@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Direct and Alchemy deployments now materialize TypeKro's internal Helm-values merge expressions
+  before encoding the canonical artifact record. Concrete chart overrides therefore deep-merge with
+  integration defaults instead of leaking `__typekroValuesMerge` as literal Helm values; KRO keeps
+  its graph-aware CEL merge behavior.
+- Restart-safe KRO artifact-binding migration now resolves an omitted schema group to KRO's
+  documented `kro.run` default. Repeated deployments of otherwise valid default-group compositions
+  no longer fail while inspecting the generated CRD.
 - Direct Alchemy singleton owners now gate consumer scheduling through a dedicated barrier instead
   of being injected into each consumer's canonical live-resource dependencies. This preserves
   singleton readiness ordering without making direct artifact execution records fail dependency
