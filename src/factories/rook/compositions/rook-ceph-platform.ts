@@ -351,8 +351,24 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_ROOK_CEPH_REPO_URL;
     const objectStoreName = spec.objectStoreName ?? 'harbor-object-store';
     const bucketStorageClassName = spec.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
-    const bucketProvisionerNamePrefix =
-      spec.bucketProvisionerNamePrefix ?? platformNamespace;
+    const bucketProvisionerNamePrefix = isKubernetesRef(spec.bucketProvisionerNamePrefix)
+      ? (Cel.default(spec.bucketProvisionerNamePrefix, platformNamespace) as string)
+      : (spec.bucketProvisionerNamePrefix ?? platformNamespace);
+    const inferredBucketProvisionerName =
+      isKubernetesRef(bucketProvisionerNamePrefix) ||
+      isCelExpression(bucketProvisionerNamePrefix)
+        ? (Cel.concat(bucketProvisionerNamePrefix, '.ceph.rook.io/bucket') as string)
+        : `${bucketProvisionerNamePrefix}.ceph.rook.io/bucket`;
+    // `bucketProvisionerName` has a computed, cross-field default. Giving that
+    // choice explicit CEL provenance prevents KRO schema-default inference from
+    // freezing the all-defaults namespace (`rook-ceph`) into every instance.
+    // Direct mode still executes ordinary JavaScript nullish semantics.
+    const bucketProvisionerName = isKubernetesRef(spec.bucketProvisionerName)
+      ? (Cel.default(
+          spec.bucketProvisionerName,
+          inferredBucketProvisionerName
+        ) as string)
+      : (spec.bucketProvisionerName ?? inferredBucketProvisionerName);
     const profile: 'single-node-development' = 'single-node-development';
 
     namespace({
@@ -420,7 +436,7 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       objectStoreName,
       objectStoreNamespace: platformNamespace,
       operatorNamespace,
-      provisionerName: spec.bucketProvisionerName,
+      provisionerName: bucketProvisionerName,
       provisionerNamePrefix: bucketProvisionerNamePrefix,
       reclaimPolicy: 'Retain',
       id: 'bucketStorageClass',

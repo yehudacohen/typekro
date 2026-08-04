@@ -231,6 +231,9 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain(
       `provisioner: '\${has(schema.spec.bucketProvisionerNamePrefix) ? string(schema.spec.bucketProvisionerNamePrefix) + ".ceph.rook.io/bucket" : string(schema.spec.namespace) + ".ceph.rook.io/bucket"}'`
     );
+    expect(yaml).not.toContain(
+      'bucketProvisionerName: string | default="rook-ceph.ceph.rook.io/bucket"'
+    );
     expectCleanYaml(yaml);
   });
 

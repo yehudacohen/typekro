@@ -284,10 +284,12 @@ describeOrSkip(
           metadata: { name: storageClassName },
         })
         .catch(() => undefined);
+      const expectedProvisioner =
+        process.env.TYPEKRO_HARBOR_BUCKET_PROVISIONER ??
+        'typekro-harbor-ceph.ceph.rook.io/bucket';
       if (
         !storageClass ||
-        (storageClass as { provisioner?: string }).provisioner !==
-          'typekro-harbor-ceph.ceph.rook.io/bucket'
+        (storageClass as { provisioner?: string }).provisioner !== expectedProvisioner
       ) {
         throw new Error(
           `Harbor integration requires the retained Rook platform StorageClass ${storageClassName}; ` +

@@ -119,6 +119,14 @@ describe('CEL Expression Builder', () => {
       expect(result.expression).toBe('"say \\\\\\"hi\\\\\\""');
     });
 
+    it('parenthesizes nested CEL expressions before concatenation', () => {
+      const selected = Cel.default(Cel.expr<string>('schema.spec.prefix'), 'fallback');
+
+      expect(Cel.concat(selected, '-suffix').expression).toBe(
+        '(has(schema.spec.prefix) && dyn((schema.spec.prefix)) != null ? (schema.spec.prefix) : "fallback") + "-suffix"'
+      );
+    });
+
     it('should escape double quotes in cel template tag string segments', () => {
       const result = cel`prefix "quoted" suffix`;
       expect(result.expression).toBe('"prefix \\"quoted\\" suffix"');
