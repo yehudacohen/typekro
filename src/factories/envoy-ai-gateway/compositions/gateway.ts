@@ -487,7 +487,7 @@ export function makeEnvoyAIGateway(
         endpoint: Cel.expr<string>(
           'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + ' +
             'string(gateway.status.addresses[0].value) + ":" + ' +
-            'string(gateway.spec.listeners[0].port) : ""'
+            'string(gateway.spec.listeners[0].port) + "/v1" : ""'
         ),
         gatewayClassName: Cel.expr<string>('gatewayContract.data.gatewayClassName'),
         providerCount: Cel.expr<number>('int(gatewayContract.data.providerCount)'),

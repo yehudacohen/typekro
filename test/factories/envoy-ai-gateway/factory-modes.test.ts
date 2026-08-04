@@ -759,6 +759,7 @@ describe('Envoy AI Gateway integration', () => {
     expect(status).toHaveProperty('routeAccepted');
     expect(status).toHaveProperty('gatewayProgrammed');
     expect(String(status.endpoint)).toContain('size(gateway.status.addresses)');
+    expect(String(status.endpoint)).toContain('"/v1"');
     expect(String(status.endpoint)).not.toContain('.size()');
     expect(status).toHaveProperty('aiGatewayVersion', '${gatewayContract.data.aiGatewayVersion}');
     expect(schemaSpec).toHaveProperty('listenerPort', 'integer | minimum=1 maximum=65535');
