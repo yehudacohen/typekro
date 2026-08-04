@@ -251,6 +251,8 @@ export const RookBucketStorageClassConfigSchema = type({
   objectStoreNamespace: 'string',
   /** @deprecated Kept for source compatibility; Rook's default provisioner identity uses the cluster namespace. */
   'operatorNamespace?': 'string',
+  /** Exact external provisioner identity; overrides `provisionerNamePrefix`. */
+  'provisionerName?': 'string',
   'provisionerNamePrefix?': 'string',
   'reclaimPolicy?': '"Delete" | "Retain"',
   'existingBucketName?': 'string',
@@ -347,6 +349,7 @@ const rookCephClusterCommonSchemaShape = {
   storageClassName: 'string',
   'objectStoreName?': 'string',
   'bucketStorageClassName?': 'string',
+  'bucketProvisionerNamePrefix?': 'string',
   'cephImageRepository?': 'string',
   'cephImageTag?': 'string',
   'values?': 'Record<string, unknown>',
@@ -379,6 +382,8 @@ export const RookCephExternalOperatorSingleNodePlatformConfigSchema = type({
   profile: '"single-node-development"',
   operatorNamespace: 'string',
   'operatorDeploymentName?': 'string',
+  /** Exact OBC provisioner registered by the external operator. */
+  'bucketProvisionerName?': 'string',
   'storageSize?': 'string',
   'resources?': optionalCephDaemonResourcesSchemaShape,
 });

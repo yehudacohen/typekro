@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rook managed platforms now pin one OBC provisioner prefix on both the
+  operator and StorageClass instead of disabling namespace scoping on only the
+  operator. External-operator platforms accept either the matching prefix or
+  an exact provisioner identity, preventing permanently pending OBCs across
+  namespace-scoped, custom-prefix, and global Rook configurations.
 - Direct Alchemy singleton owners now gate consumer scheduling through a dedicated barrier instead
   of being injected into each consumer's canonical live-resource dependencies. This preserves
   singleton readiness ordering without making direct artifact execution records fail dependency

@@ -283,12 +283,20 @@ const buckets = rookBucketStorageClass({
 ```
 
 The generated provisioner is
-`<provisionerNamePrefix>.ceph.rook.io/bucket`. By default, the prefix is the
-Ceph cluster/object-store namespace because Rook registers one bucket
-provisioner for each Ceph cluster. This remains true when the shared operator
-runs in a different namespace. If the operator bootstrap configures
-`obcProvisionerNamePrefix`, pass the same value explicitly as
-`provisionerNamePrefix` here.
+`<provisionerNamePrefix>.ceph.rook.io/bucket`. Rook's chart enables
+namespace-scoped OBC provisioners by default, so TypeKro defaults the prefix to
+the Ceph cluster/object-store namespace. Complete managed platform
+compositions pin that prefix on both the operator and StorageClass. If an
+external operator configures `obcProvisionerNamePrefix`, pass the same value as
+`bucketProvisionerNamePrefix` on the platform or `provisionerNamePrefix` on
+this resource factory. If the external operator disables namespace scoping and
+uses Rook's global `ceph.rook.io/bucket` identity, pass that exact value as
+`bucketProvisionerName` on the platform or `provisionerName` here.
+
+These rules follow Rook's tagged
+[`GetObjectBucketProvisioner()` implementation](https://github.com/rook/rook/blob/v1.20.2/pkg/operator/ceph/object/objectstore.go#L1086-L1100)
+and the
+[`rook-ceph` chart defaults](https://github.com/rook/rook/blob/v1.20.2/deploy/charts/rook-ceph/values.yaml#L223-L228).
 
 For a brownfield bucket, set `existingBucketName` on the StorageClass and omit
 both bucket-name fields on the application claim. Rook's API places the
