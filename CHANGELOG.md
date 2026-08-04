@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The managed Ory identity stack's default Kratos schema now marks its email
+  trait as a password-credential identifier. Identities created through the
+  Admin API can therefore complete password login without requiring consumers
+  to replace the otherwise usable default schema.
 - Direct Alchemy singleton owners now gate consumer scheduling through a dedicated barrier instead
   of being injected into each consumer's canonical live-resource dependencies. This preserves
   singleton readiness ordering without making direct artifact execution records fail dependency
