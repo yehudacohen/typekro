@@ -103,6 +103,10 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
         allowLoopDevices: spec.allowLoopDevices ?? false,
         enableOBCWatchOperatorNamespace: false,
         resources: { requests: { cpu: '100m', memory: '128Mi' } },
+        // The object-only development profile owns no block pools or file
+        // systems. Disable the operator chart's CSI dependency so its
+        // ClientProfile finalizers cannot outlive this owned operator.
+        csi: { installCsiOperator: false },
       },
       id: 'operatorRelease',
     });
@@ -315,7 +319,9 @@ export const rookCephProductionPlatform = kubernetesComposition(
 /**
  * Complete one-node Ceph cluster that references an already managed Rook
  * operator. The operator Deployment is an observed prerequisite and is never
- * emitted, adopted, or deleted by this composition.
+ * emitted, adopted, or deleted by this composition. Its platform owner must
+ * keep it running until this cluster and any operator-owned CSI descendants
+ * have completed deletion.
  */
 export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
   {

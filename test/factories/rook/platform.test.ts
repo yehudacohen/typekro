@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { loadAll } from 'js-yaml';
 
 import {
   DEFAULT_ROOK_CEPH_VERSION,
@@ -172,7 +173,57 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('allowLoopDevices: true');
     expect(yaml).toContain('name: harbor-retain');
     expect(yaml).toContain('reclaimPolicy: Retain');
+    expect(yaml).toContain('installCsiOperator: false');
     expectCleanYaml(yaml);
+  });
+
+  it('disables CSI on the owned operator chart rather than the cluster chart', () => {
+    const config = {
+      name: 'rook-local',
+      profile: 'single-node-development' as const,
+      namespace: 'ceph-data',
+      operatorNamespace: 'ceph-operator',
+      storageClassName: 'local-path',
+    };
+
+    const directYaml = rookCephSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toYaml(config);
+    const kroDefinitionYaml = rookCephSingleNodePlatform
+      .factory('kro', { namespace: 'control' })
+      .toYaml();
+    const externalOperatorYaml = rookCephExternalOperatorSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toYaml({
+        ...config,
+        operatorDeploymentName: 'rook-ceph-operator',
+      });
+
+    const directResources = loadAll(directYaml) as Array<{
+      kind?: string;
+      spec?: {
+        chart?: { spec?: { chart?: string } };
+        values?: { csi?: { installCsiOperator?: boolean } };
+      };
+    }>;
+    const operator = directResources.find(
+      (resource) =>
+        resource.kind === 'HelmRelease' && resource.spec?.chart?.spec?.chart === 'rook-ceph'
+    );
+    const cluster = directResources.find(
+      (resource) =>
+        resource.kind === 'HelmRelease' &&
+        resource.spec?.chart?.spec?.chart === 'rook-ceph-cluster'
+    );
+    expect(operator?.spec?.values?.csi?.installCsiOperator).toBe(false);
+    expect(cluster?.spec?.values?.csi).toBeUndefined();
+
+    expect(kroDefinitionYaml).toContain('chart: rook-ceph');
+    expect(kroDefinitionYaml).toContain('installCsiOperator: false');
+    expect(externalOperatorYaml).not.toContain('installCsiOperator');
+    expectCleanYaml(directYaml);
+    expectCleanYaml(kroDefinitionYaml);
+    expectCleanYaml(externalOperatorYaml);
   });
 
   it('keeps the object store behind the executable cluster release lifecycle edge', async () => {
@@ -226,6 +277,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('kind: CephCluster');
     expect(yaml).toContain('kind: CephObjectStore');
     expect(yaml).toContain('kind: StorageClass');
+    expect(yaml).toContain('installCsiOperator: false');
     expectCleanYaml(yaml);
   });
 
