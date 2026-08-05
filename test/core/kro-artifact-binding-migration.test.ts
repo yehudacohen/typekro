@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
+import { ApiException } from '@kubernetes/client-node/dist/gen/apis/exception.js';
 import { migrateLegacyKroArtifactBindingCrd } from '../../src/core/deployment/kro-artifact-binding-migration.js';
 import {
   kroArtifactOutputField,
@@ -25,6 +26,16 @@ function desiredRgd(): KubernetesObject {
       },
     },
   } as unknown as KubernetesObject;
+}
+
+function defaultGroupDesiredRgd(): KubernetesObject {
+  const resource = structuredClone(desiredRgd());
+  const schema = Reflect.get(Reflect.get(resource, 'spec'), 'schema') as Record<
+    string,
+    unknown
+  >;
+  Reflect.deleteProperty(schema, 'group');
+  return resource;
 }
 
 function legacyCrd(resourceVersion: string): KubernetesObject {
@@ -70,10 +81,119 @@ function legacyCrd(resourceVersion: string): KubernetesObject {
 }
 
 describe('KRO artifact-binding migration', () => {
+  test('treats a real client 404 as an absent RGD', async () => {
+    const read = mock(async () => {
+      throw new ApiException(404, 'Not Found', undefined, {});
+    });
+
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desiredRgd(), {
+      api: {
+        read,
+        list: mock(async () => ({ items: [] })),
+        replace: mock(async (resource: KubernetesObject) => resource),
+      } as never,
+    });
+
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses KRO default group when the RGD schema declares a version only', async () => {
+    const desired = defaultGroupDesiredRgd();
+    const live = structuredClone(desired);
+    live.metadata = {
+      name: 'application',
+      generation: 1,
+      resourceVersion: '20',
+    };
+    const crd = legacyCrd('10');
+    const crdSpec = Reflect.get(crd, 'spec') as Record<string, unknown>;
+    crdSpec.group = 'kro.run';
+    crd.metadata = {
+      ...crd.metadata,
+      name: 'applications.kro.run',
+    };
+    const list = mock(async () => ({ items: [crd] }));
+
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desired, {
+      api: {
+        read: mock(async () => live),
+        list,
+        replace: mock(async (resource: KubernetesObject) => resource),
+      } as never,
+    });
+
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries complete RGD replacements and never serializes them as generic patches', async () => {
+    const desired = desiredRgd();
+    desired.metadata = {
+      ...desired.metadata,
+      labels: { shared: 'desired', desired: 'true' },
+      annotations: { shared: 'desired', desired: 'true' },
+    };
+    let readCount = 0;
+    const read = mock(async () => ({
+      ...desiredRgd(),
+      metadata: {
+        name: 'application',
+        generation: 2,
+        resourceVersion: readCount++ === 0 ? '20' : '21',
+        labels: { retained: 'true', shared: 'live' },
+        annotations: { retained: 'true', shared: 'live' },
+      },
+      status: {
+        conditions: [{ type: 'KindReady', status: 'False', observedGeneration: 2 }],
+      },
+    }));
+    const replace = mock(async (resource: KubernetesObject) => {
+      if (
+        resource.kind === 'ResourceGraphDefinition' &&
+        resource.metadata?.resourceVersion === '20'
+      ) {
+        throw new ApiException(409, 'Conflict', undefined, {});
+      }
+      return resource;
+    });
+
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desired, {
+      api: {
+        read,
+        list: mock(async () => ({ items: [legacyCrd('10')] })),
+        replace,
+      } as never,
+    });
+
+    const rgdReplacements = replace.mock.calls
+      .map(([resource]) => resource as KubernetesObject)
+      .filter((resource) => resource.kind === 'ResourceGraphDefinition');
+    expect(rgdReplacements.map((resource) => resource.metadata?.resourceVersion)).toEqual([
+      '20',
+      '21',
+      '21',
+    ]);
+    expect(rgdReplacements[1]).toMatchObject({
+      metadata: {
+        labels: {
+          retained: 'true',
+          shared: 'desired',
+          desired: 'true',
+        },
+        annotations: {
+          retained: 'true',
+          shared: 'desired',
+          desired: 'true',
+        },
+      },
+      spec: Reflect.get(desired, 'spec'),
+    });
+    expect(Reflect.has(rgdReplacements[1] ?? {}, 'status')).toBe(false);
+  });
+
   test('resumes an interrupted stable-RGD migration and retries CRD conflicts from fresh state', async () => {
     const read = mock(async () => ({
       ...desiredRgd(),
-      metadata: { name: 'application', generation: 2 },
+      metadata: { name: 'application', generation: 2, resourceVersion: '20' },
       status: {
         conditions: [
           {
@@ -88,22 +208,27 @@ describe('KRO artifact-binding migration', () => {
       .mockResolvedValueOnce({ items: [legacyCrd('10')] })
       .mockResolvedValueOnce({ items: [legacyCrd('11')] });
     const crdVersions: string[] = [];
-    const patch = mock(async (resource: KubernetesObject) => resource);
+    const replacementKinds: string[] = [];
     const replace = mock(async (resource: KubernetesObject) => {
+      replacementKinds.push(resource.kind ?? '');
+      if (resource.kind === 'ResourceGraphDefinition') return resource;
       crdVersions.push(resource.metadata?.resourceVersion ?? '');
       if (crdVersions.length === 1) {
-        throw { statusCode: 409, message: 'conflict' };
+        throw { response: { statusCode: 409 }, message: 'conflict' };
       }
       return resource;
     });
 
     await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desiredRgd(), {
-      api: { read, list, patch, replace } as never,
+      api: { read, list, replace } as never,
     });
 
     expect(crdVersions).toEqual(['10', '11']);
     expect(list).toHaveBeenCalledTimes(2);
-    const finalCrdPatch = replace.mock.calls.at(-1)?.[0] as KubernetesObject | undefined;
+    const finalCrdPatch = replace.mock.calls
+      .map(([resource]) => resource as KubernetesObject)
+      .reverse()
+      .find((resource) => resource.kind === 'CustomResourceDefinition');
     expect(finalCrdPatch).toMatchObject({
       apiVersion: 'apiextensions.k8s.io/v1',
       kind: 'CustomResourceDefinition',
@@ -124,13 +249,15 @@ describe('KRO artifact-binding migration', () => {
         additionalProperties: { type: 'string' },
       },
     });
+    expect(replacementKinds).toEqual([
+      'ResourceGraphDefinition',
+      'CustomResourceDefinition',
+      'CustomResourceDefinition',
+      'ResourceGraphDefinition',
+    ]);
+    const finalRgdReplacement = replace.mock.calls.at(-1)?.[0] as KubernetesObject | undefined;
     expect(
-      patch.mock.calls.some(
-        ([resource]) =>
-          (resource as KubernetesObject).metadata?.annotations?.[
-            'typekro.io/artifact-binding-migration-retry'
-          ] !== undefined
-      )
-    ).toBe(true);
+      finalRgdReplacement?.metadata?.annotations?.['typekro.io/artifact-binding-migration-retry']
+    ).toBeDefined();
   });
 });
