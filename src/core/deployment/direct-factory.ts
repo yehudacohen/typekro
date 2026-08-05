@@ -12,6 +12,7 @@ import { createAlchemyResourceId } from '../../alchemy/utilities.js';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { applyAspects } from '../aspects/apply.js';
+import { materializeValuesMergeExpressions } from '../aspects/values-merge.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
 import {
@@ -1249,7 +1250,15 @@ export class DirectResourceFactoryImpl<
       readonly singletonSpecFingerprint?: string;
     } = {}
   ): DirectArtifactExecution {
-    const capturedGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const authoredGraph = this.createLegacyResourceGraphForInstance(spec, instanceNameOverride);
+    const capturedGraph = {
+      ...authoredGraph,
+      resources: authoredGraph.resources.map(({ id, manifest }) => {
+        const materialized = materializeValuesMergeExpressions(manifest) as typeof manifest;
+        if (materialized !== manifest) copyResourceMetadata(manifest, materialized);
+        return { id, manifest: materialized };
+      }),
+    };
     const legacyGraph = options.singletonSpecFingerprint
       ? {
           ...capturedGraph,

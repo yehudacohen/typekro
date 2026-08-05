@@ -46,7 +46,7 @@ interface KroTypeKroDeployerOptions {
   deleteInstance?: (name: string, abortSignal?: AbortSignal) => Promise<ResourceDeletionResult>;
   /** True when an RGD still has live instances and must be preserved. */
   shouldSkipRgdDelete?: (rgdName: string, abortSignal?: AbortSignal) => Promise<boolean>;
-  /** Delete the RGD and generated CRD when no CR instance exists. */
+  /** Delete the RGD when no CR instance exists; the generated CRD is retained for safe reuse. */
   deleteResourceGraphDefinition?: (rgdName: string, abortSignal?: AbortSignal) => Promise<void>;
 }
 
