@@ -169,6 +169,8 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toMatch(/name: rook-release\n {2}namespace: ceph-sources/);
     expect(yaml).toContain('chart: rook-ceph-cluster');
     expect(yaml).toContain('operatorNamespace: ceph-operator');
+    expect(yaml).toContain('obcProvisionerNamePrefix: ceph-data');
+    expect(yaml).toContain('provisioner: ceph-data.ceph.rook.io/bucket');
     expect(yaml).toContain('storageClassName: local-path');
     expect(yaml).toContain('allowLoopDevices: true');
     expect(yaml).toContain('name: harbor-retain');
@@ -277,6 +279,15 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('kind: CephCluster');
     expect(yaml).toContain('kind: CephObjectStore');
     expect(yaml).toContain('kind: StorageClass');
+    expect(yaml).toContain(
+      `obcProvisionerNamePrefix: '\${has(schema.spec.bucketProvisionerNamePrefix) ? schema.spec.bucketProvisionerNamePrefix : schema.spec.namespace}'`
+    );
+    expect(yaml).toContain(
+      `provisioner: '\${has(schema.spec.bucketProvisionerNamePrefix) ? string(schema.spec.bucketProvisionerNamePrefix) + ".ceph.rook.io/bucket" : string(schema.spec.namespace) + ".ceph.rook.io/bucket"}'`
+    );
+    expect(yaml).not.toContain(
+      'bucketProvisionerName: string | default="rook-ceph.ceph.rook.io/bucket"'
+    );
     expect(yaml).toContain('installCsiOperator: false');
     expectCleanYaml(yaml);
   });
@@ -400,6 +411,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(directYaml).toContain('cephObjectStores: []');
     expect(directYaml.match(/kind: CephObjectStore/g)).toHaveLength(1);
     expect(directYaml.match(/kind: StorageClass/g)).toHaveLength(1);
+    expect(directYaml).toContain('provisioner: ceph-data.ceph.rook.io/bucket');
     expectCleanYaml(directYaml);
 
     const kroYaml = rookCephExternalOperatorSingleNodePlatform
@@ -409,6 +421,40 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(kroYaml).toContain('availableReplicas');
     expect(kroYaml).not.toContain('id: operatorRelease');
     expectCleanYaml(kroYaml);
+  });
+
+  it('uses an explicit external-operator bucket provisioner prefix without guessing namespaces', () => {
+    const yaml = rookCephExternalOperatorSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toYaml({
+        name: 'rook-local',
+        profile: 'single-node-development',
+        namespace: 'ceph-data',
+        operatorNamespace: 'shared-rook-operator',
+        bucketProvisionerNamePrefix: 'platform-buckets',
+        storageClassName: 'csi-hostpath-sc',
+      });
+
+    expect(yaml).toContain(
+      'provisioner: platform-buckets.ceph.rook.io/bucket'
+    );
+    expectCleanYaml(yaml);
+  });
+
+  it('accepts the exact global bucket provisioner registered by an external operator', () => {
+    const yaml = rookCephExternalOperatorSingleNodePlatform
+      .factory('direct', { namespace: 'control-global' })
+      .toYaml({
+        name: 'rook-global',
+        profile: 'single-node-development',
+        namespace: 'ceph-global',
+        operatorNamespace: 'shared-rook-operator',
+        bucketProvisionerName: 'ceph.rook.io/bucket',
+        storageClassName: 'csi-hostpath-sc',
+      });
+
+    expect(yaml).toContain('provisioner: ceph.rook.io/bucket');
+    expectCleanYaml(yaml);
   });
 
   it('renders the mandatory production safety controls into official chart values', () => {

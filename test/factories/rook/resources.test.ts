@@ -233,7 +233,7 @@ describe('Rook object storage resource factories', () => {
       expect(storageClass.reclaimPolicy).toBe('Retain');
     });
 
-    it('defaults the provisioner prefix to the Ceph cluster/object-store namespace', () => {
+    it('defaults the provisioner prefix to the Ceph cluster namespace like the Rook chart', () => {
       const storageClass = rookBucketStorageClass({
         name: 'cross-namespace-assets',
         objectStoreName: 'assets',
@@ -243,6 +243,17 @@ describe('Rook object storage resource factories', () => {
 
       expect(String(storageClass.provisioner)).toBe('rook-storage.ceph.rook.io/bucket');
       expect(storageClass.parameters?.objectStoreNamespace).toBe('rook-storage');
+    });
+
+    it('accepts the exact unprefixed identity used by a global external provisioner', () => {
+      const storageClass = rookBucketStorageClass({
+        name: 'global-assets',
+        objectStoreName: 'assets',
+        objectStoreNamespace: 'rook-storage',
+        provisionerName: 'ceph.rook.io/bucket',
+      });
+
+      expect(String(storageClass.provisioner)).toBe('ceph.rook.io/bucket');
     });
   });
 });

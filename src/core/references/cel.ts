@@ -526,7 +526,10 @@ function concat(...parts: RefOrValue<CelValue>[]): CelExpression<string> & strin
     }
 
     if (isCelExpression(part)) {
-      return part.expression;
+      // A nested expression may be a conditional or another lower-precedence
+      // operator. Parenthesize it so concatenation cannot bind only to its
+      // final branch (`condition ? prefix : fallback + suffix`).
+      return `(${part.expression})`;
     }
 
     if (typeof part === 'string') {

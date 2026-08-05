@@ -14,10 +14,14 @@ import type { RookBucketStorageClassConfig } from '../types.js';
 export function rookBucketStorageClass(
   config: Composable<RookBucketStorageClassConfig>
 ): V1StorageClass & Enhanced<V1StorageClass, object> {
-  // Rook registers one bucket provisioner per Ceph cluster namespace. The
-  // operator namespace only happens to match in the common single-namespace
-  // installation. `obcProvisionerNamePrefix` is the explicit override.
+  // Rook's chart defaults namespace-scoped OBC provisioners on. The operator
+  // therefore registers `<ceph-cluster-namespace>.ceph.rook.io/bucket` unless
+  // `obcProvisionerNamePrefix` overrides the prefix. External operators that
+  // deliberately use the unprefixed global provisioner can supply the exact
+  // `ceph.rook.io/bucket` identity through `provisionerName`.
   const provisionerNamePrefix = config.provisionerNamePrefix ?? config.objectStoreNamespace;
+  const provisionerName =
+    config.provisionerName ?? `${provisionerNamePrefix}.ceph.rook.io/bucket`;
 
   return storageClass({
     apiVersion: 'storage.k8s.io/v1',
@@ -27,7 +31,7 @@ export function rookBucketStorageClass(
       ...(config.labels && { labels: config.labels }),
       ...(config.annotations && { annotations: config.annotations }),
     },
-    provisioner: `${provisionerNamePrefix}.ceph.rook.io/bucket`,
+    provisioner: provisionerName,
     reclaimPolicy: config.reclaimPolicy ?? 'Retain',
     parameters: {
       objectStoreName: config.objectStoreName,

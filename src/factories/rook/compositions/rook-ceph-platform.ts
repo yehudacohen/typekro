@@ -61,6 +61,8 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_ROOK_CEPH_REPO_URL;
     const objectStoreName = spec.objectStoreName ?? 'harbor-object-store';
     const bucketStorageClassName = spec.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
+    const bucketProvisionerNamePrefix =
+      spec.bucketProvisionerNamePrefix ?? platformNamespace;
     const profile: 'single-node-development' = 'single-node-development';
 
     namespace({
@@ -101,7 +103,8 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       repositoryUrl,
       values: {
         allowLoopDevices: spec.allowLoopDevices ?? false,
-        enableOBCWatchOperatorNamespace: false,
+        enableOBCWatchOperatorNamespace: true,
+        obcProvisionerNamePrefix: bucketProvisionerNamePrefix,
         resources: { requests: { cpu: '100m', memory: '128Mi' } },
         // The object-only development profile owns no block pools or file
         // systems. Disable the operator chart's CSI dependency so its
@@ -151,6 +154,7 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       objectStoreName,
       objectStoreNamespace: platformNamespace,
       operatorNamespace,
+      provisionerNamePrefix: bucketProvisionerNamePrefix,
       reclaimPolicy: 'Retain',
       id: 'bucketStorageClass',
     });
@@ -205,6 +209,8 @@ export const rookCephProductionPlatform = kubernetesComposition(
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_ROOK_CEPH_REPO_URL;
     const objectStoreName = spec.objectStoreName ?? 'harbor-object-store';
     const bucketStorageClassName = spec.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
+    const bucketProvisionerNamePrefix =
+      spec.bucketProvisionerNamePrefix ?? platformNamespace;
     const profile: 'production' = 'production';
 
     namespace({
@@ -243,6 +249,10 @@ export const rookCephProductionPlatform = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
+      values: {
+        enableOBCWatchOperatorNamespace: true,
+        obcProvisionerNamePrefix: bucketProvisionerNamePrefix,
+      },
       id: 'operatorRelease',
     });
     operatorRelease.dependsOn(repository);
@@ -282,6 +292,7 @@ export const rookCephProductionPlatform = kubernetesComposition(
       objectStoreName,
       objectStoreNamespace: platformNamespace,
       operatorNamespace,
+      provisionerNamePrefix: bucketProvisionerNamePrefix,
       reclaimPolicy: 'Retain',
       id: 'bucketStorageClass',
     });
@@ -333,7 +344,12 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
   (spec: RookCephExternalOperatorSingleNodePlatformConfig) => {
     const platformNamespace = spec.namespace ?? 'rook-ceph';
     const operatorNamespace = spec.operatorNamespace;
-    const operatorDeploymentName = spec.operatorDeploymentName ?? 'rook-ceph-operator';
+    // External-reference identities are part of the portable artifact plan.
+    // Give the optional default explicit provenance so direct materialization
+    // and KRO serialization resolve the same concrete Deployment name.
+    const operatorDeploymentName = isKubernetesRef(spec.operatorDeploymentName)
+      ? (Cel.default(spec.operatorDeploymentName, 'rook-ceph-operator') as string)
+      : (spec.operatorDeploymentName ?? 'rook-ceph-operator');
     const version = spec.version ?? DEFAULT_ROOK_CEPH_VERSION;
     const cephVersion = spec.cephImageTag ?? 'v20.2.2';
     const storageSize = spec.storageSize ?? '8Gi';
@@ -342,6 +358,24 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_ROOK_CEPH_REPO_URL;
     const objectStoreName = spec.objectStoreName ?? 'harbor-object-store';
     const bucketStorageClassName = spec.bucketStorageClassName ?? 'harbor-ceph-bucket-retain';
+    const bucketProvisionerNamePrefix = isKubernetesRef(spec.bucketProvisionerNamePrefix)
+      ? (Cel.default(spec.bucketProvisionerNamePrefix, platformNamespace) as string)
+      : (spec.bucketProvisionerNamePrefix ?? platformNamespace);
+    const inferredBucketProvisionerName =
+      isKubernetesRef(bucketProvisionerNamePrefix) ||
+      isCelExpression(bucketProvisionerNamePrefix)
+        ? (Cel.concat(bucketProvisionerNamePrefix, '.ceph.rook.io/bucket') as string)
+        : `${bucketProvisionerNamePrefix}.ceph.rook.io/bucket`;
+    // `bucketProvisionerName` has a computed, cross-field default. Giving that
+    // choice explicit CEL provenance prevents KRO schema-default inference from
+    // freezing the all-defaults namespace (`rook-ceph`) into every instance.
+    // Direct mode still executes ordinary JavaScript nullish semantics.
+    const bucketProvisionerName = isKubernetesRef(spec.bucketProvisionerName)
+      ? (Cel.default(
+          spec.bucketProvisionerName,
+          inferredBucketProvisionerName
+        ) as string)
+      : (spec.bucketProvisionerName ?? inferredBucketProvisionerName);
     const profile: 'single-node-development' = 'single-node-development';
 
     namespace({
@@ -409,6 +443,8 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       objectStoreName,
       objectStoreNamespace: platformNamespace,
       operatorNamespace,
+      provisionerName: bucketProvisionerName,
+      provisionerNamePrefix: bucketProvisionerNamePrefix,
       reclaimPolicy: 'Retain',
       id: 'bucketStorageClass',
     });
