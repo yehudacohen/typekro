@@ -1,6 +1,9 @@
 import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
 import { ensureError } from '../errors.js';
-import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
+import {
+  createBunCompatibleKubernetesObjectApi,
+  getErrorStatusCode,
+} from '../kubernetes/index.js';
 import { KRO_ARTIFACT_BINDINGS_SPEC_FIELD } from '../planning/values.js';
 
 const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
@@ -42,15 +45,6 @@ interface CustomResourceDefinition extends KubernetesObject {
       [key: string]: unknown;
     }>;
   };
-}
-
-function statusCode(error: unknown): number | undefined {
-  const candidate = error as {
-    statusCode?: number;
-    code?: number;
-    body?: { code?: number };
-  };
-  return candidate.statusCode ?? candidate.code ?? candidate.body?.code;
 }
 
 async function findGeneratedCrd(
@@ -167,6 +161,14 @@ async function replaceRgdWithRetry(
       metadata: {
         ...live.metadata,
         ...desired?.metadata,
+        labels: {
+          ...live.metadata?.labels,
+          ...desired?.metadata?.labels,
+        },
+        annotations: {
+          ...live.metadata?.annotations,
+          ...desired?.metadata?.annotations,
+        },
         name: rgdName,
         resourceVersion,
       },
@@ -175,7 +177,7 @@ async function replaceRgdWithRetry(
     try {
       return (await api.replace(replacement)) as ResourceGraphDefinition;
     } catch (error: unknown) {
-      if (statusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
+      if (getErrorStatusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
         throw new Error(
           `Could not replace ResourceGraphDefinition ${rgdName} after ${attempt} attempt${attempt === 1 ? '' : 's'}: ${ensureError(error).message}`
         );
@@ -242,7 +244,7 @@ export async function migrateLegacyKroArtifactBindingCrd(
       metadata: { name: rgdName },
     })) as ResourceGraphDefinition;
   } catch (error: unknown) {
-    if (statusCode(error) === 404) return;
+    if (getErrorStatusCode(error) === 404) return;
     throw new Error(
       `Could not inspect ResourceGraphDefinition ${rgdName} before artifact-binding migration: ${ensureError(error).message}`
     );
@@ -324,7 +326,7 @@ export async function migrateLegacyKroArtifactBindingCrd(
       await requestRgdReconcile(api, rgdName);
       return;
     } catch (error: unknown) {
-      if (statusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
+      if (getErrorStatusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
         throw new Error(
           `Could not migrate generated CRD ${crd.metadata.name} after ${attempt} attempt${attempt === 1 ? '' : 's'}: ${ensureError(error).message}`
         );

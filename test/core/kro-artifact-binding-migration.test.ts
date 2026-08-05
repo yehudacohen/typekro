@@ -109,6 +109,12 @@ describe('KRO artifact-binding migration', () => {
   });
 
   test('retries complete RGD replacements and never serializes them as generic patches', async () => {
+    const desired = desiredRgd();
+    desired.metadata = {
+      ...desired.metadata,
+      labels: { shared: 'desired', desired: 'true' },
+      annotations: { shared: 'desired', desired: 'true' },
+    };
     let readCount = 0;
     const read = mock(async () => ({
       ...desiredRgd(),
@@ -116,7 +122,8 @@ describe('KRO artifact-binding migration', () => {
         name: 'application',
         generation: 2,
         resourceVersion: readCount++ === 0 ? '20' : '21',
-        labels: { retained: 'true' },
+        labels: { retained: 'true', shared: 'live' },
+        annotations: { retained: 'true', shared: 'live' },
       },
       status: {
         conditions: [{ type: 'KindReady', status: 'False', observedGeneration: 2 }],
@@ -127,12 +134,12 @@ describe('KRO artifact-binding migration', () => {
         resource.kind === 'ResourceGraphDefinition' &&
         resource.metadata?.resourceVersion === '20'
       ) {
-        throw { statusCode: 409, message: 'conflict' };
+        throw { response: { statusCode: 409 }, message: 'conflict' };
       }
       return resource;
     });
 
-    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desiredRgd(), {
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desired, {
       api: {
         read,
         list: mock(async () => ({ items: [legacyCrd('10')] })),
@@ -149,8 +156,19 @@ describe('KRO artifact-binding migration', () => {
       '21',
     ]);
     expect(rgdReplacements[1]).toMatchObject({
-      metadata: { labels: { retained: 'true' } },
-      spec: Reflect.get(desiredRgd(), 'spec'),
+      metadata: {
+        labels: {
+          retained: 'true',
+          shared: 'desired',
+          desired: 'true',
+        },
+        annotations: {
+          retained: 'true',
+          shared: 'desired',
+          desired: 'true',
+        },
+      },
+      spec: Reflect.get(desired, 'spec'),
     });
     expect(Reflect.has(rgdReplacements[1] ?? {}, 'status')).toBe(false);
   });
@@ -179,7 +197,7 @@ describe('KRO artifact-binding migration', () => {
       if (resource.kind === 'ResourceGraphDefinition') return resource;
       crdVersions.push(resource.metadata?.resourceVersion ?? '');
       if (crdVersions.length === 1) {
-        throw { statusCode: 409, message: 'conflict' };
+        throw { response: { statusCode: 409 }, message: 'conflict' };
       }
       return resource;
     });
