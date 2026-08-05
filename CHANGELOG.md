@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait as a password-credential identifier. Identities created through the
   Admin API can therefore complete password login without requiring consumers
   to replace the otherwise usable default schema.
+- Direct and Alchemy deployments now materialize TypeKro's internal Helm-values merge expressions
+  before encoding the canonical artifact record. Concrete chart overrides therefore deep-merge with
+  integration defaults instead of leaking `__typekroValuesMerge` as literal Helm values; KRO keeps
+  its graph-aware CEL merge behavior.
+- Restart-safe KRO artifact-binding migration now resolves an omitted schema group to KRO's
+  documented `kro.run` default. Repeated deployments of otherwise valid default-group compositions
+  no longer fail while inspecting the generated CRD.
 - Direct Alchemy singleton owners now gate consumer scheduling through a dedicated barrier instead
   of being injected into each consumer's canonical live-resource dependencies. This preserves
   singleton readiness ordering without making direct artifact execution records fail dependency
@@ -30,7 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic KRO artifact-binding migration now replaces the complete generated CRD with
   resource-version concurrency rather than sending a partial merge patch through
   `KubernetesObjectApi`. This avoids the client serializer's `data is not iterable` failure while
-  retaining restart-safe conflict retries.
+  retaining restart-safe conflict retries. Version-only schemas correctly resolve to KRO's default
+  `kro.run` API group during migration.
+- Artifact-binding migration now also replaces the complete ResourceGraphDefinition with
+  resource-version concurrency. This avoids the same client serializer failure when an RGD update
+  contains array-valued resources, while preserving live metadata and omitting status.
 - Semantic planning now represents ArkType's explicitly open `object` and
   `object[]` nodes—including root `type('object')` schemas and ordinary or
   `ignore` undeclared-key policies—without falsely opening `reject`/`delete`

@@ -1,4 +1,5 @@
 import { toCamelCase } from '../../utils/string.js';
+import { materializeValuesMergeExpressions } from '../aspects/values-merge.js';
 import { DependencyGraph } from '../dependencies/graph.js';
 import { TypeKroError } from '../errors.js';
 import {
@@ -148,10 +149,8 @@ export function materializeDirectArtifactManifest(
       { artifactId: artifact.id, role: artifact.role }
     );
   }
-  const value = materializePlanValue(
-    artifact.desired,
-    options,
-    `$.resources.${artifact.id}.desired`
+  const value = materializeValuesMergeExpressions(
+    materializePlanValue(artifact.desired, options, `$.resources.${artifact.id}.desired`)
   );
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new DirectArtifactRuntimeAdapterError(

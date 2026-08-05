@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { ApiException } from '@kubernetes/client-node/dist/gen/apis/exception.js';
 import * as fc from 'fast-check';
 import {
   getErrorStatusCode,
@@ -23,6 +24,11 @@ import {
 
 describe('Kubernetes Error Handling Utilities', () => {
   describe('getErrorStatusCode', () => {
+    it('extracts status codes from the pinned client ApiException', () => {
+      expect(getErrorStatusCode(new ApiException(404, 'Not Found', undefined, {}))).toBe(404);
+      expect(getErrorStatusCode(new ApiException(409, 'Conflict', undefined, {}))).toBe(409);
+    });
+
     /**
      * **Feature: upgrade-kubernetes-client, Property 1: Error Handling Consistency**
      * **Validates: Requirements 2.1, 2.4**
@@ -98,6 +104,7 @@ describe('Kubernetes Error Handling Utilities', () => {
 
   describe('isNotFoundError', () => {
     it('should return true for 404 errors', () => {
+      expect(isNotFoundError(new ApiException(404, 'Not Found', undefined, {}))).toBe(true);
       expect(isNotFoundError({ statusCode: 404 })).toBe(true);
       expect(isNotFoundError({ response: { statusCode: 404 } })).toBe(true);
       expect(isNotFoundError({ body: { code: 404 } })).toBe(true);
@@ -118,6 +125,7 @@ describe('Kubernetes Error Handling Utilities', () => {
 
   describe('isConflictError', () => {
     it('should return true for 409 errors', () => {
+      expect(isConflictError(new ApiException(409, 'Conflict', undefined, {}))).toBe(true);
       expect(isConflictError({ statusCode: 409 })).toBe(true);
       expect(isConflictError({ response: { statusCode: 409 } })).toBe(true);
       expect(isConflictError({ body: { code: 409 } })).toBe(true);
