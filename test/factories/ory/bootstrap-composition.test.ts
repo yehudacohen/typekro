@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { loadAll } from 'js-yaml';
+import { evaluateSchemaCelExpression } from '../../../src/core/deployment/schema-cel-evaluator.js';
+import { Cel } from '../../../src/core/references/cel.js';
+import type { KroCompatibleType } from '../../../src/core/types/schema.js';
 import { oryIdentityStack } from '../../../src/factories/ory/index.js';
 import {
   OryIdentityStackConfigSchema,
@@ -50,6 +54,44 @@ function managedIdentityConfig(namespaceOwnership: 'owned' | 'external') {
       },
     },
   } as const;
+}
+
+function evaluateSecretKeyRefsFromKroPatches(yaml: string, spec: KroCompatibleType) {
+  const [definition] = loadAll(yaml) as Array<{
+    spec?: {
+      resources?: Array<{
+        template?: {
+          spec?: {
+            postRenderers?: Array<{
+              kustomize?: { patches?: Array<{ patch?: string }> };
+            }>;
+          };
+        };
+      }>;
+    };
+  }>;
+  const references: Array<{ name: unknown; key: unknown }> = [];
+  if (!definition) throw new Error('Expected an Ory ResourceGraphDefinition');
+
+  for (const resource of definition.spec?.resources ?? []) {
+    for (const renderer of resource.template?.spec?.postRenderers ?? []) {
+      for (const patch of renderer.kustomize?.patches ?? []) {
+        const lines = patch.patch?.split('\n') ?? [];
+        for (let index = 0; index < lines.length; index += 1) {
+          if (lines[index]?.trim() !== 'secretKeyRef:') continue;
+          const name = lines[index + 1]?.trim().match(/^name: \$\{(.+)\}$/)?.[1];
+          const key = lines[index + 2]?.trim().match(/^key: \$\{(.+)\}$/)?.[1];
+          if (!name || !key) continue;
+          references.push({
+            name: evaluateSchemaCelExpression(Cel.expr(name), spec),
+            key: evaluateSchemaCelExpression(Cel.expr(key), spec),
+          });
+        }
+      }
+    }
+  }
+
+  return references;
 }
 
 // Test decision: keep this file focused on Ory-only Helm wiring. Graph-managed
@@ -347,6 +389,69 @@ describe('Ory identity stack composition', () => {
     expect(kro).toContain('name: ${string(schema.spec.name)}-hydra');
     expect(kro).toContain('name: ${string(schema.spec.name)}-kratos');
     expect(kro).toContain('name: ${string(schema.spec.name)}-kratos-courier');
+    expect(kro).toContain('schema.spec.hydra.systemSecret.secretRef.name');
+    expect(kro).toContain(
+      'schema.spec.dependencySources.hydra.systemSecret.value.secretRef.name'
+    );
+    expect(kro).toContain('schema.spec.kratos.secrets.cookie.secretRef.name');
+    expect(kro).toContain(
+      'schema.spec.dependencySources.kratos.secrets.cookie.value.secretRef.name'
+    );
+    expect(kro).toContain('schema.spec.kratos.secrets.cipher.secretRef.name');
+    expect(kro).toContain(
+      'schema.spec.dependencySources.kratos.secrets.cipher.value.secretRef.name'
+    );
+  });
+
+  it('projects concrete external Secret bindings into KRO post-renderers', () => {
+    const external = managedIdentityConfig('external');
+    const spec = {
+      ...external,
+      dependencySources: {
+        ...external.dependencySources,
+        hydra: {
+          ...external.dependencySources?.hydra,
+          systemSecret: {
+            mode: 'external',
+            value: {
+              secretRef: { name: 'external-hydra-system', key: 'hydra-system-key' },
+            },
+          },
+        },
+        kratos: {
+          ...external.dependencySources?.kratos,
+          secrets: {
+            cookie: {
+              mode: 'external',
+              value: {
+                secretRef: { name: 'external-kratos-cookie', key: 'cookie-key' },
+              },
+            },
+            cipher: {
+              mode: 'external',
+              value: {
+                secretRef: { name: 'external-kratos-cipher', key: 'cipher-key' },
+              },
+            },
+          },
+        },
+      },
+    } as const;
+    const yaml = oryIdentityStack.toYaml();
+    const references = evaluateSecretKeyRefsFromKroPatches(yaml, spec);
+
+    expect(references).toContainEqual({
+      name: 'external-hydra-system',
+      key: 'hydra-system-key',
+    });
+    expect(references).toContainEqual({
+      name: 'external-kratos-cookie',
+      key: 'cookie-key',
+    });
+    expect(references).toContainEqual({
+      name: 'external-kratos-cipher',
+      key: 'cipher-key',
+    });
   });
 
   it('Generate direct-mode YAML for managed local dependency sources with starter OAuth2Client and Rule resources', async () => {

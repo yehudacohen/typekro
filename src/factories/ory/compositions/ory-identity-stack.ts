@@ -123,6 +123,54 @@ interface OrySecretEnvReplacement {
   readonly secretKey: unknown;
 }
 
+function hasSchemaPath(path: string): string {
+  const parts = path.split('.');
+  return parts
+    .slice(2)
+    .map((_, index) => `has(${parts.slice(0, index + 3).join('.')})`)
+    .join(' && ');
+}
+
+function graphSecretField(paths: readonly string[], fallbackExpression: string): string {
+  const expression = paths.reduceRight(
+    (fallback, path) => `(${hasSchemaPath(path)} ? ${path} : ${fallback})`,
+    fallbackExpression
+  );
+  // The post-renderer patch is itself an opaque YAML string. Embed the KRO
+  // marker in that string rather than handing the serializer a CelExpression
+  // object, which String() would flatten to "[object Object]".
+  return `\${${expression}}`;
+}
+
+function graphSecretEnvReplacement(
+  name: string,
+  explicitSecretRefPath: string,
+  dependencySourcePath: string,
+  fallbackNameExpression: string,
+  fallbackKey: string
+): OrySecretEnvReplacement {
+  return {
+    name,
+    secretName: graphSecretField(
+      [
+        `${explicitSecretRefPath}.name`,
+        `${dependencySourcePath}.value.secretRef.name`,
+        `${dependencySourcePath}.secretName`,
+        `${dependencySourcePath}.resourceName`,
+      ],
+      fallbackNameExpression
+    ),
+    secretKey: graphSecretField(
+      [
+        `${explicitSecretRefPath}.key`,
+        `${dependencySourcePath}.value.secretRef.key`,
+        `${dependencySourcePath}.secretKey`,
+      ],
+      JSON.stringify(fallbackKey)
+    ),
+  };
+}
+
 function secretEnvReplacement(
   values: unknown,
   target: 'deployment' | 'statefulSet',
@@ -559,7 +607,15 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryNamespace: resolvedNamespace,
       values: withMaesterSubchartValues(values.hydra, 'hydra-maester', values.hydraMaester),
       postRenderers: (() => {
-        const system = secretEnvReplacement(values.hydra, 'deployment', 'SECRETS_SYSTEM');
+        const system = concreteSpec
+          ? secretEnvReplacement(values.hydra, 'deployment', 'SECRETS_SYSTEM')
+          : graphSecretEnvReplacement(
+              'SECRETS_SYSTEM',
+              'schema.spec.hydra.systemSecret.secretRef',
+              'schema.spec.dependencySources.hydra.systemSecret',
+              'string(schema.spec.name) + "-hydra-secrets"',
+              'system'
+            );
         return system
           ? [
               replaceChartOwnedSecretEnv(
@@ -573,10 +629,27 @@ export const oryIdentityStack = kubernetesComposition(
       })(),
     });
 
-    const kratosSecretReplacements = ['SECRETS_COOKIE', 'SECRETS_CIPHER'].flatMap((name) => {
-      const replacement = secretEnvReplacement(values.kratos, 'deployment', name);
-      return replacement ? [replacement] : [];
-    });
+    const kratosSecretReplacements = concreteSpec
+      ? (['SECRETS_COOKIE', 'SECRETS_CIPHER'] as const).flatMap((name) => {
+          const replacement = secretEnvReplacement(values.kratos, 'deployment', name);
+          return replacement ? [replacement] : [];
+        })
+      : [
+          graphSecretEnvReplacement(
+            'SECRETS_COOKIE',
+            'schema.spec.kratos.secrets.cookie.secretRef',
+            'schema.spec.dependencySources.kratos.secrets.cookie',
+            'string(schema.spec.name) + "-kratos-secrets"',
+            'cookie'
+          ),
+          graphSecretEnvReplacement(
+            'SECRETS_CIPHER',
+            'schema.spec.kratos.secrets.cipher.secretRef',
+            'schema.spec.dependencySources.kratos.secrets.cipher',
+            'string(schema.spec.name) + "-kratos-secrets"',
+            'cipher'
+          ),
+        ];
     const kratos = kratosHelmRelease({
       id: 'kratosHelmRelease',
       name: `${typedSpec.name}-kratos`,
