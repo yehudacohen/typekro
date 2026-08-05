@@ -216,6 +216,9 @@ Direct and KRO factories expose the same complete status:
 }
 ```
 
+`endpoint` is the complete OpenAI-compatible API base URL and ends in `/v1`;
+clients append protocol operations such as `/chat/completions` to that base.
+
 Readiness requires the current observed generation for the platform,
 `GatewayConfig`, `Gateway`, route, and every provider policy whenever the
 upstream controller supplies `observedGeneration`. Envoy AI Gateway v0.6 can

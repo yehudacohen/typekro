@@ -360,6 +360,7 @@ export const RookCephSingleNodePlatformConfigSchema = type({
   ...rookCephClusterCommonSchemaShape,
   profile: '"single-node-development"',
   'storageSize?': 'string',
+  'allowLoopDevices?': 'boolean',
   'resources?': optionalCephDaemonResourcesSchemaShape,
 });
 

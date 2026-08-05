@@ -14,7 +14,7 @@ import {
 } from '../../src/core/deployment/rollback-manager.js';
 import { setMetadataField } from '../../src/core/metadata/index.js';
 import type { DeployedResource, DeploymentEvent } from '../../src/core/types/deployment.js';
-import type { Enhanced } from '../../src/core/types/kubernetes.js';
+import type { Enhanced, KubernetesResource } from '../../src/core/types/kubernetes.js';
 import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
@@ -304,6 +304,11 @@ describe('ResourceRollbackManager', () => {
         name: 'owned-system',
         namespace: 'default',
         manifest: ownedNamespace,
+        liveManifest: {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'owned-system', uid: 'owned-system-uid' },
+        } as KubernetesResource,
         status: 'deployed',
         deployedAt: new Date(),
       };
@@ -312,12 +317,197 @@ describe('ResourceRollbackManager', () => {
 
       await manager.deleteDeployedResource(deployedResource, 5);
 
-      expect(mockK8sApi.delete).toHaveBeenCalledWith({
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'owned-system' },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'owned-system-uid' } }
+      );
+      expect(mockK8sApi.read).not.toHaveBeenCalled();
+    });
+
+    it('waits for a real Namespace 404 when a standalone deployer owns the complete delete', async () => {
+      const ownedNamespace = {
         apiVersion: 'v1',
         kind: 'Namespace',
-        metadata: { name: 'owned-system' },
+        metadata: { name: 'alchemy-system' },
+      } as Enhanced<unknown, unknown>;
+      setMetadataField(ownedNamespace, 'scope', 'cluster');
+      const deployedResource: DeployedResource = {
+        id: 'alchemyNamespace',
+        kind: 'Namespace',
+        name: 'alchemy-system',
+        namespace: 'default',
+        manifest: ownedNamespace,
+        liveManifest: {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'alchemy-system', uid: 'alchemy-system-uid' },
+        } as KubernetesResource,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.read
+        .mockResolvedValueOnce({ metadata: { uid: 'alchemy-system-uid' } })
+        .mockResolvedValueOnce({ metadata: { uid: 'alchemy-system-uid' } })
+        .mockRejectedValueOnce(createK8sError('Not found', 404));
+
+      await manager.deleteDeployedResource(deployedResource, 5_000, undefined, {
+        waitForNamespaceDeletion: true,
       });
-      expect(mockK8sApi.read).not.toHaveBeenCalled();
+
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'alchemy-system' },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'alchemy-system-uid' } }
+      );
+      expect(mockK8sApi.read).toHaveBeenCalledTimes(3);
+    });
+
+    it('deletes retained PVCs before waiting for a standalone Namespace to disappear', async () => {
+      const ownedNamespace = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'alchemy-data-system' },
+      } as Enhanced<unknown, unknown>;
+      setMetadataField(ownedNamespace, 'scope', 'cluster');
+      const deployedResource: DeployedResource = {
+        id: 'alchemyDataNamespace',
+        kind: 'Namespace',
+        name: 'alchemy-data-system',
+        namespace: 'default',
+        manifest: ownedNamespace,
+        liveManifest: {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'alchemy-data-system', uid: 'alchemy-data-system-uid' },
+        } as KubernetesResource,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.list.mockResolvedValue({
+        items: [
+          { metadata: { name: 'database-data', uid: 'database-data-uid' } },
+          { metadata: { name: 'search-data', uid: 'search-data-uid' } },
+        ],
+      });
+      mockK8sApi.delete.mockResolvedValue({});
+      mockK8sApi.read
+        .mockResolvedValueOnce({ metadata: { uid: 'alchemy-data-system-uid' } })
+        .mockResolvedValueOnce({ metadata: { uid: 'alchemy-data-system-uid' } })
+        .mockResolvedValueOnce({ metadata: { uid: 'alchemy-data-system-uid' } })
+        .mockRejectedValueOnce(createK8sError('Not found', 404));
+
+      await manager.deleteDeployedResource(deployedResource, 5_000, undefined, {
+        waitForNamespaceDeletion: true,
+      });
+
+      expect(mockK8sApi.list).toHaveBeenCalledWith(
+        'v1',
+        'PersistentVolumeClaim',
+        'alchemy-data-system'
+      );
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(3);
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        {
+          apiVersion: 'v1',
+          kind: 'PersistentVolumeClaim',
+          metadata: {
+            name: 'database-data',
+            namespace: 'alchemy-data-system',
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'database-data-uid' } }
+      );
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        {
+          apiVersion: 'v1',
+          kind: 'PersistentVolumeClaim',
+          metadata: {
+            name: 'search-data',
+            namespace: 'alchemy-data-system',
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'search-data-uid' } }
+      );
+    });
+
+    it('preserves a replacement Namespace and its PVCs when the original UID lease is gone', async () => {
+      const ownedNamespace = {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'reused-system' },
+      } as Enhanced<unknown, unknown>;
+      setMetadataField(ownedNamespace, 'scope', 'cluster');
+      const deployedResource: DeployedResource = {
+        id: 'reusedNamespace',
+        kind: 'Namespace',
+        name: 'reused-system',
+        namespace: 'default',
+        manifest: ownedNamespace,
+        liveManifest: {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'reused-system', uid: 'original-uid' },
+        } as KubernetesResource,
+        status: 'deployed',
+        deployedAt: new Date(),
+      };
+
+      mockK8sApi.delete.mockResolvedValue({});
+      mockK8sApi.read.mockResolvedValue({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: 'reused-system', uid: 'replacement-uid' },
+      });
+
+      await manager.deleteDeployedResource(deployedResource, 5_000, undefined, {
+        waitForNamespaceDeletion: true,
+      });
+
+      expect(mockK8sApi.list).not.toHaveBeenCalled();
+      expect(mockK8sApi.delete).toHaveBeenCalledTimes(1);
+      expect(mockK8sApi.delete).toHaveBeenCalledWith(
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: 'reused-system' },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { preconditions: { uid: 'original-uid' } }
+      );
     });
 
     it('treats deployed rollback records already gone at initial DELETE as deleted', async () => {

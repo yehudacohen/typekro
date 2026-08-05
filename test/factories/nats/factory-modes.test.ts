@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { resourceFromDirectArtifactRecordForTest } from '../../../src/alchemy/resource-registration.js';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import { Cel } from '../../../src/core/references/cel.js';
 import { natsBootstrap } from '../../../src/factories/nats/compositions/nats-bootstrap.js';
@@ -200,6 +201,97 @@ describe('NATS and JetStream factories', () => {
     expect(controller?.dependsOn).toContain(repository?.id);
     expect(declarations.indexOf(repository!)).toBeLessThan(declarations.indexOf(server!));
     expect(declarations.indexOf(repository!)).toBeLessThan(declarations.indexOf(controller!));
+  });
+
+  it('materializes custom values in direct Alchemy without leaking the merge marker', async () => {
+    const customValues = {
+      config: {
+        jetstream: {
+          fileStore: {
+            pvc: {
+              storageClassName: 'local-path',
+            },
+          },
+        },
+      },
+    };
+    const declarations = await natsBootstrap
+      .factory('direct', { namespace: 'typekro-system', waitForReady: false })
+      .toAlchemyResources({
+        name: 'application-events',
+        namespace: 'application-system',
+        namespaceOwnership: 'external',
+        values: customValues,
+      });
+    const server = declarations.find(
+      (declaration) => declaration.props.resourceId === 'natsHelmRelease'
+    );
+    expect(server).toBeDefined();
+
+    const declaredValues = (
+      server!.props.resource as {
+        spec?: { values?: Record<string, unknown> };
+      }
+    ).spec?.values;
+    const rehydratedValues = (
+      resourceFromDirectArtifactRecordForTest({
+        ...server!.props,
+        dependencies: [{ resourceId: 'natsHelmRepository' } as never],
+      }) as {
+        spec?: { values?: Record<string, unknown> };
+      }
+    ).spec?.values;
+
+    for (const values of [declaredValues, rehydratedValues]) {
+      expect(values).toMatchObject({
+        config: {
+          jetstream: {
+            enabled: true,
+            fileStore: {
+              pvc: {
+                enabled: true,
+                size: '10Gi',
+                storageClassName: 'local-path',
+              },
+            },
+          },
+        },
+      });
+      expect(JSON.stringify(values)).not.toContain('__typekroValuesMerge');
+    }
+    expect(customValues).toEqual({
+      config: {
+        jetstream: {
+          fileStore: {
+            pvc: {
+              storageClassName: 'local-path',
+            },
+          },
+        },
+      },
+    });
+
+    const directYaml = natsBootstrap
+      .factory('direct', { namespace: 'typekro-system', waitForReady: false })
+      .toYaml({
+        name: 'application-events',
+        namespace: 'application-system',
+        namespaceOwnership: 'external',
+        values: customValues,
+      });
+    expect(directYaml).not.toContain('__typekroValuesMerge');
+    expect(directYaml).toMatch(
+      /jetstream:\s*\n\s+enabled: true\s*\n\s+fileStore:\s*\n\s+enabled: true\s*\n\s+pvc:\s*\n\s+enabled: true\s*\n\s+size: 10Gi\s*\n\s+storageClassName: local-path/
+    );
+
+    const kroYaml = natsBootstrap
+      .factory('kro', { namespace: 'typekro-system', waitForReady: false })
+      .toYaml();
+    expect(kroYaml).not.toContain('__typekroValuesMerge');
+    expect(kroYaml).toContain(
+      'has(schema.spec.values) ? json.unmarshal(json.marshal(schema.spec.values)) : {}'
+    );
+    expect(kroYaml).toContain('.merge({');
   });
 
   it('rejects non-positive and fractional replica counts', () => {

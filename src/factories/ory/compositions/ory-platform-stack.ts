@@ -18,7 +18,10 @@ import {
   OryPlatformStackStatusSchema,
   type OryValueSource,
 } from '../types.js';
-import { oryIdentityStack } from './ory-identity-stack.js';
+import {
+  oryIdentityStack,
+  oryKroLiteralSecretSchemaFieldValidations,
+} from './ory-identity-stack.js';
 import { oathkeeperRule } from '../resources/oathkeeper-rule.js';
 
 const apisixRouteSpecSchema = type({
@@ -717,5 +720,12 @@ export const oryPlatformStack = kubernetesComposition(
       ory: oryStatus,
       endpoints: oryStatus.endpoints,
     };
+  },
+  {
+    // Nested composition admission metadata is intentionally not inherited by
+    // the imperative root. The platform exposes the same literal-capable
+    // direct schema as the identity stack, so attach the KRO restriction at
+    // this public root as well.
+    schemaFieldValidations: oryKroLiteralSecretSchemaFieldValidations,
   }
 );

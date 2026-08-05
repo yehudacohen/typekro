@@ -105,7 +105,10 @@ the object store after it. The external-operator variant omits the operator
 release and Namespace, and requires their names explicitly.
 
 The development profile is intentionally replication-one and is not highly
-available:
+available. Its managed-operator composition disables the `rook-ceph` operator
+chart's CSI dependency because this object-storage-only profile owns no block
+pools or filesystems. This avoids installing unused CSI `ClientProfile`
+finalizers whose lifecycle would otherwise need to precede operator teardown:
 
 ```ts
 const local = rookCephSingleNodePlatform.factory('kro', {
@@ -120,6 +123,8 @@ await local.deploy({
   operatorNamespace: 'rook-ceph-operator',
   storageClassName: 'local-block',
   storageSize: '16Gi',
+  // Development-only escape hatch for loop-backed local block fixtures.
+  allowLoopDevices: true,
   objectStoreName: 'application-objects',
   bucketStorageClassName: 'application-buckets-retain',
   resources: {
@@ -142,6 +147,9 @@ requirements; specify every request and limit that the daemon should retain.
 The same values are admitted and rendered in direct and KRO modes, including
 the OSD resource requirements on its storage device set and the RGW gateway
 requirements on the separately materialized `CephObjectStore`.
+
+`allowLoopDevices` defaults to `false`. Enable it only for an explicitly
+loop-backed development fixture, never as a production storage substitute.
 
 The production profile requires the availability and operational decisions
 that the local profile deliberately supplies as unsafe single-node defaults:
@@ -204,6 +212,12 @@ await rookCephExternalOperatorSingleNodePlatform
     storageClassName: 'local-block',
   });
 ```
+
+The external operator remains the authority for its CSI controllers and
+finalizers. Its platform owner must keep that operator running until the
+external-operator cluster and all of its operator-owned descendants have
+finished deletion; TypeKro deliberately does not mutate the external
+operator's Helm values.
 
 All three compositions create a distinct custom `repositoryNamespace` by
 default. Set `repositoryNamespaceOwnership: 'external'` only when another

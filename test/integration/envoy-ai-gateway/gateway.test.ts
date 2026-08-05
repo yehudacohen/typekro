@@ -207,7 +207,7 @@ async function probeGateway(
                 `if curl --fail --silent --max-time 10 ` +
                 `-H 'content-type: application/json' ` +
                 `--data '{"model":"fast","messages":[{"role":"user","content":"hello"}]}' ` +
-                `${endpoint}/v1/chat/completions; then exit 0; fi; ` +
+                `${endpoint}/chat/completions; then exit 0; fi; ` +
                 `sleep 2; ` +
                 `done; ` +
                 `echo 'gateway did not become request-ready after 120 seconds' >&2; exit 1`,
@@ -315,7 +315,7 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
           gatewayProgrammed: true,
           aiGatewayVersion: 'v0.6.0',
         });
-        expect(deployed.status.endpoint).toMatch(/^http:\/\/.+:8080$/);
+        expect(deployed.status.endpoint).toMatch(/^http:\/\/.+:8080\/v1$/);
 
         const firstResponse = JSON.parse(
           await probeGateway(
@@ -344,7 +344,7 @@ describeOrSkip('Envoy AI Gateway direct and KRO lifecycle', () => {
           failed: false,
           phase: 'Ready',
         });
-        expect(updated.status.endpoint).toMatch(/^http:\/\/.+:8081$/);
+        expect(updated.status.endpoint).toMatch(/^http:\/\/.+:8081\/v1$/);
 
         if (mode === 'kro') {
           const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);

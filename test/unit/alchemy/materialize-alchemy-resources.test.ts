@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from 'bun:test';
 import * as Output from 'alchemy/Output';
+import { RemovalPolicy } from 'alchemy/RemovalPolicy';
 import { Effect } from 'effect';
+import * as Option from 'effect/Option';
 import { type KroResource, materializeAlchemyResources } from '../../../src/alchemy/index.js';
 import type { AlchemyResourceDeclaration } from '../../../src/alchemy/types.js';
 
@@ -20,6 +22,18 @@ const makeFakeKroResource = () => {
     return Effect.succeed({ FQN: id, __handle: id });
   };
   return { fake: fake as unknown as typeof KroResource, calls };
+};
+
+const makeRemovalPolicyAwareKroResource = () => {
+  const policies: Array<{ id: string; removalPolicy: 'destroy' | 'retain' }> = [];
+  const fake = (id: string, _props: Record<string, unknown>) =>
+    Effect.gen(function* () {
+      const configured = yield* Effect.serviceOption(RemovalPolicy);
+      const removalPolicy = Option.getOrElse(configured, () => 'destroy' as const);
+      policies.push({ id, removalPolicy });
+      return { FQN: id, __handle: id };
+    });
+  return { fake: fake as unknown as typeof KroResource, policies };
 };
 
 const decl = (id: string, dependsOn: string[] = []): AlchemyResourceDeclaration => ({
@@ -97,6 +111,21 @@ describe('materializeAlchemyResources', () => {
     );
 
     await expect(promise).rejects.toThrow("duplicate declaration id 'same'");
+  });
+
+  it('registers retained declarations with Alchemy native retention policy', async () => {
+    const { fake, policies } = makeRemovalPolicyAwareKroResource();
+    const retained = decl('retained');
+    retained.props.retain = true;
+
+    await Effect.runPromise(
+      materializeAlchemyResources(fake, [retained, decl('destroyed')]) as Effect.Effect<unknown>
+    );
+
+    expect(policies).toEqual([
+      { id: 'retained', removalPolicy: 'retain' },
+      { id: 'destroyed', removalPolicy: 'destroy' },
+    ]);
   });
 
   it('requires external artifact handles and wires their outputs into provider props', async () => {

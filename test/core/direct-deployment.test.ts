@@ -981,7 +981,7 @@ describe('DirectDeploymentEngine', () => {
         id: 'namespace',
         kind: 'Namespace',
         apiVersion: 'v1',
-        metadata: { name: 'owned-system' },
+        metadata: { name: 'owned-system', uid: 'owned-system-uid' },
       });
       const serviceManifest = createMockResource({
         id: 'service',

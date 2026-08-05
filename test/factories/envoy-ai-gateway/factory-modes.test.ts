@@ -380,6 +380,45 @@ describe('Envoy AI Gateway integration', () => {
     expect(yaml).toContain('numRetries: 2');
   });
 
+  test('orders secured routes after provider policies for finalizer-safe teardown', async () => {
+    const gateway = makeEnvoyAIGateway({
+      profile: 'development',
+      providers: [
+        {
+          name: 'openai',
+          kind: 'openai',
+          credential: { name: 'openai-key' },
+        },
+      ],
+      models: [
+        {
+          model: 'reasoning',
+          targets: [{ provider: 'openai', model: 'gpt' }],
+        },
+      ],
+    });
+    const declarations = await gateway
+      .factory('direct', { namespace: 'typekro-system' })
+      .toAlchemyResources({
+        name: 'secured',
+        namespace: 'secured-ai',
+        lifecycle: 'external',
+      });
+    const route = declarations.find(
+      ({ props }) => props.resource.kind === 'AIGatewayRoute'
+    );
+    const securityPolicy = declarations.find(
+      ({ props }) => props.resource.kind === 'BackendSecurityPolicy'
+    );
+
+    expect(route).toBeDefined();
+    expect(securityPolicy).toBeDefined();
+    expect(route?.dependsOn).toContain(securityPolicy?.id);
+    expect(declarations.indexOf(securityPolicy!)).toBeLessThan(
+      declarations.indexOf(route!)
+    );
+  });
+
   test('renders token accounting and rate limiting without leaking provider details', () => {
     const gateway = makeEnvoyAIGateway({
       profile: 'development',
@@ -759,6 +798,7 @@ describe('Envoy AI Gateway integration', () => {
     expect(status).toHaveProperty('routeAccepted');
     expect(status).toHaveProperty('gatewayProgrammed');
     expect(String(status.endpoint)).toContain('size(gateway.status.addresses)');
+    expect(String(status.endpoint)).toContain('"/v1"');
     expect(String(status.endpoint)).not.toContain('.size()');
     expect(status).toHaveProperty('aiGatewayVersion', '${gatewayContract.data.aiGatewayVersion}');
     expect(schemaSpec).toHaveProperty('listenerPort', 'integer | minimum=1 maximum=65535');
