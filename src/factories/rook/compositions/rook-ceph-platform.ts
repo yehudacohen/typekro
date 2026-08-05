@@ -102,6 +102,10 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       values: {
         enableOBCWatchOperatorNamespace: false,
         resources: { requests: { cpu: '100m', memory: '128Mi' } },
+        // The object-only development profile owns no block pools or file
+        // systems. Disable the operator chart's CSI dependency so its
+        // ClientProfile finalizers cannot outlive this owned operator.
+        csi: { installCsiOperator: false },
       },
       id: 'operatorRelease',
     });
@@ -113,9 +117,7 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
-      values: singleNodeClusterOnlyValues(
-        mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)
-      ),
+      values: clusterOnlyValues(mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)),
       id: 'clusterRelease',
     });
     clusterRelease.dependsOn(operatorRelease);
@@ -316,7 +318,9 @@ export const rookCephProductionPlatform = kubernetesComposition(
 /**
  * Complete one-node Ceph cluster that references an already managed Rook
  * operator. The operator Deployment is an observed prerequisite and is never
- * emitted, adopted, or deleted by this composition.
+ * emitted, adopted, or deleted by this composition. Its platform owner must
+ * keep it running until this cluster and any operator-owned CSI descendants
+ * have completed deletion.
  */
 export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
   {
@@ -374,9 +378,7 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
-      values: singleNodeClusterOnlyValues(
-        mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)
-      ),
+      values: clusterOnlyValues(mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)),
       id: 'clusterRelease',
     });
     clusterRelease.dependsOn(externalOperator);
@@ -500,38 +502,4 @@ function clusterOnlyValues(values: unknown) {
     return mergeValuesExpression(values, clusterOnly);
   }
   return { ...(structuredClone(values) as Record<string, unknown>), ...clusterOnly };
-}
-
-/**
- * The object-storage-only single-node profiles do not use Rook's CSI operator.
- * Installing it would add chart-internal ClientProfile resources whose cleanup
- * finalizers depend on the Rook operator. The cluster owns no block pools or
- * filesystems, so disabling that subchart removes an unused controller and
- * prevents its finalizers from outliving the operator during platform teardown.
- *
- * Keep this as a protected final overlay: raw chart values may customize other
- * CSI settings, but cannot re-enable a controller whose lifecycle is outside
- * this composition's dependency graph.
- */
-function singleNodeClusterOnlyValues(values: unknown) {
-  const singleNodeOnly = {
-    cephBlockPools: [],
-    cephFileSystems: [],
-    cephObjectStores: [],
-    csi: { installCsiOperator: false },
-  };
-  if (isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)) {
-    return mergeValuesExpression(values, singleNodeOnly);
-  }
-
-  const cloned = structuredClone(values) as Record<string, unknown>;
-  const authoredCsi =
-    cloned.csi && typeof cloned.csi === 'object' && !Array.isArray(cloned.csi)
-      ? (cloned.csi as Record<string, unknown>)
-      : {};
-  return {
-    ...cloned,
-    ...singleNodeOnly,
-    csi: { ...authoredCsi, installCsiOperator: false },
-  };
 }

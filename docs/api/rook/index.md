@@ -105,7 +105,10 @@ the object store after it. The external-operator variant omits the operator
 release and Namespace, and requires their names explicitly.
 
 The development profile is intentionally replication-one and is not highly
-available:
+available. Its managed-operator composition disables the `rook-ceph` operator
+chart's CSI dependency because this object-storage-only profile owns no block
+pools or filesystems. This avoids installing unused CSI `ClientProfile`
+finalizers whose lifecycle would otherwise need to precede operator teardown:
 
 ```ts
 const local = rookCephSingleNodePlatform.factory('kro', {
@@ -204,6 +207,12 @@ await rookCephExternalOperatorSingleNodePlatform
     storageClassName: 'local-block',
   });
 ```
+
+The external operator remains the authority for its CSI controllers and
+finalizers. Its platform owner must keep that operator running until the
+external-operator cluster and all of its operator-owned descendants have
+finished deletion; TypeKro deliberately does not mutate the external
+operator's Helm values.
 
 All three compositions create a distinct custom `repositoryNamespace` by
 default. Set `repositoryNamespaceOwnership: 'external'` only when another
