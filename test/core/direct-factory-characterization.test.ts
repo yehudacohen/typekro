@@ -289,12 +289,16 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     );
     const waitForNamespaceDeletion = getPrivateMethod(factory, 'waitForNamespaceDeletion') as (
       k8sApi: { read(request: Record<string, unknown>): Promise<unknown> },
-      namespaces: string[],
+      namespaces: Array<{ name: string; uid: string }>,
       timeout: number
     ) => Promise<void>;
 
     await expect(
-      waitForNamespaceDeletion({ read: mock(() => Promise.resolve({ body: {} })) }, ['stuck-ns'], 0)
+      waitForNamespaceDeletion(
+        { read: mock(() => Promise.resolve({ metadata: { uid: 'namespace-uid' } })) },
+        [{ name: 'stuck-ns', uid: 'namespace-uid' }],
+        0
+      )
     ).rejects.toThrow('Timed out waiting for namespace stuck-ns to be deleted');
   });
 });

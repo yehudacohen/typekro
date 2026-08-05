@@ -532,12 +532,53 @@ export class ResourceRollbackManager {
     };
 
     try {
+      let namespaceUid: string | undefined;
+      if (resource.kind === 'Namespace') {
+        namespaceUid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+        if (!namespaceUid) {
+          try {
+            const live = (await this.k8sApi.read({
+              apiVersion: resource.manifest.apiVersion || 'v1',
+              kind: 'Namespace',
+              metadata: { name: resource.name },
+            })) as KubernetesResource;
+            namespaceUid = live.metadata?.uid;
+            resource.liveManifest = live;
+          } catch (error: unknown) {
+            if (isNotFoundError(error)) {
+              deleteLogger.debug('Namespace already deleted');
+              return;
+            }
+            throw error;
+          }
+        }
+        if (!namespaceUid) {
+          throw new TypeKroError(
+            `Refusing to delete Namespace ${resource.name} without a Kubernetes UID lease`,
+            'NAMESPACE_UID_UNAVAILABLE',
+            { namespace: resource.name }
+          );
+        }
+      }
       try {
-        await this.k8sApi.delete({
+        const deletionTarget = {
           apiVersion: resource.manifest.apiVersion || '',
           kind: resource.kind,
           metadata,
-        } as k8s.KubernetesObject);
+        } as k8s.KubernetesObject;
+        if (namespaceUid) {
+          await this.k8sApi.delete(
+            deletionTarget,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { preconditions: { uid: namespaceUid } }
+          );
+        } else {
+          await this.k8sApi.delete(deletionTarget);
+        }
       } catch (error: unknown) {
         if (isNotFoundError(error)) {
           deleteLogger.debug('Resource already deleted');
@@ -558,8 +599,16 @@ export class ResourceRollbackManager {
         return;
       }
       if (resource.kind === 'Namespace') {
+        if (!namespaceUid) {
+          throw new TypeKroError(
+            `Refusing post-delete cleanup for Namespace ${resource.name} without its Kubernetes UID lease`,
+            'NAMESPACE_UID_UNAVAILABLE',
+            { namespace: resource.name }
+          );
+        }
         await this.deleteNamespacePersistentVolumeClaims(
           resource.name,
+          namespaceUid,
           deleteLogger,
           abortSignal
         );
@@ -572,11 +621,18 @@ export class ResourceRollbackManager {
       while (Date.now() - startTime < deleteTimeout) {
         throwIfAborted(abortSignal);
         try {
-          await this.k8sApi.read({
+          const live = (await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
             kind: resource.kind,
             metadata,
-          });
+          })) as KubernetesResource;
+          if (resource.kind === 'Namespace' && live.metadata?.uid !== namespaceUid) {
+            deleteLogger.debug('Original Namespace is gone; replacement identity is preserved', {
+              expectedUid: namespaceUid,
+              actualUid: live.metadata?.uid,
+            });
+            return;
+          }
 
           // Resource still exists, wait and try again
           await abortableDelay(DEFAULT_FAST_POLL_INTERVAL, abortSignal);
@@ -615,44 +671,79 @@ export class ResourceRollbackManager {
    */
   private async deleteNamespacePersistentVolumeClaims(
     namespace: string,
+    namespaceUid: string,
     deleteLogger: ReturnType<typeof getComponentLogger>,
     abortSignal?: AbortSignal
   ): Promise<void> {
     throwIfAborted(abortSignal);
+    if (!(await this.isNamespaceLeaseCurrent(namespace, namespaceUid))) return;
     let result: {
-      items?: Array<{ metadata?: { name?: unknown } }>;
+      items?: Array<{ metadata?: { name?: unknown; uid?: unknown } }>;
     };
     try {
-      result = (await this.k8sApi.list(
-        'v1',
-        'PersistentVolumeClaim',
-        namespace
-      )) as typeof result;
+      result = (await this.k8sApi.list('v1', 'PersistentVolumeClaim', namespace)) as typeof result;
     } catch (error: unknown) {
       if (isNotFoundError(error)) return;
       throw error;
     }
 
-    const names = (result.items ?? [])
-      .map((pvc) => pvc.metadata?.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0);
-    if (names.length > 0) {
+    const leases = (result.items ?? []).map((pvc) => {
+      const name = pvc.metadata?.name;
+      const uid = pvc.metadata?.uid;
+      if (
+        typeof name !== 'string' ||
+        name.length === 0 ||
+        typeof uid !== 'string' ||
+        uid.length === 0
+      ) {
+        throw new TypeKroError(
+          `Refusing to delete a PersistentVolumeClaim in Namespace ${namespace} without a complete UID lease`,
+          'PVC_UID_UNAVAILABLE',
+          { namespace, pvcName: name, pvcUid: uid }
+        );
+      }
+      return { name, uid };
+    });
+    if (leases.length > 0) {
       deleteLogger.info('Deleting PVCs to complete Namespace deletion', {
         namespace,
-        count: names.length,
+        count: leases.length,
       });
     }
-    for (const name of names) {
+    for (const { name, uid } of leases) {
       throwIfAborted(abortSignal);
+      if (!(await this.isNamespaceLeaseCurrent(namespace, namespaceUid))) return;
       try {
-        await this.k8sApi.delete({
-          apiVersion: 'v1',
-          kind: 'PersistentVolumeClaim',
-          metadata: { name, namespace },
-        });
+        await this.k8sApi.delete(
+          {
+            apiVersion: 'v1',
+            kind: 'PersistentVolumeClaim',
+            metadata: { name, namespace },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { preconditions: { uid } }
+        );
       } catch (error: unknown) {
         if (!isNotFoundError(error)) throw error;
       }
+    }
+  }
+
+  private async isNamespaceLeaseCurrent(namespace: string, uid: string): Promise<boolean> {
+    try {
+      const live = (await this.k8sApi.read({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: namespace },
+      })) as KubernetesResource;
+      return live.metadata?.uid === uid;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return false;
+      throw error;
     }
   }
 
