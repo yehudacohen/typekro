@@ -1477,7 +1477,8 @@ export class DirectDeploymentEngine {
     return this.rollbackManager.deleteDeployedResource(
       resource,
       options.timeout,
-      options.abortSignal
+      options.abortSignal,
+      { waitForNamespaceDeletion: true }
     );
   }
 

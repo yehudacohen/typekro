@@ -18,6 +18,7 @@
  */
 
 import { describe, expect, it, mock } from 'bun:test';
+import { ApiException } from '@kubernetes/client-node/dist/gen/apis/exception.js';
 import { type } from 'arktype';
 import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import { DependencyResolver } from '../../src/core/dependencies/resolver.js';
@@ -289,13 +290,49 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     );
     const waitForNamespaceDeletion = getPrivateMethod(factory, 'waitForNamespaceDeletion') as (
       k8sApi: { read(request: Record<string, unknown>): Promise<unknown> },
-      namespaces: string[],
+      namespaces: Array<{ name: string; uid: string }>,
       timeout: number
     ) => Promise<void>;
 
     await expect(
-      waitForNamespaceDeletion({ read: mock(() => Promise.resolve({ body: {} })) }, ['stuck-ns'], 0)
+      waitForNamespaceDeletion(
+        { read: mock(() => Promise.resolve({ metadata: { uid: 'namespace-uid' } })) },
+        [{ name: 'stuck-ns', uid: 'namespace-uid' }],
+        0
+      )
     ).rejects.toThrow('Timed out waiting for namespace stuck-ns to be deleted');
+  });
+
+  it('accepts a real client 404 as successful namespace deletion', async () => {
+    const factory = createDirectResourceFactory(
+      'namespace-terminal-404-test',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'NamespaceTerminal404Test',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    const waitForNamespaceDeletion = getPrivateMethod(factory, 'waitForNamespaceDeletion') as (
+      k8sApi: { read(request: Record<string, unknown>): Promise<unknown> },
+      namespaces: Array<{ name: string; uid: string }>,
+      timeout: number
+    ) => Promise<void>;
+
+    await expect(
+      waitForNamespaceDeletion(
+        {
+          read: mock(() => {
+            throw new ApiException(404, 'Not Found', undefined, {});
+          }),
+        },
+        [{ name: 'deleted-ns', uid: 'namespace-uid' }],
+        1_000
+      )
+    ).resolves.toBeUndefined();
   });
 });
 

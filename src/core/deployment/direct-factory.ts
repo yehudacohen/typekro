@@ -91,7 +91,7 @@ import {
 import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
-import { isNotFoundError } from './k8s-helpers.js';
+import { isConflictError, isNotFoundError } from './k8s-helpers.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
 
@@ -588,19 +588,45 @@ export class DirectResourceFactoryImpl<
     timeout?: number,
     abortSignal?: AbortSignal
   ): Promise<void> {
-    const deletedNamespaces = rollbackResult.rolledBackResources
-      .filter((resource) => resource.startsWith('Namespace/'))
-      .map((resource) => resource.split('/')[1])
-      .filter((namespace): namespace is string => namespace !== undefined);
+    const namespaceLeases = new Map<string, string>();
+    for (const resource of rollbackResult.deletedResources ?? []) {
+      if (resource.kind !== 'Namespace') continue;
+      const uid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+      if (!uid) {
+        throw new TypeKroError(
+          `Refusing post-delete cleanup for Namespace ${resource.name} without its Kubernetes UID lease`,
+          'NAMESPACE_UID_UNAVAILABLE',
+          { namespace: resource.name }
+        );
+      }
+      namespaceLeases.set(resource.name, uid);
+    }
 
-    if (deletedNamespaces.length === 0) return;
+    if (namespaceLeases.size === 0) return;
 
-    // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
-    // finalizers that block namespace termination until volumes are released.
+    // Delete PVCs in the exact Namespace identities targeted by rollback before
+    // waiting. A Namespace name can be reused after deletion, so every follow-up
+    // read and delete remains bound to the captured UID lease.
     const kubeConfig = this.getClientProvider().getKubeConfig();
     const coreApi = createBunCompatibleCoreV1Api(kubeConfig, this.factoryOptions.httpTimeouts);
-    for (const namespace of deletedNamespaces) {
+    const objectApi = this.getDeploymentEngine().getKubernetesApi();
+    const leaseStillCurrent = async (namespace: string, uid: string): Promise<boolean> => {
+      try {
+        const live = (await objectApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: namespace },
+        })) as KubernetesResource;
+        return live.metadata?.uid === uid;
+      } catch (error: unknown) {
+        if (isNotFoundError(error)) return false;
+        throw error;
+      }
+    };
+
+    for (const [namespace, namespaceUid] of namespaceLeases) {
       abortSignal?.throwIfAborted();
+      if (!(await leaseStillCurrent(namespace, namespaceUid))) continue;
       let pvcs: Awaited<ReturnType<typeof coreApi.listNamespacedPersistentVolumeClaim>>;
       try {
         pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
@@ -617,11 +643,20 @@ export class DirectResourceFactoryImpl<
       for (const pvc of pvcs.items) {
         abortSignal?.throwIfAborted();
         const pvcName = pvc.metadata?.name;
-        if (!pvcName) continue;
+        const pvcUid = pvc.metadata?.uid;
+        if (!pvcName || !pvcUid) {
+          throw new TypeKroError(
+            `Refusing to delete a PersistentVolumeClaim in Namespace ${namespace} without a complete UID lease`,
+            'PVC_UID_UNAVAILABLE',
+            { namespace, pvcName }
+          );
+        }
+        if (!(await leaseStillCurrent(namespace, namespaceUid))) break;
         try {
           await coreApi.deleteNamespacedPersistentVolumeClaim({
             name: pvcName,
             namespace,
+            body: { preconditions: { uid: pvcUid } },
           });
         } catch (error: unknown) {
           if (!isNotFoundError(error)) throw error;
@@ -631,8 +666,8 @@ export class DirectResourceFactoryImpl<
 
     const deleteTimeout = timeout ?? this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
     await this.waitForNamespaceDeletion(
-      this.getDeploymentEngine().getKubernetesApi(),
-      deletedNamespaces,
+      objectApi,
+      [...namespaceLeases].map(([name, uid]) => ({ name, uid })),
       deleteTimeout,
       abortSignal
     );
@@ -646,24 +681,30 @@ export class DirectResourceFactoryImpl<
    */
   private async waitForNamespaceDeletion(
     k8sApi: import('@kubernetes/client-node').KubernetesObjectApi,
-    namespaces: string[],
+    namespaces: Array<{ name: string; uid: string }>,
     timeout: number,
     abortSignal?: AbortSignal
   ): Promise<void> {
     const pollInterval = DEFAULT_FAST_POLL_INTERVAL;
 
-    for (const ns of namespaces) {
+    for (const { name: ns, uid } of namespaces) {
       // Each namespace gets its own timeout budget
       const nsStartTime = Date.now();
       let deleted = false;
       while (Date.now() - nsStartTime < timeout) {
         abortSignal?.throwIfAborted();
         try {
-          await k8sApi.read({
+          const live = (await k8sApi.read({
             apiVersion: 'v1',
             kind: 'Namespace',
             metadata: { name: ns },
-          });
+          })) as KubernetesResource;
+          // The leased Namespace is gone. A replacement with the same name is
+          // outside this teardown and must neither be waited on nor mutated.
+          if (live.metadata?.uid !== uid) {
+            deleted = true;
+            break;
+          }
           // Namespace still exists (likely "Terminating"), keep polling
           await new Promise<void>((resolve, reject) => {
             if (!abortSignal) {
@@ -688,8 +729,7 @@ export class DirectResourceFactoryImpl<
           });
         } catch (error: unknown) {
           // 404 means the namespace is fully gone
-          const k8sErr = error as { statusCode?: number; body?: { code?: number } };
-          if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
+          if (isNotFoundError(error)) {
             this.logger.debug('Namespace fully deleted', { namespace: ns });
             deleted = true;
             break;
@@ -2538,9 +2578,7 @@ export class DirectResourceFactoryImpl<
               return;
             }
           } catch (pollError: unknown) {
-            const err = pollError as { statusCode?: number; body?: { code?: number } };
-            const code = err.statusCode ?? err.body?.code;
-            if (code === 404) {
+            if (isNotFoundError(pollError)) {
               return;
             }
             throw pollError;
@@ -2581,9 +2619,7 @@ export class DirectResourceFactoryImpl<
           return;
         }
       } catch (readError: unknown) {
-        const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
-        const code = k8sErr.statusCode ?? k8sErr.body?.code;
-        if (code !== 404) {
+        if (!isNotFoundError(readError)) {
           throw readError;
         }
       }
@@ -2601,11 +2637,9 @@ export class DirectResourceFactoryImpl<
         });
       } catch (createError: unknown) {
         const k8sErr = createError as {
-          statusCode?: number;
-          body?: { code?: number; reason?: string };
+          body?: { reason?: string };
           message?: string;
         };
-        const code = k8sErr.statusCode ?? k8sErr.body?.code;
         const isNamespaceTerminating =
           k8sErr.body?.reason === 'Forbidden' &&
           k8sErr.message?.includes('NamespaceTerminating') === true;
@@ -2621,7 +2655,7 @@ export class DirectResourceFactoryImpl<
               },
             },
           });
-        } else if (code !== 409) {
+        } else if (!isConflictError(createError)) {
           throw createError;
         }
       }
