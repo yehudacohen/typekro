@@ -758,5 +758,19 @@ export const oryIdentityStack = kubernetesComposition(
       },
       version: Cel.template('%s', resolvedVersion),
     };
+  },
+  {
+    // Direct mode can preserve literal secret values in the chart-generated
+    // environment. KRO post-renderer patches cannot safely switch the opaque
+    // YAML patch shape between `value` and `valueFrom` at reconciliation time,
+    // so reject literal sources at admission instead of silently rewiring them
+    // to nonexistent managed Secrets.
+    schemaFieldValidations: {
+      hydra: '!has(self.systemSecret) || !has(self.systemSecret.value)',
+      kratos:
+        '(!has(self.secrets) || !has(self.secrets.cookie) || !has(self.secrets.cookie.value)) && (!has(self.secrets) || !has(self.secrets.cipher) || !has(self.secrets.cipher.value))',
+      dependencySources:
+        '(!has(self.hydra) || !has(self.hydra.systemSecret) || !has(self.hydra.systemSecret.value) || !has(self.hydra.systemSecret.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cookie) || !has(self.kratos.secrets.cookie.value) || !has(self.kratos.secrets.cookie.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cipher) || !has(self.kratos.secrets.cipher.value) || !has(self.kratos.secrets.cipher.value.value))',
+    },
   }
 );

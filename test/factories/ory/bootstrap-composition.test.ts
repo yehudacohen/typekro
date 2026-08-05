@@ -454,6 +454,19 @@ describe('Ory identity stack composition', () => {
     });
   });
 
+  it('rejects literal high-level and dependency secret sources from KRO admission', () => {
+    const yaml = oryIdentityStack.toYaml();
+
+    expect(yaml).toContain(
+      'validation="!has(self.systemSecret) || !has(self.systemSecret.value)"'
+    );
+    expect(yaml).toContain('!has(self.secrets.cookie.value)');
+    expect(yaml).toContain('!has(self.secrets.cipher.value)');
+    expect(yaml).toContain('!has(self.hydra.systemSecret.value.value)');
+    expect(yaml).toContain('!has(self.kratos.secrets.cookie.value.value)');
+    expect(yaml).toContain('!has(self.kratos.secrets.cipher.value.value)');
+  });
+
   it('Generate direct-mode YAML for managed local dependency sources with starter OAuth2Client and Rule resources', async () => {
     const factory = oryIdentityStack.factory('direct', { namespace: 'ory-test' });
     const yaml = await factory.toYaml({
