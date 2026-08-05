@@ -113,7 +113,9 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
-      values: clusterOnlyValues(mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)),
+      values: singleNodeClusterOnlyValues(
+        mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)
+      ),
       id: 'clusterRelease',
     });
     clusterRelease.dependsOn(operatorRelease);
@@ -372,7 +374,9 @@ export const rookCephExternalOperatorSingleNodePlatform = kubernetesComposition(
       repositoryName,
       repositoryNamespace,
       repositoryUrl,
-      values: clusterOnlyValues(mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)),
+      values: singleNodeClusterOnlyValues(
+        mapRookCephSingleNodePlatformToHelmValues(spec, storageSize)
+      ),
       id: 'clusterRelease',
     });
     clusterRelease.dependsOn(externalOperator);
@@ -496,4 +500,38 @@ function clusterOnlyValues(values: unknown) {
     return mergeValuesExpression(values, clusterOnly);
   }
   return { ...(structuredClone(values) as Record<string, unknown>), ...clusterOnly };
+}
+
+/**
+ * The object-storage-only single-node profiles do not use Rook's CSI operator.
+ * Installing it would add chart-internal ClientProfile resources whose cleanup
+ * finalizers depend on the Rook operator. The cluster owns no block pools or
+ * filesystems, so disabling that subchart removes an unused controller and
+ * prevents its finalizers from outliving the operator during platform teardown.
+ *
+ * Keep this as a protected final overlay: raw chart values may customize other
+ * CSI settings, but cannot re-enable a controller whose lifecycle is outside
+ * this composition's dependency graph.
+ */
+function singleNodeClusterOnlyValues(values: unknown) {
+  const singleNodeOnly = {
+    cephBlockPools: [],
+    cephFileSystems: [],
+    cephObjectStores: [],
+    csi: { installCsiOperator: false },
+  };
+  if (isKubernetesRef(values) || isCelExpression(values) || isValuesMergeExpression(values)) {
+    return mergeValuesExpression(values, singleNodeOnly);
+  }
+
+  const cloned = structuredClone(values) as Record<string, unknown>;
+  const authoredCsi =
+    cloned.csi && typeof cloned.csi === 'object' && !Array.isArray(cloned.csi)
+      ? (cloned.csi as Record<string, unknown>)
+      : {};
+  return {
+    ...cloned,
+    ...singleNodeOnly,
+    csi: { ...authoredCsi, installCsiOperator: false },
+  };
 }

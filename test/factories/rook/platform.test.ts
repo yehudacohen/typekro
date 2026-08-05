@@ -170,7 +170,53 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('storageClassName: local-path');
     expect(yaml).toContain('name: harbor-retain');
     expect(yaml).toContain('reclaimPolicy: Retain');
+    expect(yaml).toContain('installCsiOperator: false');
     expectCleanYaml(yaml);
+  });
+
+  it('keeps the unused CSI operator disabled in object-only single-node profiles', () => {
+    const config = {
+      name: 'rook-local',
+      profile: 'single-node-development' as const,
+      namespace: 'ceph-data',
+      operatorNamespace: 'ceph-operator',
+      storageClassName: 'local-path',
+      values: {
+        csi: {
+          installCsiOperator: true,
+          enableRbdDriver: false,
+        },
+      },
+    };
+
+    const directYaml = rookCephSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toYaml(config);
+    const kroYaml = rookCephSingleNodePlatform
+      .factory('kro', { namespace: 'control' })
+      .toYaml(config);
+    const kroDefinitionYaml = rookCephSingleNodePlatform
+      .factory('kro', { namespace: 'control' })
+      .toYaml();
+    const externalOperatorYaml = rookCephExternalOperatorSingleNodePlatform
+      .factory('direct', { namespace: 'control' })
+      .toYaml({
+        ...config,
+        operatorDeploymentName: 'rook-ceph-operator',
+      });
+
+    for (const yaml of [directYaml, externalOperatorYaml]) {
+      expect(yaml).toContain('installCsiOperator: false');
+      expect(yaml).not.toContain('installCsiOperator: true');
+      expect(yaml).toContain('enableRbdDriver: false');
+      expectCleanYaml(yaml);
+    }
+    // The instance preserves the authored input, while the generated RGD applies
+    // the protected final overlay during reconciliation.
+    expect(kroYaml).toContain('installCsiOperator: true');
+    expect(kroDefinitionYaml).toContain('{"installCsiOperator": false}');
+    expectCleanYaml(kroYaml);
+    expectCleanYaml(kroDefinitionYaml);
   });
 
   it('keeps the object store behind the executable cluster release lifecycle edge', async () => {
@@ -223,6 +269,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('kind: CephCluster');
     expect(yaml).toContain('kind: CephObjectStore');
     expect(yaml).toContain('kind: StorageClass');
+    expect(yaml).toContain('{"installCsiOperator": false}');
     expectCleanYaml(yaml);
   });
 
