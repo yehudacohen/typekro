@@ -80,6 +80,31 @@ const makeGraph = () =>
     })
   );
 
+const RetentionSpecSchema = type({ prefix: 'string' });
+const makeRetentionGraph = () =>
+  toResourceGraph(
+    {
+      name: 'retentionapp',
+      apiVersion: 'v1alpha1',
+      kind: 'RetentionApp',
+      spec: RetentionSpecSchema,
+      status: type({}),
+    },
+    (schema) => ({
+      retained: simple.ConfigMap({
+        name: Cel.template('%s-retained', schema.spec.prefix),
+        data: { lifecycle: 'retained' },
+        id: 'retainedConfig',
+      }),
+      destroyed: simple.ConfigMap({
+        name: Cel.template('%s-destroyed', schema.spec.prefix),
+        data: { lifecycle: 'destroyed' },
+        id: 'destroyedConfig',
+      }),
+    }),
+    () => ({})
+  );
+
 const makeOptions = { providers: kroProvider, state: StateMod.inMemoryState() };
 const runDeploy = (s: unknown) =>
   Effect.runPromise(
@@ -175,5 +200,60 @@ describeOrSkip('Alchemy v2 direct-mode fan-out (e2e)', () => {
         kubeConfig
       ),
     ]);
+  }, 180_000);
+
+  it('honors declaration retention through Alchemy destroy', async () => {
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const prefix = `retain-${crypto.randomUUID().slice(0, 8)}`;
+    const retainedName = `${prefix}-retained`;
+    const destroyedName = `${prefix}-destroyed`;
+    const factory = await makeRetentionGraph().factory('direct', {
+      namespace: NS,
+      waitForReady: true,
+      timeout: 120_000,
+    });
+    const declarations = await factory.toAlchemyResources({ prefix });
+    const retained = declarations.find(
+      (declaration) => declaration.props.resourceId === 'retainedConfig'
+    );
+    expect(retained).toBeDefined();
+    retained!.props.retain = true;
+
+    const stack = Alchemy.Stack(
+      `tk-alchemy-retention-${prefix}`,
+      makeOptions as never,
+      materializeAlchemyResources(KroResource, declarations) as never
+    );
+
+    try {
+      await runDeploy(stack);
+      await runDestroy(stack);
+
+      await waitForResourceAbsent(
+        {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { namespace: NS, name: destroyedName },
+        },
+        kubeConfig
+      );
+      const liveRetained = await coreApi.readNamespacedConfigMap({
+        namespace: NS,
+        name: retainedName,
+      });
+      expect(liveRetained.data?.lifecycle).toBe('retained');
+    } finally {
+      await coreApi
+        .deleteNamespacedConfigMap({ namespace: NS, name: retainedName })
+        .catch(() => undefined);
+      await waitForResourceAbsent(
+        {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { namespace: NS, name: retainedName },
+        },
+        kubeConfig
+      );
+    }
   }, 180_000);
 });

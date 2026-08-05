@@ -120,6 +120,8 @@ await local.deploy({
   operatorNamespace: 'rook-ceph-operator',
   storageClassName: 'local-block',
   storageSize: '16Gi',
+  // Development-only escape hatch for loop-backed local block fixtures.
+  allowLoopDevices: true,
   objectStoreName: 'application-objects',
   bucketStorageClassName: 'application-buckets-retain',
   resources: {
@@ -142,6 +144,9 @@ requirements; specify every request and limit that the daemon should retain.
 The same values are admitted and rendered in direct and KRO modes, including
 the OSD resource requirements on its storage device set and the RGW gateway
 requirements on the separately materialized `CephObjectStore`.
+
+`allowLoopDevices` defaults to `false`. Enable it only for an explicitly
+loop-backed development fixture, never as a production storage substitute.
 
 The production profile requires the availability and operational decisions
 that the local profile deliberately supplies as unsafe single-node defaults:

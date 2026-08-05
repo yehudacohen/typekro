@@ -159,6 +159,7 @@ describe('official Rook Ceph cluster chart platform', () => {
       repositoryNamespace: 'ceph-sources',
       storageClassName: 'local-path',
       bucketStorageClassName: 'harbor-retain',
+      allowLoopDevices: true,
     });
     expect(yaml).toContain('name: ceph-operator');
     expect(yaml).toContain('name: ceph-data');
@@ -168,6 +169,7 @@ describe('official Rook Ceph cluster chart platform', () => {
     expect(yaml).toContain('chart: rook-ceph-cluster');
     expect(yaml).toContain('operatorNamespace: ceph-operator');
     expect(yaml).toContain('storageClassName: local-path');
+    expect(yaml).toContain('allowLoopDevices: true');
     expect(yaml).toContain('name: harbor-retain');
     expect(yaml).toContain('reclaimPolicy: Retain');
     expectCleanYaml(yaml);
@@ -217,6 +219,7 @@ describe('official Rook Ceph cluster chart platform', () => {
       expect(yaml).toContain(`${field}:`);
     }
     expect(yaml).toContain('storageSize: string | default="8Gi"');
+    expect(yaml).toContain('allowLoopDevices: boolean | default=false');
     expect(yaml).toContain('storageClassDeviceSets');
     expect(yaml).toContain('reclaimPolicy');
     expect(yaml).toContain('Retain');

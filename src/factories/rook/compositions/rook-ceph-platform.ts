@@ -100,6 +100,7 @@ export const rookCephSingleNodePlatform = kubernetesComposition(
       repositoryNamespace,
       repositoryUrl,
       values: {
+        allowLoopDevices: spec.allowLoopDevices ?? false,
         enableOBCWatchOperatorNamespace: false,
         resources: { requests: { cpu: '100m', memory: '128Mi' } },
       },
