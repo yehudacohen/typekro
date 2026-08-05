@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
+import { ApiException } from '@kubernetes/client-node/dist/gen/apis/exception.js';
 import { migrateLegacyKroArtifactBindingCrd } from '../../src/core/deployment/kro-artifact-binding-migration.js';
 import {
   kroArtifactOutputField,
@@ -80,6 +81,22 @@ function legacyCrd(resourceVersion: string): KubernetesObject {
 }
 
 describe('KRO artifact-binding migration', () => {
+  test('treats a real client 404 as an absent RGD', async () => {
+    const read = mock(async () => {
+      throw new ApiException(404, 'Not Found', undefined, {});
+    });
+
+    await migrateLegacyKroArtifactBindingCrd({} as KubeConfig, desiredRgd(), {
+      api: {
+        read,
+        list: mock(async () => ({ items: [] })),
+        replace: mock(async (resource: KubernetesObject) => resource),
+      } as never,
+    });
+
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   test('uses KRO default group when the RGD schema declares a version only', async () => {
     const desired = defaultGroupDesiredRgd();
     const live = structuredClone(desired);
@@ -134,7 +151,7 @@ describe('KRO artifact-binding migration', () => {
         resource.kind === 'ResourceGraphDefinition' &&
         resource.metadata?.resourceVersion === '20'
       ) {
-        throw { response: { statusCode: 409 }, message: 'conflict' };
+        throw new ApiException(409, 'Conflict', undefined, {});
       }
       return resource;
     });
