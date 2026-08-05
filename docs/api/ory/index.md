@@ -89,7 +89,12 @@ await stack.deploy({
 });
 ```
 
-Explicit literal value sources are supported for controlled environments, but TypeKro rejects unsafe literals supplied through unapproved chart escape hatches.
+Explicit literal value sources are supported for controlled direct-mode environments, but the
+KRO factory requires Secret-backed Hydra system and Kratos cookie/cipher sources. KRO admission
+rejects literal values for those three secret-bearing fields because an opaque Helm post-renderer
+cannot safely change an environment entry between `value` and `valueFrom` at reconciliation time.
+This fails closed instead of replacing a literal with a nonexistent managed Secret. TypeKro also
+rejects unsafe literals supplied through unapproved chart escape hatches.
 
 `oryIdentityStack` owns the Hydra and Kratos workload names used by its
 external-secret post-renderers. It therefore protects `nameOverride` and
