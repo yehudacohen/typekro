@@ -90,7 +90,7 @@ import {
 import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
-import { isNotFoundError } from './k8s-helpers.js';
+import { isConflictError, isNotFoundError } from './k8s-helpers.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
 
@@ -728,8 +728,7 @@ export class DirectResourceFactoryImpl<
           });
         } catch (error: unknown) {
           // 404 means the namespace is fully gone
-          const k8sErr = error as { statusCode?: number; body?: { code?: number } };
-          if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
+          if (isNotFoundError(error)) {
             this.logger.debug('Namespace fully deleted', { namespace: ns });
             deleted = true;
             break;
@@ -2570,9 +2569,7 @@ export class DirectResourceFactoryImpl<
               return;
             }
           } catch (pollError: unknown) {
-            const err = pollError as { statusCode?: number; body?: { code?: number } };
-            const code = err.statusCode ?? err.body?.code;
-            if (code === 404) {
+            if (isNotFoundError(pollError)) {
               return;
             }
             throw pollError;
@@ -2613,9 +2610,7 @@ export class DirectResourceFactoryImpl<
           return;
         }
       } catch (readError: unknown) {
-        const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
-        const code = k8sErr.statusCode ?? k8sErr.body?.code;
-        if (code !== 404) {
+        if (!isNotFoundError(readError)) {
           throw readError;
         }
       }
@@ -2633,11 +2628,9 @@ export class DirectResourceFactoryImpl<
         });
       } catch (createError: unknown) {
         const k8sErr = createError as {
-          statusCode?: number;
-          body?: { code?: number; reason?: string };
+          body?: { reason?: string };
           message?: string;
         };
-        const code = k8sErr.statusCode ?? k8sErr.body?.code;
         const isNamespaceTerminating =
           k8sErr.body?.reason === 'Forbidden' &&
           k8sErr.message?.includes('NamespaceTerminating') === true;
@@ -2653,7 +2646,7 @@ export class DirectResourceFactoryImpl<
               },
             },
           });
-        } else if (code !== 409) {
+        } else if (!isConflictError(createError)) {
           throw createError;
         }
       }
