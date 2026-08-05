@@ -16,9 +16,11 @@ const logger = getComponentLogger('kubernetes-errors');
  * Interface representing a Kubernetes API error with various possible structures.
  * The error structure varies between client versions:
  * - 0.x (request-based): error.statusCode, error.body
- * - 1.x+ (fetch-based): error.response?.statusCode, error.statusCode, error.body?.code
+ * - 1.x+ generated ApiException: error.code, error.body
+ * - fetch wrappers: error.response?.statusCode, error.statusCode, error.body?.code
  */
 export interface KubernetesApiError {
+  code?: number;
   statusCode?: number;
   response?: {
     statusCode?: number;
@@ -38,6 +40,7 @@ export interface KubernetesApiError {
  * Extract the HTTP status code from a Kubernetes API error.
  *
  * Handles multiple error structures from different client versions:
+ * - Direct code property (@kubernetes/client-node 1.x ApiException)
  * - Direct statusCode property (0.x style)
  * - Nested response.statusCode (1.x+ fetch style)
  * - Nested body.code (some error responses)
@@ -63,6 +66,12 @@ export function getErrorStatusCode(error: unknown): number | undefined {
   }
 
   const err = error as KubernetesApiError;
+
+  // Generated @kubernetes/client-node 1.x ApiException instances expose the
+  // HTTP status on `code`, not `statusCode`.
+  if (typeof err.code === 'number') {
+    return err.code;
+  }
 
   // Try direct statusCode first (0.x style and some 1.x errors)
   if (typeof err.statusCode === 'number') {
