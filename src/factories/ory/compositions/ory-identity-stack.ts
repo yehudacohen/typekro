@@ -28,6 +28,20 @@ import {
 } from '../types.js';
 import { mapOryConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
+/**
+ * KRO cannot vary a post-renderer environment entry between `value` and
+ * `valueFrom` from a runtime schema branch. Keep the admission boundary
+ * shared by every root composition that exposes the Ory identity schema so a
+ * nested identity stack cannot bypass the restriction.
+ */
+export const oryKroLiteralSecretSchemaFieldValidations = Object.freeze({
+  hydra: '!has(self.systemSecret) || !has(self.systemSecret.value)',
+  kratos:
+    '(!has(self.secrets) || !has(self.secrets.cookie) || !has(self.secrets.cookie.value)) && (!has(self.secrets) || !has(self.secrets.cipher) || !has(self.secrets.cipher.value))',
+  dependencySources:
+    '(!has(self.hydra) || !has(self.hydra.systemSecret) || !has(self.hydra.systemSecret.value) || !has(self.hydra.systemSecret.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cookie) || !has(self.kratos.secrets.cookie.value) || !has(self.kratos.secrets.cookie.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cipher) || !has(self.kratos.secrets.cipher.value) || !has(self.kratos.secrets.cipher.value.value))',
+} as const);
+
 function readyCondition(conditions: unknown): boolean {
   return Cel.expr<boolean>(conditions, '.exists(c, c.type == "Ready" && c.status == "True")');
 }
@@ -765,12 +779,6 @@ export const oryIdentityStack = kubernetesComposition(
     // YAML patch shape between `value` and `valueFrom` at reconciliation time,
     // so reject literal sources at admission instead of silently rewiring them
     // to nonexistent managed Secrets.
-    schemaFieldValidations: {
-      hydra: '!has(self.systemSecret) || !has(self.systemSecret.value)',
-      kratos:
-        '(!has(self.secrets) || !has(self.secrets.cookie) || !has(self.secrets.cookie.value)) && (!has(self.secrets) || !has(self.secrets.cipher) || !has(self.secrets.cipher.value))',
-      dependencySources:
-        '(!has(self.hydra) || !has(self.hydra.systemSecret) || !has(self.hydra.systemSecret.value) || !has(self.hydra.systemSecret.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cookie) || !has(self.kratos.secrets.cookie.value) || !has(self.kratos.secrets.cookie.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cipher) || !has(self.kratos.secrets.cipher.value) || !has(self.kratos.secrets.cipher.value.value))',
-    },
+    schemaFieldValidations: oryKroLiteralSecretSchemaFieldValidations,
   }
 );

@@ -276,6 +276,19 @@ describe('Ory platform stack composition', () => {
     expect(renderedYaml).not.toContain('${${');
   });
 
+  it('rejects literal identity secret sources from platform KRO admission', () => {
+    const renderedYaml = oryPlatformStack.toYaml();
+
+    expect(renderedYaml).toContain(
+      'validation="!has(self.systemSecret) || !has(self.systemSecret.value)"'
+    );
+    expect(renderedYaml).toContain('!has(self.secrets.cookie.value)');
+    expect(renderedYaml).toContain('!has(self.secrets.cipher.value)');
+    expect(renderedYaml).toContain('!has(self.hydra.systemSecret.value.value)');
+    expect(renderedYaml).toContain('!has(self.kratos.secrets.cookie.value.value)');
+    expect(renderedYaml).toContain('!has(self.kratos.secrets.cipher.value.value)');
+  });
+
   it('produces a strict semantic plan for the managed platform contract', () => {
     const spec = {
       name: 'identity-start-identity',
