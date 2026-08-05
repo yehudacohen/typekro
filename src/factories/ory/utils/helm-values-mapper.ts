@@ -195,7 +195,17 @@ function defaultKratosIdentitySchema(): string {
       traits: {
         type: 'object',
         properties: {
-          email: { type: 'string', format: 'email' },
+          email: {
+            type: 'string',
+            format: 'email',
+            'ory.sh/kratos': {
+              credentials: {
+                password: {
+                  identifier: true,
+                },
+              },
+            },
+          },
         },
       },
     },

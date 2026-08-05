@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The managed Ory identity stack's default Kratos schema now marks its email
+  trait as a password-credential identifier. Identities created through the
+  Admin API can therefore complete password login without requiring consumers
+  to replace the otherwise usable default schema.
 - Direct and Alchemy deployments now materialize TypeKro's internal Helm-values merge expressions
   before encoding the canonical artifact record. Concrete chart overrides therefore deep-merge with
   integration defaults instead of leaking `__typekroValuesMerge` as literal Helm values; KRO keeps

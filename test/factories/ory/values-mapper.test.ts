@@ -215,6 +215,17 @@ describe('Ory Helm values mapper', () => {
     expect(values.kratos.kratos?.identitySchemas?.['identity.default.schema.json']).toContain(
       'Default Identity'
     );
+    expect(
+      JSON.parse(
+        values.kratos.kratos?.identitySchemas?.['identity.default.schema.json'] ?? '{}'
+      ).properties.traits.properties.email['ory.sh/kratos']
+    ).toEqual({
+      credentials: {
+        password: {
+          identifier: true,
+        },
+      },
+    });
   });
 
   it('Mounts a custom Kratos default identity schema without duplicate refs', () => {
