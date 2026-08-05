@@ -105,7 +105,10 @@ the object store after it. The external-operator variant omits the operator
 release and Namespace, and requires their names explicitly.
 
 The development profile is intentionally replication-one and is not highly
-available:
+available. Its managed-operator composition disables the `rook-ceph` operator
+chart's CSI dependency because this object-storage-only profile owns no block
+pools or filesystems. This avoids installing unused CSI `ClientProfile`
+finalizers whose lifecycle would otherwise need to precede operator teardown:
 
 ```ts
 const local = rookCephSingleNodePlatform.factory('kro', {
@@ -120,6 +123,8 @@ await local.deploy({
   operatorNamespace: 'rook-ceph-operator',
   storageClassName: 'local-block',
   storageSize: '16Gi',
+  // Development-only escape hatch for loop-backed local block fixtures.
+  allowLoopDevices: true,
   objectStoreName: 'application-objects',
   bucketStorageClassName: 'application-buckets-retain',
   resources: {
@@ -142,6 +147,9 @@ requirements; specify every request and limit that the daemon should retain.
 The same values are admitted and rendered in direct and KRO modes, including
 the OSD resource requirements on its storage device set and the RGW gateway
 requirements on the separately materialized `CephObjectStore`.
+
+`allowLoopDevices` defaults to `false`. Enable it only for an explicitly
+loop-backed development fixture, never as a production storage substitute.
 
 The production profile requires the availability and operational decisions
 that the local profile deliberately supplies as unsafe single-node defaults:
@@ -204,6 +212,12 @@ await rookCephExternalOperatorSingleNodePlatform
     storageClassName: 'local-block',
   });
 ```
+
+The external operator remains the authority for its CSI controllers and
+finalizers. Its platform owner must keep that operator running until the
+external-operator cluster and all of its operator-owned descendants have
+finished deletion; TypeKro deliberately does not mutate the external
+operator's Helm values.
 
 All three compositions create a distinct custom `repositoryNamespace` by
 default. Set `repositoryNamespaceOwnership: 'external'` only when another
@@ -283,12 +297,20 @@ const buckets = rookBucketStorageClass({
 ```
 
 The generated provisioner is
-`<provisionerNamePrefix>.ceph.rook.io/bucket`. By default, the prefix is the
-Ceph cluster/object-store namespace because Rook registers one bucket
-provisioner for each Ceph cluster. This remains true when the shared operator
-runs in a different namespace. If the operator bootstrap configures
-`obcProvisionerNamePrefix`, pass the same value explicitly as
-`provisionerNamePrefix` here.
+`<provisionerNamePrefix>.ceph.rook.io/bucket`. Rook's chart enables
+namespace-scoped OBC provisioners by default, so TypeKro defaults the prefix to
+the Ceph cluster/object-store namespace. Complete managed platform
+compositions pin that prefix on both the operator and StorageClass. If an
+external operator configures `obcProvisionerNamePrefix`, pass the same value as
+`bucketProvisionerNamePrefix` on the platform or `provisionerNamePrefix` on
+this resource factory. If the external operator disables namespace scoping and
+uses Rook's global `ceph.rook.io/bucket` identity, pass that exact value as
+`bucketProvisionerName` on the platform or `provisionerName` here.
+
+These rules follow Rook's tagged
+[`GetObjectBucketProvisioner()` implementation](https://github.com/rook/rook/blob/v1.20.2/pkg/operator/ceph/object/objectstore.go#L1086-L1100)
+and the
+[`rook-ceph` chart defaults](https://github.com/rook/rook/blob/v1.20.2/deploy/charts/rook-ceph/values.yaml#L223-L228).
 
 For a brownfield bucket, set `existingBucketName` on the StorageClass and omit
 both bucket-name fields on the application claim. Rook's API places the

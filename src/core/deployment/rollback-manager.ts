@@ -515,7 +515,8 @@ export class ResourceRollbackManager {
   async deleteDeployedResource(
     resource: DeployedResource,
     timeout?: number,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    behavior: { waitForNamespaceDeletion?: boolean } = {}
   ): Promise<void> {
     throwIfAborted(abortSignal);
     const deleteLogger = this.logger.child({
@@ -531,12 +532,53 @@ export class ResourceRollbackManager {
     };
 
     try {
+      let namespaceUid: string | undefined;
+      if (resource.kind === 'Namespace') {
+        namespaceUid = resource.liveManifest?.metadata?.uid ?? resource.manifest.metadata?.uid;
+        if (!namespaceUid) {
+          try {
+            const live = (await this.k8sApi.read({
+              apiVersion: resource.manifest.apiVersion || 'v1',
+              kind: 'Namespace',
+              metadata: { name: resource.name },
+            })) as KubernetesResource;
+            namespaceUid = live.metadata?.uid;
+            resource.liveManifest = live;
+          } catch (error: unknown) {
+            if (isNotFoundError(error)) {
+              deleteLogger.debug('Namespace already deleted');
+              return;
+            }
+            throw error;
+          }
+        }
+        if (!namespaceUid) {
+          throw new TypeKroError(
+            `Refusing to delete Namespace ${resource.name} without a Kubernetes UID lease`,
+            'NAMESPACE_UID_UNAVAILABLE',
+            { namespace: resource.name }
+          );
+        }
+      }
       try {
-        await this.k8sApi.delete({
+        const deletionTarget = {
           apiVersion: resource.manifest.apiVersion || '',
           kind: resource.kind,
           metadata,
-        } as k8s.KubernetesObject);
+        } as k8s.KubernetesObject;
+        if (namespaceUid) {
+          await this.k8sApi.delete(
+            deletionTarget,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { preconditions: { uid: namespaceUid } }
+          );
+        } else {
+          await this.k8sApi.delete(deletionTarget);
+        }
       } catch (error: unknown) {
         if (isNotFoundError(error)) {
           deleteLogger.debug('Resource already deleted');
@@ -547,12 +589,29 @@ export class ResourceRollbackManager {
 
       // Namespace deletion is asynchronous and may be blocked by PVCs that
       // Kubernetes cannot garbage-collect until their volumes are released.
-      // DirectResourceFactory owns that lifecycle: it removes PVCs only for
-      // explicitly targeted Namespaces and waits for the Namespace 404. Do
-      // not consume the generic per-resource timeout here before that cleanup
-      // has had a chance to run.
-      if (resource.kind === 'Namespace') {
+      // DirectResourceFactory owns that lifecycle during graph rollback: it
+      // removes PVCs only for explicitly targeted Namespaces and then performs
+      // its own 404 gate. Standalone callers such as the Alchemy deployer do
+      // not have that second phase, so they opt into the same real-404 gate
+      // here and must not report the declaration deleted while the Namespace
+      // is still Terminating.
+      if (resource.kind === 'Namespace' && behavior.waitForNamespaceDeletion !== true) {
         return;
+      }
+      if (resource.kind === 'Namespace') {
+        if (!namespaceUid) {
+          throw new TypeKroError(
+            `Refusing post-delete cleanup for Namespace ${resource.name} without its Kubernetes UID lease`,
+            'NAMESPACE_UID_UNAVAILABLE',
+            { namespace: resource.name }
+          );
+        }
+        await this.deleteNamespacePersistentVolumeClaims(
+          resource.name,
+          namespaceUid,
+          deleteLogger,
+          abortSignal
+        );
       }
 
       // Wait for resource to be deleted
@@ -562,11 +621,18 @@ export class ResourceRollbackManager {
       while (Date.now() - startTime < deleteTimeout) {
         throwIfAborted(abortSignal);
         try {
-          await this.k8sApi.read({
+          const live = (await this.k8sApi.read({
             apiVersion: resource.manifest.apiVersion || '',
             kind: resource.kind,
             metadata,
-          });
+          })) as KubernetesResource;
+          if (resource.kind === 'Namespace' && live.metadata?.uid !== namespaceUid) {
+            deleteLogger.debug('Original Namespace is gone; replacement identity is preserved', {
+              expectedUid: namespaceUid,
+              actualUid: live.metadata?.uid,
+            });
+            return;
+          }
 
           // Resource still exists, wait and try again
           await abortableDelay(DEFAULT_FAST_POLL_INTERVAL, abortSignal);
@@ -589,6 +655,94 @@ export class ResourceRollbackManager {
       );
     } catch (error: unknown) {
       deleteLogger.error('Failed to delete resource', ensureError(error));
+      throw error;
+    }
+  }
+
+  /**
+   * A Namespace that is already terminating cannot admit new namespaced
+   * resources. Delete its snapshotted PVCs before waiting for the final 404 so
+   * StatefulSet/operator retention policies cannot strand the Namespace behind
+   * `kubernetes.io/pvc-protection`.
+   *
+   * Aggregate DirectResourceFactory rollback performs this same completion
+   * phase after its graph rollback. This path is for standalone resource
+   * deployers such as Alchemy, where this manager owns the complete delete.
+   */
+  private async deleteNamespacePersistentVolumeClaims(
+    namespace: string,
+    namespaceUid: string,
+    deleteLogger: ReturnType<typeof getComponentLogger>,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
+    throwIfAborted(abortSignal);
+    if (!(await this.isNamespaceLeaseCurrent(namespace, namespaceUid))) return;
+    let result: {
+      items?: Array<{ metadata?: { name?: unknown; uid?: unknown } }>;
+    };
+    try {
+      result = (await this.k8sApi.list('v1', 'PersistentVolumeClaim', namespace)) as typeof result;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+
+    const leases = (result.items ?? []).map((pvc) => {
+      const name = pvc.metadata?.name;
+      const uid = pvc.metadata?.uid;
+      if (
+        typeof name !== 'string' ||
+        name.length === 0 ||
+        typeof uid !== 'string' ||
+        uid.length === 0
+      ) {
+        throw new TypeKroError(
+          `Refusing to delete a PersistentVolumeClaim in Namespace ${namespace} without a complete UID lease`,
+          'PVC_UID_UNAVAILABLE',
+          { namespace, pvcName: name, pvcUid: uid }
+        );
+      }
+      return { name, uid };
+    });
+    if (leases.length > 0) {
+      deleteLogger.info('Deleting PVCs to complete Namespace deletion', {
+        namespace,
+        count: leases.length,
+      });
+    }
+    for (const { name, uid } of leases) {
+      throwIfAborted(abortSignal);
+      if (!(await this.isNamespaceLeaseCurrent(namespace, namespaceUid))) return;
+      try {
+        await this.k8sApi.delete(
+          {
+            apiVersion: 'v1',
+            kind: 'PersistentVolumeClaim',
+            metadata: { name, namespace },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { preconditions: { uid } }
+        );
+      } catch (error: unknown) {
+        if (!isNotFoundError(error)) throw error;
+      }
+    }
+  }
+
+  private async isNamespaceLeaseCurrent(namespace: string, uid: string): Promise<boolean> {
+    try {
+      const live = (await this.k8sApi.read({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: namespace },
+      })) as KubernetesResource;
+      return live.metadata?.uid === uid;
+    } catch (error: unknown) {
+      if (isNotFoundError(error)) return false;
       throw error;
     }
   }

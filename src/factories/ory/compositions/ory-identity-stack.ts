@@ -28,6 +28,20 @@ import {
 } from '../types.js';
 import { mapOryConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
+/**
+ * KRO cannot vary a post-renderer environment entry between `value` and
+ * `valueFrom` from a runtime schema branch. Keep the admission boundary
+ * shared by every root composition that exposes the Ory identity schema so a
+ * nested identity stack cannot bypass the restriction.
+ */
+export const oryKroLiteralSecretSchemaFieldValidations = Object.freeze({
+  hydra: '!has(self.systemSecret) || !has(self.systemSecret.value)',
+  kratos:
+    '(!has(self.secrets) || !has(self.secrets.cookie) || !has(self.secrets.cookie.value)) && (!has(self.secrets) || !has(self.secrets.cipher) || !has(self.secrets.cipher.value))',
+  dependencySources:
+    '(!has(self.hydra) || !has(self.hydra.systemSecret) || !has(self.hydra.systemSecret.value) || !has(self.hydra.systemSecret.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cookie) || !has(self.kratos.secrets.cookie.value) || !has(self.kratos.secrets.cookie.value.value)) && (!has(self.kratos) || !has(self.kratos.secrets) || !has(self.kratos.secrets.cipher) || !has(self.kratos.secrets.cipher.value) || !has(self.kratos.secrets.cipher.value.value))',
+} as const);
+
 function readyCondition(conditions: unknown): boolean {
   return Cel.expr<boolean>(conditions, '.exists(c, c.type == "Ready" && c.status == "True")');
 }
@@ -117,11 +131,103 @@ function withStackOwnedChartNames<T extends object>(
   ) as T;
 }
 
-function removeChartOwnedSecretEnv(
+interface OrySecretEnvReplacement {
+  readonly name: string;
+  readonly secretName: unknown;
+  readonly secretKey: unknown;
+}
+
+function hasSchemaPath(path: string): string {
+  const parts = path.split('.');
+  return parts
+    .slice(2)
+    .map((_, index) => `has(${parts.slice(0, index + 3).join('.')})`)
+    .join(' && ');
+}
+
+function graphSecretField(paths: readonly string[], fallbackExpression: string): string {
+  const expression = paths.reduceRight(
+    (fallback, path) => `(${hasSchemaPath(path)} ? ${path} : ${fallback})`,
+    fallbackExpression
+  );
+  // The post-renderer patch is itself an opaque YAML string. Embed the KRO
+  // marker in that string rather than handing the serializer a CelExpression
+  // object, which String() would flatten to "[object Object]".
+  return `\${${expression}}`;
+}
+
+function graphSecretEnvReplacement(
+  name: string,
+  explicitSecretRefPath: string,
+  dependencySourcePath: string,
+  fallbackNameExpression: string,
+  fallbackKey: string
+): OrySecretEnvReplacement {
+  return {
+    name,
+    secretName: graphSecretField(
+      [
+        `${explicitSecretRefPath}.name`,
+        `${dependencySourcePath}.value.secretRef.name`,
+        `${dependencySourcePath}.secretName`,
+        `${dependencySourcePath}.resourceName`,
+      ],
+      fallbackNameExpression
+    ),
+    secretKey: graphSecretField(
+      [
+        `${explicitSecretRefPath}.key`,
+        `${dependencySourcePath}.value.secretRef.key`,
+        `${dependencySourcePath}.secretKey`,
+      ],
+      JSON.stringify(fallbackKey)
+    ),
+  };
+}
+
+function secretEnvReplacement(
+  values: unknown,
+  target: 'deployment' | 'statefulSet',
+  name: string
+): OrySecretEnvReplacement | undefined {
+  if (isValuesMergeExpression(values)) {
+    return secretEnvReplacement(values.base, target, name);
+  }
+  if (!isPlainObject(values)) return undefined;
+  const workload = values[target];
+  if (!isPlainObject(workload) || !Array.isArray(workload.extraEnv)) return undefined;
+  const entry = workload.extraEnv.find(
+    (candidate) => isPlainObject(candidate) && candidate.name === name
+  );
+  if (!isPlainObject(entry) || !isPlainObject(entry.valueFrom)) return undefined;
+  const secretKeyRef = entry.valueFrom.secretKeyRef;
+  if (
+    !isPlainObject(secretKeyRef) ||
+    secretKeyRef.name === undefined ||
+    secretKeyRef.key === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    name,
+    secretName: secretKeyRef.name,
+    secretKey: secretKeyRef.key,
+  };
+}
+
+/**
+ * The Ory charts add their generated-Secret environment entries before
+ * `deployment.extraEnv` / `statefulSet.extraEnv`. A delete-by-name strategic
+ * merge patch removes both entries because `name` is the list merge key,
+ * including the external replacement TypeKro authored. Replace the merge-keyed
+ * entry instead: Kustomize collapses duplicates to one environment variable
+ * whose value comes from the declared external Secret.
+ */
+function replaceChartOwnedSecretEnv(
   kind: 'Deployment' | 'StatefulSet',
   releaseName: string,
   containerName: 'hydra' | 'kratos' | 'kratos-courier',
-  names: string[]
+  replacements: readonly OrySecretEnvReplacement[]
 ) {
   return {
     kustomize: {
@@ -144,9 +250,12 @@ function removeChartOwnedSecretEnv(
             '      containers:',
             `        - name: ${containerName}`,
             '          env:',
-            ...names.flatMap((name) => [
-              `            - name: ${name}`,
-              '              $patch: delete',
+            ...replacements.flatMap((replacement) => [
+              `            - name: ${replacement.name}`,
+              '              valueFrom:',
+              '                secretKeyRef:',
+              `                  name: ${String(replacement.secretName)}`,
+              `                  key: ${String(replacement.secretKey)}`,
             ]),
           ].join('\n'),
         },
@@ -511,13 +620,50 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: withMaesterSubchartValues(values.hydra, 'hydra-maester', values.hydraMaester),
-      postRenderers: [
-        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-hydra`, 'hydra', [
-          'SECRETS_SYSTEM',
-        ]),
-      ],
+      postRenderers: (() => {
+        const system = concreteSpec
+          ? secretEnvReplacement(values.hydra, 'deployment', 'SECRETS_SYSTEM')
+          : graphSecretEnvReplacement(
+              'SECRETS_SYSTEM',
+              'schema.spec.hydra.systemSecret.secretRef',
+              'schema.spec.dependencySources.hydra.systemSecret',
+              'string(schema.spec.name) + "-hydra-secrets"',
+              'system'
+            );
+        return system
+          ? [
+              replaceChartOwnedSecretEnv(
+                'Deployment',
+                `${typedSpec.name}-hydra`,
+                'hydra',
+                [system]
+              ),
+            ]
+          : [];
+      })(),
     });
 
+    const kratosSecretReplacements = concreteSpec
+      ? (['SECRETS_COOKIE', 'SECRETS_CIPHER'] as const).flatMap((name) => {
+          const replacement = secretEnvReplacement(values.kratos, 'deployment', name);
+          return replacement ? [replacement] : [];
+        })
+      : [
+          graphSecretEnvReplacement(
+            'SECRETS_COOKIE',
+            'schema.spec.kratos.secrets.cookie.secretRef',
+            'schema.spec.dependencySources.kratos.secrets.cookie',
+            'string(schema.spec.name) + "-kratos-secrets"',
+            'cookie'
+          ),
+          graphSecretEnvReplacement(
+            'SECRETS_CIPHER',
+            'schema.spec.kratos.secrets.cipher.secretRef',
+            'schema.spec.dependencySources.kratos.secrets.cipher',
+            'string(schema.spec.name) + "-kratos-secrets"',
+            'cipher'
+          ),
+        ];
     const kratos = kratosHelmRelease({
       id: 'kratosHelmRelease',
       name: `${typedSpec.name}-kratos`,
@@ -526,18 +672,23 @@ export const oryIdentityStack = kubernetesComposition(
       repositoryName: 'ory',
       repositoryNamespace: resolvedNamespace,
       values: values.kratos,
-      postRenderers: [
-        removeChartOwnedSecretEnv('Deployment', `${typedSpec.name}-kratos`, 'kratos', [
-          'SECRETS_COOKIE',
-          'SECRETS_CIPHER',
-        ]),
-        removeChartOwnedSecretEnv(
-          'StatefulSet',
-          `${typedSpec.name}-kratos-courier`,
-          'kratos-courier',
-          ['SECRETS_COOKIE', 'SECRETS_CIPHER']
-        ),
-      ],
+      postRenderers:
+        kratosSecretReplacements.length > 0
+          ? [
+              replaceChartOwnedSecretEnv(
+                'Deployment',
+                `${typedSpec.name}-kratos`,
+                'kratos',
+                kratosSecretReplacements
+              ),
+              replaceChartOwnedSecretEnv(
+                'StatefulSet',
+                `${typedSpec.name}-kratos-courier`,
+                'kratos-courier',
+                kratosSecretReplacements
+              ),
+            ]
+          : [],
     });
 
     const keto = ketoHelmRelease({
@@ -621,5 +772,13 @@ export const oryIdentityStack = kubernetesComposition(
       },
       version: Cel.template('%s', resolvedVersion),
     };
+  },
+  {
+    // Direct mode can preserve literal secret values in the chart-generated
+    // environment. KRO post-renderer patches cannot safely switch the opaque
+    // YAML patch shape between `value` and `valueFrom` at reconciliation time,
+    // so reject literal sources at admission instead of silently rewiring them
+    // to nonexistent managed Secrets.
+    schemaFieldValidations: oryKroLiteralSecretSchemaFieldValidations,
   }
 );

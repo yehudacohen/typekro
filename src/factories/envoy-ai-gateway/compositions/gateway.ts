@@ -172,6 +172,9 @@ export function makeEnvoyAIGateway(
       gateway.dependsOn(gatewayConfig);
 
       const backendResources = new Map<string, ReturnType<typeof envoyAIServiceBackend>>();
+      const routeSecurityPolicies: NonNullable<
+        ReturnType<typeof providerSecurityPolicy>
+      >[] = [];
       const providerResources: ProviderResource[] = [];
       const readinessResources: ProviderResource[] = [];
       const policyResources: PolicyResource[] = [];
@@ -228,6 +231,7 @@ export function makeEnvoyAIGateway(
         );
         if (securityPolicy) {
           securityPolicy.dependsOn(aiBackend);
+          routeSecurityPolicies.push(securityPolicy);
           readinessResources.push({
             name: backendName,
             status: securityPolicy.status,
@@ -305,6 +309,13 @@ export function makeEnvoyAIGateway(
       });
       route.dependsOn(gateway);
       for (const backend of backendResources.values()) route.dependsOn(backend);
+      // Envoy AI Gateway's security-policy controller updates the referenced
+      // AIGatewayRoute when a policy disappears. If Alchemy deletes the route
+      // and policy concurrently, that status update can race the route
+      // controller's finalizer removal. Make the policy an apply prerequisite
+      // so reverse-topological teardown deterministically removes the route
+      // first, then the policy.
+      for (const policy of routeSecurityPolicies) route.dependsOn(policy);
 
       if (options.retry !== false) {
         const retry = options.retry ?? {};
@@ -487,7 +498,7 @@ export function makeEnvoyAIGateway(
         endpoint: Cel.expr<string>(
           'has(gateway.status.addresses) && size(gateway.status.addresses) > 0 ? "http://" + ' +
             'string(gateway.status.addresses[0].value) + ":" + ' +
-            'string(gateway.spec.listeners[0].port) : ""'
+            'string(gateway.spec.listeners[0].port) + "/v1" : ""'
         ),
         gatewayClassName: Cel.expr<string>('gatewayContract.data.gatewayClassName'),
         providerCount: Cel.expr<number>('int(gatewayContract.data.providerCount)'),

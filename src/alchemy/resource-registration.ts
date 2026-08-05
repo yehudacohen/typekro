@@ -19,6 +19,7 @@ import * as Diff from 'alchemy/Diff';
 import type { Input } from 'alchemy/Input';
 import * as Output from 'alchemy/Output';
 import * as ProviderMod from 'alchemy/Provider';
+import * as RemovalPolicy from 'alchemy/RemovalPolicy';
 import type { Resource as ResourceT } from 'alchemy/Resource';
 import * as ResourceMod from 'alchemy/Resource';
 import { Effect } from 'effect';
@@ -391,9 +392,18 @@ export function materializeAlchemyResources(
       // the LAST call signature — the one taking `Effect<InputProps<…>, never, PropsReq>` — so casting
       // to it selected the Effect-props overload and returned `Effect<R, never, PropsReq | Req>` with
       // `PropsReq` unresolved, leaking `unknown` into this function's public requirement channel.
-      handles[decl.id] = yield* kroResource(
+      const resource = kroResource(
         decl.id,
         props as unknown as { [K in keyof KroResourceR['Props']]: Input<KroResourceR['Props'][K]> }
+      );
+      // Retention is an Alchemy lifecycle policy, not merely a hint to the
+      // provider's delete hook. Register it natively so destroy/prune drops
+      // only the state entry without invoking Kubernetes deletion. Keep the
+      // provider-level retain guard for legacy state and direct provider use.
+      handles[decl.id] = yield* (
+        decl.props.retain === true
+          ? RemovalPolicy.retain()(resource)
+          : resource
       );
     }
     return handles;
