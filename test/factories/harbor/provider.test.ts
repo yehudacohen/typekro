@@ -77,6 +77,7 @@ class FakeHarbor implements HarborApiTransport {
       );
     }
     if (request.path.startsWith('/projects/chirp/repositories/') && request.method === 'DELETE') {
+      if (this.immutableRule) return response(412);
       const repository = decodeURIComponent(request.path.split('/').at(-1) ?? '');
       const fullName = `chirp/${repository}`;
       const index = this.repositories.indexOf(fullName);
@@ -104,6 +105,10 @@ class FakeHarbor implements HarborApiTransport {
     }
     if (request.path === '/projects/chirp/immutabletagrules/11' && request.method === 'PUT') {
       if ((request.body as { id?: number }).id !== 11) return response(400);
+      return response(200);
+    }
+    if (request.path === '/projects/chirp/immutabletagrules/11' && request.method === 'DELETE') {
+      this.immutableRule = false;
       return response(200);
     }
     if (request.path === '/retentions' && request.method === 'POST') {
@@ -514,6 +519,7 @@ describe('Harbor direct preparation providers', () => {
   it('purges a non-empty project only with explicit confirmation and waits before deleting Secrets', async () => {
     const transport = new FakeHarbor();
     transport.projectExists = true;
+    transport.immutableRule = true;
     transport.repositories.push('chirp/typekro-oci-smoke');
     const client = new HarborApiClient(transport);
     const store = new MemoryStore();
@@ -549,6 +555,18 @@ describe('Harbor direct preparation providers', () => {
           request.path === '/projects/chirp/repositories/typekro-oci-smoke'
       )
     ).toBe(true);
+    const ruleDeletion = transport.requests.findIndex(
+      (request) =>
+        request.method === 'DELETE' &&
+        request.path === '/projects/chirp/immutabletagrules/11'
+    );
+    const repositoryDeletion = transport.requests.findIndex(
+      (request) =>
+        request.method === 'DELETE' &&
+        request.path === '/projects/chirp/repositories/typekro-oci-smoke'
+    );
+    expect(ruleDeletion).toBeGreaterThanOrEqual(0);
+    expect(repositoryDeletion).toBeGreaterThan(ruleDeletion);
   });
 
   it('redacts response bodies from Harbor API failures', async () => {

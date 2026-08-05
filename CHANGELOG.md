@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Confirmed Harbor project teardown with `purgeRepositories: true` now removes
+  project immutable-tag rules before deleting repositories. TypeKro-managed
+  immutability no longer blocks its own exact-name-confirmed lifecycle with
+  Harbor HTTP 412, and robot Secrets remain until project deletion completes.
 - Rook managed platforms now pin one OBC provisioner prefix on both the
   operator and StorageClass instead of disabling namespace scoping on only the
   operator. External-operator platforms accept either the matching prefix or

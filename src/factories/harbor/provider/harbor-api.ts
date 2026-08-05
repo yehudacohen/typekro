@@ -294,6 +294,13 @@ export async function deleteHarborProject(
     throw new Error('Harbor project deletion timeoutMs must be a positive finite number.');
   }
   if (options.purgeRepositories) {
+    // Harbor enforces immutable-tag rules on repository deletion as well as
+    // pushes. Exact-name confirmation plus purgeRepositories already grants
+    // destructive authority over the complete project, so remove every
+    // project rule before purging its repositories. Leaving the rules in place
+    // makes TypeKro's own managed immutable policy render confirmed teardown
+    // impossible with HTTP 412.
+    await removeHarborProjectImmutableRules(client, project, options.signal);
     await purgeHarborProjectRepositories(client, project, timeoutMs, options.signal);
   }
   const deletion = await client.request(
@@ -311,6 +318,36 @@ export async function deleteHarborProject(
     const store = options.store ?? createHarborKubernetesStore(options.kubeConfig);
     await Promise.all(
       secretNames.map((name) => store.deleteSecret(options.secretNamespace as string, name))
+    );
+  }
+}
+
+async function removeHarborProjectImmutableRules(
+  client: HarborApiClient,
+  project: string,
+  signal: AbortSignal | undefined
+): Promise<void> {
+  const path = `/projects/${encodeURIComponent(project)}/immutabletagrules`;
+  const listed = await client.request<HarborImmutableRule[]>(
+    { method: 'GET', path, signal },
+    [200, 404]
+  );
+  if (listed.status === 404) return;
+  for (const rule of listed.body ?? []) {
+    if (!Number.isInteger(rule.id)) {
+      throw new HarborApiError(
+        `Harbor immutable-tag rule for project ${project} was missing its ID.`,
+        200,
+        path
+      );
+    }
+    await client.request(
+      {
+        method: 'DELETE',
+        path: `${path}/${rule.id as number}`,
+        signal,
+      },
+      [200, 204, 404]
     );
   }
 }
