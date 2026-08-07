@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- NATS bootstraps now consume one explicit cluster-wide NACK singleton in
+  CRD-connect mode instead of installing a competing non-namespaced controller
+  per NATS instance. The official NACK chart uses fixed ClusterRole and
+  ClusterRoleBinding names; deleting one former installation could therefore
+  remove RBAC from another live controller. Stream and Consumer resources keep
+  per-resource NATS routing, shared controller configuration is concrete
+  build-time input through `makeNatsBootstrap()`, protected values preserve the
+  multi-system routing model, and consumer deletion no longer owns controller
+  teardown. The singleton uses TypeKro-prefixed service-account/RBAC names so
+  even a controller named `jetstream` can become ready alongside a v0.33.5
+  controller; direct deploy then performs UID-leased retirement of the exact
+  legacy HelmRelease while recognizing a current NATS server itself named
+  `nack`, and KRO/Alchemy use normal graph pruning.
 - Direct dependency planning now resolves composition callback and
   local-variable aliases to their canonical graph resources, fails closed when
   an alias is ambiguous, and reports repeated unknown references only once per

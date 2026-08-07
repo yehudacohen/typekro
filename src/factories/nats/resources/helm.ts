@@ -8,6 +8,7 @@ import type { NatsHelmValues } from '../types.js';
 
 export const DEFAULT_NATS_REPOSITORY_URL = 'https://nats-io.github.io/k8s/helm/charts/';
 export const DEFAULT_NATS_REPOSITORY_NAME = 'nats';
+export const DEFAULT_NACK_REPOSITORY_NAME = 'nack-controller';
 export const DEFAULT_NATS_VERSION = '2.14.0';
 export const DEFAULT_NACK_VERSION = '0.34.0';
 
