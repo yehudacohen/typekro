@@ -94,9 +94,12 @@ function cloneValue<T>(value: T): T {
   }
   if (Array.isArray(value)) return value.map((item) => cloneValue(item)) as T;
   if (value && typeof value === 'object') {
-    const clone: Record<string, unknown> = {};
+    const clone: Record<PropertyKey, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
       clone[key] = cloneValue(child);
+    }
+    for (const key of Object.getOwnPropertySymbols(value)) {
+      clone[key] = cloneValue(Reflect.get(value, key));
     }
     return clone as T;
   }

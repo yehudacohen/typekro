@@ -177,6 +177,156 @@ describe('DependencyResolver', () => {
       expect(graph.getDependencies('app')).toContain('db');
     });
 
+    it('resolves preserved composition aliases to their prefixed graph resource', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const producer = createMockResource({
+        id: 'stack1DatabaseRelease',
+        metadata: { name: 'database' },
+      });
+      setResourceId(producer, 'databaseRelease');
+      setMetadataField(producer, 'resourceAliases', ['database']);
+      const consumer = createMockResource({
+        id: 'consumer',
+        metadata: { name: 'consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'database.status.conditions.exists(c, c.status == "True")',
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([producer, consumer]);
+
+      expect(graph.getDependencies('consumer')).toEqual(['stack1DatabaseRelease']);
+      expect(warnings).toEqual([]);
+    });
+
+    it('fails closed when a dependency reference matches multiple resource aliases', () => {
+      const first = createMockResource({
+        id: 'stack1First',
+        metadata: { name: 'first' },
+      });
+      setResourceId(first, 'first');
+      setMetadataField(first, 'resourceAliases', ['contract']);
+      const second = createMockResource({
+        id: 'stack1Second',
+        metadata: { name: 'second' },
+      });
+      setResourceId(second, 'second');
+      setMetadataField(second, 'resourceAliases', ['contract']);
+      const consumer = createMockResource({
+        id: 'consumer',
+        metadata: { name: 'consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'contract.status.ready',
+          },
+        },
+      });
+
+      expect(() => resolver.buildDependencyGraph([first, second, consumer])).toThrow(
+        "Resource identity 'contract' referenced by 'consumer' is ambiguous"
+      );
+    });
+
+    it('resolves repeated composition aliases relative to the source resource scope', () => {
+      const firstConfig = createMockResource({
+        id: 'demoResource0Configmap',
+        metadata: { name: 'first-config' },
+      });
+      setResourceId(firstConfig, 'config');
+      setMetadataField(firstConfig, 'resourceAliases', ['config']);
+      const firstConsumer = createMockResource({
+        id: 'demoResource1Deployment',
+        metadata: { name: 'first-consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'config.status.ready',
+          },
+        },
+      });
+      setMetadataField(firstConsumer, 'resourceAliasTargets', {
+        config: 'demoResource0Configmap',
+      });
+
+      const secondConfig = createMockResource({
+        id: 'demoResource2Configmap',
+        metadata: { name: 'second-config' },
+      });
+      setResourceId(secondConfig, 'config');
+      setMetadataField(secondConfig, 'resourceAliases', ['config']);
+      const secondConsumer = createMockResource({
+        id: 'demoResource3Deployment',
+        metadata: { name: 'second-consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'config.status.ready',
+          },
+        },
+      });
+      setMetadataField(secondConsumer, 'resourceAliasTargets', {
+        config: 'demoResource2Configmap',
+      });
+
+      const graph = resolver.buildDependencyGraph([
+        firstConfig,
+        firstConsumer,
+        secondConfig,
+        secondConsumer,
+      ]);
+
+      expect(graph.getDependencies('demoResource1Deployment')).toEqual([
+        'demoResource0Configmap',
+      ]);
+      expect(graph.getDependencies('demoResource3Deployment')).toEqual([
+        'demoResource2Configmap',
+      ]);
+    });
+
+    it('reports each unknown reference only once per source resource', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const consumer = createMockResource({
+        id: 'consumer',
+        metadata: { name: 'consumer' },
+        spec: {
+          first: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'missing.status.ready',
+          },
+          second: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'missing.status.phase',
+          },
+        },
+      });
+
+      resolver.buildDependencyGraph([consumer]);
+
+      expect(warnings).toEqual([
+        {
+          message: 'Reference to unknown resource',
+          context: {
+            referencedResourceId: 'missing',
+            sourceResourceId: 'consumer',
+          },
+        },
+      ]);
+    });
+
     it('normalizes CEL schema roots without reporting an unknown resource', () => {
       const warnings: Array<{ message: string; context?: unknown }> = [];
       (

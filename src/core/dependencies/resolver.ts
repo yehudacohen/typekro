@@ -36,31 +36,42 @@ export class DependencyResolver {
   ): DependencyGraph {
     const graph = new DependencyGraph();
 
-    // Add all resources as nodes and build a reverse map from original
-    // composition IDs (e.g., 'database') to graph IDs (e.g., 'testappResource0Database').
-    // Marker strings in template literals use the original composition ID, but
-    // the graph nodes use the prefixed deployment ID.
-    const originalIdToGraphId = new Map<string, string>();
+    // Add all resources as nodes and build a reverse map from every authored
+    // identity to graph IDs. References may use the graph ID, the resource's
+    // original composition ID, or a local-variable/callback alias preserved in
+    // resource metadata. Nested compositions prefix graph IDs, so resolving only
+    // the original resource ID loses otherwise valid dependencies.
+    const identityToGraphIds = new Map<string, Set<string>>();
+    const registerIdentity = (identity: string | undefined, graphId: string): void => {
+      if (!identity) return;
+      const owners = identityToGraphIds.get(identity) ?? new Set<string>();
+      owners.add(graphId);
+      identityToGraphIds.set(identity, owners);
+    };
     for (const resource of resources) {
       graph.addNode(resource.id, resource);
 
       const originalId = getResourceId(resource);
-      if (originalId && originalId !== resource.id) {
-        originalIdToGraphId.set(originalId, resource.id);
+      registerIdentity(resource.id, resource.id);
+      registerIdentity(originalId, resource.id);
+      for (const alias of getMetadataField(resource, 'resourceAliases') ?? []) {
+        registerIdentity(alias, resource.id);
       }
     }
 
     // Analyze each resource for references and add edges
     for (const resource of resources) {
       const references = this.extractReferences(resource);
+      const warnedUnknownReferences = new Set<string>();
 
       for (const ref of references) {
         // Skip schema references (these are internal TypeKro references)
         if (ref.resourceId !== '__schema__' && ref.resourceId !== 'schema') {
-          // Resolve the reference ID: try graph ID first, then original ID mapping
-          const targetId = graph.hasNode(ref.resourceId)
-            ? ref.resourceId
-            : originalIdToGraphId.get(ref.resourceId);
+          const targetId = this.resolveResourceIdentity(
+            ref.resourceId,
+            identityToGraphIds,
+            resource
+          );
 
           if (targetId) {
             try {
@@ -71,10 +82,13 @@ export class DependencyResolver {
           } else {
             // Log warning if referenced resource doesn't exist in the graph
             // This might be an external reference that will be resolved at runtime
-            this.logger.warn('Reference to unknown resource', {
-              referencedResourceId: ref.resourceId,
-              sourceResourceId: resource.id,
-            });
+            if (!warnedUnknownReferences.has(ref.resourceId)) {
+              warnedUnknownReferences.add(ref.resourceId);
+              this.logger.warn('Reference to unknown resource', {
+                referencedResourceId: ref.resourceId,
+                sourceResourceId: resource.id,
+              });
+            }
           }
         }
       }
@@ -83,9 +97,11 @@ export class DependencyResolver {
         | Array<{ resourceId: string }>
         | undefined;
       for (const dep of explicitDependencies ?? []) {
-        const targetId = graph.hasNode(dep.resourceId)
-          ? dep.resourceId
-          : originalIdToGraphId.get(dep.resourceId);
+        const targetId = this.resolveResourceIdentity(
+          dep.resourceId,
+          identityToGraphIds,
+          resource
+        );
         if (!targetId) {
           if (options.knownExternalResourceIds?.has(dep.resourceId)) {
             this.logger.debug('Skipping apply-order edge to known external resource', {
@@ -232,6 +248,38 @@ export class DependencyResolver {
     }
 
     return graph;
+  }
+
+  private resolveResourceIdentity(
+    identity: string,
+    identityToGraphIds: ReadonlyMap<string, ReadonlySet<string>>,
+    sourceResource: DeployableK8sResource<Enhanced<unknown, unknown>>
+  ): string | undefined {
+    const sourceResourceId = sourceResource.id;
+    const scopedTarget = getMetadataField(sourceResource, 'resourceAliasTargets')?.[identity];
+    if (scopedTarget) {
+      const scopedOwners = identityToGraphIds.get(scopedTarget);
+      if (scopedOwners?.size === 1) return scopedOwners.values().next().value;
+    }
+
+    const owners = identityToGraphIds.get(identity);
+    if (!owners || owners.size === 0) return undefined;
+    if (owners.size > 1) {
+      throw new TypeKroError(
+        `Resource identity '${identity}' referenced by '${sourceResourceId}' is ambiguous between resources ${[
+          ...owners,
+        ]
+          .map((owner) => `'${owner}'`)
+          .join(' and ')}`,
+        'AMBIGUOUS_DEPENDENCY_REFERENCE',
+        {
+          sourceResourceId,
+          referencedResourceId: identity,
+          owners: [...owners],
+        }
+      );
+    }
+    return owners.values().next().value;
   }
 
   /**

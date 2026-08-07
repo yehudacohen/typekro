@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller; direct deploy then performs UID-leased retirement of the exact
   legacy HelmRelease while recognizing a current NATS server itself named
   `nack`, and KRO/Alchemy use normal graph pruning.
+- Direct dependency planning now resolves composition callback and
+  local-variable aliases to their canonical graph resources, fails closed when
+  an alias is ambiguous, and reports repeated unknown references only once per
+  source resource.
 - Confirmed Harbor project teardown with `purgeRepositories: true` now removes
   project immutable-tag rules before deleting repositories. TypeKro-managed
   immutability no longer blocks its own exact-name-confirmed lifecycle with
