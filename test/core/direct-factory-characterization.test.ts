@@ -396,6 +396,65 @@ function getPrivateMethod<TInstance extends object>(
 // ===========================================================================
 
 describe('DirectFactory: __resourceId preservation', () => {
+  it('keeps dependency aliases local when the same nested composition is reused', () => {
+    const reusable = kubernetesComposition(
+      {
+        name: 'repeated-nested-dependency',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'RepeatedNestedDependency',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const config = simple.Deployment({
+          id: 'config',
+          name: `${spec.name}-config`,
+          image: 'nginx:1.27',
+        });
+        simple.Deployment({
+          id: 'deployment',
+          name: `${spec.name}-consumer`,
+          image: 'nginx:1.27',
+          env: {
+            CONFIG_REVISION: config.status.readyReplicas as unknown as string,
+          },
+        });
+        return { ready: true };
+      }
+    );
+    const parent = kubernetesComposition(
+      {
+        name: 'repeated-nested-dependency-parent',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'RepeatedNestedDependencyParent',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        reusable({ name: `${spec.name}-first` });
+        reusable({ name: `${spec.name}-second` });
+        return { ready: true };
+      }
+    );
+
+    const graph = parent
+      .factory('direct', { namespace: 'default' })
+      .createResourceGraphForInstance({ name: 'demo' });
+    const resourceIdByName = new Map(
+      graph.resources.map((resource) => [resource.manifest.metadata.name, resource.id])
+    );
+
+    expect(
+      graph.dependencyGraph.getDependencies(resourceIdByName.get('demo-first-consumer')!)
+    ).toContain(resourceIdByName.get('demo-first-config'));
+    expect(
+      graph.dependencyGraph.getDependencies(resourceIdByName.get('demo-second-consumer')!)
+    ).toContain(resourceIdByName.get('demo-second-config'));
+    expect(
+      graph.dependencyGraph.getDependencies(resourceIdByName.get('demo-first-consumer')!)
+    ).not.toContain(resourceIdByName.get('demo-second-config'));
+  });
+
   it('resources in graph have resourceId stored in WeakMap metadata', async () => {
     const factory = await createTestFactory('rid-test');
     const graph = factory.createResourceGraphForInstance(DEFAULT_SPEC);
