@@ -236,6 +236,62 @@ describe('DependencyResolver', () => {
       );
     });
 
+    it('resolves repeated composition aliases relative to the source resource scope', () => {
+      const firstConfig = createMockResource({
+        id: 'demoResource0Configmap',
+        metadata: { name: 'first-config' },
+      });
+      setResourceId(firstConfig, 'config');
+      setMetadataField(firstConfig, 'resourceAliases', ['config']);
+      const firstConsumer = createMockResource({
+        id: 'demoResource1Deployment',
+        metadata: { name: 'first-consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'config.status.ready',
+          },
+        },
+      });
+      setMetadataField(firstConsumer, 'resourceAliasTargets', {
+        config: 'demoResource0Configmap',
+      });
+
+      const secondConfig = createMockResource({
+        id: 'demoResource2Configmap',
+        metadata: { name: 'second-config' },
+      });
+      setResourceId(secondConfig, 'config');
+      setMetadataField(secondConfig, 'resourceAliases', ['config']);
+      const secondConsumer = createMockResource({
+        id: 'demoResource3Deployment',
+        metadata: { name: 'second-consumer' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'config.status.ready',
+          },
+        },
+      });
+      setMetadataField(secondConsumer, 'resourceAliasTargets', {
+        config: 'demoResource2Configmap',
+      });
+
+      const graph = resolver.buildDependencyGraph([
+        firstConfig,
+        firstConsumer,
+        secondConfig,
+        secondConsumer,
+      ]);
+
+      expect(graph.getDependencies('demoResource1Deployment')).toEqual([
+        'demoResource0Configmap',
+      ]);
+      expect(graph.getDependencies('demoResource3Deployment')).toEqual([
+        'demoResource2Configmap',
+      ]);
+    });
+
     it('reports each unknown reference only once per source resource', () => {
       const warnings: Array<{ message: string; context?: unknown }> = [];
       (

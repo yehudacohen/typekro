@@ -575,16 +575,39 @@ function executeNestedCompositionWithSpec<
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
   const nestedResourceIds = executionContext.nestedCompositionIds ?? new Set<string>();
+  const mergedResourceIds = new Map(
+    Object.keys(executionContext.resources).map((resourceId) => [
+      resourceId,
+      computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId)),
+    ])
+  );
+  const localIdentityOwners = new Map<string, Set<string>>();
+  const registerLocalIdentity = (identity: string | undefined, targetId: string): void => {
+    if (!identity) return;
+    const owners = localIdentityOwners.get(identity) ?? new Set<string>();
+    owners.add(targetId);
+    localIdentityOwners.set(identity, owners);
+  };
+  for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
+    const targetId = mergedResourceIds.get(resourceId);
+    if (!targetId) continue;
+    registerLocalIdentity(resourceId, targetId);
+    registerLocalIdentity(getResourceId(resource), targetId);
+    for (const alias of getMetadataField(resource, 'resourceAliases') ?? []) {
+      registerLocalIdentity(alias, targetId);
+    }
+  }
+  const localAliasTargets = Object.fromEntries(
+    [...localIdentityOwners].flatMap(([identity, owners]) =>
+      owners.size === 1 ? [[identity, owners.values().next().value as string]] : []
+    )
+  );
 
   // Merge the executed composition's resources into the parent context
   const mergedInnerResourceIds: string[] = [];
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
-    const uniqueId = computeMergedId(
-      baseId,
-      resourceId,
-      resourceCount,
-      nestedResourceIds.has(resourceId)
-    );
+    const uniqueId = mergedResourceIds.get(resourceId);
+    if (!uniqueId) continue;
     const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<
       unknown,
       unknown
@@ -608,6 +631,18 @@ function executeNestedCompositionWithSpec<
     const aliases = new Set(existingAliases ?? []);
     aliases.add(resourceId);
     setMetadataField(mergedResource, 'resourceAliases', Array.from(aliases));
+
+    const inheritedAliasTargets =
+      getMetadataField(mergedResource, 'resourceAliasTargets') ?? {};
+    setMetadataField(mergedResource, 'resourceAliasTargets', {
+      ...localAliasTargets,
+      ...Object.fromEntries(
+        Object.entries(inheritedAliasTargets).map(([identity, targetId]) => [
+          identity,
+          mergedResourceIds.get(targetId) ?? targetId,
+        ])
+      ),
+    });
 
     const existingDependsOn = getMetadataField(mergedResource, 'dependsOn') as
       | Array<{ resourceId: string; condition?: string }>

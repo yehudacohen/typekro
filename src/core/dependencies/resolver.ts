@@ -70,7 +70,7 @@ export class DependencyResolver {
           const targetId = this.resolveResourceIdentity(
             ref.resourceId,
             identityToGraphIds,
-            resource.id
+            resource
           );
 
           if (targetId) {
@@ -100,7 +100,7 @@ export class DependencyResolver {
         const targetId = this.resolveResourceIdentity(
           dep.resourceId,
           identityToGraphIds,
-          resource.id
+          resource
         );
         if (!targetId) {
           if (options.knownExternalResourceIds?.has(dep.resourceId)) {
@@ -253,8 +253,15 @@ export class DependencyResolver {
   private resolveResourceIdentity(
     identity: string,
     identityToGraphIds: ReadonlyMap<string, ReadonlySet<string>>,
-    sourceResourceId: string
+    sourceResource: DeployableK8sResource<Enhanced<unknown, unknown>>
   ): string | undefined {
+    const sourceResourceId = sourceResource.id;
+    const scopedTarget = getMetadataField(sourceResource, 'resourceAliasTargets')?.[identity];
+    if (scopedTarget) {
+      const scopedOwners = identityToGraphIds.get(scopedTarget);
+      if (scopedOwners?.size === 1) return scopedOwners.values().next().value;
+    }
+
     const owners = identityToGraphIds.get(identity);
     if (!owners || owners.size === 0) return undefined;
     if (owners.size > 1) {

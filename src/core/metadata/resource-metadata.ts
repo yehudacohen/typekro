@@ -66,6 +66,15 @@ export interface ResourceMetadata {
   resourceId?: string;
   /** Local resource IDs that should resolve to this emitted resource ID. */
   resourceAliases?: string[];
+  /**
+   * Composition-local resource identity bindings visible from this resource.
+   *
+   * Nested composition flattening prefixes emitted graph IDs while authored
+   * references continue to use local child names. Keeping the bindings on the
+   * source resource lets dependency resolution distinguish repeated instances
+   * of the same composition without making those local names graph-global.
+   */
+  resourceAliasTargets?: Record<string, string>;
   /** Factory-provided function that evaluates whether a deployed resource is ready */
   readinessEvaluator?: (resource: unknown) => ResourceStatus;
   /** Serializable identity for resolving the evaluator after artifact rehydration. */
