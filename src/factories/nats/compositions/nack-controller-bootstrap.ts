@@ -5,8 +5,8 @@ import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
-  DEFAULT_NACK_VERSION,
   DEFAULT_NACK_REPOSITORY_NAME,
+  DEFAULT_NACK_VERSION,
   DEFAULT_NATS_REPOSITORY_URL,
   natsHelmRelease,
   natsHelmRepository,
@@ -17,6 +17,16 @@ import {
   NackControllerBootstrapStatusSchema,
   type NatsHelmValues,
 } from '../types.js';
+
+const NACK_VALUES_VALIDATION =
+  '(!has(self.jetstream) || (' +
+  '(!has(self.jetstream.nats) || size(self.jetstream.nats) == 0) && ' +
+  '(!has(self.jetstream.tls) || size(self.jetstream.tls) == 0) && ' +
+  '(!has(self.jetstream.additionalArgs) || self.jetstream.additionalArgs.all(arg, ' +
+  '!(arg == "-s" || arg.startsWith("-s=") || arg == "--server" || ' +
+  'arg.startsWith("--server=") || arg == "--namespace" || ' +
+  'arg.startsWith("--namespace=") || arg == "--read-only" || ' +
+  'arg.startsWith("--read-only="))))) && !has(self.rbacRules)';
 
 /**
  * Own the single cluster-wide NACK controller used by NATS installations.
@@ -49,14 +59,36 @@ export const nackControllerBootstrap = kubernetesComposition(
     const version = spec.version ?? DEFAULT_NACK_VERSION;
     const repositoryName = spec.repositoryName ?? DEFAULT_NACK_REPOSITORY_NAME;
     const repositoryUrl = spec.repositoryUrl ?? DEFAULT_NATS_REPOSITORY_URL;
-    const defaults: NatsHelmValues = {
+    if (!graphMode) {
+      validateNackControllerValues(spec.values);
+    }
+    const controllerName = graphMode
+      ? Cel.expr<string>('string(schema.spec.name) + "-controller"')
+      : `${spec.name}-controller`;
+    const protectedValues: NatsHelmValues = {
       jetstream: {
         enabled: true,
         controlLoop: true,
       },
       namespaced: false,
+      // The v0.33.5 per-installation chart used the chart default
+      // `jetstream-controller`. A distinct, deterministic identity lets this
+      // singleton become Ready before the legacy release is retired, without
+      // asking Helm to steal another release's ClusterRole/Binding.
+      nameOverride: spec.name,
+      namespaceOverride: spec.namespace,
+      serviceAccountName: controllerName,
+      useLegacyNames: false,
+      readOnly: false,
+      automountServiceAccountToken: true,
     };
-    const values = spec.values ? mergeValuesExpression(defaults, spec.values) : defaults;
+    // User values are deliberately the base. The singleton invariants are the
+    // final overlay so ordinary chart customization remains available without
+    // being able to select a single NATS server, a namespace-only watch, or a
+    // controller that never reconciles.
+    const values = spec.values
+      ? mergeValuesExpression(spec.values, protectedValues)
+      : protectedValues;
 
     namespace({
       id: 'nackNamespace',
@@ -93,8 +125,71 @@ export const nackControllerBootstrap = kubernetesComposition(
       ...helmReleaseConditionSummary(release),
       version,
     };
+  },
+  {
+    schemaFieldValidations: {
+      values: NACK_VALUES_VALIDATION,
+    },
   }
 );
 
 /** Explicit lifecycle alias for the cluster-wide NACK owner. */
 export const nackControllerInstallation = nackControllerBootstrap;
+
+function validateNackControllerValues(values: NackControllerBootstrapConfig['values']): void {
+  if (!values || typeof values !== 'object' || isKubernetesRef(values)) return;
+  const valuesRecord = values as Record<string, unknown>;
+  if (Object.hasOwn(valuesRecord, 'rbacRules')) {
+    throw new Error(
+      'NACK singleton values.rbacRules cannot replace the controller permissions. Add separate ' +
+        'RBAC resources for extra access.'
+    );
+  }
+  const jetstream = valuesRecord.jetstream;
+  if (!jetstream || typeof jetstream !== 'object' || Array.isArray(jetstream)) return;
+  const nats = (jetstream as Record<string, unknown>).nats;
+  if (
+    nats &&
+    typeof nats === 'object' &&
+    !Array.isArray(nats) &&
+    Object.keys(nats as Record<string, unknown>).length > 0
+  ) {
+    throw new Error(
+      'NACK singleton values.jetstream.nats must be omitted. The shared controller uses ' +
+        'CRD-connect mode; each JetStream resource declares its own NATS connection.'
+    );
+  }
+  const tls = (jetstream as Record<string, unknown>).tls;
+  if (
+    tls &&
+    typeof tls === 'object' &&
+    !Array.isArray(tls) &&
+    Object.keys(tls as Record<string, unknown>).length > 0
+  ) {
+    throw new Error(
+      'NACK singleton values.jetstream.tls must be omitted. Shared-controller connection ' +
+        'security belongs on each JetStream resource.'
+    );
+  }
+  const additionalArgs = (jetstream as Record<string, unknown>).additionalArgs;
+  if (
+    Array.isArray(additionalArgs) &&
+    additionalArgs.some(
+      (argument) =>
+        typeof argument === 'string' &&
+        (argument === '-s' ||
+          argument.startsWith('-s=') ||
+          argument === '--server' ||
+          argument.startsWith('--server=') ||
+          argument === '--namespace' ||
+          argument.startsWith('--namespace=') ||
+          argument === '--read-only' ||
+          argument.startsWith('--read-only='))
+    )
+  ) {
+    throw new Error(
+      'NACK singleton values.jetstream.additionalArgs cannot override server, namespace, or ' +
+        'read-only routing invariants.'
+    );
+  }
+}

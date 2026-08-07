@@ -25,8 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ClusterRoleBinding names; deleting one former installation could therefore
   remove RBAC from another live controller. Stream and Consumer resources keep
   per-resource NATS routing, shared controller configuration is concrete
-  build-time input through `makeNatsBootstrap()`, and consumer deletion no
-  longer owns controller teardown.
+  build-time input through `makeNatsBootstrap()`, protected values preserve the
+  multi-system routing model, and consumer deletion no longer owns controller
+  teardown. The singleton uses collision-free service-account/RBAC names so it
+  can become ready alongside a v0.33.5 controller; direct deploy then performs
+  UID-leased retirement of the exact legacy HelmRelease while KRO/Alchemy use
+  normal graph pruning.
 - Confirmed Harbor project teardown with `purgeRepositories: true` now removes
   project immutable-tag rules before deleting repositories. TypeKro-managed
   immutability no longer blocks its own exact-name-confirmed lifecycle with

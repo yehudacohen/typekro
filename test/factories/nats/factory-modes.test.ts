@@ -139,9 +139,82 @@ describe('NATS and JetStream factories', () => {
     expect(yaml).toContain(`version: ${DEFAULT_NACK_VERSION}`);
     expect(yaml).toMatch(/jetstream:\s*\n\s+controlLoop: true\s*\n\s+enabled: true/);
     expect(yaml).toContain('namespaced: false');
+    expect(yaml).toContain('nameOverride: nack');
+    expect(yaml).toContain('namespaceOverride: typekro-nack-system');
+    expect(yaml).toContain('serviceAccountName: nack-controller');
+    expect(yaml).toContain('useLegacyNames: false');
+    expect(yaml).toContain('readOnly: false');
+    expect(yaml).toContain('automountServiceAccountToken: true');
     // Omitting jetstream.nats.url selects NACK's official -crd-connect mode.
     // Stream/Consumer/Account resources carry their own target connection.
     expect(yaml).not.toContain('url: nats://');
+  });
+
+  it('protects singleton routing and lifecycle values from Helm passthrough overrides', async () => {
+    const customized = makeNatsBootstrap({
+      controller: {
+        values: {
+          namespaced: true,
+          readOnly: true,
+          nameOverride: 'unsafe-name',
+          namespaceOverride: 'unsafe-namespace',
+          serviceAccountName: 'jetstream-controller',
+          useLegacyNames: true,
+          jetstream: {
+            enabled: false,
+            controlLoop: false,
+          },
+          resources: { requests: { cpu: '100m' } },
+        },
+      },
+    });
+    const declarations = await customized
+      .factory('direct', { namespace: 'typekro-system', waitForReady: false })
+      .toAlchemyResources({
+        name: 'application-events',
+        namespace: 'application-system',
+        namespaceOwnership: 'external',
+      });
+    const controller = declarations.find(
+      (declaration) => declaration.props.resourceId === 'nackHelmRelease'
+    );
+
+    expect(controller?.props.resource.spec?.values).toMatchObject({
+      namespaced: false,
+      readOnly: false,
+      automountServiceAccountToken: true,
+      nameOverride: 'nack',
+      namespaceOverride: 'typekro-nack-system',
+      serviceAccountName: 'nack-controller',
+      useLegacyNames: false,
+      jetstream: {
+        enabled: true,
+        controlLoop: true,
+      },
+      resources: { requests: { cpu: '100m' } },
+    });
+
+    expect(() =>
+      nackControllerBootstrap.factory('direct', { namespace: 'typekro-singletons' }).toYaml({
+        name: 'nack',
+        namespace: 'typekro-nack-system',
+        values: {
+          jetstream: {
+            nats: { url: 'nats://one.example:4222' },
+          },
+        },
+      })
+    ).toThrow(/values\.jetstream\.nats must be omitted/);
+
+    const rgd = nackControllerBootstrap
+      .factory('kro', { namespace: 'typekro-singletons' })
+      .toYaml();
+    expect(rgd).toContain('values: object | validation="');
+    expect(rgd).toContain('size(self.jetstream.nats) == 0');
+    expect(rgd).toContain('size(self.jetstream.tls) == 0');
+    expect(rgd).toContain('arg.startsWith');
+    expect(rgd).toContain('!has(self.rbacRules)');
+    expect(rgd).toContain('"serviceAccountName": string(schema.spec.name) + "-controller"');
   });
 
   it('serializes bootstrap in KRO mode and hoists an owned workload Namespace out of the graph', () => {
@@ -157,7 +230,7 @@ describe('NATS and JetStream factories', () => {
     expect(rgd).toContain('replicas: integer | minimum=1');
     expect(rgd).toContain('pvcRetentionPolicy: string | enum="delete,retain"');
     expect(rgd).toContain('namespaceOwnership: string | enum="external,owned"');
-    expect(rgd).toContain('nackValues: object | validation="self == {}"');
+    expect(rgd).toContain('nackValues: object | validation="dyn(self) == dyn({})"');
     expect(rgd).toContain('nackVersion: string | validation="self == \\"0.34.0\\""');
     expect(rgd).toContain('schema.spec.pvcRetentionPolicy');
     expect(rgd).toContain('Delete');

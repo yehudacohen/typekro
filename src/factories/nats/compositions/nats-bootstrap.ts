@@ -1,7 +1,17 @@
 import { mergeValuesExpression } from '../../../core/aspects/values-merge.js';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import {
+  createBunCompatibleKubernetesObjectApi,
+  getKubeConfig,
+} from '../../../core/kubernetes/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton, stableSerialize } from '../../../core/singleton/singleton.js';
+import type {
+  DirectResourceFactory,
+  KroResourceFactory,
+  PublicFactoryOptions,
+  ResourceFactoryDeployOptions,
+} from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
@@ -15,17 +25,20 @@ import {
   natsHelmRepository,
 } from '../resources/helm.js';
 import {
-  type NatsBootstrapConfig,
-  type NatsBootstrapBuildOptions,
   type NackControllerBootstrapConfigSchema,
+  type NatsBootstrapBuildOptions,
+  type NatsBootstrapConfig,
   NatsBootstrapConfigSchema,
   NatsBootstrapStatusSchema,
   type NatsHelmValues,
 } from '../types.js';
 import { nackControllerBootstrap } from './nack-controller-bootstrap.js';
+import { retireLegacyNackController } from './nack-controller-migration.js';
 
 const DEFAULT_NATS_NAMESPACE = 'nats-system';
 const DEFAULT_NACK_NAMESPACE = 'typekro-nack-system';
+type NatsBootstrapSchemaSpec = typeof NatsBootstrapConfigSchema.infer;
+type NatsBootstrapSchemaStatus = typeof NatsBootstrapStatusSchema.infer;
 
 /**
  * Build a NATS installation composition backed by one cluster-wide NACK owner.
@@ -45,7 +58,7 @@ export function makeNatsBootstrap(options: NatsBootstrapBuildOptions = {}) {
     ...(options.controller?.values ? { values: options.controller.values } : {}),
   };
 
-  return kubernetesComposition(
+  const composition = kubernetesComposition(
     {
       name: 'nats-bootstrap',
       kind: 'NatsBootstrap',
@@ -181,10 +194,71 @@ export function makeNatsBootstrap(options: NatsBootstrapBuildOptions = {}) {
     {
       schemaFieldValidations: {
         nackVersion: `self == ${JSON.stringify(controllerSpec.version ?? DEFAULT_NACK_VERSION)}`,
-        nackValues: `self == ${JSON.stringify(controllerSpec.values ?? {})}`,
+        // Open-object fields have a structural schema type while CEL literals
+        // are maps. Widen both operands before comparison so Kubernetes CEL
+        // can validate the deprecated compatibility assertion.
+        nackValues: `dyn(self) == dyn(${JSON.stringify(controllerSpec.values ?? {})})`,
       },
     }
   );
+
+  const originalFactory = composition.factory.bind(composition);
+  function natsBootstrapFactory(
+    mode: 'kro',
+    factoryOptions?: PublicFactoryOptions
+  ): KroResourceFactory<NatsBootstrapSchemaSpec, NatsBootstrapSchemaStatus>;
+  function natsBootstrapFactory(
+    mode: 'direct',
+    factoryOptions?: PublicFactoryOptions
+  ): DirectResourceFactory<NatsBootstrapSchemaSpec, NatsBootstrapSchemaStatus>;
+  function natsBootstrapFactory(
+    mode: 'kro' | 'direct',
+    factoryOptions?: PublicFactoryOptions
+  ):
+    | KroResourceFactory<NatsBootstrapSchemaSpec, NatsBootstrapSchemaStatus>
+    | DirectResourceFactory<NatsBootstrapSchemaSpec, NatsBootstrapSchemaStatus> {
+    if (mode === 'kro') {
+      return originalFactory('kro', factoryOptions);
+    }
+
+    const factory = originalFactory('direct', factoryOptions);
+    const originalDeploy = factory.deploy.bind(factory);
+    factory.deploy = async (
+      spec: NatsBootstrapSchemaSpec,
+      deployOptions?: ResourceFactoryDeployOptions
+    ) => {
+      // Direct mode does not prune graph nodes removed by a library upgrade.
+      // The singleton owner is synchronously made Ready by originalDeploy()
+      // before this retirement runs, so the v0.33.5 controller is never
+      // removed until its replacement can reconcile.
+      const deployed = await originalDeploy(spec, deployOptions);
+      const kubeConfig = factoryOptions?.kubeConfig ?? getKubeConfig();
+      const abortSignals = [factoryOptions?.abortSignal, deployOptions?.abortSignal].filter(
+        (signal): signal is AbortSignal => signal !== undefined
+      );
+      const abortSignal =
+        abortSignals.length > 1
+          ? AbortSignal.any(abortSignals)
+          : abortSignals.length === 1
+            ? abortSignals[0]
+            : undefined;
+      await retireLegacyNackController({
+        namespace: spec.namespace ?? DEFAULT_NATS_NAMESPACE,
+        instanceName: spec.name,
+        kubernetesApi: createBunCompatibleKubernetesObjectApi(
+          kubeConfig,
+          factoryOptions?.httpTimeouts
+        ),
+        ...(factoryOptions?.timeout !== undefined ? { timeout: factoryOptions.timeout } : {}),
+        ...(abortSignal ? { abortSignal } : {}),
+      });
+      return deployed;
+    };
+    return factory;
+  }
+
+  (composition as { factory: typeof composition.factory }).factory = natsBootstrapFactory;
+  return composition;
 }
 
 /** Install an official NATS cluster backed by the shared NACK controller. */

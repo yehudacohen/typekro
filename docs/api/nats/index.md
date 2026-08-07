@@ -50,7 +50,12 @@ typed connection fields. This is what allows one controller to reconcile resourc
 NATS systems without per-installation controller races.
 
 NATS server `values` remain a graph-aware passthrough map merged after safe defaults. Shared NACK
-configuration is build-time because every consumer must agree on one concrete singleton spec:
+configuration is build-time because every consumer must agree on one concrete singleton spec.
+TypeKro applies the singleton's routing and ownership invariants after custom values:
+cluster-wide watching, the controller-runtime control loop, write reconciliation, its owned
+namespace, and a release-specific service-account/RBAC identity cannot be overridden. Global
+`jetstream.nats` values are rejected because they would disable CRD-connect routing; put the
+connection on each typed JetStream resource instead. Other chart customization remains available:
 
 ```ts
 const productionNats = makeNatsBootstrap({
@@ -67,6 +72,19 @@ const productionNats = makeNatsBootstrap({
 
 Use `nackControllerBootstrap` directly only when explicitly installing, inspecting, or deleting
 the singleton owner. Normal applications should consume it through `natsBootstrap`.
+
+### Upgrading installations created by TypeKro v0.33.5
+
+v0.33.5 installed `HelmRelease/nack` inside each NATS workload Namespace. The singleton uses a
+different, deterministic service-account and ClusterRole identity, so Helm never has to adopt
+resources owned by the old release. Imperative `factory.deploy()` makes the singleton Ready first,
+then retires only an exact UID-leased v0.33.5 child whose TypeKro factory, instance, resource ID,
+and chart all match. A same-named user HelmRelease fails closed and is never deleted.
+
+KRO and Alchemy preserve the same dependency order: create the singleton before updating the
+consumer, then let their normal graph/state pruning remove the retired child. Static direct YAML
+cannot perform an ownership-checked live migration; upgrade through `factory.deploy()` or the
+original Alchemy state before returning to a render-only workflow.
 
 The former runtime `nackVersion` and `nackValues` fields remain in the generated schema so existing
 KRO CRDs can upgrade without a destructive schema transition. They are deprecated compatibility
