@@ -12,6 +12,7 @@ import { registerFactory } from '../../../src/core/resources/factory-registry.js
 import {
   adapterCapabilityDiagnostics,
   artifactOutput,
+  collectArtifactOutputUses,
   compileDirectArtifactPlan,
   compileKroArtifactPlan,
   decodeDesiredStatePlan,
@@ -395,6 +396,69 @@ describe('captured composition planning prototype', () => {
     expect(factoryGraph.resources[0]?.manifest.metadata?.labels).toEqual(
       expect.objectContaining({ environment: 'test', team: 'platform' })
     );
+  });
+
+  it('preserves branded artifact outputs while aspects clone resource values', () => {
+    const composition = toResourceGraph(
+      definition,
+      (schema) => ({
+        deployment: createResource({
+          id: 'deployment',
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: schema.spec.name },
+          spec: {
+            replicas: schema.spec.replicas,
+            selector: { matchLabels: { app: schema.spec.name } },
+            template: {
+              metadata: { labels: { app: schema.spec.name } },
+              spec: {
+                containers: [
+                  {
+                    name: 'application',
+                    image: artifactOutput(
+                      'application-image',
+                      'immutableReference'
+                    ),
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      }),
+      (schema, resources) => ({
+        readyReplicas: resources.deployment.status.readyReplicas,
+        summary: schema.spec.name,
+      })
+    );
+
+    const plan = composition.plan!(
+      { name: 'demo', image: 'unused', replicas: 2 },
+      {
+        strict: true,
+        aspects: [withLabels({ environment: 'development' })],
+        inputs: {
+          image: {
+            kind: 'artifact',
+            requirement: {
+              id: 'application-image',
+              kind: 'container-image',
+              descriptor: { kind: 'literal', value: 'demo' },
+              outputs: ['immutableReference'],
+            },
+          },
+        },
+      }
+    );
+
+    expect(collectArtifactOutputUses(plan.nodes)).toEqual([
+      {
+        requirementId: 'application-image',
+        output: 'immutableReference',
+        sensitive: false,
+      },
+    ]);
   });
 
   it('projects activation, readiness, dependency edges, and external lifecycle policies', () => {
