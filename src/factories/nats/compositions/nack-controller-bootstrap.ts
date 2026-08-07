@@ -63,8 +63,8 @@ export const nackControllerBootstrap = kubernetesComposition(
       validateNackControllerValues(spec.values);
     }
     const controllerName = graphMode
-      ? Cel.expr<string>('string(schema.spec.name) + "-controller"')
-      : `${spec.name}-controller`;
+      ? Cel.expr<string>('"typekro-" + string(schema.spec.name) + "-controller"')
+      : `typekro-${spec.name}-controller`;
     const protectedValues: NatsHelmValues = {
       jetstream: {
         enabled: true,
@@ -72,9 +72,10 @@ export const nackControllerBootstrap = kubernetesComposition(
       },
       namespaced: false,
       // The v0.33.5 per-installation chart used the chart default
-      // `jetstream-controller`. A distinct, deterministic identity lets this
-      // singleton become Ready before the legacy release is retired, without
-      // asking Helm to steal another release's ClusterRole/Binding.
+      // `jetstream-controller`. The TypeKro prefix makes this identity
+      // disjoint for every legal controller name, including `jetstream`, so
+      // the singleton can become Ready before the legacy release is retired
+      // without asking Helm to steal another release's ClusterRole/Binding.
       nameOverride: spec.name,
       namespaceOverride: spec.namespace,
       serviceAccountName: controllerName,

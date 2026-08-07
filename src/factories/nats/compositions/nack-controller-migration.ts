@@ -4,6 +4,7 @@ import { isNotFoundError } from '../../../core/kubernetes/errors.js';
 
 const LEGACY_NACK_RELEASE = 'nack';
 const LEGACY_NACK_RESOURCE_ID = 'nackHelmRelease';
+const CURRENT_NATS_RESOURCE_ID = 'natsHelmRelease';
 const NATS_FACTORY_NAME = 'nats-bootstrap';
 
 export interface LegacyNackRetirementOptions {
@@ -46,6 +47,8 @@ export async function retireLegacyNackController(
     throw error;
   }
 
+  const classification = classifyNackRelease(live, options.instanceName);
+  if (classification === 'current-nats-server') return;
   assertLegacyNackOwnership(live, options.instanceName);
   const uid = live.metadata?.uid;
   if (!uid) {
@@ -92,11 +95,7 @@ export async function retireLegacyNackController(
 
 function assertLegacyNackOwnership(resource: KubernetesObject, instanceName: string): void {
   const tags = extractTypekroTags(resource);
-  const chartName = (
-    resource as KubernetesObject & {
-      spec?: { chart?: { spec?: { chart?: unknown } } };
-    }
-  ).spec?.chart?.spec?.chart;
+  const chartName = chart(resource);
   const problems = [
     ...(tags.factoryName === NATS_FACTORY_NAME
       ? []
@@ -114,6 +113,45 @@ function assertLegacyNackOwnership(resource: KubernetesObject, instanceName: str
         `(${problems.join(', ')}).`
     );
   }
+}
+
+function classifyNackRelease(
+  resource: KubernetesObject,
+  instanceName: string
+): 'legacy-controller' | 'current-nats-server' | 'unrelated' {
+  const tags = extractTypekroTags(resource);
+  const chartName = chart(resource);
+  if (
+    tags.factoryName === NATS_FACTORY_NAME &&
+    tags.instanceName === instanceName &&
+    tags.resourceId === LEGACY_NACK_RESOURCE_ID &&
+    chartName === 'nack'
+  ) {
+    return 'legacy-controller';
+  }
+  // A current NATS instance may itself be named `nack`, which means the fixed
+  // legacy lookup finds the successfully deployed server HelmRelease. This is
+  // not an ownership mismatch and there is no legacy controller left to
+  // retire. Match every current identity component before treating it as
+  // absent so a same-named foreign release still fails closed.
+  if (
+    resource.metadata?.name === LEGACY_NACK_RELEASE &&
+    tags.factoryName === NATS_FACTORY_NAME &&
+    tags.instanceName === instanceName &&
+    tags.resourceId === CURRENT_NATS_RESOURCE_ID &&
+    chartName === 'nats'
+  ) {
+    return 'current-nats-server';
+  }
+  return 'unrelated';
+}
+
+function chart(resource: KubernetesObject): unknown {
+  return (
+    resource as KubernetesObject & {
+      spec?: { chart?: { spec?: { chart?: unknown } } };
+    }
+  ).spec?.chart?.spec?.chart;
 }
 
 function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {

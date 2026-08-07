@@ -141,7 +141,7 @@ describe('NATS and JetStream factories', () => {
     expect(yaml).toContain('namespaced: false');
     expect(yaml).toContain('nameOverride: nack');
     expect(yaml).toContain('namespaceOverride: typekro-nack-system');
-    expect(yaml).toContain('serviceAccountName: nack-controller');
+    expect(yaml).toContain('serviceAccountName: typekro-nack-controller');
     expect(yaml).toContain('useLegacyNames: false');
     expect(yaml).toContain('readOnly: false');
     expect(yaml).toContain('automountServiceAccountToken: true');
@@ -185,7 +185,7 @@ describe('NATS and JetStream factories', () => {
       automountServiceAccountToken: true,
       nameOverride: 'nack',
       namespaceOverride: 'typekro-nack-system',
-      serviceAccountName: 'nack-controller',
+      serviceAccountName: 'typekro-nack-controller',
       useLegacyNames: false,
       jetstream: {
         enabled: true,
@@ -214,7 +214,21 @@ describe('NATS and JetStream factories', () => {
     expect(rgd).toContain('size(self.jetstream.tls) == 0');
     expect(rgd).toContain('arg.startsWith');
     expect(rgd).toContain('!has(self.rbacRules)');
-    expect(rgd).toContain('"serviceAccountName": string(schema.spec.name) + "-controller"');
+    expect(rgd).toContain(
+      '"serviceAccountName": "typekro-" + string(schema.spec.name) + "-controller"'
+    );
+  });
+
+  it('keeps every controller name disjoint from the v0.33.5 jetstream-controller identity', () => {
+    const yaml = nackControllerBootstrap
+      .factory('direct', { namespace: 'typekro-singletons' })
+      .toYaml({
+        name: 'jetstream',
+        namespace: 'typekro-nack-system',
+      });
+
+    expect(yaml).toContain('serviceAccountName: typekro-jetstream-controller');
+    expect(yaml).not.toMatch(/serviceAccountName: jetstream-controller(?:\s|$)/);
   });
 
   it('serializes bootstrap in KRO mode and hoists an owned workload Namespace out of the graph', () => {

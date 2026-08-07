@@ -709,13 +709,13 @@ async function proveV0335Upgrade(mode: 'direct' | 'kro'): Promise<void> {
           spec?: { values?: { serviceAccountName?: string } };
         }
       ).spec?.values?.serviceAccountName
-    ).toBe(`${controllerName}-controller`);
+    ).toBe(`typekro-${controllerName}-controller`);
     expect(
       (
         await objectApi.read({
           apiVersion: 'rbac.authorization.k8s.io/v1',
           kind: 'ClusterRole',
-          metadata: { name: `${controllerName}-controller-cluster-role` },
+          metadata: { name: `typekro-${controllerName}-controller-cluster-role` },
         })
       ).metadata?.uid
     ).toBeTruthy();
@@ -935,7 +935,7 @@ describeOrSkip('NATS JetStream live direct and KRO integration', () => {
       const roleIdentity = {
         apiVersion: 'rbac.authorization.k8s.io/v1',
         kind: 'ClusterRole',
-        metadata: { name: `${controllerName}-controller-cluster-role` },
+        metadata: { name: `typekro-${controllerName}-controller-cluster-role` },
       };
       const controllerDeployment = await objectApi.read(deploymentIdentity);
       const controllerRole = await objectApi.read(roleIdentity);

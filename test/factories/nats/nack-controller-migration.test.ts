@@ -31,6 +31,34 @@ function legacyRelease(overrides: Partial<KubernetesObject['metadata']> = {}): K
   } as unknown as KubernetesObject;
 }
 
+function currentNatsRelease(): KubernetesObject {
+  return {
+    apiVersion: 'helm.toolkit.fluxcd.io/v2',
+    kind: 'HelmRelease',
+    metadata: {
+      name: 'nack',
+      namespace: 'nats-system',
+      uid: 'current-nats-uid',
+      labels: {
+        'typekro.io/factory-name': 'nats-bootstrap',
+        'typekro.io/instance-name': 'nack',
+      },
+      annotations: {
+        'typekro.io/factory-name': 'nats-bootstrap',
+        'typekro.io/instance-name': 'nack',
+        'typekro.io/resource-id': 'natsHelmRelease',
+      },
+    },
+    spec: {
+      chart: {
+        spec: {
+          chart: 'nats',
+        },
+      },
+    },
+  } as unknown as KubernetesObject;
+}
+
 describe('legacy NACK controller retirement', () => {
   it('deletes only the exact v0.33.5 child with a UID precondition', async () => {
     const live = legacyRelease();
@@ -85,6 +113,47 @@ describe('legacy NACK controller retirement', () => {
       instanceName: 'nats',
       kubernetesApi: api,
     });
+    expect(deleted).toBe(false);
+  });
+
+  it('treats an exact current NATS server named nack as no legacy controller', async () => {
+    let deleted = false;
+    const api = {
+      read: async () => currentNatsRelease(),
+      delete: async () => {
+        deleted = true;
+        return {};
+      },
+    } as unknown as KubernetesObjectApi;
+
+    await retireLegacyNackController({
+      namespace: 'nats-system',
+      instanceName: 'nack',
+      kubernetesApi: api,
+    });
+    expect(deleted).toBe(false);
+  });
+
+  it('still fails closed for a NATS server identity owned by another instance', async () => {
+    let deleted = false;
+    const current = currentNatsRelease();
+    current.metadata!.annotations!['typekro.io/instance-name'] = 'another-instance';
+    current.metadata!.labels!['typekro.io/instance-name'] = 'another-instance';
+    const api = {
+      read: async () => current,
+      delete: async () => {
+        deleted = true;
+        return {};
+      },
+    } as unknown as KubernetesObjectApi;
+
+    await expect(
+      retireLegacyNackController({
+        namespace: 'nats-system',
+        instanceName: 'nack',
+        kubernetesApi: api,
+      })
+    ).rejects.toThrow(/Refusing to retire HelmRelease/);
     expect(deleted).toBe(false);
   });
 
