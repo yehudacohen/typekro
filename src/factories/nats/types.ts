@@ -6,6 +6,10 @@ export const NatsBootstrapConfigSchema = type({
   'namespace?': 'string',
   'namespaceOwnership?': '"owned" | "external"',
   'version?': 'string',
+  /**
+   * @deprecated Configure the shared controller through
+   * `makeNatsBootstrap({ controller: { version } })`.
+   */
   'nackVersion?': 'string',
   'repositoryName?': 'string',
   'repositoryNamespace?': 'string',
@@ -15,6 +19,10 @@ export const NatsBootstrapConfigSchema = type({
   'storageClassName?': 'string',
   'pvcRetentionPolicy?': '"retain" | "delete"',
   'values?': 'Record<string, unknown>',
+  /**
+   * @deprecated Configure the shared controller through
+   * `makeNatsBootstrap({ controller: { values } })`.
+   */
   'nackValues?': 'Record<string, unknown>',
 });
 
@@ -26,6 +34,27 @@ export type NatsBootstrapConfig = Omit<
   nackValues?: TypeKroChartValue<Record<string, unknown>>;
 };
 
+/**
+ * Build-time ownership settings for the shared NACK controller.
+ *
+ * These cannot be runtime fields because every NATS consumer must resolve to
+ * one identical singleton owner. A schema-proxy value could make the shared
+ * controller's identity depend on an individual consumer instance.
+ */
+export interface NatsBootstrapBuildOptions {
+  readonly controller?: {
+    /** Stable TypeKro singleton identity shared by every consumer. */
+    readonly singletonId?: string;
+    readonly name?: string;
+    readonly namespace?: string;
+    readonly namespaceOwnership?: 'owned' | 'external';
+    readonly version?: string;
+    readonly repositoryName?: string;
+    readonly repositoryUrl?: string;
+    readonly values?: Record<string, unknown>;
+  };
+}
+
 export const NatsBootstrapStatusSchema = type({
   ready: 'boolean',
   failed: 'boolean',
@@ -36,6 +65,39 @@ export const NatsBootstrapStatusSchema = type({
 });
 
 export type NatsBootstrapStatus = typeof NatsBootstrapStatusSchema.infer;
+
+/**
+ * Configuration for the cluster-wide NACK controller owner.
+ *
+ * NACK's non-namespaced chart resources include fixed-name ClusterRoles and
+ * ClusterRoleBindings. TypeKro therefore owns exactly one controller and lets
+ * every NATS installation reference it through `singleton(...)`.
+ */
+export const NackControllerBootstrapConfigSchema = type({
+  name: 'string',
+  namespace: 'string',
+  'namespaceOwnership?': '"owned" | "external"',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryUrl?': 'string',
+  'values?': 'Record<string, unknown>',
+});
+
+export type NackControllerBootstrapConfig = Omit<
+  typeof NackControllerBootstrapConfigSchema.infer,
+  'values'
+> & {
+  values?: TypeKroChartValue<Record<string, unknown>>;
+};
+
+export const NackControllerBootstrapStatusSchema = type({
+  ready: 'boolean',
+  failed: 'boolean',
+  phase: '"Ready" | "Installing" | "Failed"',
+  version: 'string',
+});
+
+export type NackControllerBootstrapStatus = typeof NackControllerBootstrapStatusSchema.infer;
 
 export const JetStreamStreamConfigSchema = type({
   name: 'string',

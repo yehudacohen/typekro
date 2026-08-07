@@ -9,7 +9,12 @@ TypeKro installs the official NATS Helm chart with persistent JetStream storage,
 official NACK controller, and manages Stream and Consumer resources through NACK CRDs.
 
 ```ts
-import { jetStreamConsumer, jetStreamStream, natsBootstrap } from 'typekro/nats';
+import {
+  jetStreamConsumer,
+  jetStreamStream,
+  makeNatsBootstrap,
+  natsBootstrap,
+} from 'typekro/nats';
 ```
 
 ## Platform installation
@@ -34,8 +39,40 @@ that Namespace out of the RGD graph** — emitting it as a retained resource cre
 so the instance can safely live in it without a namespace/finalizer deadlock on delete. With
 `namespaceOwnership: 'external'` the Namespace is not owned (you pre-create it) and nothing is
 hoisted. Shared platform
-installations should be singleton-owned. The bootstrap pins the official `nats` and `nack` charts;
-`values` and `nackValues` are graph-aware passthrough maps merged after safe defaults.
+installations should be singleton-owned. The bootstrap pins the official `nats` chart and consumes
+one cluster-wide NACK controller through TypeKro's singleton owner boundary. Deleting one NATS
+installation therefore cannot remove the fixed-name ClusterRole or ClusterRoleBinding used by
+another installation.
+
+The shared NACK controller runs in the chart's CRD-connect mode: it has no installation-specific
+default NATS URL. Each `Stream`, `Consumer`, or `Account` identifies its NATS system through its
+typed connection fields. This is what allows one controller to reconcile resources for multiple
+NATS systems without per-installation controller races.
+
+NATS server `values` remain a graph-aware passthrough map merged after safe defaults. Shared NACK
+configuration is build-time because every consumer must agree on one concrete singleton spec:
+
+```ts
+const productionNats = makeNatsBootstrap({
+  controller: {
+    version: '0.34.0',
+    values: {
+      resources: {
+        requests: { cpu: '100m', memory: '128Mi' },
+      },
+    },
+  },
+});
+```
+
+Use `nackControllerBootstrap` directly only when explicitly installing, inspecting, or deleting
+the singleton owner. Normal applications should consume it through `natsBootstrap`.
+
+The former runtime `nackVersion` and `nackValues` fields remain in the generated schema so existing
+KRO CRDs can upgrade without a destructive schema transition. They are deprecated compatibility
+assertions: when present they must equal the build-time singleton configuration. Move those values
+to `makeNatsBootstrap({ controller: ... })`; mismatches fail closed instead of silently changing a
+cluster-shared controller from one consumer instance.
 
 JetStream is enabled with file-backed PVC storage. One replica is suitable for development. A
 production cluster normally uses three NATS replicas, three stream replicas, fast local storage,
@@ -107,6 +144,7 @@ idempotency, command results, retry classification, dead-letter semantics, and s
 behavior. JetStream publication is at-least-once; message-ID deduplication is bounded by the
 configured duplicate window and does not replace an application inbox.
 
-For authenticated installations, configure the official charts through passthrough values and
-mount credentials into NACK. Stream and Consumer factories expose `creds`, `nkey`, `servers`, and
-`jsDomain`; these are paths or routing settings, never inline credential contents.
+For authenticated installations, configure the official charts through passthrough values.
+Stream and Consumer factories expose `creds`, `nkey`, `servers`, and `jsDomain`; these are paths or
+routing settings, never inline credential contents. Because the controller is shared, prefer
+per-resource connection fields or NACK `Account` resources over controller-global credentials.

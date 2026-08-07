@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- NATS bootstraps now consume one explicit cluster-wide NACK singleton in
+  CRD-connect mode instead of installing a competing non-namespaced controller
+  per NATS instance. The official NACK chart uses fixed ClusterRole and
+  ClusterRoleBinding names; deleting one former installation could therefore
+  remove RBAC from another live controller. Stream and Consumer resources keep
+  per-resource NATS routing, shared controller configuration is concrete
+  build-time input through `makeNatsBootstrap()`, and consumer deletion no
+  longer owns controller teardown.
 - Confirmed Harbor project teardown with `purgeRepositories: true` now removes
   project immutable-tag rules before deleting repositories. TypeKro-managed
   immutability no longer blocks its own exact-name-confirmed lifecycle with
