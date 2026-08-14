@@ -151,7 +151,10 @@ import {
 import { DirectDeploymentEngine } from './engine.js';
 import { logHandleSnapshot } from './handle-tracing.js';
 import { isNotFoundError } from './k8s-helpers.js';
-import { migrateLegacyKroArtifactBindingCrd } from './kro-artifact-binding-migration.js';
+import {
+  migrateLegacyKroArtifactBindingCrd,
+  repairRetainedKroGeneratedCrdOwnership,
+} from './kro-artifact-binding-migration.js';
 import { assertKroInstanceSpecPreserved } from './kro-instance-admission.js';
 import {
   assertKroInstanceNamespaceOwnershipSafe,
@@ -2135,6 +2138,7 @@ export class KroResourceFactoryImpl<
             timeout: member.factory.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
             ...(abortSignal ? { abortSignal } : {}),
           });
+          await member.factory.repairRetainedCrdOwnership(resource);
           await member.factory.waitForCRDReadyWithEngine(deploymentEngine, abortSignal);
           continue;
         }
@@ -4725,6 +4729,10 @@ export class KroResourceFactoryImpl<
     await migrateLegacyKroArtifactBindingCrd(this.getKubeConfig(), rgdManifest);
   }
 
+  private async repairRetainedCrdOwnership(rgdManifest: k8s.KubernetesObject): Promise<void> {
+    await repairRetainedKroGeneratedCrdOwnership(this.getKubeConfig(), rgdManifest);
+  }
+
   /**
    * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine.
    *
@@ -4801,6 +4809,7 @@ export class KroResourceFactoryImpl<
         timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
         ...(abortSignal ? { abortSignal } : {}),
       });
+      await this.repairRetainedCrdOwnership(rgdWithMetadata);
       this.logger.info('RGD accepted, waiting for CRD', { rgdName: this.rgdName });
 
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine

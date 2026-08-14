@@ -8,6 +8,9 @@ import { KRO_ARTIFACT_BINDINGS_SPEC_FIELD } from '../planning/values.js';
 
 const STABLE_BINDING_SCHEMA = 'map[string]map[string]string';
 const MAX_CRD_PATCH_ATTEMPTS = 5;
+const KRO_OWNED_LABEL = 'kro.run/owned';
+const KRO_RGD_ID_LABEL = 'kro.run/resource-graph-definition-id';
+const KRO_RGD_NAME_LABEL = 'kro.run/resource-graph-definition-name';
 type MigrationApi = Pick<
   ReturnType<typeof createBunCompatibleKubernetesObjectApi>,
   'read' | 'list' | 'replace'
@@ -192,7 +195,11 @@ async function replaceRgdWithRetry(
   throw new Error(`Could not replace ResourceGraphDefinition ${rgdName}`);
 }
 
-async function requestRgdReconcile(api: MigrationApi, rgdName: string): Promise<void> {
+async function requestRgdReconcile(
+  api: MigrationApi,
+  rgdName: string,
+  reason: 'artifact-binding-migration' | 'retained-crd-adoption' = 'artifact-binding-migration'
+): Promise<void> {
   const live = (await api.read({
     apiVersion: 'kro.run/v1alpha1',
     kind: 'ResourceGraphDefinition',
@@ -206,12 +213,95 @@ async function requestRgdReconcile(api: MigrationApi, rgdName: string): Promise<
         name: rgdName,
         annotations: {
           ...live.metadata?.annotations,
-          'typekro.io/artifact-binding-migration-retry': new Date().toISOString(),
+          [`typekro.io/${reason}-retry`]: new Date().toISOString(),
         },
       },
     },
     live
   );
+}
+
+/**
+ * Repairs KRO's retained-CRD adoption edge after an RGD is recreated.
+ *
+ * KRO 0.9.2 recognizes a generated CRD with the same RGD name and a stale RGD
+ * UID as adoptable. When its schema and names are otherwise unchanged, however,
+ * KRO returns before patching the ownership labels. The dynamic instance
+ * controller can then disappear while terminating instances retain KRO's
+ * finalizer indefinitely. TypeKro deliberately retains generated CRDs for safe
+ * reuse, so it must close that adoption gap until KRO does so itself.
+ */
+export async function repairRetainedKroGeneratedCrdOwnership(
+  kubeConfig: KubeConfig,
+  desiredResource: KubernetesObject,
+  dependencies: { readonly api?: MigrationApi } = {}
+): Promise<void> {
+  const desiredRgd = desiredResource as ResourceGraphDefinition;
+  const rgdName = desiredRgd.metadata?.name;
+  const apiVersion = desiredRgd.spec?.schema?.apiVersion;
+  const kind = desiredRgd.spec?.schema?.kind;
+  if (!rgdName || !apiVersion || !kind) return;
+
+  const api = dependencies.api ?? createBunCompatibleKubernetesObjectApi(kubeConfig);
+  const liveRgd = (await api.read({
+    apiVersion: 'kro.run/v1alpha1',
+    kind: 'ResourceGraphDefinition',
+    metadata: { name: rgdName },
+  })) as ResourceGraphDefinition;
+  const liveRgdUid = liveRgd.metadata?.uid;
+  if (!liveRgdUid) {
+    throw new Error(
+      `Cannot adopt the retained generated CRD for ${rgdName}: the live ResourceGraphDefinition has no UID`
+    );
+  }
+
+  const group =
+    desiredRgd.spec?.schema?.group ??
+    (apiVersion.includes('/') ? apiVersion.slice(0, apiVersion.lastIndexOf('/')) : 'kro.run');
+  for (let attempt = 1; attempt <= MAX_CRD_PATCH_ATTEMPTS; attempt += 1) {
+    const crd = await findGeneratedCrd(api, group, kind);
+    if (!crd?.metadata?.name) return;
+    const labels = crd.metadata.labels ?? {};
+    if (labels[KRO_OWNED_LABEL] !== 'true') {
+      throw new Error(
+        `Cannot adopt generated CRD ${crd.metadata.name} for ResourceGraphDefinition ${rgdName}: the CRD is not marked as KRO-owned`
+      );
+    }
+    if (labels[KRO_RGD_NAME_LABEL] !== rgdName) {
+      throw new Error(
+        `Cannot adopt generated CRD ${crd.metadata.name} for ResourceGraphDefinition ${rgdName}: it belongs to ${labels[KRO_RGD_NAME_LABEL] ?? 'an unknown ResourceGraphDefinition'}`
+      );
+    }
+    if (labels[KRO_RGD_ID_LABEL] === liveRgdUid) return;
+    if (!crd.metadata.resourceVersion) {
+      throw new Error(
+        `Cannot adopt generated CRD ${crd.metadata.name}: the live resource has no resourceVersion`
+      );
+    }
+
+    try {
+      await api.replace({
+        ...crd,
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: {
+          ...crd.metadata,
+          labels: {
+            ...labels,
+            [KRO_RGD_ID_LABEL]: liveRgdUid,
+          },
+        },
+      });
+      await requestRgdReconcile(api, rgdName, 'retained-crd-adoption');
+      return;
+    } catch (error: unknown) {
+      if (getErrorStatusCode(error) !== 409 || attempt === MAX_CRD_PATCH_ATTEMPTS) {
+        throw new Error(
+          `Could not adopt generated CRD ${crd.metadata.name} for ResourceGraphDefinition ${rgdName} after ${attempt} attempt${attempt === 1 ? '' : 's'}: ${ensureError(error).message}`
+        );
+      }
+    }
+  }
 }
 
 /**

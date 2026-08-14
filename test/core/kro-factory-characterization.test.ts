@@ -592,6 +592,9 @@ describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
     internals.migrateLegacyArtifactBindings = async () => {
       events.push('migrate');
     };
+    internals.repairRetainedCrdOwnership = async () => {
+      events.push('adopt');
+    };
     internals.createEnhancedProxy = async (spec: TestSpec) => ({
       apiVersion: 'tests.typekro.dev/v1alpha1',
       kind: 'ArtifactMigrationPath',
@@ -616,6 +619,9 @@ describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
       expect(events).toContain('migrate');
       expect(events.indexOf('migrate')).toBeLessThan(
         events.indexOf('deploy:ResourceGraphDefinition')
+      );
+      expect(events.indexOf('deploy:ResourceGraphDefinition')).toBeLessThan(
+        events.indexOf('adopt')
       );
     } finally {
       proto.deployResource = originalDeployResource;
@@ -642,6 +648,8 @@ describe('KroResourceFactory: RGD deployment engine lifecycle', () => {
       disposed = true;
     };
     (factory as unknown as Record<string, unknown>).migrateLegacyArtifactBindings = async () =>
+      undefined;
+    (factory as unknown as Record<string, unknown>).repairRetainedCrdOwnership = async () =>
       undefined;
 
     try {

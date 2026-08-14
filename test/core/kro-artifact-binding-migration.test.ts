@@ -1,7 +1,10 @@
 import { describe, expect, mock, test } from 'bun:test';
 import type { KubeConfig, KubernetesObject } from '@kubernetes/client-node';
 import { ApiException } from '@kubernetes/client-node/dist/gen/apis/exception.js';
-import { migrateLegacyKroArtifactBindingCrd } from '../../src/core/deployment/kro-artifact-binding-migration.js';
+import {
+  migrateLegacyKroArtifactBindingCrd,
+  repairRetainedKroGeneratedCrdOwnership,
+} from '../../src/core/deployment/kro-artifact-binding-migration.js';
 import {
   kroArtifactOutputField,
   kroArtifactRequirementField,
@@ -81,6 +84,162 @@ function legacyCrd(resourceVersion: string): KubernetesObject {
 }
 
 describe('KRO artifact-binding migration', () => {
+  test('adopts a retained generated CRD after its RGD is recreated', async () => {
+    const desired = desiredRgd();
+    const liveRgd = {
+      ...desired,
+      metadata: {
+        name: 'application',
+        uid: 'new-rgd-uid',
+        resourceVersion: '20',
+      },
+    } as KubernetesObject;
+    const crd = legacyCrd('10');
+    crd.metadata = {
+      ...crd.metadata,
+      labels: {
+        'kro.run/owned': 'true',
+        'kro.run/resource-graph-definition-name': 'application',
+        'kro.run/resource-graph-definition-id': 'deleted-rgd-uid',
+        retained: 'true',
+      },
+    };
+    const replace = mock(async (resource: KubernetesObject) => resource);
+
+    await repairRetainedKroGeneratedCrdOwnership({} as KubeConfig, desired, {
+      api: {
+        read: mock(async () => liveRgd),
+        list: mock(async () => ({ items: [crd] })),
+        replace,
+      } as never,
+    });
+
+    const replacements = replace.mock.calls.map(([resource]) => resource as KubernetesObject);
+    expect(replacements[0]).toMatchObject({
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: {
+        resourceVersion: '10',
+        labels: {
+          retained: 'true',
+          'kro.run/resource-graph-definition-id': 'new-rgd-uid',
+        },
+      },
+    });
+    expect(replacements[1]).toMatchObject({
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: {
+        name: 'application',
+        resourceVersion: '20',
+        annotations: {
+          'typekro.io/retained-crd-adoption-retry': expect.any(String),
+        },
+      },
+    });
+  });
+
+  test('retries generated CRD adoption after optimistic-concurrency conflicts', async () => {
+    const desired = desiredRgd();
+    const generatedCrd = legacyCrd('10');
+    generatedCrd.metadata = {
+      ...generatedCrd.metadata,
+      labels: {
+        'kro.run/owned': 'true',
+        'kro.run/resource-graph-definition-name': 'application',
+        'kro.run/resource-graph-definition-id': 'deleted-rgd-uid',
+      },
+    };
+    let listCount = 0;
+    const list = mock(async () => {
+      const crd = structuredClone(generatedCrd);
+      crd.metadata = { ...crd.metadata, resourceVersion: String(10 + listCount++) };
+      return { items: [crd] };
+    });
+    const replace = mock(async (resource: KubernetesObject) => {
+      if (
+        resource.kind === 'CustomResourceDefinition' &&
+        resource.metadata?.resourceVersion === '10'
+      ) {
+        throw new ApiException(409, 'Conflict', undefined, {});
+      }
+      return resource;
+    });
+
+    await repairRetainedKroGeneratedCrdOwnership({} as KubeConfig, desired, {
+      api: {
+        read: mock(async () => ({
+          ...desired,
+          metadata: { name: 'application', uid: 'new-rgd-uid', resourceVersion: '20' },
+        })),
+        list,
+        replace,
+      } as never,
+    });
+
+    const crdReplacements = replace.mock.calls
+      .map(([resource]) => resource as KubernetesObject)
+      .filter((resource) => resource.kind === 'CustomResourceDefinition');
+    expect(crdReplacements.map((resource) => resource.metadata?.resourceVersion)).toEqual([
+      '10',
+      '11',
+    ]);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  test('fails closed when the generated CRD belongs to another RGD', async () => {
+    const desired = desiredRgd();
+    const crd = legacyCrd('10');
+    crd.metadata = {
+      ...crd.metadata,
+      labels: {
+        'kro.run/owned': 'true',
+        'kro.run/resource-graph-definition-name': 'another-application',
+        'kro.run/resource-graph-definition-id': 'another-rgd-uid',
+      },
+    };
+
+    await expect(
+      repairRetainedKroGeneratedCrdOwnership({} as KubeConfig, desired, {
+        api: {
+          read: mock(async () => ({
+            ...desired,
+            metadata: { name: 'application', uid: 'new-rgd-uid', resourceVersion: '20' },
+          })),
+          list: mock(async () => ({ items: [crd] })),
+          replace: mock(async (resource: KubernetesObject) => resource),
+        } as never,
+      })
+    ).rejects.toThrow('it belongs to another-application');
+  });
+
+  test('leaves a generated CRD already owned by the current RGD unchanged', async () => {
+    const desired = desiredRgd();
+    const crd = legacyCrd('10');
+    crd.metadata = {
+      ...crd.metadata,
+      labels: {
+        'kro.run/owned': 'true',
+        'kro.run/resource-graph-definition-name': 'application',
+        'kro.run/resource-graph-definition-id': 'current-rgd-uid',
+      },
+    };
+    const replace = mock(async (resource: KubernetesObject) => resource);
+
+    await repairRetainedKroGeneratedCrdOwnership({} as KubeConfig, desired, {
+      api: {
+        read: mock(async () => ({
+          ...desired,
+          metadata: { name: 'application', uid: 'current-rgd-uid', resourceVersion: '20' },
+        })),
+        list: mock(async () => ({ items: [crd] })),
+        replace,
+      } as never,
+    });
+
+    expect(replace).not.toHaveBeenCalled();
+  });
+
   test('treats a real client 404 as an absent RGD', async () => {
     const read = mock(async () => {
       throw new ApiException(404, 'Not Found', undefined, {});
