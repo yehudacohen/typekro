@@ -21,6 +21,12 @@ export interface KroDeletionOptions {
   kind: string;
   namespace: string;
   rgdName: string;
+  /**
+   * Instance owned by the same Alchemy declaration set as the RGD. The RGD delete
+   * must not classify this instance as a foreign/shared consumer: reverse-topology
+   * teardown may still be draining it when the RGD delete begins.
+   */
+  instanceName?: string;
   group?: string;
   plural?: string;
   timeout?: number;
@@ -205,6 +211,38 @@ export async function hasKroInstances(
 ): Promise<boolean> {
   return (await listKroInstances(kubeConfig, options, undefined, abortSignal)).length > 0;
 }
+
+/**
+ * Return whether an RGD is used by an instance other than the instance owned by
+ * the current Alchemy declaration set.
+ *
+ * The owned instance may still be terminating when Alchemy reaches the RGD
+ * delete. Treating it as a shared consumer drops the RGD state entry and makes
+ * the deletion impossible to retry. Letting the RGD deletion proceed instead
+ * provides a hard, finalizer-aware gate: it completes after the owned instance
+ * drains, or fails without losing state.
+ */
+export async function hasForeignKroInstances(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  abortSignal?: AbortSignal
+): Promise<boolean> {
+  return hasForeignKroInstancesWithApi(kubeConfig, options, undefined, abortSignal);
+}
+
+async function hasForeignKroInstancesWithApi(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  customApi?: CustomObjectListApi,
+  abortSignal?: AbortSignal
+): Promise<boolean> {
+  const instances = await listKroInstances(kubeConfig, options, customApi, abortSignal);
+  if (!options.instanceName) return instances.length > 0;
+  return shouldPreserveRgd(instances, options.instanceName, true, options.namespace);
+}
+
+/** Internal test hook for declaration-set-aware shared RGD classification. */
+export const hasForeignKroInstancesForTest = hasForeignKroInstancesWithApi;
 
 export async function deleteKroDefinition(
   kubeConfig: KubeConfig,

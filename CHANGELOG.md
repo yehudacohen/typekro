@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Alchemy KRO teardown no longer mistakes the declaration set's own terminating
+  instance for a foreign consumer of its ResourceGraphDefinition. The RGD now
+  remains a hard, finalizer-aware deletion gate instead of reporting success,
+  dropping retry state, and leaking the live definition.
 - NATS bootstraps now consume one explicit cluster-wide NACK singleton in
   CRD-connect mode instead of installing a competing non-namespaced controller
   per NATS instance. The official NACK chart uses fixed ClusterRole and

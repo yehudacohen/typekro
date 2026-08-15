@@ -13,6 +13,7 @@ import {
 import {
   deleteKroDefinition,
   deleteKroInstanceFinalizerSafeForTest,
+  hasForeignKroInstancesForTest,
   listKroInstancesForTest,
 } from '../../src/alchemy/kro-delete.js';
 import {
@@ -833,6 +834,52 @@ describe('KroTypeKroDeployer', () => {
 
     expect(listCalls).toEqual([{ group: 'example.com', version: 'v1alpha1', plural: 'testapps' }]);
     expect(instances[0]?.metadata?.namespace).toBe('apps-b');
+  });
+
+  it('does not mistake the declaration-set instance for a shared RGD consumer', async () => {
+    const listClusterCustomObject = mock(() =>
+      Promise.resolve({
+        items: [{ metadata: { name: 'owned-instance', namespace: 'apps-a' } }],
+      })
+    );
+
+    const shared = await hasForeignKroInstancesForTest(
+      {} as any,
+      {
+        apiVersion: 'example.com/v1alpha1',
+        group: 'example.com',
+        kind: 'TestApp',
+        namespace: 'apps-a',
+        rgdName: 'test-app',
+        plural: 'testapps',
+        instanceName: 'owned-instance',
+      },
+      { listClusterCustomObject }
+    );
+
+    expect(shared).toBe(false);
+
+    listClusterCustomObject.mockResolvedValue({
+      items: [
+        { metadata: { name: 'owned-instance', namespace: 'apps-a' } },
+        { metadata: { name: 'other-instance', namespace: 'apps-b' } },
+      ],
+    });
+    await expect(
+      hasForeignKroInstancesForTest(
+        {} as any,
+        {
+          apiVersion: 'example.com/v1alpha1',
+          group: 'example.com',
+          kind: 'TestApp',
+          namespace: 'apps-a',
+          rgdName: 'test-app',
+          plural: 'testapps',
+          instanceName: 'owned-instance',
+        },
+        { listClusterCustomObject }
+      )
+    ).resolves.toBe(true);
   });
 
   it('deletes KRO instance then removes RGD (leaves the CRD for out-of-band GC) when no instances remain', async () => {

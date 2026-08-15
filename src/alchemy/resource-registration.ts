@@ -83,7 +83,7 @@ import type { KroDeletionOptions } from './kro-delete.js';
 import {
   deleteKroDefinition,
   deleteKroInstanceFinalizerSafe,
-  hasKroInstances,
+  hasForeignKroInstances,
 } from './kro-delete.js';
 import type {
   AlchemyResourceDeclaration,
@@ -1564,7 +1564,7 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
           deleteInstance: (name: string, abortSignal?: AbortSignal) =>
             deleteKroInstanceFinalizerSafe(kc, name, kroDeletion, abortSignal),
           shouldSkipRgdDelete: (_rgdName: string, abortSignal?: AbortSignal) =>
-            hasKroInstances(kc, kroDeletion, abortSignal),
+            hasForeignKroInstances(kc, kroDeletion, abortSignal),
           deleteResourceGraphDefinition: (_rgdName: string, abortSignal?: AbortSignal) =>
             deleteKroDefinition(kc, kroDeletion, undefined, abortSignal),
         }
