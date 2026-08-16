@@ -83,7 +83,7 @@ import type { KroDeletionOptions } from './kro-delete.js';
 import {
   deleteKroDefinition,
   deleteKroInstanceFinalizerSafe,
-  hasForeignKroInstances,
+  decideKroRgdDeletion,
 } from './kro-delete.js';
 import type {
   AlchemyResourceDeclaration,
@@ -1555,7 +1555,10 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
     return new DirectTypeKroDeployer(engine);
   }
 
-  const kroDeletion = props.kroDeletion ?? inferKroDeletionOptions(props);
+  const kroDeletion = enrichKroDeletionOptions(
+    props,
+    props.kroDeletion ?? inferKroDeletionOptions(props)
+  );
   const validateInstanceSpec = shouldValidateKroInstanceAdmission(props);
   return new KroTypeKroDeployer(engine, {
     ...(validateInstanceSpec ? { validateInstanceSpec: true } : {}),
@@ -1563,8 +1566,8 @@ async function _createDeployer<T extends Enhanced<unknown, unknown>>(
       ? {
           deleteInstance: (name: string, abortSignal?: AbortSignal) =>
             deleteKroInstanceFinalizerSafe(kc, name, kroDeletion, abortSignal),
-          shouldSkipRgdDelete: (_rgdName: string, abortSignal?: AbortSignal) =>
-            hasForeignKroInstances(kc, kroDeletion, abortSignal),
+          rgdDeletionDecision: (_rgdName: string, abortSignal?: AbortSignal) =>
+            decideKroRgdDeletion(kc, kroDeletion, abortSignal),
           deleteResourceGraphDefinition: (_rgdName: string, abortSignal?: AbortSignal) =>
             deleteKroDefinition(kc, kroDeletion, undefined, abortSignal),
         }
@@ -1668,8 +1671,37 @@ function inferKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
   };
 }
 
+function enrichKroDeletionOptions<T extends Enhanced<unknown, unknown>>(
+  props: TypeKroResourceProps<T>,
+  options: KroDeletionOptions | undefined
+): KroDeletionOptions | undefined {
+  if (!options || options.instanceName || !props.kroArtifactBundle) return options;
+  try {
+    const bundle = decodeKroArtifactBundle(props.kroArtifactBundle);
+    const operationId = bundle.root.instanceOperationId;
+    const operation = operationId
+      ? bundle.operations.find((candidate) => candidate.id === operationId)
+      : undefined;
+    if (!operation || operation.role !== 'instance') return options;
+    const instance = materializeKroArtifactBundleOperation(operation);
+    const instanceName = instance.metadata?.name;
+    const namespace = instance.metadata?.namespace;
+    if (typeof instanceName !== 'string' || !instanceName) return options;
+    return {
+      ...options,
+      instanceName,
+      ...(typeof namespace === 'string' && namespace ? { namespace } : {}),
+    };
+  } catch {
+    // Legacy/incomplete state remains fail-closed: an unclassified live
+    // instance returns retry-owned and the Alchemy state entry is retained.
+    return options;
+  }
+}
+
 /** Internal test hook for legacy Alchemy KRO state rehydration. */
 export const inferKroDeletionOptionsForTest = inferKroDeletionOptions;
+export const enrichKroDeletionOptionsForTest = enrichKroDeletionOptions;
 
 async function _resolveDeployer<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
