@@ -35,6 +35,9 @@ describe('Alchemy KRO artifact-binding migration', () => {
     const migrate = mock(async () => {
       events.push('migrate');
     });
+    const repair = mock(async () => {
+      events.push('adopt');
+    });
 
     await deployKroResourceForTest(
       {
@@ -46,11 +49,13 @@ describe('Alchemy KRO artifact-binding migration', () => {
       undefined,
       {
         migrateLegacyArtifactBindings: migrate,
+        repairRetainedCrdOwnership: repair,
         kubeConfigForMigration: createMockKubeConfig,
       }
     );
 
     expect(migrate).toHaveBeenCalledTimes(1);
-    expect(events).toEqual(['migrate', 'deploy']);
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['migrate', 'deploy', 'adopt']);
   });
 });

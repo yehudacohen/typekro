@@ -44,6 +44,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
     replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
+    replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
     replace(factoryPrototype, 'dispose', async () => {});
     replace(
       enginePrototype,
@@ -98,6 +99,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
     replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
+    replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(factoryPrototype, 'createEnhancedProxy', async (spec: unknown, name: string) => ({
@@ -205,6 +207,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
     replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
+    replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(factoryPrototype, 'createEnhancedProxy', async (spec: unknown, name: string) => ({
@@ -272,6 +275,7 @@ describe('standalone KRO artifact-bundle execution', () => {
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
     replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
+    replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
     replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
     replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
     replace(

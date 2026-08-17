@@ -28,7 +28,10 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../core/constants/brands.js';
 import { ResourceReplacementTimeoutError } from '../core/deployment/errors.js';
 import { isNotFoundError } from '../core/deployment/k8s-helpers.js';
-import { migrateLegacyKroArtifactBindingCrd } from '../core/deployment/kro-artifact-binding-migration.js';
+import {
+  migrateLegacyKroArtifactBindingCrd,
+  repairRetainedKroGeneratedCrdOwnership,
+} from '../core/deployment/kro-artifact-binding-migration.js';
 import {
   decideNamespaceOwnershipCreateFirst,
   deleteNamespaceIfEmpty,
@@ -477,6 +480,7 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
   abortSignal?: AbortSignal,
   dependencies: {
     migrateLegacyArtifactBindings?: typeof migrateLegacyKroArtifactBindingCrd;
+    repairRetainedCrdOwnership?: typeof repairRetainedKroGeneratedCrdOwnership;
     kubeConfigForMigration?: () => KubeConfig;
   } = {}
 ): Promise<TypeKroResource<T>> {
@@ -581,6 +585,16 @@ async function deployKroResource<T extends Enhanced<unknown, unknown>>(
       seedResources,
       abortSignal
     );
+    if (
+      effectiveProps.deploymentStrategy === 'kro' &&
+      (resourceForDeploy as { kind?: string }).kind === 'ResourceGraphDefinition'
+    ) {
+      await (dependencies.repairRetainedCrdOwnership ?? repairRetainedKroGeneratedCrdOwnership)(
+        dependencies.kubeConfigForMigration?.() ??
+          _createClientProvider(effectiveProps, 'retained-crd-adoption'),
+        resourceForDeploy as unknown as KubernetesResource
+      );
+    }
     _logDeploymentSuccess(logger, KRO_RESOURCE_TYPE, effectiveProps, resourceProperties);
     return resourceProperties as unknown as TypeKroResource<T>;
   } catch (error: unknown) {
