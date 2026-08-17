@@ -2,7 +2,10 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as Redacted from 'effect/Redacted';
 
-import { resourceFromKroArtifactBundleForTest } from '../../../src/alchemy/resource-registration.js';
+import {
+  enrichKroDeletionOptionsForTest,
+  resourceFromKroArtifactBundleForTest,
+} from '../../../src/alchemy/resource-registration.js';
 import type {
   AlchemyResourceDeclaration,
   TypeKroResource,
@@ -78,6 +81,28 @@ async function restoredRootInstance() {
 }
 
 describe('KRO Alchemy artifact-bundle rehydration', () => {
+  it('repairs pre-upgrade RGD deletion state from the persisted artifact bundle', async () => {
+    const { declarations } = await restoredRootInstance();
+    const rgd = declarations.find(
+      (declaration) => declaration.props.resource.kind === 'ResourceGraphDefinition'
+    );
+    expect(rgd).toBeDefined();
+
+    const legacyProps = JSON.parse(JSON.stringify(rgd!.props)) as TypeKroResourceProps<
+      Enhanced<unknown, unknown>
+    >;
+    expect(legacyProps.kroDeletion).toBeDefined();
+    delete legacyProps.kroDeletion!.instanceName;
+
+    expect(
+      enrichKroDeletionOptionsForTest(legacyProps, legacyProps.kroDeletion)
+    ).toMatchObject({
+      instanceName: 'demo',
+      namespace: 'apps',
+      rgdName: 'alchemy-kro-artifact-rehydration',
+    });
+  });
+
   it('materializes provider outputs after a KRO bundle state round trip', async () => {
     const composition = toResourceGraph(
       {

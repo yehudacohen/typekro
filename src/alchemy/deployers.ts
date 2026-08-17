@@ -39,13 +39,25 @@ export class ResourceGraphDefinitionDeletionDeferredError extends Error {
   }
 }
 
+export class ResourceGraphDefinitionOwnedInstancePendingError extends Error {
+  constructor(rgdName: string) {
+    super(
+      `ResourceGraphDefinition deletion must retry because its owned KRO instance still exists for ${rgdName}`
+    );
+    this.name = 'ResourceGraphDefinitionOwnedInstancePendingError';
+  }
+}
+
 interface KroTypeKroDeployerOptions {
   /** Validate that the API server preserved the desired KRO instance spec. */
   validateInstanceSpec?: boolean;
   /** Finalizer-safe KRO instance deletion supplied by the owning factory. */
   deleteInstance?: (name: string, abortSignal?: AbortSignal) => Promise<ResourceDeletionResult>;
-  /** True when an RGD still has live instances and must be preserved. */
-  shouldSkipRgdDelete?: (rgdName: string, abortSignal?: AbortSignal) => Promise<boolean>;
+  /** Three-way ownership decision for a definition whose instances may still exist. */
+  rgdDeletionDecision?: (
+    rgdName: string,
+    abortSignal?: AbortSignal
+  ) => Promise<'delete' | 'retain-shared' | 'retry-owned'>;
   /** Delete the RGD when no CR instance exists; the generated CRD is retained for safe reuse. */
   deleteResourceGraphDefinition?: (rgdName: string, abortSignal?: AbortSignal) => Promise<void>;
 }
@@ -292,11 +304,14 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
     if (resource.kind === 'ResourceGraphDefinition') {
       if (this.deployerOptions.deleteInstance) {
         const rgdName = resource.metadata?.name || 'unnamed';
-        const shouldSkip =
+        const decision =
           (await (options.abortSignal
-            ? this.deployerOptions.shouldSkipRgdDelete?.(rgdName, options.abortSignal)
-            : this.deployerOptions.shouldSkipRgdDelete?.(rgdName))) ?? true;
-        if (shouldSkip) {
+            ? this.deployerOptions.rgdDeletionDecision?.(rgdName, options.abortSignal)
+            : this.deployerOptions.rgdDeletionDecision?.(rgdName))) ?? 'retry-owned';
+        if (decision === 'retry-owned') {
+          throw new ResourceGraphDefinitionOwnedInstancePendingError(rgdName);
+        }
+        if (decision === 'retain-shared') {
           logger.debug('Deferring Alchemy RGD delete while KRO instances still exist', {
             name: resource.metadata?.name,
           });

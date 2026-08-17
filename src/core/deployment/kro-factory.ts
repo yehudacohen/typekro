@@ -3744,7 +3744,8 @@ export class KroResourceFactoryImpl<
       );
     }
     this.assertBundleCapabilities(undefined, { host: 'alchemy', output: 'live' });
-    const kroDeletion = this.createAlchemyKroDeletionOptions(instanceNamespace);
+    const instanceName = opts?.instanceNameOverride ?? generateInstanceName(spec, this.name);
+    const kroDeletion = this.createAlchemyKroDeletionOptions(instanceNamespace, instanceName);
     const prerequisiteDeclarations = this.prerequisiteAlchemyDeclarations(kubeConfigOptions);
     const prerequisiteIds = prerequisiteDeclarations.map((decl) => decl.id);
 
@@ -3841,7 +3842,6 @@ export class KroResourceFactoryImpl<
 
     // 2. CR instance declaration (one per deploy call). Depends on the RGD so alchemy applies the
     // instance only after the RGD's CRD is established (else the CR apply races a missing kind).
-    const instanceName = opts?.instanceNameOverride ?? generateInstanceName(spec, this.name);
     const crdInstanceManifest = this.createCustomResourceInstance(
       instanceName,
       spec,
@@ -3917,13 +3917,17 @@ export class KroResourceFactoryImpl<
   }
 
   /** Build the finalizer-safe, shared-RGD-aware deletion metadata for this factory's instances. */
-  private createAlchemyKroDeletionOptions(instanceNamespace = this.namespace): KroDeletionOptions {
+  private createAlchemyKroDeletionOptions(
+    instanceNamespace = this.namespace,
+    instanceName?: string
+  ): KroDeletionOptions {
     return {
       apiVersion: this.schemaDefinition.apiVersion,
       kind: this.schemaDefinition.kind,
       ...(this.schemaDefinition.group && { group: this.schemaDefinition.group }),
       namespace: instanceNamespace,
       rgdName: this.rgdName,
+      ...(instanceName ? { instanceName } : {}),
       ...(this.discoveredPlural && { plural: this.discoveredPlural }),
       timeout: this.factoryOptions.timeout ?? 300000,
     };
@@ -3967,6 +3971,7 @@ export class KroResourceFactoryImpl<
         ? String(materializePlanValue(instanceIdentity.namespace))
         : this.namespace,
       rgdName: String(materializePlanValue(rgdIdentity.name)),
+      instanceName: String(materializePlanValue(instanceIdentity.name)),
       ...(group ? { group } : {}),
       timeout: this.factoryOptions.timeout ?? 300000,
     };

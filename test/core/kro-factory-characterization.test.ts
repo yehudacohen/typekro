@@ -1176,6 +1176,8 @@ describe('KroResourceFactory: toAlchemyResources (alchemy v2)', () => {
     expect(rgd.props.kubeConfigOptions?.cluster).toBeUndefined();
     expect(rgd.props.kroDeletion?.rgdName).toBe(factory.rgdName);
     expect(rgd.props.kroDeletion?.kind).toBe('TestApp');
+    expect(rgd.props.kroDeletion?.instanceName).toBe('web');
+    expect(instance.props.kroDeletion?.instanceName).toBe('web');
 
     // Instance: one per deploy. Ready-gated by default (matching the imperative deploy path), so a
     // declarative converge blocks until the CR's KRO-managed resources are actually ready.

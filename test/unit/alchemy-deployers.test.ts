@@ -9,10 +9,12 @@ import {
   DirectTypeKroDeployer,
   KroTypeKroDeployer,
   ResourceGraphDefinitionDeletionDeferredError,
+  ResourceGraphDefinitionOwnedInstancePendingError,
 } from '../../src/alchemy/deployers.js';
 import {
   deleteKroDefinition,
   deleteKroInstanceFinalizerSafeForTest,
+  decideKroRgdDeletionForTest,
   listKroInstancesForTest,
 } from '../../src/alchemy/kro-delete.js';
 import {
@@ -835,6 +837,71 @@ describe('KroTypeKroDeployer', () => {
     expect(instances[0]?.metadata?.namespace).toBe('apps-b');
   });
 
+  it('retries while the declaration-set instance exists and retains only foreign consumers', async () => {
+    const listClusterCustomObject = mock(() =>
+      Promise.resolve({
+        items: [{ metadata: { name: 'owned-instance', namespace: 'apps-a' } }],
+      })
+    );
+
+    const decision = await decideKroRgdDeletionForTest(
+      {} as any,
+      {
+        apiVersion: 'example.com/v1alpha1',
+        group: 'example.com',
+        kind: 'TestApp',
+        namespace: 'apps-a',
+        rgdName: 'test-app',
+        plural: 'testapps',
+        instanceName: 'owned-instance',
+      },
+      { listClusterCustomObject }
+    );
+
+    expect(decision).toBe('retry-owned');
+
+    listClusterCustomObject.mockResolvedValue({
+      items: [
+        { metadata: { name: 'owned-instance', namespace: 'apps-a' } },
+        { metadata: { name: 'other-instance', namespace: 'apps-b' } },
+      ],
+    });
+    await expect(
+      decideKroRgdDeletionForTest(
+        {} as any,
+        {
+          apiVersion: 'example.com/v1alpha1',
+          group: 'example.com',
+          kind: 'TestApp',
+          namespace: 'apps-a',
+          rgdName: 'test-app',
+          plural: 'testapps',
+          instanceName: 'owned-instance',
+        },
+        { listClusterCustomObject }
+      )
+    ).resolves.toBe('retry-owned');
+
+    listClusterCustomObject.mockResolvedValue({
+      items: [{ metadata: { name: 'other-instance', namespace: 'apps-b' } }],
+    });
+    await expect(
+      decideKroRgdDeletionForTest(
+        {} as any,
+        {
+          apiVersion: 'example.com/v1alpha1',
+          group: 'example.com',
+          kind: 'TestApp',
+          namespace: 'apps-a',
+          rgdName: 'test-app',
+          plural: 'testapps',
+          instanceName: 'owned-instance',
+        },
+        { listClusterCustomObject }
+      )
+    ).resolves.toBe('retain-shared');
+  });
+
   it('deletes KRO instance then removes RGD (leaves the CRD for out-of-band GC) when no instances remain', async () => {
     const deletes: Record<string, any>[] = [];
     let readCount = 0;
@@ -1169,8 +1236,8 @@ describe('KroTypeKroDeployer', () => {
   it('defers ResourceGraphDefinition state deletion while KRO instances still exist', async () => {
     const mockEngine = createMockEngine() as any;
     const deleteInstance = mock(() => Promise.resolve(completeKroDeletion()));
-    const shouldSkipRgdDelete = mock(() => Promise.resolve(true));
-    const deployer = new KroTypeKroDeployer(mockEngine, { deleteInstance, shouldSkipRgdDelete });
+    const rgdDeletionDecision = mock(() => Promise.resolve('retain-shared' as const));
+    const deployer = new KroTypeKroDeployer(mockEngine, { deleteInstance, rgdDeletionDecision });
     const rgd = {
       apiVersion: 'kro.run/v1alpha1',
       kind: 'ResourceGraphDefinition',
@@ -1186,18 +1253,39 @@ describe('KroTypeKroDeployer', () => {
     ).rejects.toBeInstanceOf(ResourceGraphDefinitionDeletionDeferredError);
 
     expect(deleteInstance).not.toHaveBeenCalled();
-    expect(shouldSkipRgdDelete).toHaveBeenCalledWith('test-app');
+    expect(rgdDeletionDecision).toHaveBeenCalledWith('test-app');
+    expect(mockEngine.deleteResource).not.toHaveBeenCalled();
+  });
+
+  it('fails without dropping state while the owned KRO instance still exists', async () => {
+    const mockEngine = createMockEngine() as any;
+    const rgdDeletionDecision = mock(() => Promise.resolve('retry-owned' as const));
+    const deployer = new KroTypeKroDeployer(mockEngine, {
+      deleteInstance: mock(() => Promise.resolve(completeKroDeletion())),
+      rgdDeletionDecision,
+    });
+    const rgd = {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'test-app' },
+      spec: {},
+    } as any;
+
+    await expect(
+      deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })
+    ).rejects.toBeInstanceOf(ResourceGraphDefinitionOwnedInstancePendingError);
+    expect(rgdDeletionDecision).toHaveBeenCalledWith('test-app');
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
   it('deletes ResourceGraphDefinitions when no KRO instances were registered', async () => {
     const mockEngine = createMockEngine() as any;
     const deleteInstance = mock(() => Promise.resolve(completeKroDeletion()));
-    const shouldSkipRgdDelete = mock(() => Promise.resolve(false));
+    const rgdDeletionDecision = mock(() => Promise.resolve('delete' as const));
     const deleteResourceGraphDefinition = mock(() => Promise.resolve());
     const deployer = new KroTypeKroDeployer(mockEngine, {
       deleteInstance,
-      shouldSkipRgdDelete,
+      rgdDeletionDecision,
       deleteResourceGraphDefinition,
     });
     const rgd = {
@@ -1210,7 +1298,7 @@ describe('KroTypeKroDeployer', () => {
     await deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' });
 
     expect(deleteInstance).not.toHaveBeenCalled();
-    expect(shouldSkipRgdDelete).toHaveBeenCalledWith('test-app');
+    expect(rgdDeletionDecision).toHaveBeenCalledWith('test-app');
     expect(deleteResourceGraphDefinition).toHaveBeenCalledWith('test-app');
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
@@ -1300,7 +1388,7 @@ describe('KroTypeKroDeployer', () => {
     const deleteResourceGraphDefinition = mock(() => Promise.reject(new Error('RBAC denied')));
     const deployer = new KroTypeKroDeployer(mockEngine, {
       deleteInstance: mock(() => Promise.resolve(completeKroDeletion())),
-      shouldSkipRgdDelete: mock(() => Promise.resolve(false)),
+      rgdDeletionDecision: mock(() => Promise.resolve('delete' as const)),
       deleteResourceGraphDefinition,
     });
     const rgd = {

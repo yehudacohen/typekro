@@ -21,6 +21,12 @@ export interface KroDeletionOptions {
   kind: string;
   namespace: string;
   rgdName: string;
+  /**
+   * Instance owned by the same Alchemy declaration set as the RGD. The RGD delete
+   * must not classify this instance as a foreign/shared consumer: reverse-topology
+   * teardown may still be draining it when the RGD delete begins.
+   */
+  instanceName?: string;
   group?: string;
   plural?: string;
   timeout?: number;
@@ -205,6 +211,47 @@ export async function hasKroInstances(
 ): Promise<boolean> {
   return (await listKroInstances(kubeConfig, options, undefined, abortSignal)).length > 0;
 }
+
+/**
+ * Return whether an RGD is used by an instance other than the instance owned by
+ * the current Alchemy declaration set.
+ *
+ * The owned instance may still be terminating when Alchemy reaches the RGD
+ * delete. Treating it as a shared consumer drops the RGD state entry and makes
+ * the deletion impossible to retry. Deleting the RGD would stop KRO's instance
+ * controller before its finalizer drains. Keep the declaration state retryable
+ * until the owned instance is absent; retain the RGD when only foreign
+ * instances remain; delete it only when the instance set is empty.
+ */
+export type KroRgdDeletionDecision = 'delete' | 'retain-shared' | 'retry-owned';
+
+export async function decideKroRgdDeletion(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  abortSignal?: AbortSignal
+): Promise<KroRgdDeletionDecision> {
+  return decideKroRgdDeletionWithApi(kubeConfig, options, undefined, abortSignal);
+}
+
+async function decideKroRgdDeletionWithApi(
+  kubeConfig: KubeConfig,
+  options: KroDeletionOptions,
+  customApi?: CustomObjectListApi,
+  abortSignal?: AbortSignal
+): Promise<KroRgdDeletionDecision> {
+  const instances = await listKroInstances(kubeConfig, options, customApi, abortSignal);
+  if (instances.length === 0) return 'delete';
+  if (!options.instanceName) return 'retry-owned';
+  const ownedExists = instances.some(
+    (instance) => instance.metadata?.name === options.instanceName
+      && instance.metadata?.namespace === options.namespace
+  );
+  if (ownedExists) return 'retry-owned';
+  return 'retain-shared';
+}
+
+/** Internal test hook for declaration-set-aware shared RGD classification. */
+export const decideKroRgdDeletionForTest = decideKroRgdDeletionWithApi;
 
 export async function deleteKroDefinition(
   kubeConfig: KubeConfig,
