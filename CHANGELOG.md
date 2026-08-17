@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
+  and `angular-expressions` 1.5.2 so both runtime dependencies include their
+  current security patches.
 - Alchemy KRO teardown no longer mistakes the declaration set's own terminating
   instance for a foreign consumer of its ResourceGraphDefinition. The RGD now
   remains a hard, finalizer-aware deletion gate instead of reporting success,
