@@ -13,7 +13,7 @@
  *
  * Values keys verified 2026-07-06 against
  * https://github.com/ClickHouse/ClickStack-helm-charts
- * charts/clickstack/values.yaml (chart 3.0.1, appVersion 2.29.0):
+ * charts/clickstack/values.yaml (chart 3.2.0, appVersion 2.35.0):
  * - `hyperdx.config.*` env map: `CLICKHOUSE_ENDPOINT` (native, tcp://…),
  *   `CLICKHOUSE_SERVER_ENDPOINT` (host:port), `CLICKHOUSE_USER`,
  *   `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`, `MONGO_URI`, `FRONTEND_URL`.
@@ -92,6 +92,26 @@ export const DEFAULT_K8S_TELEMETRY_COLLECTOR_IMAGE = 'otel/opentelemetry-collect
 
 /** Name of the HyperDX connection emitted into `defaultConnections`/`defaultSources`. */
 export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
+
+/**
+ * The ClickStack image runs under the OpAMP supervisor. Its built-in remote
+ * configuration declares the OTLP receiver but, without an overlay, does not
+ * attach it to any pipeline. The Service and health endpoint can therefore be
+ * Ready while 4317/4318 refuse connections. Chart 3.1+ provides the supported
+ * `global.otelCollector.customConfig` merge seam; keep every built-in receiver
+ * while attaching OTLP to all three signal pipelines.
+ */
+export const CLICKSTACK_INGEST_PIPELINES_CONFIG = [
+  'service:',
+  '  pipelines:',
+  '    logs/in:',
+  '      receivers: [fluentforward, otlp/hyperdx]',
+  '    metrics:',
+  '      receivers: [prometheus, otlp/hyperdx]',
+  '    traces:',
+  '      receivers: [nop, otlp/hyperdx]',
+  '',
+].join('\n');
 
 /** Concrete build-time options consumed by the bootstrap values mapper. */
 export interface ClickStackValuesMapperOptions {
@@ -227,7 +247,7 @@ function mergeOverridesWithPinsLast(
  * `defaultConnections`/`defaultSources` pointing at the (nonexistent) bundled
  * ClickHouse Service, so both must be overridden for external mode. The
  * sources below mirror the chart defaults (values.yaml `defaultSources`,
- * chart 3.0.1) with the connection renamed and the database parameterized
+ * chart 3.2.0) with the connection renamed and the database parameterized
  * (`%s` slots filled per mode).
  */
 const DEFAULT_SOURCES_FORMAT = JSON.stringify([
@@ -465,6 +485,11 @@ export function mapClickStackConfigToHelmValues(
   // contract's naming anchor. Merged AFTER every passthrough so they always
   // win — including over a graph-aware per-instance `customValues` override.
   const pins: Record<string, unknown> = {
+    global: {
+      otelCollector: {
+        customConfig: CLICKSTACK_INGEST_PIPELINES_CONFIG,
+      },
+    },
     clickhouse: { enabled: false },
     mongodb: { enabled: false },
     fullnameOverride: config.name,

@@ -100,10 +100,15 @@ const imageShape = {
 /**
  * Typed subset of the official `clickstack` chart values we map or pin
  * (verified 2026-07-06 against ClickHouse/ClickStack-helm-charts
- * charts/clickstack/values.yaml, chart 3.0.1). The index signature keeps the
+ * charts/clickstack/values.yaml, chart 3.2.0). The index signature keeps the
  * rest of the chart's surface reachable through the values passthrough.
  */
 export interface ClickStackHelmValues {
+  /** Cross-subchart settings, including the supported collector config overlay. */
+  global?: {
+    otelCollector?: { customConfig?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
   /** HyperDX app (UI + API + OpAMP). */
   hyperdx?: {
     /** Shared non-sensitive env (rendered into the `clickstack-config` ConfigMap). */
@@ -249,7 +254,7 @@ const bootstrapBaseShape = {
   name: 'string',
   /** Namespace for the stack (default: 'clickstack'). */
   'namespace?': 'string',
-  /** Chart version (default: '3.0.1'). */
+  /** Chart version (default: '3.2.0'). */
   'version?': 'string',
   // SECRETS CAVEAT: `password`/`appPassword` below (and `apiKey` further
   // down) travel as PLAINTEXT runtime spec values all the way into the

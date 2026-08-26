@@ -220,13 +220,21 @@ describe('clickstackBootstrap factory modes', () => {
       const docs = splitDocs(yaml);
       const kinds = docs.map(docKind);
 
-      // Internal-Mongo default: Namespace + Mongo StatefulSet/Service + HelmRelease.
+      // Internal-Mongo default: Namespace + Mongo StatefulSet/Service +
+      // HelmRelease + the idempotent authoritative-Team bootstrap Job.
       expect(kinds).toContain('Namespace');
       expect(kinds).toContain('StatefulSet');
       expect(kinds).toContain('Service');
       expect(kinds).toContain('HelmRelease');
+      expect(kinds).toContain('Job');
       expect(yaml).toContain('image: mongo:7');
       expect(yaml).toContain('name: clickstack-mongodb');
+      expect(yaml).toContain('name: clickstack-team-bootstrap');
+      expect(yaml).toContain('key: HYPERDX_API_KEY');
+      expect(yaml).toContain('name: clickstack-secret');
+      expect(yaml).toContain("hookId = 'typekro-managed-ingestion'");
+      expect(yaml).not.toContain('ttlSecondsAfterFinished');
+      expect(kinds.indexOf('HelmRelease')).toBeLessThan(kinds.indexOf('Job'));
 
       // DOCUMENTED WART: direct-mode toYaml() omits singleton-owned resources.
       // The shared HelmRepository is NOT a document here — only the HelmRelease
@@ -264,6 +272,10 @@ describe('clickstackBootstrap factory modes', () => {
       expect(release).toMatch(/mongodb:\s*\n\s+enabled: false/);
       // The status contract's naming anchor.
       expect(release).toContain('fullnameOverride: clickstack');
+      expect(release).toContain('customConfig: |');
+      expect(release).toContain('receivers: [fluentforward, otlp/hyperdx]');
+      expect(release).toContain('receivers: [prometheus, otlp/hyperdx]');
+      expect(release).toContain('receivers: [nop, otlp/hyperdx]');
 
       // External-ClickHouse wiring is fully concrete.
       expect(release).toContain(
@@ -288,6 +300,15 @@ describe('clickstackBootstrap factory modes', () => {
       );
       expect(release).toContain('"username":"otelcollector"');
       expect(release).toContain('"tableName":"otel_logs"');
+    });
+
+    it('protects the OTLP pipeline attachment from chart-value passthrough overrides', () => {
+      const bootstrap = makeClickstackBootstrap({
+        values: { global: { otelCollector: { customConfig: '' } } },
+      });
+      const yaml = bootstrap.factory('direct').toYaml(BOOTSTRAP_SPEC);
+
+      expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
     });
 
     it('resolves every schema ref — no unresolved CEL/schema markers anywhere', () => {
@@ -332,8 +353,11 @@ describe('clickstackBootstrap factory modes', () => {
       );
       expect(serialized).not.toContain('CLICKHOUSE_PASSWORD');
       expect(serialized).not.toContain('CLICKHOUSE_APP_PASSWORD');
-      expect(serialized).not.toContain('HYPERDX_API_KEY');
+      expect(serialized).not.toContain('schema.spec.apiKey');
+      expect(yaml).toContain('key: HYPERDX_API_KEY');
+      expect(yaml).toContain('name: clickstack-secret');
       expect(yaml).toContain('validation="self == null"');
+      expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
     });
 
     it('toYaml(instance) bundles the singleton owner instance BEFORE the ClickStackBootstrap CR', () => {

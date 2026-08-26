@@ -39,6 +39,26 @@ function fakeRef(path: string): unknown {
 }
 
 describe('clickstackBootstrap (internal-Mongo default)', () => {
+  it('preserves the internal Mongo URI as a canonical plan template', () => {
+    const plan = clickstackBootstrap.plan!(
+      {
+        name: 'clickstack',
+        namespace: 'observability',
+        clickhouse: {
+          host: 'clickhouse.observability.svc.cluster.local',
+          username: 'otelcollector',
+          password: 'test-only',
+        },
+        apiKey: 'test-only',
+      },
+      { strict: true }
+    );
+    const serialized = JSON.stringify(plan);
+
+    expect(serialized).not.toContain('[object Object]');
+    expect(serialized).toContain('.svc.cluster.local:27017/hyperdx');
+  });
+
   it('serializes an RGD wrapping the official clickstack chart under strict CEL', () => {
     const yaml = clickstackBootstrap.toYaml();
 
@@ -148,7 +168,8 @@ describe('makeClickstackBootstrap (build-time variants)', () => {
     });
     const yaml = external.toYaml();
     expect(yaml).not.toContain('kind: StatefulSet');
-    expect(yaml).not.toContain('mongo:7');
+    expect(yaml).toContain('kind: Job');
+    expect(yaml).toContain('${schema.spec.mongoUri}');
     // The variant's spec schema requires the URI (topology shapes the schema).
     expect(yaml).toContain('mongoUri');
   });

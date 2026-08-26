@@ -1,7 +1,7 @@
 /**
  * ClickStack (HyperDX) Bootstrap Composition — EXTERNAL ClickHouse only.
  *
- * Deploys the OFFICIAL `clickstack` chart (3.0.x, MIT) from
+ * Deploys the OFFICIAL `clickstack` chart (3.2.x, MIT) from
  * https://clickhouse.github.io/ClickStack-helm-charts via HelmRepository and
  * HelmRelease resources. Build-around: we wrap the official chart — never
  * hand-rolled manifests. NOT the archived hyperdxio/helm-charts repo, NOT the
@@ -80,6 +80,7 @@ import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { job } from '../../kubernetes/workloads/job.js';
 import {
   CLICKSTACK_API_PORT,
   CLICKSTACK_APP_PORT,
@@ -128,6 +129,32 @@ const secretValuesSchemaFieldValidations = {
   'clickhouse.appPassword': 'self == null',
   apiKey: 'self == null',
 } as const;
+
+const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
+  "const database = db.getSiblingDB('hyperdx');",
+  'const apiKey = process.env.HYPERDX_API_KEY;',
+  "if (!apiKey) throw new Error('HYPERDX_API_KEY is required.');",
+  "const hookId = 'typekro-managed-ingestion';",
+  'const teams = database.teams.find({ hookId }).toArray();',
+  "if (teams.length > 1) throw new Error('Multiple TypeKro-managed ClickStack Teams exist.');",
+  'if (teams.length === 0) {',
+  '  const now = new Date();',
+  '  database.teams.insertOne({',
+  "    name: 'Applik8s Observability',",
+  '    allowedAuthMethods: [],',
+  '    hookId,',
+  '    apiKey,',
+  '    collectorAuthenticationEnforced: true,',
+  '    isMetricsSeriesTableEnabled: false,',
+  '    createdAt: now,',
+  '    updatedAt: now,',
+  '  });',
+  '} else if (teams[0].apiKey !== apiKey || teams[0].collectorAuthenticationEnforced !== true) {',
+  '  database.teams.updateOne({ _id: teams[0]._id }, {',
+  '    $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
+  '  });',
+  '}',
+].join('\n');
 
 /**
  * Shared composition body. `build` is CONCRETE (construction-time), so every
@@ -257,6 +284,65 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       id: 'clickstackHelmRelease',
     });
 
+    // HyperDX's production OpAMP controller activates OTLP only after its
+    // authoritative Team collection contains an ingestion key. The chart's
+    // HYPERDX_API_KEY environment value configures application telemetry but
+    // does not create that Team. Bootstrap one framework-owned Team from the
+    // chart-owned Secret, after the release (and therefore Mongo) is ready.
+    // This keeps the credential out of the Job manifest, coexists with
+    // application-created Teams, and converges the framework-owned key when a
+    // replacement credentials Secret is selected.
+    const mongoUri =
+      build.mongoMode === 'external'
+        ? (spec as ClickStackExternalMongoBootstrapConfig).mongoUri
+        : Cel.template(
+            'mongodb://%s-mongodb.%s.svc.cluster.local:27017/hyperdx',
+            spec.name,
+            resolvedNamespace
+          );
+    const _teamBootstrap = job({
+      id: 'clickstackTeamBootstrap',
+      metadata: {
+        name: spec.name,
+        namespace: resolvedNamespace as string,
+        labels: {
+          'app.kubernetes.io/name': 'clickstack-team-bootstrap',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      spec: {
+        backoffLimit: 6,
+        template: {
+          metadata: {
+            labels: {
+              'app.kubernetes.io/name': 'clickstack-team-bootstrap',
+              'app.kubernetes.io/instance': spec.name,
+            },
+          },
+          spec: {
+            restartPolicy: 'Never',
+            containers: [{
+              name: 'team-bootstrap',
+              image: 'mongo:7',
+              command: ['mongosh', '--quiet', mongoUri as string, '--eval', CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT],
+              env: [{
+                name: 'HYPERDX_API_KEY',
+                valueFrom: {
+                  secretKeyRef: {
+                    name: 'clickstack-secret',
+                    key: 'HYPERDX_API_KEY',
+                    optional: false,
+                  },
+                },
+              }],
+            }],
+          },
+        },
+      },
+    });
+    _teamBootstrap.dependsOn(_clickstackHelmRelease);
+
     const helmReleaseReady = Cel.expr<boolean>(
       _clickstackHelmRelease.status.conditions,
       '.exists(c, c.type == "Ready" && c.status == "True")'
@@ -287,11 +373,15 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // final-pipeline test). Unchanged by this migration: raw Cel.expr before
     // and after; only the metadata endpoint fields switched to template literals.
     return {
-      ready: helmReleaseReady,
+      ready: Cel.expr<boolean>(
+        `${helmReleaseReady.expression} && has(clickstackTeamBootstrap.status.succeeded) && clickstackTeamBootstrap.status.succeeded > 0`
+      ),
       phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-        'clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") ' +
-          '? "Failed" : clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && ' +
-          'c.status == "True") ? "Ready" : "Installing"'
+        'clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") || ' +
+          '(has(clickstackTeamBootstrap.status.failed) && clickstackTeamBootstrap.status.failed > 0) ? "Failed" : ' +
+          '(clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True") && ' +
+          'has(clickstackTeamBootstrap.status.succeeded) && clickstackTeamBootstrap.status.succeeded > 0) ' +
+          '? "Ready" : "Installing"'
       ),
       version: resolvedVersion,
       ui: {
