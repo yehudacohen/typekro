@@ -254,7 +254,7 @@ export const kroProvider = ProviderMod.effect(
     stables: ['namespace'],
     // Account-wide enumeration (powers `alchemy nuke`). A generic KRO resource isn't discoverable
     // cluster-wide from props alone — TypeKro manages teardown through its own `delete` lifecycle —
-    // so this reports nothing to nuke rather than guessing (required by alchemy beta.58's ProviderService).
+    // so this reports nothing to nuke rather than guessing (required by Alchemy's ProviderService).
     list: () => Effect.succeed([]),
     diff: Effect.fn(function* ({ olds, news, output }) {
       if (shouldReplaceKroResourceIdentity(olds, news, output)) {
@@ -293,7 +293,7 @@ export const kroProvider = ProviderMod.effect(
       });
     }),
     delete: Effect.fn(function* ({ output, olds }) {
-      // Prefer the live spec (`olds` — the last-applied props; alchemy beta.58 renamed the delete
+      // Prefer the live spec (`olds` — the last-applied props; Alchemy renamed the delete
       // input's spec field from `news` to `olds`); fall back to reconstructing minimal props from
       // persisted output (a delete after the spec is gone — e.g. resource removed from the stack).
       const props = olds ?? propsFromOutput(output);

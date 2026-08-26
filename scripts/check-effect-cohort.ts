@@ -1,4 +1,6 @@
-const EXPECTED_EFFECT_VERSION = '4.0.0-beta.84';
+const EXPECTED_EFFECT_VERSION = '4.0.0-rc.110';
+const EXPECTED_ALCHEMY_VERSION = '2.0.0-beta.74';
+const EXPECTED_DISTILLED_AWS_VERSION = '1.0.0-rc.6';
 const COHORT_PACKAGES = [
   'effect',
   '@effect/platform-bun',
@@ -14,6 +16,28 @@ const packageJson = (await Bun.file('package.json').json()) as {
 const lockfile = await Bun.file('bun.lock').text();
 
 const failures: string[] = [];
+
+if (packageJson.dependencies?.alchemy !== EXPECTED_ALCHEMY_VERSION) {
+  failures.push(
+    `alchemy must be declared at ${EXPECTED_ALCHEMY_VERSION}; found ${
+      packageJson.dependencies?.alchemy ?? 'missing'
+    }`
+  );
+}
+
+const alchemyLockEntry = `"alchemy": ["alchemy@${EXPECTED_ALCHEMY_VERSION}"`;
+if (!lockfile.includes(alchemyLockEntry)) {
+  failures.push(`alchemy must resolve at ${EXPECTED_ALCHEMY_VERSION} in bun.lock`);
+}
+
+const distilledAwsLockEntry =
+  `"@distilled.cloud/aws": ["@distilled.cloud/aws@${EXPECTED_DISTILLED_AWS_VERSION}"`;
+if (!lockfile.includes(distilledAwsLockEntry)) {
+  failures.push(
+    `Alchemy must resolve @distilled.cloud/aws at ${EXPECTED_DISTILLED_AWS_VERSION} in bun.lock`
+  );
+}
+
 for (const packageName of COHORT_PACKAGES) {
   const declared =
     packageJson.dependencies?.[packageName] ?? packageJson.devDependencies?.[packageName];
@@ -44,4 +68,6 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`Effect dependency cohort is coherent at ${EXPECTED_EFFECT_VERSION}.`);
+console.log(
+  `Alchemy ${EXPECTED_ALCHEMY_VERSION}, Distilled AWS ${EXPECTED_DISTILLED_AWS_VERSION}, and the Effect dependency cohort at ${EXPECTED_EFFECT_VERSION} are coherent.`
+);
