@@ -1,4 +1,8 @@
-const EXPECTED_EFFECT_VERSION = '4.0.0-beta.84';
+import { resolvedLockVersions } from './dependency-cohort.js';
+
+const EXPECTED_EFFECT_VERSION = '4.0.0-rc.110';
+const EXPECTED_ALCHEMY_VERSION = '2.0.0-beta.74';
+const EXPECTED_DISTILLED_AWS_VERSION = '1.0.0-rc.6';
 const COHORT_PACKAGES = [
   'effect',
   '@effect/platform-bun',
@@ -14,6 +18,29 @@ const packageJson = (await Bun.file('package.json').json()) as {
 const lockfile = await Bun.file('bun.lock').text();
 
 const failures: string[] = [];
+
+function requireSingleLockVersion(packageName: string, expectedVersion: string): void {
+  const resolvedVersions = resolvedLockVersions(lockfile, packageName);
+  if (resolvedVersions.size !== 1 || !resolvedVersions.has(expectedVersion)) {
+    failures.push(
+      `${packageName} must resolve only at ${expectedVersion}; found ${
+        resolvedVersions.size === 0 ? 'nothing' : [...resolvedVersions].join(', ')
+      }`
+    );
+  }
+}
+
+if (packageJson.dependencies?.alchemy !== EXPECTED_ALCHEMY_VERSION) {
+  failures.push(
+    `alchemy must be declared at ${EXPECTED_ALCHEMY_VERSION}; found ${
+      packageJson.dependencies?.alchemy ?? 'missing'
+    }`
+  );
+}
+
+requireSingleLockVersion('alchemy', EXPECTED_ALCHEMY_VERSION);
+requireSingleLockVersion('@distilled.cloud/aws', EXPECTED_DISTILLED_AWS_VERSION);
+
 for (const packageName of COHORT_PACKAGES) {
   const declared =
     packageJson.dependencies?.[packageName] ?? packageJson.devDependencies?.[packageName];
@@ -44,4 +71,6 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`Effect dependency cohort is coherent at ${EXPECTED_EFFECT_VERSION}.`);
+console.log(
+  `Alchemy ${EXPECTED_ALCHEMY_VERSION}, Distilled AWS ${EXPECTED_DISTILLED_AWS_VERSION}, and the Effect dependency cohort at ${EXPECTED_EFFECT_VERSION} are coherent.`
+);

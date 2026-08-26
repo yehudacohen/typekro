@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
+  catalog and Distilled AWS `1.0.0-rc.6`; TypeKro's Effect runtime cohort moves
+  with it to `4.0.0-rc.110`. CI now locks all three dependency boundaries so a
+  partial upgrade cannot silently reintroduce incompatible runtime copies.
 - KRO artifact bindings now use a topology-independent nested string-map
   schema, so adding or removing generated artifact outputs no longer changes
   the application CRD. Imperative and Alchemy deployments automatically migrate
@@ -19,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
   current security patches.
