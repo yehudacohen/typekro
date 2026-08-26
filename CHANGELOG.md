@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The Secret-backed ClickStack variant omits credential values and default
   connection passwords from RGD instances and HelmRelease inline values while
   preserving direct/KRO parity.
+- ClickStack composition variants now expose explicit `namespaceOwnership`,
+  allowing parent deployment graphs to manage the workload Namespace without
+  introducing a second owner for the same Kubernetes object.
 - KRO artifact bindings now use a topology-independent nested string-map
   schema, so adding or removing generated artifact outputs no longer changes
   the application CRD. Imperative and Alchemy deployments automatically migrate

@@ -141,6 +141,16 @@ const TELEMETRY_SPEC = {
 
 describe('clickstackBootstrap factory modes', () => {
   describe("direct: factory('direct').toYaml(spec) — concrete manifests", () => {
+    it('can consume an externally managed namespace without owning it', () => {
+      const bootstrap = makeClickstackBootstrap({
+        namespaceOwnership: 'external',
+      });
+      const yaml = bootstrap.factory('direct').toYaml(BOOTSTRAP_SPEC);
+
+      expect(splitDocs(yaml).some((doc) => docKind(doc) === 'Namespace')).toBe(false);
+      expect(yaml).toContain('namespace: clickstack');
+    });
+
     it('loads credential values from a Secret without serializing inline credential fields', () => {
       const bootstrap = makeClickstackBootstrap({
         credentials: { source: 'secretValues' },
@@ -294,6 +304,16 @@ describe('clickstackBootstrap factory modes', () => {
   });
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
+    it('keeps an externally managed namespace out of the generated resource graph', () => {
+      const bootstrap = makeClickstackBootstrap({
+        namespaceOwnership: 'external',
+      });
+      const yaml = bootstrap.factory('kro').toYaml();
+
+      expect(yaml).not.toContain('kind: Namespace');
+      expect(yaml).toContain('kind: HelmRelease');
+    });
+
     it('preserves Secret-backed valuesFrom wiring without exposing inline credential paths', () => {
       const bootstrap = makeClickstackBootstrap({
         credentials: { source: 'secretValues' },

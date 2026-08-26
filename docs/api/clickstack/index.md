@@ -17,6 +17,8 @@ For production, construct the Secret-backed variant:
 
 ```typescript
 const clickstack = makeClickstackBootstrap({
+  // Select external when a parent platform owns the workload Namespace.
+  namespaceOwnership: 'external',
   credentials: { source: 'secretValues' },
 });
 
@@ -39,6 +41,10 @@ connection is desired, `hyperdx.deployment.defaultConnections`. Flux merges it b
 non-sensitive inline values. TypeKro deliberately omits those credential-bearing paths from the
 HelmRelease and rejects inline password/API-key fields in this variant. The Secret must be in the
 ClickStack workload namespace because Flux values references are namespace-local.
+
+`namespaceOwnership` defaults to `owned` for standalone use. Set it to `external` when a parent
+platform owns the workload Namespace; ClickStack will still target that namespace but will not create
+or delete it.
 
 ## Import
 
