@@ -11,7 +11,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/yehudacohen/typekro)](https://github.com/yehudacohen/typekro)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/yehudacohen/typekro/deploy.yml?branch=master)](https://github.com/yehudacohen/typekro/actions)
 
-📚 **[Documentation](https://typekro.run)** • 💬 **[Discord](https://discord.gg/kKNSDDjW)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
+📚 **[Documentation](https://typekro.run)** • 💬 **[Discord](https://discord.gg/2PPPUG9mg7)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
 
 ---
 
@@ -240,5 +240,5 @@ Apache 2.0 - See [LICENSE](LICENSE) for details.
 <div align="center">
   <strong>Built with ❤️ for the Kubernetes community</strong>
   
-  [Documentation](https://typekro.run) • [Discord](https://discord.gg/kKNSDDjW) • [GitHub](https://github.com/yehudacohen/typekro)
+  [Documentation](https://typekro.run) • [Discord](https://discord.gg/2PPPUG9mg7) • [GitHub](https://github.com/yehudacohen/typekro)
 </div>
