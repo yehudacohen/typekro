@@ -99,7 +99,8 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
 - `name`, `namespace`, `version`, `clusterName`
 - `storage.size`, `storage.storageClassName`
 - `keeper.host`, `keeper.port`
-- `users.<name>.passwordSha256Hex` (one literal key per declared user)
+- `users.<name>.passwordSha256Hex` or `users.<name>.passwordSecretRef` (one
+  literal key per declared user, selected by the build-time credential source)
 - `podResources`
 
 ### Why zones are build-time (and why zone pinning exists at all)
@@ -140,9 +141,37 @@ users: [
 ]
 ```
 
+For Secret-backed credentials, select the representation when declaring the
+topology and pass only Secret coordinates at runtime:
+
+```typescript
+const clickhouse = makeClickHouseCluster({
+  users: [{ name: 'otelcollector', credentialSource: 'secret' }],
+});
+
+await clickhouse.factory('kro').deploy({
+  name: 'observability',
+  namespace: 'observability',
+  version: '25.7',
+  storage: { size: '10Gi' },
+  users: {
+    otelcollector: {
+      passwordSecretRef: {
+        name: 'clickstack-credentials',
+        key: 'clickhouse-password',
+      },
+    },
+  },
+});
+```
+
+This compiles to the Altinity operator's native `valueFrom.secretKeyRef`
+shape. The password does not enter the ClickHouseInstallation, RGD instance,
+or TypeKro state. The Secret must be in the ClickHouseInstallation namespace.
+
 User names become CHI configuration path fragments (`<name>/password_sha256_hex`, `<name>/networks/ip`), so they must be concrete — a map keyed by schema proxies would serialize `__typekroSchemaKey/...` garbage. Password hashes and network lists are plain value positions: schema refs serialize to clean CEL (proven under `TYPEKRO_STRICT_CEL=1` in the test suite).
 
-In `makeClickHouseCluster`, declared user names become **literal keys** in the generated runtime spec schema — `spec.users.signoz.passwordSha256Hex` — so each declared user's credential is a required, typed, ref-safe field.
+In `makeClickHouseCluster`, declared user names become **literal keys** in the generated runtime spec schema — for example `spec.users.signoz.passwordSha256Hex` or `spec.users.otelcollector.passwordSecretRef` — so each declared user's credential is a required, typed, ref-safe field.
 
 ## Status Contract
 

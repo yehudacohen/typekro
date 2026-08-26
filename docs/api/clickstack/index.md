@@ -7,15 +7,38 @@ OFFICIAL `clickstack` Helm chart (3.0.x, MIT) from
 **external ClickHouse** you already run (e.g. an Altinity-operator-managed
 [`ClickHouseInstallation`](../clickhouse/)).
 
-## Secrets Caveat
+## Credential modes
 
-`clickhouse.password`, `clickhouse.appPassword`, and `apiKey` travel as **plaintext** runtime spec
-values all the way into the generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
-object stored in etcd, readable by anyone with read access to the HelmRelease/RGD instance
-(`kubectl get helmrelease -o yaml`). This is unlike `clickstackK8sTelemetry`'s `apiKeySecret` (a
-`secretKeyRef` env var — the value never appears in any CR spec). There is currently **no
-existing-Secret alternative** for these three fields. Do not treat this family as production-ready
-for credentials that need stronger-than-etcd-RBAC protection until that gap is closed.
+The backwards-compatible default accepts `clickhouse.password`, `clickhouse.appPassword`, and
+`apiKey` inline. Those values enter the HelmRelease and RGD instance, so use that mode only when
+etcd/RBAC protection is sufficient.
+
+For production, construct the Secret-backed variant:
+
+```typescript
+const clickstack = makeClickstackBootstrap({
+  credentials: { source: 'secretValues' },
+});
+
+await clickstack.factory('kro', { namespace: 'typekro-system' }).deploy({
+  name: 'clickstack',
+  namespace: 'observability',
+  clickhouse: {
+    host: 'clickhouse-observability.observability.svc.cluster.local',
+    username: 'otelcollector',
+  },
+  credentialsSecret: {
+    name: 'clickstack-credentials',
+    valuesKey: 'values.yaml',
+  },
+});
+```
+
+The Secret key is a Helm values fragment containing `hyperdx.secrets` and, when a preconfigured UI
+connection is desired, `hyperdx.deployment.defaultConnections`. Flux merges it before TypeKro's
+non-sensitive inline values. TypeKro deliberately omits those credential-bearing paths from the
+HelmRelease and rejects inline password/API-key fields in this variant. The Secret must be in the
+ClickStack workload namespace because Flux values references are namespace-local.
 
 ## Import
 
@@ -34,15 +57,16 @@ import {
 // 1. The stack (internal dev-first Mongo, external ClickHouse). The bootstrap
 // owns its Namespace, so TypeKro hoists that namespace out of the RGD graph
 // (retained) and the instance CR stays in the `clickstack` namespace:
-const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+const bootstrap = makeClickstackBootstrap({ credentials: { source: 'secretValues' } });
+const factory = bootstrap.factory('kro', { namespace: 'typekro-system' });
 const stack = await factory.deploy({
   name: 'clickstack',
+  namespace: 'clickstack',
   clickhouse: {
     host: 'clickhouse-observability.clickhouse.svc.cluster.local',
     username: 'otelcollector',
-    password: '…',
   },
-  apiKey: '…',
+  credentialsSecret: { name: 'clickstack-credentials', valuesKey: 'values.yaml' },
 });
 
 // 2. Cluster telemetry into it (wired from the status contract):
@@ -79,8 +103,9 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name, namespace, chart
-version, the ClickHouse connection, API key, HyperDX conveniences.
+credential source, static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
+namespace, chart version, the ClickHouse connection, credential Secret coordinates or inline API key,
+and HyperDX conveniences.
 
 Note `customValues` is **not part of the runtime schema** — it's absent from `bootstrapBaseShape`, so
 KRO-mode callers (whose spec is validated against that schema, and whose values come out as CEL) cannot

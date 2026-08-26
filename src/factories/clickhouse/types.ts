@@ -200,6 +200,15 @@ export const ClickHouseUserSchema = type({
   name: 'string',
   /** SHA256 hex digest of the user password (value position — refs OK). */
   'passwordSha256Hex?': 'string',
+  /**
+   * Secret-backed plaintext password. The Altinity operator resolves this
+   * reference without copying credential material into the CHI spec.
+   * Mutually exclusive with `passwordSha256Hex`.
+   */
+  'passwordSecretRef?': {
+    name: 'string > 0',
+    key: 'string > 0',
+  },
   /** Allowed source networks, e.g. ['::/0'] (value position — refs OK). */
   'networksIp?': 'string[]',
 });
@@ -417,6 +426,8 @@ export interface ClickHouseClusterUserTopology {
   readonly name: string;
   /** Allowed source networks (default: ['::/0']). */
   readonly networksIp?: readonly string[];
+  /** Runtime credential representation. Defaults to the legacy SHA256 form. */
+  readonly credentialSource?: 'sha256' | 'secret';
 }
 
 /**
@@ -499,7 +510,11 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
   /** Keeper connection (required iff the topology enables keeper). */
   keeper?: ClickHouseClusterKeeperSpec;
   /** Per-declared-user runtime credentials, keyed by build-time user name. */
-  users?: Record<string, { passwordSha256Hex: string }>;
+  users?: Record<
+    string,
+    | { passwordSha256Hex: string }
+    | { passwordSecretRef: { name: string; key: string } }
+  >;
 };
 
 /**

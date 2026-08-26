@@ -99,6 +99,8 @@ export interface ClickStackValuesMapperOptions {
   mongoMode?: 'internal' | 'external';
   /** Static raw chart values merged after the typed mapping (pins re-applied after). */
   values?: TypeKroChartValues<ClickStackHelmValues>;
+  /** Runtime credential transport selected by the composition constructor. */
+  credentialSource?: 'inline' | 'secretValues';
 }
 
 /** Values pair for the two stock collector instances. */
@@ -339,6 +341,7 @@ export function mapClickStackConfigToHelmValues(
 ): ClickStackMappedHelmValues {
   const isGraph = isKubernetesRef(config.name) || isKubernetesRef(config.clickhouse);
   const mongoMode = options.mongoMode ?? 'internal';
+  const credentialSource = options.credentialSource ?? 'inline';
 
   const ch = config.clickhouse;
   const hyperdxConfig: Record<string, unknown> = {};
@@ -381,21 +384,25 @@ export function mapClickStackConfigToHelmValues(
           );
     hyperdxConfig.FRONTEND_URL = graphOptional('schema.spec.hyperdx.frontendUrl');
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(ch.password, '');
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    hyperdxSecrets.HYPERDX_API_KEY = graphOptional('schema.spec.apiKey');
+    if (credentialSource === 'inline') {
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(ch.password, '');
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      hyperdxSecrets.HYPERDX_API_KEY = graphOptional('schema.spec.apiKey');
+    }
 
     hyperdxDeployment.replicas = graphOptional('schema.spec.hyperdx.replicas');
     hyperdxDeployment.resources = graphOptional('schema.spec.hyperdx.resources');
     hyperdxDeployment.image = graphOptional('schema.spec.hyperdx.image');
-    hyperdxDeployment.defaultConnections = Cel.template(
-      DEFAULT_CONNECTIONS_FORMAT,
-      ch.host,
-      httpPortStr,
-      httpPortStr,
-      appUsername,
-      appPassword
-    );
+    if (credentialSource === 'inline') {
+      hyperdxDeployment.defaultConnections = Cel.template(
+        DEFAULT_CONNECTIONS_FORMAT,
+        ch.host,
+        httpPortStr,
+        httpPortStr,
+        appUsername,
+        appPassword
+      );
+    }
     const database = resolve(ch.database, 'default');
     hyperdxDeployment.defaultSources = Cel.template(
       DEFAULT_SOURCES_FORMAT,
@@ -423,29 +430,33 @@ export function mapClickStackConfigToHelmValues(
         : `mongodb://${config.name}${CLICKSTACK_MONGO_NAME_SUFFIX}.${config.namespace ?? DEFAULT_CLICKSTACK_NAMESPACE}.svc.cluster.local:${CLICKSTACK_MONGO_PORT}/hyperdx`;
     setIfDefined(hyperdxConfig, 'FRONTEND_URL', config.hyperdx?.frontendUrl);
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    setIfDefined(hyperdxSecrets, 'HYPERDX_API_KEY', config.apiKey);
+    if (credentialSource === 'inline') {
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      setIfDefined(hyperdxSecrets, 'HYPERDX_API_KEY', config.apiKey);
+    }
 
     setIfDefined(hyperdxDeployment, 'replicas', config.hyperdx?.replicas);
     setIfDefined(hyperdxDeployment, 'resources', config.hyperdx?.resources);
     setIfDefined(hyperdxDeployment, 'image', config.hyperdx?.image);
-    hyperdxDeployment.defaultConnections = JSON.stringify([
-      {
-        name: CLICKSTACK_CONNECTION_NAME,
-        host: `http://${ch.host}:${httpPort}`,
-        port: httpPort,
-        username: appUsername,
-        password: appPassword,
-      },
-    ]);
+    if (credentialSource === 'inline') {
+      hyperdxDeployment.defaultConnections = JSON.stringify([
+        {
+          name: CLICKSTACK_CONNECTION_NAME,
+          host: `http://${ch.host}:${httpPort}`,
+          port: httpPort,
+          username: appUsername,
+          password: appPassword,
+        },
+      ]);
+    }
     hyperdxDeployment.defaultSources = DEFAULT_SOURCES_FORMAT.replace(/%s/g, () => database);
   }
 
   const values: ClickStackHelmValues = {
     hyperdx: {
       config: hyperdxConfig,
-      secrets: hyperdxSecrets,
+      ...(credentialSource === 'inline' ? { secrets: hyperdxSecrets } : {}),
       deployment: hyperdxDeployment,
     },
   };

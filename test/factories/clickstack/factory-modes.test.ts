@@ -30,7 +30,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAll } from 'js-yaml';
 
-import { clickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
+import {
+  clickstackBootstrap,
+  makeClickstackBootstrap,
+} from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { clickstackK8sTelemetry } from '../../../src/factories/clickstack/compositions/k8s-telemetry.js';
 import {
   DEFAULT_CLICKSTACK_REPO_NAME,
@@ -138,6 +141,69 @@ const TELEMETRY_SPEC = {
 
 describe('clickstackBootstrap factory modes', () => {
   describe("direct: factory('direct').toYaml(spec) — concrete manifests", () => {
+    it('loads credential values from a Secret without serializing inline credential fields', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+      });
+      const yaml = bootstrap.factory('direct').toYaml({
+        name: 'clickstack',
+        namespace: 'clickstack',
+        clickhouse: {
+          host: 'clickhouse-observability.clickhouse.svc.cluster.local',
+          username: 'otelcollector',
+        },
+        credentialsSecret: {
+          name: 'clickstack-credentials',
+          valuesKey: 'values.yaml',
+        },
+      } as never);
+      const release = splitDocs(yaml).find((doc) => docKind(doc) === 'HelmRelease');
+
+      expect(release).toContain('valuesFrom:');
+      expect(release).toContain('kind: Secret');
+      expect(release).toContain('name: clickstack-credentials');
+      expect(release).toContain('valuesKey: values.yaml');
+      expect(release).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(release).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(release).not.toContain('HYPERDX_API_KEY');
+      expect(release).not.toContain('defaultConnections');
+    });
+
+    it('rejects inline credential fields in Secret-backed mode', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+      });
+      expect(() =>
+        bootstrap.factory('direct').toYaml({
+          ...BOOTSTRAP_SPEC,
+          credentialsSecret: { name: 'clickstack-credentials' },
+        } as never)
+      ).toThrow('rejects inline');
+    });
+
+    it('rejects build-time credential-bearing values in Secret-backed mode', () => {
+      expect(() =>
+        makeClickstackBootstrap({
+          credentials: { source: 'secretValues' },
+          values: {
+            hyperdx: {
+              secrets: { CLICKHOUSE_PASSWORD: 'must-not-enter-the-rgd' },
+            },
+          },
+        })
+      ).toThrow('Put those values in the referenced Secret');
+
+      expect(() =>
+        makeClickstackBootstrap({
+          credentials: { source: 'secretValues' },
+          values: {
+            hyperdx: {
+              deployment: { defaultConnections: 'must-not-enter-the-rgd' },
+            },
+          },
+        })
+      ).toThrow('Put those values in the referenced Secret');
+    });
     it('emits the internal-Mongo resource set with correct namespace wiring and NO singleton document', () => {
       const factory = clickstackBootstrap.factory('direct', { namespace: 'clickstack' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
@@ -228,6 +294,28 @@ describe('clickstackBootstrap factory modes', () => {
   });
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
+    it('preserves Secret-backed valuesFrom wiring without exposing inline credential paths', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+        name: 'clickstack-secret-values',
+        kind: 'ClickStackSecretValues',
+      });
+      const yaml = bootstrap.factory('kro', { namespace: 'typekro-system' }).toYaml();
+      const serialized = JSON.stringify(loadAll(yaml));
+
+      expect(yaml).toContain('credentialsSecret:');
+      expect(yaml).toContain('valuesFrom:');
+      expect(yaml).toContain('kind: Secret');
+      expect(serialized).toContain('${schema.spec.credentialsSecret.name}');
+      expect(serialized).toContain(
+        'has(schema.spec.credentialsSecret) && has(schema.spec.credentialsSecret.valuesKey)'
+      );
+      expect(serialized).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(serialized).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(serialized).not.toContain('HYPERDX_API_KEY');
+      expect(yaml).toContain('validation="self == null"');
+    });
+
     it('toYaml(instance) bundles the singleton owner instance BEFORE the ClickStackBootstrap CR', () => {
       // `clickstackBootstrap` owns its workload namespace, so pin the instance CR
       // to an explicit control-plane namespace (decoupled from the `clickstack`

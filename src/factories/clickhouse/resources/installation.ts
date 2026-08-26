@@ -183,8 +183,23 @@ function compileUsers(
 ): Record<string, unknown> {
   const compiled: Record<string, unknown> = {};
   for (const user of users) {
+    if (user.passwordSha256Hex !== undefined && user.passwordSecretRef !== undefined) {
+      throw new Error(
+        `ClickHouse user ${user.name} cannot define both passwordSha256Hex and passwordSecretRef.`
+      );
+    }
     if (user.passwordSha256Hex !== undefined) {
       compiled[`${user.name}/password_sha256_hex`] = user.passwordSha256Hex;
+    }
+    if (user.passwordSecretRef !== undefined) {
+      compiled[`${user.name}/password`] = {
+        valueFrom: {
+          secretKeyRef: {
+            name: user.passwordSecretRef.name,
+            key: user.passwordSecretRef.key,
+          },
+        },
+      };
     }
     if (user.networksIp !== undefined) {
       compiled[`${user.name}/networks/ip`] = user.networksIp;

@@ -95,6 +95,48 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       expect(yaml).not.toContain('__typekroSchemaKey');
     });
 
+    it('compiles Secret-backed runtime user credentials in direct and KRO modes', () => {
+      const clickhouse = makeClickHouseCluster({
+        replicas: 1,
+        users: [
+          {
+            name: 'otelcollector',
+            credentialSource: 'secret',
+            networksIp: ['::/0'],
+          },
+        ],
+      });
+      const spec = {
+        name: 'observability',
+        namespace: 'observability',
+        version: '25.7',
+        storage: { size: '10Gi' },
+        users: {
+          otelcollector: {
+            passwordSecretRef: {
+              name: 'observability-credentials',
+              key: 'clickhouse-password',
+            },
+          },
+        },
+      };
+
+      const direct = clickhouse.factory('direct').toYaml(spec as never);
+      expect(direct).toContain('otelcollector/password:');
+      expect(direct).toContain('name: observability-credentials');
+      expect(direct).toContain('key: clickhouse-password');
+      expect(direct).not.toContain('password_sha256_hex');
+
+      const kro = clickhouse.toYaml();
+      expect(kro).toContain(
+        'name: ${schema.spec.users.otelcollector.passwordSecretRef.name}'
+      );
+      expect(kro).toContain(
+        'key: ${schema.spec.users.otelcollector.passwordSecretRef.key}'
+      );
+      expect(kro).not.toContain('otelcollector/password_sha256_hex');
+    });
+
     it('enables keeper by default for multi-replica topologies and requires the runtime host', () => {
       const yaml = makeClickHouseCluster({ replicas: 2 }).toYaml();
       expect(yaml).toContain('zookeeper');

@@ -42,7 +42,8 @@
 
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
-import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
+import type { HelmReleaseValuesFromSource } from '../helm/types.js';
 
 // ============================================================================
 // ClickHouse version-coupling guidance
@@ -192,6 +193,13 @@ export type ClickStackMongoBuildOptions =
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
+   * Credential transport selected at composition construction time.
+   * `inline` preserves the historical runtime fields. `secretValues` loads a
+   * complete Helm values fragment from a Kubernetes Secret through Flux and
+   * keeps credentials out of the RGD, instance, and HelmRelease values.
+   */
+  credentials?: { source: 'inline' } | { source: 'secretValues' };
+  /**
    * Static raw official-chart values merged at construction time (they win
    * over the typed mapping), EXCEPT the hard pins — `clickhouse.enabled: false`,
    * `mongodb.enabled: false`, and `fullnameOverride` (the status contract's
@@ -300,6 +308,19 @@ export const ClickStackBootstrapConfigSchema = type(bootstrapBaseShape);
 /** Runtime configuration for the internal-Mongo bootstrap variant. */
 export type ClickStackBootstrapConfig = typeof ClickStackBootstrapConfigSchema.infer;
 
+/** Runtime schema used by the Secret-backed internal-Mongo variant. */
+export const ClickStackSecretValuesBootstrapConfigSchema = type({
+  ...bootstrapBaseShape,
+  credentialsSecret: {
+    name: 'string > 0',
+    'valuesKey?': 'string > 0',
+  },
+});
+
+/** Runtime configuration for the Secret-backed internal-Mongo variant. */
+export type ClickStackSecretValuesBootstrapConfig =
+  typeof ClickStackSecretValuesBootstrapConfigSchema.infer;
+
 /**
  * Runtime spec for the external-Mongo variant: base + a required `mongoUri`.
  */
@@ -313,8 +334,27 @@ export const ClickStackExternalMongoBootstrapConfigSchema = type({
 export type ClickStackExternalMongoBootstrapConfig =
   typeof ClickStackExternalMongoBootstrapConfigSchema.infer;
 
+/** Runtime schema used by the Secret-backed external-Mongo variant. */
+export const ClickStackSecretValuesExternalMongoBootstrapConfigSchema = type({
+  ...bootstrapBaseShape,
+  credentialsSecret: {
+    name: 'string > 0',
+    'valuesKey?': 'string > 0',
+  },
+  mongoUri: 'string',
+});
+
+/** Runtime configuration for the Secret-backed external-Mongo variant. */
+export type ClickStackSecretValuesExternalMongoBootstrapConfig =
+  typeof ClickStackSecretValuesExternalMongoBootstrapConfigSchema.infer;
+
 /** Widest runtime config the values mapper accepts (either variant). */
-export type ClickStackBootstrapRuntimeConfig = ClickStackBootstrapConfig & {
+export type ClickStackBootstrapRuntimeConfig = (
+  | ClickStackBootstrapConfig
+  | ClickStackSecretValuesBootstrapConfig
+  | ClickStackExternalMongoBootstrapConfig
+  | ClickStackSecretValuesExternalMongoBootstrapConfig
+) & {
   mongoUri?: string;
   /**
    * INTERNAL, DIRECT-MODE-ONLY escape hatch — not part of the runtime
@@ -516,6 +556,8 @@ export interface ClickStackHelmReleaseConfig {
   repositoryNamespace?: string;
   /** Official clickstack chart values (graph-aware trees / runtime merges allowed). */
   values?: ClickStackMappedHelmValues;
+  /** Secret/ConfigMap values overlays resolved by Flux before inline values. */
+  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
   id?: string;
 }
 

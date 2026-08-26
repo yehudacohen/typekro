@@ -154,6 +154,7 @@ export function clickstackHelmRelease(
     },
     driftDetection: { mode: 'enabled' },
     values: config.values || {},
+    ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('ClickStack')

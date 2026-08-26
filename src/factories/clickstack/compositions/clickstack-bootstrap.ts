@@ -103,6 +103,10 @@ import {
   type ClickStackExternalMongoBuildOptions,
   type ClickStackInternalMongoBuildOptions,
   type ClickStackMongoStorageOptions,
+  type ClickStackSecretValuesBootstrapConfig,
+  ClickStackSecretValuesBootstrapConfigSchema,
+  type ClickStackSecretValuesExternalMongoBootstrapConfig,
+  ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
 } from '../types.js';
 import {
   DEFAULT_CLICKSTACK_NAMESPACE,
@@ -113,9 +117,16 @@ import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.
 /** Concrete, resolved build choices the composition body branches on. */
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
+  credentialSource: 'inline' | 'secretValues';
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
 }
+
+const secretValuesSchemaFieldValidations = {
+  'clickhouse.password': 'self == null',
+  'clickhouse.appPassword': 'self == null',
+  apiKey: 'self == null',
+} as const;
 
 /**
  * Shared composition body. `build` is CONCRETE (construction-time), so every
@@ -131,6 +142,11 @@ interface ResolvedBuildConfig {
  */
 function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBuildConfig) {
   {
+    const credentialsSecret = (
+      spec as
+        | ClickStackSecretValuesBootstrapConfig
+        | ClickStackSecretValuesExternalMongoBootstrapConfig
+    ).credentialsSecret;
     const resolvedNamespace = isKubernetesRef(spec.namespace)
       ? Cel.default(spec.namespace, DEFAULT_CLICKSTACK_NAMESPACE)
       : (spec.namespace ?? DEFAULT_CLICKSTACK_NAMESPACE);
@@ -140,8 +156,31 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
 
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
+      credentialSource: build.credentialSource,
       ...(build.values !== undefined && { values: build.values }),
     });
+
+    if (
+      build.credentialSource === 'secretValues' &&
+      !isKubernetesRef(credentialsSecret) &&
+      credentialsSecret === undefined
+    ) {
+      throw new Error(
+        'ClickStack secretValues credential mode requires credentialsSecret.'
+      );
+    }
+    if (
+      build.credentialSource === 'secretValues' &&
+      !isKubernetesRef(spec.clickhouse) &&
+      (spec.clickhouse.password !== undefined ||
+        spec.clickhouse.appPassword !== undefined ||
+        spec.apiKey !== undefined ||
+        spec.customValues !== undefined)
+    ) {
+      throw new Error(
+        'ClickStack secretValues credential mode rejects inline clickhouse.password, clickhouse.appPassword, apiKey, and runtime customValues.'
+      );
+    }
 
     const _clickstackNamespace = namespace({
       metadata: {
@@ -198,6 +237,20 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
+      ...(build.credentialSource === 'secretValues'
+        ? {
+            valuesFrom: [
+              {
+                kind: 'Secret' as const,
+                // biome-ignore lint/style/noNonNullAssertion: the secretValues schema requires credentialsSecret
+                name: credentialsSecret!.name,
+                valuesKey: isKubernetesRef(credentialsSecret?.valuesKey)
+                  ? Cel.default(credentialsSecret.valuesKey, 'values.yaml')
+                  : (credentialsSecret?.valuesKey ?? 'values.yaml'),
+              },
+            ],
+          }
+        : {}),
       id: 'clickstackHelmRelease',
     });
 
@@ -259,33 +312,52 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
 function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) {
   const build: ResolvedBuildConfig = {
     mongoMode: 'internal',
+    credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
   };
+  const secretValues = build.credentialSource === 'secretValues';
   return kubernetesComposition(
     {
       name: options.name ?? 'clickstack-bootstrap',
       kind: options.kind ?? 'ClickStackBootstrap',
-      spec: ClickStackBootstrapConfigSchema,
+      spec: secretValues
+        ? ClickStackSecretValuesBootstrapConfigSchema
+        : ClickStackBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackBootstrapConfig | ClickStackSecretValuesBootstrapConfig) =>
+      bootstrapBody(spec, build),
+    secretValues
+      ? { schemaFieldValidations: secretValuesSchemaFieldValidations }
+      : undefined
   );
 }
 
 function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) {
   const build: ResolvedBuildConfig = {
     mongoMode: 'external',
+    credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
   };
+  const secretValues = build.credentialSource === 'secretValues';
   return kubernetesComposition(
     {
       name: options.name ?? 'clickstack-bootstrap-external-mongo',
       kind: options.kind ?? 'ClickStackExternalMongoBootstrap',
-      spec: ClickStackExternalMongoBootstrapConfigSchema,
+      spec: secretValues
+        ? ClickStackSecretValuesExternalMongoBootstrapConfigSchema
+        : ClickStackExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
+    (
+      spec:
+        | ClickStackExternalMongoBootstrapConfig
+        | ClickStackSecretValuesExternalMongoBootstrapConfig
+    ) => bootstrapBody(spec, build),
+    secretValues
+      ? { schemaFieldValidations: secretValuesSchemaFieldValidations }
+      : undefined
   );
 }
 
@@ -319,6 +391,27 @@ export function makeClickstackBootstrap(
         'Build-time options (mongo mode/storage, static chart values, name/kind) are fixed at ' +
         'construction — move per-instance values into the runtime spec instead.'
     );
+  }
+  if (options.credentials?.source === 'secretValues') {
+    const hyperdx = options.values?.hyperdx;
+    const deployment =
+      hyperdx && typeof hyperdx === 'object' && !Array.isArray(hyperdx)
+        ? hyperdx.deployment
+        : undefined;
+    if (
+      hyperdx &&
+      typeof hyperdx === 'object' &&
+      !Array.isArray(hyperdx) &&
+      (hyperdx.secrets !== undefined ||
+        (deployment &&
+          typeof deployment === 'object' &&
+          !Array.isArray(deployment) &&
+          deployment.defaultConnections !== undefined))
+    ) {
+      throw new Error(
+        'makeClickstackBootstrap: secretValues credential mode rejects build-time hyperdx.secrets and hyperdx.deployment.defaultConnections. Put those values in the referenced Secret.'
+      );
+    }
   }
   if (options.mongo?.mode === 'external') {
     return buildExternalComposition(options as ClickStackExternalMongoBuildOptions);

@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   catalog and Distilled AWS `1.0.0-rc.6`; TypeKro's Effect runtime cohort moves
   with it to `4.0.0-rc.110`. CI now locks all three dependency boundaries so a
   partial upgrade cannot silently reintroduce incompatible runtime copies.
+- ClickHouse users may now source plaintext passwords through the Altinity
+  operator's native `secretKeyRef` support, and ClickStack bootstraps may load a
+  complete credential values fragment from a Kubernetes Secret through Flux.
+  The Secret-backed ClickStack variant omits credential values and default
+  connection passwords from RGD instances and HelmRelease inline values while
+  preserving direct/KRO parity.
 - KRO artifact bindings now use a topology-independent nested string-map
   schema, so adding or removing generated artifact outputs no longer changes
   the application CRD. Imperative and Alchemy deployments automatically migrate
