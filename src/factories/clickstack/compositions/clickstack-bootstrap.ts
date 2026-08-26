@@ -19,7 +19,7 @@
  * hits a JS branch on a proxy.
  *
  * What gets deployed:
- * 1. The target Namespace.
+ * 1. The default target Namespace when no external namespace is supplied.
  * 2. The shared ClickStack HelmRepository singleton.
  * 3. Internal-Mongo variant only: a minimal single-replica Mongo
  *    StatefulSet + Service (`mongo:7`, no operator/CRDs/auth — APP METADATA
@@ -117,6 +117,20 @@ interface ResolvedBuildConfig {
   values?: Record<string, unknown>;
 }
 
+function createDefaultClickStackNamespace(spec: ClickStackBootstrapRuntimeConfig): void {
+  namespace({
+    metadata: {
+      name: DEFAULT_CLICKSTACK_NAMESPACE,
+      labels: {
+        'app.kubernetes.io/name': 'clickstack',
+        'app.kubernetes.io/instance': spec.name,
+        'app.kubernetes.io/managed-by': 'typekro',
+      },
+    },
+    id: 'clickstackNamespace',
+  });
+}
+
 /**
  * Shared composition body. `build` is CONCRETE (construction-time), so every
  * plain-JS branch below is on build config — never on the (possibly
@@ -141,18 +155,6 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
       ...(build.values !== undefined && { values: build.values }),
-    });
-
-    const _clickstackNamespace = namespace({
-      metadata: {
-        name: resolvedNamespace,
-        labels: {
-          'app.kubernetes.io/name': 'clickstack',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/managed-by': 'typekro',
-        },
-      },
-      id: 'clickstackNamespace',
     });
 
     // One cluster-level Flux source shared by every ClickStack instance —
@@ -269,7 +271,10 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
       spec: ClickStackBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackBootstrapConfig) => {
+      if (!spec.namespace) createDefaultClickStackNamespace(spec);
+      return bootstrapBody(spec, build);
+    }
   );
 }
 
@@ -285,7 +290,10 @@ function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) 
       spec: ClickStackExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackExternalMongoBootstrapConfig) => {
+      if (!spec.namespace) createDefaultClickStackNamespace(spec);
+      return bootstrapBody(spec, build);
+    }
   );
 }
 

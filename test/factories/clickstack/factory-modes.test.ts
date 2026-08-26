@@ -120,7 +120,6 @@ function findSecretKeyRefs(value: unknown): Record<string, unknown>[] {
 
 const BOOTSTRAP_SPEC = {
   name: 'clickstack',
-  namespace: 'clickstack',
   clickhouse: {
     host: 'clickhouse-observability.clickhouse.svc.cluster.local',
     username: 'otelcollector',

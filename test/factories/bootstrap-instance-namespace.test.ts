@@ -210,7 +210,6 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(() => {
       yaml = factory.toYaml({
         name: 'clickstack',
-        namespace: 'clickstack',
         clickhouse: {
           host: 'ch.clickstack.svc.cluster.local',
           nativePort: 9000,

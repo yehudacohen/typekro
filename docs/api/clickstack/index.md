@@ -79,8 +79,13 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name, namespace, chart
-version, the ClickHouse connection, API key, HyperDX conveniences.
+static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release
+name, namespace, chart version, the ClickHouse connection, API key, HyperDX conveniences.
+
+Omit the runtime `namespace` to use the default `clickstack` Namespace and let the composition own its
+lifecycle. Supplying `namespace` means that the caller or a parent application graph owns it; ClickStack
+installs into the named Namespace without creating or deleting it. This keeps the common call declarative
+while ensuring a Namespace has exactly one lifecycle authority.
 
 Note `customValues` is **not part of the runtime schema** — it's absent from `bootstrapBaseShape`, so
 KRO-mode callers (whose spec is validated against that schema, and whose values come out as CEL) cannot

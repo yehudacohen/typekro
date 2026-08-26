@@ -140,6 +140,35 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
 });
 
 describe('makeClickstackBootstrap (build-time variants)', () => {
+  it('owns the default target namespace when namespace is omitted', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-owned-namespace',
+      kind: 'ClickstackOwnedNamespace',
+    });
+    const spec = {
+      name: 'clickstack',
+      clickhouse: { host: 'clickhouse.example' },
+    };
+
+    expect(bootstrap.factory('direct').toYaml(spec)).toContain('kind: Namespace');
+    expect(bootstrap.factory('kro').toYaml(spec)).toContain('kind: Namespace');
+  });
+
+  it('treats an explicitly supplied target namespace as externally owned', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-external-namespace',
+      kind: 'ClickstackExternalNamespace',
+    });
+    const spec = {
+      name: 'clickstack',
+      namespace: 'observability',
+      clickhouse: { host: 'clickhouse.example' },
+    };
+
+    expect(bootstrap.factory('direct').toYaml(spec)).not.toContain('kind: Namespace');
+    expect(bootstrap.factory('kro').toYaml(spec)).not.toContain('kind: Namespace');
+  });
+
   it('external-Mongo variant drops the internal Mongo resources and requires mongoUri in the spec schema', () => {
     const external = makeClickstackBootstrap({
       mongo: { mode: 'external' },
