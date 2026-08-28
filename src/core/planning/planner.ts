@@ -363,6 +363,90 @@ function canonicalizeStatusResourceReferences(
   }
 }
 
+function nestedStatusMappingValue(
+  mapping: string,
+  specSchema: SchemaIR,
+  resourceIds?: ReadonlySet<string>
+): PlanValue {
+  if (mapping.includes('__KUBERNETES_REF_') || mapping.includes('${')) {
+    return lowerPlanValue(mapping, { specSchema, resourceIds }).value;
+  }
+  try {
+    const literal = JSON.parse(mapping) as unknown;
+    if (
+      literal === null ||
+      typeof literal === 'string' ||
+      typeof literal === 'number' ||
+      typeof literal === 'boolean'
+    ) {
+      return lowerPlanValue(literal, { specSchema, resourceIds }).value;
+    }
+  } catch {
+    // A non-JSON mapping is an analyzed CEL expression.
+  }
+  return { kind: 'expression', expression: expressionIR(mapping) };
+}
+
+/**
+ * Nested compositions are authoring-time virtual resources. Canonical plans
+ * must lower their status references to the concrete child-resource
+ * expression captured during composition flattening; deployment runtimes
+ * cannot bind a virtual resource id after reconciliation.
+ */
+function resolveNestedStatusReferences(
+  value: PlanValue,
+  nestedStatusMappings: Readonly<Record<string, string>>,
+  specSchema: SchemaIR,
+  resourceIds?: ReadonlySet<string>
+): PlanValue {
+  if (value.kind === 'sensitive-value') {
+    return {
+      ...value,
+      value: resolveNestedStatusReferences(
+        value.value,
+        nestedStatusMappings,
+        specSchema,
+        resourceIds
+      ),
+    };
+  }
+  if (
+    value.kind === 'reference' &&
+    value.source === 'resource' &&
+    value.resourceId &&
+    value.nestedComposition
+  ) {
+    const fieldPath = value.fieldPath.replace(/^status\./, '');
+    const mapping = nestedStatusMappings[`__nestedStatus:${value.resourceId}:${fieldPath}`];
+    return mapping === undefined
+      ? value
+      : nestedStatusMappingValue(mapping, specSchema, resourceIds);
+  }
+  if (value.kind === 'array') {
+    return {
+      ...value,
+      items: value.items.map((item) =>
+        resolveNestedStatusReferences(item, nestedStatusMappings, specSchema, resourceIds)
+      ),
+    };
+  }
+  if (value.kind === 'object') {
+    return {
+      ...value,
+      entries: value.entries.map((entry) => ({
+        ...entry,
+        value: resolveNestedStatusReferences(
+          entry.value,
+          nestedStatusMappings,
+          specSchema,
+          resourceIds
+        ),
+      })),
+    };
+  }
+  return value;
+}
+
 function resourceFieldValue(
   desired: PlanValue,
   fieldPath: string,
@@ -570,6 +654,7 @@ function statusProjections(
   statusMappings: Readonly<Record<string, unknown>>,
   diagnostics: PlanDiagnostic[],
   specSchema: SchemaIR,
+  nestedStatusMappings: Readonly<Record<string, string>> = {},
   sensitiveSpecPaths: ReadonlySet<string> = new Set(),
   resourceIds?: ReadonlySet<string>,
   resourceAliases: ReadonlyMap<string, string> = new Map(),
@@ -589,7 +674,15 @@ function statusProjections(
     .filter((key) => !key.startsWith('__'))
     .sort()) {
     const lowered = lowerPlanValue(statusMappings[key], { specSchema, resourceIds });
-    const canonicalValue = canonicalizeStatusResourceReferences(lowered.value, resourceAliases);
+    const canonicalValue = canonicalizeStatusResourceReferences(
+      resolveNestedStatusReferences(
+        lowered.value,
+        nestedStatusMappings,
+        specSchema,
+        resourceIds
+      ),
+      resourceAliases
+    );
     const value = markSensitiveResourceReferences(
       markSensitiveSpecReferences(canonicalValue, sensitiveSpecPaths),
       resourceNodes,
@@ -665,6 +758,7 @@ function buildStatusContract<TSpec extends KroCompatibleType>(
     capture.ir.statusMappings,
     diagnostics,
     specSchema,
+    capture.ir.nestedStatusMappings,
     sensitiveSpecPaths,
     identityContext.resourceIds,
     identityContext.resourceAliases,

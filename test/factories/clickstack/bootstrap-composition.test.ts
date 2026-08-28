@@ -13,8 +13,11 @@
  *  - the typed status service contract (ui/gateway/app endpoints).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
 import { load } from 'js-yaml';
 
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import { materializePlanOutputs } from '../../../src/experimental-planning.js';
 import {
   clickstackBootstrap,
   makeClickstackBootstrap,
@@ -210,6 +213,51 @@ describe('makeClickstackBootstrap (build-time variants)', () => {
     expect(kroYaml).not.toContain('schema.spec.clickhouse.password');
     expect(kroYaml).not.toContain('schema.spec.clickhouse.appPassword');
     expect(kroYaml).not.toContain('schema.spec.apiKey');
+  });
+
+  it('lowers nested ClickStack endpoint outputs to concrete HelmRelease bindings', () => {
+    const bootstrap = makeClickstackBootstrap({ credentials: { source: 'secretValues' } });
+    const application = kubernetesComposition(
+      {
+        name: 'clickstack-output-application',
+        kind: 'ClickstackOutputApplication',
+        spec: type({
+          name: 'string',
+          namespace: 'string',
+          clickhouse: { host: 'string', username: 'string' },
+          credentialsSecret: { name: 'string', valuesKey: 'string' },
+        }),
+        status: type({ endpoint: 'string' }),
+      },
+      (spec) => {
+        const stack = bootstrap(spec as never);
+        return { endpoint: stack.status.gateway.otlpHttpEndpoint };
+      }
+    );
+    const spec = {
+      name: 'clickstack',
+      namespace: 'observability',
+      clickhouse: { host: 'clickhouse.example', username: 'otelcollector' },
+      credentialsSecret: { name: 'clickstack-credentials', valuesKey: 'values.yaml' },
+    };
+    const plan = application.plan!(spec, { strict: true });
+    const endpoint = plan.outputs.endpoint;
+
+    expect(endpoint).toMatchObject({ kind: 'template' });
+    expect(JSON.stringify(endpoint)).toContain('clickstackBootstrap1ClickstackHelmRelease');
+    expect(JSON.stringify(endpoint)).not.toContain('nestedComposition');
+    expect(
+      materializePlanOutputs({ endpoint }, {
+        resources: {
+          clickstackBootstrap1ClickstackHelmRelease: {
+            metadata: { name: 'clickstack', namespace: 'observability' },
+          },
+        },
+      })
+    ).toEqual({
+      endpoint:
+        'http://clickstack-otel-collector.observability.svc.cluster.local:4318',
+    });
   });
 
   it('keeps the existing inline-credential contract as the default variant', () => {
