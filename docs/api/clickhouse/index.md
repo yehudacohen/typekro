@@ -144,6 +144,30 @@ User names become CHI configuration path fragments (`<name>/password_sha256_hex`
 
 In `makeClickHouseCluster`, declared user names become **literal keys** in the generated runtime spec schema — `spec.users.signoz.passwordSha256Hex` — so each declared user's credential is a required, typed, ref-safe field.
 
+For credentials generated or managed by another controller, select the Secret-backed
+runtime shape when constructing the cluster. The CHI contains only the Secret
+reference; the cleartext password never enters the TypeKro instance or deployment
+state:
+
+```typescript
+const clickhouse = makeClickHouseCluster({
+  users: [{ name: 'otelcollector', credentialSource: 'secret' }],
+});
+
+clickhouse({
+  // ...name, namespace, version, storage...
+  users: {
+    otelcollector: {
+      passwordSecretRef: { name: 'clickhouse-credentials', key: 'password' },
+    },
+  },
+});
+```
+
+The low-level `clickHouseInstallation()` accepts the same
+`passwordSecretRef: { name, key }` field. A user must not declare both a Secret
+reference and `passwordSha256Hex`.
+
 ## Status Contract
 
 `makeClickHouseCluster` exposes a typed service contract so downstream compositions (e.g. a SigNoz factory) never reconstruct Altinity hostnames by hand:

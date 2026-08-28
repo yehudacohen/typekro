@@ -274,6 +274,45 @@ describe('ClickHouseInstallation Factory', () => {
       });
     });
 
+    it('should compile a Secret-backed cleartext password without exposing it in the CHI', () => {
+      const chi = clickHouseInstallation({
+        name: 'test-ch',
+        version: '25.12.5',
+        storage: { size: '10Gi' },
+        users: [
+          {
+            name: 'otelcollector',
+            passwordSecretRef: { name: 'clickhouse-credentials', key: 'password' },
+          },
+        ],
+      });
+
+      expect(chi.spec.configuration?.users).toEqual({
+        'otelcollector/password': {
+          valueFrom: {
+            secretKeyRef: { name: 'clickhouse-credentials', key: 'password' },
+          },
+        },
+      });
+    });
+
+    it('should reject competing password representations for one user', () => {
+      expect(() =>
+        clickHouseInstallation({
+          name: 'test-ch',
+          version: '25.12.5',
+          storage: { size: '10Gi' },
+          users: [
+            {
+              name: 'otelcollector',
+              passwordSha256Hex: 'abc123',
+              passwordSecretRef: { name: 'clickhouse-credentials', key: 'password' },
+            },
+          ],
+        })
+      ).toThrow(/only one of passwordSha256Hex or passwordSecretRef/);
+    });
+
     it('should omit user fields that are not provided', () => {
       const chi = clickHouseInstallation({
         name: 'test-ch',

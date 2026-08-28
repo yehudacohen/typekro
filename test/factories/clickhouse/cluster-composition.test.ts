@@ -95,6 +95,20 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       expect(yaml).not.toContain('__typekroSchemaKey');
     });
 
+    it('serializes build-selected Secret-backed user credentials in KRO mode', () => {
+      const clickhouse = makeClickHouseCluster({
+        users: [{ name: 'otelcollector', credentialSource: 'secret' }],
+      });
+
+      const yaml = clickhouse.toYaml();
+      expect(yaml).toContain('otelcollector/password:');
+      expect(yaml).toContain('valueFrom:');
+      expect(yaml).toContain(
+        'secretKeyRef: ${schema.spec.users.otelcollector.passwordSecretRef}'
+      );
+      expect(yaml).not.toContain('otelcollector/password_sha256_hex');
+    });
+
     it('enables keeper by default for multi-replica topologies and requires the runtime host', () => {
       const yaml = makeClickHouseCluster({ replicas: 2 }).toYaml();
       expect(yaml).toContain('zookeeper');

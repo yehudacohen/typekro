@@ -183,8 +183,18 @@ function compileUsers(
 ): Record<string, unknown> {
   const compiled: Record<string, unknown> = {};
   for (const user of users) {
+    if (user.passwordSha256Hex !== undefined && user.passwordSecretRef !== undefined) {
+      throw new Error(
+        `clickHouseInstallation: user '${user.name}' must declare only one of passwordSha256Hex or passwordSecretRef`
+      );
+    }
     if (user.passwordSha256Hex !== undefined) {
       compiled[`${user.name}/password_sha256_hex`] = user.passwordSha256Hex;
+    }
+    if (user.passwordSecretRef !== undefined) {
+      compiled[`${user.name}/password`] = {
+        valueFrom: { secretKeyRef: user.passwordSecretRef },
+      };
     }
     if (user.networksIp !== undefined) {
       compiled[`${user.name}/networks/ip`] = user.networksIp;

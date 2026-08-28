@@ -59,7 +59,11 @@ interface ResolvedTopology {
   replicas: number;
   shards: number;
   keeper: boolean;
-  users: readonly { name: string; networksIp: readonly string[] }[];
+  users: readonly {
+    name: string;
+    networksIp: readonly string[];
+    credentialSource: 'sha256Hex' | 'secret';
+  }[];
 }
 
 function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology {
@@ -80,6 +84,7 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
     users: (topology.users ?? []).map((user) => ({
       name: user.name,
       networksIp: user.networksIp ?? DEFAULT_USER_NETWORKS_IP,
+      credentialSource: user.credentialSource ?? 'sha256Hex',
     })),
   };
 }
@@ -113,7 +118,17 @@ function buildSpecSchema(topology: ResolvedTopology) {
 
   if (topology.users.length > 0) {
     definition.users = Object.fromEntries(
-      topology.users.map((user) => [user.name, { passwordSha256Hex: 'string' }])
+      topology.users.map((user) => [
+        user.name,
+        user.credentialSource === 'secret'
+          ? {
+              passwordSecretRef: {
+                name: 'string > 0',
+                key: 'string > 0',
+              },
+            }
+          : { passwordSha256Hex: 'string' },
+      ])
     );
   }
 
@@ -177,12 +192,25 @@ export function makeClickHouseCluster(
       // Runtime credentials pair with build-time user names by LITERAL key:
       // `spec.users.<name>.passwordSha256Hex` is a plain schema path, so it
       // serializes to clean CEL. Names/networks come from the topology.
-      const users: ClickHouseUser[] = resolved.users.map((user) => ({
-        name: user.name,
+      const users: ClickHouseUser[] = resolved.users.map((user) => {
         // biome-ignore lint/style/noNonNullAssertion: the generated schema requires one users.<name> entry per declared user
-        passwordSha256Hex: spec.users![user.name]!.passwordSha256Hex,
-        networksIp: [...user.networksIp],
-      }));
+        const credential = spec.users![user.name]!;
+        return {
+          name: user.name,
+          ...(user.credentialSource === 'secret'
+            ? {
+                passwordSecretRef: (
+                  credential as { passwordSecretRef: { name: string; key: string } }
+                ).passwordSecretRef,
+              }
+            : {
+                passwordSha256Hex: (
+                  credential as { passwordSha256Hex: string }
+                ).passwordSha256Hex,
+              }),
+          networksIp: [...user.networksIp],
+        };
+      });
 
       const clickhouse = clickHouseInstallation({
         name: spec.name,
