@@ -12,7 +12,7 @@
  *
  * BUILD-TIME vs RUNTIME: `makeClickstackBootstrap(options)` constructs a
  * composition VARIANT. Options that decide WHICH resources exist (the Mongo
- * mode + its storage shape) and the static raw chart values are build-time —
+ * mode + its storage shape), credential transport, and static raw chart values are build-time —
  * plain JS may branch on them because they are always concrete. The runtime
  * spec carries only proxy-safe values (names, namespaces, endpoints,
  * versions, credentials); a user composing with `schema.spec.*` refs never
@@ -100,6 +100,8 @@ import {
   type ClickStackBuildOptions,
   type ClickStackExternalMongoBootstrapConfig,
   ClickStackExternalMongoBootstrapConfigSchema,
+  ClickStackSecretValuesBootstrapConfigSchema,
+  ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
   type ClickStackExternalMongoBuildOptions,
   type ClickStackInternalMongoBuildOptions,
   type ClickStackMongoStorageOptions,
@@ -113,6 +115,7 @@ import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.
 /** Concrete, resolved build choices the composition body branches on. */
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
+  credentialsSource: 'inline' | 'secretValues';
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
 }
@@ -154,6 +157,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
 
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
+      credentialsSource: build.credentialsSource,
       ...(build.values !== undefined && { values: build.values }),
     });
 
@@ -200,6 +204,17 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
+      ...(build.credentialsSource === 'secretValues' && {
+        valuesFrom: [
+          {
+            kind: 'Secret' as const,
+            name: spec.credentialsSecret?.name as string,
+            valuesKey: isKubernetesRef(spec.credentialsSecret?.valuesKey)
+              ? Cel.default(spec.credentialsSecret?.valuesKey, 'values.yaml')
+              : (spec.credentialsSecret?.valuesKey ?? 'values.yaml'),
+          },
+        ],
+      }),
       id: 'clickstackHelmRelease',
     });
 
@@ -261,6 +276,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
 function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) {
   const build: ResolvedBuildConfig = {
     mongoMode: 'internal',
+    credentialsSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
   };
@@ -268,7 +284,10 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
     {
       name: options.name ?? 'clickstack-bootstrap',
       kind: options.kind ?? 'ClickStackBootstrap',
-      spec: ClickStackBootstrapConfigSchema,
+      spec:
+        build.credentialsSource === 'secretValues'
+          ? ClickStackSecretValuesBootstrapConfigSchema
+          : ClickStackBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackBootstrapConfig) => {
@@ -281,13 +300,17 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
 function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) {
   const build: ResolvedBuildConfig = {
     mongoMode: 'external',
+    credentialsSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
   };
   return kubernetesComposition(
     {
       name: options.name ?? 'clickstack-bootstrap-external-mongo',
       kind: options.kind ?? 'ClickStackExternalMongoBootstrap',
-      spec: ClickStackExternalMongoBootstrapConfigSchema,
+      spec:
+        build.credentialsSource === 'secretValues'
+          ? ClickStackSecretValuesExternalMongoBootstrapConfigSchema
+          : ClickStackExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
     (spec: ClickStackExternalMongoBootstrapConfig) => {
@@ -307,8 +330,8 @@ export type ClickStackExternalMongoBootstrapComposition = ReturnType<
 
 /**
  * Construct a ClickStack bootstrap composition variant. Build-time options
- * select WHICH resources exist (Mongo mode/storage) and bake static raw chart
- * values; everything per-instance stays in the runtime spec.
+ * select WHICH resources exist (Mongo mode/storage), credential transport,
+ * and bake static raw chart values; everything per-instance stays in the runtime spec.
  */
 export function makeClickstackBootstrap(
   options?: ClickStackInternalMongoBuildOptions
@@ -324,7 +347,7 @@ export function makeClickstackBootstrap(
   if (containsKubernetesRefs(options)) {
     throw new Error(
       'makeClickstackBootstrap: build-time options contain a schema/resource reference. ' +
-        'Build-time options (mongo mode/storage, static chart values, name/kind) are fixed at ' +
+        'Build-time options (mongo mode/storage, credential transport, static chart values, name/kind) are fixed at ' +
         'construction — move per-instance values into the runtime spec instead.'
     );
   }

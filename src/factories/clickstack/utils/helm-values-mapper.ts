@@ -97,6 +97,8 @@ export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
 export interface ClickStackValuesMapperOptions {
   /** Which Mongo wiring to emit (build-time; default 'internal'). */
   mongoMode?: 'internal' | 'external';
+  /** Credential values are supplied by a Flux Secret values source. */
+  credentialsSource?: 'inline' | 'secretValues';
   /** Static raw chart values merged after the typed mapping (pins re-applied after). */
   values?: TypeKroChartValues<ClickStackHelmValues>;
 }
@@ -339,6 +341,7 @@ export function mapClickStackConfigToHelmValues(
 ): ClickStackMappedHelmValues {
   const isGraph = isKubernetesRef(config.name) || isKubernetesRef(config.clickhouse);
   const mongoMode = options.mongoMode ?? 'internal';
+  const credentialsSource = options.credentialsSource ?? 'inline';
 
   const ch = config.clickhouse;
   const hyperdxConfig: Record<string, unknown> = {};
@@ -357,10 +360,6 @@ export function mapClickStackConfigToHelmValues(
     const appUsername = Cel.expr<string>(
       `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
         `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
-    );
-    const appPassword = Cel.expr<string>(
-      `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
-        `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
     );
 
     hyperdxConfig.CLICKHOUSE_ENDPOINT = Cel.template(
@@ -381,21 +380,27 @@ export function mapClickStackConfigToHelmValues(
           );
     hyperdxConfig.FRONTEND_URL = graphOptional('schema.spec.hyperdx.frontendUrl');
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(ch.password, '');
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    hyperdxSecrets.HYPERDX_API_KEY = graphOptional('schema.spec.apiKey');
+    if (credentialsSource === 'inline') {
+      const appPassword = Cel.expr<string>(
+        `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
+          `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
+      );
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(ch.password, '');
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      hyperdxSecrets.HYPERDX_API_KEY = graphOptional('schema.spec.apiKey');
+      hyperdxDeployment.defaultConnections = Cel.template(
+        DEFAULT_CONNECTIONS_FORMAT,
+        ch.host,
+        httpPortStr,
+        httpPortStr,
+        appUsername,
+        appPassword
+      );
+    }
 
     hyperdxDeployment.replicas = graphOptional('schema.spec.hyperdx.replicas');
     hyperdxDeployment.resources = graphOptional('schema.spec.hyperdx.resources');
     hyperdxDeployment.image = graphOptional('schema.spec.hyperdx.image');
-    hyperdxDeployment.defaultConnections = Cel.template(
-      DEFAULT_CONNECTIONS_FORMAT,
-      ch.host,
-      httpPortStr,
-      httpPortStr,
-      appUsername,
-      appPassword
-    );
     const database = resolve(ch.database, 'default');
     hyperdxDeployment.defaultSources = Cel.template(
       DEFAULT_SOURCES_FORMAT,
@@ -409,7 +414,7 @@ export function mapClickStackConfigToHelmValues(
     const httpPort = ch.httpPort ?? 8123;
     const database = ch.database ?? 'default';
     const username = ch.username ?? 'default';
-    const password = ch.password ?? '';
+    const password = credentialsSource === 'inline' ? (ch.password ?? '') : '';
     const appUsername = ch.appUsername ?? username;
     const appPassword = ch.appPassword ?? password;
 
@@ -423,29 +428,33 @@ export function mapClickStackConfigToHelmValues(
         : `mongodb://${config.name}${CLICKSTACK_MONGO_NAME_SUFFIX}.${config.namespace ?? DEFAULT_CLICKSTACK_NAMESPACE}.svc.cluster.local:${CLICKSTACK_MONGO_PORT}/hyperdx`;
     setIfDefined(hyperdxConfig, 'FRONTEND_URL', config.hyperdx?.frontendUrl);
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    setIfDefined(hyperdxSecrets, 'HYPERDX_API_KEY', config.apiKey);
+    if (credentialsSource === 'inline') {
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      setIfDefined(hyperdxSecrets, 'HYPERDX_API_KEY', config.apiKey);
+    }
 
     setIfDefined(hyperdxDeployment, 'replicas', config.hyperdx?.replicas);
     setIfDefined(hyperdxDeployment, 'resources', config.hyperdx?.resources);
     setIfDefined(hyperdxDeployment, 'image', config.hyperdx?.image);
-    hyperdxDeployment.defaultConnections = JSON.stringify([
-      {
-        name: CLICKSTACK_CONNECTION_NAME,
-        host: `http://${ch.host}:${httpPort}`,
-        port: httpPort,
-        username: appUsername,
-        password: appPassword,
-      },
-    ]);
+    if (credentialsSource === 'inline') {
+      hyperdxDeployment.defaultConnections = JSON.stringify([
+        {
+          name: CLICKSTACK_CONNECTION_NAME,
+          host: `http://${ch.host}:${httpPort}`,
+          port: httpPort,
+          username: appUsername,
+          password: appPassword,
+        },
+      ]);
+    }
     hyperdxDeployment.defaultSources = DEFAULT_SOURCES_FORMAT.replace(/%s/g, () => database);
   }
 
   const values: ClickStackHelmValues = {
     hyperdx: {
       config: hyperdxConfig,
-      secrets: hyperdxSecrets,
+      ...(credentialsSource === 'inline' && { secrets: hyperdxSecrets }),
       deployment: hyperdxDeployment,
     },
   };

@@ -7,15 +7,37 @@ OFFICIAL `clickstack` Helm chart (3.0.x, MIT) from
 **external ClickHouse** you already run (e.g. an Altinity-operator-managed
 [`ClickHouseInstallation`](../clickhouse/)).
 
-## Secrets Caveat
+## Secret-backed credentials
 
-`clickhouse.password`, `clickhouse.appPassword`, and `apiKey` travel as **plaintext** runtime spec
-values all the way into the generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
-object stored in etcd, readable by anyone with read access to the HelmRelease/RGD instance
-(`kubectl get helmrelease -o yaml`). This is unlike `clickstackK8sTelemetry`'s `apiKeySecret` (a
-`secretKeyRef` env var — the value never appears in any CR spec). There is currently **no
-existing-Secret alternative** for these three fields. Do not treat this family as production-ready
-for credentials that need stronger-than-etcd-RBAC protection until that gap is closed.
+The default variant retains the original convenient inline fields (`clickhouse.password`,
+`clickhouse.appPassword`, and `apiKey`). Those values appear in the HelmRelease spec and are suitable
+only when etcd/RBAC exposure is acceptable.
+
+Production compositions should select the build-time Secret-values contract. The runtime schema then
+requires `credentialsSecret`, removes the plaintext credential fields, and Flux loads a complete Helm
+values document without copying its bytes into the RGD, instance, or HelmRelease:
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  credentials: { source: 'secretValues' },
+});
+
+await bootstrap.factory('kro').deploy({
+  name: 'clickstack',
+  namespace: 'observability',
+  clickhouse: {
+    host: 'clickhouse-observability.clickhouse.svc.cluster.local',
+    username: 'otelcollector',
+  },
+  credentialsSecret: {
+    name: 'clickstack-credentials',
+    valuesKey: 'values.yaml',
+  },
+});
+```
+
+The Secret key must contain a Helm values YAML document. TypeKro does not own that externally supplied
+Secret; its creator remains responsible for rotation and lifecycle.
 
 ## Import
 
@@ -79,7 +101,7 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release
+credential transport, static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release
 name, namespace, chart version, the ClickHouse connection, API key, HyperDX conveniences.
 
 Omit the runtime `namespace` to use the default `clickstack` Namespace and let the composition own its

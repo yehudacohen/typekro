@@ -182,6 +182,48 @@ describe('makeClickstackBootstrap (build-time variants)', () => {
     expect(yaml).toContain('mongoUri');
   });
 
+  it('loads credential Helm values from a required Secret in direct and KRO modes', () => {
+    const bootstrap = makeClickstackBootstrap({
+      credentials: { source: 'secretValues' },
+      name: 'clickstack-secret-values',
+      kind: 'ClickstackSecretValues',
+    });
+    const spec = {
+      name: 'clickstack',
+      namespace: 'observability',
+      clickhouse: { host: 'clickhouse.example', username: 'otelcollector' },
+      credentialsSecret: { name: 'clickstack-credentials', valuesKey: 'private-values.yaml' },
+    };
+
+    const directYaml = bootstrap.factory('direct').toYaml(spec);
+    expect(directYaml).toContain('valuesFrom:');
+    expect(directYaml).toContain('name: clickstack-credentials');
+    expect(directYaml).toContain('valuesKey: private-values.yaml');
+    expect(directYaml).not.toContain('CLICKHOUSE_PASSWORD');
+    expect(directYaml).not.toContain('CLICKHOUSE_APP_PASSWORD');
+    expect(directYaml).not.toContain('HYPERDX_API_KEY');
+
+    const kroYaml = bootstrap.toYaml();
+    expect(kroYaml).toContain('credentialsSecret');
+    expect(kroYaml).toContain('name: ${schema.spec.credentialsSecret.name}');
+    expect(kroYaml).toContain('schema.spec.credentialsSecret.valuesKey');
+    expect(kroYaml).not.toContain('schema.spec.clickhouse.password');
+    expect(kroYaml).not.toContain('schema.spec.clickhouse.appPassword');
+    expect(kroYaml).not.toContain('schema.spec.apiKey');
+  });
+
+  it('keeps the existing inline-credential contract as the default variant', () => {
+    const yaml = makeClickstackBootstrap({
+      name: 'clickstack-inline-values',
+      kind: 'ClickstackInlineValues',
+    }).toYaml();
+
+    expect(yaml).toContain('password: string');
+    expect(yaml).toContain('apiKey: string');
+    expect(yaml).not.toContain('credentialsSecret');
+    expect(yaml).not.toContain('valuesFrom:');
+  });
+
   it('rejects schema refs in build-time options with an actionable error', () => {
     expect(() =>
       makeClickstackBootstrap({

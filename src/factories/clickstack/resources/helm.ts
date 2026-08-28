@@ -153,6 +153,7 @@ export function clickstackHelmRelease(
       kind: 'HelmRepository',
     },
     driftDetection: { mode: 'enabled' },
+    ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
     values: config.values || {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(

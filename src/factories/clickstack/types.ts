@@ -42,7 +42,8 @@
 
 import { type } from 'arktype';
 import type { ValuesMergeExpression } from '../../core/aspects/values-merge.js';
-import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { TypeKroChartValues, TypeKroValue } from '../../core/types/common.js';
+import type { HelmReleaseValuesFromSource } from '../helm/types.js';
 
 // ============================================================================
 // ClickHouse version-coupling guidance
@@ -192,6 +193,15 @@ export type ClickStackMongoBuildOptions =
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
+   * Credential transport selected when the composition is constructed.
+   *
+   * `secretValues` replaces the plaintext credential fields in the runtime
+   * schema with a required Secret reference. Flux loads the complete Helm
+   * values document from that Secret, so secret bytes never enter the RGD,
+   * instance, or HelmRelease spec.
+   */
+  credentials?: { source: 'secretValues' };
+  /**
    * Static raw official-chart values merged at construction time (they win
    * over the typed mapping), EXCEPT the hard pins — `clickhouse.enabled: false`,
    * `mongodb.enabled: false`, and `fullnameOverride` (the status contract's
@@ -229,45 +239,30 @@ export type ClickStackBuildOptions =
 // Bootstrap runtime spec (external ClickHouse)
 // ============================================================================
 
-const bootstrapBaseShape = {
+const bootstrapClickHouseShape = {
+  /** DNS host of the external ClickHouse service (no scheme, no port). */
+  host: 'string',
+  /** Native TCP port (default: 9000) → `CLICKHOUSE_ENDPOINT`/`CLICKHOUSE_SERVER_ENDPOINT`. */
+  'nativePort?': 'number.integer',
+  /** HTTP port (default: 8123) → HyperDX UI `defaultConnections` host. */
+  'httpPort?': 'number.integer',
+  /** OTel export target database (default: 'default') → `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`. */
+  'database?': 'string',
+  /** Ingest/collector user (default: 'default'). */
+  'username?': 'string',
+  /** Read-mostly UI user for HyperDX connections (default: `username`). */
+  'appUsername?': 'string',
+} as const;
+
+const bootstrapShapeWithoutCredentials = {
   /** Release name for the Helm installation. */
   name: 'string',
   /** Namespace for the stack (default: 'clickstack'). */
   'namespace?': 'string',
   /** Chart version (default: '3.0.1'). */
   'version?': 'string',
-  // SECRETS CAVEAT: `password`/`appPassword` below (and `apiKey` further
-  // down) travel as PLAINTEXT runtime spec values all the way into the
-  // generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
-  // object stored in etcd, readable by anyone with read access to the
-  // HelmRelease/RGD instance (`kubectl get helmrelease -o yaml`), unlike
-  // `k8s-telemetry.ts`'s `apiKeySecret` (a `secretKeyRef` env var — the
-  // value never appears in any CR spec). There is currently NO
-  // existing-Secret / secretKeyRef alternative for these three fields.
-  // Treat them as no more protected than any other spec field; do not
-  // consider this family production-ready for credentials that need
-  // stronger-than-etcd-RBAC protection until that gap is closed.
   /** External ClickHouse connection (REQUIRED — external-only build-around). */
-  clickhouse: {
-    /** DNS host of the external ClickHouse service (no scheme, no port). */
-    host: 'string',
-    /** Native TCP port (default: 9000) → `CLICKHOUSE_ENDPOINT`/`CLICKHOUSE_SERVER_ENDPOINT`. */
-    'nativePort?': 'number.integer',
-    /** HTTP port (default: 8123) → HyperDX UI `defaultConnections` host. */
-    'httpPort?': 'number.integer',
-    /** OTel export target database (default: 'default') → `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`. */
-    'database?': 'string',
-    /** Ingest/collector user (default: 'default') → `hyperdx.config.CLICKHOUSE_USER`. Needs SELECT,INSERT,CREATE,SHOW on the database. */
-    'username?': 'string',
-    /** Ingest/collector password → `hyperdx.secrets.CLICKHOUSE_PASSWORD` (default: ''). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
-    'password?': 'string',
-    /** Read-mostly UI user for HyperDX connections (default: `username`). Needs SHOW + SELECT. */
-    'appUsername?': 'string',
-    /** UI user password → `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (default: `password`). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
-    'appPassword?': 'string',
-  },
-  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. PLAINTEXT in the HelmRelease spec — see the secrets caveat above `clickhouse`. */
-  'apiKey?': 'string',
+  clickhouse: bootstrapClickHouseShape,
   /** HyperDX app (UI/API) conveniences. */
   'hyperdx?': {
     'replicas?': 'number.integer',
@@ -276,6 +271,22 @@ const bootstrapBaseShape = {
     /** Public URL of the HyperDX UI → `hyperdx.config.FRONTEND_URL`. */
     'frontendUrl?': 'string',
   },
+} as const;
+
+const bootstrapBaseShape = {
+  ...bootstrapShapeWithoutCredentials,
+  // Compatibility/convenience mode: these credential values are embedded in
+  // the HelmRelease spec. Select build.credentials.source='secretValues' for
+  // the production schema that replaces them with credentialsSecret.
+  clickhouse: {
+    ...bootstrapClickHouseShape,
+    /** Ingest/collector password → `hyperdx.secrets.CLICKHOUSE_PASSWORD` (default: ''). PLAINTEXT in the HelmRelease spec. */
+    'password?': 'string',
+    /** UI user password → `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (default: `password`). PLAINTEXT in the HelmRelease spec. */
+    'appPassword?': 'string',
+  },
+  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. PLAINTEXT in the HelmRelease spec. */
+  'apiKey?': 'string',
   // NOTE: `customValues` is NOT part of this schema, so KRO-mode callers
   // (validated against this shape) can't use it — the mapped values tree
   // carries CEL templates (CLICKHOUSE_ENDPOINT, defaultConnections, ...),
@@ -300,12 +311,35 @@ export const ClickStackBootstrapConfigSchema = type(bootstrapBaseShape);
 /** Runtime configuration for the internal-Mongo bootstrap variant. */
 export type ClickStackBootstrapConfig = typeof ClickStackBootstrapConfigSchema.infer;
 
+/** Runtime schema used by the build-selected Secret-values credential mode. */
+export const ClickStackSecretValuesBootstrapConfigSchema = type({
+  ...bootstrapShapeWithoutCredentials,
+  credentialsSecret: {
+    name: 'string > 0',
+    'valuesKey?': 'string > 0',
+  },
+});
+
+/** Runtime configuration for Secret-backed Helm values. */
+export type ClickStackSecretValuesBootstrapConfig =
+  typeof ClickStackSecretValuesBootstrapConfigSchema.infer;
+
 /**
  * Runtime spec for the external-Mongo variant: base + a required `mongoUri`.
  */
 export const ClickStackExternalMongoBootstrapConfigSchema = type({
   ...bootstrapBaseShape,
   /** Full MongoDB connection URI → `hyperdx.config.MONGO_URI` (verbatim). */
+  mongoUri: 'string',
+});
+
+/** External-Mongo runtime schema with Secret-backed Helm values. */
+export const ClickStackSecretValuesExternalMongoBootstrapConfigSchema = type({
+  ...bootstrapShapeWithoutCredentials,
+  credentialsSecret: {
+    name: 'string > 0',
+    'valuesKey?': 'string > 0',
+  },
   mongoUri: 'string',
 });
 
@@ -316,6 +350,7 @@ export type ClickStackExternalMongoBootstrapConfig =
 /** Widest runtime config the values mapper accepts (either variant). */
 export type ClickStackBootstrapRuntimeConfig = ClickStackBootstrapConfig & {
   mongoUri?: string;
+  credentialsSecret?: { name: string; valuesKey?: string };
   /**
    * INTERNAL, DIRECT-MODE-ONLY escape hatch — not part of the runtime
    * schema (`bootstrapBaseShape`), so KRO-mode callers can never populate
@@ -516,6 +551,8 @@ export interface ClickStackHelmReleaseConfig {
   repositoryNamespace?: string;
   /** Official clickstack chart values (graph-aware trees / runtime merges allowed). */
   values?: ClickStackMappedHelmValues;
+  /** Flux Secret/ConfigMap sources merged before inline values. */
+  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
   id?: string;
 }
 
