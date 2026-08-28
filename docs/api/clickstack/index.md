@@ -17,8 +17,6 @@ For production, construct the Secret-backed variant:
 
 ```typescript
 const clickstack = makeClickstackBootstrap({
-  // Select external when a parent platform owns the workload Namespace.
-  namespaceOwnership: 'external',
   credentials: { source: 'secretValues' },
 });
 
@@ -42,9 +40,10 @@ non-sensitive inline values. TypeKro deliberately omits those credential-bearing
 HelmRelease and rejects inline password/API-key fields in this variant. The Secret must be in the
 ClickStack workload namespace because Flux values references are namespace-local.
 
-`namespaceOwnership` defaults to `owned` for standalone use. Set it to `external` when a parent
-platform owns the workload Namespace; ClickStack will still target that namespace but will not create
-or delete it.
+Omit `namespace` to let TypeKro create and own the documented `clickstack` default Namespace. Pass
+`namespace` when a parent platform owns the workload Namespace; ClickStack targets that Namespace
+without creating or deleting it. The same rule is preserved when the factory is nested in another
+composition, so one Kubernetes Namespace never gains competing lifecycle owners.
 
 ## Import
 
@@ -60,9 +59,8 @@ import {
 ## Quick Example
 
 ```typescript
-// 1. The stack (internal dev-first Mongo, external ClickHouse). The bootstrap
-// owns its Namespace, so TypeKro hoists that namespace out of the RGD graph
-// (retained) and the instance CR stays in the `clickstack` namespace:
+// 1. The stack (internal dev-first Mongo, external ClickHouse). Omitting the
+// runtime namespace asks TypeKro to hoist and own its `clickstack` default.
 const bootstrap = makeClickstackBootstrap({ credentials: { source: 'secretValues' } });
 const factory = bootstrap.factory('kro', { namespace: 'typekro-system' });
 const stack = await factory.deploy({

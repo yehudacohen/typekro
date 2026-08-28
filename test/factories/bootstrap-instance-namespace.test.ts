@@ -204,7 +204,7 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
     expect(bNamespace?.props.namespaceEmptyGate).toBe(true);
   });
 
-  it('clickstackBootstrap serializes without throwing (instance in workload ns)', () => {
+  it('clickstackBootstrap treats an explicit workload namespace as externally owned', () => {
     const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
     let yaml = '';
     expect(() => {
@@ -221,6 +221,7 @@ describe('bootstrap factories: self-owned namespace is hoisted + retained, not r
       } as never);
     }).not.toThrow();
     expect(yaml).toMatch(/namespace: clickstack$/m);
-    expect(yaml).toContain('typekro.io/kro-instance-namespace');
+    expect(yaml).toContain("typekro.io/hoisted-namespaces: '[]'");
+    expect(yaml).not.toContain('typekro.io/kro-instance-namespace');
   });
 });

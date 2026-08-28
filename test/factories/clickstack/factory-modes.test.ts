@@ -30,6 +30,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAll } from 'js-yaml';
 
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import {
   clickstackBootstrap,
   makeClickstackBootstrap,
@@ -43,6 +44,10 @@ import {
   DEFAULT_OTEL_REPO_NAME,
   DEFAULT_OTEL_REPO_URL,
 } from '../../../src/factories/clickstack/resources/helm.js';
+import {
+  ClickStackBootstrapConfigSchema,
+  ClickStackBootstrapStatusSchema,
+} from '../../../src/factories/clickstack/types.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
 const ORIGINAL_KUBECONFIG = process.env.KUBECONFIG;
@@ -142,13 +147,37 @@ const TELEMETRY_SPEC = {
 describe('clickstackBootstrap factory modes', () => {
   describe("direct: factory('direct').toYaml(spec) — concrete manifests", () => {
     it('can consume an externally managed namespace without owning it', () => {
-      const bootstrap = makeClickstackBootstrap({
-        namespaceOwnership: 'external',
-      });
+      const bootstrap = makeClickstackBootstrap();
       const yaml = bootstrap.factory('direct').toYaml(BOOTSTRAP_SPEC);
 
       expect(splitDocs(yaml).some((doc) => docKind(doc) === 'Namespace')).toBe(false);
       expect(yaml).toContain('namespace: clickstack');
+    });
+
+    it('preserves the external namespace boundary when nested in another composition', () => {
+      const bootstrap = makeClickstackBootstrap();
+      const parent = kubernetesComposition(
+        {
+          name: 'nested-clickstack',
+          kind: 'NestedClickStack',
+          spec: ClickStackBootstrapConfigSchema,
+          status: ClickStackBootstrapStatusSchema,
+        },
+        (spec) => bootstrap(spec).status
+      );
+
+      const yaml = parent.factory('direct').toYaml(BOOTSTRAP_SPEC as never);
+
+      expect(splitDocs(yaml).some((doc) => docKind(doc) === 'Namespace')).toBe(false);
+      expect(yaml).toContain('namespace: clickstack');
+    });
+
+    it('owns the default namespace only when namespace is omitted', () => {
+      const { namespace: _externalNamespace, ...standaloneSpec } = BOOTSTRAP_SPEC;
+      const yaml = clickstackBootstrap.factory('direct').toYaml(standaloneSpec as never);
+      const namespaceDocument = splitDocs(yaml).find((doc) => docKind(doc) === 'Namespace');
+
+      expect(namespaceDocument).toContain('name: clickstack');
     });
 
     it('loads credential values from a Secret without serializing inline credential fields', () => {
@@ -220,9 +249,9 @@ describe('clickstackBootstrap factory modes', () => {
       const docs = splitDocs(yaml);
       const kinds = docs.map(docKind);
 
-      // Internal-Mongo default: Namespace + Mongo StatefulSet/Service +
-      // HelmRelease + the idempotent authoritative-Team bootstrap Job.
-      expect(kinds).toContain('Namespace');
+      // The supplied namespace is external; ClickStack owns only Mongo,
+      // HelmRelease, and the idempotent authoritative-Team bootstrap Job.
+      expect(kinds).not.toContain('Namespace');
       expect(kinds).toContain('StatefulSet');
       expect(kinds).toContain('Service');
       expect(kinds).toContain('HelmRelease');
@@ -325,14 +354,22 @@ describe('clickstackBootstrap factory modes', () => {
   });
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
-    it('keeps an externally managed namespace out of the generated resource graph', () => {
-      const bootstrap = makeClickstackBootstrap({
-        namespaceOwnership: 'external',
+    it('hoists namespace ownership only when the runtime namespace is absent', async () => {
+      const bootstrap = makeClickstackBootstrap();
+      const factory = bootstrap.factory('kro', {
+        namespace: 'typekro-system',
+        waitForReady: false,
       });
-      const yaml = bootstrap.factory('kro').toYaml();
+      const { namespace: _externalNamespace, ...standaloneSpec } = BOOTSTRAP_SPEC;
+      const owned = await factory.toAlchemyResources(standaloneSpec as never);
+      const external = await factory.toAlchemyResources(BOOTSTRAP_SPEC as never);
 
-      expect(yaml).not.toContain('kind: Namespace');
-      expect(yaml).toContain('kind: HelmRelease');
+      expect(owned.some((declaration) => declaration.props.resource.kind === 'Namespace')).toBe(
+        true
+      );
+      expect(external.some((declaration) => declaration.props.resource.kind === 'Namespace')).toBe(
+        false
+      );
     });
 
     it('preserves Secret-backed valuesFrom wiring without exposing inline credential paths', () => {

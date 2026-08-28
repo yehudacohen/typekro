@@ -119,7 +119,6 @@ import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
   credentialSource: 'inline' | 'secretValues';
-  namespaceOwnership: 'owned' | 'external';
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
 }
@@ -210,19 +209,23 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       );
     }
 
-    if (build.namespaceOwnership === 'owned') {
-      const _clickstackNamespace = namespace({
-        metadata: {
-          name: resolvedNamespace,
-          labels: {
-            'app.kubernetes.io/name': 'clickstack',
-            'app.kubernetes.io/instance': spec.name,
-            'app.kubernetes.io/managed-by': 'typekro',
-          },
+    const _clickstackNamespace = namespace({
+      metadata: {
+        // This resource is active only when namespace is omitted, so its
+        // identity is always TypeKro's documented standalone default.
+        name: DEFAULT_CLICKSTACK_NAMESPACE,
+        labels: {
+          'app.kubernetes.io/name': 'clickstack',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/managed-by': 'typekro',
         },
-        id: 'clickstackNamespace',
-      });
-    }
+      },
+      id: 'clickstackNamespace',
+    }).withIncludeWhen(
+      isKubernetesRef(spec.namespace)
+        ? Cel.not(spec.namespace)
+        : spec.namespace === undefined
+    );
 
     // One cluster-level Flux source shared by every ClickStack instance —
     // singleton(...) keeps it out of any single instance's KRO ApplySet
@@ -406,7 +409,6 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
   const build: ResolvedBuildConfig = {
     mongoMode: 'internal',
     credentialSource: options.credentials?.source ?? 'inline',
-    namespaceOwnership: options.namespaceOwnership ?? 'owned',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
   };
@@ -432,7 +434,6 @@ function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) 
   const build: ResolvedBuildConfig = {
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
-    namespaceOwnership: options.namespaceOwnership ?? 'owned',
     ...(options.values !== undefined && { values: options.values }),
   };
   const secretValues = build.credentialSource === 'secretValues';

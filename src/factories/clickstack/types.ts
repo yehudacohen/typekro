@@ -198,13 +198,6 @@ export type ClickStackMongoBuildOptions =
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
-   * Namespace lifecycle boundary. `owned` preserves the standalone default;
-   * `external` requires the namespace to be managed by a parent platform and
-   * prevents duplicate ownership when ClickStack is embedded in a larger
-   * deployment graph.
-   */
-  namespaceOwnership?: 'owned' | 'external';
-  /**
    * Credential transport selected at composition construction time.
    * `inline` preserves the historical runtime fields. `secretValues` loads a
    * complete Helm values fragment from a Kubernetes Secret through Flux and
