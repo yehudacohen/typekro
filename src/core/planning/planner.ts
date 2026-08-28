@@ -155,6 +155,96 @@ function markNestedStatusReferences(
   return value;
 }
 
+/**
+ * Replace virtual nested-composition status handles with the flattened CEL
+ * expressions captured for their concrete child resources. Semantic plans
+ * are consumed independently of the imperative factory runtime, so leaving a
+ * virtual handle such as `stack1.status.endpoint` in an output makes direct
+ * artifact hydration request a resource that can never exist.
+ */
+function inlineNestedStatusPlanValue(
+  value: PlanValue,
+  nestedStatusMappings: Readonly<Record<string, string>>,
+  resourceIds: ReadonlySet<string> | undefined
+): PlanValue {
+  if (value.kind === 'sensitive-value') {
+    return {
+      ...value,
+      value: inlineNestedStatusPlanValue(value.value, nestedStatusMappings, resourceIds),
+    };
+  }
+  if (value.kind === 'reference') {
+    if (value.source !== 'resource' || !value.resourceId || value.nestedComposition !== true) {
+      return value;
+    }
+    const authored = `${value.resourceId}.${value.fieldPath}`;
+    const fieldPath = value.fieldPath.replace(/^status\./, '');
+    const mapped = nestedStatusMappings[`__nestedStatus:${value.resourceId}:${fieldPath}`];
+    if (mapped === authored) {
+      if (resourceIds?.has(value.resourceId)) {
+        const { nestedComposition: _nestedComposition, ...resourceReference } = value;
+        return resourceReference;
+      }
+      return value;
+    }
+    if (mapped?.includes('__KUBERNETES_REF_')) {
+      return inlineNestedStatusPlanValue(
+        lowerPlanValue(mapped, { resourceIds }).value,
+        nestedStatusMappings,
+        resourceIds
+      );
+    }
+    return mapped === undefined
+      ? value
+      : { kind: 'expression', expression: expressionIR(mapped, { resourceIds }) };
+  }
+  if (value.kind === 'template') {
+    return {
+      ...value,
+      segments: value.segments.flatMap((segment) => {
+        if (segment.kind === 'literal') return segment;
+        if (segment.kind === 'expression') return segment;
+        if (
+          segment.source !== 'resource' ||
+          !segment.resourceId ||
+          segment.nestedComposition !== true
+        ) {
+          return segment;
+        }
+        const resolved = inlineNestedStatusPlanValue(segment, nestedStatusMappings, resourceIds);
+        if (resolved.kind === 'template') return [...resolved.segments];
+        if (resolved.kind === 'reference') return resolved;
+        if (resolved.kind === 'expression') {
+          return { kind: 'expression' as const, expression: resolved.expression };
+        }
+        if (resolved.kind === 'literal') {
+          return { kind: 'literal' as const, value: String(resolved.value) };
+        }
+        if (resolved.kind === 'omitted') return [];
+        return segment;
+      }),
+    };
+  }
+  if (value.kind === 'array') {
+    return {
+      ...value,
+      items: value.items.map((item) =>
+        inlineNestedStatusPlanValue(item, nestedStatusMappings, resourceIds)
+      ),
+    };
+  }
+  if (value.kind === 'object') {
+    return {
+      ...value,
+      entries: value.entries.map((entry) => ({
+        ...entry,
+        value: inlineNestedStatusPlanValue(entry.value, nestedStatusMappings, resourceIds),
+      })),
+    };
+  }
+  return value;
+}
+
 function summarizeValue(value: PlanValue): ValueReferenceSummary {
   switch (value.kind) {
     case 'sensitive-binding':
@@ -568,6 +658,7 @@ function preserveCapturedDynamicValue(
 
 function statusProjections(
   statusMappings: Readonly<Record<string, unknown>>,
+  nestedStatusMappings: Readonly<Record<string, string>>,
   diagnostics: PlanDiagnostic[],
   specSchema: SchemaIR,
   sensitiveSpecPaths: ReadonlySet<string> = new Set(),
@@ -589,7 +680,10 @@ function statusProjections(
     .filter((key) => !key.startsWith('__'))
     .sort()) {
     const lowered = lowerPlanValue(statusMappings[key], { specSchema, resourceIds });
-    const canonicalValue = canonicalizeStatusResourceReferences(lowered.value, resourceAliases);
+    const canonicalValue = canonicalizeStatusResourceReferences(
+      inlineNestedStatusPlanValue(lowered.value, nestedStatusMappings, resourceIds),
+      resourceAliases
+    );
     const value = markSensitiveResourceReferences(
       markSensitiveSpecReferences(canonicalValue, sensitiveSpecPaths),
       resourceNodes,
@@ -663,6 +757,7 @@ function buildStatusContract<TSpec extends KroCompatibleType>(
   }
   const projected = statusProjections(
     capture.ir.statusMappings,
+    capture.ir.nestedStatusMappings,
     diagnostics,
     specSchema,
     sensitiveSpecPaths,
