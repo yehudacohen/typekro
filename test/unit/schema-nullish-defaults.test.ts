@@ -849,7 +849,7 @@ describe('Schema Nullish Defaults', () => {
       }
     });
 
-    it('KRO mode: generated Secret and Deployment require a secret source', async () => {
+    it('KRO mode: gates only the generated Secret while selecting the Deployment secret source by value', async () => {
       const { searxngBootstrap } = await import(
         '../../src/factories/searxng/compositions/searxng-bootstrap.js'
       );
@@ -862,10 +862,19 @@ describe('Schema Nullish Defaults', () => {
       expect(secretIncludeWhen).toContain('has(schema.spec.server.secret_key)');
 
       const deploymentIncludeWhen =
-        extractYamlResourceBlock(yaml, 'searxngDeployment').split('includeWhen:')[1] ?? '';
-      expect(deploymentIncludeWhen).toContain('has(schema.spec.secretKeyRef)');
-      expect(deploymentIncludeWhen).toContain('has(schema.spec.server)');
-      expect(deploymentIncludeWhen).toContain('has(schema.spec.server.secret_key)');
+        (extractYamlResourceBlock(yaml, 'searxngDeployment').split('includeWhen:')[1] ?? '')
+          .split('template:')[0] ?? '';
+      expect(deploymentIncludeWhen).toContain('!(has(schema.spec.enabled))');
+      expect(deploymentIncludeWhen).not.toContain('has(schema.spec.secretKeyRef)');
+      expect(deploymentIncludeWhen).not.toContain('has(schema.spec.server)');
+
+      const deploymentBlock = extractYamlResourceBlock(yaml, 'searxngDeployment');
+      expect(deploymentBlock).toContain(
+        "name: '${has(schema.spec.secretKeyRef) ? schema.spec.secretKeyRef.name : string(schema.spec.name) + \"-secret\"}'"
+      );
+      expect(deploymentBlock).toContain(
+        "key: '${has(schema.spec.secretKeyRef) ? schema.spec.secretKeyRef.key : \"secret_key\"}'"
+      );
     });
 
     it('KRO mode: status CEL avoids CR spec refs unsupported by KRO status schemas', async () => {

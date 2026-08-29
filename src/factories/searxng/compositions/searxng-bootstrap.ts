@@ -278,14 +278,12 @@ ${redisSection}`;
       //       Secret from `server.secret_key`. The plaintext stops at the
       //       Secret's stringData and never enters the Deployment env.
       //
-      // The plain `if (!spec.secretKeyRef)` below is transformed into a KRO
-      // `includeWhen: ${!has(schema.spec.secretKeyRef)}` directive by the
-      // composition AST analyzer during serialization. In direct mode the
-      // `if` runs normally; in KRO mode the analyzer attaches the includeWhen
-      // so the Secret is only created when the user didn't provide an
-      // external ref. The Deployment's `secretKeyRef` field is computed by
-      // the JS ternary on the same condition and the analyzer emits the
-      // corresponding CEL ternary there as well.
+      // The generated Secret is explicitly gated by the absence of
+      // `secretKeyRef`, so an external Secret remains externally owned. The
+      // Deployment itself is not gated on either credential branch: admission
+      // already requires one source, and secret-derived resource activation
+      // would turn sensitive data into structural planning control flow. Its
+      // `secretKeyRef` value instead selects the external or generated Secret.
       //
       // Why `simple.Secret` is NOT used here: it eagerly base64-encodes
       // stringData values via `Buffer.from(...)` at composition time, which
@@ -344,11 +342,9 @@ ${redisSection}`;
       // `secretKeyRef` instead, which the factory translates into
       // `valueFrom.secretKeyRef` on the SEARXNG_SECRET env var.
       //
-      // The two nested ternaries on `secretKeyRef.name` and `secretKeyRef.key`
-      // are detected by the composition AST analyzer and emitted as CEL
-      // conditionals in the final RGD — in KRO mode the user's CR value
-      // for `spec.secretKeyRef` selects between the external Secret and
-      // the auto-created one at reconcile time.
+      // In KRO mode the explicit CEL conditionals select the external Secret
+      // or the auto-created one at reconcile time without changing whether
+      // the Deployment exists.
       const deploymentSecretRefName = hasDynamicSecretKeyRef
         ? `${Cel.cond<string>(Cel.has(dynamicSecretKeyRef), dynamicSecretKeyRef.name, secretName)}`
         : spec.secretKeyRef
