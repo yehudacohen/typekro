@@ -34,6 +34,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { getErrorStatusCode } from '../../../src/core/kubernetes/errors.js';
 import {
   createTestNamespace,
   deleteGeneratedCrdAndWait,
@@ -49,6 +50,48 @@ import {
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+
+async function resetClickstackKroDefinition(kubeConfig: any): Promise<void> {
+  const { createBunCompatibleCustomObjectsApi } = await import(
+    '../../../src/core/kubernetes/index.js'
+  );
+  const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+  let instances: any[] = [];
+  try {
+    const raw: any = await customApi.listClusterCustomObject({
+      group: 'kro.run',
+      version: 'v1alpha1',
+      plural: 'clickstackbootstraps',
+    });
+    instances = (raw?.body ?? raw)?.items ?? [];
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 404) throw error;
+  }
+  if (instances.length > 0) {
+    throw new Error(
+      `Refusing to reset ClickStack's live test RGD while ${instances.length} instance(s) remain`
+    );
+  }
+  await deleteTestResourceAndWait(
+    {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'clickstack-bootstrap' },
+    },
+    kubeConfig,
+    60_000
+  );
+  await deleteGeneratedCrdAndWait(
+    {
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: { name: 'clickstackbootstraps.kro.run' },
+    },
+    'kro.run/v1alpha1',
+    'ClickStackBootstrap',
+    kubeConfig
+  );
+}
 
 // Live-verified: tearing down the operator + CHI + clickstack (direct +
 // kro) + singleton sweep + 5 namespaces exceeds bun's 5s default hook
@@ -76,9 +119,8 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
   const chiNs = `clickstack-test-chi-${runId}`;
   const stackNs = `clickstack-test-stack-${runId}`;
   // KRO-mode namespaces: the instance CR lives in kroCrNs (factory
-  // namespace); the app namespace kroStackNs is OWNED by the composition
-  // graph (it declares the Namespace resource), so it is NOT pre-created —
-  // same split as the searxng/dagster KRO-mode suites.
+  // namespace); the explicitly supplied app namespace is externally owned
+  // under ClickStack's namespace-presence contract and is pre-created below.
   const kroStackNs = `clickstack-test-kro-${runId}`;
   const kroCrNs = `clickstack-test-kro-cr-${runId}`;
   let storageClass: string;
@@ -107,6 +149,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
         '../../../src/core/kubernetes/index.js'
       );
       const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      await resetClickstackKroDefinition(kubeConfig);
 
       try {
         await customApi.getNamespacedCustomObject({
@@ -139,7 +182,9 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
       altinityRepositoryPreexisting = await repositoryExists('altinity');
       clickstackRepositoryPreexisting = await repositoryExists('clickstack');
 
-      const namespaces = reuseExistingOperator ? [chiNs, stackNs] : [operatorNs, chiNs, stackNs];
+      const namespaces = reuseExistingOperator
+        ? [chiNs, stackNs, kroStackNs]
+        : [operatorNs, chiNs, stackNs, kroStackNs];
       namespaceLeases.push(
         ...(await Promise.all(
           namespaces.map((namespace) => createTestNamespace(namespace, kubeConfig))
@@ -468,7 +513,7 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     kroStackDeployed = true;
 
     const instance = await runWithExpectedTestNamespaces<any>(
-      [kroStackNs, kroCrNs],
+      [kroCrNs],
       kubeConfig,
       (lease) => namespaceLeases.push(lease),
       () =>
@@ -617,7 +662,8 @@ describeOrSkip('ClickStack Bootstrap Composition Integration Tests', () => {
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: clickstack-bootstrap');
     expect(yaml).toContain('chart: clickstack');
-    expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
+    expect(yaml).toContain('clickstackHelmRelease.status.observedGeneration');
+    expect(yaml).toContain('clickstackTeamBootstrap.status.lastSuccessfulTime');
     expect(yaml).toContain('otlpHttpEndpoint:');
     expect(yaml).toContain('driftDetection:');
     expect(yaml).toContain('mode: enabled');

@@ -23,6 +23,7 @@ import {
   getPortableReadinessStrategy,
   getRuntimeReadinessClassification,
 } from '../readiness/portable-strategies.js';
+import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
 import {
   type FactoryRegistration,
   type FactoryRepresentationRequirement,
@@ -45,6 +46,7 @@ import type {
   CompositionInspection,
   DeclaredInputManifestEntry,
   DesiredStatePlan,
+  ExpressionIR,
   KubernetesIdentity,
   LifecyclePolicy,
   PlanDiagnostic,
@@ -167,6 +169,53 @@ function inlineNestedStatusPlanValue(
   nestedStatusMappings: Readonly<Record<string, string>>,
   resourceIds: ReadonlySet<string> | undefined
 ): PlanValue {
+  const planValueAsExpression = (candidate: PlanValue): string | undefined => {
+    if (candidate.kind === 'literal') return JSON.stringify(candidate.value);
+    if (candidate.kind === 'reference') {
+      const path =
+        candidate.source === 'spec'
+          ? `schema.spec.${candidate.fieldPath}`
+          : `${candidate.resourceId}.${candidate.fieldPath}`;
+      return path;
+    }
+    if (candidate.kind === 'expression') return candidate.expression.expression;
+    if (candidate.kind === 'template') {
+      return candidate.segments
+        .map((segment) => {
+          if (segment.kind === 'literal') return JSON.stringify(segment.value);
+          if (segment.kind === 'expression') {
+            return `string(${segment.expression.expression})`;
+          }
+          const path =
+            segment.source === 'spec'
+              ? `schema.spec.${segment.fieldPath}`
+              : `${segment.resourceId}.${segment.fieldPath}`;
+          return `string(${path})`;
+        })
+        .join(' + ');
+    }
+    return undefined;
+  };
+
+  const inlineExpression = (expression: ExpressionIR): ExpressionIR => {
+    const expressionMappings = Object.fromEntries(
+      Object.entries(nestedStatusMappings).map(([key, mapped]) => {
+        const lowered = lowerPlanValue(mapped, { resourceIds }).value;
+        return [key, planValueAsExpression(lowered) ?? mapped];
+      })
+    );
+    const inlined = inlineNestedStatusRefs(expression.expression, expressionMappings, resourceIds);
+    if (inlined === expression.expression) return expression;
+    const rebuilt = expressionIR(inlined, {
+      language: expression.language,
+      sensitivity: expression.sensitivity,
+      resourceIds,
+    });
+    return expression.sourceLocation === undefined
+      ? rebuilt
+      : { ...rebuilt, sourceLocation: expression.sourceLocation };
+  };
+
   if (value.kind === 'sensitive-value') {
     return {
       ...value,
@@ -198,12 +247,17 @@ function inlineNestedStatusPlanValue(
       ? value
       : { kind: 'expression', expression: expressionIR(mapped, { resourceIds }) };
   }
+  if (value.kind === 'expression') {
+    return { ...value, expression: inlineExpression(value.expression) };
+  }
   if (value.kind === 'template') {
     return {
       ...value,
       segments: value.segments.flatMap((segment) => {
         if (segment.kind === 'literal') return segment;
-        if (segment.kind === 'expression') return segment;
+        if (segment.kind === 'expression') {
+          return { ...segment, expression: inlineExpression(segment.expression) };
+        }
         if (
           segment.source !== 'resource' ||
           !segment.resourceId ||
@@ -681,7 +735,11 @@ function statusProjections(
     .sort()) {
     const lowered = lowerPlanValue(statusMappings[key], { specSchema, resourceIds });
     const canonicalValue = canonicalizeStatusResourceReferences(
-      inlineNestedStatusPlanValue(lowered.value, nestedStatusMappings, resourceIds),
+      inlineNestedStatusPlanValue(
+        markNestedStatusReferences(lowered.value, nestedStatusMappings),
+        nestedStatusMappings,
+        resourceIds
+      ),
       resourceAliases
     );
     const value = markSensitiveResourceReferences(

@@ -5,7 +5,7 @@
  * inferred via `typeof Schema.infer` (mirrors the clickhouse/dagster families).
  *
  * Wraps the OFFICIAL ClickStack Helm chart (MIT):
- * - Chart: `clickstack` 3.0.x from https://clickhouse.github.io/ClickStack-helm-charts
+ * - Chart: `clickstack` 3.2.x from https://clickhouse.github.io/ClickStack-helm-charts
  *   (classic Helm repo, NOT OCI). The old hyperdxio/helm-charts repo is archived
  *   and its `hdx-oss-v2` chart is deprecated — do not use them.
  * - Components: the HyperDX app (UI + API + OpAMP server on 4320 that remotely
@@ -198,13 +198,6 @@ export type ClickStackMongoBuildOptions =
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
-   * Credential transport selected at composition construction time.
-   * `inline` preserves the historical runtime fields. `secretValues` loads a
-   * complete Helm values fragment from a Kubernetes Secret through Flux and
-   * keeps credentials out of the RGD, instance, and HelmRelease values.
-   */
-  credentials?: { source: 'inline' } | { source: 'secretValues' };
-  /**
    * Static raw official-chart values merged at construction time (they win
    * over the typed mapping), EXCEPT the hard pins — `clickhouse.enabled: false`,
    * `mongodb.enabled: false`, and `fullnameOverride` (the status contract's
@@ -223,15 +216,39 @@ interface ClickStackBuildOptionsBase {
   kind?: string;
 }
 
-/** Build-time options for the internal-Mongo bootstrap variant. */
-export interface ClickStackInternalMongoBuildOptions extends ClickStackBuildOptionsBase {
+/** Build-time options for inline credentials with internal Mongo. */
+export type ClickStackInlineInternalMongoBuildOptions = ClickStackBuildOptionsBase & {
   mongo?: { mode: 'internal'; storage?: ClickStackMongoStorageOptions };
-}
+  credentials?: { source: 'inline' };
+};
 
-/** Build-time options for the external-Mongo bootstrap variant. */
-export interface ClickStackExternalMongoBuildOptions extends ClickStackBuildOptionsBase {
+/** Build-time options for Secret-backed credentials with internal Mongo. */
+export type ClickStackSecretValuesInternalMongoBuildOptions = ClickStackBuildOptionsBase & {
+  mongo?: { mode: 'internal'; storage?: ClickStackMongoStorageOptions };
+  credentials: { source: 'secretValues' };
+};
+
+/** Every supported internal-Mongo construction-time configuration. */
+export type ClickStackInternalMongoBuildOptions =
+  | ClickStackInlineInternalMongoBuildOptions
+  | ClickStackSecretValuesInternalMongoBuildOptions;
+
+/** Build-time options for inline credentials with external Mongo. */
+export type ClickStackInlineExternalMongoBuildOptions = ClickStackBuildOptionsBase & {
   mongo: { mode: 'external' };
-}
+  credentials?: { source: 'inline' };
+};
+
+/** Build-time options for Secret-backed credentials with external Mongo. */
+export type ClickStackSecretValuesExternalMongoBuildOptions = ClickStackBuildOptionsBase & {
+  mongo: { mode: 'external' };
+  credentials: { source: 'secretValues' };
+};
+
+/** Every supported external-Mongo construction-time configuration. */
+export type ClickStackExternalMongoBuildOptions =
+  | ClickStackInlineExternalMongoBuildOptions
+  | ClickStackSecretValuesExternalMongoBuildOptions;
 
 /** Union accepted by `makeClickstackBootstrap`. */
 export type ClickStackBuildOptions =
@@ -242,6 +259,21 @@ export type ClickStackBuildOptions =
 // Bootstrap runtime spec (external ClickHouse)
 // ============================================================================
 
+const clickhouseConnectionBaseShape = {
+  /** DNS host of the external ClickHouse service (no scheme, no port). */
+  host: 'string',
+  /** Native TCP port (default: 9000) → `CLICKHOUSE_ENDPOINT`/`CLICKHOUSE_SERVER_ENDPOINT`. */
+  'nativePort?': 'number.integer',
+  /** HTTP port (default: 8123) → HyperDX UI `defaultConnections` host. */
+  'httpPort?': 'number.integer',
+  /** OTel export target database (default: 'default') → `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`. */
+  'database?': 'string',
+  /** Ingest/collector user (default: 'default') → `hyperdx.config.CLICKHOUSE_USER`. Needs SELECT,INSERT,CREATE,SHOW on the database. */
+  'username?': 'string',
+  /** Read-mostly UI user for HyperDX connections (default: `username`). Needs SHOW + SELECT. */
+  'appUsername?': 'string',
+} as const;
+
 const bootstrapBaseShape = {
   /** Release name for the Helm installation. */
   name: 'string',
@@ -249,38 +281,25 @@ const bootstrapBaseShape = {
   'namespace?': 'string',
   /** Chart version (default: '3.2.0'). */
   'version?': 'string',
-  // SECRETS CAVEAT: `password`/`appPassword` below (and `apiKey` further
-  // down) travel as PLAINTEXT runtime spec values all the way into the
+  // SECRETS CAVEAT: `password`/`appPassword` below (and the required inline
+  // `apiKey` on the inline-mode schemas) travel as PLAINTEXT runtime spec values all the way into the
   // generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
   // object stored in etcd, readable by anyone with read access to the
   // HelmRelease/RGD instance (`kubectl get helmrelease -o yaml`), unlike
   // `k8s-telemetry.ts`'s `apiKeySecret` (a `secretKeyRef` env var — the
-  // value never appears in any CR spec). There is currently NO
-  // existing-Secret / secretKeyRef alternative for these three fields.
+  // value never appears in any CR spec). Use the secretValues constructor
+  // mode when these three fields need to stay out of the CR spec.
   // Treat them as no more protected than any other spec field; do not
   // consider this family production-ready for credentials that need
   // stronger-than-etcd-RBAC protection until that gap is closed.
   /** External ClickHouse connection (REQUIRED — external-only build-around). */
   clickhouse: {
-    /** DNS host of the external ClickHouse service (no scheme, no port). */
-    host: 'string',
-    /** Native TCP port (default: 9000) → `CLICKHOUSE_ENDPOINT`/`CLICKHOUSE_SERVER_ENDPOINT`. */
-    'nativePort?': 'number.integer',
-    /** HTTP port (default: 8123) → HyperDX UI `defaultConnections` host. */
-    'httpPort?': 'number.integer',
-    /** OTel export target database (default: 'default') → `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`. */
-    'database?': 'string',
-    /** Ingest/collector user (default: 'default') → `hyperdx.config.CLICKHOUSE_USER`. Needs SELECT,INSERT,CREATE,SHOW on the database. */
-    'username?': 'string',
+    ...clickhouseConnectionBaseShape,
     /** Ingest/collector password → `hyperdx.secrets.CLICKHOUSE_PASSWORD` (default: ''). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
     'password?': 'string',
-    /** Read-mostly UI user for HyperDX connections (default: `username`). Needs SHOW + SELECT. */
-    'appUsername?': 'string',
     /** UI user password → `hyperdx.secrets.CLICKHOUSE_APP_PASSWORD` (default: `password`). PLAINTEXT in the HelmRelease spec — see the secrets caveat above. */
     'appPassword?': 'string',
   },
-  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. PLAINTEXT in the HelmRelease spec — see the secrets caveat above `clickhouse`. */
-  'apiKey?': 'string',
   /** HyperDX app (UI/API) conveniences. */
   'hyperdx?': {
     'replicas?': 'number.integer',
@@ -303,19 +322,28 @@ const bootstrapBaseShape = {
   // concrete objects before serialization.
 } as const;
 
+const secretValuesBootstrapBaseShape = {
+  ...bootstrapBaseShape,
+  clickhouse: clickhouseConnectionBaseShape,
+} as const;
+
 /**
  * Runtime spec for the internal-Mongo variant (the default
  * `clickstackBootstrap`). Mongo needs no runtime config — mode and storage
  * are build-time (`makeClickstackBootstrap`).
  */
-export const ClickStackBootstrapConfigSchema = type(bootstrapBaseShape);
+export const ClickStackBootstrapConfigSchema = type({
+  ...bootstrapBaseShape,
+  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. Required and non-empty in inline mode. */
+  apiKey: 'string > 0',
+});
 
 /** Runtime configuration for the internal-Mongo bootstrap variant. */
 export type ClickStackBootstrapConfig = typeof ClickStackBootstrapConfigSchema.infer;
 
 /** Runtime schema used by the Secret-backed internal-Mongo variant. */
 export const ClickStackSecretValuesBootstrapConfigSchema = type({
-  ...bootstrapBaseShape,
+  ...secretValuesBootstrapBaseShape,
   credentialsSecret: {
     name: 'string > 0',
     'valuesKey?': 'string > 0',
@@ -331,6 +359,8 @@ export type ClickStackSecretValuesBootstrapConfig =
  */
 export const ClickStackExternalMongoBootstrapConfigSchema = type({
   ...bootstrapBaseShape,
+  /** HyperDX ingestion API key → `hyperdx.secrets.HYPERDX_API_KEY`. Required and non-empty in inline mode. */
+  apiKey: 'string > 0',
   /** Full MongoDB connection URI → `hyperdx.config.MONGO_URI` (verbatim). */
   mongoUri: 'string',
 });
@@ -341,7 +371,7 @@ export type ClickStackExternalMongoBootstrapConfig =
 
 /** Runtime schema used by the Secret-backed external-Mongo variant. */
 export const ClickStackSecretValuesExternalMongoBootstrapConfigSchema = type({
-  ...bootstrapBaseShape,
+  ...secretValuesBootstrapBaseShape,
   credentialsSecret: {
     name: 'string > 0',
     'valuesKey?': 'string > 0',

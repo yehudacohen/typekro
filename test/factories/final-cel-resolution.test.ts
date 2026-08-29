@@ -99,25 +99,53 @@ describe('final-pipeline CEL resolution for raw-Cel.expr status fields (hermetic
     // Both the chart and the authoritative ingestion-Team bootstrap have
     // reconciled — what the graph looks like post-waitForReady.
     const ready = {
-      clickstackHelmRelease: { status: { conditions: [{ type: 'Ready', status: 'True' }] } },
-      clickstackTeamBootstrap: { status: { succeeded: 1 } },
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+        },
+      },
+      clickstackTeamBootstrap: {
+        status: {
+          lastScheduleTime: '2026-08-28T10:00:00Z',
+          lastSuccessfulTime: '2026-08-28T10:00:05Z',
+        },
+      },
     };
     expect(await evalCel(status!.ready, ready)).toBe(true);
     expect(await evalCel(status!.phase, ready)).toBe('Ready');
 
     // A failed HelmRelease drives phase to Failed — proves the macro chain, not a constant.
     const failed = {
-      clickstackHelmRelease: { status: { conditions: [{ type: 'Ready', status: 'False' }] } },
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'False', observedGeneration: 2 }],
+        },
+      },
       clickstackTeamBootstrap: { status: {} },
     };
     expect(await evalCel(status!.ready, failed)).toBe(false);
     expect(await evalCel(status!.phase, failed)).toBe('Failed');
 
-    const bootstrapFailed = {
-      clickstackHelmRelease: { status: { conditions: [{ type: 'Ready', status: 'True' }] } },
-      clickstackTeamBootstrap: { status: { succeeded: 0, failed: 1 } },
+    const bootstrapPending = {
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+        },
+      },
+      clickstackTeamBootstrap: {
+        status: {
+          lastScheduleTime: '2026-08-28T10:01:00Z',
+          lastSuccessfulTime: '2026-08-28T10:00:05Z',
+        },
+      },
     };
-    expect(await evalCel(status!.ready, bootstrapFailed)).toBe(false);
-    expect(await evalCel(status!.phase, bootstrapFailed)).toBe('Failed');
+    expect(await evalCel(status!.ready, bootstrapPending)).toBe(false);
+    expect(await evalCel(status!.phase, bootstrapPending)).toBe('Installing');
   });
 });

@@ -113,7 +113,9 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
       app: { host: string };
     };
     // Resource-derived fields serialize as KRO CEL off the owned HelmRelease...
-    expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
+    expect(yaml).toContain('clickstackHelmRelease.status.observedGeneration');
+    expect(yaml).toContain('clickstackTeamBootstrap.status.lastScheduleTime');
+    expect(yaml).toContain('clickstackTeamBootstrap.status.lastSuccessfulTime');
     expect(yaml).toContain('phase:');
     // ...and so does the CONNECTION CONTRACT (ui/gateway/app): it is anchored
     // on the HelmRelease resource (raw CEL over clickstackHelmRelease.metadata,
@@ -168,7 +170,7 @@ describe('makeClickstackBootstrap (build-time variants)', () => {
     });
     const yaml = external.toYaml();
     expect(yaml).not.toContain('kind: StatefulSet');
-    expect(yaml).toContain('kind: Job');
+    expect(yaml).toContain('kind: CronJob');
     expect(yaml).toContain('${schema.spec.mongoUri}');
     // The variant's spec schema requires the URI (topology shapes the schema).
     expect(yaml).toContain('mongoUri');

@@ -144,6 +144,29 @@ const TELEMETRY_SPEC = {
   apiKeySecret: { name: 'hyperdx-api-key' },
 } as const;
 
+function credentialModeCompileTimeContract(): void {
+  const secretBacked = makeClickstackBootstrap({
+    credentials: { source: 'secretValues' },
+  }).factory('direct');
+  secretBacked.toYaml({
+    name: 'clickstack',
+    // @ts-expect-error Secret-backed specs do not expose plaintext credential fields.
+    clickhouse: { host: 'clickhouse', password: 'plaintext' },
+    credentialsSecret: { name: 'credentials' },
+  });
+
+  const inline = makeClickstackBootstrap().factory('direct');
+  inline.toYaml({
+    name: 'clickstack',
+    clickhouse: { host: 'clickhouse' },
+    // @ts-expect-error Inline specs require apiKey and do not accept a values Secret coordinate.
+    credentialsSecret: { name: 'credentials' },
+  });
+}
+
+// Preserve the contract in the TypeScript test graph without executing it.
+void credentialModeCompileTimeContract;
+
 describe('clickstackBootstrap factory modes', () => {
   describe("direct: factory('direct').toYaml(spec) — concrete manifests", () => {
     it('can consume an externally managed namespace without owning it', () => {
@@ -195,7 +218,7 @@ describe('clickstackBootstrap factory modes', () => {
           name: 'clickstack-credentials',
           valuesKey: 'values.yaml',
         },
-      } as never);
+      });
       const release = splitDocs(yaml).find((doc) => docKind(doc) === 'HelmRelease');
 
       expect(release).toContain('valuesFrom:');
@@ -218,6 +241,39 @@ describe('clickstackBootstrap factory modes', () => {
           credentialsSecret: { name: 'clickstack-credentials' },
         } as never)
       ).toThrow('rejects inline');
+    });
+
+    it('rejects the chart placeholder API key in inline mode', () => {
+      expect(() =>
+        clickstackBootstrap.factory('direct').toYaml({
+          ...BOOTSTRAP_SPEC,
+          apiKey: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+        })
+      ).toThrow('published chart placeholder');
+
+      const rgd = clickstackBootstrap.factory('kro').toYaml();
+      expect(rgd).toContain('apiKey: string | minLength=1');
+      expect(rgd).toContain('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx');
+    });
+
+    it('types Secret-backed external Mongo independently from inline credentials', () => {
+      const bootstrap = makeClickstackBootstrap({
+        mongo: { mode: 'external' },
+        credentials: { source: 'secretValues' },
+      });
+      const yaml = bootstrap.factory('direct').toYaml({
+        name: 'clickstack',
+        namespace: 'clickstack',
+        clickhouse: {
+          host: 'clickhouse-observability.clickhouse.svc.cluster.local',
+          username: 'otelcollector',
+        },
+        mongoUri: 'mongodb://mongo.example.test:27017/hyperdx',
+        credentialsSecret: { name: 'clickstack-credentials' },
+      });
+
+      expect(yaml).toContain('mongodb://mongo.example.test:27017/hyperdx');
+      expect(yaml).toContain('kind: CronJob');
     });
 
     it('rejects build-time credential-bearing values in Secret-backed mode', () => {
@@ -250,20 +306,22 @@ describe('clickstackBootstrap factory modes', () => {
       const kinds = docs.map(docKind);
 
       // The supplied namespace is external; ClickStack owns only Mongo,
-      // HelmRelease, and the idempotent authoritative-Team bootstrap Job.
+      // HelmRelease, and the idempotent authoritative-Team bootstrap CronJob.
       expect(kinds).not.toContain('Namespace');
       expect(kinds).toContain('StatefulSet');
       expect(kinds).toContain('Service');
       expect(kinds).toContain('HelmRelease');
-      expect(kinds).toContain('Job');
+      expect(kinds).toContain('CronJob');
       expect(yaml).toContain('image: mongo:7');
       expect(yaml).toContain('name: clickstack-mongodb');
       expect(yaml).toContain('name: clickstack-team-bootstrap');
       expect(yaml).toContain('key: HYPERDX_API_KEY');
       expect(yaml).toContain('name: clickstack-secret');
       expect(yaml).toContain("hookId = 'typekro-managed-ingestion'");
+      expect(yaml).toContain("schedule: '* * * * *'");
+      expect(yaml).toContain('must override the published ClickStack chart placeholder');
       expect(yaml).not.toContain('ttlSecondsAfterFinished');
-      expect(kinds.indexOf('HelmRelease')).toBeLessThan(kinds.indexOf('Job'));
+      expect(kinds.indexOf('HelmRelease')).toBeLessThan(kinds.indexOf('CronJob'));
 
       // DOCUMENTED WART: direct-mode toYaml() omits singleton-owned resources.
       // The shared HelmRepository is NOT a document here — only the HelmRelease
@@ -393,7 +451,6 @@ describe('clickstackBootstrap factory modes', () => {
       expect(serialized).not.toContain('schema.spec.apiKey');
       expect(yaml).toContain('key: HYPERDX_API_KEY');
       expect(yaml).toContain('name: clickstack-secret');
-      expect(yaml).toContain('validation="self == null"');
       expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
     });
 
@@ -441,7 +498,9 @@ describe('clickstackBootstrap factory modes', () => {
 
       // The status/endpoint contract survives factory serialization: KRO CEL
       // anchored on the owned HelmRelease (never schema.spec.*).
-      expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
+      expect(yaml).toContain('clickstackHelmRelease.status.observedGeneration');
+      expect(yaml).toContain('clickstackTeamBootstrap.status.lastScheduleTime');
+      expect(yaml).toContain('clickstackTeamBootstrap.status.lastSuccessfulTime');
       expect(yaml).toContain(
         'url: http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
       );
@@ -453,9 +512,7 @@ describe('clickstackBootstrap factory modes', () => {
       );
 
       // Secret wiring reaches the RGD values as guarded schema CEL.
-      expect(JSON.stringify(loadAll(yaml))).toContain(
-        '${has(schema.spec.apiKey) ? dyn(schema.spec.apiKey) : omit()}'
-      );
+      expect(JSON.stringify(loadAll(yaml))).toContain('${schema.spec.apiKey}');
     });
   });
 });

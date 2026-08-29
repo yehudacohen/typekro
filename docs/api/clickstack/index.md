@@ -2,16 +2,16 @@
 
 Deploy [ClickStack](https://clickhouse.com/docs/use-cases/observability/clickstack) — ClickHouse Inc.'s
 observability stack (the HyperDX UI/API, an OTel gateway collector, and schema migrations) — via the
-OFFICIAL `clickstack` Helm chart (3.0.x, MIT) from
+OFFICIAL `clickstack` Helm chart (3.2.x, MIT) from
 [`ClickHouse/ClickStack-helm-charts`](https://github.com/ClickHouse/ClickStack-helm-charts), wired to an
 **external ClickHouse** you already run (e.g. an Altinity-operator-managed
 [`ClickHouseInstallation`](../clickhouse/)).
 
 ## Credential modes
 
-The backwards-compatible default accepts `clickhouse.password`, `clickhouse.appPassword`, and
-`apiKey` inline. Those values enter the HelmRelease and RGD instance, so use that mode only when
-etcd/RBAC protection is sufficient.
+The default accepts `clickhouse.password`, `clickhouse.appPassword`, and a required, non-empty
+`apiKey` inline. The published chart placeholder is rejected. Those values enter the HelmRelease
+and RGD instance, so use that mode only when etcd/RBAC protection is sufficient.
 
 For production, construct the Secret-backed variant:
 
@@ -38,7 +38,11 @@ The Secret key is a Helm values fragment containing `hyperdx.secrets` and, when 
 connection is desired, `hyperdx.deployment.defaultConnections`. Flux merges it before TypeKro's
 non-sensitive inline values. TypeKro deliberately omits those credential-bearing paths from the
 HelmRelease and rejects inline password/API-key fields in this variant. The Secret must be in the
-ClickStack workload namespace because Flux values references are namespace-local.
+ClickStack workload namespace because Flux values references are namespace-local. The fragment must
+override `hyperdx.secrets.HYPERDX_API_KEY`: an idempotent reconciliation CronJob refuses the chart's
+published placeholder and keeps the installation non-ready until an authoritative Team is updated.
+It reruns every minute so API-key and external-Mongo URI rotations converge without replacing an
+immutable completed Job.
 
 Omit `namespace` to let TypeKro create and own the documented `clickstack` default Namespace. Pass
 `namespace` when a parent platform owns the workload Namespace; ClickStack targets that Namespace
@@ -65,7 +69,6 @@ const bootstrap = makeClickstackBootstrap({ credentials: { source: 'secretValues
 const factory = bootstrap.factory('kro', { namespace: 'typekro-system' });
 const stack = await factory.deploy({
   name: 'clickstack',
-  namespace: 'clickstack',
   clickhouse: {
     host: 'clickhouse-observability.clickhouse.svc.cluster.local',
     username: 'otelcollector',

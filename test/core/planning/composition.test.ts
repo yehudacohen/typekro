@@ -382,7 +382,11 @@ describe('captured composition planning prototype', () => {
         kind: 'PlanningNestedClickStack',
         revision: '1',
         spec: type({ name: 'string', namespace: 'string' }),
-        status: type({ endpoint: 'string' }),
+        status: type({
+          endpoint: 'string',
+          templateEndpoint: 'string',
+          expressionEndpoint: 'string',
+        }),
       },
       (spec) => {
         const stack = clickstackBootstrap({
@@ -395,7 +399,11 @@ describe('captured composition planning prototype', () => {
           },
           apiKey: 'test-only',
         });
-        return { endpoint: stack.status.gateway.otlpHttpEndpoint };
+        return {
+          endpoint: stack.status.gateway.otlpHttpEndpoint,
+          templateEndpoint: `${stack.status.gateway.otlpHttpEndpoint}/v1`,
+          expressionEndpoint: Cel.expr<string>(stack.status.gateway.otlpHttpEndpoint, ' + "/v2"'),
+        };
       }
     );
 
@@ -429,6 +437,20 @@ describe('captured composition planning prototype', () => {
     expect(materializePlanOutputs({ endpoint }, { resources })).toEqual({
       endpoint: 'http://clickstack-otel-collector.observability.svc.cluster.local:4318',
     });
+    expect(
+      materializePlanOutputs(
+        {
+          templateEndpoint: plan.outputs.templateEndpoint!,
+          expressionEndpoint: plan.outputs.expressionEndpoint!,
+        },
+        { resources }
+      )
+    ).toEqual({
+      templateEndpoint: 'http://clickstack-otel-collector.observability.svc.cluster.local:4318/v1',
+      expressionEndpoint:
+        'http://clickstack-otel-collector.observability.svc.cluster.local:4318/v2',
+    });
+    expect(JSON.stringify(plan.outputs)).not.toContain('clickstackBootstrap1.status');
   });
 
   it('marks source-only composition identity as preview-unstable and changes semantic digests with inputs', () => {
