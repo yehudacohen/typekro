@@ -136,12 +136,6 @@ const searxngBootstrapComposition = kubernetesComposition(
     const enabledWhen = Cel.expr<boolean>(
       '!(has(schema.spec.enabled)) || schema.spec.enabled != false'
     );
-    const generatedSecretKeyWhen = Cel.expr<boolean>(
-      'has(schema.spec.server) && has(schema.spec.server.secret_key)'
-    );
-    const secretSourceWhen = Cel.expr<boolean>(
-      'has(schema.spec.secretKeyRef) || (has(schema.spec.server) && has(schema.spec.server.secret_key))'
-    );
     const port = DEFAULT_SEARXNG_PORT;
     let deployment: ReturnType<typeof searxng> | undefined;
 
@@ -336,7 +330,6 @@ ${redisSection}`;
       if (isGraphMode) {
         setIncludeWhen(generatedSecret, [
           Cel.expr<boolean>('!has(schema.spec.secretKeyRef)'),
-          generatedSecretKeyWhen,
           enabledWhen,
         ]);
       } else if (hasDynamicSecretKeyRef) {
@@ -396,7 +389,11 @@ ${redisSection}`;
         id: 'searxngDeployment',
       });
       if (isGraphMode) {
-        appendIncludeWhen(deployment, [secretSourceWhen, enabledWhen]);
+        // Admission already requires either secretKeyRef or server.secret_key.
+        // Repeating that choice as resource activation would make the
+        // sensitive plaintext path control resource existence and fail strict
+        // semantic planning even for the reference-only production path.
+        appendIncludeWhen(deployment, [enabledWhen]);
       }
 
       // ── Service ────────────────────────────────────────────────────────

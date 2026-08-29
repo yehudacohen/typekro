@@ -131,6 +131,18 @@ describe('SearXNG Factory', () => {
   });
 
   describe('bootstrap settings', () => {
+    it('strictly plans the reference-only Secret path without sensitive control flow', () => {
+      const plan = searxngBootstrap.plan!({
+        name: 'search',
+        namespace: 'search-system',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+        search: { formats: ['html', 'json'] },
+      });
+
+      expect(plan.diagnostics.filter(({ severity }) => severity === 'error')).toEqual([]);
+      expect(JSON.stringify(plan)).toContain('search-secret');
+    });
+
     it('emits documented concrete settings fields in direct YAML', () => {
       const yaml = searxngBootstrap.factory('direct').toYaml(
         {
