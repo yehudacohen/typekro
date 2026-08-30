@@ -150,10 +150,10 @@ const SearxngBootstrapBaseConfigSchema = type({
   /** Base URL for the instance. */
   'baseUrl?': 'string',
   /**
-   * Server configuration. When `secretKeyRef` is NOT provided, the bootstrap
-   * composition requires `server.secret_key`, creates a dedicated K8s Secret
-   * (`{name}-secret`), and mounts it via `valueFrom.secretKeyRef` on the
-   * Deployment.
+   * Server configuration. Direct mode can turn `server.secret_key` into a
+   * dedicated K8s Secret (`{name}-secret`). KRO mode rejects that plaintext
+   * field and requires `secretKeyRef`, keeping credentials out of the custom
+   * resource persistence boundary.
    */
   'server?': serverConfigShape,
   /**
@@ -161,10 +161,9 @@ const SearxngBootstrapBaseConfigSchema = type({
    * key. Use this with external-secrets-operator, Vault, or any workflow
    * where the Secret's lifecycle is managed outside TypeKro. When set,
    * the bootstrap SKIPS creating its own Secret and wires the existing
-   * one through to the Deployment via `valueFrom.secretKeyRef`. In KRO
-   * mode this is resolved via `has(schema.spec.secretKeyRef)` so the
-   * user can decide per-instance whether to provide an external ref or
-   * fall back to the auto-created Secret.
+   * one through to the Deployment via `valueFrom.secretKeyRef`. This field is
+   * required for every enabled KRO instance; generated Secrets are a
+   * direct-mode-only convenience.
    */
   'secretKeyRef?': {
     name: 'string',

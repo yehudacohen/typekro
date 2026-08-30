@@ -151,10 +151,20 @@ describe('SearXNG Factory', () => {
           name: 'inline-secret-is-direct-only',
           server: { secret_key: 'must-not-live-in-a-kro-cr' },
         })
-      ).toThrow('KRO mode requires secretKeyRef');
+      ).toThrow('KRO mode rejects server.secret_key');
       expect(() => factory.toYaml({ name: 'missing-secret-source' } as never)).toThrow(
         'KRO mode requires secretKeyRef'
       );
+      expect(() =>
+        factory.toYaml(
+          {
+            name: 'ambiguous-secret-source',
+            secretKeyRef: { name: 'external-secret', key: 'secret_key' },
+            server: { secret_key: 'must-never-be-materialized' },
+          },
+          { allowSensitiveMaterialization: true }
+        )
+      ).toThrow('KRO mode rejects server.secret_key even when secretKeyRef is present');
 
       const rgd = searxngBootstrap.toYaml();
       expect(rgd.match(/\$\{has\(schema\.spec\.secretKeyRef\)\}/g)?.length).toBeGreaterThanOrEqual(
@@ -162,6 +172,7 @@ describe('SearXNG Factory', () => {
       );
       expect(rgd).toContain('id: searxngSecret');
       expect(rgd).toMatch(/id: searxngSecret[\s\S]*?includeWhen:\n\s+- \$\{false\}/);
+      expect(rgd).toContain('secret_key: string | validation="false"');
     });
 
     it('emits documented concrete settings fields in direct YAML', () => {

@@ -33,8 +33,8 @@ import type {
 } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
-import { namespace } from '../../kubernetes/core/namespace.js';
 import { secret } from '../../kubernetes/config/secret.js';
+import { namespace } from '../../kubernetes/core/namespace.js';
 import { simple } from '../../simple/index.js';
 import { searxng } from '../resources/searxng.js';
 import {
@@ -48,10 +48,9 @@ import {
 /**
  * Return a copy of the server config with `secret_key` removed. The field
  * is delivered via a dedicated K8s Secret, not via the Deployment spec —
- * this helper makes sure the plaintext (or the KubernetesRef proxy that
- * carries it in KRO mode) does not leak into the searxng() factory's
- * `spec.server` which would otherwise fall back to injecting it as a
- * plaintext env var.
+ * this helper makes sure direct mode's plaintext does not leak into the
+ * searxng() factory's `spec.server`, which would otherwise inject it as an
+ * env value. KRO rejects the inline field and uses only `secretKeyRef`.
  */
 function stripSecretKey<T extends { secret_key?: unknown }>(server: T): Omit<T, 'secret_key'> {
   const { secret_key: _discarded, ...rest } = server;
@@ -72,6 +71,14 @@ function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
     );
   }
 
+  if (spec.server?.secret_key !== undefined) {
+    throw new TypeKroError(
+      'searxngBootstrap KRO mode rejects server.secret_key even when secretKeyRef is present. KRO credentials are reference-only so plaintext is never materialized into the instance custom resource.',
+      'UNSUPPORTED_KRO_CONFIG',
+      { field: 'server.secret_key', mode: 'kro' }
+    );
+  }
+
   if (!spec.secretKeyRef) {
     throw new TypeKroError(
       'searxngBootstrap KRO mode requires secretKeyRef for enabled instances. Inline server.secret_key is direct-mode-only so plaintext credentials are not stored in KRO custom resources.',
@@ -89,7 +96,12 @@ function withKroInstanceValidation(
       if (prop === 'deploy') {
         return (
           spec: SearxngBootstrapConfig,
-          opts?: Parameters<KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>['deploy']>[1]
+          opts?: Parameters<
+            KroResourceFactory<
+              SearxngBootstrapConfig,
+              typeof SearxngBootstrapStatusSchema.infer
+            >['deploy']
+          >[1]
         ) => {
           validateKroBootstrapInstanceSpec(spec);
           return target.deploy(spec, opts);
@@ -97,10 +109,7 @@ function withKroInstanceValidation(
       }
 
       if (prop === 'toYaml') {
-        return (
-          spec?: SearxngBootstrapConfig,
-          options?: StaticYamlMaterializationOptions
-        ) => {
+        return (spec?: SearxngBootstrapConfig, options?: StaticYamlMaterializationOptions) => {
           if (spec !== undefined) {
             validateKroBootstrapInstanceSpec(spec);
             return target.toYaml(spec, options);
@@ -293,8 +302,8 @@ ${redisSection}`;
       // gated on credential-source PRESENCE so raw GitOps instances that
       // bypass ArkType validation fail
       // closed without creating a broken workload. Secret DATA never controls
-      // resource activation. The Deployment's `secretKeyRef` value selects the
-      // external or generated Secret for valid instances.
+      // resource activation. KRO always selects the external reference; only
+      // direct mode can select the generated Secret.
       //
       // Why `simple.Secret` is NOT used here: it eagerly base64-encodes
       // stringData values via `Buffer.from(...)` at composition time, which
@@ -353,9 +362,8 @@ ${redisSection}`;
       // `secretKeyRef` instead, which the factory translates into
       // `valueFrom.secretKeyRef` on the SEARXNG_SECRET env var.
       //
-      // In KRO mode the explicit CEL conditionals select the external Secret
-      // or the auto-created one at reconcile time without changing whether
-      // the Deployment exists.
+      // In KRO mode the explicit CEL reference selects the required external
+      // Secret. Direct mode may instead select the auto-created Secret.
       const deploymentSecretRefName = hasDynamicSecretKeyRef
         ? `${Cel.cond<string>(Cel.has(dynamicSecretKeyRef), dynamicSecretKeyRef.name, secretName)}`
         : spec.secretKeyRef
@@ -442,6 +450,16 @@ ${redisSection}`;
       ),
       url: `http://${spec.name}.${resolvedNamespace}:${port}`,
     };
+  },
+  {
+    // Direct mode intentionally retains the ergonomic inline-to-Secret path,
+    // but a KRO custom resource is a broadly readable persistence boundary.
+    // This optional-leaf validation runs only when the field is present, so
+    // raw GitOps instances cannot submit plaintext — including alongside an
+    // otherwise valid secretKeyRef.
+    schemaFieldValidations: {
+      'server.secret_key': 'false',
+    },
   }
 );
 
@@ -459,7 +477,10 @@ function searxngBootstrapFactory(mode: 'kro' | 'direct', options?: PublicFactory
   const factory = baseFactory(mode, options);
   return mode === 'kro'
     ? withKroInstanceValidation(
-        factory as KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
+        factory as KroResourceFactory<
+          SearxngBootstrapConfig,
+          typeof SearxngBootstrapStatusSchema.infer
+        >
       )
     : factory;
 }
