@@ -977,7 +977,7 @@ describe('Schema Nullish Defaults', () => {
           { name: 'searxng', server: { secret_key: 'test-secret' } },
           { allowSensitiveMaterialization: true }
         )
-      ).toThrow('KRO mode requires secretKeyRef');
+      ).toThrow('KRO mode rejects server.secret_key');
     });
 
     it('Direct mode: generated secret uses the explicit server secret key', async () => {
