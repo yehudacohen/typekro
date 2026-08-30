@@ -30,6 +30,8 @@ afterEach(() => {
 describe('standalone KRO artifact-bundle execution', () => {
   it('applies one operation-wide timeout across singleton and root bundle phases', async () => {
     let receivedSignal: AbortSignal | undefined;
+    const operationSignals: AbortSignal[] = [];
+    const applied: Array<{ kind: string; name: string }> = [];
     let started!: () => void;
     const operationStarted = new Promise<void>((resolve) => {
       started = resolve;
@@ -40,15 +42,37 @@ describe('standalone KRO artifact-bundle execution', () => {
     }));
     replace(factoryPrototype, 'ensureTargetNamespace', async () => {});
     replace(factoryPrototype, 'assertNoPreHoistNamespaceConflict', async () => {});
+    replace(factoryPrototype, 'getSingletonOwnerInstancesForDriftCheck', async () => []);
     replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
     replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
     replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
     replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
+    replace(factoryPrototype, 'waitForCRDReadyWithEngine', async () => {});
+    replace(factoryPrototype, 'waitForKroInstanceReady', async () => {});
+    replace(factoryPrototype, 'createEnhancedProxy', async (spec: unknown, name: string) => ({
+      metadata: { name },
+      spec,
+      status: { ready: true },
+    }));
     replace(factoryPrototype, 'dispose', async () => {});
     replace(
       enginePrototype,
       'deployResource',
-      async (_resource: KubernetesResource, options: { abortSignal?: AbortSignal }) => {
+      async (resource: KubernetesResource, options: { abortSignal?: AbortSignal }) => {
+        applied.push({ kind: resource.kind, name: String(resource.metadata.name) });
+        if (options.abortSignal) operationSignals.push(options.abortSignal);
+        if (resource.metadata.name !== 'standalone-timeout-kro') {
+          return {
+            id: String(Reflect.get(resource, 'id') ?? resource.metadata.name),
+            kind: resource.kind,
+            name: String(resource.metadata.name),
+            namespace: resource.metadata.namespace ?? 'default',
+            manifest: resource,
+            status: 'deployed',
+            applied: true,
+            deployedAt: new Date(0),
+          };
+        }
         receivedSignal = options.abortSignal;
         started();
         return new Promise<never>((_, reject) => {
@@ -62,6 +86,19 @@ describe('standalone KRO artifact-bundle execution', () => {
     );
     replace(enginePrototype, 'dispose', async () => {});
 
+    const owner = kubernetesComposition(
+      {
+        name: 'standalone-timeout-owner',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'StandaloneTimeoutOwner',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        simple.ConfigMap({ id: 'ownerConfig', name: spec.name, data: { ready: 'true' } });
+        return { ready: true };
+      }
+    );
     const composition = kubernetesComposition(
       {
         name: 'standalone-timeout-kro',
@@ -71,6 +108,7 @@ describe('standalone KRO artifact-bundle execution', () => {
         status: type({ ready: 'boolean' }),
       },
       (spec) => {
+        singleton(owner, { id: 'owner', spec: { name: 'shared-owner' } });
         simple.ConfigMap({ id: 'config', name: spec.name, data: { ready: 'true' } });
         return { ready: true };
       }
@@ -85,6 +123,13 @@ describe('standalone KRO artifact-bundle execution', () => {
     expect((error as DeploymentTimeoutError).timeoutMs).toBe(500);
     expect((error as DeploymentTimeoutError).operation).toBe('deployment');
     expect(receivedSignal?.aborted).toBe(true);
+    expect(operationSignals).toHaveLength(3);
+    expect(operationSignals.every((signal) => signal === receivedSignal)).toBe(true);
+    expect(applied).toEqual([
+      { kind: 'ResourceGraphDefinition', name: 'standalone-timeout-owner' },
+      { kind: 'StandaloneTimeoutOwner', name: 'owner' },
+      { kind: 'ResourceGraphDefinition', name: 'standalone-timeout-kro' },
+    ]);
   });
 
   it('forwards Effect interruption through the decoded bundle executor', async () => {
