@@ -95,7 +95,7 @@ async function waitForKroReconciliation(
   );
 }
 
-async function resetSearxngKroDefinition(kubeConfig: k8s.KubeConfig): Promise<void> {
+async function deleteSearxngKroDefinitionWhenUnused(kubeConfig: k8s.KubeConfig): Promise<void> {
   const objectApi = createKubernetesObjectApiClient(kubeConfig);
   try {
     const instances = await objectApi.list('kro.run/v1alpha1', 'SearxngBootstrap');
@@ -288,7 +288,7 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     let invalidRawInstanceCreated = false;
     let testError: unknown;
     try {
-      await resetSearxngKroDefinition(kubeConfig);
+      await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
       kroFactory = searxngBootstrap.factory('kro', {
         namespace: kroNamespace,
         waitForReady: true,
@@ -444,6 +444,16 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
           kubeConfig
         );
       }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      // TypeKro intentionally retains generated CRDs during ordinary factory
+      // teardown. This fixed-name integration definition is test-owned, so
+      // remove it only after proving that every SearxngBootstrap instance is
+      // gone. The helper waits for both RGD and CRD absence and fails closed
+      // rather than leaving stale schema state for a later run.
+      await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
     } catch (error) {
       cleanupErrors.push(error);
     }
