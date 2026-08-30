@@ -61,6 +61,11 @@ function appendIncludeWhen(resource: WeakKey, conditions: unknown[]): void {
   setIncludeWhen(resource, [...(getIncludeWhen(resource) ?? []), ...conditions]);
 }
 
+type SearxngKroFactory = KroResourceFactory<
+  SearxngBootstrapConfig,
+  typeof SearxngBootstrapStatusSchema.infer
+>;
+
 function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
   if (spec.enabled === false) {
     throw new TypeKroError(
@@ -89,8 +94,8 @@ function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
 }
 
 function withKroInstanceValidation(
-  factory: KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
-): KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer> {
+  factory: SearxngKroFactory
+): SearxngKroFactory {
   return new Proxy(factory, {
     get(target, prop, receiver) {
       if (prop === 'deploy') {
@@ -115,6 +120,16 @@ function withKroInstanceValidation(
             return target.toYaml(spec, options);
           }
           return target.toYaml();
+        };
+      }
+
+      if (prop === 'toAlchemyResources') {
+        return async (
+          spec: SearxngBootstrapConfig,
+          opts?: Parameters<SearxngKroFactory['toAlchemyResources']>[1]
+        ) => {
+          validateKroBootstrapInstanceSpec(spec);
+          return target.toAlchemyResources(spec, opts);
         };
       }
 
