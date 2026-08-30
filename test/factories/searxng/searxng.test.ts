@@ -143,6 +143,27 @@ describe('SearXNG Factory', () => {
       expect(JSON.stringify(plan)).toContain('search-secret');
     });
 
+    it('requires a Secret reference for KRO instances and makes raw missing-reference instances inert', () => {
+      const factory = searxngBootstrap.factory('kro');
+
+      expect(() =>
+        factory.toYaml({
+          name: 'inline-secret-is-direct-only',
+          server: { secret_key: 'must-not-live-in-a-kro-cr' },
+        })
+      ).toThrow('KRO mode requires secretKeyRef');
+      expect(() => factory.toYaml({ name: 'missing-secret-source' } as never)).toThrow(
+        'KRO mode requires secretKeyRef'
+      );
+
+      const rgd = searxngBootstrap.toYaml();
+      expect(rgd.match(/\$\{has\(schema\.spec\.secretKeyRef\)\}/g)?.length).toBeGreaterThanOrEqual(
+        3
+      );
+      expect(rgd).toContain('id: searxngSecret');
+      expect(rgd).toMatch(/id: searxngSecret[\s\S]*?includeWhen:\n\s+- \$\{false\}/);
+    });
+
     it('emits documented concrete settings fields in direct YAML', () => {
       const yaml = searxngBootstrap.factory('direct').toYaml(
         {

@@ -21,6 +21,10 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 
 - **`search.formats` is direct-mode only.** In KRO mode the user-supplied `formats` array is currently ignored and the composition falls back to the literal default `['html', 'json']`. This is because KRO's CEL mixed templates don't yet support iterating a schema array into a YAML list. If you need a custom `formats` list, deploy via direct mode. Array-valued CEL templating is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) and this limitation will be removed once it lands.
 - **Optional generated settings fields are direct-mode only.** `server.bind_address`, `server.method`, `search.default_lang`, `search.autocomplete`, and `search.safe_search` are emitted into generated `settings.yml` when the spec is concrete. In KRO mode those optional fields are schema proxies, so the composition omits them rather than emitting invalid YAML for absent values.
+- **KRO credentials are reference-only.** KRO instances require `secretKeyRef`; inline
+  `server.secret_key` is supported only in direct mode. This keeps plaintext credentials out of the
+  custom resource. Raw GitOps instances that omit `secretKeyRef` fail closed and create no SearXNG
+  workload resources.
 - **KRO 0.9.2+ required.** See [Requirements](#requirements) above.
 
 ## Quick Start
@@ -48,7 +52,7 @@ await factory.deploy({
 |----------|------|------|
 | Namespace | `searxng` | Namespace |
 | Settings | `{name}-config` | ConfigMap |
-| Secret key | `{name}-secret` | Secret, created when `secretKeyRef` is omitted |
+| Secret key | `{name}-secret` | Secret, created from inline `server.secret_key` in direct mode only |
 | Search engine | `{name}` | Deployment |
 | Service | `{name}` | Service (port 8080) |
 
@@ -68,7 +72,7 @@ await factory.deploy({
 | `server` | object | — | Server configuration |
 | `search` | object | — | Search configuration |
 | `redisUrl` | `string` | — | Redis/Valkey URL for rate limiter |
-| `secretKeyRef` | `{ name: string; key: string }` | — | Existing Secret key to use for `SEARXNG_SECRET`; skips the auto-created Secret workflow |
+| `secretKeyRef` | `{ name: string; key: string }` | — | Existing Secret key to use for `SEARXNG_SECRET`; required in KRO mode and skips the direct-mode auto-created Secret workflow |
 | `settingsYaml` | `string` | — | Complete `settings.yml` content. In direct mode this overrides generated settings and is useful when KRO array templating limits apply |
 | `env` | `Record<string, string>` | — | Extra environment variables |
 | `resources` | object | — | CPU/memory requests and limits |
@@ -77,7 +81,7 @@ await factory.deploy({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `secret_key` | `string` | required unless `secretKeyRef` is set | Session encryption key used for the auto-created Secret |
+| `secret_key` | `string` | required in direct mode unless `secretKeyRef` is set | Session encryption key used for the direct-mode auto-created Secret; not accepted as the KRO credential source |
 | `limiter` | `boolean` | — | Enable built-in rate limiter |
 | `bind_address` | `string` | `'0.0.0.0:8080'` | Bind address |
 | `method` | `string` | `'GET'` | HTTP method |

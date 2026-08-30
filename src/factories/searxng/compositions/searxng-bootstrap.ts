@@ -72,11 +72,11 @@ function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
     );
   }
 
-  if (!spec.secretKeyRef && spec.server?.secret_key === undefined) {
+  if (!spec.secretKeyRef) {
     throw new TypeKroError(
-      'searxngBootstrap KRO mode requires server.secret_key or secretKeyRef for enabled instances.',
+      'searxngBootstrap KRO mode requires secretKeyRef for enabled instances. Inline server.secret_key is direct-mode-only so plaintext credentials are not stored in KRO custom resources.',
       'REQUIRED_CONFIG_MISSING',
-      { field: 'server.secret_key', alternative: 'secretKeyRef', mode: 'kro' }
+      { field: 'secretKeyRef', mode: 'kro' }
     );
   }
 }
@@ -136,6 +136,14 @@ const searxngBootstrapComposition = kubernetesComposition(
     const enabledWhen = Cel.expr<boolean>(
       '!(has(schema.spec.enabled)) || schema.spec.enabled != false'
     );
+    // ArkType's cross-field `.narrow()` protects JavaScript factory calls, but
+    // KRO does not carry that predicate into the generated CRD schema. Raw
+    // GitOps clients can therefore submit an enabled instance without the
+    // required external reference. Fail closed at the graph boundary too:
+    // such an instance owns no Namespace, Secret, Deployment, ConfigMap, or
+    // Service. Inline secrets remain a direct-mode-only convenience so secret
+    // data never controls KRO resource activation or lives in an instance CR.
+    const credentialSourcePresentWhen = Cel.expr<boolean>('has(schema.spec.secretKeyRef)');
     const port = DEFAULT_SEARXNG_PORT;
     let deployment: ReturnType<typeof searxng> | undefined;
 
@@ -154,7 +162,7 @@ const searxngBootstrapComposition = kubernetesComposition(
         id: 'searxngNamespace',
       });
       if (isGraphMode) {
-        appendIncludeWhen(_ns, [enabledWhen]);
+        appendIncludeWhen(_ns, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Settings ConfigMap ─────────────────────────────────────────────
@@ -264,7 +272,7 @@ ${redisSection}`;
         id: 'searxngConfig',
       });
       if (isGraphMode) {
-        appendIncludeWhen(_config, [enabledWhen]);
+        appendIncludeWhen(_config, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Secret (SEARXNG_SECRET delivery) ───────────────────────────────
@@ -274,16 +282,19 @@ ${redisSection}`;
       //       mounts that existing Secret via valueFrom — the bootstrap does
       //       NOT create its own. This is the path for external-secrets
       //       workflows (Vault, AWS SM, external-secrets operator).
-      //   (2) Otherwise, the bootstrap creates a dedicated `{name}-secret`
-      //       Secret from `server.secret_key`. The plaintext stops at the
-      //       Secret's stringData and never enters the Deployment env.
+      //   (2) In direct mode, the bootstrap can instead create a dedicated
+      //       `{name}-secret` Secret from `server.secret_key`. The plaintext
+      //       stops at the Secret's stringData and never enters the Deployment
+      //       env. KRO mode requires the external-reference form.
       //
-      // The generated Secret is explicitly gated by the absence of
-      // `secretKeyRef`, so an external Secret remains externally owned. The
-      // Deployment itself is not gated on either credential branch: admission
-      // already requires one source, and secret-derived resource activation
-      // would turn sensitive data into structural planning control flow. Its
-      // `secretKeyRef` value instead selects the external or generated Secret.
+      // Direct mode suppresses the generated Secret when `secretKeyRef` is
+      // present, so an external Secret remains externally owned; KRO mode
+      // suppresses it unconditionally. The Deployment and every sibling are
+      // gated on credential-source PRESENCE so raw GitOps instances that
+      // bypass ArkType validation fail
+      // closed without creating a broken workload. Secret DATA never controls
+      // resource activation. The Deployment's `secretKeyRef` value selects the
+      // external or generated Secret for valid instances.
       //
       // Why `simple.Secret` is NOT used here: it eagerly base64-encodes
       // stringData values via `Buffer.from(...)` at composition time, which
@@ -326,10 +337,10 @@ ${redisSection}`;
       });
 
       if (isGraphMode) {
-        setIncludeWhen(generatedSecret, [
-          Cel.expr<boolean>('!has(schema.spec.secretKeyRef)'),
-          enabledWhen,
-        ]);
+        // Inline credentials are deliberately direct-mode-only. Keeping the
+        // generated Secret inactive in every KRO instance prevents plaintext
+        // credentials from becoming a supported CR storage path.
+        setIncludeWhen(generatedSecret, [Cel.expr<boolean>('false')]);
       } else if (hasDynamicSecretKeyRef) {
         setIncludeWhen(generatedSecret, [Cel.not(dynamicSecretKeyRef)]);
       } else if (spec.secretKeyRef) {
@@ -385,11 +396,7 @@ ${redisSection}`;
         id: 'searxngDeployment',
       });
       if (isGraphMode) {
-        // Admission already requires either secretKeyRef or server.secret_key.
-        // Repeating that choice as resource activation would make the
-        // sensitive plaintext path control resource existence and fail strict
-        // semantic planning even for the reference-only production path.
-        appendIncludeWhen(deployment, [enabledWhen]);
+        appendIncludeWhen(deployment, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Service ────────────────────────────────────────────────────────
@@ -405,7 +412,7 @@ ${redisSection}`;
         id: 'searxngService',
       });
       if (isGraphMode) {
-        appendIncludeWhen(svc, [enabledWhen]);
+        appendIncludeWhen(svc, [enabledWhen, credentialSourcePresentWhen]);
       }
     }
 
