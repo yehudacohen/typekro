@@ -3,6 +3,7 @@ import { type } from 'arktype';
 
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import { KroResourceFactoryImpl } from '../../src/core/deployment/kro-factory.js';
+import { DeploymentTimeoutError } from '../../src/core/errors.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import {
   createResource,
@@ -27,6 +28,65 @@ afterEach(() => {
 });
 
 describe('standalone KRO artifact-bundle execution', () => {
+  it('applies one operation-wide timeout across singleton and root bundle phases', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const operationStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+
+    replace(factoryPrototype, 'getKubeConfig', () => ({
+      getCurrentCluster: () => ({ server: 'https://example.invalid' }),
+    }));
+    replace(factoryPrototype, 'ensureTargetNamespace', async () => {});
+    replace(factoryPrototype, 'assertNoPreHoistNamespaceConflict', async () => {});
+    replace(factoryPrototype, 'executeClosuresBeforeRGD', async () => []);
+    replace(factoryPrototype, 'addRgdSchemaStatusPruneMarkers', async () => {});
+    replace(factoryPrototype, 'migrateLegacyArtifactBindings', async () => {});
+    replace(factoryPrototype, 'repairRetainedCrdOwnership', async () => {});
+    replace(factoryPrototype, 'dispose', async () => {});
+    replace(
+      enginePrototype,
+      'deployResource',
+      async (_resource: KubernetesResource, options: { abortSignal?: AbortSignal }) => {
+        receivedSignal = options.abortSignal;
+        started();
+        return new Promise<never>((_, reject) => {
+          options.abortSignal?.addEventListener(
+            'abort',
+            () => reject(options.abortSignal?.reason),
+            { once: true }
+          );
+        });
+      }
+    );
+    replace(enginePrototype, 'dispose', async () => {});
+
+    const composition = kubernetesComposition(
+      {
+        name: 'standalone-timeout-kro',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'StandaloneTimeoutKro',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        simple.ConfigMap({ id: 'config', name: spec.name, data: { ready: 'true' } });
+        return { ready: true };
+      }
+    );
+    const factory = await composition.factory('kro', { namespace: 'apps', timeout: 500 });
+    const deployment = factory.deploy({ name: 'demo' }).catch((error: unknown) => error);
+
+    await operationStarted;
+    const error = await deployment;
+
+    expect(error).toBeInstanceOf(DeploymentTimeoutError);
+    expect((error as DeploymentTimeoutError).timeoutMs).toBe(500);
+    expect((error as DeploymentTimeoutError).operation).toBe('deployment');
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
   it('forwards Effect interruption through the decoded bundle executor', async () => {
     const controller = new AbortController();
     const reason = new DOMException('stop KRO deployment', 'AbortError');

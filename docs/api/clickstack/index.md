@@ -133,8 +133,8 @@ JSON-typed schema via `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_JSON_ENABLE` wants CH 25
 
 ## Status Contract
 
-Beyond `ready`/`phase` (KRO CEL from the owned HelmRelease), the status exposes typed connection
-details so downstream compositions never reconstruct chart naming rules:
+Beyond `ready`/`phase` (KRO CEL from the owned HelmRelease and Team-bootstrap CronJob), the status
+exposes typed connection details so downstream compositions never reconstruct chart naming rules:
 
 ```typescript
 status: {
@@ -150,7 +150,11 @@ status: {
 HelmRelease resource**, so it serializes as KRO status CEL and is visible on the live KRO CR's
 status (GitOps/KRO consumers can read it):
 
-- `ready`, `phase` — CEL over `clickstackHelmRelease.status.conditions`.
+- `ready`, `phase` — generation-aware CEL over `clickstackHelmRelease.status.conditions`, combined
+  with the authoritative Team-bootstrap CronJob's current schedule and last successful execution.
+  `ready` becomes true only after Flux has observed the current HelmRelease generation **and** the
+  current credential bootstrap has completed successfully; `phase` remains `Installing` until both
+  gates pass and becomes `Failed` on a current-generation Helm failure.
 - `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`, `app.host` — CEL string concat
   over `clickstackHelmRelease.metadata.name` / `.namespace` (the mapper pins `fullnameOverride` to
   the release name, so the HyperDX Service is `<name>` and the gateway Service is
