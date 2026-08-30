@@ -21,7 +21,6 @@ import type {
 import {
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
-  createKubernetesObjectApiClient,
   createTestNamespace,
   deleteGeneratedCrdAndWait,
   deleteTestFactoryInstanceAndRecoverNamespaces,
@@ -96,9 +95,13 @@ async function waitForKroReconciliation(
 }
 
 async function deleteSearxngKroDefinitionWhenUnused(kubeConfig: k8s.KubeConfig): Promise<void> {
-  const objectApi = createKubernetesObjectApiClient(kubeConfig);
+  const customApi = createCustomObjectsApiClient(kubeConfig);
   try {
-    const instances = await objectApi.list('kro.run/v1alpha1', 'SearxngBootstrap');
+    const instances = await customApi.listClusterCustomObject({
+      group: 'kro.run',
+      version: 'v1alpha1',
+      plural: 'searxngbootstraps',
+    });
     if (instances.items.length > 0) {
       throw new Error(
         `Refusing to reset SearXNG KRO test definitions while ${instances.items.length} instance(s) remain`
