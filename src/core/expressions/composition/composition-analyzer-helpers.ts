@@ -63,6 +63,28 @@ const KNOWN_FACTORY_NAMES = new Set([
   'ResourceQuota',
 ]);
 
+function pascalCaseFactoryName(name: string): string {
+  return name.length === 0 ? name : `${name[0]?.toUpperCase()}${name.slice(1)}`;
+}
+
+/**
+ * Factory modules conventionally export lower-camel functions (`namespace`,
+ * `configMap`, `deployment`) while the registry is keyed by the Kubernetes kind
+ * (`Namespace`, `ConfigMap`, `Deployment`). Treat those two spellings as the
+ * same factory identity during source analysis. Without this normalization an
+ * untaken native-JavaScript branch containing a lower-camel factory is invisible
+ * to differential capture and its resource silently disappears from KRO mode.
+ */
+function isKnownFactoryName(name: string): boolean {
+  const pascalName = pascalCaseFactoryName(name);
+  return (
+    isKnownFactory(name) ||
+    isKnownFactory(pascalName) ||
+    KNOWN_FACTORY_NAMES.has(name) ||
+    KNOWN_FACTORY_NAMES.has(pascalName)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Source extraction
 // ---------------------------------------------------------------------------
@@ -95,13 +117,13 @@ export function isFactoryCall(node: ASTNode): node is CallExpression {
   const callee = call.callee;
   if (callee.type === 'Identifier') {
     const name = (callee as Identifier).name;
-    return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
+    return isKnownFactoryName(name);
   }
   if (callee.type === 'MemberExpression' && !callee.computed) {
     const property = callee.property as ASTNode | undefined;
     if (property?.type === 'Identifier') {
       const name = (property as Identifier).name;
-      return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
+      return isKnownFactoryName(name);
     }
   }
   return false;

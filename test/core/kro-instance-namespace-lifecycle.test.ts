@@ -129,15 +129,6 @@ describe('newly-covered built-ins hoist the owned namespace without the removed 
         },
       },
       {
-        name: 'searxngBootstrap',
-        factory: () => searxngBootstrap.factory('kro', { namespace: 'searxng' }),
-        spec: {
-          name: 'searxng',
-          namespace: 'searxng',
-          secretKeyRef: { name: 'searxng-secret', key: 'secret_key' },
-        },
-      },
-      {
         name: 'caddyIngress',
         factory: () => caddyIngress.factory('kro', { namespace: 'caddy' }),
         spec: { name: 'caddy', namespace: 'caddy', caddyfile: ':80 {\n  respond "ok"\n}\n' },
@@ -160,4 +151,22 @@ describe('newly-covered built-ins hoist the owned namespace without the removed 
       expect(yaml).toContain('argocd.argoproj.io/sync-options: Prune=false,Delete=false');
     });
   }
+
+  it('searxngBootstrap hoists the omitted default but treats a supplied namespace as external', () => {
+    const factory = searxngBootstrap.factory('kro', { namespace: 'typekro-system' });
+    const owned = factory.toYaml({
+      name: 'owned-searxng',
+      secretKeyRef: { name: 'searxng-secret', key: 'secret_key' },
+    });
+    const external = factory.toYaml({
+      name: 'external-searxng',
+      namespace: 'shared-search',
+      secretKeyRef: { name: 'searxng-secret', key: 'secret_key' },
+    });
+
+    expect(owned).toContain('typekro.io/kro-instance-namespace');
+    expect(owned).toContain('typekro.io/hoisted-namespaces: \'["searxng"]\'');
+    expect(external).toContain("typekro.io/hoisted-namespaces: '[]'");
+    expect(external).not.toContain('typekro.io/kro-instance-namespace');
+  });
 });

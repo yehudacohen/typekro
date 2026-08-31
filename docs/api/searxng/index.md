@@ -40,6 +40,9 @@ const factory = searxngBootstrap.factory('direct', {
 
 await factory.deploy({
   name: 'searxng',
+  // Passing namespace uses this externally owned namespace. Omit it to let
+  // TypeKro create and own the default `searxng` namespace.
+  namespace: 'search',
   server: { secret_key: process.env.SEARXNG_SECRET_KEY!, limiter: false },
   // search.formats only takes effect in direct mode — see "Known Limitations" above
   search: { formats: ['html', 'json'] },
@@ -50,7 +53,7 @@ await factory.deploy({
 
 | Resource | Name | Type |
 |----------|------|------|
-| Namespace | `searxng` | Namespace |
+| Namespace | `searxng` | Namespace, created only when `namespace` is omitted |
 | Settings | `{name}-config` | ConfigMap |
 | Secret key | `{name}-secret` | Secret, created from inline `server.secret_key` in direct mode only |
 | Search engine | `{name}` | Deployment |
@@ -63,7 +66,7 @@ await factory.deploy({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `string` | required | Instance name |
-| `namespace` | `string` | `'searxng'` | Target namespace |
+| `namespace` | `string` | — | Existing target namespace. Omit it to create and own the default `searxng` namespace. A supplied namespace is never deleted with the installation. |
 | `enabled` | `boolean` | `true` | Direct-mode only. When `false`, direct mode creates no SearXNG resources. KRO mode rejects disabled instances because status depends on the Deployment; omit the KRO instance instead. |
 | `image` | `string` | `'searxng/searxng:2026.3.29-7ac4ff39f'` | Container image (pinned to avoid breaking config changes between releases) |
 | `replicas` | `number` | `1` | Number of replicas |

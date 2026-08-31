@@ -168,7 +168,11 @@ function createStubResource(
   factoryName: string,
   resourceId: string
 ): Record<string, unknown> | null {
-  const kindInfo = getKindInfo(factoryName);
+  const pascalFactoryName =
+    factoryName.length === 0
+      ? factoryName
+      : `${factoryName[0]?.toUpperCase()}${factoryName.slice(1)}`;
+  const kindInfo = getKindInfo(factoryName) ?? getKindInfo(pascalFactoryName);
   if (!kindInfo) return null;
 
   const stub: Record<string, unknown> = {
