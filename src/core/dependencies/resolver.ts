@@ -593,6 +593,16 @@ export class DependencyResolver {
         continue;
       }
 
+      // A three-segment window can begin in the middle of a longer member or
+      // DNS chain. For example, a resource-derived template ending in
+      // `.svc.cluster.local` previously invented a dependency on a resource
+      // named `svc`. Real resource references begin at a CEL token boundary;
+      // a preceding dot proves that this match is only a suffix.
+      if (match.index > 0 && searchableExpression[match.index - 1] === '.') {
+        match = refPattern.exec(searchableExpression);
+        continue;
+      }
+
       refs.push({
         [KUBERNETES_REF_BRAND]: true,
         resourceId: resourceId === 'schema' ? '__schema__' : resourceId,

@@ -1520,11 +1520,39 @@ export class KroResourceFactoryImpl<
     if (opts?.operationSignal) {
       return this.deployWithinOperation(spec, opts, opts.operationSignal);
     }
-    return runStandaloneOperation(
-      (abortSignal) =>
-        this.deployWithinOperation(spec, { ...opts, operationSignal: abortSignal }, abortSignal),
-      { abortSignals: [this.factoryOptions.abortSignal, opts?.abortSignal] }
-    );
+    const timeout = this.factoryOptions.timeout;
+    const deadlineController = timeout === undefined ? undefined : new AbortController();
+    const timeoutId =
+      timeout === undefined
+        ? undefined
+        : setTimeout(() => {
+            deadlineController?.abort(
+              new DeploymentTimeoutError(
+                `KRO deployment ${this.name} timed out after ${timeout}ms. Singleton owners, definitions, instances, and readiness checks share this operation deadline.`,
+                'ResourceGraphDefinition',
+                this.rgdName,
+                timeout,
+                'deployment'
+              )
+            );
+          }, timeout);
+    timeoutId?.unref?.();
+
+    try {
+      return await runStandaloneOperation(
+        (abortSignal) =>
+          this.deployWithinOperation(spec, { ...opts, operationSignal: abortSignal }, abortSignal),
+        {
+          abortSignals: [
+            this.factoryOptions.abortSignal,
+            opts?.abortSignal,
+            deadlineController?.signal,
+          ],
+        }
+      );
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
   }
 
   private async deployWithinOperation(

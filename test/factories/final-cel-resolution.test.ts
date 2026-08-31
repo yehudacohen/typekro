@@ -96,14 +96,56 @@ describe('final-pipeline CEL resolution for raw-Cel.expr status fields (hermetic
     );
     expect(status).not.toBeNull();
 
-    // A reconciled HelmRelease (Ready=True) — what the graph looks like post-waitForReady.
-    const ready = { clickstackHelmRelease: { status: { conditions: [{ type: 'Ready', status: 'True' }] } } };
+    // Both the chart and the authoritative ingestion-Team bootstrap have
+    // reconciled — what the graph looks like post-waitForReady.
+    const ready = {
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+        },
+      },
+      clickstackTeamBootstrap: {
+        status: {
+          lastScheduleTime: '2026-08-28T10:00:00Z',
+          lastSuccessfulTime: '2026-08-28T10:00:05Z',
+        },
+      },
+    };
     expect(await evalCel(status!.ready, ready)).toBe(true);
     expect(await evalCel(status!.phase, ready)).toBe('Ready');
 
     // A failed HelmRelease drives phase to Failed — proves the macro chain, not a constant.
-    const failed = { clickstackHelmRelease: { status: { conditions: [{ type: 'Ready', status: 'False' }] } } };
+    const failed = {
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'False', observedGeneration: 2 }],
+        },
+      },
+      clickstackTeamBootstrap: { status: {} },
+    };
     expect(await evalCel(status!.ready, failed)).toBe(false);
     expect(await evalCel(status!.phase, failed)).toBe('Failed');
+
+    const bootstrapPending = {
+      clickstackHelmRelease: {
+        metadata: { generation: 2 },
+        status: {
+          observedGeneration: 2,
+          conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+        },
+      },
+      clickstackTeamBootstrap: {
+        status: {
+          lastScheduleTime: '2026-08-28T10:01:00Z',
+          lastSuccessfulTime: '2026-08-28T10:00:05Z',
+        },
+      },
+    };
+    expect(await evalCel(status!.ready, bootstrapPending)).toBe(false);
+    expect(await evalCel(status!.phase, bootstrapPending)).toBe('Installing');
   });
 });

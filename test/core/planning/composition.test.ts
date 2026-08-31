@@ -19,10 +19,12 @@ import {
   encodeDesiredStatePlan,
   expressionIR,
   kroArtifactPlanToGraphResources,
+  materializePlanOutputs,
   planExpression,
   type SchemaNodeIR,
   SEMANTIC_PLAN_VERSION,
 } from '../../../src/experimental-planning.js';
+import { clickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import {
   Cel,
   createResource,
@@ -302,6 +304,155 @@ describe('captured composition planning prototype', () => {
     ).toEqual(['deployment']);
   });
 
+  it('materializes nested-composition outputs from flattened child resources', () => {
+    const child = kubernetesComposition(
+      {
+        name: 'planning-nested-child',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningNestedChild',
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ readyReplicas: 'number' }),
+      },
+      (spec) => {
+        const deployment = simple.Deployment({
+          id: 'deployment',
+          name: spec.name,
+          image: 'nginx:1.27',
+          replicas: 1,
+        });
+        simple.ConfigMap({
+          id: 'config',
+          name: `${spec.name}-config`,
+          data: { role: 'forces-multi-resource-flattening' },
+        });
+        return { readyReplicas: deployment.status.readyReplicas };
+      }
+    );
+    const parent = kubernetesComposition(
+      {
+        name: 'planning-nested-parent',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningNestedParent',
+        revision: '1',
+        spec: type({ name: 'string' }),
+        status: type({ readyReplicas: 'number' }),
+      },
+      (spec) => {
+        const installation = child({ name: spec.name });
+        return { readyReplicas: installation.status.readyReplicas };
+      }
+    );
+
+    const plan = parent.plan!({ name: 'demo' }, { strict: true });
+    const output = plan.outputs.readyReplicas;
+    if (!output) throw new Error('Expected readyReplicas output.');
+    expect(output).toEqual(
+      expect.objectContaining({
+        kind: 'expression',
+        expression: expect.objectContaining({
+          references: [
+            {
+              source: 'resource',
+              resourceId: 'planningNestedChild1Deployment',
+              fieldPath: 'status.readyReplicas',
+            },
+          ],
+        }),
+      })
+    );
+    expect(JSON.stringify(output)).not.toContain('planningNestedChild1.status');
+    expect(
+      materializePlanOutputs(
+        { readyReplicas: output },
+        {
+          resources: {
+            planningNestedChild1Deployment: { status: { readyReplicas: 1 } },
+          },
+        }
+      )
+    ).toEqual({ readyReplicas: 1 });
+  });
+
+  it('materializes nested ClickStack endpoints from its flattened HelmRelease', () => {
+    const parent = kubernetesComposition(
+      {
+        name: 'planning-nested-clickstack',
+        apiVersion: 'testing.typekro.dev/v1alpha1',
+        kind: 'PlanningNestedClickStack',
+        revision: '1',
+        spec: type({ name: 'string', namespace: 'string' }),
+        status: type({
+          endpoint: 'string',
+          templateEndpoint: 'string',
+          expressionEndpoint: 'string',
+        }),
+      },
+      (spec) => {
+        const stack = clickstackBootstrap({
+          name: spec.name,
+          namespace: spec.namespace,
+          clickhouse: {
+            host: 'clickhouse.observability.svc.cluster.local',
+            username: 'otelcollector',
+            password: 'test-only',
+          },
+          apiKey: 'test-only',
+        });
+        return {
+          endpoint: stack.status.gateway.otlpHttpEndpoint,
+          templateEndpoint: `${stack.status.gateway.otlpHttpEndpoint}/v1`,
+          expressionEndpoint: Cel.expr<string>(stack.status.gateway.otlpHttpEndpoint, ' + "/v2"'),
+        };
+      }
+    );
+
+    const plan = parent.plan!({ name: 'clickstack', namespace: 'observability' });
+    const endpoint = plan.outputs.endpoint;
+    if (!endpoint) throw new Error('Expected endpoint output.');
+    expect(JSON.stringify(endpoint)).not.toContain('clickstackBootstrap1.status');
+    expect(endpoint).toEqual(
+      expect.objectContaining({
+        kind: 'template',
+        segments: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'reference',
+            source: 'resource',
+            fieldPath: 'metadata.name',
+          }),
+          expect.objectContaining({
+            kind: 'reference',
+            source: 'resource',
+            fieldPath: 'metadata.namespace',
+          }),
+        ]),
+      })
+    );
+    const resources = Object.fromEntries(
+      plan.nodes.map((node) => [
+        node.id,
+        { metadata: { name: 'clickstack', namespace: 'observability' } },
+      ])
+    );
+    expect(materializePlanOutputs({ endpoint }, { resources })).toEqual({
+      endpoint: 'http://clickstack-otel-collector.observability.svc.cluster.local:4318',
+    });
+    expect(
+      materializePlanOutputs(
+        {
+          templateEndpoint: plan.outputs.templateEndpoint!,
+          expressionEndpoint: plan.outputs.expressionEndpoint!,
+        },
+        { resources }
+      )
+    ).toEqual({
+      templateEndpoint: 'http://clickstack-otel-collector.observability.svc.cluster.local:4318/v1',
+      expressionEndpoint:
+        'http://clickstack-otel-collector.observability.svc.cluster.local:4318/v2',
+    });
+    expect(JSON.stringify(plan.outputs)).not.toContain('clickstackBootstrap1.status');
+  });
+
   it('marks source-only composition identity as preview-unstable and changes semantic digests with inputs', () => {
     const { revision: _revision, ...previewDefinition } = definition;
     const composition = toResourceGraph(
@@ -416,10 +567,7 @@ describe('captured composition planning prototype', () => {
                 containers: [
                   {
                     name: 'application',
-                    image: artifactOutput(
-                      'application-image',
-                      'immutableReference'
-                    ),
+                    image: artifactOutput('application-image', 'immutableReference'),
                   },
                 ],
               },

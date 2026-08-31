@@ -274,6 +274,56 @@ describe('ClickHouseInstallation Factory', () => {
       });
     });
 
+    it('should preserve Secret-backed user credentials without copying their value', () => {
+      const chi = clickHouseInstallation({
+        name: 'test-ch',
+        version: '25.12.5',
+        storage: { size: '10Gi' },
+        users: [
+          {
+            name: 'otelcollector',
+            passwordSecretRef: {
+              name: 'clickstack-credentials',
+              key: 'clickhouse-password',
+            },
+            networksIp: ['::/0'],
+          },
+        ],
+      });
+
+      expect(chi.spec.configuration?.users).toEqual({
+        'otelcollector/password': {
+          valueFrom: {
+            secretKeyRef: {
+              name: 'clickstack-credentials',
+              key: 'clickhouse-password',
+            },
+          },
+        },
+        'otelcollector/networks/ip': ['::/0'],
+      });
+    });
+
+    it('rejects ambiguous inline and Secret-backed user credentials', () => {
+      expect(() =>
+        clickHouseInstallation({
+          name: 'test-ch',
+          version: '25.12.5',
+          storage: { size: '10Gi' },
+          users: [
+            {
+              name: 'otelcollector',
+              passwordSha256Hex: 'abc123',
+              passwordSecretRef: {
+                name: 'clickstack-credentials',
+                key: 'clickhouse-password',
+              },
+            },
+          ],
+        })
+      ).toThrow('cannot define both passwordSha256Hex and passwordSecretRef');
+    });
+
     it('should omit user fields that are not provided', () => {
       const chi = clickHouseInstallation({
         name: 'test-ch',

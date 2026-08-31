@@ -410,6 +410,35 @@ describe('DependencyResolver', () => {
       expect(warnings).toEqual([]);
     });
 
+    it('does not treat a Kubernetes DNS suffix as a resource reference', () => {
+      const warnings: Array<{ message: string; context?: unknown }> = [];
+      (
+        resolver as unknown as { logger: { warn: (message: string, context?: unknown) => void } }
+      ).logger = {
+        warn: (message, context) => warnings.push({ message, context }),
+      };
+      const app = createMockResource({
+        id: 'app',
+        metadata: { name: 'app' },
+        spec: {
+          value: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression:
+              'string(service.metadata.name) + "." + string(service.metadata.namespace) + .svc.cluster.local',
+          },
+        },
+      });
+      const service = createMockResource({
+        id: 'service',
+        metadata: { name: 'service' },
+      });
+
+      const graph = resolver.buildDependencyGraph([app, service]);
+
+      expect(graph.getDependencies('app')).toEqual(['service']);
+      expect(warnings).toEqual([]);
+    });
+
     it('does not turn CEL macro variables into graph resources', () => {
       const warnings: Array<{ message: string; context?: unknown }> = [];
       (

@@ -13,7 +13,7 @@
  *
  * Values keys verified 2026-07-06 against
  * https://github.com/ClickHouse/ClickStack-helm-charts
- * charts/clickstack/values.yaml (chart 3.0.1, appVersion 2.29.0):
+ * charts/clickstack/values.yaml (chart 3.2.0, appVersion 2.35.0):
  * - `hyperdx.config.*` env map: `CLICKHOUSE_ENDPOINT` (native, tcp://…),
  *   `CLICKHOUSE_SERVER_ENDPOINT` (host:port), `CLICKHOUSE_USER`,
  *   `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`, `MONGO_URI`, `FRONTEND_URL`.
@@ -57,7 +57,9 @@ import type { TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import type {
+  ClickStackBootstrapConfig,
   ClickStackBootstrapRuntimeConfig,
+  ClickStackExternalMongoBootstrapConfig,
   ClickStackHelmValues,
   ClickStackK8sTelemetryConfig,
   ClickStackMappedHelmValues,
@@ -93,12 +95,34 @@ export const DEFAULT_K8S_TELEMETRY_COLLECTOR_IMAGE = 'otel/opentelemetry-collect
 /** Name of the HyperDX connection emitted into `defaultConnections`/`defaultSources`. */
 export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
 
+/**
+ * The ClickStack image runs under the OpAMP supervisor. Its built-in remote
+ * configuration declares the OTLP receiver but, without an overlay, does not
+ * attach it to any pipeline. The Service and health endpoint can therefore be
+ * Ready while 4317/4318 refuse connections. Chart 3.1+ provides the supported
+ * `global.otelCollector.customConfig` merge seam; keep every built-in receiver
+ * while attaching OTLP to all three signal pipelines.
+ */
+export const CLICKSTACK_INGEST_PIPELINES_CONFIG = [
+  'service:',
+  '  pipelines:',
+  '    logs/in:',
+  '      receivers: [fluentforward, otlp/hyperdx]',
+  '    metrics:',
+  '      receivers: [prometheus, otlp/hyperdx]',
+  '    traces:',
+  '      receivers: [nop, otlp/hyperdx]',
+  '',
+].join('\n');
+
 /** Concrete build-time options consumed by the bootstrap values mapper. */
 export interface ClickStackValuesMapperOptions {
   /** Which Mongo wiring to emit (build-time; default 'internal'). */
   mongoMode?: 'internal' | 'external';
   /** Static raw chart values merged after the typed mapping (pins re-applied after). */
   values?: TypeKroChartValues<ClickStackHelmValues>;
+  /** Runtime credential transport selected by the composition constructor. */
+  credentialSource?: 'inline' | 'secretValues';
 }
 
 /** Values pair for the two stock collector instances. */
@@ -225,7 +249,7 @@ function mergeOverridesWithPinsLast(
  * `defaultConnections`/`defaultSources` pointing at the (nonexistent) bundled
  * ClickHouse Service, so both must be overridden for external mode. The
  * sources below mirror the chart defaults (values.yaml `defaultSources`,
- * chart 3.0.1) with the connection renamed and the database parameterized
+ * chart 3.2.0) with the connection renamed and the database parameterized
  * (`%s` slots filled per mode).
  */
 const DEFAULT_SOURCES_FORMAT = JSON.stringify([
@@ -260,8 +284,7 @@ const DEFAULT_SOURCES_FORMAT = JSON.stringify([
     bodyExpression: 'SpanName',
     eventAttributesExpression: 'SpanAttributes',
     resourceAttributesExpression: 'ResourceAttributes',
-    defaultTableSelectExpression:
-      'Timestamp,ServiceName,StatusCode,round(Duration/1e6),SpanName',
+    defaultTableSelectExpression: 'Timestamp,ServiceName,StatusCode,round(Duration/1e6),SpanName',
     traceIdExpression: 'TraceId',
     spanIdExpression: 'SpanId',
     durationExpression: 'Duration',
@@ -339,6 +362,7 @@ export function mapClickStackConfigToHelmValues(
 ): ClickStackMappedHelmValues {
   const isGraph = isKubernetesRef(config.name) || isKubernetesRef(config.clickhouse);
   const mongoMode = options.mongoMode ?? 'internal';
+  const credentialSource = options.credentialSource ?? 'inline';
 
   const ch = config.clickhouse;
   const hyperdxConfig: Record<string, unknown> = {};
@@ -354,15 +378,6 @@ export function mapClickStackConfigToHelmValues(
     const httpPortStr = Cel.expr<string>(
       `string(${hasSchemaPath('schema.spec.clickhouse.httpPort')} ? schema.spec.clickhouse.httpPort : 8123)`
     );
-    const appUsername = Cel.expr<string>(
-      `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
-        `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
-    );
-    const appPassword = Cel.expr<string>(
-      `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
-        `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
-    );
-
     hyperdxConfig.CLICKHOUSE_ENDPOINT = Cel.template(
       'tcp://%s:%s?dial_timeout=10s',
       ch.host,
@@ -381,21 +396,35 @@ export function mapClickStackConfigToHelmValues(
           );
     hyperdxConfig.FRONTEND_URL = graphOptional('schema.spec.hyperdx.frontendUrl');
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(ch.password, '');
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    hyperdxSecrets.HYPERDX_API_KEY = graphOptional('schema.spec.apiKey');
+    if (credentialSource === 'inline') {
+      const inlineConfig = config as
+        | ClickStackBootstrapConfig
+        | ClickStackExternalMongoBootstrapConfig;
+      const inlineClickhouse = inlineConfig.clickhouse;
+      const appUsername = Cel.expr<string>(
+        `${hasSchemaPath('schema.spec.clickhouse.appUsername')} ? schema.spec.clickhouse.appUsername : ` +
+          `(${hasSchemaPath('schema.spec.clickhouse.username')} ? schema.spec.clickhouse.username : "default")`
+      );
+      const appPassword = Cel.expr<string>(
+        `${hasSchemaPath('schema.spec.clickhouse.appPassword')} ? schema.spec.clickhouse.appPassword : ` +
+          `(${hasSchemaPath('schema.spec.clickhouse.password')} ? schema.spec.clickhouse.password : "")`
+      );
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = resolve(inlineClickhouse.password, '');
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
+      hyperdxDeployment.defaultConnections = Cel.template(
+        DEFAULT_CONNECTIONS_FORMAT,
+        ch.host,
+        httpPortStr,
+        httpPortStr,
+        appUsername,
+        appPassword
+      );
+    }
 
     hyperdxDeployment.replicas = graphOptional('schema.spec.hyperdx.replicas');
     hyperdxDeployment.resources = graphOptional('schema.spec.hyperdx.resources');
     hyperdxDeployment.image = graphOptional('schema.spec.hyperdx.image');
-    hyperdxDeployment.defaultConnections = Cel.template(
-      DEFAULT_CONNECTIONS_FORMAT,
-      ch.host,
-      httpPortStr,
-      httpPortStr,
-      appUsername,
-      appPassword
-    );
     const database = resolve(ch.database, 'default');
     hyperdxDeployment.defaultSources = Cel.template(
       DEFAULT_SOURCES_FORMAT,
@@ -409,10 +438,6 @@ export function mapClickStackConfigToHelmValues(
     const httpPort = ch.httpPort ?? 8123;
     const database = ch.database ?? 'default';
     const username = ch.username ?? 'default';
-    const password = ch.password ?? '';
-    const appUsername = ch.appUsername ?? username;
-    const appPassword = ch.appPassword ?? password;
-
     hyperdxConfig.CLICKHOUSE_ENDPOINT = `tcp://${ch.host}:${nativePort}?dial_timeout=10s`;
     hyperdxConfig.CLICKHOUSE_SERVER_ENDPOINT = `${ch.host}:${nativePort}`;
     hyperdxConfig.CLICKHOUSE_USER = username;
@@ -423,29 +448,38 @@ export function mapClickStackConfigToHelmValues(
         : `mongodb://${config.name}${CLICKSTACK_MONGO_NAME_SUFFIX}.${config.namespace ?? DEFAULT_CLICKSTACK_NAMESPACE}.svc.cluster.local:${CLICKSTACK_MONGO_PORT}/hyperdx`;
     setIfDefined(hyperdxConfig, 'FRONTEND_URL', config.hyperdx?.frontendUrl);
 
-    hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
-    hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
-    setIfDefined(hyperdxSecrets, 'HYPERDX_API_KEY', config.apiKey);
+    if (credentialSource === 'inline') {
+      const inlineConfig = config as
+        | ClickStackBootstrapConfig
+        | ClickStackExternalMongoBootstrapConfig;
+      const inlineClickhouse = inlineConfig.clickhouse;
+      const password = inlineClickhouse.password ?? '';
+      const appUsername = inlineClickhouse.appUsername ?? username;
+      const appPassword = inlineClickhouse.appPassword ?? password;
+      hyperdxSecrets.CLICKHOUSE_PASSWORD = password;
+      hyperdxSecrets.CLICKHOUSE_APP_PASSWORD = appPassword;
+      hyperdxSecrets.HYPERDX_API_KEY = inlineConfig.apiKey;
+      hyperdxDeployment.defaultConnections = JSON.stringify([
+        {
+          name: CLICKSTACK_CONNECTION_NAME,
+          host: `http://${ch.host}:${httpPort}`,
+          port: httpPort,
+          username: appUsername,
+          password: appPassword,
+        },
+      ]);
+    }
 
     setIfDefined(hyperdxDeployment, 'replicas', config.hyperdx?.replicas);
     setIfDefined(hyperdxDeployment, 'resources', config.hyperdx?.resources);
     setIfDefined(hyperdxDeployment, 'image', config.hyperdx?.image);
-    hyperdxDeployment.defaultConnections = JSON.stringify([
-      {
-        name: CLICKSTACK_CONNECTION_NAME,
-        host: `http://${ch.host}:${httpPort}`,
-        port: httpPort,
-        username: appUsername,
-        password: appPassword,
-      },
-    ]);
     hyperdxDeployment.defaultSources = DEFAULT_SOURCES_FORMAT.replace(/%s/g, () => database);
   }
 
   const values: ClickStackHelmValues = {
     hyperdx: {
       config: hyperdxConfig,
-      secrets: hyperdxSecrets,
+      ...(credentialSource === 'inline' ? { secrets: hyperdxSecrets } : {}),
       deployment: hyperdxDeployment,
     },
   };
@@ -454,6 +488,11 @@ export function mapClickStackConfigToHelmValues(
   // contract's naming anchor. Merged AFTER every passthrough so they always
   // win — including over a graph-aware per-instance `customValues` override.
   const pins: Record<string, unknown> = {
+    global: {
+      otelCollector: {
+        customConfig: CLICKSTACK_INGEST_PIPELINES_CONFIG,
+      },
+    },
     clickhouse: { enabled: false },
     mongodb: { enabled: false },
     fullnameOverride: config.name,

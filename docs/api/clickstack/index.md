@@ -2,20 +2,52 @@
 
 Deploy [ClickStack](https://clickhouse.com/docs/use-cases/observability/clickstack) — ClickHouse Inc.'s
 observability stack (the HyperDX UI/API, an OTel gateway collector, and schema migrations) — via the
-OFFICIAL `clickstack` Helm chart (3.0.x, MIT) from
+OFFICIAL `clickstack` Helm chart (3.2.x, MIT) from
 [`ClickHouse/ClickStack-helm-charts`](https://github.com/ClickHouse/ClickStack-helm-charts), wired to an
 **external ClickHouse** you already run (e.g. an Altinity-operator-managed
 [`ClickHouseInstallation`](../clickhouse/)).
 
-## Secrets Caveat
+## Credential modes
 
-`clickhouse.password`, `clickhouse.appPassword`, and `apiKey` travel as **plaintext** runtime spec
-values all the way into the generated HelmRelease's `spec.values.hyperdx.secrets.*` — a Kubernetes
-object stored in etcd, readable by anyone with read access to the HelmRelease/RGD instance
-(`kubectl get helmrelease -o yaml`). This is unlike `clickstackK8sTelemetry`'s `apiKeySecret` (a
-`secretKeyRef` env var — the value never appears in any CR spec). There is currently **no
-existing-Secret alternative** for these three fields. Do not treat this family as production-ready
-for credentials that need stronger-than-etcd-RBAC protection until that gap is closed.
+The default accepts `clickhouse.password`, `clickhouse.appPassword`, and a required, non-empty
+`apiKey` inline. The published chart placeholder is rejected. Those values enter the HelmRelease
+and RGD instance, so use that mode only when etcd/RBAC protection is sufficient.
+
+For production, construct the Secret-backed variant:
+
+```typescript
+const clickstack = makeClickstackBootstrap({
+  credentials: { source: 'secretValues' },
+});
+
+await clickstack.factory('kro', { namespace: 'typekro-system' }).deploy({
+  name: 'clickstack',
+  namespace: 'observability',
+  clickhouse: {
+    host: 'clickhouse-observability.observability.svc.cluster.local',
+    username: 'otelcollector',
+  },
+  credentialsSecret: {
+    name: 'clickstack-credentials',
+    valuesKey: 'values.yaml',
+  },
+});
+```
+
+The Secret key is a Helm values fragment containing `hyperdx.secrets` and, when a preconfigured UI
+connection is desired, `hyperdx.deployment.defaultConnections`. Flux merges it before TypeKro's
+non-sensitive inline values. TypeKro deliberately omits those credential-bearing paths from the
+HelmRelease and rejects inline password/API-key fields in this variant. The Secret must be in the
+ClickStack workload namespace because Flux values references are namespace-local. The fragment must
+override `hyperdx.secrets.HYPERDX_API_KEY`: an idempotent reconciliation CronJob refuses the chart's
+published placeholder and keeps the installation non-ready until an authoritative Team is updated.
+It reruns every minute so API-key and external-Mongo URI rotations converge without replacing an
+immutable completed Job.
+
+Omit `namespace` to let TypeKro create and own the documented `clickstack` default Namespace. Pass
+`namespace` when a parent platform owns the workload Namespace; ClickStack targets that Namespace
+without creating or deleting it. The same rule is preserved when the factory is nested in another
+composition, so one Kubernetes Namespace never gains competing lifecycle owners.
 
 ## Import
 
@@ -31,18 +63,17 @@ import {
 ## Quick Example
 
 ```typescript
-// 1. The stack (internal dev-first Mongo, external ClickHouse). The bootstrap
-// owns its Namespace, so TypeKro hoists that namespace out of the RGD graph
-// (retained) and the instance CR stays in the `clickstack` namespace:
-const factory = clickstackBootstrap.factory('kro', { namespace: 'clickstack' });
+// 1. The stack (internal dev-first Mongo, external ClickHouse). Omitting the
+// runtime namespace asks TypeKro to hoist and own its `clickstack` default.
+const bootstrap = makeClickstackBootstrap({ credentials: { source: 'secretValues' } });
+const factory = bootstrap.factory('kro', { namespace: 'typekro-system' });
 const stack = await factory.deploy({
   name: 'clickstack',
   clickhouse: {
     host: 'clickhouse-observability.clickhouse.svc.cluster.local',
     username: 'otelcollector',
-    password: '…',
   },
-  apiKey: '…',
+  credentialsSecret: { name: 'clickstack-credentials', valuesKey: 'values.yaml' },
 });
 
 // 2. Cluster telemetry into it (wired from the status contract):
@@ -79,8 +110,9 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name, namespace, chart
-version, the ClickHouse connection, API key, HyperDX conveniences.
+credential source, static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
+namespace, chart version, the ClickHouse connection, credential Secret coordinates or inline API key,
+and HyperDX conveniences.
 
 Note `customValues` is **not part of the runtime schema** — it's absent from `bootstrapBaseShape`, so
 KRO-mode callers (whose spec is validated against that schema, and whose values come out as CEL) cannot
@@ -101,8 +133,8 @@ JSON-typed schema via `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_JSON_ENABLE` wants CH 25
 
 ## Status Contract
 
-Beyond `ready`/`phase` (KRO CEL from the owned HelmRelease), the status exposes typed connection
-details so downstream compositions never reconstruct chart naming rules:
+Beyond `ready`/`phase` (KRO CEL from the owned HelmRelease and Team-bootstrap CronJob), the status
+exposes typed connection details so downstream compositions never reconstruct chart naming rules:
 
 ```typescript
 status: {
@@ -118,7 +150,11 @@ status: {
 HelmRelease resource**, so it serializes as KRO status CEL and is visible on the live KRO CR's
 status (GitOps/KRO consumers can read it):
 
-- `ready`, `phase` — CEL over `clickstackHelmRelease.status.conditions`.
+- `ready`, `phase` — generation-aware CEL over `clickstackHelmRelease.status.conditions`, combined
+  with the authoritative Team-bootstrap CronJob's current schedule and last successful execution.
+  `ready` becomes true only after Flux has observed the current HelmRelease generation **and** the
+  current credential bootstrap has completed successfully; `phase` remains `Installing` until both
+  gates pass and becomes `Failed` on a current-generation Helm failure.
 - `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`, `app.host` — CEL string concat
   over `clickstackHelmRelease.metadata.name` / `.namespace` (the mapper pins `fullnameOverride` to
   the release name, so the HyperDX Service is `<name>` and the gateway Service is

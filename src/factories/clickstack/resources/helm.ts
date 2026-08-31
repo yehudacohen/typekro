@@ -50,9 +50,9 @@ export const CLICKSTACK_CHART_NAME = 'clickstack';
 
 /**
  * Default clickstack chart version (verified against the live repo index on
- * 2026-07-06: 3.0.1, appVersion 2.29.0).
+ * 2026-08-26: 3.2.0, appVersion 2.35.0).
  */
-export const DEFAULT_CLICKSTACK_VERSION = '3.0.1';
+export const DEFAULT_CLICKSTACK_VERSION = '3.2.0';
 
 /** Official OpenTelemetry Helm chart repository URL. */
 export const DEFAULT_OTEL_REPO_URL = 'https://open-telemetry.github.io/opentelemetry-helm-charts';
@@ -72,7 +72,7 @@ export const OTEL_COLLECTOR_CHART_NAME = 'opentelemetry-collector';
 export const DEFAULT_OTEL_COLLECTOR_VERSION = '0.146.1';
 
 // Chart port facts (values.yaml `hyperdx.ports` and `otel-collector.ports`,
-// chart 3.0.1) — the bootstrap status contract is built on these defaults.
+// chart 3.2.0) — the bootstrap status contract is built on these defaults.
 
 /** HyperDX UI port (`hyperdx.ports.app`). */
 export const CLICKSTACK_APP_PORT = 3000;
@@ -154,6 +154,7 @@ export function clickstackHelmRelease(
     },
     driftDetection: { mode: 'enabled' },
     values: config.values || {},
+    ...(config.valuesFrom && { valuesFrom: config.valuesFrom }),
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('ClickStack')

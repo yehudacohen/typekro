@@ -1,7 +1,7 @@
 /**
  * ClickStack (HyperDX) Bootstrap Composition — EXTERNAL ClickHouse only.
  *
- * Deploys the OFFICIAL `clickstack` chart (3.0.x, MIT) from
+ * Deploys the OFFICIAL `clickstack` chart (3.2.x, MIT) from
  * https://clickhouse.github.io/ClickStack-helm-charts via HelmRepository and
  * HelmRelease resources. Build-around: we wrap the official chart — never
  * hand-rolled manifests. NOT the archived hyperdxio/helm-charts repo, NOT the
@@ -59,6 +59,7 @@
  *     username: 'otelcollector',
  *     password: '…',
  *   },
+ *   apiKey: '…',
  * });
  * ```
  *
@@ -69,17 +70,22 @@
  * await bootstrap.factory('kro').deploy({
  *   name: 'clickstack',
  *   clickhouse: { host: '…' },
+ *   apiKey: '…',
  *   mongoUri: 'mongodb://user:pass@mongo.example.com:27017/hyperdx',
  * });
  * ```
  */
 
+import type { V1CronJob } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
 import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
+import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import {
   CLICKSTACK_API_PORT,
   CLICKSTACK_APP_PORT,
@@ -101,8 +107,16 @@ import {
   type ClickStackExternalMongoBootstrapConfig,
   ClickStackExternalMongoBootstrapConfigSchema,
   type ClickStackExternalMongoBuildOptions,
+  type ClickStackInlineExternalMongoBuildOptions,
+  type ClickStackInlineInternalMongoBuildOptions,
   type ClickStackInternalMongoBuildOptions,
   type ClickStackMongoStorageOptions,
+  type ClickStackSecretValuesBootstrapConfig,
+  ClickStackSecretValuesBootstrapConfigSchema,
+  type ClickStackSecretValuesExternalMongoBuildOptions,
+  type ClickStackSecretValuesExternalMongoBootstrapConfig,
+  ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
+  type ClickStackSecretValuesInternalMongoBuildOptions,
 } from '../types.js';
 import {
   DEFAULT_CLICKSTACK_NAMESPACE,
@@ -113,9 +127,69 @@ import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.
 /** Concrete, resolved build choices the composition body branches on. */
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
+  credentialSource: 'inline' | 'secretValues';
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
 }
+
+const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1CronJob>(
+  'typekro.readiness.clickstack.team-bootstrap',
+  '1',
+  (liveResource) => {
+    const status = liveResource.status;
+    const scheduledAt = status?.lastScheduleTime
+      ? new Date(status.lastScheduleTime).getTime()
+      : Number.NaN;
+    const succeededAt = status?.lastSuccessfulTime
+      ? new Date(status.lastSuccessfulTime).getTime()
+      : Number.NaN;
+    if (Number.isFinite(scheduledAt) && Number.isFinite(succeededAt) && succeededAt >= scheduledAt) {
+      return {
+        ready: true,
+        reason: 'BootstrapCurrent',
+        message: 'The latest ClickStack Team credential convergence succeeded',
+      };
+    }
+    return {
+      ready: false,
+      reason: status?.active?.length ? 'BootstrapActive' : 'BootstrapPending',
+      message: status?.lastScheduleTime
+        ? 'The latest ClickStack Team credential convergence has not succeeded'
+        : 'The ClickStack Team credential convergence has not run yet',
+    };
+  }
+);
+const inlineSchemaFieldValidations = {
+  apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
+} as const;
+
+const CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT = [
+  "const database = db.getSiblingDB('hyperdx');",
+  'const apiKey = process.env.HYPERDX_API_KEY;',
+  "if (typeof apiKey !== 'string' || apiKey.trim().length === 0) throw new Error('HYPERDX_API_KEY is required.');",
+  `if (apiKey === '${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}') throw new Error('HYPERDX_API_KEY must override the published ClickStack chart placeholder.');`,
+  "const hookId = 'typekro-managed-ingestion';",
+  'const teams = database.teams.find({ hookId }).toArray();',
+  "if (teams.length > 1) throw new Error('Multiple TypeKro-managed ClickStack Teams exist.');",
+  'if (teams.length === 0) {',
+  '  const now = new Date();',
+  '  database.teams.insertOne({',
+  "    name: 'Applik8s Observability',",
+  '    allowedAuthMethods: [],',
+  '    hookId,',
+  '    apiKey,',
+  '    collectorAuthenticationEnforced: true,',
+  '    isMetricsSeriesTableEnabled: false,',
+  '    createdAt: now,',
+  '    updatedAt: now,',
+  '  });',
+  '} else if (teams[0].apiKey !== apiKey || teams[0].collectorAuthenticationEnforced !== true) {',
+  '  database.teams.updateOne({ _id: teams[0]._id }, {',
+  '    $set: { apiKey, collectorAuthenticationEnforced: true, updatedAt: new Date() },',
+  '  });',
+  '}',
+].join('\n');
 
 /**
  * Shared composition body. `build` is CONCRETE (construction-time), so every
@@ -131,6 +205,11 @@ interface ResolvedBuildConfig {
  */
 function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBuildConfig) {
   {
+    const credentialsSecret = (
+      spec as
+        | ClickStackSecretValuesBootstrapConfig
+        | ClickStackSecretValuesExternalMongoBootstrapConfig
+    ).credentialsSecret;
     const resolvedNamespace = isKubernetesRef(spec.namespace)
       ? Cel.default(spec.namespace, DEFAULT_CLICKSTACK_NAMESPACE)
       : (spec.namespace ?? DEFAULT_CLICKSTACK_NAMESPACE);
@@ -138,14 +217,51 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       ? Cel.default(spec.version, DEFAULT_CLICKSTACK_VERSION)
       : (spec.version ?? DEFAULT_CLICKSTACK_VERSION);
 
+    if (build.credentialSource === 'inline') {
+      const inlineApiKey = (
+        spec as ClickStackBootstrapConfig | ClickStackExternalMongoBootstrapConfig
+      ).apiKey;
+      if (
+        !isKubernetesRef(inlineApiKey) &&
+        (inlineApiKey.trim().length === 0 || inlineApiKey === CLICKSTACK_CHART_PLACEHOLDER_API_KEY)
+      ) {
+        throw new Error(
+          'ClickStack inline credential mode requires a non-empty apiKey that is not the published chart placeholder.'
+        );
+      }
+    }
+
     const helmValues = mapClickStackConfigToHelmValues(spec, {
       mongoMode: build.mongoMode,
+      credentialSource: build.credentialSource,
       ...(build.values !== undefined && { values: build.values }),
     });
 
+    if (
+      build.credentialSource === 'secretValues' &&
+      !isKubernetesRef(credentialsSecret) &&
+      credentialsSecret === undefined
+    ) {
+      throw new Error('ClickStack secretValues credential mode requires credentialsSecret.');
+    }
+    if (
+      build.credentialSource === 'secretValues' &&
+      !isKubernetesRef(spec.clickhouse) &&
+      ((spec.clickhouse as { password?: unknown }).password !== undefined ||
+        (spec.clickhouse as { appPassword?: unknown }).appPassword !== undefined ||
+        (spec as { apiKey?: unknown }).apiKey !== undefined ||
+        spec.customValues !== undefined)
+    ) {
+      throw new Error(
+        'ClickStack secretValues credential mode rejects inline clickhouse.password, clickhouse.appPassword, apiKey, and runtime customValues.'
+      );
+    }
+
     const _clickstackNamespace = namespace({
       metadata: {
-        name: resolvedNamespace,
+        // This resource is active only when namespace is omitted, so its
+        // identity is always TypeKro's documented standalone default.
+        name: DEFAULT_CLICKSTACK_NAMESPACE,
         labels: {
           'app.kubernetes.io/name': 'clickstack',
           'app.kubernetes.io/instance': spec.name,
@@ -153,7 +269,9 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         },
       },
       id: 'clickstackNamespace',
-    });
+    }).withIncludeWhen(
+      isKubernetesRef(spec.namespace) ? Cel.not(spec.namespace) : spec.namespace === undefined
+    );
 
     // One cluster-level Flux source shared by every ClickStack instance —
     // singleton(...) keeps it out of any single instance's KRO ApplySet
@@ -198,12 +316,111 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
+      ...(build.credentialSource === 'secretValues'
+        ? {
+            valuesFrom: [
+              {
+                kind: 'Secret' as const,
+                // biome-ignore lint/style/noNonNullAssertion: the secretValues schema requires credentialsSecret
+                name: credentialsSecret!.name,
+                valuesKey: isKubernetesRef(credentialsSecret?.valuesKey)
+                  ? Cel.default(credentialsSecret.valuesKey, 'values.yaml')
+                  : (credentialsSecret?.valuesKey ?? 'values.yaml'),
+              },
+            ],
+          }
+        : {}),
       id: 'clickstackHelmRelease',
     });
 
-    const helmReleaseReady = Cel.expr<boolean>(
-      _clickstackHelmRelease.status.conditions,
-      '.exists(c, c.type == "Ready" && c.status == "True")'
+    // HyperDX's production OpAMP controller activates OTLP only after its
+    // authoritative Team collection contains an ingestion key. The chart's
+    // HYPERDX_API_KEY environment value configures application telemetry but
+    // does not create that Team. Bootstrap one framework-owned Team from the
+    // chart-owned Secret, after the release (and therefore Mongo) is ready.
+    // This keeps the credential out of the Job manifest, coexists with
+    // application-created Teams, and converges the framework-owned key when a
+    // referenced Secret or Mongo URI rotates. A one-shot Job cannot observe
+    // either update after it completes, so this deliberately uses an
+    // idempotent minute-level CronJob. Readiness requires a successful run;
+    // the script rejects the chart's public placeholder key, making an absent
+    // Secret values override fail closed.
+    const mongoUri =
+      build.mongoMode === 'external'
+        ? (spec as ClickStackExternalMongoBootstrapConfig).mongoUri
+        : Cel.template(
+            'mongodb://%s-mongodb.%s.svc.cluster.local:27017/hyperdx',
+            spec.name,
+            resolvedNamespace
+          );
+    const _teamBootstrap = cronJob({
+      id: 'clickstackTeamBootstrap',
+      metadata: {
+        name: `${spec.name}-team-bootstrap`,
+        namespace: resolvedNamespace as string,
+        labels: {
+          'app.kubernetes.io/name': 'clickstack-team-bootstrap',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      spec: {
+        schedule: '* * * * *',
+        concurrencyPolicy: 'Forbid',
+        startingDeadlineSeconds: 60,
+        successfulJobsHistoryLimit: 1,
+        failedJobsHistoryLimit: 3,
+        jobTemplate: {
+          spec: {
+            backoffLimit: 6,
+            template: {
+              metadata: {
+                labels: {
+                  'app.kubernetes.io/name': 'clickstack-team-bootstrap',
+                  'app.kubernetes.io/instance': spec.name,
+                },
+              },
+              spec: {
+                restartPolicy: 'Never',
+                containers: [
+                  {
+                    name: 'team-bootstrap',
+                    image: 'mongo:7',
+                    command: [
+                      'mongosh',
+                      '--quiet',
+                      mongoUri as string,
+                      '--eval',
+                      CLICKSTACK_TEAM_BOOTSTRAP_SCRIPT,
+                    ],
+                    env: [
+                      {
+                        name: 'HYPERDX_API_KEY',
+                        valueFrom: {
+                          secretKeyRef: {
+                            name: 'clickstack-secret',
+                            key: 'HYPERDX_API_KEY',
+                            optional: false,
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    }).withReadinessEvaluator(clickstackTeamBootstrapReadiness);
+    _teamBootstrap.dependsOn(_clickstackHelmRelease);
+
+    const helmReleaseStatus = helmReleaseConditionSummary(_clickstackHelmRelease);
+    const teamBootstrapReady = Cel.expr<boolean>(
+      'has(clickstackTeamBootstrap.status.lastScheduleTime) && ',
+      'has(clickstackTeamBootstrap.status.lastSuccessfulTime) && ',
+      'string(clickstackTeamBootstrap.status.lastSuccessfulTime) >= ',
+      'string(clickstackTeamBootstrap.status.lastScheduleTime)'
     );
 
     // Status endpoints derive from the owned HelmRelease resource so they
@@ -231,11 +448,14 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     // final-pipeline test). Unchanged by this migration: raw Cel.expr before
     // and after; only the metadata endpoint fields switched to template literals.
     return {
-      ready: helmReleaseReady,
+      ready: Cel.expr<boolean>(helmReleaseStatus.ready, ' && ', teamBootstrapReady),
       phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
-        'clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "False") ' +
-          '? "Failed" : clickstackHelmRelease.status.conditions.exists(c, c.type == "Ready" && ' +
-          'c.status == "True") ? "Ready" : "Installing"'
+        helmReleaseStatus.failed,
+        ' ? "Failed" : (',
+        helmReleaseStatus.ready,
+        ' && ',
+        teamBootstrapReady,
+        ' ? "Ready" : "Installing")'
       ),
       version: resolvedVersion,
       ui: {
@@ -256,12 +476,25 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
   }
 }
 
-function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) {
-  const build: ResolvedBuildConfig = {
+function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
+  return {
     mongoMode: 'internal',
+    credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
   };
+}
+
+function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): ResolvedBuildConfig {
+  return {
+    mongoMode: 'external',
+    credentialSource: options.credentials?.source ?? 'inline',
+    ...(options.values !== undefined && { values: options.values }),
+  };
+}
+
+function buildInternalInlineComposition(options: ClickStackInlineInternalMongoBuildOptions) {
+  const build = resolveInternalBuild(options);
   return kubernetesComposition(
     {
       name: options.name ?? 'clickstack-bootstrap',
@@ -269,15 +502,31 @@ function buildInternalComposition(options: ClickStackInternalMongoBuildOptions) 
       spec: ClickStackBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackBootstrapConfig) => bootstrapBody(spec, build),
+    { schemaFieldValidations: inlineSchemaFieldValidations }
   );
 }
 
-function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) {
+function buildInternalSecretValuesComposition(
+  options: ClickStackSecretValuesInternalMongoBuildOptions
+) {
   const build: ResolvedBuildConfig = {
-    mongoMode: 'external',
-    ...(options.values !== undefined && { values: options.values }),
+    ...resolveInternalBuild(options),
+    credentialSource: 'secretValues',
   };
+  return kubernetesComposition(
+    {
+      name: options.name ?? 'clickstack-bootstrap',
+      kind: options.kind ?? 'ClickStackBootstrap',
+      spec: ClickStackSecretValuesBootstrapConfigSchema,
+      status: ClickStackBootstrapStatusSchema,
+    },
+    (spec: ClickStackSecretValuesBootstrapConfig) => bootstrapBody(spec, build)
+  );
+}
+
+function buildExternalInlineComposition(options: ClickStackInlineExternalMongoBuildOptions) {
+  const build = resolveExternalBuild(options);
   return kubernetesComposition(
     {
       name: options.name ?? 'clickstack-bootstrap-external-mongo',
@@ -285,17 +534,64 @@ function buildExternalComposition(options: ClickStackExternalMongoBuildOptions) 
       spec: ClickStackExternalMongoBootstrapConfigSchema,
       status: ClickStackBootstrapStatusSchema,
     },
-    (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
+    (spec: ClickStackExternalMongoBootstrapConfig) => bootstrapBody(spec, build),
+    { schemaFieldValidations: inlineSchemaFieldValidations }
+  );
+}
+
+function buildExternalSecretValuesComposition(
+  options: ClickStackSecretValuesExternalMongoBuildOptions
+) {
+  const build: ResolvedBuildConfig = {
+    ...resolveExternalBuild(options),
+    credentialSource: 'secretValues',
+  };
+  return kubernetesComposition(
+    {
+      name: options.name ?? 'clickstack-bootstrap-external-mongo',
+      kind: options.kind ?? 'ClickStackExternalMongoBootstrap',
+      spec: ClickStackSecretValuesExternalMongoBootstrapConfigSchema,
+      status: ClickStackBootstrapStatusSchema,
+    },
+    (spec: ClickStackSecretValuesExternalMongoBootstrapConfig) => bootstrapBody(spec, build)
   );
 }
 
 /** Composition type for the internal-Mongo variant. */
-export type ClickStackBootstrapComposition = ReturnType<typeof buildInternalComposition>;
+export type ClickStackBootstrapComposition = ReturnType<typeof buildInternalInlineComposition>;
+
+/** Composition type for the Secret-backed internal-Mongo variant. */
+export type ClickStackSecretValuesBootstrapComposition = ReturnType<
+  typeof buildInternalSecretValuesComposition
+>;
 
 /** Composition type for the external-Mongo variant. */
 export type ClickStackExternalMongoBootstrapComposition = ReturnType<
-  typeof buildExternalComposition
+  typeof buildExternalInlineComposition
 >;
+
+/** Composition type for the Secret-backed external-Mongo variant. */
+export type ClickStackSecretValuesExternalMongoBootstrapComposition = ReturnType<
+  typeof buildExternalSecretValuesComposition
+>;
+
+function isSecretValuesExternalBuild(
+  options: ClickStackBuildOptions
+): options is ClickStackSecretValuesExternalMongoBuildOptions {
+  return options.mongo?.mode === 'external' && options.credentials?.source === 'secretValues';
+}
+
+function isInlineExternalBuild(
+  options: ClickStackBuildOptions
+): options is ClickStackInlineExternalMongoBuildOptions {
+  return options.mongo?.mode === 'external' && options.credentials?.source !== 'secretValues';
+}
+
+function isSecretValuesInternalBuild(
+  options: ClickStackBuildOptions
+): options is ClickStackSecretValuesInternalMongoBuildOptions {
+  return options.mongo?.mode !== 'external' && options.credentials?.source === 'secretValues';
+}
 
 /**
  * Construct a ClickStack bootstrap composition variant. Build-time options
@@ -303,14 +599,24 @@ export type ClickStackExternalMongoBootstrapComposition = ReturnType<
  * values; everything per-instance stays in the runtime spec.
  */
 export function makeClickstackBootstrap(
-  options?: ClickStackInternalMongoBuildOptions
+  options?: ClickStackInlineInternalMongoBuildOptions
 ): ClickStackBootstrapComposition;
 export function makeClickstackBootstrap(
-  options: ClickStackExternalMongoBuildOptions
+  options: ClickStackSecretValuesInternalMongoBuildOptions
+): ClickStackSecretValuesBootstrapComposition;
+export function makeClickstackBootstrap(
+  options: ClickStackInlineExternalMongoBuildOptions
 ): ClickStackExternalMongoBootstrapComposition;
 export function makeClickstackBootstrap(
+  options: ClickStackSecretValuesExternalMongoBuildOptions
+): ClickStackSecretValuesExternalMongoBootstrapComposition;
+export function makeClickstackBootstrap(
   options: ClickStackBuildOptions = {}
-): ClickStackBootstrapComposition | ClickStackExternalMongoBootstrapComposition {
+):
+  | ClickStackBootstrapComposition
+  | ClickStackSecretValuesBootstrapComposition
+  | ClickStackExternalMongoBootstrapComposition
+  | ClickStackSecretValuesExternalMongoBootstrapComposition {
   // Build-time options must be CONCRETE: they select which resources exist and bake static chart
   // values at construction — a schema ref here can never serialize (loud > silent mis-serialization).
   if (containsKubernetesRefs(options)) {
@@ -320,10 +626,37 @@ export function makeClickstackBootstrap(
         'construction — move per-instance values into the runtime spec instead.'
     );
   }
-  if (options.mongo?.mode === 'external') {
-    return buildExternalComposition(options as ClickStackExternalMongoBuildOptions);
+  if (options.credentials?.source === 'secretValues') {
+    const hyperdx = options.values?.hyperdx;
+    const deployment =
+      hyperdx && typeof hyperdx === 'object' && !Array.isArray(hyperdx)
+        ? hyperdx.deployment
+        : undefined;
+    if (
+      hyperdx &&
+      typeof hyperdx === 'object' &&
+      !Array.isArray(hyperdx) &&
+      (hyperdx.secrets !== undefined ||
+        (deployment &&
+          typeof deployment === 'object' &&
+          !Array.isArray(deployment) &&
+          deployment.defaultConnections !== undefined))
+    ) {
+      throw new Error(
+        'makeClickstackBootstrap: secretValues credential mode rejects build-time hyperdx.secrets and hyperdx.deployment.defaultConnections. Put those values in the referenced Secret.'
+      );
+    }
   }
-  return buildInternalComposition(options as ClickStackInternalMongoBuildOptions);
+  if (isSecretValuesExternalBuild(options)) {
+    return buildExternalSecretValuesComposition(options);
+  }
+  if (isInlineExternalBuild(options)) {
+    return buildExternalInlineComposition(options);
+  }
+  if (isSecretValuesInternalBuild(options)) {
+    return buildInternalSecretValuesComposition(options);
+  }
+  return buildInternalInlineComposition(options);
 }
 
 /**

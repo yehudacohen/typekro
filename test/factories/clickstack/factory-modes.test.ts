@@ -30,7 +30,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadAll } from 'js-yaml';
 
-import { clickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
+import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
+import {
+  clickstackBootstrap,
+  makeClickstackBootstrap,
+} from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import { clickstackK8sTelemetry } from '../../../src/factories/clickstack/compositions/k8s-telemetry.js';
 import {
   DEFAULT_CLICKSTACK_REPO_NAME,
@@ -40,6 +44,10 @@ import {
   DEFAULT_OTEL_REPO_NAME,
   DEFAULT_OTEL_REPO_URL,
 } from '../../../src/factories/clickstack/resources/helm.js';
+import {
+  ClickStackBootstrapConfigSchema,
+  ClickStackBootstrapStatusSchema,
+} from '../../../src/factories/clickstack/types.js';
 
 const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
 const ORIGINAL_KUBECONFIG = process.env.KUBECONFIG;
@@ -136,21 +144,184 @@ const TELEMETRY_SPEC = {
   apiKeySecret: { name: 'hyperdx-api-key' },
 } as const;
 
+function credentialModeCompileTimeContract(): void {
+  const secretBacked = makeClickstackBootstrap({
+    credentials: { source: 'secretValues' },
+  }).factory('direct');
+  secretBacked.toYaml({
+    name: 'clickstack',
+    // @ts-expect-error Secret-backed specs do not expose plaintext credential fields.
+    clickhouse: { host: 'clickhouse', password: 'plaintext' },
+    credentialsSecret: { name: 'credentials' },
+  });
+
+  const inline = makeClickstackBootstrap().factory('direct');
+  inline.toYaml({
+    name: 'clickstack',
+    clickhouse: { host: 'clickhouse' },
+    // @ts-expect-error Inline specs require apiKey and do not accept a values Secret coordinate.
+    credentialsSecret: { name: 'credentials' },
+  });
+}
+
+// Preserve the contract in the TypeScript test graph without executing it.
+void credentialModeCompileTimeContract;
+
 describe('clickstackBootstrap factory modes', () => {
   describe("direct: factory('direct').toYaml(spec) — concrete manifests", () => {
+    it('can consume an externally managed namespace without owning it', () => {
+      const bootstrap = makeClickstackBootstrap();
+      const yaml = bootstrap.factory('direct').toYaml(BOOTSTRAP_SPEC);
+
+      expect(splitDocs(yaml).some((doc) => docKind(doc) === 'Namespace')).toBe(false);
+      expect(yaml).toContain('namespace: clickstack');
+    });
+
+    it('preserves the external namespace boundary when nested in another composition', () => {
+      const bootstrap = makeClickstackBootstrap();
+      const parent = kubernetesComposition(
+        {
+          name: 'nested-clickstack',
+          kind: 'NestedClickStack',
+          spec: ClickStackBootstrapConfigSchema,
+          status: ClickStackBootstrapStatusSchema,
+        },
+        (spec) => bootstrap(spec).status
+      );
+
+      const yaml = parent.factory('direct').toYaml(BOOTSTRAP_SPEC as never);
+
+      expect(splitDocs(yaml).some((doc) => docKind(doc) === 'Namespace')).toBe(false);
+      expect(yaml).toContain('namespace: clickstack');
+    });
+
+    it('owns the default namespace only when namespace is omitted', () => {
+      const { namespace: _externalNamespace, ...standaloneSpec } = BOOTSTRAP_SPEC;
+      const yaml = clickstackBootstrap.factory('direct').toYaml(standaloneSpec as never);
+      const namespaceDocument = splitDocs(yaml).find((doc) => docKind(doc) === 'Namespace');
+
+      expect(namespaceDocument).toContain('name: clickstack');
+    });
+
+    it('loads credential values from a Secret without serializing inline credential fields', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+      });
+      const yaml = bootstrap.factory('direct').toYaml({
+        name: 'clickstack',
+        namespace: 'clickstack',
+        clickhouse: {
+          host: 'clickhouse-observability.clickhouse.svc.cluster.local',
+          username: 'otelcollector',
+        },
+        credentialsSecret: {
+          name: 'clickstack-credentials',
+          valuesKey: 'values.yaml',
+        },
+      });
+      const release = splitDocs(yaml).find((doc) => docKind(doc) === 'HelmRelease');
+
+      expect(release).toContain('valuesFrom:');
+      expect(release).toContain('kind: Secret');
+      expect(release).toContain('name: clickstack-credentials');
+      expect(release).toContain('valuesKey: values.yaml');
+      expect(release).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(release).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(release).not.toContain('HYPERDX_API_KEY');
+      expect(release).not.toContain('defaultConnections');
+    });
+
+    it('rejects inline credential fields in Secret-backed mode', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+      });
+      expect(() =>
+        bootstrap.factory('direct').toYaml({
+          ...BOOTSTRAP_SPEC,
+          credentialsSecret: { name: 'clickstack-credentials' },
+        } as never)
+      ).toThrow('rejects inline');
+    });
+
+    it('rejects the chart placeholder API key in inline mode', () => {
+      expect(() =>
+        clickstackBootstrap.factory('direct').toYaml({
+          ...BOOTSTRAP_SPEC,
+          apiKey: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+        })
+      ).toThrow('published chart placeholder');
+
+      const rgd = clickstackBootstrap.factory('kro').toYaml();
+      expect(rgd).toContain('apiKey: string | minLength=1');
+      expect(rgd).toContain('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx');
+    });
+
+    it('types Secret-backed external Mongo independently from inline credentials', () => {
+      const bootstrap = makeClickstackBootstrap({
+        mongo: { mode: 'external' },
+        credentials: { source: 'secretValues' },
+      });
+      const yaml = bootstrap.factory('direct').toYaml({
+        name: 'clickstack',
+        namespace: 'clickstack',
+        clickhouse: {
+          host: 'clickhouse-observability.clickhouse.svc.cluster.local',
+          username: 'otelcollector',
+        },
+        mongoUri: 'mongodb://mongo.example.test:27017/hyperdx',
+        credentialsSecret: { name: 'clickstack-credentials' },
+      });
+
+      expect(yaml).toContain('mongodb://mongo.example.test:27017/hyperdx');
+      expect(yaml).toContain('kind: CronJob');
+    });
+
+    it('rejects build-time credential-bearing values in Secret-backed mode', () => {
+      expect(() =>
+        makeClickstackBootstrap({
+          credentials: { source: 'secretValues' },
+          values: {
+            hyperdx: {
+              secrets: { CLICKHOUSE_PASSWORD: 'must-not-enter-the-rgd' },
+            },
+          },
+        })
+      ).toThrow('Put those values in the referenced Secret');
+
+      expect(() =>
+        makeClickstackBootstrap({
+          credentials: { source: 'secretValues' },
+          values: {
+            hyperdx: {
+              deployment: { defaultConnections: 'must-not-enter-the-rgd' },
+            },
+          },
+        })
+      ).toThrow('Put those values in the referenced Secret');
+    });
     it('emits the internal-Mongo resource set with correct namespace wiring and NO singleton document', () => {
       const factory = clickstackBootstrap.factory('direct', { namespace: 'clickstack' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
       const docs = splitDocs(yaml);
       const kinds = docs.map(docKind);
 
-      // Internal-Mongo default: Namespace + Mongo StatefulSet/Service + HelmRelease.
-      expect(kinds).toContain('Namespace');
+      // The supplied namespace is external; ClickStack owns only Mongo,
+      // HelmRelease, and the idempotent authoritative-Team bootstrap CronJob.
+      expect(kinds).not.toContain('Namespace');
       expect(kinds).toContain('StatefulSet');
       expect(kinds).toContain('Service');
       expect(kinds).toContain('HelmRelease');
+      expect(kinds).toContain('CronJob');
       expect(yaml).toContain('image: mongo:7');
       expect(yaml).toContain('name: clickstack-mongodb');
+      expect(yaml).toContain('name: clickstack-team-bootstrap');
+      expect(yaml).toContain('key: HYPERDX_API_KEY');
+      expect(yaml).toContain('name: clickstack-secret');
+      expect(yaml).toContain("hookId = 'typekro-managed-ingestion'");
+      expect(yaml).toContain("schedule: '* * * * *'");
+      expect(yaml).toContain('must override the published ClickStack chart placeholder');
+      expect(yaml).not.toContain('ttlSecondsAfterFinished');
+      expect(kinds.indexOf('HelmRelease')).toBeLessThan(kinds.indexOf('CronJob'));
 
       // DOCUMENTED WART: direct-mode toYaml() omits singleton-owned resources.
       // The shared HelmRepository is NOT a document here — only the HelmRelease
@@ -188,6 +359,10 @@ describe('clickstackBootstrap factory modes', () => {
       expect(release).toMatch(/mongodb:\s*\n\s+enabled: false/);
       // The status contract's naming anchor.
       expect(release).toContain('fullnameOverride: clickstack');
+      expect(release).toContain('customConfig: |');
+      expect(release).toContain('receivers: [fluentforward, otlp/hyperdx]');
+      expect(release).toContain('receivers: [prometheus, otlp/hyperdx]');
+      expect(release).toContain('receivers: [nop, otlp/hyperdx]');
 
       // External-ClickHouse wiring is fully concrete.
       expect(release).toContain(
@@ -214,6 +389,15 @@ describe('clickstackBootstrap factory modes', () => {
       expect(release).toContain('"tableName":"otel_logs"');
     });
 
+    it('protects the OTLP pipeline attachment from chart-value passthrough overrides', () => {
+      const bootstrap = makeClickstackBootstrap({
+        values: { global: { otelCollector: { customConfig: '' } } },
+      });
+      const yaml = bootstrap.factory('direct').toYaml(BOOTSTRAP_SPEC);
+
+      expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
+    });
+
     it('resolves every schema ref — no unresolved CEL/schema markers anywhere', () => {
       const factory = clickstackBootstrap.factory('direct', { namespace: 'clickstack' });
       const yaml = factory.toYaml(BOOTSTRAP_SPEC as never);
@@ -228,6 +412,48 @@ describe('clickstackBootstrap factory modes', () => {
   });
 
   describe("kro: factory('kro').toYaml(...) — instance bundle + RGD contract", () => {
+    it('hoists namespace ownership only when the runtime namespace is absent', async () => {
+      const bootstrap = makeClickstackBootstrap();
+      const factory = bootstrap.factory('kro', {
+        namespace: 'typekro-system',
+        waitForReady: false,
+      });
+      const { namespace: _externalNamespace, ...standaloneSpec } = BOOTSTRAP_SPEC;
+      const owned = await factory.toAlchemyResources(standaloneSpec as never);
+      const external = await factory.toAlchemyResources(BOOTSTRAP_SPEC as never);
+
+      expect(owned.some((declaration) => declaration.props.resource.kind === 'Namespace')).toBe(
+        true
+      );
+      expect(external.some((declaration) => declaration.props.resource.kind === 'Namespace')).toBe(
+        false
+      );
+    });
+
+    it('preserves Secret-backed valuesFrom wiring without exposing inline credential paths', () => {
+      const bootstrap = makeClickstackBootstrap({
+        credentials: { source: 'secretValues' },
+        name: 'clickstack-secret-values',
+        kind: 'ClickStackSecretValues',
+      });
+      const yaml = bootstrap.factory('kro', { namespace: 'typekro-system' }).toYaml();
+      const serialized = JSON.stringify(loadAll(yaml));
+
+      expect(yaml).toContain('credentialsSecret:');
+      expect(yaml).toContain('valuesFrom:');
+      expect(yaml).toContain('kind: Secret');
+      expect(serialized).toContain('${schema.spec.credentialsSecret.name}');
+      expect(serialized).toContain(
+        'has(schema.spec.credentialsSecret) && has(schema.spec.credentialsSecret.valuesKey)'
+      );
+      expect(serialized).not.toContain('CLICKHOUSE_PASSWORD');
+      expect(serialized).not.toContain('CLICKHOUSE_APP_PASSWORD');
+      expect(serialized).not.toContain('schema.spec.apiKey');
+      expect(yaml).toContain('key: HYPERDX_API_KEY');
+      expect(yaml).toContain('name: clickstack-secret');
+      expect(yaml).toContain('receivers: [fluentforward, otlp/hyperdx]');
+    });
+
     it('toYaml(instance) bundles the singleton owner instance BEFORE the ClickStackBootstrap CR', () => {
       // `clickstackBootstrap` owns its workload namespace, so pin the instance CR
       // to an explicit control-plane namespace (decoupled from the `clickstack`
@@ -272,7 +498,9 @@ describe('clickstackBootstrap factory modes', () => {
 
       // The status/endpoint contract survives factory serialization: KRO CEL
       // anchored on the owned HelmRelease (never schema.spec.*).
-      expect(yaml).toMatch(/ready: \$\{clickstackHelmRelease\.status\.conditions\.exists/);
+      expect(yaml).toContain('clickstackHelmRelease.status.observedGeneration');
+      expect(yaml).toContain('clickstackTeamBootstrap.status.lastScheduleTime');
+      expect(yaml).toContain('clickstackTeamBootstrap.status.lastSuccessfulTime');
       expect(yaml).toContain(
         'url: http://${string(clickstackHelmRelease.metadata.name)}.${string(clickstackHelmRelease.metadata.namespace)}.svc.cluster.local:3000'
       );
@@ -284,9 +512,7 @@ describe('clickstackBootstrap factory modes', () => {
       );
 
       // Secret wiring reaches the RGD values as guarded schema CEL.
-      expect(JSON.stringify(loadAll(yaml))).toContain(
-        '${has(schema.spec.apiKey) ? dyn(schema.spec.apiKey) : omit()}'
-      );
+      expect(JSON.stringify(loadAll(yaml))).toContain('${schema.spec.apiKey}');
     });
   });
 });
