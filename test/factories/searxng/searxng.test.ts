@@ -131,6 +131,70 @@ describe('SearXNG Factory', () => {
   });
 
   describe('bootstrap settings', () => {
+    it('strictly plans the reference-only Secret path without sensitive control flow', () => {
+      const plan = searxngBootstrap.plan!({
+        name: 'search',
+        namespace: 'search-system',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+        search: { formats: ['html', 'json'] },
+      });
+
+      expect(plan.diagnostics.filter(({ severity }) => severity === 'error')).toEqual([]);
+      expect(JSON.stringify(plan)).toContain('search-secret');
+    });
+
+    it('requires a Secret reference for KRO instances and makes raw missing-reference instances inert', async () => {
+      const factory = searxngBootstrap.factory('kro');
+
+      expect(() =>
+        factory.toYaml({
+          name: 'inline-secret-is-direct-only',
+          server: { secret_key: 'must-not-live-in-a-kro-cr' },
+        })
+      ).toThrow('KRO mode rejects server.secret_key');
+      expect(() => factory.toYaml({ name: 'missing-secret-source' } as never)).toThrow(
+        'KRO mode requires secretKeyRef'
+      );
+      expect(() =>
+        factory.toYaml(
+          {
+            name: 'ambiguous-secret-source',
+            secretKeyRef: { name: 'external-secret', key: 'secret_key' },
+            server: { secret_key: 'must-never-be-materialized' },
+          },
+          { allowSensitiveMaterialization: true }
+        )
+      ).toThrow('KRO mode rejects server.secret_key even when secretKeyRef is present');
+
+      await expect(
+        factory.toAlchemyResources({
+          name: 'alchemy-inline-secret',
+          server: { secret_key: 'must-not-live-in-a-kro-cr' },
+        })
+      ).rejects.toThrow('KRO mode rejects server.secret_key');
+      await expect(
+        factory.toAlchemyResources({
+          name: 'alchemy-ambiguous-secret-source',
+          secretKeyRef: { name: 'external-secret', key: 'secret_key' },
+          server: { secret_key: 'must-never-be-materialized' },
+        })
+      ).rejects.toThrow('KRO mode rejects server.secret_key even when secretKeyRef is present');
+      await expect(
+        factory.toAlchemyResources({
+          name: 'alchemy-disabled',
+          enabled: false,
+        })
+      ).rejects.toThrow('KRO mode does not support enabled=false');
+
+      const rgd = searxngBootstrap.toYaml();
+      expect(rgd.match(/\$\{has\(schema\.spec\.secretKeyRef\)\}/g)?.length).toBeGreaterThanOrEqual(
+        3
+      );
+      expect(rgd).toContain('id: searxngSecret');
+      expect(rgd).toMatch(/id: searxngSecret[\s\S]*?includeWhen:\n\s+- \$\{false\}/);
+      expect(rgd).toContain('secret_key: string | validation="false"');
+    });
+
     it('emits documented concrete settings fields in direct YAML', () => {
       const yaml = searxngBootstrap.factory('direct').toYaml(
         {

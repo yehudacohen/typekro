@@ -33,8 +33,8 @@ import type {
 } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
-import { namespace } from '../../kubernetes/core/namespace.js';
 import { secret } from '../../kubernetes/config/secret.js';
+import { namespace } from '../../kubernetes/core/namespace.js';
 import { simple } from '../../simple/index.js';
 import { searxng } from '../resources/searxng.js';
 import {
@@ -48,10 +48,9 @@ import {
 /**
  * Return a copy of the server config with `secret_key` removed. The field
  * is delivered via a dedicated K8s Secret, not via the Deployment spec —
- * this helper makes sure the plaintext (or the KubernetesRef proxy that
- * carries it in KRO mode) does not leak into the searxng() factory's
- * `spec.server` which would otherwise fall back to injecting it as a
- * plaintext env var.
+ * this helper makes sure direct mode's plaintext does not leak into the
+ * searxng() factory's `spec.server`, which would otherwise inject it as an
+ * env value. KRO rejects the inline field and uses only `secretKeyRef`.
  */
 function stripSecretKey<T extends { secret_key?: unknown }>(server: T): Omit<T, 'secret_key'> {
   const { secret_key: _discarded, ...rest } = server;
@@ -61,6 +60,11 @@ function stripSecretKey<T extends { secret_key?: unknown }>(server: T): Omit<T, 
 function appendIncludeWhen(resource: WeakKey, conditions: unknown[]): void {
   setIncludeWhen(resource, [...(getIncludeWhen(resource) ?? []), ...conditions]);
 }
+
+type SearxngKroFactory = KroResourceFactory<
+  SearxngBootstrapConfig,
+  typeof SearxngBootstrapStatusSchema.infer
+>;
 
 function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
   if (spec.enabled === false) {
@@ -72,24 +76,37 @@ function validateKroBootstrapInstanceSpec(spec: SearxngBootstrapConfig): void {
     );
   }
 
-  if (!spec.secretKeyRef && spec.server?.secret_key === undefined) {
+  if (spec.server?.secret_key !== undefined) {
     throw new TypeKroError(
-      'searxngBootstrap KRO mode requires server.secret_key or secretKeyRef for enabled instances.',
+      'searxngBootstrap KRO mode rejects server.secret_key even when secretKeyRef is present. KRO credentials are reference-only so plaintext is never materialized into the instance custom resource.',
+      'UNSUPPORTED_KRO_CONFIG',
+      { field: 'server.secret_key', mode: 'kro' }
+    );
+  }
+
+  if (!spec.secretKeyRef) {
+    throw new TypeKroError(
+      'searxngBootstrap KRO mode requires secretKeyRef for enabled instances. Inline server.secret_key is direct-mode-only so plaintext credentials are not stored in KRO custom resources.',
       'REQUIRED_CONFIG_MISSING',
-      { field: 'server.secret_key', alternative: 'secretKeyRef', mode: 'kro' }
+      { field: 'secretKeyRef', mode: 'kro' }
     );
   }
 }
 
 function withKroInstanceValidation(
-  factory: KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
-): KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer> {
+  factory: SearxngKroFactory
+): SearxngKroFactory {
   return new Proxy(factory, {
     get(target, prop, receiver) {
       if (prop === 'deploy') {
         return (
           spec: SearxngBootstrapConfig,
-          opts?: Parameters<KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>['deploy']>[1]
+          opts?: Parameters<
+            KroResourceFactory<
+              SearxngBootstrapConfig,
+              typeof SearxngBootstrapStatusSchema.infer
+            >['deploy']
+          >[1]
         ) => {
           validateKroBootstrapInstanceSpec(spec);
           return target.deploy(spec, opts);
@@ -97,15 +114,22 @@ function withKroInstanceValidation(
       }
 
       if (prop === 'toYaml') {
-        return (
-          spec?: SearxngBootstrapConfig,
-          options?: StaticYamlMaterializationOptions
-        ) => {
+        return (spec?: SearxngBootstrapConfig, options?: StaticYamlMaterializationOptions) => {
           if (spec !== undefined) {
             validateKroBootstrapInstanceSpec(spec);
             return target.toYaml(spec, options);
           }
           return target.toYaml();
+        };
+      }
+
+      if (prop === 'toAlchemyResources') {
+        return async (
+          spec: SearxngBootstrapConfig,
+          opts?: Parameters<SearxngKroFactory['toAlchemyResources']>[1]
+        ) => {
+          validateKroBootstrapInstanceSpec(spec);
+          return target.toAlchemyResources(spec, opts);
         };
       }
 
@@ -136,12 +160,14 @@ const searxngBootstrapComposition = kubernetesComposition(
     const enabledWhen = Cel.expr<boolean>(
       '!(has(schema.spec.enabled)) || schema.spec.enabled != false'
     );
-    const generatedSecretKeyWhen = Cel.expr<boolean>(
-      'has(schema.spec.server) && has(schema.spec.server.secret_key)'
-    );
-    const secretSourceWhen = Cel.expr<boolean>(
-      'has(schema.spec.secretKeyRef) || (has(schema.spec.server) && has(schema.spec.server.secret_key))'
-    );
+    // ArkType's cross-field `.narrow()` protects JavaScript factory calls, but
+    // KRO does not carry that predicate into the generated CRD schema. Raw
+    // GitOps clients can therefore submit an enabled instance without the
+    // required external reference. Fail closed at the graph boundary too:
+    // such an instance owns no Namespace, Secret, Deployment, ConfigMap, or
+    // Service. Inline secrets remain a direct-mode-only convenience so secret
+    // data never controls KRO resource activation or lives in an instance CR.
+    const credentialSourcePresentWhen = Cel.expr<boolean>('has(schema.spec.secretKeyRef)');
     const port = DEFAULT_SEARXNG_PORT;
     let deployment: ReturnType<typeof searxng> | undefined;
 
@@ -160,7 +186,7 @@ const searxngBootstrapComposition = kubernetesComposition(
         id: 'searxngNamespace',
       });
       if (isGraphMode) {
-        appendIncludeWhen(_ns, [enabledWhen]);
+        appendIncludeWhen(_ns, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Settings ConfigMap ─────────────────────────────────────────────
@@ -270,7 +296,7 @@ ${redisSection}`;
         id: 'searxngConfig',
       });
       if (isGraphMode) {
-        appendIncludeWhen(_config, [enabledWhen]);
+        appendIncludeWhen(_config, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Secret (SEARXNG_SECRET delivery) ───────────────────────────────
@@ -280,18 +306,19 @@ ${redisSection}`;
       //       mounts that existing Secret via valueFrom — the bootstrap does
       //       NOT create its own. This is the path for external-secrets
       //       workflows (Vault, AWS SM, external-secrets operator).
-      //   (2) Otherwise, the bootstrap creates a dedicated `{name}-secret`
-      //       Secret from `server.secret_key`. The plaintext stops at the
-      //       Secret's stringData and never enters the Deployment env.
+      //   (2) In direct mode, the bootstrap can instead create a dedicated
+      //       `{name}-secret` Secret from `server.secret_key`. The plaintext
+      //       stops at the Secret's stringData and never enters the Deployment
+      //       env. KRO mode requires the external-reference form.
       //
-      // The plain `if (!spec.secretKeyRef)` below is transformed into a KRO
-      // `includeWhen: ${!has(schema.spec.secretKeyRef)}` directive by the
-      // composition AST analyzer during serialization. In direct mode the
-      // `if` runs normally; in KRO mode the analyzer attaches the includeWhen
-      // so the Secret is only created when the user didn't provide an
-      // external ref. The Deployment's `secretKeyRef` field is computed by
-      // the JS ternary on the same condition and the analyzer emits the
-      // corresponding CEL ternary there as well.
+      // Direct mode suppresses the generated Secret when `secretKeyRef` is
+      // present, so an external Secret remains externally owned; KRO mode
+      // suppresses it unconditionally. The Deployment and every sibling are
+      // gated on credential-source PRESENCE so raw GitOps instances that
+      // bypass ArkType validation fail
+      // closed without creating a broken workload. Secret DATA never controls
+      // resource activation. KRO always selects the external reference; only
+      // direct mode can select the generated Secret.
       //
       // Why `simple.Secret` is NOT used here: it eagerly base64-encodes
       // stringData values via `Buffer.from(...)` at composition time, which
@@ -334,11 +361,10 @@ ${redisSection}`;
       });
 
       if (isGraphMode) {
-        setIncludeWhen(generatedSecret, [
-          Cel.expr<boolean>('!has(schema.spec.secretKeyRef)'),
-          generatedSecretKeyWhen,
-          enabledWhen,
-        ]);
+        // Inline credentials are deliberately direct-mode-only. Keeping the
+        // generated Secret inactive in every KRO instance prevents plaintext
+        // credentials from becoming a supported CR storage path.
+        setIncludeWhen(generatedSecret, [Cel.expr<boolean>('false')]);
       } else if (hasDynamicSecretKeyRef) {
         setIncludeWhen(generatedSecret, [Cel.not(dynamicSecretKeyRef)]);
       } else if (spec.secretKeyRef) {
@@ -351,11 +377,8 @@ ${redisSection}`;
       // `secretKeyRef` instead, which the factory translates into
       // `valueFrom.secretKeyRef` on the SEARXNG_SECRET env var.
       //
-      // The two nested ternaries on `secretKeyRef.name` and `secretKeyRef.key`
-      // are detected by the composition AST analyzer and emitted as CEL
-      // conditionals in the final RGD — in KRO mode the user's CR value
-      // for `spec.secretKeyRef` selects between the external Secret and
-      // the auto-created one at reconcile time.
+      // In KRO mode the explicit CEL reference selects the required external
+      // Secret. Direct mode may instead select the auto-created Secret.
       const deploymentSecretRefName = hasDynamicSecretKeyRef
         ? `${Cel.cond<string>(Cel.has(dynamicSecretKeyRef), dynamicSecretKeyRef.name, secretName)}`
         : spec.secretKeyRef
@@ -396,7 +419,7 @@ ${redisSection}`;
         id: 'searxngDeployment',
       });
       if (isGraphMode) {
-        appendIncludeWhen(deployment, [secretSourceWhen, enabledWhen]);
+        appendIncludeWhen(deployment, [enabledWhen, credentialSourcePresentWhen]);
       }
 
       // ── Service ────────────────────────────────────────────────────────
@@ -412,7 +435,7 @@ ${redisSection}`;
         id: 'searxngService',
       });
       if (isGraphMode) {
-        appendIncludeWhen(svc, [enabledWhen]);
+        appendIncludeWhen(svc, [enabledWhen, credentialSourcePresentWhen]);
       }
     }
 
@@ -442,6 +465,16 @@ ${redisSection}`;
       ),
       url: `http://${spec.name}.${resolvedNamespace}:${port}`,
     };
+  },
+  {
+    // Direct mode intentionally retains the ergonomic inline-to-Secret path,
+    // but a KRO custom resource is a broadly readable persistence boundary.
+    // This optional-leaf validation runs only when the field is present, so
+    // raw GitOps instances cannot submit plaintext — including alongside an
+    // otherwise valid secretKeyRef.
+    schemaFieldValidations: {
+      'server.secret_key': 'false',
+    },
   }
 );
 
@@ -459,7 +492,10 @@ function searxngBootstrapFactory(mode: 'kro' | 'direct', options?: PublicFactory
   const factory = baseFactory(mode, options);
   return mode === 'kro'
     ? withKroInstanceValidation(
-        factory as KroResourceFactory<SearxngBootstrapConfig, typeof SearxngBootstrapStatusSchema.infer>
+        factory as KroResourceFactory<
+          SearxngBootstrapConfig,
+          typeof SearxngBootstrapStatusSchema.infer
+        >
       )
     : factory;
 }

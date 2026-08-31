@@ -12,6 +12,7 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { isValidationError } from '../../../src/core/kubernetes/errors.js';
 import type { ResourceFactory } from '../../../src/core/types/deployment.js';
 import type {
   SearxngBootstrapConfig,
@@ -19,12 +20,16 @@ import type {
 } from '../../../src/factories/searxng/types.js';
 import {
   createCoreV1ApiClient,
+  createCustomObjectsApiClient,
   createTestNamespace,
+  deleteGeneratedCrdAndWait,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
+  deleteTestResourceAndWait,
   isClusterAvailable,
-  runWithExpectedTestNamespace,
+  isNotFoundError,
   runTestPodAndReadLogs,
+  runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -33,6 +38,99 @@ setDefaultTimeout(120000);
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
   clusterAvailable || process.env.REQUIRE_CLUSTER_TESTS === 'true' ? describe : describe.skip;
+
+async function waitForNamespace(
+  coreApi: ReturnType<typeof createCoreV1ApiClient>,
+  name: string,
+  timeoutMs = 30_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await coreApi.readNamespace({ name });
+      return;
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for Namespace/${name}`);
+}
+
+async function waitForKroReconciliation(
+  customApi: ReturnType<typeof createCustomObjectsApiClient>,
+  namespace: string,
+  name: string,
+  timeoutMs = 30_000
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let lastObserved: Record<string, unknown> = {};
+  while (Date.now() < deadline) {
+    const raw = await customApi.getNamespacedCustomObject({
+      group: 'kro.run',
+      version: 'v1alpha1',
+      namespace,
+      plural: 'searxngbootstraps',
+      name,
+    });
+    const live = ((raw as { body?: unknown }).body ?? raw) as Record<string, unknown>;
+    lastObserved = live;
+    const metadata = Reflect.get(live, 'metadata') as Record<string, unknown> | undefined;
+    const status = Reflect.get(live, 'status') as Record<string, unknown> | undefined;
+    const generation = Number(metadata?.generation ?? 0);
+    const finalizers = Array.isArray(metadata?.finalizers) ? metadata.finalizers : [];
+    const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
+    const currentGenerationObserved = conditions.some((candidate) => {
+      if (!candidate || typeof candidate !== 'object') return false;
+      return Number(Reflect.get(candidate, 'observedGeneration') ?? 0) >= generation;
+    });
+    if (generation > 0 && finalizers.includes('kro.run/finalizer') && currentGenerationObserved) {
+      return live;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(
+    `Timed out waiting for KRO to reconcile SearxngBootstrap/${name}: ${JSON.stringify(lastObserved)}`
+  );
+}
+
+async function deleteSearxngKroDefinitionWhenUnused(kubeConfig: k8s.KubeConfig): Promise<void> {
+  const customApi = createCustomObjectsApiClient(kubeConfig);
+  try {
+    const instances = await customApi.listClusterCustomObject({
+      group: 'kro.run',
+      version: 'v1alpha1',
+      plural: 'searxngbootstraps',
+    });
+    if (instances.items.length > 0) {
+      throw new Error(
+        `Refusing to reset SearXNG KRO test definitions while ${instances.items.length} instance(s) remain`
+      );
+    }
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+
+  await deleteTestResourceAndWait(
+    {
+      apiVersion: 'kro.run/v1alpha1',
+      kind: 'ResourceGraphDefinition',
+      metadata: { name: 'searxng-bootstrap' },
+    },
+    kubeConfig,
+    60_000
+  );
+  await deleteGeneratedCrdAndWait(
+    {
+      apiVersion: 'apiextensions.k8s.io/v1',
+      kind: 'CustomResourceDefinition',
+      metadata: { name: 'searxngbootstraps.kro.run' },
+    },
+    'kro.run/v1alpha1',
+    'SearxngBootstrap',
+    kubeConfig
+  );
+}
 
 describeOrSkip('SearXNG Bootstrap Composition', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -184,8 +282,16 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
 
     let kroFactory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
     let kroAppNamespaceLease: TestNamespaceLease | undefined;
+    let externalSecretLease:
+      | { readonly name: string; readonly namespace: string; readonly uid: string }
+      | undefined;
+    const invalidRawInstanceName = `searxng-invalid-${suffix}`;
+    const invalidRawAppNamespace = `searxng-invalid-app-${suffix}`;
+    const plaintextRawInstanceName = `searxng-plaintext-${suffix}`;
+    let invalidRawInstanceCreated = false;
     let testError: unknown;
     try {
+      await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
       kroFactory = searxngBootstrap.factory('kro', {
         namespace: kroNamespace,
         waitForReady: true,
@@ -199,12 +305,29 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
         (lease) => {
           kroAppNamespaceLease = lease;
         },
-        () =>
-          kroFactory!.deploy({
+        async () => {
+          const secretName = `${kroInstanceName}-external-secret`;
+          const coreApi = createCoreV1ApiClient(kubeConfig);
+          const deployment = kroFactory!.deploy({
             name: kroInstanceName,
             namespace: kroAppNamespace,
-            server: { secret_key: 'kro-test-key', limiter: false },
-          })
+            secretKeyRef: { name: secretName, key: 'secret_key' },
+            server: { limiter: false },
+          });
+          await waitForNamespace(coreApi, kroAppNamespace);
+          const createdSecret = await coreApi.createNamespacedSecret({
+            namespace: kroAppNamespace,
+            body: {
+              metadata: { name: secretName },
+              type: 'Opaque',
+              stringData: { secret_key: 'kro-reference-only-test-key' },
+            },
+          });
+          const uid = createdSecret.metadata?.uid;
+          if (!uid) throw new Error(`Created Secret ${kroAppNamespace}/${secretName} has no UID`);
+          externalSecretLease = { name: secretName, namespace: kroAppNamespace, uid };
+          return deployment;
+        }
       );
 
       expect(instance.spec.name).toBe(kroInstanceName);
@@ -219,12 +342,102 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       for (const pod of pods) {
         expect(pod.status?.phase).toBe('Running');
       }
+
+      // The generated CRD itself—not only the TypeScript factory—rejects a
+      // plaintext value even when the required external reference is present.
+      // This proves raw GitOps clients cannot persist the ambiguous form.
+      const customApi = createCustomObjectsApiClient(kubeConfig);
+      if (!externalSecretLease) throw new Error('External Secret lease was not recorded');
+      let plaintextRejected = false;
+      try {
+        await customApi.createNamespacedCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          namespace: kroNamespace,
+          plural: 'searxngbootstraps',
+          body: {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'SearxngBootstrap',
+            metadata: { name: plaintextRawInstanceName, namespace: kroNamespace },
+            spec: {
+              name: plaintextRawInstanceName,
+              namespace: kroAppNamespace,
+              secretKeyRef: { name: externalSecretLease.name, key: 'secret_key' },
+              server: { secret_key: 'must-be-rejected-at-admission' },
+            },
+          },
+        });
+      } catch (error) {
+        if (!isValidationError(error)) throw error;
+        plaintextRejected = true;
+      }
+      expect(plaintextRejected).toBe(true);
+
+      // Raw GitOps clients bypass ArkType's cross-field `.narrow()`. Prove
+      // that the emitted KRO graph still fails closed: the CR can be admitted,
+      // but without secretKeyRef it creates no application Namespace or
+      // workload resources.
+      await customApi.createNamespacedCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        namespace: kroNamespace,
+        plural: 'searxngbootstraps',
+        body: {
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'SearxngBootstrap',
+          metadata: { name: invalidRawInstanceName, namespace: kroNamespace },
+          spec: { name: invalidRawInstanceName, namespace: invalidRawAppNamespace },
+        },
+      });
+      invalidRawInstanceCreated = true;
+      const invalidRawInstance = await waitForKroReconciliation(
+        customApi,
+        kroNamespace,
+        invalidRawInstanceName
+      );
+      expect(
+        (Reflect.get(invalidRawInstance, 'metadata') as Record<string, unknown>).finalizers
+      ).toContain('kro.run/finalizer');
+      let invalidNamespaceAbsent = false;
+      try {
+        await createCoreV1ApiClient(kubeConfig).readNamespace({ name: invalidRawAppNamespace });
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+        invalidNamespaceAbsent = true;
+      }
+      expect(invalidNamespaceAbsent).toBe(true);
     } catch (error) {
       testError = error;
     }
 
     const cleanupErrors: unknown[] = [];
     if (testError !== undefined) cleanupErrors.push(testError);
+    if (invalidRawInstanceCreated) {
+      try {
+        await deleteTestResourceAndWait(
+          {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: 'SearxngBootstrap',
+            metadata: { name: invalidRawInstanceName, namespace: kroNamespace },
+          },
+          kubeConfig,
+          30_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (externalSecretLease) {
+      try {
+        await createCoreV1ApiClient(kubeConfig).deleteNamespacedSecret({
+          name: externalSecretLease.name,
+          namespace: externalSecretLease.namespace,
+          body: { preconditions: { uid: externalSecretLease.uid } },
+        });
+      } catch (error) {
+        if (!isNotFoundError(error)) cleanupErrors.push(error);
+      }
+    }
     try {
       if (kroFactory) {
         await deleteTestFactoryInstanceAndRecoverNamespaces(
@@ -238,6 +451,16 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       cleanupErrors.push(error);
     }
     try {
+      // TypeKro intentionally retains generated CRDs during ordinary factory
+      // teardown. This fixed-name integration definition is test-owned, so
+      // remove it only after proving that every SearxngBootstrap instance is
+      // gone. The helper waits for both RGD and CRD absence and fails closed
+      // rather than leaving stale schema state for a later run.
+      await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       await deleteTestNamespaceAndWait(kroNamespaceLease, kubeConfig);
     } catch (error) {
       cleanupErrors.push(error);
@@ -245,5 +468,5 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'SearXNG KRO integration did not complete safely');
     }
-  }, 180000);
+  }, 300000);
 });
