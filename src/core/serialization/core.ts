@@ -168,11 +168,13 @@ function createStubResource(
   factoryName: string,
   resourceId: string
 ): Record<string, unknown> | null {
-  const pascalFactoryName =
-    factoryName.length === 0
-      ? factoryName
-      : `${factoryName[0]?.toUpperCase()}${factoryName.slice(1)}`;
-  const kindInfo = getKindInfo(factoryName) ?? getKindInfo(pascalFactoryName);
+  // Lower-camel factory aliases are intentionally excluded here. The AST
+  // analyzer may use them to trigger a counterfactual branch capture, but a
+  // captured resource is admitted only when that execution actually registers
+  // it in the composition context. Fabricating a stub from a name such as
+  // `service(...)` would otherwise turn an unrelated local helper into a
+  // phantom Kubernetes Service.
+  const kindInfo = getKindInfo(factoryName);
   if (!kindInfo) return null;
 
   const stub: Record<string, unknown> = {

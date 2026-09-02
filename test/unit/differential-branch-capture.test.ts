@@ -50,6 +50,34 @@ function extractResourceSection(yaml: string, id: string): string | undefined {
 
 describe('Differential Branch Capture', () => {
   describe('if (!spec.optional) — resource creation in untaken branch', () => {
+    it('does not fabricate resources for lower-camel local helpers', () => {
+      const service = (_options: { id: string }) => ({ endpoint: 'https://example.test' });
+      const composition = kubernetesComposition(
+        {
+          name: 'lower-camel-helper',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'LowerCamelHelper',
+          spec: type({ name: 'string', 'label?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          if (!spec.label) {
+            service({ id: 'phantomService' });
+          }
+          ConfigMap({
+            name: `${spec.name}-config`,
+            data: { ready: 'true' },
+            id: 'config',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).not.toContain('id: phantomService');
+      expect(yaml).not.toContain('name: phantomService');
+    });
+
     it('captures lower-camel Kubernetes factories for KRO outer-resource lowering', async () => {
       const composition = kubernetesComposition(
         {
