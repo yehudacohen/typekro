@@ -962,7 +962,9 @@ function captureHybridRunResources(
       overrideValues
     );
 
-    const tempCtx = createCompositionContext('hybrid-capture');
+    const tempCtx = createCompositionContext('hybrid-capture', {
+      suppressResourceDiagnostics: true,
+    });
     runWithCompositionContext(tempCtx, () => {
       compositionFn(hybridSpec);
     });
@@ -1127,7 +1129,9 @@ function captureAnalyzedBranchResource(
       new Set(overrides.keys()),
       overrides
     );
-    const context = createCompositionContext(`analyzed-branch:${resourceId}`);
+    const context = createCompositionContext(`analyzed-branch:${resourceId}`, {
+      suppressResourceDiagnostics: true,
+    });
     runWithCompositionContext(context, () => compositionFn(constrainedSpec));
     return context.resources[resourceId] as Enhanced<unknown, unknown> | undefined;
   } catch {
@@ -1367,6 +1371,7 @@ function runResourceStatusBranch(
 ) {
   const branchCtx = createCompositionContext('resource-status-branch', {
     isReExecution: true,
+    suppressResourceDiagnostics: true,
   });
   branchCtx.liveStatusMap = createResourceStatusBranchMap(analysis, ternary, desiredConditionValue);
 

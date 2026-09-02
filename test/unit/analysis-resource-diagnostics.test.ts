@@ -26,4 +26,23 @@ describe('analysis-only resource diagnostics', () => {
     expect(output).not.toContain('CephCluster');
     expect(output).not.toContain('CephObjectStore');
   });
+
+  it('does not emit namespace warnings while capturing an omitted-namespace branch', () => {
+    const moduleUrl = pathToFileURL(
+      resolve(import.meta.dir, '../../src/factories/searxng/index.ts')
+    ).href;
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, '-e', `await import(${JSON.stringify(moduleUrl)});`],
+      cwd: resolve(import.meta.dir, '../..'),
+      env: { ...process.env, TYPEKRO_LOG_LEVEL: 'warn' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output =
+      new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+
+    expect(result.exitCode).toBe(0);
+    expect(output).not.toContain('no namespace specified');
+    expect(output).not.toContain('Deployment');
+  });
 });
