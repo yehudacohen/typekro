@@ -137,7 +137,7 @@ export interface SearxngStatus {
 const SearxngBootstrapBaseConfigSchema = type({
   /** Instance name. */
   name: 'string',
-  /** Target namespace (default: 'searxng'). */
+  /** Existing target namespace. Omit to create and own `searxng`. */
   'namespace?': 'string',
   /** Whether to create SearXNG resources (default: true). */
   'enabled?': 'boolean',

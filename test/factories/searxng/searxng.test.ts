@@ -131,6 +131,47 @@ describe('SearXNG Factory', () => {
   });
 
   describe('bootstrap settings', () => {
+    it('owns only the omitted default namespace and treats a supplied namespace as external', async () => {
+      const directFactory = searxngBootstrap.factory('direct');
+      const owned = directFactory.createResourceGraphForInstance({
+        name: 'owned-search',
+        server: { secret_key: 'owned-test-secret' },
+      });
+      const external = directFactory.createResourceGraphForInstance({
+        name: 'external-search',
+        namespace: 'shared-search',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+      });
+
+      expect(owned.resources.map(({ manifest }) => manifest.kind)).toContain('Namespace');
+      expect(external.resources.map(({ manifest }) => manifest.kind)).not.toContain('Namespace');
+      expect(
+        external.resources
+          .filter(({ manifest }) => manifest.kind !== 'Namespace')
+          .every(({ manifest }) => manifest.metadata?.namespace === 'shared-search')
+      ).toBe(true);
+
+      const kroFactory = searxngBootstrap.factory('kro');
+      const externalDeclarations = await kroFactory.toAlchemyResources({
+        name: 'external-search',
+        namespace: 'shared-search',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+      });
+      expect(
+        externalDeclarations.some(
+          (declaration) => declaration.props.resource.kind === 'Namespace'
+        )
+      ).toBe(false);
+
+      const ownedDeclarations = await kroFactory.toAlchemyResources({
+        name: 'owned-search',
+        secretKeyRef: { name: 'search-secret', key: 'secret_key' },
+      });
+      expect(
+        ownedDeclarations.some((declaration) => declaration.props.resource.kind === 'Namespace')
+      ).toBe(true);
+    });
+
     it('strictly plans the reference-only Secret path without sensitive control flow', () => {
       const plan = searxngBootstrap.plan!({
         name: 'search',

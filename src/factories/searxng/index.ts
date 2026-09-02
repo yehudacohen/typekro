@@ -15,6 +15,9 @@
  *
  * await factory.deploy({
  *   name: 'searxng',
+ *   // Passing namespace targets an externally owned namespace. Omit it to
+ *   // let TypeKro create and own the default `searxng` namespace.
+ *   namespace: 'search',
  *   search: { formats: ['html', 'json'] },
  *   server: { limiter: false, secret_key: 'change-me' },
  * });

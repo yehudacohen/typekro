@@ -23,6 +23,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
 // Direct imports: the composition-analyzer's `isFactoryCall` only recognises
 // Identifier callees (`ConfigMap(...)`), not MemberExpression callees
 // (`simple.ConfigMap(...)`), so we import the factory functions by name
@@ -49,6 +50,82 @@ function extractResourceSection(yaml: string, id: string): string | undefined {
 
 describe('Differential Branch Capture', () => {
   describe('if (!spec.optional) — resource creation in untaken branch', () => {
+    it('does not fabricate resources for lower-camel local helpers', () => {
+      const service = (_options: { id: string }) => ({ endpoint: 'https://example.test' });
+      const composition = kubernetesComposition(
+        {
+          name: 'lower-camel-helper',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'LowerCamelHelper',
+          spec: type({ name: 'string', 'label?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          if (!spec.label) {
+            service({ id: 'phantomService' });
+          }
+          ConfigMap({
+            name: `${spec.name}-config`,
+            data: { ready: 'true' },
+            id: 'config',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).not.toContain('id: phantomService');
+      expect(yaml).not.toContain('name: phantomService');
+    });
+
+    it('captures lower-camel Kubernetes factories for KRO outer-resource lowering', async () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'lower-camel-namespace',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'LowerCamelNamespace',
+          spec: type({ name: 'string', 'namespace?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          if (!spec.namespace) {
+            namespace({
+              metadata: { name: 'framework-owned' },
+              id: 'ownedNamespace',
+            });
+          }
+          ConfigMap({
+            name: `${spec.name}-config`,
+            namespace: spec.namespace ?? 'framework-owned',
+            data: { ready: 'true' },
+            id: 'config',
+          });
+          return { ready: true };
+        }
+      );
+
+      expect(composition.plan!({ name: 'owned' }).nodes.map(({ id }) => id)).toContain(
+        'ownedNamespace'
+      );
+
+      const factory = composition.factory('kro');
+      const owned = await factory.toAlchemyResources({ name: 'owned' });
+      const external = await factory.toAlchemyResources({
+        name: 'external',
+        namespace: 'shared',
+      });
+
+      expect(
+        owned.some(
+          ({ props }) =>
+            props.resource.kind === 'Namespace' &&
+            props.resource.metadata?.name === 'framework-owned'
+        )
+      ).toBe(true);
+      expect(external.some(({ props }) => props.resource.kind === 'Namespace')).toBe(false);
+      expect(factory.toYaml()).not.toContain('kind: Namespace');
+    });
+
     it('captures the resource and attaches a correct includeWhen', () => {
       const composition = kubernetesComposition(
         {

@@ -1,7 +1,7 @@
 /**
  * SearXNG Bootstrap Composition
  *
- * Deploys a complete SearXNG instance: Namespace + ConfigMap + Deployment + Service.
+ * Deploys a complete SearXNG instance: optional Namespace + ConfigMap + Deployment + Service.
  * Settings are built from typed spec fields — no proxy objects pass through to YAML.
  *
  * @example
@@ -173,20 +173,24 @@ const searxngBootstrapComposition = kubernetesComposition(
 
     if (spec.enabled !== false) {
       // ── Namespace ──────────────────────────────────────────────────────
-
-      const _ns = namespace({
-        metadata: {
-          name: resolvedNamespace,
-          labels: {
-            'app.kubernetes.io/name': 'searxng',
-            'app.kubernetes.io/instance': spec.name,
-            'app.kubernetes.io/managed-by': 'typekro',
+      // Omitting namespace requests the TypeKro-owned default. Supplying one
+      // is an explicit external-ownership boundary, which is required when an
+      // existing Secret or another controller already owns the namespace.
+      if (!spec.namespace) {
+        const _ns = namespace({
+          metadata: {
+            name: resolvedNamespace,
+            labels: {
+              'app.kubernetes.io/name': 'searxng',
+              'app.kubernetes.io/instance': spec.name,
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
           },
-        },
-        id: 'searxngNamespace',
-      });
-      if (isGraphMode) {
-        appendIncludeWhen(_ns, [enabledWhen, credentialSourcePresentWhen]);
+          id: 'searxngNamespace',
+        });
+        if (isGraphMode) {
+          appendIncludeWhen(_ns, [enabledWhen, credentialSourcePresentWhen]);
+        }
       }
 
       // ── Settings ConfigMap ─────────────────────────────────────────────

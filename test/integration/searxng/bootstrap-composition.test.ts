@@ -2,7 +2,7 @@
  * SearXNG Bootstrap Composition Integration Tests
  *
  * Deploys a SearXNG instance to the cluster and verifies:
- * - All resources deploy successfully (Namespace, ConfigMap, Deployment, Service)
+ * - All workload resources deploy successfully into an externally owned Namespace
  * - Health endpoint responds
  * - JSON API works when enabled
  * - Status fields are correct
@@ -19,6 +19,7 @@ import type {
   SearxngBootstrapStatus,
 } from '../../../src/factories/searxng/types.js';
 import {
+  createAppsV1ApiClient,
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
   createTestNamespace,
@@ -29,7 +30,6 @@ import {
   isClusterAvailable,
   isNotFoundError,
   runTestPodAndReadLogs,
-  runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -146,6 +146,7 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
     factoryNamespaceLease = await createTestNamespace(factoryNamespace, kubeConfig);
+    appNamespaceLease = await createTestNamespace(appNamespace, kubeConfig);
   });
 
   afterAll(async () => {
@@ -155,11 +156,18 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
         await deleteTestFactoryInstanceAndRecoverNamespaces(
           factory,
           directInstanceName,
-          appNamespaceLease ? [appNamespaceLease] : [],
+          [],
           kubeConfig,
           30_000,
           { scopes: ['cluster'] }
         );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (appNamespaceLease) {
+      try {
+        await deleteTestNamespaceAndWait(appNamespaceLease, kubeConfig);
       } catch (error) {
         failures.push(error);
       }
@@ -186,22 +194,14 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       kubeConfig,
     });
 
-    const instance = await runWithExpectedTestNamespace(
-      appNamespace,
-      kubeConfig,
-      (lease) => {
-        appNamespaceLease = lease;
+    const instance = await factory.deploy({
+      name: directInstanceName,
+      namespace: appNamespace,
+      server: {
+        secret_key: 'test-integration-key-not-for-production',
+        limiter: false,
       },
-      () =>
-        factory!.deploy({
-          name: directInstanceName,
-          namespace: appNamespace,
-          server: {
-            secret_key: 'test-integration-key-not-for-production',
-            limiter: false,
-          },
-        })
-    );
+    });
 
     // Status assertions
     expect(instance.spec.name).toBe(directInstanceName);
@@ -279,18 +279,20 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
     const kroNamespace = `typekro-kro-searxng-${suffix}`;
     const kroAppNamespace = `searxng-kro-${suffix}`;
     const kroNamespaceLease = await createTestNamespace(kroNamespace, kubeConfig);
+    const kroAppNamespaceLease = await createTestNamespace(kroAppNamespace, kubeConfig);
 
     let kroFactory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
-    let kroAppNamespaceLease: TestNamespaceLease | undefined;
     let externalSecretLease:
       | { readonly name: string; readonly namespace: string; readonly uid: string }
       | undefined;
     const invalidRawInstanceName = `searxng-invalid-${suffix}`;
     const invalidRawAppNamespace = `searxng-invalid-app-${suffix}`;
     const plaintextRawInstanceName = `searxng-plaintext-${suffix}`;
+    let invalidRawAppNamespaceLease: TestNamespaceLease | undefined;
     let invalidRawInstanceCreated = false;
     let testError: unknown;
     try {
+      invalidRawAppNamespaceLease = await createTestNamespace(invalidRawAppNamespace, kubeConfig);
       await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
       kroFactory = searxngBootstrap.factory('kro', {
         namespace: kroNamespace,
@@ -299,36 +301,25 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
         kubeConfig,
       });
 
-      const instance = await runWithExpectedTestNamespace(
-        kroAppNamespace,
-        kubeConfig,
-        (lease) => {
-          kroAppNamespaceLease = lease;
+      const secretName = `${kroInstanceName}-external-secret`;
+      const coreApi = createCoreV1ApiClient(kubeConfig);
+      const createdSecret = await coreApi.createNamespacedSecret({
+        namespace: kroAppNamespace,
+        body: {
+          metadata: { name: secretName },
+          type: 'Opaque',
+          stringData: { secret_key: 'kro-reference-only-test-key' },
         },
-        async () => {
-          const secretName = `${kroInstanceName}-external-secret`;
-          const coreApi = createCoreV1ApiClient(kubeConfig);
-          const deployment = kroFactory!.deploy({
-            name: kroInstanceName,
-            namespace: kroAppNamespace,
-            secretKeyRef: { name: secretName, key: 'secret_key' },
-            server: { limiter: false },
-          });
-          await waitForNamespace(coreApi, kroAppNamespace);
-          const createdSecret = await coreApi.createNamespacedSecret({
-            namespace: kroAppNamespace,
-            body: {
-              metadata: { name: secretName },
-              type: 'Opaque',
-              stringData: { secret_key: 'kro-reference-only-test-key' },
-            },
-          });
-          const uid = createdSecret.metadata?.uid;
-          if (!uid) throw new Error(`Created Secret ${kroAppNamespace}/${secretName} has no UID`);
-          externalSecretLease = { name: secretName, namespace: kroAppNamespace, uid };
-          return deployment;
-        }
-      );
+      });
+      const uid = createdSecret.metadata?.uid;
+      if (!uid) throw new Error(`Created Secret ${kroAppNamespace}/${secretName} has no UID`);
+      externalSecretLease = { name: secretName, namespace: kroAppNamespace, uid };
+      const instance = await kroFactory.deploy({
+        name: kroInstanceName,
+        namespace: kroAppNamespace,
+        secretKeyRef: { name: secretName, key: 'secret_key' },
+        server: { limiter: false },
+      });
 
       expect(instance.spec.name).toBe(kroInstanceName);
       expect(instance.status.ready).toBe(true);
@@ -375,8 +366,8 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
 
       // Raw GitOps clients bypass ArkType's cross-field `.narrow()`. Prove
       // that the emitted KRO graph still fails closed: the CR can be admitted,
-      // but without secretKeyRef it creates no application Namespace or
-      // workload resources.
+      // but without secretKeyRef it creates no workload resources in the
+      // explicitly pre-existing external Namespace.
       await customApi.createNamespacedCustomObject({
         group: 'kro.run',
         version: 'v1alpha1',
@@ -398,14 +389,33 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       expect(
         (Reflect.get(invalidRawInstance, 'metadata') as Record<string, unknown>).finalizers
       ).toContain('kro.run/finalizer');
-      let invalidNamespaceAbsent = false;
-      try {
-        await createCoreV1ApiClient(kubeConfig).readNamespace({ name: invalidRawAppNamespace });
-      } catch (error) {
-        if (!isNotFoundError(error)) throw error;
-        invalidNamespaceAbsent = true;
-      }
-      expect(invalidNamespaceAbsent).toBe(true);
+      await waitForNamespace(createCoreV1ApiClient(kubeConfig), invalidRawAppNamespace);
+      const invalidCoreApi = createCoreV1ApiClient(kubeConfig);
+      const invalidAppsApi = createAppsV1ApiClient(kubeConfig);
+      expect(
+        (
+          await invalidCoreApi.listNamespacedConfigMap({
+            namespace: invalidRawAppNamespace,
+            fieldSelector: `metadata.name=${invalidRawInstanceName}-config`,
+          })
+        ).items
+      ).toHaveLength(0);
+      expect(
+        (
+          await invalidCoreApi.listNamespacedService({
+            namespace: invalidRawAppNamespace,
+            fieldSelector: `metadata.name=${invalidRawInstanceName}`,
+          })
+        ).items
+      ).toHaveLength(0);
+      expect(
+        (
+          await invalidAppsApi.listNamespacedDeployment({
+            namespace: invalidRawAppNamespace,
+            fieldSelector: `metadata.name=${invalidRawInstanceName}`,
+          })
+        ).items
+      ).toHaveLength(0);
     } catch (error) {
       testError = error;
     }
@@ -427,6 +437,19 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
         cleanupErrors.push(error);
       }
     }
+    try {
+      if (kroFactory) {
+        await deleteTestFactoryInstanceAndRecoverNamespaces(
+          kroFactory,
+          kroInstanceName,
+          [],
+          kubeConfig
+        );
+        await waitForNamespace(createCoreV1ApiClient(kubeConfig), kroAppNamespace);
+      }
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     if (externalSecretLease) {
       try {
         await createCoreV1ApiClient(kubeConfig).deleteNamespacedSecret({
@@ -439,18 +462,6 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       }
     }
     try {
-      if (kroFactory) {
-        await deleteTestFactoryInstanceAndRecoverNamespaces(
-          kroFactory,
-          kroInstanceName,
-          kroAppNamespaceLease ? [kroAppNamespaceLease] : [],
-          kubeConfig
-        );
-      }
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    try {
       // TypeKro intentionally retains generated CRDs during ordinary factory
       // teardown. This fixed-name integration definition is test-owned, so
       // remove it only after proving that every SearxngBootstrap instance is
@@ -459,6 +470,18 @@ describeOrSkip('SearXNG Bootstrap Composition', () => {
       await deleteSearxngKroDefinitionWhenUnused(kubeConfig);
     } catch (error) {
       cleanupErrors.push(error);
+    }
+    try {
+      await deleteTestNamespaceAndWait(kroAppNamespaceLease, kubeConfig);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (invalidRawAppNamespaceLease) {
+      try {
+        await deleteTestNamespaceAndWait(invalidRawAppNamespaceLease, kubeConfig);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
     try {
       await deleteTestNamespaceAndWait(kroNamespaceLease, kubeConfig);

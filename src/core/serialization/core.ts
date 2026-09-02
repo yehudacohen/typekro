@@ -168,6 +168,12 @@ function createStubResource(
   factoryName: string,
   resourceId: string
 ): Record<string, unknown> | null {
+  // Lower-camel factory aliases are intentionally excluded here. The AST
+  // analyzer may use them to trigger a counterfactual branch capture, but a
+  // captured resource is admitted only when that execution actually registers
+  // it in the composition context. Fabricating a stub from a name such as
+  // `service(...)` would otherwise turn an unrelated local helper into a
+  // phantom Kubernetes Service.
   const kindInfo = getKindInfo(factoryName);
   if (!kindInfo) return null;
 
@@ -958,7 +964,9 @@ function captureHybridRunResources(
       overrideValues
     );
 
-    const tempCtx = createCompositionContext('hybrid-capture');
+    const tempCtx = createCompositionContext('hybrid-capture', {
+      suppressResourceDiagnostics: true,
+    });
     runWithCompositionContext(tempCtx, () => {
       compositionFn(hybridSpec);
     });
@@ -1123,7 +1131,9 @@ function captureAnalyzedBranchResource(
       new Set(overrides.keys()),
       overrides
     );
-    const context = createCompositionContext(`analyzed-branch:${resourceId}`);
+    const context = createCompositionContext(`analyzed-branch:${resourceId}`, {
+      suppressResourceDiagnostics: true,
+    });
     runWithCompositionContext(context, () => compositionFn(constrainedSpec));
     return context.resources[resourceId] as Enhanced<unknown, unknown> | undefined;
   } catch {
@@ -1363,6 +1373,7 @@ function runResourceStatusBranch(
 ) {
   const branchCtx = createCompositionContext('resource-status-branch', {
     isReExecution: true,
+    suppressResourceDiagnostics: true,
   });
   branchCtx.liveStatusMap = createResourceStatusBranchMap(analysis, ternary, desiredConditionValue);
 
