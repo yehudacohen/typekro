@@ -81,9 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves it on Kubernetes' default `RollingUpdate`, whose default `maxSurge`
   rounds up to one extra Pod, so any pod-template change creates the
   replacement collector while the old one still holds the `ReadWriteOnce` claim
-  and the bbolt lock — the new Pod can never become Ready, and `RollingUpdate`
-  will not terminate the old one until it is, so the rollout deadlocks until
-  `progressDeadlineSeconds` expires. `Recreate` drains first. The cost is a
+  and the bbolt lock. On another node that replacement never leaves
+  `ContainerCreating` (`Multi-Attach error for volume`), and `RollingUpdate`
+  will not terminate the old Pod until the new one is Ready, so the rollout
+  deadlocks until `progressDeadlineSeconds` expires; on the same node it starts
+  anyway and reports Ready off the OpAMP supervisor's `health_check` while its
+  `file_storage` extension cannot take the lock, so the rollout "succeeds" over
+  a queue the new collector never opened. `Recreate` removes the overlap
+  entirely by draining first. The cost is a
   brief gateway outage on every rollout, and the persistent queue is exactly
   what makes that cost acceptable: producers upstream retry, and telemetry the
   gateway already accepted is on the claim rather than in the departing Pod's

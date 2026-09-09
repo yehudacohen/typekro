@@ -622,14 +622,26 @@ export function renderPersistentQueueConfig(
  * Deployment on Kubernetes' default `RollingUpdate` (values.yaml `rollout`,
  * collector chart 0.146.x), whose default `maxSurge: 25%` rounds UP to one
  * extra Pod. A rollout therefore creates the replacement Pod while the old one
- * is still running and still holding the queue, and the replacement cannot
- * become Ready: the ReadWriteOnce claim is already attached to the old Pod's
- * node, and even co-scheduled there it would block on bbolt's exclusive lock.
- * The old Pod is only terminated once the new one is Ready, so the rollout
- * DEADLOCKS until `progressDeadlineSeconds` expires — the queue's own
- * single-writer requirement turned into a stuck upgrade. `Recreate` inverts
- * the order: the old Pod is deleted, its claim detaches and its lock is
- * released, and only then is the replacement created.
+ * is still running and still holding both the claim and the queue, and that
+ * overlap fails in one of two ways depending on where the replacement lands:
+ *
+ * - **On another node — a stuck rollout.** The ReadWriteOnce claim is still
+ *   attached to the old Pod's node, so the replacement never leaves
+ *   `ContainerCreating` (`Multi-Attach error for volume`). `RollingUpdate`
+ *   will not terminate the old Pod until the new one is Ready, and
+ *   `maxUnavailable: 25%` of one replica rounds DOWN to zero, so nothing gives:
+ *   the rollout DEADLOCKS until `progressDeadlineSeconds` expires.
+ * - **On the same node — a silent two-writer window.** The replacement starts,
+ *   and its `file_storage` extension cannot take bbolt's exclusive lock while
+ *   the old collector holds it. Readiness does not notice: it comes from the
+ *   OpAMP supervisor's own `health_check`, not from the agent's extensions
+ *   (the same reason the missing `custom-config` mount below stayed invisible),
+ *   so the Pod reports Ready and the rollout "succeeds" over a queue the new
+ *   collector could not open. LIVE-OBSERVED on a single-node cluster: under
+ *   `RollingUpdate` the replacement went Ready in under 10s.
+ *
+ * `Recreate` removes the overlap entirely: the old Pod is deleted, its claim
+ * detaches and its lock is released, and only then is the replacement created.
  *
  * The cost is a brief gateway outage on every rollout, and the persistent
  * queue is precisely what makes that cost acceptable: producers upstream of
@@ -682,10 +694,11 @@ export function renderPersistentQueueValues(
       // Always pinned: the queue's bbolt database admits exactly one writer.
       replicaCount: 1,
       // …and one writer AT A TIME, which the replica count alone does not buy
-      // during a rollout. RollingUpdate would surge a second Pod onto the same
-      // RWO claim and the same bbolt lock while the old one still holds both,
-      // deadlocking the rollout; Recreate drains first. The chart emits
-      // `rollingUpdate` only for the RollingUpdate branch, so nothing to clear.
+      // during a rollout. RollingUpdate surges a second Pod onto the same RWO
+      // claim and the same bbolt lock while the old one still holds both:
+      // Multi-Attach deadlock on another node, silent lock contention on the
+      // same one. Recreate drains first. The chart emits `rollingUpdate` only
+      // for the RollingUpdate branch, so there is nothing to clear.
       rollout: { strategy: QUEUE_ROLLOUT_STRATEGY },
     },
   };

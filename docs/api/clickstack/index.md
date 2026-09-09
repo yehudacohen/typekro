@@ -281,11 +281,22 @@ rollout, and a rollout is where the queue's single-writer rule actually bites.
 The collector chart leaves the Deployment on Kubernetes' default `RollingUpdate`
 (`rollout.strategy` in its `values.yaml`), whose default `maxSurge: 25%` rounds **up** to one extra
 Pod. So changing anything in the pod template — a new chart version, an image tag, an annotation —
-creates the replacement collector while the old one is still running. The replacement then cannot
-become Ready: the `ReadWriteOnce` claim is already attached to the old Pod's node, and even
-co-scheduled there it would block on bbolt's exclusive lock. `RollingUpdate` will not terminate the
-old Pod until the new one is Ready, so **the rollout deadlocks** until `progressDeadlineSeconds`
-expires. The single-replica pin does not prevent that; it is what causes it.
+creates the replacement collector while the old one is still running and still holds both the claim
+and the queue. That overlap fails in one of two ways, depending on where the replacement lands:
+
+- **On another node — a stuck rollout.** The `ReadWriteOnce` claim is still attached to the old
+  Pod's node, so the replacement never leaves `ContainerCreating`
+  (`Multi-Attach error for volume`). `RollingUpdate` will not terminate the old Pod until the new
+  one is Ready, and `maxUnavailable: 25%` of one replica rounds **down** to zero, so nothing gives:
+  the rollout deadlocks until `progressDeadlineSeconds` expires.
+- **On the same node — a silent two-writer window.** The replacement starts, and its `file_storage`
+  extension cannot take bbolt's exclusive lock while the old collector holds it. Readiness does not
+  notice, because it comes from the OpAMP supervisor's own `health_check` rather than from the
+  agent's extensions — the same blind spot as the `custom-config` mount below — so the Pod reports
+  Ready and the rollout "succeeds" over a queue the new collector could not open. Observed live on
+  a single-node cluster: under `RollingUpdate` the replacement went Ready in under 10 seconds.
+
+The single-replica pin does not prevent either; it is what makes the overlap harmful.
 
 Whenever `persistentQueue` is enabled, TypeKro therefore also pins:
 
@@ -296,8 +307,8 @@ otel-collector:
     strategy: Recreate
 ```
 
-`Recreate` inverts the order: the old collector is deleted, its claim detaches and its lock is
-released, and only then is the replacement created. Nothing carries a `rollingUpdate` block
+`Recreate` removes the overlap entirely: the old collector is deleted, its claim detaches and its
+lock is released, and only then is the replacement created. Nothing carries a `rollingUpdate` block
 alongside it — the chart's Deployment template emits that only on the `RollingUpdate` branch, and
 the API server rejects a `Recreate` strategy that has one.
 

@@ -410,9 +410,11 @@ describe('the persistent queue outlives the collector Pod', () => {
     // `replicaCount: 1` bounds the steady state only. The chart leaves the
     // Deployment on RollingUpdate, whose default maxSurge rounds up to one
     // extra Pod, so an upgrade creates the replacement while the old collector
-    // still holds the RWO claim and the bbolt lock — the new Pod never becomes
-    // Ready, and RollingUpdate will not terminate the old one until it does.
-    // Recreate drains first and is the only value that breaks that deadlock.
+    // still holds the RWO claim and the bbolt lock. On another node the new Pod
+    // is stuck on Multi-Attach and RollingUpdate will not terminate the old one
+    // until it is Ready, so the rollout deadlocks; on the same node it starts
+    // and reports Ready off the supervisor's health_check while its
+    // file_storage extension cannot take the lock. Recreate drains first.
     const values = renderPersistentQueueValues(resolveQueue({}), 'c-otel-queue');
     const collector = values['otel-collector'] as Record<string, unknown>;
     expect(collector.rollout).toEqual({ strategy: 'Recreate' });

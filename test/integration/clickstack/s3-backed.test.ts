@@ -684,10 +684,12 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     // pass just as happily under RollingUpdate. The overlap only appears when
     // the POD TEMPLATE changes: RollingUpdate's default maxSurge rounds up to
     // one extra Pod, so it creates the replacement while the old collector
-    // still holds the ReadWriteOnce claim and the bbolt lock, and then waits
-    // for a Ready that can never arrive — the rollout hangs until
-    // progressDeadlineSeconds. This test changes the template for real and
-    // requires the rollout to finish.
+    // still holds the ReadWriteOnce claim and the bbolt lock — a Multi-Attach
+    // deadlock on another node, and a silent two-writer window on the same one
+    // (readiness comes from the supervisor's health_check, not from the queue
+    // extension). This test changes the template for real, requires the rollout
+    // to finish, and requires it never to have two live collectors at once —
+    // the last of which is exactly what a RollingUpdate surge would produce.
     const coreApi = createCoreV1ApiClient(kubeConfig);
     const appsApi = createAppsV1ApiClient(kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
