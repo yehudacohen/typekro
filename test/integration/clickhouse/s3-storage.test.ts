@@ -22,11 +22,20 @@
  * 3. `plain_rewritable` durability: DELETE the ClickHouse pod, and the rows are
  *    still queryable once it comes back, with no restore step. That is the
  *    whole point of the disk type, and the thing `diskType: 's3'` cannot do.
+ * 4. The rendered `BACKUP ... TO S3(...)` statement is accepted by a real
+ *    server with NO credentials in the query text — they come from the `<s3>`
+ *    config section the storage compiler writes — and the coordinated
+ *    `ON CLUSTER` form FAILS without a Keeper, which is the premise of the
+ *    construction-time guard that rejects a keeperless sharded topology with a
+ *    backup schedule.
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
+import {
+  createBunCompatibleBatchV1Api,
+  createBunCompatibleCustomObjectsApi,
+} from '../../../src/core/kubernetes/index.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
   createCoreV1ApiClient,
@@ -70,6 +79,8 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     | undefined;
   let operatorDeployed = false;
   let clickhouseDeployed = false;
+  /** Name of the backup created by the live single-host BACKUP test. */
+  let backupName = '';
   let helmRepositoryPreexisting = false;
   const namespaceLeases: TestNamespaceLease[] = [];
 
@@ -109,6 +120,14 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
       await Bun.sleep(5_000);
     }
     throw new Error(`Operator HelmRelease never became Ready: ${lastMessage}`);
+  }
+
+  /**
+   * Backup destination base URL, built the same way the factory builds it:
+   * path-style `<endpoint>/<bucket>/<prefix>/`.
+   */
+  function backupEndpointUrl(): string {
+    return `${minio.endpoint.replace(/\/+$/, '')}/${minio.bucket}/backups/`;
   }
 
   /** Run a query against the CHI from a throwaway clickhouse-client Pod. */
@@ -266,6 +285,11 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
         endpoint: minio.endpoint,
         cache: { size: '512Mi' },
         auth: { secretRef: { name: minio.secretName } },
+        // A backup schedule renders the CronJob AND the server-side `<s3>`
+        // config section the BACKUP statement's credentials come from. The
+        // schedule is deliberately far out: the test triggers a Job from the
+        // rendered template rather than waiting for a tick.
+        backup: { schedule: '0 3 * * *', prefix: 'backups' },
       },
     });
     const factory = clickhouse.factory('direct', {
@@ -322,6 +346,65 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     // What matters is that it is not the server's local `default` disk.
     expect(disks).toBe('s3');
   }, 600_000);
+
+  // ── The BACKUP statement the CronJob renders ─────────────────────────────
+  //
+  // The backup schedule declared above renders both the CronJob and the
+  // server-side `<s3>` config section that supplies the destination's
+  // credentials. These two tests execute the STATEMENTS that CronJob would
+  // issue, which is where the "sharded clusters get a partial backup" finding
+  // lives.
+  it('renders the CronJob with the single-host statement for this 1-shard cluster', async () => {
+    const batchApi = createBunCompatibleBatchV1Api(kubeConfig);
+    const cron = await batchApi.readNamespacedCronJob({
+      namespace: chiNs,
+      name: `${chiName}-s3-backup`,
+    });
+    const podSpec = cron.spec?.jobTemplate.spec?.template.spec;
+    const script = (podSpec?.containers ?? [])[0]?.command?.[2] ?? '';
+
+    expect(script).toContain('BACKUP DATABASE $CLICKHOUSE_DATABASE TO S3(');
+    // 1 shard, 1 replica, no keeper: nothing to coordinate, so no ON CLUSTER.
+    expect(script).not.toContain('ON CLUSTER');
+  }, 300_000);
+
+  it('accepts the rendered single-host BACKUP against MinIO, credentials from config', async () => {
+    // The statement carries no keys: the server matches the destination URL
+    // against the `<s3>` section the storage compiler rendered. A backup that
+    // needed keys in the query text would fail here.
+    backupName = `it${Date.now()}`;
+    await query(`BACKUP DATABASE default TO S3('${backupEndpointUrl()}${backupName}')`, 'backupok');
+
+    // The destination is now a real, listable backup.
+    const status = await query(
+      `SELECT status FROM system.backups WHERE name LIKE '%${backupName}%' ORDER BY start_time DESC LIMIT 1`,
+      'backupstatus'
+    );
+    expect(status).toBe('BACKUP_CREATED');
+  }, 900_000);
+
+  it('proves ON CLUSTER needs a Keeper — the premise of the construction-time guard', async () => {
+    // `makeClickHouseCluster` REJECTS a multi-shard/multi-replica topology
+    // with a backup schedule and no keeper, because the only statement that
+    // backs up every shard is `BACKUP ... ON CLUSTER` and its fan-out is
+    // coordinated through [Zoo]Keeper. This cluster has no keeper, so the
+    // coordinated statement must fail rather than quietly degrade to a
+    // one-shard backup — which is exactly why the guard is a hard error.
+    let message = '';
+    try {
+      await query(
+        `BACKUP DATABASE default ON CLUSTER 'cluster' TO S3('${backupEndpointUrl()}oncluster')`,
+        'oncluster'
+      );
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe('');
+    // The server names the missing coordination substrate; accept any of the
+    // spellings ClickHouse uses for it rather than pinning one release's text.
+    expect(message).toMatch(/[Zz]oo[Kk]eeper|KEEPER|coordination|NO_ELEMENTS_IN_CONFIG/);
+  }, 900_000);
 
   it('survives losing the ClickHouse pod with no restore step (plain_rewritable)', async () => {
     const coreApi = createCoreV1ApiClient(kubeConfig);

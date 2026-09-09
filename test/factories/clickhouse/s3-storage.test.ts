@@ -466,6 +466,71 @@ describe('clickHouseS3BackupCronJob', () => {
       /must be a positive integer/
     );
   });
+
+  // ── Sharded clusters: BACKUP ... ON CLUSTER ────────────────────────────
+  //
+  // A single-host statement backs up only the shard the client connected to,
+  // so on a distributed topology the CronJob has to fan the statement out.
+  describe('ON CLUSTER rendering', () => {
+    function script(overrides: Record<string, unknown> = {}) {
+      const job = clickHouseS3BackupCronJob({
+        name: 'test-ch',
+        namespace: 'observability',
+        version: '25.12.5',
+        storage: resolvedWithBackup({ schedule: '0 2 * * *' }),
+        nativePort: 9000,
+        ...overrides,
+      });
+      const podSpec = job.spec.jobTemplate.spec?.template.spec;
+      const container = podSpec?.initContainers?.[0] ?? podSpec?.containers?.[0];
+      return { text: container?.command?.[2] ?? '', env: container?.env ?? [] };
+    }
+
+    it('renders a SINGLE-HOST statement for a single-node topology', () => {
+      const { text, env } = script();
+      expect(text).toContain('BACKUP DATABASE $CLICKHOUSE_DATABASE TO S3(');
+      expect(text).not.toContain('ON CLUSTER');
+      // No cluster env var is emitted at all, so nothing can be half-wired.
+      expect(env.find((entry) => entry.name === 'CLICKHOUSE_CLUSTER')).toBeUndefined();
+    });
+
+    it('renders ON CLUSTER, taking the name from an env var', () => {
+      const { text, env } = script({ onCluster: true, clusterName: 'cluster' });
+      expect(text).toContain(
+        "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLICKHOUSE_CLUSTER' TO S3("
+      );
+      // The name travels as an env value rather than being baked into the
+      // script text, so a schema reference (the runtime `spec.clusterName`)
+      // survives serialization.
+      expect(env.find((entry) => entry.name === 'CLICKHOUSE_CLUSTER')?.value).toBe('cluster');
+      expect(text).not.toContain("ON CLUSTER 'cluster'");
+    });
+
+    it('uses ONE coordinated destination — no {shard}/{replica} macros', () => {
+      // Macros in the destination would produce N independent per-shard
+      // backups needing N restore statements; ON CLUSTER produces one.
+      const { text } = script({ onCluster: true, clusterName: 'cluster' });
+      expect(text).toContain("S3('$BACKUP_ENDPOINT$NAME')");
+      expect(text).not.toContain('{shard}');
+      expect(text).not.toContain('{replica}');
+    });
+
+    it('still carries no credentials in the ON CLUSTER statement', () => {
+      const { text } = script({ onCluster: true, clusterName: 'cluster' });
+      expect(text).not.toContain('access_key');
+      expect(text).not.toContain('AWS_SECRET');
+    });
+
+    it('requires a cluster name when onCluster is set', () => {
+      expect(() => script({ onCluster: true })).toThrow(/`onCluster` requires `clusterName`/);
+    });
+
+    it('rejects a cluster name that could break out of the ON CLUSTER clause', () => {
+      expect(() => script({ onCluster: true, clusterName: "c'; DROP DATABASE x; --" })).toThrow(
+        /must be a bare identifier/
+      );
+    });
+  });
 });
 
 describe('parseByteQuantity', () => {

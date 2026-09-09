@@ -75,6 +75,12 @@ interface ResolvedTopology {
   replicas: number;
   shards: number;
   keeper: boolean;
+  /**
+   * Render the scheduled backup as `BACKUP ... ON CLUSTER`. True whenever a
+   * single-host statement would produce a PARTIAL backup (>1 shard or replica)
+   * or a keeper is available to coordinate the fan-out.
+   */
+  onClusterBackup: boolean;
   users: readonly {
     name: string;
     networksIp: readonly string[];
@@ -125,6 +131,31 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
     );
   }
 
+  // Replicated tables need coordination — default keeper on for
+  // multi-replica clusters unless the caller opts out explicitly.
+  const keeper = topology.keeper ?? replicas > 1;
+
+  // A DISTRIBUTED topology with a backup schedule must back up EVERY shard.
+  // The only way to do that in one statement is `BACKUP ... ON CLUSTER`, and
+  // that fan-out is coordinated through [Zoo]Keeper — so a multi-shard or
+  // multi-replica cluster with a backup schedule and NO keeper cannot be
+  // backed up completely. Fail here rather than emit a statement that
+  // succeeds while capturing one shard: a partial backup that reports success
+  // is worse than no backup at all.
+  const distributed = shards > 1 || replicas > 1;
+  if (resolvedStorage.mode === 's3' && resolvedStorage.backup !== undefined && distributed) {
+    if (!keeper) {
+      throw new Error(
+        `makeClickHouseCluster: a topology with ${shards} shard(s) and ${replicas} replica(s) ` +
+          `and a 'storage.backup' schedule requires a keeper. Backing up every shard needs ` +
+          `\`BACKUP ... ON CLUSTER\`, whose fan-out is coordinated through [Zoo]Keeper; without ` +
+          `one the statement would run on a single host and silently capture only that shard's ` +
+          `data. Set \`keeper: true\` (and supply \`spec.keeper.host\`), or drop to ` +
+          `shards: 1, replicas: 1.`
+      );
+    }
+  }
+
   return {
     zones: topology.zones ?? [],
     replicas,
@@ -132,9 +163,12 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
     storage,
     ...(isS3Storage(storage) ? { s3Options: storage } : {}),
     ...(resolvedStorage.mode === 's3' ? { s3: resolvedStorage } : {}),
-    // Replicated tables need coordination — default keeper on for
-    // multi-replica clusters unless the caller opts out explicitly.
-    keeper: topology.keeper ?? replicas > 1,
+    keeper,
+    // `ON CLUSTER` is rendered for every topology whose backup would otherwise
+    // be partial — more than one shard or replica — and also whenever a keeper
+    // is configured, because that is the topology that may GROW shards later
+    // and the coordinated statement is correct for one host too.
+    onClusterBackup: distributed || keeper,
     users: (topology.users ?? []).map((user) => ({
       name: user.name,
       networksIp: user.networksIp ?? DEFAULT_USER_NETWORKS_IP,
@@ -342,6 +376,11 @@ export function makeClickHouseCluster(
       // Scheduled `BACKUP ... TO S3(...)`. This is what makes
       // `diskType: 's3'` durable at all — see resources/s3-backup.ts and the
       // durability table in docs/api/clickhouse/index.md.
+      //
+      // On a sharded or replicated topology the statement becomes
+      // `BACKUP ... ON CLUSTER '<clusterName>'`, so EVERY shard contributes to
+      // the one backup. `clusterName` is the same expression the CHI's cluster
+      // is named after, so the two can never drift.
       if (resolved.s3?.backup !== undefined) {
         const _s3Backup = clickHouseS3BackupCronJob({
           name: spec.name,
@@ -349,6 +388,7 @@ export function makeClickHouseCluster(
           version: spec.version,
           storage: resolved.s3,
           nativePort: CLICKHOUSE_NATIVE_PORT,
+          ...(resolved.onClusterBackup ? { onCluster: true, clusterName } : {}),
           id: S3_BACKUP_RESOURCE_ID,
         });
         _s3Backup.dependsOn(clickhouse);

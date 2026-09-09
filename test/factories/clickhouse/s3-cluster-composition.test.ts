@@ -112,6 +112,56 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
     expect(withBackup).toContain('amazon/aws-cli');
   });
 
+  // ── Every shard gets backed up ─────────────────────────────────────────
+  //
+  // A plain `BACKUP DATABASE db TO S3(...)` runs on the ONE host the client
+  // connected to, which on a sharded cluster is a backup that succeeds while
+  // capturing a single shard.
+  it('keeps the single-host statement on a 1-shard, 1-replica topology', () => {
+    const yaml = makeClickHouseCluster({ storage: BACKED_UP_S3 }).toYaml();
+    expect(yaml).toContain('BACKUP DATABASE $CLICKHOUSE_DATABASE TO S3(');
+    expect(yaml).not.toContain('ON CLUSTER');
+    expect(yaml).not.toContain('CLICKHOUSE_CLUSTER');
+  });
+
+  it('renders ON CLUSTER for a multi-SHARD topology, off the CHI cluster name', () => {
+    const yaml = makeClickHouseCluster({
+      shards: 3,
+      keeper: true,
+      storage: BACKED_UP_S3,
+    }).toYaml();
+    expect(yaml).toContain(
+      "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLICKHOUSE_CLUSTER' TO S3("
+    );
+    // The name comes from the same runtime expression the CHI's cluster is
+    // named after, so the statement and the cluster cannot drift.
+    expect(yaml).toContain('CLICKHOUSE_CLUSTER');
+    expect(yaml).toContain('shardsCount: 3');
+  });
+
+  it('renders ON CLUSTER for a multi-REPLICA topology (keeper defaults on)', () => {
+    const yaml = makeClickHouseCluster({ replicas: 2, storage: BACKED_UP_S3 }).toYaml();
+    expect(yaml).toContain("ON CLUSTER '$CLICKHOUSE_CLUSTER'");
+  });
+
+  it('rejects a multi-shard backup with no keeper at CONSTRUCTION time', () => {
+    // `ON CLUSTER` coordination is Keeper-based, so without a keeper the only
+    // statement available would silently capture one shard. Note that `keeper`
+    // does NOT default on for shards, only for replicas.
+    expect(() => makeClickHouseCluster({ shards: 2, storage: BACKED_UP_S3 })).toThrow(
+      /requires a keeper/
+    );
+    expect(() =>
+      makeClickHouseCluster({ replicas: 2, keeper: false, storage: BACKED_UP_S3 })
+    ).toThrow(/requires a keeper/);
+  });
+
+  it('leaves a keeperless SHARDED topology alone when no backup is declared', () => {
+    // The rejection is about a backup that would be partial, not about
+    // sharding — a cluster with no backup schedule is unaffected.
+    expect(() => makeClickHouseCluster({ shards: 2, storage: IRSA_S3 })).not.toThrow();
+  });
+
   it('surfaces the durability decision on the status contract', () => {
     const plainRewritable = makeClickHouseCluster({ storage: PLAIN_REWRITABLE_S3 });
     const plan = plainRewritable.plan?.(

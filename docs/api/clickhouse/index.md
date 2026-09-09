@@ -303,18 +303,47 @@ storage: {
 
 That renders a CronJob whose run:
 
-1. generates a timestamped name (`%Y%m%d%H%M%S`) and issues `BACKUP DATABASE <db> TO S3('<endpoint>/<timestamp>')`. The statement carries **no credentials** — `BACKUP` executes server-side, and the storage compiler renders an `<s3>` section for the backup endpoint into `config.d/storage.xml`, so nothing sensitive reaches `system.query_log`;
+1. generates a timestamped name (`%Y%m%d%H%M%S`) and issues `BACKUP DATABASE <db> [ON CLUSTER '<clusterName>'] TO S3('<endpoint>/<timestamp>')`. The statement carries **no credentials** — `BACKUP` executes server-side, and the storage compiler renders an `<s3>` section for the backup endpoint into `config.d/storage.xml`, so nothing sensitive reaches `system.query_log`;
 2. with `retention.days`, follows up with an `amazon/aws-cli` prune container that deletes expired timestamped prefixes. The backup runs as an `initContainer` in that case, because Job containers otherwise run in parallel and the prune must see a finished backup.
 
 Set `backup.auth.secretRef` to connect as a specific ClickHouse user; without it the job connects as `default` with no password (the dev-first default).
 
-**Restore is deliberately not automated** — restoring over a live database is a decision, not a schedule. List the available backups and restore one by name:
+### Sharded clusters back up every shard
+
+A plain `BACKUP DATABASE db TO S3(...)` is executed by the ONE server the client connected to, and that server holds only its own shard's parts — on a multi-shard cluster it produces a backup that succeeds, restores cleanly, and is missing every other shard's data. So the rendered statement gains `ON CLUSTER '<clusterName>'` whenever the topology has more than one shard or replica, or a keeper is configured. ClickHouse then fans the statement out to every host of the cluster and coordinates them through [Zoo]Keeper into **one** backup at **one** destination path (the `backup_restore_keeper_*` settings in the [BACKUP/RESTORE reference](https://clickhouse.com/docs/operations/backup) exist for that coordination).
+
+There are deliberately no `{shard}` / `{replica}` macros in the destination: that convention produces N independent per-shard backups needing N restore statements, which is a different design.
+
+Because the fan-out needs Keeper, `makeClickHouseCluster` **rejects at construction** a topology with more than one shard or replica that declares `storage.backup` but no keeper:
+
+```typescript
+// throws: backing up every shard needs `BACKUP ... ON CLUSTER`, which needs a keeper
+makeClickHouseCluster({ shards: 2, storage: { /* … */ backup: { schedule: '0 2 * * *' } } });
+
+// correct: the coordinated statement has somewhere to coordinate
+makeClickHouseCluster({ shards: 2, keeper: true, storage: { /* … */ backup: { schedule: '0 2 * * *' } } });
+```
+
+(`keeper` already defaults to `true` for `replicas > 1`; multi-*shard* topologies must opt in.)
+
+### Restore
+
+**Restore is deliberately not automated** — restoring over a live database is a decision, not a schedule. List the available backups and restore one by name, **matching the backup's own shape**: a backup taken `ON CLUSTER` is restored `ON CLUSTER`.
 
 ```sql
 -- from a clickhouse-client pod against the cluster
 SHOW DATABASES;
-RESTORE DATABASE default FROM S3('https://<bucket>.s3.<region>.amazonaws.com/backups/20260101020000');
+
+-- single-node topology (1 shard, 1 replica, no keeper)
+RESTORE DATABASE default
+  FROM S3('https://<bucket>.s3.<region>.amazonaws.com/backups/20260101020000');
+
+-- sharded/replicated topology — the same cluster name the CronJob used
+RESTORE DATABASE default ON CLUSTER 'cluster'
+  FROM S3('https://<bucket>.s3.<region>.amazonaws.com/backups/20260101020000');
 ```
+
+The cluster name is `spec.clusterName` (default `cluster`), and it is also published on the status contract as `status.clickhouse.clusterName`.
 
 Restore into a fresh database first (`RESTORE DATABASE default AS default_restored FROM …`) when the live one still exists, then swap with `EXCHANGE TABLES` or `RENAME DATABASE`. The restore reads its credentials from the same `<s3>` config section the backup wrote through, so it needs no keys in the statement either.
 

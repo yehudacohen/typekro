@@ -22,7 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classic `s3` disk keeps part metadata on the local disk, so the bucket alone
   cannot be reattached and durability depends on the new optional
   `storage.backup` — a CronJob issuing `BACKUP DATABASE … TO S3(…)` with an
-  age-based prune step and a documented restore procedure. `s3_plain_rewritable`
+  age-based prune step and a documented restore procedure. On a sharded or
+  replicated topology that statement becomes
+  `BACKUP … ON CLUSTER '<clusterName>' TO S3(…)`, so every shard contributes to
+  one Keeper-coordinated backup rather than the connected host silently
+  capturing only its own shard; because that fan-out is coordinated through
+  [Zoo]Keeper, a topology with more than one shard or replica that declares
+  `storage.backup` without a keeper is rejected at construction.
+  `s3_plain_rewritable`
   keeps metadata in the bucket, making node loss a restart and reattach; it
   requires ClickHouse 24.5 or newer and a single replica, and both limits are
   enforced at construction time. `status.storage` reports the resulting

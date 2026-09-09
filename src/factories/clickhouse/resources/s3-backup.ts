@@ -22,10 +22,30 @@
  *   needs S3 `DeleteObject` on the backup prefix (see the IAM policy in the
  *   docs).
  *
+ * SHARDED CLUSTERS — WHY `ON CLUSTER` IS NOT OPTIONAL
+ * A plain `BACKUP DATABASE db TO S3(...)` is executed by the ONE server the
+ * client happened to connect to, and that server only holds its own shard's
+ * parts. On a multi-shard cluster that silently produces a PARTIAL backup: it
+ * succeeds, it is restorable, and it is missing every other shard's data.
+ * ClickHouse's answer is `BACKUP ... ON CLUSTER '<cluster>' TO S3(...)`, which
+ * fans the statement out to every host of the cluster and coordinates them
+ * through [Zoo]Keeper so that all of them contribute to ONE backup at ONE
+ * destination path (the `backup_restore_keeper_*` settings in the BACKUP/
+ * RESTORE reference exist for exactly this coordination). No `{shard}` /
+ * `{replica}` macros belong in the destination: that convention produces N
+ * INDEPENDENT per-shard backups, which is a different (external-tool) design
+ * and would need N restore statements.
+ *
+ * Because the coordination is Keeper-based, `ON CLUSTER` is only rendered for
+ * topologies that actually have a Keeper — {@link makeClickHouseCluster}
+ * REJECTS a multi-shard/multi-replica topology with a backup schedule and no
+ * keeper at construction rather than emitting a statement that would back up
+ * one shard.
+ *
  * RESTORE is deliberately NOT automated — restoring over a live database is a
  * decision, not a schedule. The procedure is documented in
- * `docs/api/clickhouse/index.md`; in short:
- * `RESTORE DATABASE <db> FROM S3('<endpoint>/<timestamp>')`.
+ * `docs/api/clickhouse/index.md`; in short (matching the backup's own shape):
+ * `RESTORE DATABASE <db> [ON CLUSTER '<cluster>'] FROM S3('<endpoint>/<timestamp>')`.
  */
 
 import type {
@@ -59,9 +79,44 @@ export interface ClickHouseS3BackupCronJobConfig {
   storage: ResolvedClickHouseS3Storage;
   /** Native TCP port of the ClickHouse service. */
   nativePort: number;
+  /**
+   * CHI cluster name, required when {@link onCluster} is set — it becomes the
+   * `ON CLUSTER '<name>'` target. Passed to the container as an env var rather
+   * than baked into the script text so a schema reference (the runtime
+   * `spec.clusterName`) survives serialization the way `database` does.
+   */
+  clusterName?: string;
+  /**
+   * Render `BACKUP ... ON CLUSTER` instead of a single-host statement.
+   *
+   * BUILD-TIME: true iff the topology has more than one shard or replica, or a
+   * Keeper is configured. See the module doc for why a single-host statement is
+   * a partial backup on a sharded cluster.
+   */
+  onCluster?: boolean;
   /** Resource id for composition references. */
   id?: string;
 }
+
+/**
+ * Env var carrying the `ON CLUSTER` target into the backup container.
+ *
+ * `CLICKHOUSE_CLUSTER` is NOT a name `clickhouse-client` interprets, so it
+ * cannot collide with the client's own configuration.
+ */
+export const BACKUP_CLUSTER_ENV = 'CLICKHOUSE_CLUSTER';
+
+/**
+ * Characters allowed in a cluster name that is interpolated into SQL.
+ *
+ * The CHI cluster name is a Kubernetes-ish identifier in every path that
+ * produces one, so this is not a restriction in practice — it exists so the
+ * generated statement can never be turned into extra SQL by a quote in the
+ * name. Checked only when the value is a concrete string: in KRO mode
+ * `spec.clusterName` arrives as a schema reference and is validated by the
+ * operator instead.
+ */
+const CLUSTER_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 /**
  * Shell script for the backup step.
@@ -70,19 +125,27 @@ export interface ClickHouseS3BackupCronJobConfig {
  * the Job (and, with `retention`, skips the prune step) rather than reporting
  * success on an empty backup.
  */
-function backupScript(): string {
+function backupScript(onCluster: boolean): string {
+  // `ON CLUSTER '<name>'` fans the statement out to every host of the cluster
+  // and coordinates them into ONE backup through Keeper. Without it the
+  // connected host backs up only its own shard — see the module doc.
+  const onClusterClause = onCluster ? ` ON CLUSTER '$${BACKUP_CLUSTER_ENV}'` : '';
   return [
     'set -eu',
     'NAME="$(date -u +%Y%m%d%H%M%S)"',
-    'echo "Backing up database $CLICKHOUSE_DATABASE to $BACKUP_ENDPOINT$NAME"',
+    onCluster
+      ? 'echo "Backing up database $CLICKHOUSE_DATABASE on cluster' +
+        ` $${BACKUP_CLUSTER_ENV} to $BACKUP_ENDPOINT$NAME"`
+      : 'echo "Backing up database $CLICKHOUSE_DATABASE to $BACKUP_ENDPOINT$NAME"',
     // The destination credentials come from the server's `<s3>` config section
     // (rendered by the storage compiler and matched by endpoint prefix), so the
     // statement itself carries none — nothing sensitive reaches query_log.
-    // The database name is validated as a bare SQL identifier at resolve time,
-    // so it needs no quoting here.
+    // The database name is validated as a bare SQL identifier at resolve time
+    // and the cluster name against CLUSTER_NAME_PATTERN, so neither needs
+    // quoting beyond the SQL string literal the cluster name sits in.
     'clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT"' +
       ' --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD"' +
-      ' --query "BACKUP DATABASE $CLICKHOUSE_DATABASE TO' +
+      ` --query "BACKUP DATABASE $CLICKHOUSE_DATABASE${onClusterClause} TO` +
       " S3('$BACKUP_ENDPOINT$NAME')\"",
     'echo "Backup $NAME complete"',
   ].join('\n');
@@ -149,6 +212,12 @@ function clickHouseConnectionEnv(config: ClickHouseS3BackupCronJobConfig): V1Env
           },
         },
     { name: 'BACKUP_ENDPOINT', value: backup?.endpointUrl ?? '' },
+    ...(config.onCluster === true
+      ? // `clusterName` is required when `onCluster` is set (checked by the
+        // factory below), but it may legitimately be a schema reference, so it
+        // travels as an env value exactly like `database` does.
+        [{ name: BACKUP_CLUSTER_ENV, value: config.clusterName as string }]
+      : []),
   ];
 }
 
@@ -191,7 +260,9 @@ function pruneEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
  *
  * @param config - Backup CronJob configuration
  * @returns Enhanced CronJob resource with schedule-based readiness evaluation
- * @throws Error when the resolved storage carries no `backup` schedule
+ * @throws Error when the resolved storage carries no `backup` schedule, when
+ *   `onCluster` is set without a `clusterName`, or when a concrete
+ *   `clusterName` is not a bare identifier
  *
  * @example
  * ```typescript
@@ -201,6 +272,9 @@ function pruneEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
  *   version: '25.12.5',
  *   storage: resolved,
  *   nativePort: 9000,
+ *   // Sharded/replicated topology: back up EVERY shard, coordinated by Keeper.
+ *   onCluster: true,
+ *   clusterName: 'cluster',
  *   id: 'clickhouseBackup',
  * });
  * ```
@@ -215,11 +289,29 @@ export function clickHouseS3BackupCronJob(
         'Set storage.backup.schedule to render a backup CronJob.'
     );
   }
+  const onCluster = config.onCluster === true;
+  if (onCluster && config.clusterName === undefined) {
+    throw new Error(
+      'clickHouseS3BackupCronJob: `onCluster` requires `clusterName` — it is the ' +
+        "`ON CLUSTER '<name>'` target of the BACKUP statement."
+    );
+  }
+  if (
+    onCluster &&
+    typeof config.clusterName === 'string' &&
+    !CLUSTER_NAME_PATTERN.test(config.clusterName)
+  ) {
+    throw new Error(
+      `clickHouseS3BackupCronJob: 'clusterName' must be a bare identifier (letters, digits, ` +
+        `underscores and dashes, not starting with a dash) because it is interpolated into the ` +
+        `ON CLUSTER clause — got ${JSON.stringify(config.clusterName)}.`
+    );
+  }
 
   const backupContainer: V1Container = {
     name: 'backup',
     image: `clickhouse/clickhouse-server:${config.version}`,
-    command: ['sh', '-c', backupScript()],
+    command: ['sh', '-c', backupScript(onCluster)],
     env: clickHouseConnectionEnv(config),
   };
   const prune: V1Container | undefined =
