@@ -34,7 +34,10 @@ import {
   clickHouseS3ServiceAccountName,
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
-import { assertPositiveIntegerCount } from '../utils/validation.js';
+import {
+  assertClickHouseClusterName,
+  assertPositiveIntegerCount,
+} from '../utils/validation.js';
 import { compileZonePinnedLayout } from '../utils/zone-layout.js';
 
 /**
@@ -226,6 +229,11 @@ function compileInstallationSpec(
   assertPositiveIntegerCount('clickHouseInstallation', 'shards', shards);
   assertPositiveIntegerCount('clickHouseInstallation', 'replicas', replicas);
   const clusterName = config.clusterName ?? DEFAULT_CHI_CLUSTER_NAME;
+  // Concrete names only — a schema reference passes through untouched and is
+  // constrained by the generated KRO schema instead (see
+  // `ClickHouseClusterNameSchema`). The value is a fragment of every object
+  // name the operator generates AND the `ON CLUSTER` target of the backup.
+  assertClickHouseClusterName('clickHouseInstallation', 'clusterName', clusterName);
   const image = config.image ?? `${DEFAULT_CLICKHOUSE_IMAGE_REPOSITORY}:${config.version}`;
   const zones = config.zones ?? [];
 

@@ -98,6 +98,25 @@ The chart installs CRDs via a Helm hook (`crdHook.enabled`). When deploying thro
 **Runtime (spec fields — schema refs / proxies serialize to clean CEL):**
 
 - `name`, `namespace`, `version`, `clusterName`
+  ::: warning `clusterName` is constrained, and the constraint is enforced in three places
+  The value is the cluster identity the operator concatenates into every generated object name
+  **and** the `ON CLUSTER '<name>'` target of the [scheduled backup](#scheduled-backups-and-restore) — where a
+  quote or a semicolon would be extra SQL rather than a bad name. It must match
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$`: a letter, then up to 14 more letters, digits or
+  dashes, not ending in a dash.
+
+  That is the *intersection* of two independent limits, not a house style. The Altinity CRD
+  constrains `spec.configuration.clusters[].name` to `^[a-zA-Z0-9-]{0,15}$` with `maxLength: 15`
+  (`namePartClusterMaxLen`), so an underscore or a 16th character is rejected by the API server
+  whatever TypeKro accepts; ClickHouse reads the same value as an identifier, so a leading digit or
+  dash is not one.
+
+  A **literal** is rejected at construction. A **schema reference** cannot be — so the pattern
+  travels into the generated RGD (`clusterName: string | maxLength=15 pattern="…"`) and KRO rejects
+  a bad instance. The backup script re-checks the name it receives in `$CLICKHOUSE_CLUSTER` and
+  escapes it before interpolation, and refuses to run rather than issue a statement built from a
+  name it does not recognise.
+  :::
 - `storage.size`, `storage.storageClassName` — the **local** volume (the data volume in PVC mode; the thin cache volume in S3 mode)
 - `keeper.host`, `keeper.port`
 - `users.<name>.passwordSha256Hex` or `users.<name>.passwordSecretRef` (one

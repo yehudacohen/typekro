@@ -295,6 +295,69 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
     });
   });
 
+  describe('cluster name validation (SQL interpolation + operator naming)', () => {
+    // `spec.clusterName` reaches ClickHouse twice: as the cluster identity the
+    // operator concatenates into generated object names, and as the
+    // `ON CLUSTER '<name>'` target of the backup statement. In kro mode it is
+    // a per-INSTANCE value, so the constraint has to travel into the RGD.
+    it('carries the pattern and the length bound into the generated RGD schema', () => {
+      const yaml = makeClickHouseCluster({}).toYaml();
+      expect(yaml).toContain(
+        'clusterName: string | maxLength=15 pattern="^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$"'
+      );
+    });
+
+    it('keeps the pattern on every topology that renders a backup', () => {
+      const yaml = makeClickHouseCluster({
+        shards: 2,
+        keeper: true,
+        storage: {
+          mode: 's3',
+          bucket: 'example-bucket',
+          region: 'us-east-1',
+          cache: { size: '10Gi' },
+          auth: { irsa: { roleArn: 'arn:aws:iam::111122223333:role/example' } },
+          backup: { schedule: '0 2 * * *' },
+        },
+      }).toYaml();
+      expect(yaml).toContain('pattern="^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$"');
+    });
+
+    it('accepts a valid name through the low-level installation factory', () => {
+      for (const clusterName of ['cluster', 'c', 'my-cluster', 'Cluster9', 'abcdefghijklmno']) {
+        expect(() =>
+          clickHouseInstallation({
+            name: 'ch',
+            version: '25.12.5',
+            clusterName,
+            storage: { size: '10Gi' },
+          })
+        ).not.toThrow();
+      }
+    });
+
+    it.each([
+      ["quote", "c'; DROP DATABASE x; --"],
+      ['space', 'my cluster'],
+      ['semicolon', 'a;b'],
+      ['leading digit', '9cluster'],
+      ['leading dash', '-cluster'],
+      ['trailing dash', 'cluster-'],
+      ['underscore (the CRD pattern forbids it)', 'my_cluster'],
+      ['16 characters (the CRD caps at 15)', 'abcdefghijklmnop'],
+      ['empty', ''],
+    ])('rejects a cluster name with a %s at construction', (_label, clusterName) => {
+      expect(() =>
+        clickHouseInstallation({
+          name: 'ch',
+          version: '25.12.5',
+          clusterName,
+          storage: { size: '10Gi' },
+        })
+      ).toThrow(/clickHouseInstallation: 'clusterName' must match/);
+    });
+  });
+
   describe('loud build-time rejection of schema refs', () => {
     function composeWith(
       build: (spec: { name: string; count: number; zone: string }) => void

@@ -28,7 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one Keeper-coordinated backup rather than the connected host silently
   capturing only its own shard; because that fan-out is coordinated through
   [Zoo]Keeper, a topology with more than one shard or replica that declares
-  `storage.backup` without a keeper is rejected at construction.
+  `storage.backup` without a keeper is rejected at construction. Because
+  `clusterName` is interpolated into that statement, it is constrained to
+  `^[a-zA-Z]([a-zA-Z0-9-]{0,13}[a-zA-Z0-9])?$` — the intersection of the
+  Altinity CRD's own pattern and 15-character cap on `clusters[].name` with
+  ClickHouse's use of the value as an identifier. A literal is rejected at
+  construction, the pattern travels into the generated KRO schema so a bad
+  instance is rejected by the operator, and the backup script re-checks and
+  escapes the name it receives before building the statement.
   `s3_plain_rewritable`
   keeps metadata in the bucket, making node loss a restart and reattach; it
   requires ClickHouse 24.5 or newer and a single replica, and both limits are

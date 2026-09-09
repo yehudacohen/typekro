@@ -496,14 +496,38 @@ describe('clickHouseS3BackupCronJob', () => {
 
     it('renders ON CLUSTER, taking the name from an env var', () => {
       const { text, env } = script({ onCluster: true, clusterName: 'cluster' });
+      // The clause interpolates the CHECKED AND ESCAPED copy of the env var,
+      // never the raw value — see the guard test below.
       expect(text).toContain(
-        "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLICKHOUSE_CLUSTER' TO S3("
+        "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLUSTER_SQL' TO S3("
       );
+      expect(text).toContain('CLUSTER="$CLICKHOUSE_CLUSTER"');
       // The name travels as an env value rather than being baked into the
       // script text, so a schema reference (the runtime `spec.clusterName`)
       // survives serialization.
       expect(env.find((entry) => entry.name === 'CLICKHOUSE_CLUSTER')?.value).toBe('cluster');
       expect(text).not.toContain("ON CLUSTER 'cluster'");
+    });
+
+    it('re-checks and escapes the cluster name INSIDE the container', () => {
+      // Defence in depth: the build-time check only sees concrete strings, and
+      // the KRO schema pattern only guards the instance — the value that
+      // actually reaches the statement is an env var on a rendered CronJob.
+      const { text } = script({ onCluster: true, clusterName: 'cluster' });
+      expect(text).toContain('case "$CLUSTER" in');
+      expect(text).toContain('"" | *[!A-Za-z0-9-]* | [!A-Za-z]* | *-)');
+      expect(text).toContain('is not a cluster identifier');
+      expect(text).toContain('exit 1');
+      // The CRD's own 15-character cap, re-asserted at run time.
+      expect(text).toContain('if [ "${#CLUSTER}" -gt 15 ]; then');
+      // ClickHouse escapes a quote in a string literal by doubling it.
+      expect(text).toContain(`CLUSTER_SQL="$(printf '%s' "$CLUSTER" | sed "s/'/''/g")"`);
+    });
+
+    it('emits no cluster guard at all for a single-host statement', () => {
+      const { text } = script();
+      expect(text).not.toContain('CLUSTER_SQL');
+      expect(text).not.toContain('case "$CLUSTER" in');
     });
 
     it('uses ONE coordinated destination — no {shard}/{replica} macros', () => {
@@ -525,10 +549,42 @@ describe('clickHouseS3BackupCronJob', () => {
       expect(() => script({ onCluster: true })).toThrow(/`onCluster` requires `clusterName`/);
     });
 
+    it('accepts the cluster names the operator and ClickHouse both allow', () => {
+      for (const clusterName of ['cluster', 'c', 'my-cluster', 'Cluster9', 'abcdefghijklmno']) {
+        expect(() => script({ onCluster: true, clusterName })).not.toThrow();
+      }
+    });
+
     it('rejects a cluster name that could break out of the ON CLUSTER clause', () => {
+      // A quote or a semicolon here is extra SQL, not a bad name.
       expect(() => script({ onCluster: true, clusterName: "c'; DROP DATABASE x; --" })).toThrow(
-        /must be a bare identifier/
+        /must match/
       );
+      expect(() => script({ onCluster: true, clusterName: 'my cluster' })).toThrow(/must match/);
+      expect(() => script({ onCluster: true, clusterName: 'a;b' })).toThrow(/must match/);
+    });
+
+    it('rejects names the operator or ClickHouse itself would refuse', () => {
+      // Leading digit / dash: not an identifier. Underscore and >15 chars: the
+      // Altinity CRD's own `^[a-zA-Z0-9-]{0,15}$` / maxLength 15 on
+      // `clusters[].name`, so accepting them would just defer the failure to
+      // apply time.
+      expect(() => script({ onCluster: true, clusterName: '9cluster' })).toThrow(/must match/);
+      expect(() => script({ onCluster: true, clusterName: '-cluster' })).toThrow(/must match/);
+      expect(() => script({ onCluster: true, clusterName: 'cluster-' })).toThrow(/must match/);
+      expect(() => script({ onCluster: true, clusterName: 'my_cluster' })).toThrow(/must match/);
+      expect(() => script({ onCluster: true, clusterName: 'abcdefghijklmnop' })).toThrow(
+        /must match/
+      );
+      expect(() => script({ onCluster: true, clusterName: '' })).toThrow(/must match/);
+    });
+
+    it('leaves a schema reference to KRO rather than rejecting it', () => {
+      // In kro mode `spec.clusterName` is a reference at construction; the
+      // pattern travels into the RGD schema instead of being checked here.
+      expect(() =>
+        script({ onCluster: true, clusterName: { __brand: 'KubernetesRef' } })
+      ).not.toThrow();
     });
   });
 });

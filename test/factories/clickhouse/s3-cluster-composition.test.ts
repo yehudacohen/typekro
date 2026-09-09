@@ -131,7 +131,7 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
       storage: BACKED_UP_S3,
     }).toYaml();
     expect(yaml).toContain(
-      "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLICKHOUSE_CLUSTER' TO S3("
+      "BACKUP DATABASE $CLICKHOUSE_DATABASE ON CLUSTER '$CLUSTER_SQL' TO S3("
     );
     // The name comes from the same runtime expression the CHI's cluster is
     // named after, so the statement and the cluster cannot drift.
@@ -141,7 +141,7 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
 
   it('renders ON CLUSTER for a multi-REPLICA topology (keeper defaults on)', () => {
     const yaml = makeClickHouseCluster({ replicas: 2, storage: BACKED_UP_S3 }).toYaml();
-    expect(yaml).toContain("ON CLUSTER '$CLICKHOUSE_CLUSTER'");
+    expect(yaml).toContain("ON CLUSTER '$CLUSTER_SQL'");
   });
 
   it('rejects a multi-shard backup with no keeper at CONSTRUCTION time', () => {

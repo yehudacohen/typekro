@@ -57,6 +57,7 @@ import type {
 import type { Enhanced } from '../../../core/types/index.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import type { ResolvedClickHouseS3Storage } from '../utils/s3-storage.js';
+import { assertClickHouseClusterName } from '../utils/validation.js';
 import {
   S3_ACCESS_KEY_ID_ENV,
   S3_SECRET_ACCESS_KEY_ENV,
@@ -107,18 +108,6 @@ export interface ClickHouseS3BackupCronJobConfig {
 export const BACKUP_CLUSTER_ENV = 'CLICKHOUSE_CLUSTER';
 
 /**
- * Characters allowed in a cluster name that is interpolated into SQL.
- *
- * The CHI cluster name is a Kubernetes-ish identifier in every path that
- * produces one, so this is not a restriction in practice — it exists so the
- * generated statement can never be turned into extra SQL by a quote in the
- * name. Checked only when the value is a concrete string: in KRO mode
- * `spec.clusterName` arrives as a schema reference and is validated by the
- * operator instead.
- */
-const CLUSTER_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
-
-/**
  * Shell script for the backup step.
  *
  * `set -eu` plus an explicit `--query` exit code means a failed BACKUP fails
@@ -129,9 +118,14 @@ function backupScript(onCluster: boolean): string {
   // `ON CLUSTER '<name>'` fans the statement out to every host of the cluster
   // and coordinates them into ONE backup through Keeper. Without it the
   // connected host backs up only its own shard — see the module doc.
-  const onClusterClause = onCluster ? ` ON CLUSTER '$${BACKUP_CLUSTER_ENV}'` : '';
+  //
+  // The clause interpolates `$CLUSTER_SQL`, not the raw env var: see
+  // `clusterNameGuard()` for why the value is re-checked and re-escaped inside
+  // the container even though it is validated on the way in.
+  const onClusterClause = onCluster ? " ON CLUSTER '$CLUSTER_SQL'" : '';
   return [
     'set -eu',
+    ...(onCluster ? clusterNameGuard() : []),
     'NAME="$(date -u +%Y%m%d%H%M%S)"',
     onCluster
       ? 'echo "Backing up database $CLICKHOUSE_DATABASE on cluster' +
@@ -140,15 +134,54 @@ function backupScript(onCluster: boolean): string {
     // The destination credentials come from the server's `<s3>` config section
     // (rendered by the storage compiler and matched by endpoint prefix), so the
     // statement itself carries none — nothing sensitive reaches query_log.
-    // The database name is validated as a bare SQL identifier at resolve time
-    // and the cluster name against CLUSTER_NAME_PATTERN, so neither needs
-    // quoting beyond the SQL string literal the cluster name sits in.
+    // The database name is validated as a bare SQL identifier at resolve time;
+    // the cluster name is checked and escaped by the guard above.
     'clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT"' +
       ' --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD"' +
       ` --query "BACKUP DATABASE $CLICKHOUSE_DATABASE${onClusterClause} TO` +
       " S3('$BACKUP_ENDPOINT$NAME')\"",
     'echo "Backup $NAME complete"',
   ].join('\n');
+}
+
+/**
+ * Re-validate and escape the `ON CLUSTER` target inside the container.
+ *
+ * DEFENCE IN DEPTH, and the depth is real: the name is checked on the way in
+ * ({@link assertClickHouseClusterName}) only when it is a CONCRETE string, and
+ * carried into the RGD as a `pattern=` marker for the kro path — but the value
+ * that actually reaches this script is an environment variable, resolved by
+ * KRO at instance time and editable on the rendered CronJob afterwards. So the
+ * script asserts the same rule itself and REFUSES to run rather than issue a
+ * statement built from a name it does not recognise.
+ *
+ * The escape (doubling `'`, ClickHouse's own string-literal escape) is
+ * redundant after that check by construction. It is emitted anyway so the
+ * statement stays well-formed if the guard is ever relaxed — the failure mode
+ * of the pair is a refused backup, never an injected one.
+ */
+function clusterNameGuard(): string[] {
+  return [
+    `CLUSTER="$${BACKUP_CLUSTER_ENV}"`,
+    // POSIX `case` globs, matched against the WHOLE word: empty, any
+    // disallowed character (the `-` sits last in the bracket expression, where
+    // it is literal), a first character that is not a letter, or a trailing
+    // dash. Same rule as CLICKHOUSE_CLUSTER_NAME_PATTERN.
+    'case "$CLUSTER" in',
+    '  "" | *[!A-Za-z0-9-]* | [!A-Za-z]* | *-)',
+    `    echo "Refusing to back up: $${BACKUP_CLUSTER_ENV} is not a cluster identifier" >&2`,
+    '    exit 1 ;;',
+    'esac',
+    // The Altinity CRD caps `clusters[].name` at 15 characters; a longer value
+    // cannot name a real cluster, so it is a bug or an edit, not a backup.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: POSIX shell string length
+    'if [ "${#CLUSTER}" -gt 15 ]; then',
+    `  echo "Refusing to back up: $${BACKUP_CLUSTER_ENV} is longer than 15 characters" >&2`,
+    '  exit 1',
+    'fi',
+    // ClickHouse escapes a quote inside a string literal by doubling it.
+    'CLUSTER_SQL="$(printf \'%s\' "$CLUSTER" | sed "s/\'/\'\'/g")"',
+  ];
 }
 
 /**
@@ -296,15 +329,14 @@ export function clickHouseS3BackupCronJob(
         "`ON CLUSTER '<name>'` target of the BACKUP statement."
     );
   }
-  if (
-    onCluster &&
-    typeof config.clusterName === 'string' &&
-    !CLUSTER_NAME_PATTERN.test(config.clusterName)
-  ) {
-    throw new Error(
-      `clickHouseS3BackupCronJob: 'clusterName' must be a bare identifier (letters, digits, ` +
-        `underscores and dashes, not starting with a dash) because it is interpolated into the ` +
-        `ON CLUSTER clause — got ${JSON.stringify(config.clusterName)}.`
+  if (onCluster) {
+    // Concrete names only — a schema reference is validated by the generated
+    // KRO schema (`ClickHouseClusterNameSchema`) and, at run time, by the
+    // guard the script itself carries.
+    assertClickHouseClusterName(
+      'clickHouseS3BackupCronJob',
+      'clusterName',
+      config.clusterName
     );
   }
 

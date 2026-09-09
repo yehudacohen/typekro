@@ -45,7 +45,10 @@ import {
   type ResolvedClickHouseS3Storage,
   resolveClickHouseStorage,
 } from '../utils/s3-storage.js';
-import { assertPositiveIntegerCount } from '../utils/validation.js';
+import {
+  assertPositiveIntegerCount,
+  ClickHouseClusterNameSchema,
+} from '../utils/validation.js';
 
 /** Native (TCP) ClickHouse port — operator default ChDefaultTCPPortNumber. */
 export const CLICKHOUSE_NATIVE_PORT = 9000;
@@ -189,7 +192,13 @@ function buildSpecSchema(topology: ResolvedTopology) {
     name: 'string',
     namespace: 'string',
     version: 'string',
-    'clusterName?': 'string',
+    // NOT a bare `'string'`: this value reaches ClickHouse twice — as the
+    // cluster identity the operator concatenates into every generated object
+    // name, and as the `ON CLUSTER '<name>'` target the backup CronJob
+    // interpolates into SQL. In kro mode it is a per-INSTANCE value that no
+    // build-time check can see, so the constraint travels into the RGD as a
+    // `pattern=` marker and KRO rejects a bad instance before it is applied.
+    'clusterName?': ClickHouseClusterNameSchema,
     storage: {
       size: 'string',
       'storageClassName?': 'string',
