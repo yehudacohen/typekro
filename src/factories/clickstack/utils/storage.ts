@@ -102,16 +102,22 @@ export const CHART_CUSTOM_CONFIG_MOUNT_PATH = '/etc/otelcol-contrib/custom';
 /** Default size of the persistent-queue PersistentVolumeClaim. */
 export const DEFAULT_QUEUE_SIZE = '10Gi';
 
-/** Default access modes of the persistent-queue PersistentVolumeClaim. */
-export const DEFAULT_QUEUE_ACCESS_MODES = ['ReadWriteOnce'] as const;
-
 /**
- * Access modes that let more than one collector Pod mount the queue at once.
+ * Access modes of the persistent-queue PersistentVolumeClaim — not an option.
  *
- * `ReadWriteOncePod` is deliberately absent: it is STRICTER than
- * `ReadWriteOnce` (one Pod, not one node), so it never permits extra replicas.
+ * `ReadWriteMany` used to be selectable, on the theory that a shared volume
+ * would let several collector replicas run off one queue directory. It does
+ * not, and the volume was never the binding constraint: the OTel `file_storage`
+ * extension stores the queue in a bbolt database, and bbolt takes an EXCLUSIVE
+ * FILE LOCK on open (the extension's own README says a single collector
+ * instance per directory; collector-contrib issue #5894 is the second instance
+ * hanging on that lock). Two replicas pointed at one directory therefore either
+ * block forever or, if the lock is lost across a node boundary the way a
+ * network filesystem can lose it, corrupt the database. Offering RWX advertised
+ * a multi-replica queue that cannot exist, so the knob is gone and the claim is
+ * always `ReadWriteOnce`.
  */
-const SHAREABLE_QUEUE_ACCESS_MODES: readonly string[] = ['ReadWriteMany'];
+export const QUEUE_ACCESS_MODES = ['ReadWriteOnce'] as const;
 
 /** Name suffix of the queue PersistentVolumeClaim (and its resource id). */
 export const QUEUE_CLAIM_NAME_SUFFIX = '-otel-queue';
@@ -295,12 +301,8 @@ export interface ResolvedClickStackStorage {
     /** PVC size — always present: there is no ephemeral fallback. */
     readonly size: string;
     readonly storageClassName?: string;
+    /** Always {@link QUEUE_ACCESS_MODES} — see the constant for why. */
     readonly accessModes: readonly string[];
-    /**
-     * True when {@link accessModes} lets more than one collector Pod mount the
-     * claim. False pins the collector Deployment to one replica.
-     */
-    readonly shared: boolean;
     readonly exporterName: string;
     readonly extensions: readonly string[];
   };
@@ -390,14 +392,6 @@ export function resolveClickStackStorage(
   }
 
   const queue = options?.persistentQueue;
-  if (queue?.accessModes !== undefined && queue.accessModes.length === 0) {
-    throw new Error(
-      `${context}: 'storage.persistentQueue.accessModes' must list at least one access mode ` +
-        `(omit it for ${JSON.stringify(DEFAULT_QUEUE_ACCESS_MODES[0])}).`
-    );
-  }
-  const accessModes =
-    queue?.accessModes !== undefined ? [...queue.accessModes] : [...DEFAULT_QUEUE_ACCESS_MODES];
 
   return {
     mode,
@@ -416,8 +410,7 @@ export function resolveClickStackStorage(
         ...(queue.storageClassName !== undefined && {
           storageClassName: queue.storageClassName,
         }),
-        accessModes,
-        shared: accessModes.some((accessMode) => SHAREABLE_QUEUE_ACCESS_MODES.includes(accessMode)),
+        accessModes: [...QUEUE_ACCESS_MODES],
         exporterName: queue.exporterName ?? DEFAULT_QUEUE_EXPORTER_NAME,
         extensions: queue.extensions ?? DEFAULT_QUEUE_EXTENSIONS,
       },
@@ -426,35 +419,53 @@ export function resolveClickStackStorage(
 }
 
 /**
- * Reject a collector replica count the queue's access modes cannot support.
+ * Reject more than one gateway collector replica alongside a persistent queue.
  *
- * The gateway collector is a Deployment sharing ONE claim, so with
- * `ReadWriteOnce` (the default) more than one replica is not a degraded
- * configuration — it is a wedged one: the extra Pods stay `Pending` on
- * `Multi-Attach`, or, worse, land on the same node and two collectors write
- * the same `file_storage` directory. Fail at construction with the fix in the
- * message instead.
+ * UNCONDITIONAL: `persistentQueue` means exactly one collector replica, and no
+ * volume choice changes that. The `file_storage` extension keeps the queue in a
+ * bbolt database, and bbolt takes an EXCLUSIVE FILE LOCK for the lifetime of
+ * the handle — the extension's README is explicit that one directory serves one
+ * collector instance, and collector-contrib issue #5894 is the report of the
+ * second instance hanging on that lock. So a second replica either blocks
+ * forever on `Open` or, where the lock does not hold across a node boundary,
+ * writes the same pages as the first.
+ *
+ * The claim's `ReadWriteOnce` mode is a second, weaker line of defence (extra
+ * Pods on other nodes stay `Pending` on `Multi-Attach`), not the reason.
+ * `ReadWriteMany` was previously accepted as a way to lift this guard; it is
+ * gone, because a shared filesystem hands both replicas the same locked
+ * database rather than giving each its own.
+ *
+ * PER-REPLICA STORAGE IS THE REAL ALTERNATIVE, and it is not modelled here:
+ * it needs the upstream chart's `mode: statefulset` with `volumeClaimTemplates`
+ * so every replica gets its OWN queue directory. This composition renders the
+ * gateway as the chart's default Deployment and mounts one standalone claim, so
+ * the error names that path as future work rather than pretending it exists.
  *
  * @param context - Entry point name for the error message
  * @param resolved - Resolved storage options
  * @param replicaCount - Collector replica count from the build-time chart
  *   values, when one was set
- * @throws Error when several replicas would share a non-shareable claim
+ * @throws Error when a persistent queue is requested with more than one replica
  */
 export function assertQueueReplicaCompatible(
   context: string,
   resolved: ResolvedClickStackStorage,
   replicaCount: unknown
 ): void {
-  const queue = resolved.persistentQueue;
-  if (queue === undefined || queue.shared) return;
+  if (resolved.persistentQueue === undefined) return;
   if (typeof replicaCount !== 'number' || replicaCount <= 1) return;
   throw new Error(
-    `${context}: the persistent sending queue is backed by a single ` +
-      `${queue.accessModes.join('/')} PersistentVolumeClaim, so the gateway collector must run ` +
-      `one replica — got values['otel-collector'].replicaCount = ${replicaCount}. Either drop ` +
-      `to one replica, or set storage.persistentQueue.accessModes: ['ReadWriteMany'] with a ` +
-      `storage class that supports it so every replica can mount the same queue directory.`
+    `${context}: 'storage.persistentQueue' requires exactly ONE gateway collector replica — ` +
+      `got values['otel-collector'].replicaCount = ${replicaCount}. The queue is a bbolt ` +
+      `database owned by the OTel 'file_storage' extension, and bbolt holds an exclusive file ` +
+      `lock on it: a second collector opening the same database blocks on that lock ` +
+      `(opentelemetry-collector-contrib issue #5894, and the filestorage README's "only one ` +
+      `collector instance per directory"), and loses the queue's integrity if the lock is not ` +
+      `honoured across nodes. A shared ReadWriteMany volume does NOT help — it hands both ` +
+      `replicas the same locked database. Drop to one replica. Giving every replica its own ` +
+      `queue would need the chart's 'mode: statefulset' with volumeClaimTemplates, which this ` +
+      `composition does not model today.`
   );
 }
 
@@ -587,11 +598,11 @@ export function renderPersistentQueueConfig(
  * that owns it, so an ephemeral claim would be destroyed by exactly the
  * collector restart the queue exists to survive.
  *
- * With a non-shareable access mode the collector is also PINNED to one
- * replica, because one `ReadWriteOnce` claim cannot back a multi-replica
- * Deployment. A build-time `replicaCount` above 1 never reaches this point —
- * {@link assertQueueReplicaCompatible} rejects it at construction — so the pin
- * only makes the single-replica guarantee explicit against later values drift.
+ * The collector is also PINNED to one replica, unconditionally: the queue is a
+ * bbolt database under an exclusive file lock, so a second replica cannot open
+ * it at all — see {@link assertQueueReplicaCompatible}, which rejects a
+ * build-time `replicaCount` above 1 at construction. The pin makes that
+ * guarantee explicit in the rendered values against later drift.
  *
  * ⚠️ THE CHART'S OWN `custom-config` VOLUME IS RE-EMITTED HERE, and must be:
  * Helm REPLACES a list override instead of appending to it, and these are the
@@ -629,7 +640,8 @@ export function renderPersistentQueueValues(
         },
         { name: QUEUE_VOLUME_NAME, mountPath: queue.directory },
       ],
-      ...(queue.shared ? {} : { replicaCount: 1 }),
+      // Always pinned: the queue's bbolt database admits exactly one writer.
+      replicaCount: 1,
     },
   };
 }

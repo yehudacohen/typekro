@@ -229,6 +229,17 @@ export interface ClickStackRetentionOptions {
  * `claimName` — never an `emptyDir` or a generic ephemeral volume, both of
  * which Kubernetes deletes with the Pod.
  *
+ * ⚠️ EXACTLY ONE GATEWAY COLLECTOR REPLICA. The queue is a bbolt database and
+ * the `file_storage` extension holds an exclusive file lock on it, so a second
+ * collector opening the same directory blocks on that lock
+ * (opentelemetry-collector-contrib issue #5894). A build-time
+ * `values['otel-collector'].replicaCount` above 1 is REJECTED at construction,
+ * and the rendered values pin `replicaCount: 1`. There is deliberately no
+ * shared-volume escape hatch: `ReadWriteMany` would hand every replica the
+ * same locked database. Per-replica queues would need the chart's
+ * `mode: statefulset` with `volumeClaimTemplates`, which this composition does
+ * not model today.
+ *
  * ⚠️ NOT VERIFIED AGAINST A LIVE CHART RENDER. This is emitted through the
  * chart's supported `global.otelCollector.customConfig` merge seam, and a YAML
  * list in that overlay REPLACES the supervisor's own list rather than appending
@@ -258,18 +269,6 @@ export interface ClickStackPersistentQueueOptions {
   size?: string;
   /** StorageClass for the queue PVC (cluster default when omitted). */
   storageClassName?: string;
-  /**
-   * Access modes for the queue PVC (default: `['ReadWriteOnce']`).
-   *
-   * The gateway collector is a **Deployment**, so a `ReadWriteOnce` claim can
-   * only be mounted by Pods on one node: the collector is pinned to
-   * `replicaCount: 1`, and a build-time
-   * `values['otel-collector'].replicaCount` above 1 is REJECTED at
-   * construction. Declare `['ReadWriteMany']` (with a storage class that
-   * supports it) to run several collector replicas off one shared queue
-   * directory.
-   */
-  accessModes?: readonly string[];
   /** Exporter whose `sending_queue` is switched to file storage. */
   exporterName?: string;
   /**

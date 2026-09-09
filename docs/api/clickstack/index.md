@@ -243,26 +243,43 @@ That volume is a **standalone `PersistentVolumeClaim` owned by the composition**
 so either would be destroyed by exactly the collector restart the queue exists to survive. There is
 no ephemeral fallback and no "omit `size`" path: `size` defaults to `'10Gi'`.
 
-`accessModes` defaults to `['ReadWriteOnce']`. Because the gateway collector is a **Deployment**
-sharing one claim, that pins it to `replicaCount: 1`, and a build-time
-`values['otel-collector'].replicaCount` above 1 is **rejected at construction**:
+#### The queue means exactly one gateway collector replica
+
+There is no access-mode knob and no shared-volume escape hatch, because the volume was never the
+binding constraint. The `file_storage` extension keeps the queue in a
+[bbolt](https://github.com/etcd-io/bbolt) database, and bbolt takes an **exclusive file lock** for
+the lifetime of the handle — the extension's own README states one collector instance per
+directory, and
+[collector-contrib#5894](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/5894)
+is the report of the second instance hanging on that lock. A `ReadWriteMany` volume does not fix
+that: it hands both replicas the *same* locked database, so it would only trade a `Multi-Attach`
+failure for a blocked collector or a corrupt queue.
+
+So a build-time `values['otel-collector'].replicaCount` above 1 is **rejected at construction**,
+and the rendered chart values pin `replicaCount: 1`. The claim is always `ReadWriteOnce`, which
+stops a second Pod on another node from even attaching.
 
 ```typescript
-// throws: one ReadWriteOnce claim cannot back a multi-replica Deployment
+// throws: the queue is a bbolt database under an exclusive lock — one replica
 makeClickstackBootstrap({
   storage: { mode: 's3', persistentQueue: { enabled: true } },
   values: { 'otel-collector': { replicaCount: 3 } },
 });
 
-// correct: every replica can mount the same queue directory
+// correct
 makeClickstackBootstrap({
-  storage: {
-    mode: 's3',
-    persistentQueue: { enabled: true, accessModes: ['ReadWriteMany'], storageClassName: 'efs-sc' },
-  },
-  values: { 'otel-collector': { replicaCount: 3 } },
+  storage: { mode: 's3', persistentQueue: { enabled: true } },
+  values: { 'otel-collector': { replicaCount: 1 } },
 });
 ```
+
+::: info Future path: per-replica queues
+Running several collectors each with their **own** queue is a real design, and a different one: it
+needs the upstream chart's `mode: statefulset` with `volumeClaimTemplates`, so every replica gets a
+private directory. This composition renders the gateway as the chart's default Deployment mounting
+one standalone claim, so that shape is not modelled today — the construction error names it rather
+than leaving a shared-volume option that cannot deliver it.
+:::
 
 The HelmRelease depends on the claim, so it exists before the collector's first Pod. The claim is
 treated as ready while `Pending`, because a `WaitForFirstConsumer` StorageClass (the common default)

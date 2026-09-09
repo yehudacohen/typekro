@@ -656,10 +656,10 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
  * Resolve the ClickHouse-storage half of a build, with the queue's
  * replica constraint checked against the build-time chart values.
  *
- * The persistent queue is ONE PersistentVolumeClaim shared by the collector
- * Deployment, so a `ReadWriteOnce` claim and `replicaCount > 1` cannot both be
- * honoured — that combination is rejected at construction rather than
- * deploying a Deployment whose extra Pods wedge on `Multi-Attach`.
+ * The persistent queue is ONE bbolt database under an exclusive file lock, so
+ * `persistentQueue` and `replicaCount > 1` cannot both be honoured — that
+ * combination is rejected at construction rather than deploying a second
+ * collector that blocks on the lock (or wedges on `Multi-Attach` first).
  */
 function resolveClickHouseStorageForBuild(
   options: Pick<ClickStackInternalMongoBuildOptions, 'storage' | 'values'>

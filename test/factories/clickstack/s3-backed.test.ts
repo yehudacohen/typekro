@@ -390,25 +390,32 @@ describe('the persistent queue outlives the collector Pod', () => {
     });
   });
 
-  it('pins the collector to one replica for a ReadWriteOnce claim', () => {
-    const rwo = renderPersistentQueueValues(resolveQueue({}), 'c-otel-queue');
-    expect((rwo['otel-collector'] as Record<string, unknown>).replicaCount).toBe(1);
+  it('pins the collector to one replica, unconditionally', () => {
+    // Not a property of the volume: the queue is a bbolt database under an
+    // exclusive file lock, so there is no configuration in which a second
+    // collector may open it.
+    const values = renderPersistentQueueValues(resolveQueue({}), 'c-otel-queue');
+    expect((values['otel-collector'] as Record<string, unknown>).replicaCount).toBe(1);
+    expect(
+      (
+        renderPersistentQueueValues(
+          resolveQueue({ size: '40Gi', storageClassName: 'gp3' }),
+          'c-otel-queue'
+        )['otel-collector'] as Record<string, unknown>
+      ).replicaCount
+    ).toBe(1);
   });
 
-  it('leaves the replica count alone for a shareable (RWX) claim', () => {
-    const shared = resolveQueue({ accessModes: ['ReadWriteMany'], storageClassName: 'efs-sc' });
-    expect(shared.shared).toBe(true);
-    const values = renderPersistentQueueValues(shared, 'c-otel-queue');
-    expect((values['otel-collector'] as Record<string, unknown>).replicaCount).toBeUndefined();
-    expect(renderPersistentQueueClaimSpec(shared).accessModes).toEqual(['ReadWriteMany']);
-  });
-
-  it('treats ReadWriteOncePod as NOT shareable — it is stricter than RWO', () => {
-    expect(resolveQueue({ accessModes: ['ReadWriteOncePod'] }).shared).toBe(false);
-  });
-
-  it('rejects an empty access-mode list', () => {
-    expect(() => resolveQueue({ accessModes: [] })).toThrow(/at least one access mode/);
+  it('offers NO access-mode knob — the claim is always ReadWriteOnce', () => {
+    // The RWX escape hatch is gone: a shared filesystem hands every replica
+    // the same locked bbolt database, so it never bought multi-replica ingest.
+    expect(resolveQueue({}).accessModes).toEqual(['ReadWriteOnce']);
+    // An accessModes value is not part of the option type any more, and is
+    // ignored rather than honoured if one is smuggled through at runtime.
+    expect(resolveQueue({ accessModes: ['ReadWriteMany'] }).accessModes).toEqual(['ReadWriteOnce']);
+    expect(renderPersistentQueueClaimSpec(resolveQueue({})).accessModes).toEqual([
+      'ReadWriteOnce',
+    ]);
   });
 
   it('derives the claim name from the release name, for mount and claim alike', () => {
@@ -514,33 +521,72 @@ describe('makeClickstackBootstrap({ storage })', () => {
     expect(yaml).not.toContain('-otel-queue');
   });
 
-  it('rejects several collector replicas on a ReadWriteOnce queue at CONSTRUCTION', () => {
-    // One RWO claim cannot back a multi-replica Deployment: the extra Pods
-    // would wedge on Multi-Attach, or two collectors would write the same
-    // file_storage directory.
-    expect(() =>
+  it('rejects several collector replicas alongside the queue at CONSTRUCTION', () => {
+    // bbolt takes an exclusive file lock, so a second collector cannot open
+    // the queue database at all — this is not a volume-mode trade-off.
+    const build = () =>
       makeClickstackBootstrap({
         name: 'clickstack-s3-queue-replicas',
         kind: 'ClickStackS3QueueReplicas',
         storage: { mode: 's3', persistentQueue: { enabled: true } },
         values: { 'otel-collector': { replicaCount: 3 } },
-      })
-    ).toThrow(/must run\s+one replica|must run one replica/);
+      });
+    expect(build).toThrow(/requires exactly ONE gateway collector replica/);
+    // The message has to explain WHY, refuse the shared-volume workaround, and
+    // name the path that would actually give every replica its own queue.
+    expect(build).toThrow(/bbolt/);
+    expect(build).toThrow(/exclusive file lock/);
+    expect(build).toThrow(/#5894/);
+    expect(build).toThrow(/ReadWriteMany volume does NOT help/);
+    expect(build).toThrow(/mode: statefulset/);
+    expect(build).toThrow(/volumeClaimTemplates/);
   });
 
-  it('allows several collector replicas once the queue claim is ReadWriteMany', () => {
-    const bootstrap = makeClickstackBootstrap({
-      name: 'clickstack-s3-queue-rwx',
-      kind: 'ClickStackS3QueueRwx',
-      storage: {
-        mode: 's3',
-        persistentQueue: { enabled: true, accessModes: ['ReadWriteMany'], storageClassName: 'efs' },
-      },
-      values: { 'otel-collector': { replicaCount: 3 } },
-    });
-    const yaml = bootstrap.toYaml();
-    expect(yaml).toContain('ReadWriteMany');
-    expect(yaml).toContain('replicaCount: 3');
+  it('has no shared-volume escape hatch that lifts the replica guard', () => {
+    // Previously `accessModes: ['ReadWriteMany']` lifted the guard. It is not
+    // an option any more, and smuggling one through changes nothing.
+    expect(() =>
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-queue-rwx',
+        kind: 'ClickStackS3QueueRwx',
+        storage: {
+          mode: 's3',
+          persistentQueue: {
+            enabled: true,
+            storageClassName: 'efs',
+            accessModes: ['ReadWriteMany'],
+          } as never,
+        },
+        values: { 'otel-collector': { replicaCount: 3 } },
+      })
+    ).toThrow(/requires exactly ONE gateway collector replica/);
+  });
+
+  it('renders the claim, the claimName mount and the chart custom-config mount on RWO', () => {
+    // The single-replica path is the ONLY path now, so it carries everything
+    // the previous round fixed: a real claim, mounted by claimName, next to
+    // the chart's own custom-config volume (Helm replaces list overrides).
+    const yaml = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-single',
+      kind: 'ClickStackS3QueueSingle',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+      values: { 'otel-collector': { replicaCount: 1 } },
+    }).toYaml();
+
+    expect(yaml).toContain('kind: PersistentVolumeClaim');
+    expect(yaml).toContain('ReadWriteOnce');
+    expect(yaml).not.toContain('ReadWriteMany');
+    // The claim name is the release name plus the suffix — a CEL expression
+    // in kro mode, so assert on the suffix and the mount, not the literal.
+    expect(yaml).toContain('-otel-queue');
+    expect(yaml).toContain('claimName: ${string(schema.spec.name)}-otel-queue');
+    expect(yaml).toContain('replicaCount: 1');
+    // The chart's own mount survives next to the queue's — dropping it leaves
+    // the OpAMP supervisor unable to read custom.config.yaml.
+    expect(yaml).toContain('custom-config');
+    expect(yaml).toContain('clickstack-otel-custom-config');
+    expect(yaml).toContain('/etc/otelcol-contrib/custom');
+    expect(yaml).not.toContain('emptyDir');
   });
 
   it('does not constrain replicas when no queue is requested', () => {

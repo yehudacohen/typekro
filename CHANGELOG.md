@@ -58,10 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   telemetry. That queue is backed by a standalone PersistentVolumeClaim owned by
   the composition and mounted by `claimName` — never an `emptyDir` or a generic
   ephemeral volume, both of which Kubernetes deletes together with the collector
-  Pod. `accessModes` defaults to `['ReadWriteOnce']`, which pins the collector
-  Deployment to one replica and rejects a build-time
-  `values['otel-collector'].replicaCount` above 1; declare `['ReadWriteMany']`
-  to run several replicas off one shared queue directory. The queue's chart
+  Pod. The queue means exactly ONE gateway collector replica and there is no
+  volume option that changes it: `file_storage` keeps the queue in a bbolt
+  database under an exclusive file lock, so a second collector opening the same
+  directory blocks on that lock rather than sharing the queue. A build-time
+  `values['otel-collector'].replicaCount` above 1 is rejected at construction,
+  the rendered values pin `replicaCount: 1`, and the claim is always
+  `ReadWriteOnce`. Per-replica queues would need the chart's `mode: statefulset`
+  with `volumeClaimTemplates`, which this composition does not model today — the
+  error names that path rather than offering a shared volume that cannot
+  deliver it. The queue's chart
   values re-emit the gateway subchart's own `custom-config` volume alongside
   the claim, because Helm replaces a list-valued override and that mount is how
   the collector receives `global.otelCollector.customConfig` — without it the
