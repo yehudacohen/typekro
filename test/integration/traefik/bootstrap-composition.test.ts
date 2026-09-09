@@ -13,19 +13,26 @@
  *   `traefik`, `python:3.12-alpine` and `curlimages/curl` images.
  *
  * WHAT IS PROVEN END TO END
- * 1. `traefikBootstrap` deploys: the HelmRepository singleton, the release,
- *    the CRDs the chart carries, and the status contract hydrates.
- * 2. A typed `IngressRoute` routes a request to a Service and answers 200.
- * 3. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
+ * 1. `traefikBootstrap` deploys FROM SCRATCH into an empty namespace — the
+ *    reviewer's bar for #186: nothing in the graph may be read before it is
+ *    applied. The HelmRepository singleton, the release, the CRDs the chart
+ *    carries and the OWNED entrypoint Service all come up, and the status
+ *    contract hydrates.
+ * 2. The `loadBalancer` projection is exercised on the owned Service: kind has
+ *    no load-balancer controller, so the suite asserts the documented empty
+ *    result for `ClusterIP` and then writes an address onto the Service's
+ *    status subresource and re-reads the instance to prove the CEL actually
+ *    projects it.
+ * 3. A typed `IngressRoute` routes a request to a Service and answers 200.
+ * 4. `forwardAuth` denies: a request the stub authorizer rejects gets 403 and
  *    never reaches the upstream.
- * 4. `forwardAuth` propagates the principal/tier/customer headers it
+ * 5. `forwardAuth` propagates the principal/tier/customer headers it
  *    allowlists, and drops one the authorizer sends outside the allowlist.
- * 5. `rateLimit` answers 429 once the burst is spent.
+ * 6. `rateLimit` answers 429 once the burst is spent.
  *
- * The Service type is `ClusterIP`: kind has no load-balancer controller, and
- * the probes run inside the cluster. The status contract's `loadBalancer`
- * fields are therefore expected to be empty here — that is the documented
- * behavior for a non-LoadBalancer Service, and it is what this suite asserts.
+ * The Service type is `ClusterIP`: kind has no load-balancer controller, and a
+ * `LoadBalancer` Service is now part of the graph, so `waitForReady` would
+ * block on an address no controller is going to assign.
  *
  * The distributed (Redis-backed) rate limit is NOT exercised here: a single
  * Traefik replica makes the local counter sufficient, and standing up Valkey
@@ -75,7 +82,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        key = self.headers.get("x-example-api-key", "")
+        key = self.headers.get("x-edge-api-key", "")
         if key == "allow":
             self.send_response(200)
             self.send_header("X-Edge-Principal", "svc-integration")
@@ -106,11 +113,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         payload = json.dumps({
             "path": self.path,
-            "principal": self.headers.get("x-example-principal", ""),
-            "tier": self.headers.get("x-example-tier", ""),
-            "customer": self.headers.get("x-example-customer", ""),
-            "notAllowlisted": self.headers.get("x-example-not-allowlisted", ""),
-        }).encode()
+            "principal": self.headers.get("x-edge-principal", ""),
+            "tier": self.headers.get("x-edge-tier", ""),
+            "customer": self.headers.get("x-edge-customer", ""),
+            "notAllowlisted": self.headers.get("x-edge-not-allowlisted", ""),
+        }, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
@@ -124,7 +131,7 @@ HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 `;
 
 /** The edge policy for one API, expressed only with exported factories. */
-const costApiEdge = kubernetesComposition(
+const ordersApiEdge = kubernetesComposition(
   {
     name: 'traefik-e2e-edge',
     kind: 'TraefikE2eEdge',
@@ -143,7 +150,7 @@ const costApiEdge = kubernetesComposition(
       headers: {
         accessControlAllowOriginList: ['https://console.example.test'],
         accessControlAllowMethods: ['GET', 'OPTIONS'],
-        accessControlAllowHeaders: ['authorization', 'x-example-api-key'],
+        accessControlAllowHeaders: ['authorization', 'x-edge-api-key'],
         accessControlMaxAge: 600,
         addVaryHeader: true,
         frameDeny: true,
@@ -182,7 +189,17 @@ const costApiEdge = kubernetesComposition(
       name: spec.name,
       namespace: spec.namespace,
       spec: {
-        entryPoints: ['web'],
+        // `websecure`: the default composition redirects `web` permanently to
+        // `websecure`, so a functional probe has to speak TLS. No `secretName`
+        // — Traefik serves its built-in self-signed certificate, which the
+        // probes accept with `curl -k`.
+        entryPoints: ['websecure'],
+        tls: {},
+        // REQUIRED. The bootstrap sets `providers.kubernetesCRD.ingressClass`,
+        // and Traefik then processes only the CRDs whose class matches — an
+        // IngressRoute without it is silently ignored and the edge answers 404.
+        // That is what scopes a route to one of several Traefik installations.
+        ingressClassName: 'traefik',
         routes: [
           {
             match: 'PathPrefix(`/v1`)',
@@ -278,21 +295,26 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
   const appNs = `traefik-e2e-app-${runId}`;
   const traefikName = 'traefik';
   const routeName = 'orders-api';
+  const LOAD_BALANCER_HOSTNAME = 'edge.example.test';
   const namespaceLeases: TestNamespaceLease[] = [];
 
   let kubeConfig: k8s.KubeConfig;
   // The factory generics are inferred per-composition; the harness helpers
   // accept the structural `TestDeletableFactory` shape, which is what matters.
   let bootstrapFactory: ReturnType<typeof traefikBootstrap.factory> | undefined;
-  let edgeFactory: ReturnType<typeof costApiEdge.factory> | undefined;
+  let edgeFactory: ReturnType<typeof ordersApiEdge.factory> | undefined;
   let bootstrapDeployed = false;
   let edgeDeployed = false;
-  let entrypoint = '';
+  /** The plain-HTTP `web` entrypoint, which redirects to `websecure`. */
+  let webEntrypoint = '';
+  /** The TLS `websecure` entrypoint the routes are published on. */
+  let secureEntrypoint = '';
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
     namespaceLeases.push(await createTestNamespace(appNs, kubeConfig));
-    entrypoint = `http://${traefikName}.${traefikNs}.svc.cluster.local`;
+    webEntrypoint = `http://${traefikName}.${traefikNs}.svc.cluster.local`;
+    secureEntrypoint = `https://${traefikName}.${traefikNs}.svc.cluster.local`;
   });
 
   afterAll(async () => {
@@ -353,28 +375,41 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     expect(instance.status.failed).toBe(false);
     expect(instance.status.phase).toBe('Ready');
     expect(instance.status.serviceName).toBe(traefikName);
-    expect(instance.status.entrypoints).toEqual(['web', 'websecure']);
     // Documented behavior for a non-LoadBalancer Service: no address to report.
     expect(instance.status.loadBalancer.hostname).toBe('');
     expect(instance.status.loadBalancer.ip).toBe('');
   });
 
-  it('installs the Traefik CRDs from the same release', async () => {
-    const { createBunCompatibleCustomObjectsApi } = await import(
-      '../../../src/core/kubernetes/index.js'
-    );
-    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+  it('owns the entrypoint Service rather than letting the chart create it', async () => {
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const owned = await coreApi.readNamespacedService({
+      namespace: traefikNs,
+      name: traefikName,
+    });
 
-    // Listing a namespaced CRD kind proves the CRD is served.
-    for (const plural of ['ingressroutes', 'middlewares', 'tlsoptions', 'tlsstores']) {
-      const listed = await customApi.listNamespacedCustomObject({
-        group: 'traefik.io',
-        version: 'v1alpha1',
-        namespace: appNs,
-        plural,
-      });
-      expect(listed).toBeDefined();
-    }
+    // A chart-created Service carries `app.kubernetes.io/managed-by: Helm`;
+    // this one is a graph resource, so TypeKro owns it.
+    expect(owned.metadata?.labels?.['app.kubernetes.io/managed-by']).toBe('typekro');
+    expect(owned.spec?.selector).toEqual({
+      'app.kubernetes.io/name': 'traefik',
+      'app.kubernetes.io/instance': traefikName,
+    });
+
+    // Proof the selector is not merely self-consistent: it actually matches the
+    // pods the chart created.
+    const pods = await coreApi.listNamespacedPod({
+      namespace: traefikNs,
+      labelSelector: `app.kubernetes.io/name=traefik,app.kubernetes.io/instance=${traefikName}`,
+    });
+    expect(pods.items.length).toBeGreaterThan(0);
+
+    // And that traffic can reach them: the Service has ready endpoints.
+    const endpoints = await coreApi.readNamespacedEndpoints({
+      namespace: traefikNs,
+      name: traefikName,
+    });
+    const addresses = (endpoints.subsets ?? []).flatMap((subset) => subset.addresses ?? []);
+    expect(addresses.length).toBeGreaterThan(0);
   });
 
   it('does not expose the dashboard on the live deployment', async () => {
@@ -386,17 +421,17 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     const ports = (service.spec?.ports ?? []).map((port) => port.name);
 
     // The internal `traefik` entrypoint (which would serve the dashboard and
-    // the insecure API) is never published by the Service.
-    expect(ports).toContain('web');
-    expect(ports).toContain('websecure');
-    expect(ports).not.toContain('traefik');
+    // the insecure API) is never published by the Service. Now that TypeKro
+    // owns the Service, that port simply does not exist rather than depending
+    // on a chart value.
+    expect(ports).toEqual(['web', 'websecure']);
   });
 
   it('routes a request through the typed IngressRoute and answers 200', async () => {
     await installStub(appNs, 'authorizer', AUTHORIZER, kubeConfig);
     await installStub(appNs, 'upstream', UPSTREAM, kubeConfig);
 
-    edgeFactory = costApiEdge.factory('direct', {
+    edgeFactory = ordersApiEdge.factory('direct', {
       namespace: appNs,
       waitForReady: true,
       timeout: 300_000,
@@ -419,8 +454,8 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
           'sh',
           '-ec',
           `for attempt in $(seq 1 60); do ` +
-            `body=$(curl --silent --max-time 10 -o /dev/stdout -w '\\nHTTP:%{http_code}' ` +
-            `-H 'X-Edge-Api-Key: allow' ${entrypoint}/v1/costs); ` +
+            `body=$(curl --silent --insecure --max-time 10 -o /dev/stdout -w '\\nHTTP:%{http_code}' ` +
+            `-H 'X-Edge-Api-Key: allow' ${secureEntrypoint}/v1/orders); ` +
             `case "$body" in *HTTP:200*) echo "$body"; exit 0;; esac; ` +
             `sleep 2; done; ` +
             `echo "edge never answered 200: $body" >&2; exit 1`,
@@ -439,6 +474,31 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     expect(logs).toContain('"notAllowlisted":""');
   });
 
+  it('redirects the plain-HTTP entrypoint to websecure', async () => {
+    // `redirectWebToWebsecure` is on by default and is structural — the chart
+    // expresses "no redirect" by OMITTING the redirection block — so this is
+    // the only place the default is proven end to end.
+    const logs = await runTestPodAndReadLogs(
+      {
+        namespace: appNs,
+        name: `probe-redirect-${runId}`,
+        image: 'curlimages/curl:8.17.0',
+        command: [
+          'sh',
+          '-ec',
+          `curl --silent --insecure --max-time 10 -o /dev/null ` +
+            `-w 'HTTP:%{http_code} LOCATION:%{redirect_url}\\n' ` +
+            `${webEntrypoint}/v1/orders`,
+        ],
+        timeoutMs: 180_000,
+      },
+      kubeConfig
+    );
+
+    expect(logs).toContain('HTTP:301');
+    expect(logs).toContain('LOCATION:https://');
+  });
+
   it('denies an unauthorized request at the edge with 403', async () => {
     const logs = await runTestPodAndReadLogs(
       {
@@ -448,8 +508,8 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
         command: [
           'sh',
           '-ec',
-          `curl --silent --max-time 10 -o /dev/null -w 'HTTP:%{http_code}\\n' ` +
-            `-H 'X-Edge-Api-Key: deny' ${entrypoint}/v1/costs`,
+          `curl --silent --insecure --max-time 10 -o /dev/null -w 'HTTP:%{http_code}\\n' ` +
+            `-H 'X-Edge-Api-Key: deny' ${secureEntrypoint}/v1/orders`,
         ],
         timeoutMs: 180_000,
       },
@@ -471,8 +531,8 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
           // average 1/min with burst 2, keyed on the principal forwardAuth
           // injects: a short burst of identical requests must be throttled.
           `for attempt in $(seq 1 20); do ` +
-            `curl --silent --max-time 10 -o /dev/null -w '%{http_code}\\n' ` +
-            `-H 'X-Edge-Api-Key: allow' ${entrypoint}/v1/costs; ` +
+            `curl --silent --insecure --max-time 10 -o /dev/null -w '%{http_code}\\n' ` +
+            `-H 'X-Edge-Api-Key: allow' ${secureEntrypoint}/v1/orders; ` +
             `done`,
         ],
         timeoutMs: 180_000,
@@ -483,5 +543,65 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     const codes = logs.trim().split('\n');
     expect(codes).toContain('200');
     expect(codes).toContain('429');
+  });
+  it('projects a load-balancer address once one is assigned', async () => {
+    // The `loadBalancer` projection is the reason the entrypoint Service is a
+    // graph resource at all, so it is exercised rather than assumed. kind has
+    // no load-balancer controller, so the Service is switched to
+    // `LoadBalancer` and the address is written onto its status subresource
+    // the way a cloud controller would. (The API server REFUSES
+    // `status.loadBalancer.ingress` on a `ClusterIP` Service, so the switch is
+    // required, not cosmetic.) Everything else — the readiness evaluator, the
+    // guarded CEL and the direct-mode status hydration that evaluates it — is
+    // the real path. The empty arm of the projection is asserted on the
+    // ClusterIP deployment above.
+    const lbFactory = traefikBootstrap.factory('direct', {
+      namespace: 'flux-system',
+      waitForReady: false,
+      timeout: 300_000,
+      kubeConfig,
+    });
+    const lbSpec = {
+      name: traefikName,
+      namespace: traefikNs,
+      service: { type: 'LoadBalancer' as const },
+      replicas: 1,
+      providers: { crd: true },
+      accessLogs: true,
+      dashboard: false as const,
+    };
+
+    // First pass switches the Service to `LoadBalancer`; readiness is off
+    // because nothing on kind will ever assign it an address.
+    await lbFactory.deploy(lbSpec);
+
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const current = await coreApi.readNamespacedService({
+      namespace: traefikNs,
+      name: traefikName,
+    });
+    await coreApi.replaceNamespacedServiceStatus({
+      namespace: traefikNs,
+      name: traefikName,
+      body: {
+        ...current,
+        status: { loadBalancer: { ingress: [{ hostname: LOAD_BALANCER_HOSTNAME }] } },
+      },
+    });
+
+    // Second pass runs WITH readiness: the Service readiness evaluator now sees
+    // an address, so this also proves a LoadBalancer entrypoint Service is a
+    // real participant in `waitForReady` now that the composition owns it.
+    const readyFactory = traefikBootstrap.factory('direct', {
+      namespace: 'flux-system',
+      waitForReady: true,
+      timeout: 300_000,
+      kubeConfig,
+    });
+    const assigned = await readyFactory.deploy(lbSpec);
+    expect(assigned.status.loadBalancer.hostname).toBe(LOAD_BALANCER_HOSTNAME);
+    // The entry carries a hostname and no ip; the guarded CEL reports the
+    // absent sibling as '' rather than failing the whole status object.
+    expect(assigned.status.loadBalancer.ip).toBe('');
   });
 });
