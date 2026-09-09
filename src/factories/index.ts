@@ -35,6 +35,10 @@ export * as envoyAIGateway from './envoy-ai-gateway/index.js';
 // =============================================================================
 export * from './flux/index.js';
 // =============================================================================
+// GATEWAY API ECOSYSTEM (shared, vendor-neutral)
+// =============================================================================
+export * as gatewayApi from './gateway-api/index.js';
+// =============================================================================
 // HARBOR REGISTRY ECOSYSTEM
 // =============================================================================
 export * as harbor from './harbor/index.js';
@@ -96,6 +100,10 @@ export * as rook from './rook/index.js';
 // are intentionally NOT re-exported here. They are exported from the canonical
 // locations in src/index.ts to avoid duplicate export paths in IDE autocomplete.
 // Factories import them internally via ./shared.js.
+// =============================================================================
+// TRAEFIK ECOSYSTEM
+// =============================================================================
+export * as traefik from './traefik/index.js';
 // =============================================================================
 // SIMPLE NAMESPACE
 // =============================================================================

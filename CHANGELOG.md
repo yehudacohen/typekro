@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A Traefik v3 factory (`typekro/traefik`) that stands Traefik up as a cluster
+  edge and exposes its CRDs as typed factories. `traefikBootstrap` /
+  `makeTraefikBootstrap` own the install — a singleton `HelmRepository` for the
+  official chart, the `HelmRelease` (chart 41.5.0, Traefik `v3.7.13`, which
+  carries the `traefik.io/v1alpha1` CRDs in its own `crds/` directory so one
+  release installs both), an optional owned Namespace, and optional
+  cluster-default `TLSOption`/`TLSStore` resources. The status contract reports
+  `ready`/`failed`/`phase` from the release's Ready condition and
+  `loadBalancer.hostname`/`ip` from the entrypoint Service the composition
+  observes. Routing, TLS and upstream behavior are typed: `IngressRoute`,
+  `IngressRouteTCP`, `TraefikService`, `ServersTransport`, `TLSOption`,
+  `TLSStore`, and `Middleware` as a discriminated union over the whole OSS
+  middleware set — two middleware keys in one spec is a compile error and is
+  rejected before serialization. Typed builders carry the secure defaults for
+  the middlewares an edge always needs (`forwardAuth`, `rateLimit` with the
+  Redis backend, `inFlightReq`, `headers`, `redirectScheme`, `buffering`,
+  `chain`). Traefik CRDs publish no status subresource, so they register an
+  explicit always-ready evaluator rather than polling for conditions that never
+  arrive.
+- A shared, vendor-neutral Gateway API factory (`typekro/gateway-api`) holding
+  `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `ReferenceGrant` and
+  `BackendTLSPolicy` plus the upstream condition readiness evaluators
+  (`Accepted`, `Accepted`+`Programmed` for a Gateway, per-parent conditions for
+  routes, per-ancestor conditions scoped to a controller name for policies).
+  Traefik consumes it with `traefik.io/gateway-controller`, so a Traefik edge
+  and an Envoy AI Gateway can claim their own `GatewayClass` in one cluster.
+
 ### Changed
 
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
@@ -19,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The Secret-backed ClickStack variant omits credential values and default
   connection passwords from RGD instances and HelmRelease inline values while
   preserving direct/KRO parity.
+- The upstream Gateway API types and readiness evaluators that
+  `envoy-ai-gateway` owned now live in the shared `typekro/gateway-api` module
+  and are re-exported from `typekro/envoy-ai-gateway` unchanged. Every
+  previously exported symbol, its behavior, and its portable
+  readiness-strategy identifier are preserved, so serialized plans stay
+  resolvable. `GatewaySpec` and `BackendTLSPolicySpec` are correspondingly more
+  general (listener TLS, hostnames, allowed routes, non-Envoy target refs);
+  `envoy-ai-gateway`'s `GatewayClassSpec` keeps its controller name pinned as a
+  literal.
 - ClickStack composition variants now expose explicit `namespaceOwnership`,
   allowing parent deployment graphs to manage the workload Namespace without
   introducing a second owner for the same Kubernetes object.
