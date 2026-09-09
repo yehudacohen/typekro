@@ -20,6 +20,7 @@ import { createResource } from '../../shared.js';
 import {
   DEFAULT_TRAEFIK_CHART_NAME,
   DEFAULT_TRAEFIK_CHART_VERSION,
+  DEFAULT_TRAEFIK_CRDS_POLICY,
   DEFAULT_TRAEFIK_NAMESPACE,
   DEFAULT_TRAEFIK_REPOSITORY_NAME,
   DEFAULT_TRAEFIK_REPOSITORY_URL,
@@ -75,7 +76,9 @@ export function traefikHelmRepository(
  *
  * Chart 41.5.0 ships the `traefik.io/v1alpha1` CRDs in its own `crds/`
  * directory, so this single release installs both the CRDs and the proxy — no
- * separate `traefik-crds` release is needed.
+ * separate `traefik-crds` release is needed. Because Flux SKIPS `crds/` on
+ * upgrade by default, `install.crds` and `upgrade.crds` are both set from
+ * `config.crds` (default `CreateReplace`) so a chart bump moves the CRDs too.
  *
  * Values are passed through unchanged. Build them with
  * `mapTraefikConfigToHelmValues`, which applies the security pins from #172.
@@ -95,6 +98,12 @@ export function traefikHelmRelease(
   config: TraefikHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec<TraefikHelmValues>, HelmReleaseStatus> {
   const namespace = config.namespace ?? DEFAULT_FLUX_NAMESPACE;
+  // Flux's own defaults are `install.crds: Create` and `upgrade.crds: Skip`.
+  // `Skip` on upgrade is the dangerous half: the chart carries its CRDs in
+  // `crds/`, so a version bump would install a newer proxy against the CRD
+  // schemas the release was FIRST created with. Both actions are set from one
+  // policy so they cannot drift apart.
+  const crds = config.crds ?? DEFAULT_TRAEFIK_CRDS_POLICY;
   return createResource<HelmReleaseSpec<TraefikHelmValues>, HelmReleaseStatus>({
     ...(config.id ? { id: config.id } : {}),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -120,9 +129,11 @@ export function traefikHelmRelease(
       targetNamespace: config.targetNamespace ?? DEFAULT_TRAEFIK_NAMESPACE,
       install: {
         createNamespace: config.createNamespace ?? false,
+        crds,
         remediation: { retries: 3 },
       },
       upgrade: {
+        crds,
         remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
       },
       ...(config.values ? { values: config.values } : {}),

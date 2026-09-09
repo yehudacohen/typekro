@@ -44,8 +44,8 @@ const CONCRETE_SPEC: TraefikBootstrapConfig = {
     },
   },
   entrypoints: {
-    web: { exposedPort: 80, expose: true },
-    websecure: { exposedPort: 443, expose: true, readTimeout: '120s', writeTimeout: '120s' },
+    web: { exposedPort: 80 },
+    websecure: { exposedPort: 443, readTimeout: '120s', writeTimeout: '120s' },
   },
   providers: { crd: true, gatewayApi: true, kubernetesIngress: false },
   accessLogs: true,
@@ -120,19 +120,22 @@ describe('traefikBootstrap — direct mode', () => {
     const release = documents(yaml).find((document) => document.kind === 'HelmRelease');
     const values = (release?.spec as { values?: Record<string, unknown> }).values as {
       deployment?: { replicas?: number };
-      service?: { spec?: { type?: string }; annotations?: Record<string, string> };
+      service?: { enabled?: boolean };
       providers?: Record<string, { enabled?: boolean }>;
       accessLog?: { enabled?: boolean };
       tracing?: { otlp?: { enabled?: boolean; grpc?: { endpoint?: string } } };
       ports?: Record<string, { exposedPort?: number; transport?: Record<string, unknown> }>;
       fullnameOverride?: string;
+      nameOverride?: string;
+      instanceLabelOverride?: string;
     };
 
     expect(values.deployment?.replicas).toBe(3);
-    expect(values.service?.spec?.type).toBe('LoadBalancer');
-    expect(values.service?.annotations?.['service.beta.kubernetes.io/aws-load-balancer-type']).toBe(
-      'external'
-    );
+    // The entrypoint Service is a resource this factory owns, so the chart's
+    // own Service is off and its type/annotations are not chart values.
+    expect(values.service?.enabled).toBe(false);
+    expect(values.nameOverride).toBe('traefik');
+    expect(values.instanceLabelOverride).toBe('traefik');
     expect(values.providers?.kubernetesCRD?.enabled).toBe(true);
     expect(values.providers?.kubernetesGateway?.enabled).toBe(true);
     expect(values.providers?.kubernetesIngress?.enabled).toBe(false);
@@ -143,6 +146,40 @@ describe('traefikBootstrap — direct mode', () => {
     );
     expect(values.ports?.websecure?.exposedPort).toBe(443);
     expect(values.fullnameOverride).toBe('traefik');
+  });
+
+  it('owns the entrypoint Service with the concrete type and annotations', () => {
+    const yaml = traefikBootstrap
+      .factory('direct', { namespace: 'flux-system' })
+      .toYaml(CONCRETE_SPEC);
+    const owned = documents(yaml).find(
+      (document) => document.kind === 'Service' && document.metadata?.name === 'traefik'
+    );
+    const spec = owned?.spec as
+      | {
+          type?: string;
+          selector?: Record<string, string>;
+          ports?: { name?: string; port?: number; targetPort?: string; protocol?: string }[];
+        }
+      | undefined;
+
+    expect(owned?.metadata?.namespace).toBe('traefik');
+    expect(
+      (owned?.metadata as { annotations?: Record<string, string> } | undefined)?.annotations?.[
+        'service.beta.kubernetes.io/aws-load-balancer-type'
+      ]
+    ).toBe('external');
+    expect(spec?.type).toBe('LoadBalancer');
+    // Exactly the chart's own pod selector, both halves of which the values
+    // mapper pins (`nameOverride`, `instanceLabelOverride`).
+    expect(spec?.selector).toEqual({
+      'app.kubernetes.io/name': 'traefik',
+      'app.kubernetes.io/instance': 'traefik',
+    });
+    expect(spec?.ports).toEqual([
+      { name: 'web', port: 80, targetPort: 'web', protocol: 'TCP' },
+      { name: 'websecure', port: 443, targetPort: 'websecure', protocol: 'TCP' },
+    ]);
   });
 
   it('disables OTLP export when no endpoint is given', () => {

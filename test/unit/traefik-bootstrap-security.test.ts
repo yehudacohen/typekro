@@ -30,6 +30,7 @@ import {
   mapTraefikConfigToHelmValues,
   TRAEFIK_CONTAINER_SECURITY_CONTEXT,
   TRAEFIK_POD_SECURITY_CONTEXT,
+  traefikEntrypointServiceType,
   validateTraefikHelmValues,
 } from '../../src/factories/traefik/utils/helm-values-mapper.js';
 
@@ -194,6 +195,22 @@ describe('Traefik runs non-root with a read-only root filesystem', () => {
     expect(values.ingressClass?.isDefaultClass).toBe(false);
   });
 
+  it('never publishes the internal entrypoint on the Service it owns', () => {
+    // Stronger than the chart value above: the port simply does not exist on
+    // the owned Service, so no chart value can reintroduce it.
+    const yaml = traefikBootstrap
+      .factory('direct', { namespace: 'flux-system' })
+      .toYaml({ name: 'traefik', namespace: 'traefik' });
+    const owned = loadAll(yaml).find(
+      (document): document is { kind?: string; spec?: { ports?: { name?: string }[] } } =>
+        document !== null &&
+        typeof document === 'object' &&
+        (document as { kind?: string }).kind === 'Service'
+    );
+
+    expect((owned?.spec?.ports ?? []).map((port) => port.name)).toEqual(['web', 'websecure']);
+  });
+
   it('disables the chart phone-home defaults', () => {
     const values = mapTraefikConfigToHelmValues({ name: 'traefik' });
 
@@ -229,15 +246,26 @@ describe('validateTraefikHelmValues', () => {
   });
 
   it('warns about a single replica behind a LoadBalancer', () => {
-    const warnings = validateTraefikHelmValues(
-      mapTraefikConfigToHelmValues({
-        name: 'traefik',
-        replicas: 1,
-        service: { type: 'LoadBalancer' },
-      })
-    );
+    const config = {
+      name: 'traefik',
+      replicas: 1,
+      service: { type: 'LoadBalancer' as const },
+    };
+    // The Service type is no longer a chart value — this factory owns the
+    // Service — so it is supplied as validation context.
+    const warnings = validateTraefikHelmValues(mapTraefikConfigToHelmValues(config), {
+      serviceType: traefikEntrypointServiceType(config),
+    });
 
     expect(warnings.some((warning) => warning.includes('single Traefik replica'))).toBe(true);
+  });
+
+  it('warns when the chart has been handed the entrypoint Service back', () => {
+    const warnings = validateTraefikHelmValues({ service: { enabled: true } });
+
+    expect(
+      warnings.some((warning) => warning.includes('creating its own entrypoint Service'))
+    ).toBe(true);
   });
 });
 

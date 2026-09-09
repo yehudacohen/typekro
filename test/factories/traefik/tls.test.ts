@@ -175,7 +175,7 @@ describe('cert-manager → TLSStore → IngressRoute composition pattern', () =>
               store: { name: 'default', namespace: NAMESPACE },
             },
           },
-          id: 'costApiRoute',
+          id: 'ordersApiRoute',
         });
         route.dependsOn(store);
         route.dependsOn(option);

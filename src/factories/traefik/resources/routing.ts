@@ -31,6 +31,12 @@ export type TraefikNoStatus = Record<string, never>;
  * The HTTP router: it binds rule expressions on one or more entrypoints to
  * backend services, with an ordered middleware chain and optional TLS.
  *
+ * Set `ingressClassName` whenever the installation sets
+ * `providers.kubernetesCRD.ingressClass` — `traefikBootstrap` does, from
+ * `spec.ingressClass`. Traefik then processes only the CRDs whose class
+ * matches, which is what keeps two installations from stealing each other's
+ * routes; a route without it is silently ignored and the edge answers `404`.
+ *
  * @example An authenticated, rate-limited API route terminating TLS
  * ```typescript
  * traefikIngressRoute({
@@ -38,6 +44,7 @@ export type TraefikNoStatus = Record<string, never>;
  *   namespace: 'edge',
  *   spec: {
  *     entryPoints: ['websecure'],
+ *     ingressClassName: 'traefik',
  *     routes: [
  *       {
  *         match: 'Host(`api.example.com`) && PathPrefix(`/v1`)',
@@ -48,7 +55,7 @@ export type TraefikNoStatus = Record<string, never>;
  *     ],
  *     tls: { secretName: 'orders-api-tls' },
  *   },
- *   id: 'costApiRoute',
+ *   id: 'ordersApiRoute',
  * });
  * ```
  */
@@ -109,7 +116,7 @@ export function traefikIngressRouteTCP(
  *       ],
  *     },
  *   },
- *   id: 'costApiCanary',
+ *   id: 'ordersApiCanary',
  * });
  * ```
  */
@@ -136,7 +143,7 @@ export function traefikService(
  *   name: 'orders-api-slow',
  *   namespace: 'edge',
  *   spec: { forwardingTimeouts: { responseHeaderTimeout: '120s', idleConnTimeout: '150s' } },
- *   id: 'costApiTransport',
+ *   id: 'ordersApiTransport',
  * });
  * ```
  */

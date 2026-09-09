@@ -42,6 +42,28 @@ export const TRAEFIK_WEBSECURE_ENTRYPOINT = 'websecure';
 /** Internal entrypoint serving `/ping`, metrics and (when enabled) the dashboard. */
 export const TRAEFIK_INTERNAL_ENTRYPOINT = 'traefik';
 
+/**
+ * `app.kubernetes.io/name` the chart stamps on the Traefik pods.
+ *
+ * The chart derives this label from `nameOverride`, defaulting to the chart
+ * name. The values mapper pins `nameOverride` to this constant so the
+ * entrypoint Service this factory OWNS can select the chart's pods by an
+ * exactly known label rather than by whatever the chart's template computed.
+ */
+export const TRAEFIK_POD_NAME_LABEL_VALUE = 'traefik';
+
+/**
+ * Flux CRD policy this factory applies to install AND upgrade.
+ *
+ * Chart 41.5.0 ships the `traefik.io/v1alpha1` CRDs in its own `crds/`
+ * directory, and the helm-controller SKIPS `crds/` on upgrade by default — so a
+ * chart bump would otherwise keep serving the CRD schemas the release was
+ * first installed with.
+ *
+ * @see https://fluxcd.io/flux/components/helm/api/v2/
+ */
+export const DEFAULT_TRAEFIK_CRDS_POLICY = 'CreateReplace';
+
 /** Externally published port of the `web` entrypoint. */
 export const DEFAULT_TRAEFIK_WEB_PORT = 80;
 /** Externally published port of the `websecure` entrypoint. */

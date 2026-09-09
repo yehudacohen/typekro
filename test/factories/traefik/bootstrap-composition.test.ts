@@ -10,7 +10,9 @@
  *    WHICH resources exist),
  *  - the singleton-owned HelmRepository and the release's sourceRef,
  *  - the pinned chart and the CRD-carrying single release,
- *  - the status contract, including the observed entrypoint Service.
+ *  - the CRD policy applied to install AND upgrade,
+ *  - the status contract, including the OWNED entrypoint Service, and the
+ *    absence of any external reference to a Kubernetes API object.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { loadAll } from 'js-yaml';
@@ -140,16 +142,89 @@ describe('traefikBootstrap (defaults)', () => {
     expect(yaml).toContain(DEFAULT_TRAEFIK_REPOSITORY_URL);
   });
 
-  it('pins fullnameOverride so the observed Service name is predictable', () => {
+  it('owns the entrypoint Service instead of observing the chart\'s', () => {
     const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
     const release = resource(consumer, 'traefikHelmRelease');
     const values = release.template?.spec?.values as Record<string, unknown>;
 
+    // The chart's resource-name anchor still decides the pod/ServiceAccount
+    // names, so it stays pinned — but the Service itself is disabled.
     expect(values.fullnameOverride).toBe('${schema.spec.name}');
+    expect((values.service as { enabled?: boolean }).enabled).toBe(false);
+    expect(values.nameOverride).toBe('traefik');
+    expect(values.instanceLabelOverride).toBe('${schema.spec.name}');
 
-    const observed = consumer.spec?.resources?.find((entry) => entry.id === 'traefikService');
-    expect(observed?.externalRef?.kind).toBe('Service');
-    expect(observed?.externalRef?.metadata).toMatchObject({ name: '${schema.spec.name}' });
+    const owned = resource(consumer, 'traefikService');
+    expect(owned.externalRef).toBeUndefined();
+    expect(owned.template?.kind).toBe('Service');
+    expect(owned.template?.metadata).toMatchObject({ name: '${schema.spec.name}' });
+
+    const spec = owned.template?.spec as {
+      type?: string;
+      selector?: Record<string, string>;
+      ports?: { name?: string; targetPort?: string }[];
+    };
+    expect(spec.selector).toEqual({
+      'app.kubernetes.io/name': 'traefik',
+      'app.kubernetes.io/instance': '${schema.spec.name}',
+    });
+    // `targetPort` is the container port NAME, so it survives a change of the
+    // chart's container ports.
+    expect((spec.ports ?? []).map((port) => [port.name, port.targetPort])).toEqual([
+      ['web', 'web'],
+      ['websecure', 'websecure'],
+    ]);
+  });
+
+  it('references no Kubernetes API object it does not own', () => {
+    // The regression this guards: the direct engine resolves every external
+    // reference BEFORE it applies anything, and a failed read is fatal — so an
+    // externalRef to a resource the graph itself creates makes a FRESH
+    // deployment impossible, and `dependsOn` cannot reorder it.
+    const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
+    const externals = (consumer.spec?.resources ?? []).filter((entry) => entry.externalRef);
+
+    // The only reference left is the singleton composition that owns the
+    // shared chart HelmRepository. That one is a KRO instance, seeded into the
+    // resolution context by the singleton machinery rather than read from the
+    // API, so it is not subject to the pre-apply read at all.
+    expect(externals.map((entry) => entry.externalRef?.apiVersion)).toEqual(['kro.run/v1alpha1']);
+    expect(externals[0]?.externalRef?.kind).toBe('TraefikHelmRepository');
+  });
+
+  it('plans every Kubernetes resource as created, not required-existing', () => {
+    // Same guarantee as the assertion above, on the direct-mode plan: only the
+    // singleton owner may be `require-existing`.
+    const plan = traefikBootstrap.plan?.(
+      { name: 'traefik', namespace: 'traefik' },
+      { strict: true }
+    ) as
+      | {
+          nodes?: {
+            id: string;
+            lifecycle?: { creation?: string };
+            identity?: { apiVersion?: string };
+          }[];
+        }
+      | undefined;
+    const requiredExisting = (plan?.nodes ?? []).filter(
+      (node) => node.lifecycle?.creation === 'require-existing'
+    );
+
+    expect(requiredExisting.map((node) => node.identity?.apiVersion)).toEqual(['kro.run/v1alpha1']);
+  });
+
+  it('replaces the chart CRDs on install AND on upgrade', () => {
+    // Flux defaults `upgrade.crds` to Skip, so a chart bump would otherwise
+    // leave the traefik.io CRDs at the version first installed.
+    const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
+    const release = resource(consumer, 'traefikHelmRelease').template?.spec as {
+      install?: { crds?: string };
+      upgrade?: { crds?: string };
+    };
+
+    expect(release.install?.crds).toBe('CreateReplace');
+    expect(release.upgrade?.crds).toBe('CreateReplace');
   });
 
   it('redirects web to websecure by default', () => {
@@ -188,11 +263,21 @@ describe('traefikBootstrap (defaults)', () => {
     // Every hop is guarded: a ClusterIP Service and an unprovisioned
     // LoadBalancer both resolve to the empty string rather than erroring.
     expect(loadBalancer?.hostname).toContain('has(traefikService.status.loadBalancer)');
+    expect(loadBalancer?.hostname).toContain('filter(entry, has(entry.hostname))');
+    expect(loadBalancer?.ip).toContain('filter(entry, has(entry.ip))');
+    // The guards must be LAZY. `size()` on an absent `ingress` is an
+    // evaluation error, and direct mode's cel-js evaluates BOTH operands of
+    // `&&` and propagates it — which took the whole status object down to
+    // unresolved, `ready` and `phase` included. A ternary is lazy in both
+    // engines.
     expect(loadBalancer?.hostname).toContain(
-      'size(traefikService.status.loadBalancer.ingress) > 0'
+      'has(traefikService.status.loadBalancer.ingress) ? (size('
     );
-    expect(loadBalancer?.hostname).toContain('ingress[0].hostname');
-    expect(loadBalancer?.ip).toContain('ingress[0].ip');
+    // Neither engine-specific dead end may come back: cel-js rejects a `has()`
+    // whose operand is an index expression, and KRO rejects `in` on an ingress
+    // entry because it types the entry as a message rather than a map.
+    expect(loadBalancer?.hostname).not.toContain('has(traefikService.status.loadBalancer.ingress[');
+    expect(loadBalancer?.hostname).not.toContain('"hostname" in ');
   });
 
   it('accepts the declared status contract shape', () => {
@@ -200,19 +285,39 @@ describe('traefikBootstrap (defaults)', () => {
       ready: true,
       failed: false,
       phase: 'Ready',
-      loadBalancer: { hostname: 'a1b2.elb.us-east-1.amazonaws.com', ip: '' },
-      entrypoints: ['web', 'websecure'],
+      loadBalancer: { hostname: 'edge.example.test', ip: '' },
       serviceName: 'traefik',
     });
 
     expect(result).toHaveProperty('phase');
     if ('phase' in result) {
       expect(result.phase).toBe('Ready');
-      expect(result.entrypoints).toEqual(['web', 'websecure']);
+      expect(result.serviceName).toBe('traefik');
     }
   });
 
-  it('reports the entrypoints and load-balancer contract in a direct plan', () => {
+  it('declares no status field KRO would drop', () => {
+    // KRO leaves LITERAL status fields unset, so a declared field that is not a
+    // projection of a graph resource would be required by the schema and never
+    // carried by the instance. Every field here must therefore reference a
+    // resource id.
+    const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
+    const status = (consumer.spec as { schema?: { status?: Record<string, unknown> } }).schema
+      ?.status as Record<string, unknown>;
+    const leaves = (value: unknown): string[] =>
+      typeof value === 'string'
+        ? [value]
+        : value !== null && typeof value === 'object'
+          ? Object.values(value).flatMap(leaves)
+          : [String(value)];
+
+    expect(leaves(status).length).toBeGreaterThan(0);
+    for (const leaf of leaves(status)) {
+      expect(leaf).toMatch(/traefikHelmRelease|traefikService/);
+    }
+  });
+
+  it('reports the owned resources in a direct plan', () => {
     const plan = traefikBootstrap.plan?.(
       { name: 'traefik', namespace: 'traefik' },
       { strict: true }
@@ -223,6 +328,7 @@ describe('traefikBootstrap (defaults)', () => {
     // The owned namespace exists as a graph resource in direct mode.
     expect(serialized).toContain('"Namespace"');
     expect(serialized).toContain('"HelmRelease"');
+    expect(serialized).toContain('"Service"');
     expect(serialized).toContain('websecure');
   });
 
@@ -305,6 +411,23 @@ describe('makeTraefikBootstrap build-time variants', () => {
     expect(values.additionalArguments).toEqual(['--serversTransport.insecureSkipVerify=false']);
     expect(values.podDisruptionBudget).toEqual({ enabled: true, minAvailable: 1 });
     // The mapped values still win where they overlap.
-    expect((values.service as { enabled?: boolean }).enabled).toBe(true);
+    // The ownership pins still win where they overlap.
+    expect((values.service as { enabled?: boolean }).enabled).toBe(false);
+  });
+
+  it('can hand the CRD lifecycle to something else', () => {
+    const bootstrap = makeTraefikBootstrap({
+      name: 'traefik-skip-crds',
+      kind: 'TraefikSkipCrds',
+      crds: 'Skip',
+    });
+    const consumer = rgd(bootstrap.toYaml(), 'TraefikSkipCrds');
+    const release = resource(consumer, 'traefikHelmRelease').template?.spec as {
+      install?: { crds?: string };
+      upgrade?: { crds?: string };
+    };
+
+    expect(release.install?.crds).toBe('Skip');
+    expect(release.upgrade?.crds).toBe('Skip');
   });
 });

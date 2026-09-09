@@ -63,7 +63,7 @@ import { Cel, kubernetesComposition } from '../src/index.js';
  * decide WHICH resources the graph contains, so they are build-time options
  * rather than runtime spec fields.
  */
-export const costApiTraefik = makeTraefikBootstrap({
+export const ordersApiTraefik = makeTraefikBootstrap({
   name: 'example-edge-traefik',
   kind: 'ExampleEdgeTraefik',
   namespaceOwnership: 'owned',
@@ -87,7 +87,7 @@ export const costApiTraefik = makeTraefikBootstrap({
  * section 4.
  */
 export async function deployEdgeProxy(kubeConfig: KubeConfig) {
-  const factory = costApiTraefik.factory('direct', {
+  const factory = ordersApiTraefik.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true,
     timeout: 900_000,
@@ -110,11 +110,11 @@ export async function deployEdgeProxy(kubeConfig: KubeConfig) {
         'service.beta.kubernetes.io/aws-load-balancer-healthcheck-port': '9000',
       },
     },
+    // Both entrypoints are always published by the Service the bootstrap owns.
     entrypoints: {
-      web: { exposedPort: 80, expose: true },
+      web: { exposedPort: 80 },
       websecure: {
         exposedPort: 443,
-        expose: true,
         // The orders API serves long analytical queries.
         readTimeout: '120s',
         writeTimeout: '120s',
@@ -143,7 +143,7 @@ export async function deployEdgeProxy(kubeConfig: KubeConfig) {
 // 2-8. The edge policy for one API
 // =============================================================================
 
-const CostApiEdgeSpec = type({
+const OrdersApiEdgeSpec = type({
   /** Resource-name prefix for the middlewares and the route. */
   name: 'string',
   /** Namespace holding the route, the middlewares and the upstream Service. */
@@ -172,7 +172,7 @@ const CostApiEdgeSpec = type({
   concurrency: 'number',
 });
 
-const CostApiEdgeStatus = type({
+const OrdersApiEdgeStatus = type({
   ready: 'boolean',
   url: 'string',
   certificateSecret: 'string',
@@ -186,13 +186,13 @@ const CostApiEdgeStatus = type({
  * authorization next so the rate limit can be keyed on an authenticated
  * principal, then the budget, the concurrency cap, and finally the body limit.
  */
-export const costApiEdge = kubernetesComposition(
+export const ordersApiEdge = kubernetesComposition(
   {
     name: 'example-orders-api-edge',
     apiVersion: 'edge.example.dev/v1alpha1',
     kind: 'ExampleEdge',
-    spec: CostApiEdgeSpec,
-    status: CostApiEdgeStatus,
+    spec: OrdersApiEdgeSpec,
+    status: OrdersApiEdgeStatus,
   },
   (spec) => {
     const certificateSecret = `${spec.name}-tls`;
@@ -331,6 +331,10 @@ export const costApiEdge = kubernetesComposition(
       namespace: spec.namespace,
       spec: {
         entryPoints: ['websecure'],
+        // REQUIRED whenever the bootstrap sets `ingressClass` (it does by
+        // default): Traefik processes only the CRDs whose class matches, so an
+        // IngressRoute without it is silently ignored and the edge answers 404.
+        ingressClassName: 'traefik',
         routes: [
           {
             match: Cel.template('Host(`%s`) && PathPrefix(`/v1`)', spec.hostname),
@@ -375,7 +379,7 @@ export const costApiEdge = kubernetesComposition(
 // The same policy through Gateway API
 // =============================================================================
 
-const CostApiGatewayRouteSpec = type({
+const OrdersApiGatewayRouteSpec = type({
   name: 'string',
   namespace: 'string',
   hostname: 'string',
@@ -389,16 +393,16 @@ const CostApiGatewayRouteSpec = type({
  * The Gateway API expression of the same route.
  *
  * Gateway API has no vendor-neutral `forwardAuth` or `rateLimit` filter, so the
- * Traefik middlewares from `costApiEdge` are attached through `ExtensionRef`
+ * Traefik middlewares from `ordersApiEdge` are attached through `ExtensionRef`
  * filters. Enable the provider with `providers: { gatewayApi: true }` on the
  * bootstrap spec; the middlewares themselves are unchanged.
  */
-export const costApiGatewayRoute = kubernetesComposition(
+export const ordersApiGatewayRoute = kubernetesComposition(
   {
     name: 'example-orders-api-gateway-route',
     apiVersion: 'edge.example.dev/v1alpha1',
     kind: 'ExampleEdgeGatewayRoute',
-    spec: CostApiGatewayRouteSpec,
+    spec: OrdersApiGatewayRouteSpec,
     status: type({ ready: 'boolean', url: 'string' }),
   },
   (spec) => {
@@ -441,8 +445,8 @@ export const costApiGatewayRoute = kubernetesComposition(
 // =============================================================================
 
 /** Deploy the edge policy for the orders API. */
-export async function deployCostApiEdge(kubeConfig: KubeConfig) {
-  const factory = costApiEdge.factory('direct', {
+export async function deployOrdersApiEdge(kubeConfig: KubeConfig) {
+  const factory = ordersApiEdge.factory('direct', {
     namespace: 'example-edge',
     waitForReady: true,
     timeout: 600_000,
@@ -452,7 +456,7 @@ export async function deployCostApiEdge(kubeConfig: KubeConfig) {
   return factory.deploy({
     name: 'orders-api',
     namespace: 'example-edge',
-    hostname: 'cost.api.example.dev',
+    hostname: 'orders.api.example.dev',
     upstreamService: 'orders-api',
     upstreamPort: 8080,
     authorizerUrl: 'http://orders-authorizer.example-edge.svc.cluster.local:8080/authorize',
@@ -468,7 +472,7 @@ export async function deployCostApiEdge(kubeConfig: KubeConfig) {
 
 /** Print the KRO ResourceGraphDefinitions for both layers. */
 export function printEdgeYaml(): string {
-  return [costApiTraefik.toYaml(), costApiEdge.toYaml(), costApiGatewayRoute.toYaml()].join(
+  return [ordersApiTraefik.toYaml(), ordersApiEdge.toYaml(), ordersApiGatewayRoute.toYaml()].join(
     '\n---\n'
   );
 }

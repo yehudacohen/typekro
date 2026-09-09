@@ -15,10 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   official chart, the `HelmRelease` (chart 41.5.0, Traefik `v3.7.13`, which
   carries the `traefik.io/v1alpha1` CRDs in its own `crds/` directory so one
   release installs both), an optional owned Namespace, and optional
-  cluster-default `TLSOption`/`TLSStore` resources. The status contract reports
-  `ready`/`failed`/`phase` from the release's Ready condition and
-  `loadBalancer.hostname`/`ip` from the entrypoint Service the composition
-  observes. Routing, TLS and upstream behavior are typed: `IngressRoute`,
+  cluster-default `TLSOption`/`TLSStore` resources. The composition also OWNS
+  the entrypoint Service — the chart's own Service is disabled through values —
+  so its address can be projected without reading an unmanaged resource before
+  anything has been applied. The status contract reports `ready`/`failed`/`phase`
+  from the release's Ready condition and `loadBalancer.hostname`/`ip` from that
+  owned Service, and both `install.crds` and `upgrade.crds` default to
+  `CreateReplace` so a chart bump moves the `traefik.io/v1alpha1` CRDs with the
+  proxy. Routing, TLS and upstream behavior are typed: `IngressRoute`,
   `IngressRouteTCP`, `TraefikService`, `ServersTransport`, `TLSOption`,
   `TLSStore`, and `Middleware` as a discriminated union over the whole OSS
   middleware set — two middleware keys in one spec is a compile error and is
@@ -38,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `HelmReleaseSpec` gained `install.crds` and `upgrade.crds`
+  (`HelmReleaseCrdsPolicy`). Flux defaults the upgrade action to `Skip`, so a
+  chart that ships its CRDs in `crds/` otherwise keeps serving the schemas it
+  was first installed with.
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
   catalog and Distilled AWS `1.0.0-rc.6`; TypeKro's Effect runtime cohort moves
   with it to `4.0.0-rc.110`. CI now locks all three dependency boundaries so a

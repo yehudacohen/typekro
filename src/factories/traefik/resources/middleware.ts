@@ -117,7 +117,7 @@ export interface TraefikForwardAuthMiddlewareConfig extends TraefikMiddlewareMet
  *   address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
  *   authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
  *   authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
- *   id: 'costApiAuthz',
+ *   id: 'ordersApiAuthz',
  * });
  * ```
  */
@@ -177,7 +177,7 @@ export interface TraefikRateLimitMiddlewareConfig extends TraefikMiddlewareMetad
  *     secret: 'valkey-auth',
  *     db: 3,
  *   },
- *   id: 'costApiRateLimit',
+ *   id: 'ordersApiRateLimit',
  * });
  * ```
  */
@@ -219,7 +219,7 @@ export interface TraefikInFlightReqMiddlewareConfig extends TraefikMiddlewareMet
  *   namespace: 'edge',
  *   amount: 20,
  *   requestHeaderName: 'X-Edge-Customer',
- *   id: 'costApiConcurrency',
+ *   id: 'ordersApiConcurrency',
  * });
  * ```
  */
@@ -264,7 +264,7 @@ export interface TraefikHeadersMiddlewareConfig extends TraefikMiddlewareMetadat
  *     stsSeconds: 31_536_000,
  *     stsIncludeSubdomains: true,
  *   },
- *   id: 'costApiHeaders',
+ *   id: 'ordersApiHeaders',
  * });
  * ```
  */
@@ -316,7 +316,7 @@ export interface TraefikBufferingMiddlewareConfig extends TraefikMiddlewareMetad
  *   name: 'orders-api-body-limit',
  *   namespace: 'edge',
  *   buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
- *   id: 'costApiBodyLimit',
+ *   id: 'ordersApiBodyLimit',
  * });
  * ```
  */
@@ -348,7 +348,7 @@ export interface TraefikChainMiddlewareConfig extends TraefikMiddlewareMetadata 
  *     { name: 'orders-api-concurrency' },
  *     { name: 'orders-api-body-limit' },
  *   ],
- *   id: 'costApiEdgeChain',
+ *   id: 'ordersApiEdgeChain',
  * });
  * ```
  */
