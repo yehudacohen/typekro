@@ -108,8 +108,9 @@ describe('renderRetentionScript', () => {
   const script = renderRetentionScript(resolved);
 
   it('emits a MODIFY TTL per table with the signal duration', () => {
-    expect(script).toContain('MODIFY TTL Timestamp + INTERVAL 30 DAY DELETE');
-    expect(script).toContain('MODIFY TTL TimeUnix + INTERVAL 90 DAY DELETE');
+    // `toDateTime(...)` matches the form the collector's own migration stores.
+    expect(script).toContain('MODIFY TTL toDateTime(Timestamp) + INTERVAL 30 DAY DELETE');
+    expect(script).toContain('MODIFY TTL toDateTime(TimeUnix) + INTERVAL 90 DAY DELETE');
     expect(script).toContain('otel_logs');
     expect(script).toContain('otel_metrics_gauge');
     expect(script).not.toContain('otel_traces');

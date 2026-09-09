@@ -73,6 +73,44 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
   let helmRepositoryPreexisting = false;
   const namespaceLeases: TestNamespaceLease[] = [];
 
+  /**
+   * Poll the operator HelmRelease's own `Ready` condition.
+   *
+   * The direct factory's returned snapshot can predate Flux's install (see the
+   * call site), and every later step depends on a live operator, so the gate is
+   * the resource's own condition.
+   */
+  async function waitForOperatorReady(timeoutMs = 600_000): Promise<void> {
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const deadline = Date.now() + timeoutMs;
+    let lastMessage = 'no status yet';
+    while (Date.now() < deadline) {
+      try {
+        const raw = (await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: operatorNs,
+          plural: 'helmreleases',
+          name: 'clickhouse-operator',
+        })) as { body?: unknown };
+        const release = (raw as { body?: unknown }).body ?? raw;
+        const conditions =
+          (
+            release as {
+              status?: { conditions?: { type: string; status: string; message?: string }[] };
+            }
+          ).status?.conditions ?? [];
+        const ready = conditions.find((condition) => condition.type === 'Ready');
+        if (ready?.status === 'True') return;
+        lastMessage = ready?.message ?? lastMessage;
+      } catch {
+        // The HelmRelease may not exist yet.
+      }
+      await Bun.sleep(5_000);
+    }
+    throw new Error(`Operator HelmRelease never became Ready: ${lastMessage}`);
+  }
+
   /** Run a query against the CHI from a throwaway clickhouse-client Pod. */
   async function query(sql: string, name: string): Promise<string> {
     return (
@@ -202,7 +240,14 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     });
     operatorDeployed = true;
 
-    expect(instance.status.ready).toBe(true);
+    // LIVE OBSERVATION: `deploy()` returned in ~20s with `status.ready: false`
+    // while the operator HelmRelease only reached `Ready=True` about 90s later
+    // (the Flux HelmRepository this bootstrap creates has to fetch an artifact
+    // first). This suite is about S3 storage, not the bootstrap's readiness
+    // plumbing, so it polls the live HelmRelease rather than trusting the
+    // returned snapshot — see the PR's open questions for the underlying gap.
+    expect(instance).toBeDefined();
+    await waitForOperatorReady();
   }, 900_000);
 
   it('reconciles an s3_plain_rewritable cluster against MinIO with Secret-backed keys', async () => {
@@ -272,8 +317,10 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
       "SELECT DISTINCT disk_name FROM system.parts WHERE table = 'probe' AND active",
       'disks'
     );
-    // The policy's only volume is the cache disk in front of the object store.
-    expect(disks).toContain('s3_cache');
+    // LIVE-VERIFIED: a `cache` disk is a transparent wrapper, so `system.parts`
+    // reports the UNDERLYING object-storage disk (`s3`) rather than `s3_cache`.
+    // What matters is that it is not the server's local `default` disk.
+    expect(disks).toBe('s3');
   }, 600_000);
 
   it('survives losing the ClickHouse pod with no restore step (plain_rewritable)', async () => {

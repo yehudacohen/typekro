@@ -9,9 +9,14 @@
  * `SETTINGS storage_policy` clause and no per-table DDL from TypeKro. This
  * module covers the two things a server default cannot express:
  *
- * 1. **Retention** — `TTL <timestamp> + INTERVAL n UNIT DELETE`, applied by an
- *    idempotent CronJob because the tables do not exist until the collector
- *    has migrated, and because TypeKro does not own their DDL.
+ * 1. **Retention** — `TTL toDateTime(<timestamp>) + INTERVAL n UNIT DELETE`,
+ *    applied by an idempotent CronJob because the tables do not exist until the
+ *    collector has migrated, and because TypeKro does not own their DDL.
+ *    LIVE-VERIFIED: the collector's own migration already sets a 30-day TTL
+ *    (`toDateTime(Timestamp) + toIntervalDay(30)` with `ttl_only_drop_parts`),
+ *    so `retention` OVERRIDES that default rather than establishing the first
+ *    one — which is exactly why the idempotence probe compares intervals rather
+ *    than merely asking whether a TTL exists.
  * 2. **Persistent queue** — a `file_storage`-backed exporter queue so a
  *    ClickHouse restart (which is exactly what an S3-backed node rebuild
  *    causes) does not drop in-flight telemetry.
@@ -218,9 +223,15 @@ export function resolveClickStackStorage(
         ...target,
         signal,
         duration,
-        ttlExpression: `${target.column} + INTERVAL ${amount} ${unit} DELETE`,
+        // `toDateTime(...)` wraps the column deliberately: the collector's own
+        // migration renders its TTL as `toDateTime(Timestamp) + toIntervalDay(30)`
+        // (LIVE-VERIFIED against chart 3.2.0), and the timestamp columns are
+        // DateTime64. Emitting the same form keeps the stored expression — and
+        // therefore the idempotence probe below — directly comparable.
+        ttlExpression: `toDateTime(${target.column}) + INTERVAL ${amount} ${unit} DELETE`,
         ttlMarkers: [
-          // Normalized AST rendering (what ClickHouse actually stores).
+          // Normalized AST rendering — exactly what ClickHouse stores and what
+          // `create_table_query` returns.
           `toInterval${unit.charAt(0)}${unit.slice(1).toLowerCase()}(${amount})`,
           // Source spelling, in case a release renders it verbatim.
           `INTERVAL ${amount} ${unit}`,

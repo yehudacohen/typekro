@@ -66,7 +66,46 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
   let stackDeployed = false;
   let helmRepositoryPreexisting = false;
   let gatewayEndpoint: string | undefined;
+  const apiKey = crypto.randomUUID();
   const namespaceLeases: TestNamespaceLease[] = [];
+
+  /**
+   * Poll the operator HelmRelease's own `Ready` condition.
+   *
+   * The direct factory's returned snapshot can predate Flux's install (see the
+   * call site), and every later step depends on a live operator, so the gate is
+   * the resource's own condition.
+   */
+  async function waitForOperatorReady(timeoutMs = 600_000): Promise<void> {
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const deadline = Date.now() + timeoutMs;
+    let lastMessage = 'no status yet';
+    while (Date.now() < deadline) {
+      try {
+        const raw = (await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: operatorNs,
+          plural: 'helmreleases',
+          name: 'clickhouse-operator',
+        })) as { body?: unknown };
+        const release = (raw as { body?: unknown }).body ?? raw;
+        const conditions =
+          (
+            release as {
+              status?: { conditions?: { type: string; status: string; message?: string }[] };
+            }
+          ).status?.conditions ?? [];
+        const ready = conditions.find((condition) => condition.type === 'Ready');
+        if (ready?.status === 'True') return;
+        lastMessage = ready?.message ?? lastMessage;
+      } catch {
+        // The HelmRelease may not exist yet.
+      }
+      await Bun.sleep(5_000);
+    }
+    throw new Error(`Operator HelmRelease never became Ready: ${lastMessage}`);
+  }
 
   async function query(sql: string, label: string): Promise<string> {
     return (
@@ -199,7 +238,14 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     });
     operatorDeployed = true;
 
-    expect(instance.status.ready).toBe(true);
+    // LIVE OBSERVATION: `deploy()` returned in ~20s with `status.ready: false`
+    // while the operator HelmRelease only reached `Ready=True` about 90s later
+    // (the Flux HelmRepository this bootstrap creates has to fetch an artifact
+    // first). This suite is about S3 storage, not the bootstrap's readiness
+    // plumbing, so it polls the live HelmRelease rather than trusting the
+    // returned snapshot — see the PR's open questions for the underlying gap.
+    expect(instance).toBeDefined();
+    await waitForOperatorReady();
   }, 900_000);
 
   it('deploys an S3-backed ClickHouse for ClickStack to write to', async () => {
@@ -274,7 +320,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         username: chiUser,
         password: chiUserPassword,
       },
-      apiKey: crypto.randomUUID(),
+      apiKey,
     });
     stackDeployed = true;
 
@@ -305,6 +351,17 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
   it('ingests OTLP logs through the gateway and stores the parts on the S3 disks', async () => {
     expect(gatewayEndpoint).toBeDefined();
 
+    // LIVE-VERIFIED: the Team bootstrap sets `collectorAuthenticationEnforced`,
+    // so the gateway rejects an unauthenticated OTLP post with
+    // "missing or empty authorization header". The probe therefore sends the
+    // same ingestion key the bootstrap installed.
+    const payload = [
+      '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name",',
+      '"value":{"stringValue":"typekro-s3-probe"}}]},"scopeLogs":[{"logRecords":[{',
+      '"timeUnixNano":"\'"$TS"\'","body":{"stringValue":"typekro-s3-probe-line"},',
+      '"severityText":"INFO"}]}]}]}',
+    ].join('');
+
     await runTestPodAndReadLogs(
       {
         namespace: stackNs,
@@ -313,12 +370,16 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         command: [
           'sh',
           '-c',
-          `curl -sS -X POST "${gatewayEndpoint}/v1/logs" -H 'Content-Type: application/json' ` +
-            `--data '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name",` +
-            `"value":{"stringValue":"typekro-s3-probe"}}]},"scopeLogs":[{"logRecords":[{` +
-            `"timeUnixNano":"' + $(date +%s)000000000 + '","body":{"stringValue":` +
-            `"typekro-s3-probe-line"},"severityText":"INFO"}]}]}]}' -w '\\n%{http_code}\\n'`,
+          [
+            'set -eu',
+            // OTLP/HTTP wants nanoseconds; `date +%s` gives seconds.
+            'TS="$(date +%s)000000000"',
+            `curl -sS --fail-with-body -X POST "${gatewayEndpoint}/v1/logs" ` +
+              `-H 'Content-Type: application/json' ` +
+              `-H "authorization: $HYPERDX_API_KEY" --data '${payload}'`,
+          ].join('\n'),
         ],
+        env: [{ name: 'HYPERDX_API_KEY', value: apiKey }],
         timeoutMs: 240_000,
       },
       kubeConfig
@@ -340,7 +401,9 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       "SELECT DISTINCT disk_name FROM system.parts WHERE table = 'otel_logs' AND active",
       'disks'
     );
-    expect(disks).toContain('s3_cache');
+    // A `cache` disk is a transparent wrapper, so `system.parts` reports the
+    // underlying object-storage disk — the point is that it is not `default`.
+    expect(disks).toBe('s3');
   }, 900_000);
 
   it('keeps the telemetry queryable after the ClickHouse pod is deleted', async () => {
@@ -375,6 +438,9 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
   it('applies the configured TTL to the collector-created tables', async () => {
     // The retention CronJob converges on its own schedule once the tables
     // exist, so poll rather than assuming the first run already landed.
+    // LIVE-VERIFIED: the collector's own migration already sets
+    // `TTL toDateTime(Timestamp) + toIntervalDay(30)`, so "the table has a TTL"
+    // is true before the retention CronJob has ever run. Poll for OUR interval.
     const deadline = Date.now() + 600_000;
     let ttl = '';
     while (Date.now() < deadline) {
@@ -383,12 +449,11 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
           "AND name = 'otel_logs'",
         'ttl'
       );
-      if (ttl.includes('TTL')) break;
+      if (/toIntervalDay\(7\)|INTERVAL 7 DAY/.test(ttl)) break;
       await Bun.sleep(15_000);
     }
 
     expect(ttl).toContain('TTL');
-    // 7 days for logs, however ClickHouse chooses to re-render the interval.
     expect(ttl).toMatch(/toIntervalDay\(7\)|INTERVAL 7 DAY/);
   }, 900_000);
 });

@@ -162,10 +162,16 @@ const bootstrap = makeClickstackBootstrap({
 ### Retention (TTL)
 
 Durations are `'<n>d'`, `'<n>h'` or `'<n>m'`, compiled into
-`ALTER TABLE … MODIFY TTL <column> + INTERVAL n UNIT DELETE`. `logs` covers `otel_logs` and
+`ALTER TABLE … MODIFY TTL toDateTime(<column>) + INTERVAL n UNIT DELETE`. `logs` covers `otel_logs` and
 `hyperdx_sessions` (a log-kind table in HyperDX's own source definitions), `traces` covers
 `otel_traces`, and `metrics` covers `otel_metrics_gauge` / `_sum` / `_histogram`. Each table's TTL
 keys off the timestamp column HyperDX itself queries — `Timestamp`, `TimeUnix`, `TimestampTime`.
+
+The collector's own migration **already sets a 30-day TTL**
+(`toDateTime(Timestamp) + toIntervalDay(30)`, with `ttl_only_drop_parts = 1` — verified live against
+chart 3.2.0), so `retention` *overrides* that default rather than establishing the first one. The
+`toDateTime(…)` wrapper matches the form the collector stores, which keeps the stored expression and
+the idempotence probe directly comparable.
 
 It runs as a **CronJob**, not a one-shot Job, for two honest reasons: the tables do not exist until
 the collector has migrated, and TypeKro does not own their DDL. The script therefore skips a missing
