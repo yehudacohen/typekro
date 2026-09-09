@@ -1,6 +1,12 @@
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import {
+  createGatewayApiPolicyReadinessEvaluator,
+  gatewayApiConditionIsCurrent,
+  gatewayApiConditionReadiness,
+  gatewayApiGatewayReadinessEvaluator,
+} from '../../gateway-api/readiness.js';
 import { createResource } from '../../shared.js';
 import {
   DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME,
@@ -22,7 +28,6 @@ import type {
   GatewayObservedStatus,
   GatewayPolicyObservedStatus,
   GatewaySpec,
-  KubernetesCondition,
   MCPRouteSpec,
 } from '../types.js';
 
@@ -39,160 +44,46 @@ interface ClusterResourceConfig<TSpec extends object> {
   readonly id?: string;
 }
 
-function conditionReadiness(
-  liveResource: unknown,
-  acceptedType: string,
-  rejectedTypes: readonly string[]
-): ResourceStatus {
-  const resource = liveResource as
-    | {
-        readonly metadata?: {
-          readonly generation?: number;
-        };
-        readonly status?: AcceptedResourceStatus;
-      }
-    | undefined;
-  const conditions = resource?.status?.conditions ?? [];
-  const generation = resource?.metadata?.generation;
-  const rejected = conditions.find(
-    (condition) =>
-      rejectedTypes.includes(condition.type) &&
-      condition.status === 'True' &&
-      conditionIsCurrent(condition, generation)
-  );
-  if (rejected) {
-    return {
-      ready: false,
-      reason: rejected.reason ?? rejected.type,
-      message: rejected.message ?? `${rejected.type} is True`,
-    };
-  }
-  const accepted = conditions.find((condition) => condition.type === acceptedType);
-  const current = conditionIsCurrent(accepted, generation);
-  if (accepted?.status === 'True' && current) {
-    return {
-      ready: true,
-      reason: accepted.reason ?? acceptedType,
-      message: accepted.message ?? `${acceptedType} is True`,
-    };
-  }
-  return {
-    ready: false,
-    reason: accepted?.reason ?? 'Reconciling',
-    message:
-      accepted?.message ??
-      `${acceptedType} has not been observed for the current resource generation`,
-  };
-}
+/**
+ * Envoy AI Gateway readiness contracts.
+ *
+ * The condition-freshness and Accepted/Programmed logic is upstream Gateway API
+ * behavior and now lives in `src/factories/gateway-api/readiness.ts` (#176).
+ * These wrappers keep the exported names and the original
+ * `typekro.readiness.envoy-ai-gateway.*` portable-strategy identifiers so
+ * previously serialized plans stay resolvable.
+ */
+const envoyGatewayPolicyReadiness = createGatewayApiPolicyReadinessEvaluator(
+  DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME
+);
 
-function conditionIsCurrent(
-  condition: KubernetesCondition | undefined,
-  generation: number | undefined
-): boolean {
-  if (generation === undefined) return true;
-  // Envoy AI Gateway v0.6 emits Condition-shaped entries without
-  // observedGeneration on its v1beta1 resources. Preserve strict freshness
-  // whenever the controller supplies it, while accepting the controller's
-  // documented sparse condition shape when it cannot.
-  return condition?.observedGeneration === undefined || condition.observedGeneration === generation;
-}
-
+/** Ready when the resource reports a current `Accepted=True` and no `NotAccepted=True`. */
 export function envoyAIAcceptedReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  return conditionReadiness(liveResource, 'Accepted', ['NotAccepted']);
+  return gatewayApiConditionReadiness(liveResource, 'Accepted', ['NotAccepted']);
 }
 
+/** Ready when Envoy Gateway has claimed the `GatewayClass` (`Accepted=True`). */
 export function envoyGatewayClassReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  return conditionReadiness(liveResource, 'Accepted', []);
+  return gatewayApiConditionReadiness(liveResource, 'Accepted', []);
 }
 
+/** Ready when the `Gateway` is both `Accepted` and `Programmed` for its current generation. */
 export function envoyGatewayReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  const resource = liveResource as
-    | {
-        readonly metadata?: { readonly generation?: number };
-        readonly status?: GatewayObservedStatus;
-      }
-    | undefined;
-  const conditions = resource?.status?.conditions ?? [];
-  const generation = resource?.metadata?.generation;
-  const rejected = conditions.find(
-    (condition) =>
-      ['Accepted', 'Programmed'].includes(condition.type) &&
-      condition.status === 'False' &&
-      conditionIsCurrent(condition, generation)
-  );
-  if (rejected) {
-    return {
-      ready: false,
-      reason: rejected.reason ?? `${rejected.type}False`,
-      message: rejected.message ?? `${rejected.type} is False`,
-    };
-  }
-  const accepted = conditions.find((condition) => condition.type === 'Accepted');
-  const programmed = conditions.find((condition) => condition.type === 'Programmed');
-  const ready =
-    accepted?.status === 'True' &&
-    programmed?.status === 'True' &&
-    conditionIsCurrent(accepted, generation) &&
-    conditionIsCurrent(programmed, generation);
-  return ready
-    ? {
-        ready: true,
-        reason: 'GatewayProgrammed',
-        message: programmed.message ?? 'Gateway is accepted and programmed',
-      }
-    : {
-        ready: false,
-        reason: programmed?.reason ?? accepted?.reason ?? 'GatewayProgressing',
-        message:
-          programmed?.message ??
-          accepted?.message ??
-          'Gateway is waiting to be accepted and programmed',
-      };
+  return gatewayApiGatewayReadinessEvaluator(liveResource);
 }
 
+/** Ready when the Envoy Gateway ancestor entry of a policy reports `Accepted=True`. */
 export function envoyGatewayPolicyReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  const resource = liveResource as
-    | {
-        readonly metadata?: { readonly generation?: number };
-        readonly status?: GatewayPolicyObservedStatus;
-      }
-    | undefined;
-  const generation = resource?.metadata?.generation;
-  const conditions = (resource?.status?.ancestors ?? [])
-    .filter((ancestor) => ancestor.controllerName === DEFAULT_ENVOY_GATEWAY_CONTROLLER_NAME)
-    .flatMap((ancestor) => ancestor.conditions ?? []);
-  const rejected = conditions.find(
-    (condition) =>
-      ((condition.type === 'Accepted' && condition.status === 'False') ||
-        (condition.type === 'ResolvedRefs' && condition.status === 'False')) &&
-      conditionIsCurrent(condition, generation)
-  );
-  if (rejected) {
-    return {
-      ready: false,
-      terminal: true,
-      reason: rejected.reason ?? `${rejected.type}False`,
-      message: rejected.message ?? `${rejected.type} is False`,
-    };
-  }
-  const accepted = conditions.find(
-    (condition) =>
-      condition.type === 'Accepted' &&
-      condition.status === 'True' &&
-      conditionIsCurrent(condition, generation)
-  );
-  return accepted
-    ? {
-        ready: true,
-        reason: accepted.reason ?? 'Accepted',
-        message: accepted.message ?? 'Policy is accepted',
-      }
-    : {
-        ready: false,
-        reason: 'Reconciling',
-        message: 'Policy has not been accepted for the current resource generation',
-      };
+  return envoyGatewayPolicyReadiness(liveResource);
 }
+
+/**
+ * Re-exported for callers that inspected Envoy AI Gateway's condition-freshness
+ * rule directly. Envoy AI Gateway v0.6 emits Condition-shaped entries without
+ * `observedGeneration` on its v1beta1 resources, and the shared helper keeps
+ * accepting that documented sparse shape.
+ */
+export const envoyConditionIsCurrent = gatewayApiConditionIsCurrent;
 
 registerPortableReadinessEvaluator(
   'typekro.readiness.envoy-ai-gateway.accepted',
