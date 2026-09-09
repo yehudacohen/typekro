@@ -93,7 +93,7 @@ export function traefikGateway(
  * @example A route attaching a Traefik `Middleware` through an ExtensionRef
  * ```typescript
  * traefikHTTPRoute({
- *   name: 'cost-api',
+ *   name: 'orders-api',
  *   namespace: 'edge',
  *   spec: {
  *     parentRefs: [{ name: 'traefik-gateway', namespace: 'traefik' }],
@@ -101,8 +101,8 @@ export function traefikGateway(
  *     rules: [
  *       {
  *         matches: [{ path: { type: 'PathPrefix', value: '/v1' } }],
- *         filters: [traefikMiddlewareFilter('cost-api-authz')],
- *         backendRefs: [{ name: 'cost-api', port: 8080 }],
+ *         filters: [traefikMiddlewareFilter('orders-api-authz')],
+ *         backendRefs: [{ name: 'orders-api', port: 8080 }],
  *         timeouts: { request: '120s' },
  *       },
  *     ],

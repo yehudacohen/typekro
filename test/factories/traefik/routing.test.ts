@@ -16,7 +16,7 @@ const NAMESPACE = 'edge';
 describe('traefikIngressRoute', () => {
   it('creates the HTTP router with entrypoints, middleware chain and TLS', () => {
     const route = traefikIngressRoute({
-      name: 'cost-api',
+      name: 'orders-api',
       namespace: NAMESPACE,
       spec: {
         entryPoints: ['websecure'],
@@ -25,12 +25,12 @@ describe('traefikIngressRoute', () => {
             match: 'Host(`api.example.com`) && PathPrefix(`/v1`)',
             kind: 'Rule',
             priority: 100,
-            middlewares: [{ name: 'cost-api-edge' }],
-            services: [{ name: 'cost-api', port: 8080, passHostHeader: true }],
+            middlewares: [{ name: 'orders-api-edge' }],
+            services: [{ name: 'orders-api', port: 8080, passHostHeader: true }],
           },
         ],
         tls: {
-          secretName: 'cost-api-tls',
+          secretName: 'orders-api-tls',
           options: { name: 'default', namespace: 'traefik' },
         },
       },
@@ -39,14 +39,14 @@ describe('traefikIngressRoute', () => {
 
     expect(route.apiVersion).toBe('traefik.io/v1alpha1');
     expect(route.kind).toBe('IngressRoute');
-    expect(route.metadata.name).toBe('cost-api');
+    expect(route.metadata.name).toBe('orders-api');
     expect(route.metadata.namespace).toBe(NAMESPACE);
     expect(route.spec.entryPoints).toEqual(['websecure']);
     expect(route.spec.routes[0]?.match).toBe('Host(`api.example.com`) && PathPrefix(`/v1`)');
     expect(route.spec.routes[0]?.priority).toBe(100);
-    expect(route.spec.routes[0]?.middlewares).toEqual([{ name: 'cost-api-edge' }]);
-    expect(route.spec.routes[0]?.services?.[0]).toMatchObject({ name: 'cost-api', port: 8080 });
-    expect(route.spec.tls?.secretName).toBe('cost-api-tls');
+    expect(route.spec.routes[0]?.middlewares).toEqual([{ name: 'orders-api-edge' }]);
+    expect(route.spec.routes[0]?.services?.[0]).toMatchObject({ name: 'orders-api', port: 8080 });
+    expect(route.spec.tls?.secretName).toBe('orders-api-tls');
     expect(route.spec.tls?.options).toEqual({ name: 'default', namespace: 'traefik' });
   });
 
@@ -85,7 +85,7 @@ describe('traefikIngressRoute', () => {
         routes: [
           {
             match: 'Host(`api.example.com`)',
-            services: [{ name: 'cost-api-canary', kind: 'TraefikService' }],
+            services: [{ name: 'orders-api-canary', kind: 'TraefikService' }],
           },
         ],
       },
@@ -137,13 +137,13 @@ describe('traefikIngressRouteTCP', () => {
 describe('traefikService', () => {
   it('creates a weighted backend for a canary split', () => {
     const composed = traefikService({
-      name: 'cost-api-canary',
+      name: 'orders-api-canary',
       namespace: NAMESPACE,
       spec: {
         weighted: {
           services: [
-            { name: 'cost-api', port: 8080, weight: 9 },
-            { name: 'cost-api-next', port: 8080, weight: 1 },
+            { name: 'orders-api', port: 8080, weight: 9 },
+            { name: 'orders-api-next', port: 8080, weight: 1 },
           ],
           sticky: { cookie: { name: 'canary', secure: true, httpOnly: true, sameSite: 'strict' } },
         },
@@ -158,13 +158,13 @@ describe('traefikService', () => {
 
   it('creates a mirroring backend', () => {
     const composed = traefikService({
-      name: 'cost-api-mirror',
+      name: 'orders-api-mirror',
       namespace: NAMESPACE,
       spec: {
         mirroring: {
-          name: 'cost-api',
+          name: 'orders-api',
           port: 8080,
-          mirrors: [{ name: 'cost-api-shadow', port: 8080, percent: 10 }],
+          mirrors: [{ name: 'orders-api-shadow', port: 8080, percent: 10 }],
         },
       },
       id: 'costApiMirror',
@@ -177,7 +177,7 @@ describe('traefikService', () => {
 describe('traefikServersTransport', () => {
   it('carries the upstream timeouts an edge needs above the 60s default', () => {
     const transport = traefikServersTransport({
-      name: 'cost-api-slow',
+      name: 'orders-api-slow',
       namespace: NAMESPACE,
       spec: {
         forwardingTimeouts: {

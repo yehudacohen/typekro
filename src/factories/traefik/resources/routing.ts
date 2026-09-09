@@ -34,7 +34,7 @@ export type TraefikNoStatus = Record<string, never>;
  * @example An authenticated, rate-limited API route terminating TLS
  * ```typescript
  * traefikIngressRoute({
- *   name: 'cost-api',
+ *   name: 'orders-api',
  *   namespace: 'edge',
  *   spec: {
  *     entryPoints: ['websecure'],
@@ -42,11 +42,11 @@ export type TraefikNoStatus = Record<string, never>;
  *       {
  *         match: 'Host(`api.example.com`) && PathPrefix(`/v1`)',
  *         kind: 'Rule',
- *         middlewares: [{ name: 'cost-api-authz' }, { name: 'cost-api-rate-limit' }],
- *         services: [{ name: 'cost-api', port: 8080 }],
+ *         middlewares: [{ name: 'orders-api-authz' }, { name: 'orders-api-rate-limit' }],
+ *         services: [{ name: 'orders-api', port: 8080 }],
  *       },
  *     ],
- *     tls: { secretName: 'cost-api-tls' },
+ *     tls: { secretName: 'orders-api-tls' },
  *   },
  *   id: 'costApiRoute',
  * });
@@ -99,13 +99,13 @@ export function traefikIngressRouteTCP(
  * @example Canary split between two Deployments
  * ```typescript
  * traefikService({
- *   name: 'cost-api-canary',
+ *   name: 'orders-api-canary',
  *   namespace: 'edge',
  *   spec: {
  *     weighted: {
  *       services: [
- *         { name: 'cost-api', port: 8080, weight: 9 },
- *         { name: 'cost-api-next', port: 8080, weight: 1 },
+ *         { name: 'orders-api', port: 8080, weight: 9 },
+ *         { name: 'orders-api-next', port: 8080, weight: 1 },
  *       ],
  *     },
  *   },
@@ -133,7 +133,7 @@ export function traefikService(
  * @example
  * ```typescript
  * traefikServersTransport({
- *   name: 'cost-api-slow',
+ *   name: 'orders-api-slow',
  *   namespace: 'edge',
  *   spec: { forwardingTimeouts: { responseHeaderTimeout: '120s', idleConnTimeout: '150s' } },
  *   id: 'costApiTransport',

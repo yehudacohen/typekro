@@ -1,7 +1,7 @@
 /**
- * Traefik Edge Example — the Sela cost-API edge
+ * Traefik Edge Example — an API edge behind Traefik
  *
- * The scenario that drove the Traefik factory (selacloud/sela-foundry-deploy#232):
+ * A representative scenario for the Traefik factory:
  * one public HTTPS entrypoint in front of an internal API, where every request
  * must be authorized, budgeted, bounded and observable.
  *
@@ -30,6 +30,7 @@
  * Run: `bun run build:examples` typechecks this file.
  */
 
+import type { KubeConfig } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { certificate } from '../src/factories/cert-manager/resources/certificates.js';
 import { makeTraefikBootstrap } from '../src/factories/traefik/compositions/traefik-bootstrap.js';
@@ -63,8 +64,8 @@ import { Cel, kubernetesComposition } from '../src/index.js';
  * rather than runtime spec fields.
  */
 export const costApiTraefik = makeTraefikBootstrap({
-  name: 'sela-edge-traefik',
-  kind: 'SelaEdgeTraefik',
+  name: 'example-edge-traefik',
+  kind: 'ExampleEdgeTraefik',
   namespaceOwnership: 'owned',
   redirectWebToWebsecure: true,
   defaultTlsOption: {
@@ -73,7 +74,7 @@ export const costApiTraefik = makeTraefikBootstrap({
   },
   // Fed by the cert-manager Certificate in section 2.
   defaultTlsStore: {
-    defaultCertificateSecretName: 'sela-edge-wildcard-tls',
+    defaultCertificateSecretName: 'example-edge-wildcard-tls',
   },
 });
 
@@ -85,17 +86,17 @@ export const costApiTraefik = makeTraefikBootstrap({
  * the 60s default on the `websecure` entrypoint; the upstream half is raised in
  * section 4.
  */
-export async function deployEdgeProxy(kubeConfig: unknown) {
+export async function deployEdgeProxy(kubeConfig: KubeConfig) {
   const factory = costApiTraefik.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true,
     timeout: 900_000,
-    kubeConfig: kubeConfig as never,
+    kubeConfig,
   });
 
   const edge = await factory.deploy({
     name: 'traefik',
-    namespace: 'sela-edge',
+    namespace: 'example-edge',
     replicas: 3,
     ingressClass: 'traefik',
     service: {
@@ -114,7 +115,7 @@ export async function deployEdgeProxy(kubeConfig: unknown) {
       websecure: {
         exposedPort: 443,
         expose: true,
-        // The cost API serves long analytical queries.
+        // The orders API serves long analytical queries.
         readTimeout: '120s',
         writeTimeout: '120s',
         idleTimeout: '180s',
@@ -126,7 +127,7 @@ export async function deployEdgeProxy(kubeConfig: unknown) {
     otlp: {
       endpoint: 'otel-collector.observability.svc.cluster.local:4317',
       insecure: true,
-      serviceName: 'sela-edge-traefik',
+      serviceName: 'example-edge-traefik',
     },
     dashboard: false,
   });
@@ -153,7 +154,7 @@ const CostApiEdgeSpec = type({
   upstreamService: 'string',
   /** Upstream Service port. */
   upstreamPort: 'number',
-  /** Authorizer URL, e.g. `http://cost-api-authorizer.sela-edge.svc.cluster.local:8080/authorize`. */
+  /** Authorizer URL, e.g. `http://orders-authorizer.example-edge.svc.cluster.local:8080/authorize`. */
   authorizerUrl: 'string',
   /** Origin allowed to call the API from a browser. */
   consoleOrigin: 'string',
@@ -178,7 +179,7 @@ const CostApiEdgeStatus = type({
 });
 
 /**
- * The whole edge policy for the cost API.
+ * The whole edge policy for the orders API.
  *
  * The middleware ORDER in the chain is the order requests traverse it: CORS
  * first so a browser preflight is answered before authorization runs,
@@ -187,9 +188,9 @@ const CostApiEdgeStatus = type({
  */
 export const costApiEdge = kubernetesComposition(
   {
-    name: 'sela-cost-api-edge',
-    apiVersion: 'edge.sela.dev/v1alpha1',
-    kind: 'SelaCostApiEdge',
+    name: 'example-orders-api-edge',
+    apiVersion: 'edge.example.dev/v1alpha1',
+    kind: 'ExampleEdge',
     spec: CostApiEdgeSpec,
     status: CostApiEdgeStatus,
   },
@@ -215,7 +216,7 @@ export const costApiEdge = kubernetesComposition(
       headers: {
         accessControlAllowOriginList: [spec.consoleOrigin],
         accessControlAllowMethods: ['GET', 'POST', 'OPTIONS'],
-        accessControlAllowHeaders: ['authorization', 'content-type', 'x-sela-api-key'],
+        accessControlAllowHeaders: ['authorization', 'content-type', 'x-example-api-key'],
         accessControlAllowCredentials: true,
         accessControlMaxAge: 600,
         addVaryHeader: true,
@@ -236,9 +237,9 @@ export const costApiEdge = kubernetesComposition(
       address: spec.authorizerUrl,
       // Only these three headers reach the upstream. The authorizer cannot
       // inject anything else, by construction.
-      authResponseHeaders: ['X-Sela-Principal', 'X-Sela-Tier', 'X-Sela-Customer'],
+      authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
       // Only the credential headers reach the authorizer.
-      authRequestHeaders: ['Authorization', 'X-Sela-Api-Key'],
+      authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
       // Default, restated because it is the load-bearing choice here: clients
       // reach this entrypoint directly from the internet, so their own
       // X-Forwarded-* must never be believed.
@@ -255,7 +256,7 @@ export const costApiEdge = kubernetesComposition(
       period: '1s',
       // Keyed on the principal `forwardAuth` just injected — one budget per
       // caller rather than one per source IP.
-      requestHeaderName: 'X-Sela-Principal',
+      requestHeaderName: 'X-Edge-Principal',
       // Without this the budget would be per-replica, i.e. average x replicas.
       redis: {
         endpoints: [spec.valkeyEndpoint],
@@ -274,7 +275,7 @@ export const costApiEdge = kubernetesComposition(
       namespace: spec.namespace,
       amount: spec.concurrency,
       // Per customer: one tenant's slow queries must not exhaust the upstream.
-      requestHeaderName: 'X-Sela-Customer',
+      requestHeaderName: 'X-Edge-Customer',
       id: 'edgeConcurrency',
     });
 
@@ -348,7 +349,7 @@ export const costApiEdge = kubernetesComposition(
         ],
         tls: {
           secretName: certificateSecret,
-          options: { name: 'default', namespace: 'sela-edge' },
+          options: { name: 'default', namespace: 'example-edge' },
         },
       },
       id: 'edgeRoute',
@@ -394,9 +395,9 @@ const CostApiGatewayRouteSpec = type({
  */
 export const costApiGatewayRoute = kubernetesComposition(
   {
-    name: 'sela-cost-api-gateway-route',
-    apiVersion: 'edge.sela.dev/v1alpha1',
-    kind: 'SelaCostApiGatewayRoute',
+    name: 'example-orders-api-gateway-route',
+    apiVersion: 'edge.example.dev/v1alpha1',
+    kind: 'ExampleEdgeGatewayRoute',
     spec: CostApiGatewayRouteSpec,
     status: type({ ready: 'boolean', url: 'string' }),
   },
@@ -439,24 +440,24 @@ export const costApiGatewayRoute = kubernetesComposition(
 // Deploying the policy
 // =============================================================================
 
-/** Deploy the edge policy for the cost API. */
-export async function deployCostApiEdge(kubeConfig: unknown) {
+/** Deploy the edge policy for the orders API. */
+export async function deployCostApiEdge(kubeConfig: KubeConfig) {
   const factory = costApiEdge.factory('direct', {
-    namespace: 'sela-edge',
+    namespace: 'example-edge',
     waitForReady: true,
     timeout: 600_000,
-    kubeConfig: kubeConfig as never,
+    kubeConfig,
   });
 
   return factory.deploy({
-    name: 'cost-api',
-    namespace: 'sela-edge',
-    hostname: 'cost.api.sela.dev',
-    upstreamService: 'cost-api',
+    name: 'orders-api',
+    namespace: 'example-edge',
+    hostname: 'cost.api.example.dev',
+    upstreamService: 'orders-api',
     upstreamPort: 8080,
-    authorizerUrl: 'http://cost-api-authorizer.sela-edge.svc.cluster.local:8080/authorize',
-    consoleOrigin: 'https://console.sela.dev',
-    valkeyEndpoint: 'valkey-primary.sela-edge.svc.cluster.local:6379',
+    authorizerUrl: 'http://orders-authorizer.example-edge.svc.cluster.local:8080/authorize',
+    consoleOrigin: 'https://console.example.dev',
+    valkeyEndpoint: 'valkey-primary.example-edge.svc.cluster.local:6379',
     valkeySecret: 'valkey-auth',
     clusterIssuer: 'letsencrypt-production',
     rateLimitAverage: 50,

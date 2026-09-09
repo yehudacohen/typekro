@@ -247,7 +247,7 @@ describe('forwardAuth and TLSOption secure defaults', () => {
       name: 'authz',
       namespace: 'edge',
       address: 'http://authz.edge.svc.cluster.local:8080',
-      authResponseHeaders: ['X-Sela-Principal'],
+      authResponseHeaders: ['X-Edge-Principal'],
       id: 'authz',
     });
 

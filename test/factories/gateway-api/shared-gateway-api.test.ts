@@ -83,7 +83,7 @@ describe('shared Gateway API resources', () => {
     expect(gatewayResource.spec.listeners[1]?.tls?.certificateRefs?.[0]?.name).toBe('edge-tls');
 
     const route = httpRoute({
-      name: 'cost-api',
+      name: 'orders-api',
       namespace: 'edge',
       spec: {
         parentRefs: [{ name: 'edge', namespace: 'traefik' }],
@@ -91,7 +91,7 @@ describe('shared Gateway API resources', () => {
         rules: [
           {
             matches: [{ path: { type: 'PathPrefix', value: '/v1' } }],
-            backendRefs: [{ name: 'cost-api', port: 8080 }],
+            backendRefs: [{ name: 'orders-api', port: 8080 }],
             timeouts: { request: '120s' },
           },
         ],
@@ -132,8 +132,8 @@ describe('shared Gateway API resources', () => {
       namespace: 'edge',
       controllerName: TRAEFIK_GATEWAY_CONTROLLER_NAME,
       spec: {
-        targetRefs: [{ group: '', kind: 'Service', name: 'cost-api' }],
-        validation: { hostname: 'cost-api.internal', wellKnownCACertificates: 'System' },
+        targetRefs: [{ group: '', kind: 'Service', name: 'orders-api' }],
+        validation: { hostname: 'orders-api.internal', wellKnownCACertificates: 'System' },
       },
       id: 'upstreamTls',
     });
@@ -446,14 +446,14 @@ describe('traefik consumes the shared Gateway API module', () => {
   });
 
   it('attaches a Traefik Middleware to an HTTPRoute through an ExtensionRef filter', () => {
-    const filter = traefikMiddlewareFilter('cost-api-authz');
+    const filter = traefikMiddlewareFilter('orders-api-authz');
     expect(filter).toEqual({
       type: 'ExtensionRef',
-      extensionRef: { group: 'traefik.io', kind: 'Middleware', name: 'cost-api-authz' },
+      extensionRef: { group: 'traefik.io', kind: 'Middleware', name: 'orders-api-authz' },
     });
 
     const route = traefikHTTPRoute({
-      name: 'cost-api',
+      name: 'orders-api',
       namespace: 'edge',
       spec: {
         parentRefs: [{ name: 'edge', namespace: 'traefik' }],
@@ -462,7 +462,7 @@ describe('traefik consumes the shared Gateway API module', () => {
           {
             matches: [{ path: { type: 'PathPrefix', value: '/v1' } }],
             filters: [filter],
-            backendRefs: [{ name: 'cost-api', port: 8080 }],
+            backendRefs: [{ name: 'orders-api', port: 8080 }],
           },
         ],
       },

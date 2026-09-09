@@ -30,8 +30,8 @@ describe('Traefik exports', () => {
     expect(traefik.traefikTLSStore).toBeTypeOf('function');
   });
 
-  test('exports a typed builder for every middleware the cost-api edge needs', () => {
-    // The consumer scenario from selacloud/sela-foundry-deploy#232 must be
+  test('exports a typed builder for every middleware the orders-api edge needs', () => {
+    // The consumer scenario from a downstream consumer must be
     // expressible with exported functions only — no hand-written CRD literals.
     expect(traefik.traefikForwardAuthMiddleware).toBeTypeOf('function');
     expect(traefik.traefikRateLimitMiddleware).toBeTypeOf('function');
