@@ -74,7 +74,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ReadWriteOnce`. Per-replica queues would need the chart's `mode: statefulset`
   with `volumeClaimTemplates`, which this composition does not model today — the
   error names that path rather than offering a shared volume that cannot
-  deliver it. The queue's chart
+  deliver it.
+
+  Because one replica bounds only the STEADY state, the queue also forces
+  `rollout.strategy: 'Recreate'` on the gateway Deployment. The collector chart
+  leaves it on Kubernetes' default `RollingUpdate`, whose default `maxSurge`
+  rounds up to one extra Pod, so any pod-template change creates the
+  replacement collector while the old one still holds the `ReadWriteOnce` claim
+  and the bbolt lock — the new Pod can never become Ready, and `RollingUpdate`
+  will not terminate the old one until it is, so the rollout deadlocks until
+  `progressDeadlineSeconds` expires. `Recreate` drains first. The cost is a
+  brief gateway outage on every rollout, and the persistent queue is exactly
+  what makes that cost acceptable: producers upstream retry, and telemetry the
+  gateway already accepted is on the claim rather than in the departing Pod's
+  memory, so the replacement resumes draining the same queue. The pin is scoped
+  to the queue — with no `persistentQueue` the gateway keeps the chart's
+  `RollingUpdate` default — and unlike `replicaCount` a build-time
+  `rollout.strategy` is overridden rather than rejected.
+
+  The queue's chart
   values re-emit the gateway subchart's own `custom-config` volume alongside
   the claim, because Helm replaces a list-valued override and that mount is how
   the collector receives `global.otelCollector.customConfig` — without it the

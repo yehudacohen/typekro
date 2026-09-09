@@ -28,6 +28,7 @@ import {
 } from '../../../src/core/kubernetes/index.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
+  createAppsV1ApiClient,
   createCoreV1ApiClient,
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
@@ -345,9 +346,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     // health_check. Assert BOTH mounts are present on the live Pod.
     const coreApi = createCoreV1ApiClient(kubeConfig);
     const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
-    const collector = pods.items.find((pod) =>
-      pod.metadata?.name?.includes('otel-collector')
-    );
+    const collector = pods.items.find((pod) => pod.metadata?.name?.includes('otel-collector'));
     expect(collector).toBeDefined();
 
     const mounts = (collector?.spec?.containers ?? [])
@@ -361,7 +360,9 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       volumes.some((volume) => volume.configMap?.name === 'clickstack-otel-custom-config')
     ).toBe(true);
     expect(
-      volumes.some((volume) => volume.persistentVolumeClaim?.claimName === `${stackName}-otel-queue`)
+      volumes.some(
+        (volume) => volume.persistentVolumeClaim?.claimName === `${stackName}-otel-queue`
+      )
     ).toBe(true);
   }, 300_000);
 
@@ -675,4 +676,204 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       .filter((name): name is string => name !== undefined);
     expect(mountedClaims).toContain(claimName);
   }, 1_200_000);
+
+  it('completes a REAL rollout on Recreate instead of deadlocking on the queue', async () => {
+    // WHY THIS IS NOT THE PREVIOUS TEST: deleting the collector Pod is not a
+    // rollout. The Deployment controller replaces a deleted Pod only after it
+    // is gone, so that path never puts two collectors on the claim and would
+    // pass just as happily under RollingUpdate. The overlap only appears when
+    // the POD TEMPLATE changes: RollingUpdate's default maxSurge rounds up to
+    // one extra Pod, so it creates the replacement while the old collector
+    // still holds the ReadWriteOnce claim and the bbolt lock, and then waits
+    // for a Ready that can never arrive — the rollout hangs until
+    // progressDeadlineSeconds. This test changes the template for real and
+    // requires the rollout to finish.
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const appsApi = createAppsV1ApiClient(kubeConfig);
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const claimName = `${stackName}-otel-queue`;
+    const queueDirectory = '/var/lib/otelcol/file_storage';
+
+    /** Collector Pods that are not already on their way out. */
+    async function liveCollectorPods(): Promise<string[]> {
+      const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
+      return pods.items
+        .filter(
+          (pod) =>
+            pod.metadata?.name?.includes('otel-collector') &&
+            pod.metadata.deletionTimestamp === undefined
+        )
+        .map((pod) => pod.metadata?.name ?? '');
+    }
+
+    /** Mount the queue claim from a throwaway Pod and run a script on it. */
+    async function onQueueVolume(label: string, script: string): Promise<string> {
+      return (
+        await runTestPodAndReadLogs(
+          {
+            namespace: stackNs,
+            name: `rollout-${label}-${crypto.randomUUID().slice(0, 6)}`,
+            image: 'busybox:1.37',
+            command: ['sh', '-c', script],
+            volumes: [{ name: 'queue', persistentVolumeClaim: { claimName } }],
+            volumeMounts: [{ name: 'queue', mountPath: queueDirectory }],
+            timeoutMs: 240_000,
+          },
+          kubeConfig
+        )
+      ).trim();
+    }
+
+    const deployments = await appsApi.listNamespacedDeployment({ namespace: stackNs });
+    const collectorDeployment = deployments.items.find((deployment) =>
+      deployment.metadata?.name?.includes('otel-collector')
+    );
+    expect(collectorDeployment).toBeDefined();
+    const deploymentName = collectorDeployment?.metadata?.name as string;
+
+    // (a) The rendered `rollout.strategy` reached the live object.
+    expect(collectorDeployment?.spec?.strategy?.type).toBe('Recreate');
+    // …and carries no rollingUpdate block, which the API server would reject
+    // next to Recreate. The chart's own template guard is what removes it.
+    expect(collectorDeployment?.spec?.strategy?.rollingUpdate).toBeUndefined();
+    expect(collectorDeployment?.spec?.replicas).toBe(1);
+
+    const sentinel = `${queueDirectory}/typekro-rollout-sentinel`;
+    const sentinelValue = crypto.randomUUID();
+    await onQueueVolume(
+      'write',
+      `set -eu; printf '%s' '${sentinelValue}' > ${sentinel}; ls -l ${queueDirectory}`
+    );
+
+    const claimBefore = await coreApi.readNamespacedPersistentVolumeClaim({
+      namespace: stackNs,
+      name: claimName,
+    });
+    const volumeBefore = claimBefore.spec?.volumeName ?? '';
+    expect(volumeBefore).not.toBe('');
+
+    const podsBefore = await liveCollectorPods();
+    expect(podsBefore.length).toBe(1);
+    const oldPodName = podsBefore[0] as string;
+    const generationBefore = collectorDeployment?.metadata?.generation ?? 0;
+
+    // (b) A GENUINE template change, made the way a user would make one: a new
+    // pod annotation through the HelmRelease's values, which Flux rolls into
+    // the Deployment's pod template. `add` on an existing object replaces it,
+    // and the chart's own checksum annotation is deep-merged back in by Helm.
+    const probeValue = crypto.randomUUID();
+    await customApi.patchNamespacedCustomObject({
+      group: 'helm.toolkit.fluxcd.io',
+      version: 'v2',
+      namespace: stackNs,
+      plural: 'helmreleases',
+      name: stackName,
+      body: [
+        {
+          op: 'add',
+          path: '/spec/values/otel-collector/podAnnotations',
+          value: { 'typekro.dev/rollout-probe': probeValue },
+        },
+      ],
+    });
+
+    const startedAt = Date.now();
+
+    // Flux has to run the upgrade before the Deployment's template changes.
+    const templateDeadline = Date.now() + 900_000;
+    let templateUpdated = false;
+    while (Date.now() < templateDeadline) {
+      const deployment = await appsApi.readNamespacedDeployment({
+        namespace: stackNs,
+        name: deploymentName,
+      });
+      if (
+        deployment.spec?.template?.metadata?.annotations?.['typekro.dev/rollout-probe'] ===
+        probeValue
+      ) {
+        templateUpdated = true;
+        expect(deployment.metadata?.generation ?? 0).toBeGreaterThan(generationBefore);
+        // The upgrade must not have quietly reverted the strategy.
+        expect(deployment.spec?.strategy?.type).toBe('Recreate');
+        break;
+      }
+      await Bun.sleep(5_000);
+    }
+    expect(templateUpdated).toBe(true);
+    const templateAt = Date.now();
+
+    // (c) The rollout itself must FINISH — this is the assertion RollingUpdate
+    // would fail. Equivalent to `kubectl rollout status`: the controller has
+    // observed the new generation, every replica is updated, and none is
+    // unavailable. Along the way, count live collector Pods: Recreate must
+    // never have two of them contending for the claim.
+    const rolloutDeadline = Date.now() + 900_000;
+    let rolledOut = false;
+    let maxLivePods = 0;
+    let lastState = 'no status yet';
+    while (Date.now() < rolloutDeadline) {
+      maxLivePods = Math.max(maxLivePods, (await liveCollectorPods()).length);
+      const deployment = await appsApi.readNamespacedDeployment({
+        namespace: stackNs,
+        name: deploymentName,
+      });
+      const status = deployment.status ?? {};
+      const desired = deployment.spec?.replicas ?? 1;
+      lastState = JSON.stringify({
+        observedGeneration: status.observedGeneration,
+        updated: status.updatedReplicas,
+        ready: status.readyReplicas,
+        available: status.availableReplicas,
+        unavailable: status.unavailableReplicas,
+      });
+      if (
+        (status.observedGeneration ?? 0) >= (deployment.metadata?.generation ?? 0) &&
+        status.updatedReplicas === desired &&
+        status.readyReplicas === desired &&
+        status.availableReplicas === desired &&
+        (status.unavailableReplicas ?? 0) === 0
+      ) {
+        rolledOut = true;
+        break;
+      }
+      await Bun.sleep(5_000);
+    }
+    const finishedAt = Date.now();
+    console.log(
+      `[rollout] helm upgrade reached the template in ${Math.round(
+        (templateAt - startedAt) / 1000
+      )}s; rollout completed in ${Math.round(
+        (finishedAt - templateAt) / 1000
+      )}s; max concurrent live collector Pods: ${maxLivePods}`
+    );
+    expect(rolledOut, `rollout never completed; last status ${lastState}`).toBe(true);
+
+    // Recreate's whole contract: the old collector is gone before the new one
+    // exists, so the single-writer queue never has two claimants.
+    expect(maxLivePods).toBeLessThanOrEqual(1);
+
+    // A genuinely NEW Pod ran, carrying the annotation that caused the roll.
+    const podsAfter = await liveCollectorPods();
+    expect(podsAfter.length).toBe(1);
+    const newPodName = podsAfter[0] as string;
+    expect(newPodName).not.toBe(oldPodName);
+    const newPod = await coreApi.readNamespacedPod({ namespace: stackNs, name: newPodName });
+    expect(newPod.metadata?.annotations?.['typekro.dev/rollout-probe']).toBe(probeValue);
+
+    // It mounts the SAME claim, still bound to the same PersistentVolume…
+    const mountedClaims = (newPod.spec?.volumes ?? [])
+      .map((volume) => volume.persistentVolumeClaim?.claimName)
+      .filter((name): name is string => name !== undefined);
+    expect(mountedClaims).toContain(claimName);
+    const claimAfter = await coreApi.readNamespacedPersistentVolumeClaim({
+      namespace: stackNs,
+      name: claimName,
+    });
+    expect(claimAfter.status?.phase).toBe('Bound');
+    expect(claimAfter.spec?.volumeName).toBe(volumeBefore);
+
+    // …and the queue directory came through the rollout intact, which is what
+    // makes the brief outage Recreate costs an acceptable trade.
+    expect(await onQueueVolume('read', `set -eu; cat ${sentinel}`)).toBe(sentinelValue);
+  }, 2_400_000);
 });

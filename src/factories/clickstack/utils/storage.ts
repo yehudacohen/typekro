@@ -71,6 +71,18 @@ export const DEFAULT_QUEUE_EXTENSIONS = ['health_check', QUEUE_EXTENSION_NAME] a
 export const QUEUE_VOLUME_NAME = 'otel-file-storage';
 
 /**
+ * Deployment update strategy forced on the gateway whenever the queue is on.
+ *
+ * The collector chart's `rollout.strategy` (default `RollingUpdate`) becomes
+ * the Deployment's `spec.strategy.type` verbatim. `Recreate` is the only value
+ * under which a rollout terminates the old collector BEFORE creating its
+ * replacement, which is what a single-writer queue on a ReadWriteOnce claim
+ * requires — see {@link renderPersistentQueueValues} for why the replica pin
+ * does not cover this on its own.
+ */
+export const QUEUE_ROLLOUT_STRATEGY = 'Recreate';
+
+/**
  * The gateway subchart's OWN `extraVolumes` entry, which we must re-emit.
  *
  * Helm REPLACES a list-valued override rather than appending to it, and the
@@ -604,6 +616,33 @@ export function renderPersistentQueueConfig(
  * build-time `replicaCount` above 1 at construction. The pin makes that
  * guarantee explicit in the rendered values against later drift.
  *
+ * ⚠️ `replicaCount: 1` IS NOT ENOUGH ON ITS OWN, which is why
+ * `rollout.strategy: 'Recreate'` travels with it. One replica bounds the
+ * STEADY state, not the state DURING a rollout: the chart leaves the
+ * Deployment on Kubernetes' default `RollingUpdate` (values.yaml `rollout`,
+ * collector chart 0.146.x), whose default `maxSurge: 25%` rounds UP to one
+ * extra Pod. A rollout therefore creates the replacement Pod while the old one
+ * is still running and still holding the queue, and the replacement cannot
+ * become Ready: the ReadWriteOnce claim is already attached to the old Pod's
+ * node, and even co-scheduled there it would block on bbolt's exclusive lock.
+ * The old Pod is only terminated once the new one is Ready, so the rollout
+ * DEADLOCKS until `progressDeadlineSeconds` expires — the queue's own
+ * single-writer requirement turned into a stuck upgrade. `Recreate` inverts
+ * the order: the old Pod is deleted, its claim detaches and its lock is
+ * released, and only then is the replacement created.
+ *
+ * The cost is a brief gateway outage on every rollout, and the persistent
+ * queue is precisely what makes that cost acceptable: producers upstream of
+ * the gateway retry, and telemetry the gateway already accepted is on the
+ * claim rather than in the departing Pod's memory, so the replacement resumes
+ * draining the same queue instead of starting from an empty one.
+ *
+ * `rollout.rollingUpdate` needs no clearing here. The chart's Deployment
+ * template emits that block only under `if eq .Values.rollout.strategy
+ * "RollingUpdate"`, so `Recreate` drops it — which matters, because a
+ * Deployment carrying `strategy.type: Recreate` alongside a
+ * `strategy.rollingUpdate` block is rejected by the API server.
+ *
  * ⚠️ THE CHART'S OWN `custom-config` VOLUME IS RE-EMITTED HERE, and must be:
  * Helm REPLACES a list override instead of appending to it, and these are the
  * lists through which the chart mounts the ConfigMap it renders from
@@ -642,6 +681,12 @@ export function renderPersistentQueueValues(
       ],
       // Always pinned: the queue's bbolt database admits exactly one writer.
       replicaCount: 1,
+      // …and one writer AT A TIME, which the replica count alone does not buy
+      // during a rollout. RollingUpdate would surge a second Pod onto the same
+      // RWO claim and the same bbolt lock while the old one still holds both,
+      // deadlocking the rollout; Recreate drains first. The chart emits
+      // `rollingUpdate` only for the RollingUpdate branch, so nothing to clear.
+      rollout: { strategy: QUEUE_ROLLOUT_STRATEGY },
     },
   };
 }

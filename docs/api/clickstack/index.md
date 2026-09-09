@@ -273,6 +273,45 @@ makeClickstackBootstrap({
 });
 ```
 
+#### …and a `Recreate` rollout, because one replica does not bound an upgrade
+
+`replicaCount: 1` bounds the **steady state**. It says nothing about what happens *during* a
+rollout, and a rollout is where the queue's single-writer rule actually bites.
+
+The collector chart leaves the Deployment on Kubernetes' default `RollingUpdate`
+(`rollout.strategy` in its `values.yaml`), whose default `maxSurge: 25%` rounds **up** to one extra
+Pod. So changing anything in the pod template — a new chart version, an image tag, an annotation —
+creates the replacement collector while the old one is still running. The replacement then cannot
+become Ready: the `ReadWriteOnce` claim is already attached to the old Pod's node, and even
+co-scheduled there it would block on bbolt's exclusive lock. `RollingUpdate` will not terminate the
+old Pod until the new one is Ready, so **the rollout deadlocks** until `progressDeadlineSeconds`
+expires. The single-replica pin does not prevent that; it is what causes it.
+
+Whenever `persistentQueue` is enabled, TypeKro therefore also pins:
+
+```yaml
+otel-collector:
+  replicaCount: 1
+  rollout:
+    strategy: Recreate
+```
+
+`Recreate` inverts the order: the old collector is deleted, its claim detaches and its lock is
+released, and only then is the replacement created. Nothing carries a `rollingUpdate` block
+alongside it — the chart's Deployment template emits that only on the `RollingUpdate` branch, and
+the API server rejects a `Recreate` strategy that has one.
+
+**The cost is a brief gateway outage on every rollout**, and the persistent queue is precisely what
+makes that cost acceptable: producers upstream of the gateway retry, and telemetry the gateway has
+already accepted sits on the claim rather than in the departing Pod's memory, so the replacement
+resumes draining the same queue instead of starting empty. Without a queue there would be nothing
+to make the gap safe — which is why the pin is scoped to the queue. **With no `persistentQueue` the
+gateway keeps the chart's `RollingUpdate` default** and stays available across a rollout.
+
+Unlike `replicaCount`, a build-time `values['otel-collector'].rollout.strategy` is not rejected at
+construction — it is simply **overridden**. The deadlock is a property of the queue, not a
+trade-off the caller gets to take.
+
 ::: info Future path: per-replica queues
 Running several collectors each with their **own** queue is a real design, and a different one: it
 needs the upstream chart's `mode: statefulset` with `volumeClaimTemplates`, so every replica gets a

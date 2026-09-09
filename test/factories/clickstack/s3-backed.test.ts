@@ -406,6 +406,34 @@ describe('the persistent queue outlives the collector Pod', () => {
     ).toBe(1);
   });
 
+  it('forces Recreate, because one replica does not bound a ROLLOUT', () => {
+    // `replicaCount: 1` bounds the steady state only. The chart leaves the
+    // Deployment on RollingUpdate, whose default maxSurge rounds up to one
+    // extra Pod, so an upgrade creates the replacement while the old collector
+    // still holds the RWO claim and the bbolt lock — the new Pod never becomes
+    // Ready, and RollingUpdate will not terminate the old one until it does.
+    // Recreate drains first and is the only value that breaks that deadlock.
+    const values = renderPersistentQueueValues(resolveQueue({}), 'c-otel-queue');
+    const collector = values['otel-collector'] as Record<string, unknown>;
+    expect(collector.rollout).toEqual({ strategy: 'Recreate' });
+
+    // No `rollingUpdate` key travels with it: the chart's Deployment template
+    // emits that block only on the RollingUpdate branch, and the API server
+    // rejects a Recreate strategy that carries one.
+    expect(collector.rollout).not.toHaveProperty('rollingUpdate');
+
+    // Independent of every queue knob — it is a property of the single-writer
+    // queue itself, not of the volume's size or class.
+    expect(
+      (
+        renderPersistentQueueValues(
+          resolveQueue({ size: '40Gi', storageClassName: 'gp3' }),
+          'c-otel-queue'
+        )['otel-collector'] as Record<string, unknown>
+      ).rollout
+    ).toEqual({ strategy: 'Recreate' });
+  });
+
   it('offers NO access-mode knob — the claim is always ReadWriteOnce', () => {
     // The RWX escape hatch is gone: a shared filesystem hands every replica
     // the same locked bbolt database, so it never bought multi-replica ingest.
@@ -413,9 +441,7 @@ describe('the persistent queue outlives the collector Pod', () => {
     // An accessModes value is not part of the option type any more, and is
     // ignored rather than honoured if one is smuggled through at runtime.
     expect(resolveQueue({ accessModes: ['ReadWriteMany'] }).accessModes).toEqual(['ReadWriteOnce']);
-    expect(renderPersistentQueueClaimSpec(resolveQueue({})).accessModes).toEqual([
-      'ReadWriteOnce',
-    ]);
+    expect(renderPersistentQueueClaimSpec(resolveQueue({})).accessModes).toEqual(['ReadWriteOnce']);
   });
 
   it('derives the claim name from the release name, for mount and claim alike', () => {
@@ -494,8 +520,11 @@ describe('makeClickstackBootstrap({ storage })', () => {
     // The HelmRelease waits on the claim, so the collector's first Pod can
     // bind it.
     expect(yaml).toContain('typekro.dev/depends-on-clickstackQueueClaim');
-    // The RWO claim pins the collector Deployment to one replica.
+    // The RWO claim pins the collector Deployment to one replica…
     expect(yaml).toContain('replicaCount: 1');
+    // …and forces Recreate, so a rollout drains the old collector before the
+    // replacement contends for the same claim and the same bbolt lock.
+    expect(yaml).toContain('strategy: Recreate');
 
     // The two volume shapes Kubernetes deletes with the Pod must not appear in
     // the collector's own values. (`volumeClaimTemplates` legitimately appears
@@ -519,6 +548,11 @@ describe('makeClickstackBootstrap({ storage })', () => {
     const yaml = bootstrap.toYaml();
     expect(yaml).not.toContain('kind: PersistentVolumeClaim');
     expect(yaml).not.toContain('-otel-queue');
+    // Recreate is the queue's constraint, not a house style: with no queue the
+    // gateway keeps the chart's own RollingUpdate default and stays available
+    // across a rollout, so nothing is pinned here.
+    expect(yaml).not.toContain('rollout:');
+    expect(yaml).not.toContain('Recreate');
   });
 
   it('rejects several collector replicas alongside the queue at CONSTRUCTION', () => {
@@ -581,12 +615,32 @@ describe('makeClickstackBootstrap({ storage })', () => {
     expect(yaml).toContain('-otel-queue');
     expect(yaml).toContain('claimName: ${string(schema.spec.name)}-otel-queue');
     expect(yaml).toContain('replicaCount: 1');
+    expect(yaml).toContain('strategy: Recreate');
     // The chart's own mount survives next to the queue's — dropping it leaves
     // the OpAMP supervisor unable to read custom.config.yaml.
     expect(yaml).toContain('custom-config');
     expect(yaml).toContain('clickstack-otel-custom-config');
     expect(yaml).toContain('/etc/otelcol-contrib/custom');
     expect(yaml).not.toContain('emptyDir');
+  });
+
+  it('overrides a build-time RollingUpdate rather than letting it deadlock', () => {
+    // Unlike `replicaCount`, a rollout strategy is not rejected at
+    // construction — it is simply overridden, because the deadlock it causes
+    // is a property of the queue and not a trade-off the caller can take.
+    const yaml = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-rollout',
+      kind: 'ClickStackS3QueueRollout',
+      storage: { mode: 's3', persistentQueue: { enabled: true } },
+      values: {
+        'otel-collector': {
+          rollout: { strategy: 'RollingUpdate', rollingUpdate: { maxSurge: 1 } },
+        },
+      },
+    }).toYaml();
+
+    expect(yaml).toContain('strategy: Recreate');
+    expect(yaml).not.toContain('strategy: RollingUpdate');
   });
 
   it('does not constrain replicas when no queue is requested', () => {
