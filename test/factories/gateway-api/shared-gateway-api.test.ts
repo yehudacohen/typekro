@@ -96,19 +96,19 @@ describe('shared Gateway API resources', () => {
           },
         ],
       },
-      id: 'costApiRoute',
+      id: 'ordersApiRoute',
     });
     expect(route.kind).toBe('HTTPRoute');
     expect(route.spec.rules?.[0]?.timeouts?.request).toBe('120s');
 
     const grpc = grpcRoute({
-      name: 'cost-grpc',
+      name: 'orders-grpc',
       namespace: 'edge',
       spec: {
         parentRefs: [{ name: 'edge', namespace: 'traefik' }],
-        rules: [{ backendRefs: [{ name: 'cost-grpc', port: 9090 }] }],
+        rules: [{ backendRefs: [{ name: 'orders-grpc', port: 9090 }] }],
       },
-      id: 'costGrpcRoute',
+      id: 'ordersGrpcRoute',
     });
     expect(grpc.kind).toBe('GRPCRoute');
 
@@ -466,7 +466,7 @@ describe('traefik consumes the shared Gateway API module', () => {
           },
         ],
       },
-      id: 'costApiHttpRoute',
+      id: 'ordersApiHttpRoute',
     });
 
     expect(route.spec.rules?.[0]?.filters?.[0]?.extensionRef?.kind).toBe('Middleware');

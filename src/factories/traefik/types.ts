@@ -18,6 +18,7 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
 const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
@@ -700,6 +701,17 @@ export interface TraefikPortValues {
     };
     middlewares?: string[];
     maxHeaderBytes?: number;
+    /**
+     * TLS termination for the entrypoint. Nested under `http`, which is where
+     * chart 41.5.0's `values.schema.json` puts it — `ports.<name>.tls` is
+     * rejected by the schema (`additionalProperties 'tls' not allowed`).
+     */
+    tls?: {
+      enabled?: boolean;
+      options?: string;
+      certResolver?: string;
+      domains?: { main?: string; sans?: string[] }[];
+    };
     [key: string]: unknown;
   };
   forwardedHeaders?: { trustedIPs?: string[]; insecure?: boolean; [key: string]: unknown };
@@ -717,12 +729,6 @@ export interface TraefikPortValues {
     };
     keepAliveMaxRequests?: number;
     keepAliveMaxTime?: TraefikDuration;
-  };
-  tls?: {
-    enabled?: boolean;
-    options?: string;
-    certResolver?: string;
-    domains?: { main?: string; sans?: string[] }[];
   };
   observability?: Record<string, unknown>;
   [key: string]: unknown;
@@ -777,7 +783,18 @@ export interface TraefikHelmValues {
       nativeLBByDefault?: boolean;
       [key: string]: unknown;
     };
-    kubernetesIngress?: { enabled?: boolean; ingressClass?: string; [key: string]: unknown };
+    kubernetesIngress?: {
+      enabled?: boolean;
+      ingressClass?: string;
+      /**
+       * Service whose address Traefik copies onto `Ingress.status`. The chart
+       * emits the flag only when it created the Service itself OR when
+       * `pathOverride` names one — this factory owns the Service, so the mapper
+       * always sets `pathOverride`.
+       */
+      publishedService?: { enabled?: boolean; pathOverride?: string; [key: string]: unknown };
+      [key: string]: unknown;
+    };
     kubernetesGateway?: {
       enabled?: boolean;
       experimentalChannel?: boolean;
@@ -816,8 +833,14 @@ export interface TraefikHelmValues {
   experimental?: { otlpLogs?: boolean; plugins?: Record<string, unknown>; [key: string]: unknown };
   ports?: Record<string, TraefikPortValues>;
   service?: {
+    /**
+     * Pinned OFF by the values mapper: the bootstrap composition OWNS the
+     * entrypoint Service so its address can be projected without reading an
+     * unmanaged resource before anything has been applied.
+     */
     enabled?: boolean;
     single?: boolean;
+    nameOverride?: string;
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
     /** The Service type lives here in chart 3x, not at `service.type`. */
@@ -828,11 +851,23 @@ export interface TraefikHelmValues {
   tlsStore?: Record<string, unknown>;
   rbac?: { enabled?: boolean; namespaced?: boolean; [key: string]: unknown };
   /**
-   * Pinned to the release name by the values mapper so the Service name — and
-   * therefore the status contract — is deterministic instead of depending on
-   * the chart's fullname template.
+   * Pinned to the release name by the values mapper so the resource-name anchor
+   * — and therefore the name of the Service this factory owns — is
+   * deterministic instead of depending on the chart's fullname template.
    */
   fullnameOverride?: string;
+  /**
+   * Pinned to `TRAEFIK_POD_NAME_LABEL_VALUE`. Feeds the chart's
+   * `app.kubernetes.io/name` pod label, which the owned Service selects on.
+   */
+  nameOverride?: string;
+  /**
+   * Pinned to the release name. Feeds the chart's `app.kubernetes.io/instance`
+   * pod label — otherwise derived from the Helm release name, which Flux
+   * composes from the HelmRelease name and target namespace — so the owned
+   * Service's selector is exact and stable.
+   */
+  instanceLabelOverride?: string;
   serviceAccount?: { name?: string };
   serviceAccountAnnotations?: Record<string, string>;
   resources?: {
@@ -894,6 +929,15 @@ export interface TraefikHelmReleaseConfig {
   readonly timeout?: string;
   /** Whether Flux should create `targetNamespace`. @default false */
   readonly createNamespace?: boolean;
+  /**
+   * CRD policy applied to BOTH `install.crds` and `upgrade.crds`.
+   *
+   * Flux defaults `upgrade.crds` to `Skip`, which would leave the CRDs of the
+   * first-installed chart version in place across a chart bump.
+   *
+   * @default DEFAULT_TRAEFIK_CRDS_POLICY (`'CreateReplace'`)
+   */
+  readonly crds?: HelmReleaseCrdsPolicy;
   readonly values?: TraefikMappedHelmValues;
   readonly id?: string;
 }
@@ -922,14 +966,20 @@ export const TraefikBootstrapConfigSchema = type({
     /** Cloud load-balancer annotations, e.g. the AWS NLB set. */
     'annotations?': 'Record<string, string>',
   },
+  /**
+   * Published ports and timeouts of the two entrypoints this edge exposes.
+   *
+   * Both are always published by the Service this composition owns: whether a
+   * port EXISTS is structural, so it cannot come from a runtime value that may
+   * be a schema reference. Use the build-time `values` passthrough for a
+   * chart-level entrypoint this factory does not model.
+   */
   'entrypoints?': {
     'web?': {
       'exposedPort?': kubernetesPort,
-      'expose?': 'boolean',
     },
     'websecure?': {
       'exposedPort?': kubernetesPort,
-      'expose?': 'boolean',
       /** Entrypoint responding timeouts, for requests longer than 60s. */
       'readTimeout?': 'string > 0',
       'writeTimeout?': 'string > 0',
@@ -967,15 +1017,19 @@ export type TraefikBootstrapConfig = typeof TraefikBootstrapConfigSchema.infer;
 /**
  * Status contract of the `traefikBootstrap` composition.
  *
- * `loadBalancer` mirrors the Traefik Service's `status.loadBalancer.ingress[0]`
- * and stays empty for `ClusterIP` / `NodePort` services or while a cloud
- * controller is still provisioning an address.
+ * `loadBalancer` mirrors the entrypoint Service's
+ * `status.loadBalancer.ingress[0]` and stays empty for `ClusterIP` /
+ * `NodePort` services or while a cloud controller is still provisioning an
+ * address.
  *
- * Every field is derived from a graph resource, so it is populated in both
- * direct and KRO mode — except `entrypoints`, which is fixed by this
- * composition's values mapping and is therefore a literal. KRO leaves literal
- * status fields unset (the same is true of `apisix`'s literal status fields);
- * direct mode reports them.
+ * EVERY field here is a projection of a resource this composition owns, so it
+ * hydrates identically in direct and KRO mode. That rules out literals: KRO
+ * drops literal status fields, so declaring one would require a field the
+ * instance never carries. The entrypoint NAMES are therefore not in this
+ * contract — they are fixed by this composition and exported as
+ * `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
+ * live port names off the Service named by `serviceName` if a consumer needs
+ * them at runtime.
  */
 export const TraefikBootstrapStatusSchema = type({
   ready: 'boolean',
@@ -985,7 +1039,6 @@ export const TraefikBootstrapStatusSchema = type({
     hostname: 'string',
     ip: 'string',
   },
-  entrypoints: 'string[]',
   serviceName: 'string',
 });
 
@@ -1064,6 +1117,19 @@ export interface TraefikBootstrapBuildOptions {
   readonly defaultTlsOption?: TraefikDefaultTlsOptionOptions;
   /** Create a cluster-default `TLSStore` fed by a cert-manager Secret. */
   readonly defaultTlsStore?: TraefikDefaultTlsStoreOptions;
+  /**
+   * Flux CRD policy for the release, applied to `install.crds` AND
+   * `upgrade.crds`.
+   *
+   * The default replaces the chart's `crds/` on every reconcile, which is what
+   * keeps the `traefik.io/v1alpha1` CRDs in lockstep with the chart version.
+   * Set `'Skip'` only when the CRDs are managed by something else — a
+   * cluster-wide CRD pipeline, say — and accept that a chart bump then needs a
+   * separate CRD rollout.
+   *
+   * @default DEFAULT_TRAEFIK_CRDS_POLICY (`'CreateReplace'`)
+   */
+  readonly crds?: HelmReleaseCrdsPolicy;
   /**
    * Concrete chart values merged BEFORE the security pins, which always win.
    * Use for chart surface this factory does not model.

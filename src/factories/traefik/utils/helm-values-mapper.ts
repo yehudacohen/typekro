@@ -13,12 +13,15 @@
  */
 
 import { Cel } from '../../../core/references/cel.js';
+import type { RefOrValue } from '../../../core/types/references.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   DEFAULT_TRAEFIK_CHART_VERSION,
   DEFAULT_TRAEFIK_INGRESS_CLASS,
+  DEFAULT_TRAEFIK_NAMESPACE,
   DEFAULT_TRAEFIK_WEB_PORT,
   DEFAULT_TRAEFIK_WEBSECURE_PORT,
+  TRAEFIK_POD_NAME_LABEL_VALUE,
   TRAEFIK_WEBSECURE_ENTRYPOINT,
 } from '../constants.js';
 import type {
@@ -72,6 +75,33 @@ export const TRAEFIK_SECURITY_PINS = {
   global: { checkNewVersion: false, sendAnonymousUsage: false },
 } as const;
 
+/**
+ * Values that hand ownership of the entrypoint Service to TypeKro.
+ *
+ * The chart would otherwise create the Service itself, and a composition can
+ * only project a resource's status if that resource is part of its graph.
+ * Observing the chart's Service instead made every fresh direct deployment fail
+ * before it started: the direct engine resolves external references BEFORE it
+ * applies anything, and a `404` on the not-yet-created Service is fatal.
+ *
+ * Three pins make the owned Service possible. Two are constants and live here;
+ * the third takes the release name, so {@link applyTraefikOwnershipPins} adds
+ * it.
+ *
+ * - `service.enabled: false` — the chart skips its whole Service template.
+ * - `nameOverride` — fixes the chart's `app.kubernetes.io/name` pod label.
+ * - `instanceLabelOverride` — fixes `app.kubernetes.io/instance`, which the
+ *   chart otherwise derives from the Helm release name (Flux composes that from
+ *   the HelmRelease name and the target namespace).
+ *
+ * Together those two labels are exactly the chart's own pod selector, so the
+ * owned Service front-ends the same pods the chart's Service would have.
+ */
+export const TRAEFIK_OWNERSHIP_PINS = {
+  service: { enabled: false },
+  nameOverride: TRAEFIK_POD_NAME_LABEL_VALUE,
+} as const;
+
 /** Build-time inputs that shape which configuration the values tree contains. */
 export interface TraefikHelmValuesMapperOptions {
   /**
@@ -85,8 +115,18 @@ export interface TraefikHelmValuesMapperOptions {
    * structural rather than a value. @default true
    */
   readonly redirectWebToWebsecure?: boolean;
-  /** Namespace Traefik is installed into, used for the Gateway status address. */
-  readonly targetNamespace?: string;
+  /**
+   * Namespace Traefik is installed into.
+   *
+   * Used to name the Service whose address Traefik copies onto `Ingress`
+   * status. The chart emits that flag only when IT created the Service, so
+   * disabling the chart's Service would silently drop Ingress status hydration
+   * unless `publishedService.pathOverride` names the owned Service instead.
+   *
+   * May be a schema reference or CEL expression: it is only ever placed into
+   * the values tree, never branched on.
+   */
+  readonly targetNamespace?: RefOrValue<string>;
 }
 
 /**
@@ -144,6 +184,42 @@ export function applyTraefikSecurityPins(values: TraefikHelmValues): TraefikHelm
 }
 
 /**
+ * Overwrite the values that decide who owns the entrypoint Service.
+ *
+ * Applied after `baseValues` so a passthrough cannot hand the Service back to
+ * the chart, which would produce a second Service competing for the same name.
+ *
+ * @param values - Chart values to pin.
+ * @param instanceLabel - Value for the chart's `app.kubernetes.io/instance`
+ *   pod label. Normally the release name; may be a schema reference.
+ */
+export function applyTraefikOwnershipPins(
+  values: TraefikHelmValues,
+  instanceLabel: RefOrValue<string>
+): TraefikHelmValues {
+  return {
+    ...values,
+    service: { ...values.service, ...TRAEFIK_OWNERSHIP_PINS.service },
+    nameOverride: TRAEFIK_OWNERSHIP_PINS.nameOverride,
+    instanceLabelOverride: instanceLabel as string,
+  };
+}
+
+/**
+ * Type of the entrypoint Service this factory owns.
+ *
+ * Lives here rather than in the composition so the Service's type and the
+ * chart values it is paired with share one default. `Cel.default` rather than
+ * `??`: a schema proxy is a truthy object, so `??` would keep the reference and
+ * drop the fallback in KRO mode.
+ *
+ * @param config - The bootstrap spec. `service.type` may be a schema reference.
+ */
+export function traefikEntrypointServiceType(config: TraefikBootstrapConfig): TraefikServiceType {
+  return Cel.default(config.service?.type, 'LoadBalancer');
+}
+
+/**
  * Map the bootstrap runtime spec onto official-chart values.
  *
  * @param config - The bootstrap spec. Any field may be a schema reference.
@@ -170,7 +246,6 @@ export function mapTraefikConfigToHelmValues(
   // drop the fallback in KRO mode, leaving the chart's own default in place and
   // making direct and KRO deployments disagree.
   const ingressClass = Cel.default(config.ingressClass, DEFAULT_TRAEFIK_INGRESS_CLASS);
-  const serviceType: TraefikServiceType = Cel.default(config.service?.type, 'LoadBalancer');
   const redirect = options.redirectWebToWebsecure ?? true;
 
   // OTLP is enabled by the PRESENCE of an endpoint. In KRO mode the endpoint is
@@ -189,9 +264,15 @@ export function mapTraefikConfigToHelmValues(
   const otlpInsecure = Cel.default(config.otlp?.insecure, true);
   const otlpServiceName = Cel.default(config.otlp?.serviceName, 'traefik');
 
+  // `expose` is a structural choice (whether a port EXISTS on the Service), so
+  // it is not spec-driven: the composition OWNS the entrypoint Service and
+  // always publishes both entrypoints. These chart-side values only matter if
+  // the chart's own Service is re-enabled through `baseValues`, which the
+  // ownership pins prevent — they are kept so the values tree still states the
+  // intent for anyone reading it.
   const webPort: TraefikPortValues = {
     exposedPort: Cel.default(config.entrypoints?.web?.exposedPort, DEFAULT_TRAEFIK_WEB_PORT),
-    expose: { default: Cel.default(config.entrypoints?.web?.expose, true) },
+    expose: { default: true },
     ...(redirect
       ? {
           http: {
@@ -212,8 +293,10 @@ export function mapTraefikConfigToHelmValues(
       config.entrypoints?.websecure?.exposedPort,
       DEFAULT_TRAEFIK_WEBSECURE_PORT
     ),
-    expose: { default: Cel.default(config.entrypoints?.websecure?.expose, true) },
-    tls: { enabled: true },
+    expose: { default: true },
+    // TLS lives under `http` in chart 41.5.0 — `ports.websecure.tls` is
+    // rejected outright by the chart's values.schema.json.
+    http: { tls: { enabled: true } },
     // An edge fronting requests longer than Traefik's 60s default must raise
     // the responding timeouts here as well as the upstream ServersTransport.
     transport: {
@@ -226,9 +309,10 @@ export function mapTraefikConfigToHelmValues(
   };
 
   const mapped: TraefikHelmValues = {
-    // Pin the resource-name anchor so the entrypoint Service is named exactly
-    // `config.name`. Without it the chart's fullname template decides, and the
-    // bootstrap status contract could not name the Service it observes.
+    // Pin the resource-name anchor to `config.name`. The chart's fullname
+    // template would otherwise decide the name of the ServiceAccount, RBAC and
+    // Deployment — and of the Service the chart's Ingress `publishedService`
+    // path points at, which must match the Service this factory owns.
     fullnameOverride: config.name,
     deployment: { replicas: Cel.default(config.replicas, 2) },
     ingressClass: {
@@ -245,6 +329,20 @@ export function mapTraefikConfigToHelmValues(
       },
       kubernetesIngress: {
         enabled: Cel.default(config.providers?.kubernetesIngress, false),
+        // The chart emits `--providers.kubernetesingress.ingressendpoint.
+        // publishedservice` only when it created the Service itself, or when a
+        // pathOverride names one. This factory owns the Service, so the
+        // override is what keeps `Ingress.status.loadBalancer` hydrating. The
+        // path is `<namespace>/<name>` — the same value the chart's own default
+        // would have produced.
+        publishedService: {
+          enabled: true,
+          pathOverride: Cel.template(
+            '%s/%s',
+            options.targetNamespace ?? Cel.default(config.namespace, DEFAULT_TRAEFIK_NAMESPACE),
+            config.name
+          ),
+        },
       },
       kubernetesGateway: {
         enabled: Cel.default(config.providers?.gatewayApi, false),
@@ -278,11 +376,8 @@ export function mapTraefikConfigToHelmValues(
       // off) dashboard. It must never be published by the Service.
       traefik: { expose: { default: false } },
     },
-    service: {
-      enabled: true,
-      spec: { type: serviceType },
-      ...(config.service?.annotations ? { annotations: config.service.annotations } : {}),
-    },
+    // No `service` section: the entrypoint Service — its type, annotations and
+    // published ports — is a resource this factory owns, not a chart value.
     resources: {
       requests: { cpu: '100m', memory: '128Mi' },
       limits: { cpu: '1', memory: '512Mi' },
@@ -290,7 +385,16 @@ export function mapTraefikConfigToHelmValues(
   };
 
   const merged = mergeSections(options.baseValues ?? {}, mapped);
-  return applyTraefikSecurityPins(merged);
+  return applyTraefikSecurityPins(applyTraefikOwnershipPins(merged, config.name));
+}
+
+/** Facts about the owned entrypoint Service that the chart values no longer carry. */
+export interface TraefikHelmValuesValidationContext {
+  /**
+   * Type of the Service this factory owns. The chart values cannot say: the
+   * entrypoint Service is a TypeKro-owned resource, not a chart value.
+   */
+  readonly serviceType?: TraefikServiceType;
 }
 
 /**
@@ -301,8 +405,13 @@ export function mapTraefikConfigToHelmValues(
  *
  * @param values - Chart values, normally the output of
  *   {@link mapTraefikConfigToHelmValues}.
+ * @param context - Facts about the owned entrypoint Service. Omit it and the
+ *   Service-type warnings simply do not fire.
  */
-export function validateTraefikHelmValues(values: TraefikHelmValues): string[] {
+export function validateTraefikHelmValues(
+  values: TraefikHelmValues,
+  context: TraefikHelmValuesValidationContext = {}
+): string[] {
   const warnings: string[] = [];
 
   if (values.api?.dashboard === true) {
@@ -330,7 +439,12 @@ export function validateTraefikHelmValues(values: TraefikHelmValues): string[] {
       'Traefik is claiming the cluster-default IngressClass. Every Ingress without an explicit class will be routed by this installation.'
     );
   }
-  if (values.deployment?.replicas === 1 && values.service?.spec?.type === 'LoadBalancer') {
+  if (values.service?.enabled === true) {
+    warnings.push(
+      'The chart is creating its own entrypoint Service. This factory owns that Service so its address can be projected into the status contract; seeing it enabled means the ownership pins were bypassed.'
+    );
+  }
+  if (values.deployment?.replicas === 1 && context.serviceType === 'LoadBalancer') {
     warnings.push(
       'A single Traefik replica behind a LoadBalancer has no rolling-update headroom. Consider replicas >= 2 for a production edge.'
     );

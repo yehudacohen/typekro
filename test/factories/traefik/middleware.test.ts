@@ -208,7 +208,7 @@ describe('Middleware builders', () => {
       address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
       authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
       authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
-      id: 'costApiAuthz',
+      id: 'ordersApiAuthz',
     });
 
     expect(middleware.spec.forwardAuth?.trustForwardHeader).toBe(false);
@@ -252,7 +252,7 @@ describe('Middleware builders', () => {
         db: 3,
         dialTimeout: '500ms',
       },
-      id: 'costApiRateLimit',
+      id: 'ordersApiRateLimit',
     });
 
     expect(middleware.spec.rateLimit?.average).toBe(50);
@@ -302,7 +302,7 @@ describe('Middleware builders', () => {
       namespace: NAMESPACE,
       amount: 20,
       requestHeaderName: 'X-Edge-Customer',
-      id: 'costApiConcurrency',
+      id: 'ordersApiConcurrency',
     });
 
     expect(middleware.spec.inFlightReq?.amount).toBe(20);
@@ -328,7 +328,7 @@ describe('Middleware builders', () => {
         stsSeconds: 31_536_000,
         stsIncludeSubdomains: true,
       },
-      id: 'costApiHeaders',
+      id: 'ordersApiHeaders',
     });
 
     expect(middleware.spec.headers?.accessControlAllowOriginList).toEqual([
@@ -355,7 +355,7 @@ describe('Middleware builders', () => {
       name: 'orders-api-body-limit',
       namespace: NAMESPACE,
       buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
-      id: 'costApiBodyLimit',
+      id: 'ordersApiBodyLimit',
     });
 
     expect(middleware.spec.buffering?.maxRequestBodyBytes).toBe(1_048_576);
@@ -371,7 +371,7 @@ describe('Middleware builders', () => {
         { name: 'orders-api-authz' },
         { name: 'orders-api-rate-limit' },
       ],
-      id: 'costApiEdgeChain',
+      id: 'ordersApiEdgeChain',
     });
 
     expect(middleware.spec.chain?.middlewares.map((entry) => entry.name)).toEqual([

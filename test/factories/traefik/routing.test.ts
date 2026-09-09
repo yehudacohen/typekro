@@ -34,7 +34,7 @@ describe('traefikIngressRoute', () => {
           options: { name: 'default', namespace: 'traefik' },
         },
       },
-      id: 'costApiRoute',
+      id: 'ordersApiRoute',
     });
 
     expect(route.apiVersion).toBe('traefik.io/v1alpha1');
@@ -148,7 +148,7 @@ describe('traefikService', () => {
           sticky: { cookie: { name: 'canary', secure: true, httpOnly: true, sameSite: 'strict' } },
         },
       },
-      id: 'costApiCanary',
+      id: 'ordersApiCanary',
     });
 
     expect(composed.kind).toBe('TraefikService');
@@ -167,7 +167,7 @@ describe('traefikService', () => {
           mirrors: [{ name: 'orders-api-shadow', port: 8080, percent: 10 }],
         },
       },
-      id: 'costApiMirror',
+      id: 'ordersApiMirror',
     });
 
     expect(composed.spec.mirroring?.mirrors?.[0]?.percent).toBe(10);
@@ -187,7 +187,7 @@ describe('traefikServersTransport', () => {
         },
         maxIdleConnsPerHost: 64,
       },
-      id: 'costApiTransport',
+      id: 'ordersApiTransport',
     });
 
     expect(transport.kind).toBe('ServersTransport');

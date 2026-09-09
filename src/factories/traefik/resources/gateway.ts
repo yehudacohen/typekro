@@ -107,7 +107,7 @@ export function traefikGateway(
  *       },
  *     ],
  *   },
- *   id: 'costApiHttpRoute',
+ *   id: 'ordersApiHttpRoute',
  * });
  * ```
  */

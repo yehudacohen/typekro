@@ -92,11 +92,13 @@ interface TraefikBootstrapConfig {
     type?: 'LoadBalancer' | 'NodePort' | 'ClusterIP';
     annotations?: Record<string, string>;
   };
+  // Both entrypoints are always published by the Service the bootstrap owns:
+  // whether a port EXISTS is structural, so it cannot come from a value that
+  // may be a schema reference.
   entrypoints?: {
-    web?: { exposedPort?: number; expose?: boolean };
+    web?: { exposedPort?: number };
     websecure?: {
       exposedPort?: number;
-      expose?: boolean;
       readTimeout?: string;
       writeTimeout?: string;
       idleTimeout?: string;
@@ -129,10 +131,22 @@ const edge = traefik.makeTraefikBootstrap({
   redirectWebToWebsecure: true,
   defaultTlsOption: { minVersion: 'VersionTLS13' },
   defaultTlsStore: { defaultCertificateSecretName: 'edge-wildcard-tls' },
+  // Flux CRD policy, applied to install AND upgrade. 'Skip' only when the
+  // traefik.io CRDs are managed by something else.
+  crds: 'CreateReplace',
   // Chart surface this factory does not model. The security pins still win.
   values: { podDisruptionBudget: { enabled: true, minAvailable: 1 } },
 });
 ```
+
+### CRD lifecycle
+
+Chart 41.5.0 ships the `traefik.io/v1alpha1` CRDs in its own `crds/` directory,
+so one `HelmRelease` installs the CRDs and the proxy together. Flux, however,
+defaults `spec.upgrade.crds` to `Skip` — a chart bump would install a newer
+proxy against the CRD schemas the release was *first* created with. Both
+`install.crds` and `upgrade.crds` are therefore set from one option, defaulting
+to `CreateReplace`.
 
 ### Status contract
 
@@ -142,21 +156,50 @@ interface TraefikBootstrapStatus {
   failed: boolean;
   phase: 'Ready' | 'Installing' | 'Failed';
   loadBalancer: { hostname: string; ip: string };
-  entrypoints: string[];
   serviceName: string;
 }
 ```
 
 `ready` / `failed` / `phase` come from the `HelmRelease`'s Ready condition,
-ignoring conditions stale for the current generation. `loadBalancer` mirrors
-`status.loadBalancer.ingress[0]` of the entrypoint Service, which the factory
-observes rather than owns; both fields stay `''` for a `ClusterIP` or
-`NodePort` Service and while a cloud controller is still provisioning an
-address. `serviceName` is read back from that Service — the values mapper pins
-`fullnameOverride` to `spec.name` so the name is deterministic.
+ignoring conditions stale for the current generation. `loadBalancer` reports the
+first `status.loadBalancer.ingress` entry of the entrypoint Service that carries
+the field — an entry carries `ip` or `hostname`, rarely both, and a load
+balancer may report several. Both fields stay `''` for a `ClusterIP` or
+`NodePort` Service and while a cloud controller is still provisioning.
+`serviceName` is read back from the same Service — the values mapper pins
+`fullnameOverride` to `spec.name`, so the name is deterministic.
 
-`entrypoints` is fixed by this composition's values mapping and is therefore a
-literal. KRO leaves literal status fields unset; direct mode reports them.
+Every field is a projection of a resource the composition **owns**. That rules
+out literals: KRO leaves literal status fields unset, so declaring one would
+put a field in the status schema that the instance never carries. The
+entrypoint *names* are consequently not part of this contract — they are fixed
+by the composition and exported as `TRAEFIK_WEB_ENTRYPOINT` and
+`TRAEFIK_WEBSECURE_ENTRYPOINT`.
+
+### The entrypoint Service is owned, not observed
+
+The chart would normally create the entrypoint Service, and an earlier revision
+of this factory read it back with `observedResource`. That cannot work for a
+fresh deployment: `DirectDeploymentEngine` resolves every external reference
+*before* it applies anything, and a failed read is fatal — so the first deploy
+died on a `404` for a Service the release had not created yet, and `dependsOn`
+could not reorder it because the read happens before the dependency graph is
+walked.
+
+The factory therefore disables the chart's Service (`service.enabled: false`)
+and creates a typed one instead, selecting the chart's pods through
+`app.kubernetes.io/name` and `app.kubernetes.io/instance`. Both label sources
+are pinned (`nameOverride`, `instanceLabelOverride`) so the selector cannot
+drift with the Helm release name Flux composes. Two consequences worth knowing:
+
+- The Service type, its annotations and its published ports are properties of a
+  resource TypeKro owns, not chart values. A `LoadBalancer` Service therefore
+  participates in `waitForReady`.
+- `providers.kubernetesIngress.publishedService.pathOverride` is set to the
+  owned Service, because the chart only emits that flag for a Service it
+  created itself. The chart's Gateway API `statusAddress.service` wiring has no
+  such override and is skipped; set `providers.kubernetesGateway.statusAddress`
+  through `values` if a Gateway needs a published address.
 
 ## Routing with typed CRDs
 
@@ -166,6 +209,7 @@ const route = traefik.traefikIngressRoute({
   namespace: 'edge',
   spec: {
     entryPoints: ['websecure'],
+    ingressClassName: 'traefik',
     routes: [
       {
         match: 'Host(`api.example.com`) && PathPrefix(`/v1`)',
@@ -180,9 +224,16 @@ const route = traefik.traefikIngressRoute({
       options: { name: 'default', namespace: 'traefik' },
     },
   },
-  id: 'costApiRoute',
+  id: 'ordersApiRoute',
 });
 ```
+
+`ingressClassName` is **required**, not decoration. The bootstrap sets
+`providers.kubernetesCRD.ingressClass` (from `spec.ingressClass`, default
+`traefik`), and Traefik then processes only the CRDs whose class matches — that
+is what lets two Traefik installations share a cluster without stealing each
+other's routes. An `IngressRoute` without it is silently ignored and the edge
+answers `404`.
 
 Traefik's `providers.kubernetesCRD.allowCrossNamespace` is `false` by default,
 so an `IngressRoute` and the `Middleware` resources it names must share a
@@ -204,7 +255,7 @@ const transport = traefik.traefikServersTransport({
   spec: {
     forwardingTimeouts: { responseHeaderTimeout: '120s', idleConnTimeout: '150s' },
   },
-  id: 'costApiTransport',
+  id: 'ordersApiTransport',
 });
 ```
 
@@ -235,7 +286,7 @@ const authz = traefik.traefikForwardAuthMiddleware({
   // Explicit allowlist: only these headers are copied onto the upstream request
   authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
   authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
-  id: 'costApiAuthz',
+  id: 'ordersApiAuthz',
 });
 ```
 
@@ -260,7 +311,7 @@ const rateLimit = traefik.traefikRateLimitMiddleware({
     db: 3,
     dialTimeout: '500ms',
   },
-  id: 'costApiRateLimit',
+  id: 'ordersApiRateLimit',
 });
 ```
 
@@ -277,7 +328,7 @@ const concurrency = traefik.traefikInFlightReqMiddleware({
   namespace: 'edge',
   amount: 20,
   requestHeaderName: 'X-Edge-Customer',
-  id: 'costApiConcurrency',
+  id: 'ordersApiConcurrency',
 });
 
 const headers = traefik.traefikHeadersMiddleware({
@@ -296,14 +347,14 @@ const headers = traefik.traefikHeadersMiddleware({
     stsSeconds: 31_536_000,
     stsIncludeSubdomains: true,
   },
-  id: 'costApiHeaders',
+  id: 'ordersApiHeaders',
 });
 
 const bodyLimit = traefik.traefikBufferingMiddleware({
   name: 'orders-api-body-limit',
   namespace: 'edge',
   buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
-  id: 'costApiBodyLimit',
+  id: 'ordersApiBodyLimit',
 });
 
 // One reference several routes can share
@@ -317,7 +368,7 @@ const chain = traefik.traefikChainMiddleware({
     { name: 'orders-api-concurrency' },
     { name: 'orders-api-body-limit' },
   ],
-  id: 'costApiEdgeChain',
+  id: 'ordersApiEdgeChain',
 });
 ```
 
@@ -394,7 +445,7 @@ const route = traefik.traefikHTTPRoute({
       },
     ],
   },
-  id: 'costApiHttpRoute',
+  id: 'ordersApiHttpRoute',
 });
 ```
 
