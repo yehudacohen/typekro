@@ -195,6 +195,93 @@ export type ClickStackMongoBuildOptions =
   | { mode: 'internal'; storage?: ClickStackMongoStorageOptions }
   | { mode: 'external' };
 
+/**
+ * Per-signal retention for the OTel tables the gateway collector creates.
+ *
+ * Values are duration strings — `'30d'`, `'720h'`, `'90m'` — compiled into
+ * `ALTER TABLE ... MODIFY TTL <timestamp column> + INTERVAL <n> <unit> DELETE`.
+ * Omit a signal to leave its table's TTL alone.
+ */
+export interface ClickStackRetentionOptions {
+  /** `otel_logs` (and `hyperdx_sessions`, which is a log-kind table). */
+  logs?: string;
+  /** `otel_traces`. */
+  traces?: string;
+  /** `otel_metrics_gauge`, `otel_metrics_sum`, `otel_metrics_histogram`. */
+  metrics?: string;
+}
+
+/**
+ * OTel gateway collector persistent sending queue.
+ *
+ * WHY: the gateway buffers in memory by default, so a ClickHouse restart —
+ * exactly what an S3-backed node rebuild causes — drops whatever is in flight.
+ * A `file_storage`-backed queue survives it.
+ *
+ * ⚠️ NOT VERIFIED AGAINST A LIVE CHART RENDER. This is emitted through the
+ * chart's supported `global.otelCollector.customConfig` merge seam, and a YAML
+ * list in that overlay REPLACES the supervisor's own list rather than appending
+ * to it. That means `extensions` below must enumerate every extension the
+ * collector needs, and `exporterName` must match the exporter the OpAMP
+ * supervisor actually defines. Both are exposed as options precisely because
+ * the correct values depend on the ClickStack version you deploy — check the
+ * rendered collector config before relying on this in production.
+ */
+export interface ClickStackPersistentQueueOptions {
+  /** Enable the file-storage-backed sending queue (default: false). */
+  enabled: boolean;
+  /** Queue directory inside the collector pod. */
+  directory?: string;
+  /**
+   * PVC size for the queue directory. Omit for an `emptyDir`, which survives a
+   * ClickHouse restart but NOT a collector pod restart.
+   */
+  size?: string;
+  /** StorageClass for the queue PVC (only meaningful with `size`). */
+  storageClassName?: string;
+  /** Exporter whose `sending_queue` is switched to file storage. */
+  exporterName?: string;
+  /**
+   * The complete `service.extensions` list to emit. It REPLACES the
+   * supervisor's list, so it must name every extension the collector needs.
+   */
+  extensions?: readonly string[];
+}
+
+/**
+ * BUILD-TIME description of the EXTERNAL ClickHouse's storage, plus the
+ * ClickStack-side knobs that depend on it.
+ *
+ * WHY build-time: `retention` renders a DDL CronJob and `persistentQueue`
+ * renders chart values plus volumes — both decide WHICH resources exist and
+ * what static text they carry, the same class as the Mongo mode.
+ *
+ * NO PER-TABLE DDL IS NEEDED for the storage policy itself: the `clickhouse`
+ * factory sets `merge_tree/storage_policy` as the server DEFAULT, so the
+ * gateway collector's goose migrations create `otel_logs` / `otel_traces` /
+ * `otel_metrics_*` / `hyperdx_sessions` on the S3 policy without any
+ * `SETTINGS storage_policy` clause (see the SCHEMA caveat in
+ * `compositions/clickstack-bootstrap.ts`). These options exist for the two
+ * things the server default cannot express — TTL and the collector queue — and
+ * to surface the mode on the status contract.
+ */
+export interface ClickStackStorageOptions {
+  /** Storage mode of the external ClickHouse (default: 'pvc'). */
+  mode?: 'pvc' | 's3';
+  /** Object-storage disk type, echoed onto the status contract. */
+  diskType?: 's3' | 's3_plain_rewritable';
+  /** The external ClickHouse's default MergeTree policy (default: 's3_main'). */
+  policyName?: string;
+  /** Per-signal TTL, rendered as an idempotent DDL CronJob. */
+  retention?: ClickStackRetentionOptions;
+  /** Cron schedule for the retention DDL CronJob (default: '17 * * * *'). */
+  retentionSchedule?: string;
+  /** Image running `clickhouse-client` for the retention DDL. */
+  retentionImage?: string;
+  /** OTel gateway collector persistent sending queue. */
+  persistentQueue?: ClickStackPersistentQueueOptions;
+}
+
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
@@ -214,6 +301,12 @@ interface ClickStackBuildOptionsBase {
   name?: string;
   /** KRO kind override. */
   kind?: string;
+  /**
+   * The external ClickHouse's storage story and the ClickStack-side knobs that
+   * depend on it (TTL retention, collector persistent queue, status contract).
+   * Omit for the PVC default — existing behaviour is unchanged.
+   */
+  storage?: ClickStackStorageOptions;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */
@@ -460,6 +553,28 @@ export const ClickStackBootstrapStatusSchema = type({
     appPort: 'number.integer',
     /** API port. */
     apiPort: 'number.integer',
+  },
+  /**
+   * Storage contract of the external ClickHouse this stack writes to, next to
+   * `gateway.otlpHttpEndpoint` so a consumer reads durability and ingest from
+   * one place. BARE build-time constants — client-hydrated, absent from the
+   * live KRO CR status (same class as `app.appPort`).
+   */
+  storage: {
+    /** 'pvc' or 's3'. */
+    mode: '"pvc" | "s3"',
+    /** Object-storage disk type of the external ClickHouse. */
+    'diskType?': '"s3" | "s3_plain_rewritable"',
+    /** Default MergeTree storage policy the OTel tables are created on. */
+    'policyName?': 'string',
+    /** Configured per-signal TTL, when a retention CronJob is rendered. */
+    'retention?': {
+      'logs?': 'string',
+      'traces?': 'string',
+      'metrics?': 'string',
+    },
+    /** Whether the gateway collector uses a file-storage sending queue. */
+    'persistentQueue?': 'boolean',
   },
 });
 

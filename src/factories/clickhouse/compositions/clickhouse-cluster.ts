@@ -24,17 +24,27 @@ import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
+import type { Composable } from '../../../core/types/index.js';
+import { containsKubernetesRefs } from '../../../utils/type-guards.js';
+import { serviceAccount } from '../../kubernetes/rbac/service-account.js';
 import {
   type ClickHouseClusterSpec,
   ClickHouseClusterStatusSchema,
   type ClickHouseClusterStatus,
   type ClickHouseClusterTopology,
+  type ClickHouseInstallationConfig,
+  type ClickHouseS3StorageOptions,
+  type ClickHouseStorageTopology,
   type ClickHouseUser,
 } from '../types.js';
+import { clickHouseInstallation, DEFAULT_CHI_CLUSTER_NAME } from '../resources/installation.js';
+import { clickHouseS3BackupCronJob } from '../resources/s3-backup.js';
 import {
-  clickHouseInstallation,
-  DEFAULT_CHI_CLUSTER_NAME,
-} from '../resources/installation.js';
+  IRSA_ROLE_ARN_ANNOTATION,
+  isS3Storage,
+  type ResolvedClickHouseS3Storage,
+  resolveClickHouseStorage,
+} from '../utils/s3-storage.js';
 import { assertPositiveIntegerCount } from '../utils/validation.js';
 
 /** Native (TCP) ClickHouse port — operator default ChDefaultTCPPortNumber. */
@@ -51,6 +61,12 @@ export const DEFAULT_USER_NETWORKS_IP = ['::/0'] as const;
 /** Resource id of the CHI inside the composition graph. */
 const CHI_RESOURCE_ID = 'clickhouse';
 
+/** Resource id of the IRSA ServiceAccount inside the composition graph. */
+const S3_SERVICE_ACCOUNT_RESOURCE_ID = 'clickhouseS3ServiceAccount';
+
+/** Resource id of the scheduled S3 backup CronJob. */
+const S3_BACKUP_RESOURCE_ID = 'clickhouseS3Backup';
+
 /**
  * Normalized build-time topology (defaults applied once, at construction).
  */
@@ -64,6 +80,12 @@ interface ResolvedTopology {
     networksIp: readonly string[];
     credentialSource: 'sha256' | 'secret';
   }[];
+  /** Build-time storage topology, resolved and validated once. */
+  storage: ClickHouseStorageTopology;
+  /** The raw S3 options, narrowed — present iff the topology selects S3. */
+  s3Options?: ClickHouseS3StorageOptions;
+  /** The S3 resolution, present iff the topology selects object storage. */
+  s3?: ResolvedClickHouseS3Storage;
 }
 
 function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology {
@@ -74,10 +96,42 @@ function resolveTopology(topology: ClickHouseClusterTopology): ResolvedTopology 
   // invalid operator input (`replicasCount: 0` / `shardsCount: 0`).
   assertPositiveIntegerCount('makeClickHouseCluster', 'replicas', replicas);
   assertPositiveIntegerCount('makeClickHouseCluster', 'shards', shards);
+
+  // Storage is build-time for the same reason zones are: the S3 branch
+  // compiles to server-configuration TEXT and selects which resources exist.
+  // Resolve (and reject) it at CONSTRUCTION so a bad bucket/credential shape
+  // surfaces before the first serialization. The runtime `size`/`version`
+  // halves are validated again by `clickHouseInstallation` inside the body.
+  const storage = topology.storage ?? {};
+  if (containsKubernetesRefs(storage)) {
+    throw new Error(
+      'makeClickHouseCluster: build-time option `storage` contains a schema/resource ' +
+        'reference. The S3 disk configuration compiles into a storage_configuration XML ' +
+        'document and selects resources (ServiceAccount, backup CronJob), so it is fixed at ' +
+        'construction — only storage.size / storage.storageClassName are runtime spec.'
+    );
+  }
+  const resolvedStorage = resolveClickHouseStorage('makeClickHouseCluster', storage);
+  if (
+    resolvedStorage.mode === 's3' &&
+    resolvedStorage.diskType === 's3_plain_rewritable' &&
+    replicas > 1
+  ) {
+    throw new Error(
+      `makeClickHouseCluster: storage.diskType 's3_plain_rewritable' does not support table ` +
+        `replication (ClickHouse documents mutations and replication as unsupported for the ` +
+        `plain_rewritable metadata type), so it requires replicas: 1 (got ${replicas}). Use ` +
+        `diskType: 's3' with storage.backup for a replicated cluster.`
+    );
+  }
+
   return {
     zones: topology.zones ?? [],
     replicas,
     shards,
+    storage,
+    ...(isS3Storage(storage) ? { s3Options: storage } : {}),
+    ...(resolvedStorage.mode === 's3' ? { s3: resolvedStorage } : {}),
     // Replicated tables need coordination — default keeper on for
     // multi-replica clusters unless the caller opts out explicitly.
     keeper: topology.keeper ?? replicas > 1,
@@ -200,12 +254,64 @@ export function makeClickHouseCluster(
                 ).passwordSecretRef,
               }
             : {
-                passwordSha256Hex: (credential as { passwordSha256Hex: string })
-                  .passwordSha256Hex,
+                passwordSha256Hex: (credential as { passwordSha256Hex: string }).passwordSha256Hex,
               }),
           networksIp: [...user.networksIp],
         };
       });
+
+      // IRSA: the CHI pod template runs as this ServiceAccount and the disk
+      // configuration uses `use_environment_credentials`, so ClickHouse's AWS
+      // SDK picks up the projected web-identity token. The SA is a SEPARATE
+      // resource, so the composition owns it — the low-level
+      // `clickHouseInstallation()` only sets `serviceAccountName` and expects
+      // the account to exist.
+      const s3ServiceAccountName =
+        resolved.s3?.auth.kind === 'irsa'
+          ? (resolved.s3.auth.serviceAccountName ?? `${spec.name}-s3`)
+          : undefined;
+      if (resolved.s3?.auth.kind === 'irsa' && s3ServiceAccountName !== undefined) {
+        const _s3ServiceAccount = serviceAccount({
+          id: S3_SERVICE_ACCOUNT_RESOURCE_ID,
+          metadata: {
+            name: s3ServiceAccountName,
+            namespace: spec.namespace,
+            annotations: {
+              [IRSA_ROLE_ARN_ANNOTATION]: resolved.s3.auth.roleArn,
+            },
+            labels: {
+              'app.kubernetes.io/name': 'clickhouse',
+              'app.kubernetes.io/component': 's3-storage',
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
+          },
+        });
+      }
+
+      // The installation's `storage` is the build-time topology plus the two
+      // runtime (ref-safe) local-volume fields. Written out rather than spread
+      // through a cast so the discriminated union stays type-checked.
+      const installationStorage: Composable<ClickHouseInstallationConfig>['storage'] =
+        resolved.s3Options === undefined
+          ? {
+              size: spec.storage.size,
+              storageClassName: spec.storage.storageClassName,
+            }
+          : {
+              ...resolved.s3Options,
+              size: spec.storage.size,
+              storageClassName: spec.storage.storageClassName,
+              ...(s3ServiceAccountName !== undefined && resolved.s3?.auth.kind === 'irsa'
+                ? {
+                    auth: {
+                      irsa: {
+                        roleArn: resolved.s3.auth.roleArn,
+                        serviceAccountName: s3ServiceAccountName,
+                      },
+                    },
+                  }
+                : {}),
+            };
 
       const clickhouse = clickHouseInstallation({
         name: spec.name,
@@ -216,10 +322,9 @@ export function makeClickHouseCluster(
         shards: resolved.shards,
         replicas: resolved.replicas,
         ...(resolved.zones.length > 0 ? { zones: [...resolved.zones] } : {}),
-        storage: {
-          size: spec.storage.size,
-          storageClassName: spec.storage.storageClassName,
-        },
+        // Runtime local-volume sizing merged with the build-time storage
+        // topology. In PVC mode this is byte-for-byte today's input.
+        storage: installationStorage,
         ...(users.length > 0 ? { users } : {}),
         ...(resolved.keeper
           ? {
@@ -233,6 +338,21 @@ export function makeClickHouseCluster(
         podResources: spec.podResources,
         id: CHI_RESOURCE_ID,
       });
+
+      // Scheduled `BACKUP ... TO S3(...)`. This is what makes
+      // `diskType: 's3'` durable at all — see resources/s3-backup.ts and the
+      // durability table in docs/api/clickhouse/index.md.
+      if (resolved.s3?.backup !== undefined) {
+        const _s3Backup = clickHouseS3BackupCronJob({
+          name: spec.name,
+          namespace: spec.namespace,
+          version: spec.version,
+          storage: resolved.s3,
+          nativePort: CLICKHOUSE_NATIVE_PORT,
+          id: S3_BACKUP_RESOURCE_ID,
+        });
+        _s3Backup.dependsOn(clickhouse);
+      }
 
       // Connection contract derived from the operator's ACTUAL naming
       // (release-0.27.1): the CR-level Service is `clickhouse-{chi-name}`
@@ -287,9 +407,7 @@ export function makeClickHouseCluster(
           // reference resolver evaluates it against the live CHI in
           // `factory('direct')` (proven concrete — `'cluster'` — in the
           // integration suite). Same for keeper.* below.
-          clusterName: Cel.expr<string>(
-            `${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`
-          ),
+          clusterName: Cel.expr<string>(`${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`),
           database: CLICKHOUSE_DEFAULT_DATABASE,
           ...(firstUserName ? { user: firstUserName } : {}),
         },
@@ -313,6 +431,26 @@ export function makeClickHouseCluster(
               },
             }
           : {}),
+        // Storage contract: BARE build-time constants (no resource anchor),
+        // so — like `clickhouse.port`/`database` — these hydrate client-side
+        // and are absent from the live KRO CR status. They exist so a consumer
+        // never has to read the CHI's XML to learn what durability it has.
+        storage: {
+          mode: resolved.s3 === undefined ? ('pvc' as const) : ('s3' as const),
+          ...(resolved.s3 !== undefined
+            ? {
+                diskType: resolved.s3.diskType,
+                policyName: resolved.s3.policyName,
+                bucket: resolved.s3.bucket,
+                // ONLY plain_rewritable keeps its metadata in the bucket, so
+                // only it survives node loss without a backup.
+                selfDescribingBucket: resolved.s3.diskType === 's3_plain_rewritable',
+                ...(resolved.s3.backup !== undefined
+                  ? { backupSchedule: resolved.s3.backup.schedule }
+                  : {}),
+              }
+            : {}),
+        },
         installation: {
           // CHI identity from the owned resource (same reachability rule).
           name: `${clickhouse.metadata.name}`,

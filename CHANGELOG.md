@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ClickHouse clusters may now keep their data in S3-compatible object storage
+  with only a bounded local read-through cache on the node. `makeClickHouseCluster`
+  takes a build-time `storage` topology whose `mode: 's3'` branch compiles a
+  `storage_configuration` document into the ClickHouseInstallation's
+  `configuration.files` and makes the generated policy the MergeTree default, so
+  tables created by tooling outside TypeKro land on object storage with no
+  per-table DDL. `mode: 'pvc'` remains the default and existing PVC consumers are
+  unchanged.
+
+  The durability trade-off is a discriminated `diskType`, not a boolean. The
+  classic `s3` disk keeps part metadata on the local disk, so the bucket alone
+  cannot be reattached and durability depends on the new optional
+  `storage.backup` — a CronJob issuing `BACKUP DATABASE … TO S3(…)` with an
+  age-based prune step and a documented restore procedure. `s3_plain_rewritable`
+  keeps metadata in the bucket, making node loss a restart and reattach; it
+  requires ClickHouse 24.5 or newer and a single replica, and both limits are
+  enforced at construction time. `status.storage` reports the resulting
+  guarantee.
+
+  S3 credentials are never accepted inline: `auth.irsa` creates a ServiceAccount
+  annotated with `eks.amazonaws.com/role-arn` and pairs it with
+  `use_environment_credentials`, while `auth.secretRef` wires the keys as pod
+  environment variables that the rendered configuration reads through `from_env`,
+  so no key material appears in the ClickHouseInstallation spec.
+
+- ClickStack bootstraps may now declare the external ClickHouse's storage story.
+  Per-signal `retention` renders an idempotent CronJob applying `TTL … DELETE` to
+  the OTel tables the gateway collector creates, skipping tables that have not
+  been migrated yet and leaving a converged cluster untouched. An opt-in
+  persistent sending queue backs the gateway collector with file storage so a
+  ClickHouse restart during a node rebuild does not drop in-flight telemetry, and
+  the bootstrap status now carries `storage` next to the gateway endpoints.
+
 ### Changed
 
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider

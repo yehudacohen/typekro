@@ -181,6 +181,182 @@ export type ClickHouseOperatorHelmReleaseConfig = Omit<
 };
 
 // ============================================================================
+// Storage: PVC (default) vs S3-backed object storage
+// ============================================================================
+
+/**
+ * IRSA credential transport for the S3 disk.
+ *
+ * The factory creates (or annotates) a ServiceAccount with
+ * `eks.amazonaws.com/role-arn` and runs the CHI pod template as it; the
+ * rendered disk configuration then uses
+ * `<use_environment_credentials>true</use_environment_credentials>` so the AWS
+ * SDK inside ClickHouse picks up the projected web-identity token. NO key
+ * material appears in any manifest.
+ */
+export interface ClickHouseS3IrsaAuth {
+  readonly irsa: {
+    /** IAM role ARN the ServiceAccount assumes (see the docs for the policy). */
+    readonly roleArn: string;
+    /**
+     * ServiceAccount name (default: `<installation-name>-s3`). Supply an
+     * existing name to reuse a ServiceAccount managed elsewhere — the
+     * composition then annotates its own copy of it.
+     */
+    readonly serviceAccountName?: string;
+  };
+}
+
+/**
+ * Secret-backed access-key credential transport for the S3 disk.
+ *
+ * The keys are wired as pod env vars via `secretKeyRef` and referenced from
+ * the disk configuration with ClickHouse's `from_env` attribute, so the key
+ * VALUES never enter the CHI spec. Inline keys are not accepted at all.
+ */
+export interface ClickHouseS3SecretRefAuth {
+  readonly secretRef: {
+    /** Secret name in the CHI namespace. */
+    readonly name: string;
+    /** Key holding the access key id (default: 'AWS_ACCESS_KEY_ID'). */
+    readonly accessKeyIdKey?: string;
+    /** Key holding the secret access key (default: 'AWS_SECRET_ACCESS_KEY'). */
+    readonly secretAccessKeyKey?: string;
+  };
+}
+
+/** Exactly one S3 credential transport — never inline keys. */
+export type ClickHouseS3Auth = ClickHouseS3IrsaAuth | ClickHouseS3SecretRefAuth;
+
+/**
+ * Scheduled `BACKUP ... TO S3(...)` options.
+ *
+ * This is the durability story for `diskType: 's3'`, where part METADATA lives
+ * on the local disk and the bucket alone cannot be reattached. It is optional
+ * (and largely redundant) for `s3_plain_rewritable`.
+ */
+export interface ClickHouseS3BackupOptions {
+  /** Cron schedule for the backup CronJob (e.g. '0 2 * * *'). */
+  readonly schedule: string;
+  /** Backup bucket (default: the data disk's bucket). */
+  readonly bucket?: string;
+  /** Backup key prefix (default: 'backups'); must not be the bucket root. */
+  readonly prefix?: string;
+  /** Database to back up (default: 'default'). */
+  readonly database?: string;
+  /**
+   * Age-based pruning. Rendered as a real prune step in the CronJob (an
+   * `aws s3 rm` pass over expired timestamped backup prefixes) — not an
+   * accepted-but-ignored hint, and not a substitute for a bucket lifecycle
+   * policy if you prefer to own expiry in AWS.
+   */
+  readonly retention?: { readonly days: number };
+  /**
+   * ClickHouse credentials the CronJob connects with. Omit to connect as
+   * `default` with no password (the dev-first single-node default).
+   */
+  readonly auth?: {
+    readonly secretRef: {
+      readonly name: string;
+      /** Key holding the ClickHouse user name (default: 'username'). */
+      readonly usernameKey?: string;
+      /** Key holding the ClickHouse password (default: 'password'). */
+      readonly passwordKey?: string;
+    };
+  };
+}
+
+/**
+ * S3-backed storage options — object storage as the durable record, with only
+ * a bounded local read-through cache on the node.
+ *
+ * BUILD-TIME: every field here compiles into a `storage_configuration` XML
+ * document and selects which resources exist (ServiceAccount, backup
+ * CronJob), so it is fixed at construction time. Only the thin local volume
+ * sizing (`size` / `storageClassName`) stays runtime spec.
+ */
+export interface ClickHouseS3StorageOptions {
+  /** Discriminator selecting object-storage mode. */
+  readonly mode: 's3';
+  /** Bucket name (the factory builds the endpoint from it). */
+  readonly bucket: string;
+  /** Key prefix inside the bucket (default: the bucket root). */
+  readonly prefix?: string;
+  /** AWS region — required unless `endpoint` is set. */
+  readonly region?: string;
+  /**
+   * Base URL of a custom S3-compatible service (MinIO, Ceph RGW), e.g.
+   * `http://minio.minio.svc.cluster.local:9000`. Bucket and prefix are
+   * appended path-style by the factory; do not include them here.
+   */
+  readonly endpoint?: string;
+  /**
+   * Disk type — the DURABILITY choice, deliberately not a boolean:
+   * - `'s3'` (default): part metadata on the local disk. Fast and
+   *   fully-featured, but the bucket is not self-describing — durability comes
+   *   from `backup`.
+   * - `'s3_plain_rewritable'`: metadata in the bucket, so node loss is a
+   *   restart + reattach. Requires ClickHouse >= 24.5, a SINGLE replica, and
+   *   no mutations (see the module docs on `utils/s3-storage.ts`).
+   */
+  readonly diskType?: 's3' | 's3_plain_rewritable';
+  /** Local read-through cache in front of the object-storage disk. */
+  readonly cache: {
+    /** Cache cap as a Kubernetes quantity; must fit inside `storage.size`. */
+    readonly size: string;
+    /** Cache directory (default: '/var/lib/clickhouse/disks/s3_cache/'). */
+    readonly path?: string;
+  };
+  /** MergeTree storage policy name (default: 's3_main'). */
+  readonly policyName?: string;
+  /** S3 credentials — IRSA or a Secret reference. */
+  readonly auth: ClickHouseS3Auth;
+  /** Optional scheduled backups with a documented restore path. */
+  readonly backup?: ClickHouseS3BackupOptions;
+}
+
+/** PVC-backed storage — today's behaviour, and still the default. */
+export interface ClickHousePvcStorageOptions {
+  /** Discriminator; omit for the PVC default. */
+  readonly mode?: 'pvc';
+}
+
+/**
+ * BUILD-TIME storage topology accepted by {@link makeClickHouseCluster}.
+ *
+ * `mode: 'pvc'` (or omitting `storage` entirely) is the default and preserves
+ * existing behaviour byte for byte.
+ */
+export type ClickHouseStorageTopology = ClickHousePvcStorageOptions | ClickHouseS3StorageOptions;
+
+/** Local volume sizing — present in BOTH storage modes. */
+export interface ClickHouseLocalVolumeOptions {
+  /**
+   * Volume size (e.g. '100Gi').
+   *
+   * In PVC mode this is the MergeTree data volume. In S3 mode it is the thin
+   * local volume mounted at `/var/lib/clickhouse`, which holds server
+   * metadata, the read-through cache, and — for `diskType: 's3'` — part
+   * metadata; size it for the cache, not for the dataset.
+   */
+  size: string;
+  /**
+   * StorageClass name. On EKS this should be a WaitForFirstConsumer +
+   * `allowVolumeExpansion: true` gp3 class so the PVC binds in the zone the
+   * scheduler places the pod (and can grow in place).
+   */
+  storageClassName?: string;
+}
+
+/**
+ * The `storage` input accepted by `clickHouseInstallation()`: local volume
+ * sizing plus, in S3 mode, the full object-storage configuration.
+ */
+export type ClickHouseInstallationStorage =
+  | (ClickHouseLocalVolumeOptions & ClickHousePvcStorageOptions)
+  | (ClickHouseLocalVolumeOptions & ClickHouseS3StorageOptions);
+
+// ============================================================================
 // ClickHouseInstallation (CHI) Resource
 // ============================================================================
 
@@ -271,7 +447,14 @@ export const ClickHouseInstallationConfigSchema = type({
    * cannot do this (Altinity/clickhouse-operator#772).
    */
   'zones?': 'string[]',
-  /** Persistent storage for ClickHouse data. Required. */
+  /**
+   * Storage for ClickHouse data. Required.
+   *
+   * The runtime TYPE is {@link ClickHouseInstallationStorage} — a discriminated
+   * union on `mode` whose S3 branch carries the object-storage configuration.
+   * The ArkType shape below only describes the two fields common to both
+   * modes; see {@link ClickHouseInstallationConfig} for the widened type.
+   */
   storage: {
     /** Volume size (e.g. '100Gi'). Required. */
     size: 'string',
@@ -281,6 +464,8 @@ export const ClickHouseInstallationConfigSchema = type({
      * scheduler places the pod (and can grow in place).
      */
     'storageClassName?': 'string',
+    /** Storage mode discriminator (default: 'pvc'). */
+    'mode?': '"pvc" | "s3"',
   },
   /**
    * ClickHouse users (ARRAY shape), compiled to the operator's path-keyed
@@ -309,8 +494,20 @@ export const ClickHouseInstallationConfigSchema = type({
   },
 });
 
-/** High-level configuration for a ClickHouseInstallation. */
-export type ClickHouseInstallationConfig = typeof ClickHouseInstallationConfigSchema.infer;
+/**
+ * High-level configuration for a ClickHouseInstallation.
+ *
+ * `storage` is widened beyond the ArkType inference to the discriminated
+ * {@link ClickHouseInstallationStorage} union: the S3 branch compiles to a
+ * `storage_configuration` XML document, which ArkType's inferred shape cannot
+ * express without losing the discriminant.
+ */
+export type ClickHouseInstallationConfig = Omit<
+  typeof ClickHouseInstallationConfigSchema.infer,
+  'storage'
+> & {
+  storage: ClickHouseInstallationStorage;
+};
 
 // ----------------------------------------------------------------------------
 // CHI spec shapes (what the factory compiles TO). Typed as far as practical;
@@ -461,6 +658,21 @@ export interface ClickHouseClusterTopology {
   readonly keeper?: boolean;
   /** Declared ClickHouse users (names/networks build-time, passwords runtime). */
   readonly users?: readonly ClickHouseClusterUserTopology[];
+  /**
+   * Storage topology (default: `{ mode: 'pvc' }` — today's behaviour).
+   *
+   * WHY build-time: the S3 branch compiles into a `storage_configuration` XML
+   * document embedded in the CHI's `configuration.files` AND decides which
+   * resources exist (the IRSA ServiceAccount, the backup CronJob). Both are
+   * exactly the class of choice `zones` already occupies — a schema reference
+   * there could only serialize as a `__KUBERNETES_REF__` marker inside server
+   * configuration text, so the constructor rejects one loudly.
+   *
+   * The per-instance half stays in the runtime spec: `storage.size` and
+   * `storage.storageClassName` size the thin local volume that hosts the
+   * read-through cache.
+   */
+  readonly storage?: ClickHouseStorageTopology;
 }
 
 /** Runtime keeper connection spec (present iff the topology enables keeper). */
@@ -484,13 +696,15 @@ export interface ClickHouseClusterSpecBase {
    * SIGNOZ COMPATIBILITY: SigNoz's migrations hardcode `cluster`.
    */
   clusterName?: string;
-  /** Persistent storage for ClickHouse data. */
-  storage: {
-    /** Volume size (e.g. '100Gi'). */
-    size: string;
-    /** StorageClass name (EKS: WaitForFirstConsumer + expandable gp3). */
-    storageClassName?: string;
-  };
+  /**
+   * Local volume for ClickHouse data.
+   *
+   * In the default PVC topology this is the MergeTree data volume. In an
+   * S3-backed topology (`makeClickHouseCluster({ storage: { mode: 's3' } })`)
+   * it is the thin local volume that hosts the read-through cache — the object
+   * store holds the data.
+   */
+  storage: ClickHouseLocalVolumeOptions;
   /** ClickHouse server container resources. */
   podResources?: {
     requests?: { cpu?: string; memory?: string };
@@ -512,8 +726,7 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
   /** Per-declared-user runtime credentials, keyed by build-time user name. */
   users?: Record<
     string,
-    | { passwordSha256Hex: string }
-    | { passwordSecretRef: { name: string; key: string } }
+    { passwordSha256Hex: string } | { passwordSecretRef: { name: string; key: string } }
   >;
 };
 
@@ -603,6 +816,34 @@ export interface ClickHouseClusterStatus {
   };
   /** Keeper connection echo (present iff the topology enables keeper). */
   keeper?: { host: string; port: number };
+  /**
+   * Storage contract — what the durability guarantee of this cluster actually
+   * is, so consumers (and operators reading `kubectl get clickhousecluster`)
+   * never have to infer it from the CHI's XML.
+   *
+   * BARE BUILD-TIME CONSTANTS: these come from the construction-time topology,
+   * not from the owned CHI, so — like `clickhouse.port`/`database` — they have
+   * no resource anchor and are hydrated CLIENT-SIDE by TypeKro rather than
+   * appearing on the live KRO CR status.
+   */
+  storage: {
+    /** 'pvc' (local MergeTree volume) or 's3' (object storage). */
+    mode: 'pvc' | 's3';
+    /** Object-storage disk type; absent in PVC mode. */
+    diskType?: 's3' | 's3_plain_rewritable';
+    /** Default MergeTree storage policy; absent in PVC mode. */
+    policyName?: string;
+    /** Bucket holding the durable record; absent in PVC mode. */
+    bucket?: string;
+    /**
+     * Whether the bucket alone is enough to rebuild the cluster.
+     * `true` only for `s3_plain_rewritable`; `diskType: 's3'` keeps part
+     * metadata locally and therefore depends on `backupSchedule`.
+     */
+    selfDescribingBucket?: boolean;
+    /** Cron schedule of the generated backup CronJob, when one exists. */
+    backupSchedule?: string;
+  };
   /** Raw installation identity + operator progress counters. */
   installation: {
     name: string;
@@ -628,6 +869,14 @@ export const ClickHouseClusterStatusSchema = type({
     'user?': 'string',
   },
   'keeper?': { host: 'string', port: 'number.integer' },
+  storage: {
+    mode: '"pvc" | "s3"',
+    'diskType?': '"s3" | "s3_plain_rewritable"',
+    'policyName?': 'string',
+    'bucket?': 'string',
+    'selfDescribingBucket?': 'boolean',
+    'backupSchedule?': 'string',
+  },
   installation: {
     name: 'string',
     namespace: 'string',

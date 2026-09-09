@@ -56,6 +56,11 @@ import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
+import {
+  type ResolvedClickStackStorage,
+  renderPersistentQueueConfig,
+  renderPersistentQueueValues,
+} from './storage.js';
 import type {
   ClickStackBootstrapConfig,
   ClickStackBootstrapRuntimeConfig,
@@ -123,6 +128,12 @@ export interface ClickStackValuesMapperOptions {
   values?: TypeKroChartValues<ClickStackHelmValues>;
   /** Runtime credential transport selected by the composition constructor. */
   credentialSource?: 'inline' | 'secretValues';
+  /**
+   * Resolved storage consumption options. Only the persistent sending queue
+   * reaches chart values — the storage POLICY needs none, because the
+   * `clickhouse` factory makes it the server default.
+   */
+  storage?: ResolvedClickStackStorage;
 }
 
 /** Values pair for the two stock collector instances. */
@@ -487,15 +498,24 @@ export function mapClickStackConfigToHelmValues(
   // Hard pins (see module doc): external-only build-around + the status
   // contract's naming anchor. Merged AFTER every passthrough so they always
   // win — including over a graph-aware per-instance `customValues` override.
+  // The persistent sending queue extends the SAME `customConfig` overlay the
+  // ingest pipelines use, and pins the volume that backs its directory — a
+  // queue whose directory is not writable degrades silently, so both halves
+  // travel together and beat the values passthrough.
+  const queue = options.storage?.persistentQueue;
   const pins: Record<string, unknown> = {
     global: {
       otelCollector: {
-        customConfig: CLICKSTACK_INGEST_PIPELINES_CONFIG,
+        customConfig:
+          queue === undefined
+            ? CLICKSTACK_INGEST_PIPELINES_CONFIG
+            : `${CLICKSTACK_INGEST_PIPELINES_CONFIG}${renderPersistentQueueConfig(queue)}`,
       },
     },
     clickhouse: { enabled: false },
     mongodb: { enabled: false },
     fullnameOverride: config.name,
+    ...(queue !== undefined ? renderPersistentQueueValues(queue) : {}),
   };
 
   // Per-instance `customValues` is a DIRECT-mode-only convenience: only a CONCRETE object merges.

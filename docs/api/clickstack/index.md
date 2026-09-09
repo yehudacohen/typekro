@@ -110,7 +110,8 @@ HyperDX requires MongoDB for app state (dashboards, alerts, users — metadata o
 ## Build-Time Options vs Runtime Spec
 
 Build-time (constructor — must be concrete; schema refs are rejected loudly): the Mongo mode + storage,
-credential source, static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
+credential source, the external ClickHouse's [`storage`](#s3-backed-clickhouse) story,
+static raw chart `values`, RGD `name`/`kind`. Runtime spec (proxy-safe): release name,
 namespace, chart version, the ClickHouse connection, credential Secret coordinates or inline API key,
 and HyperDX conveniences.
 
@@ -130,6 +131,73 @@ tables — matching a 1-shard×1-replica CHI. Multi-replica (`ON CLUSTER` / `Rep
 supported by ClickStack's tooling; see `CLICKSTACK_CLICKHOUSE_GUIDANCE` before scaling the CHI. Version
 coupling is loose (chart vendors CH 25.7; a `<26.2` compat schema variant exists; the optional
 JSON-typed schema via `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_JSON_ENABLE` wants CH 25.3+).
+
+## S3-backed ClickHouse
+
+When the external ClickHouse keeps its data in object storage
+([`makeClickHouseCluster({ storage: { mode: 's3' } })`](/api/clickhouse/#storage)), the storage
+**policy** needs nothing here: the `clickhouse` factory sets `merge_tree/storage_policy` as the
+server default, so the gateway collector's goose migrations create `otel_logs` / `otel_traces` /
+`otel_metrics_*` / `hyperdx_sessions` on the S3 policy with no `SETTINGS storage_policy` clause and
+no per-table DDL from TypeKro. The kind integration suite asserts exactly that
+(`test/integration/clickstack/s3-backed.test.ts`).
+
+`storage` here covers the three things a server default cannot express — TTL retention, the
+collector's persistent sending queue, and the status contract:
+
+```typescript
+const bootstrap = makeClickstackBootstrap({
+  mongo: { mode: 'internal', storage: { storageClassName: 'gp3-expandable' } },
+  storage: {
+    mode: 's3',
+    diskType: 's3_plain_rewritable',
+    // Per-signal TTL, applied by an idempotent DDL CronJob.
+    retention: { logs: '30d', traces: '7d', metrics: '90d' },
+    // Survive a ClickHouse restart during a node rebuild.
+    persistentQueue: { enabled: true, size: '10Gi' },
+  },
+});
+```
+
+### Retention (TTL)
+
+Durations are `'<n>d'`, `'<n>h'` or `'<n>m'`, compiled into
+`ALTER TABLE … MODIFY TTL <column> + INTERVAL n UNIT DELETE`. `logs` covers `otel_logs` and
+`hyperdx_sessions` (a log-kind table in HyperDX's own source definitions), `traces` covers
+`otel_traces`, and `metrics` covers `otel_metrics_gauge` / `_sum` / `_histogram`. Each table's TTL
+keys off the timestamp column HyperDX itself queries — `Timestamp`, `TimeUnix`, `TimestampTime`.
+
+It runs as a **CronJob**, not a one-shot Job, for two honest reasons: the tables do not exist until
+the collector has migrated, and TypeKro does not own their DDL. The script therefore skips a missing
+table and re-checks on a later run, and only issues `MODIFY TTL` when the table's current
+`create_table_query` does not already carry the target interval — so a converged cluster does no
+metadata churn. `retentionSchedule` defaults to `'17 * * * *'`.
+
+Every statement carries `SETTINGS materialize_ttl_after_modify = 0`, because the materialization
+pass is a **mutation** and the `plain_rewritable` metadata type does not support mutations. Expiry
+still happens during merges.
+
+The job reads its connection from the chart-owned `clickstack-config` ConfigMap and
+`clickstack-secret` Secret via `envFrom` — the same pair the gateway collector uses — so it works
+identically in inline and Secret-backed credential modes and keeps no credential in the manifest.
+
+### Persistent collector queue
+
+::: warning NOT VERIFIED AGAINST A LIVE CHART RENDER
+This is emitted through the chart's supported `global.otelCollector.customConfig` merge seam, and a
+YAML **list** in that overlay *replaces* the supervisor's own list rather than appending to it. So
+`persistentQueue.extensions` must enumerate every extension the collector needs (default:
+`['health_check', 'file_storage/hyperdx']`) and `persistentQueue.exporterName` must match the
+exporter the OpAMP supervisor actually defines (default: `'clickhouse'`). Both are options precisely
+because the correct values depend on the ClickStack version you deploy — inspect the rendered
+collector config before relying on this in production.
+:::
+
+The gateway buffers in memory by default, so a ClickHouse restart — exactly what an S3-backed node
+rebuild causes — drops in-flight telemetry. `persistentQueue: { enabled: true }` adds a
+`file_storage` extension, points the exporter's `sending_queue` at it, and pins the volume backing
+its directory. Omit `size` for an `emptyDir` (survives a ClickHouse restart, not a collector pod
+restart); pass `size` for an ephemeral PVC that survives both.
 
 ## Status Contract
 
@@ -160,8 +228,10 @@ status (GitOps/KRO consumers can read it):
   the release name, so the HyperDX Service is `<name>` and the gateway Service is
   `<name>-otel-collector`), with the chart-default ports embedded in the URL strings.
 
-Only the **bare build-time constants** `app.appPort` (3000) and `app.apiPort` (8000), plus the
-spec-derived `version`, are **client-hydrated** and absent from the KRO CR status — KRO status CEL
+Only the **bare build-time constants** `app.appPort` (3000), `app.apiPort` (8000) and the whole
+`storage` block (`mode`, `diskType`, `policyName`, `retention`, `persistentQueue` — sitting next to
+`gateway.otlpHttpEndpoint` so one read answers both "where do I send telemetry" and "what happens to
+it"), plus the spec-derived `version`, are **client-hydrated** and absent from the KRO CR status — KRO status CEL
 cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest
 HelmRelease field to anchor them on. Both ports are still KRO-visible inside `ui.url` and the
 gateway endpoints.

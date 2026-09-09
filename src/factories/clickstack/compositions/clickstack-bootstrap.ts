@@ -122,14 +122,28 @@ import {
   DEFAULT_CLICKSTACK_NAMESPACE,
   mapClickStackConfigToHelmValues,
 } from '../utils/helm-values-mapper.js';
+import {
+  CLICKSTACK_CONFIG_MAP_NAME,
+  CLICKSTACK_SECRET_NAME,
+  type ResolvedClickStackStorage,
+  renderRetentionScript,
+  resolveClickStackStorage,
+} from '../utils/storage.js';
 import { clickstackHelmRepositoryBootstrap } from './clickstack-helm-repository.js';
 
 /** Concrete, resolved build choices the composition body branches on. */
 interface ResolvedBuildConfig {
   mongoMode: 'internal' | 'external';
   credentialSource: 'inline' | 'secretValues';
+  /** Internal-Mongo PVC sizing (build-time; shapes the StatefulSet template). */
   storage?: ClickStackMongoStorageOptions;
   values?: Record<string, unknown>;
+  /**
+   * The EXTERNAL ClickHouse's storage story: retention DDL, the collector's
+   * persistent queue, and the status contract. Distinct from `storage` above,
+   * which is Mongo's PVC.
+   */
+  clickhouseStorage: ResolvedClickStackStorage;
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
@@ -144,7 +158,11 @@ const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1Cr
     const succeededAt = status?.lastSuccessfulTime
       ? new Date(status.lastSuccessfulTime).getTime()
       : Number.NaN;
-    if (Number.isFinite(scheduledAt) && Number.isFinite(succeededAt) && succeededAt >= scheduledAt) {
+    if (
+      Number.isFinite(scheduledAt) &&
+      Number.isFinite(succeededAt) &&
+      succeededAt >= scheduledAt
+    ) {
       return {
         ready: true,
         reason: 'BootstrapCurrent',
@@ -235,6 +253,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       mongoMode: build.mongoMode,
       credentialSource: build.credentialSource,
       ...(build.values !== undefined && { values: build.values }),
+      storage: build.clickhouseStorage,
     });
 
     if (
@@ -415,6 +434,68 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
     }).withReadinessEvaluator(clickstackTeamBootstrapReadiness);
     _teamBootstrap.dependsOn(_clickstackHelmRelease);
 
+    // ── OTel table retention (TTL) ───────────────────────────────────────
+    //
+    // TypeKro does not own the OTel tables — the gateway collector's goose
+    // migrations create them on first start, and only then can a TTL be
+    // applied. So retention converges through an idempotent CronJob rather
+    // than a one-shot Job: it skips tables that have not appeared yet and
+    // re-checks later, and it only issues `MODIFY TTL` when the table's
+    // current definition does not already carry the target expression.
+    //
+    // Connection details come from the chart-owned `clickstack-config`
+    // ConfigMap and `clickstack-secret` Secret (the same envFrom pair the
+    // gateway collector uses), so this works identically in inline and
+    // Secret-backed credential modes and keeps no credential in the manifest.
+    if (build.clickhouseStorage.retentionEntries.length > 0) {
+      const _retention = cronJob({
+        id: 'clickstackRetention',
+        metadata: {
+          name: `${spec.name}-otel-retention`,
+          namespace: resolvedNamespace as string,
+          labels: {
+            'app.kubernetes.io/name': 'clickstack-otel-retention',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        spec: {
+          schedule: build.clickhouseStorage.retentionSchedule,
+          concurrencyPolicy: 'Forbid',
+          successfulJobsHistoryLimit: 1,
+          failedJobsHistoryLimit: 3,
+          jobTemplate: {
+            spec: {
+              backoffLimit: 3,
+              template: {
+                metadata: {
+                  labels: {
+                    'app.kubernetes.io/name': 'clickstack-otel-retention',
+                    'app.kubernetes.io/instance': spec.name,
+                  },
+                },
+                spec: {
+                  restartPolicy: 'Never',
+                  containers: [
+                    {
+                      name: 'retention',
+                      image: build.clickhouseStorage.retentionImage,
+                      command: ['sh', '-c', renderRetentionScript(build.clickhouseStorage)],
+                      envFrom: [
+                        { configMapRef: { name: CLICKSTACK_CONFIG_MAP_NAME, optional: false } },
+                        { secretRef: { name: CLICKSTACK_SECRET_NAME, optional: false } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      _retention.dependsOn(_clickstackHelmRelease);
+    }
+
     const helmReleaseStatus = helmReleaseConditionSummary(_clickstackHelmRelease);
     const teamBootstrapReady = Cel.expr<boolean>(
       'has(clickstackTeamBootstrap.status.lastScheduleTime) && ',
@@ -472,6 +553,23 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         appPort: CLICKSTACK_APP_PORT,
         apiPort: CLICKSTACK_API_PORT,
       },
+      // Storage sits next to `gateway.otlpHttpEndpoint` so one read answers
+      // both "where do I send telemetry" and "what happens to it". These are
+      // BARE build-time constants (client-hydrated, absent from the KRO CR
+      // status) — the same class as the ports above.
+      storage: {
+        mode: build.clickhouseStorage.mode,
+        ...(build.clickhouseStorage.diskType !== undefined && {
+          diskType: build.clickhouseStorage.diskType,
+        }),
+        ...(build.clickhouseStorage.policyName !== undefined && {
+          policyName: build.clickhouseStorage.policyName,
+        }),
+        ...(build.clickhouseStorage.retention !== undefined && {
+          retention: build.clickhouseStorage.retention,
+        }),
+        persistentQueue: build.clickhouseStorage.persistentQueue !== undefined,
+      },
     };
   }
 }
@@ -482,6 +580,7 @@ function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): Res
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
+    clickhouseStorage: resolveClickStackStorage('makeClickstackBootstrap', options.storage),
   };
 }
 
@@ -490,6 +589,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
+    clickhouseStorage: resolveClickStackStorage('makeClickstackBootstrap', options.storage),
   };
 }
 

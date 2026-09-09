@@ -1,0 +1,197 @@
+/**
+ * makeClickHouseCluster with S3-backed storage.
+ *
+ * Storage is a BUILD-TIME topology choice here for the same reason `zones` is:
+ * it compiles into server-configuration text and selects which resources exist
+ * (the IRSA ServiceAccount, the backup CronJob). These tests pin that split,
+ * the rendered pod template + ServiceAccount pairing (#181), and the status
+ * storage contract (#182) — all under TYPEKRO_STRICT_CEL=1, so every status
+ * expression the new fields add is proven strict-CEL-clean.
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import {
+  clickHouseCluster,
+  makeClickHouseCluster,
+} from '../../../src/factories/clickhouse/index.js';
+import type { ClickHouseS3StorageOptions } from '../../../src/factories/clickhouse/types.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
+
+const ORIGINAL_STRICT_ENV = process.env.TYPEKRO_STRICT_CEL;
+
+beforeAll(() => {
+  process.env.TYPEKRO_STRICT_CEL = '1';
+});
+
+afterAll(() => {
+  if (ORIGINAL_STRICT_ENV === undefined) delete process.env.TYPEKRO_STRICT_CEL;
+  else process.env.TYPEKRO_STRICT_CEL = ORIGINAL_STRICT_ENV;
+});
+
+const IRSA_S3: ClickHouseS3StorageOptions = {
+  mode: 's3',
+  bucket: 'example-observability',
+  prefix: 'clickhouse',
+  region: 'us-east-2',
+  cache: { size: '50Gi' },
+  auth: { irsa: { roleArn: 'arn:aws:iam::123456789012:role/clickhouse-s3' } },
+};
+
+const PLAIN_REWRITABLE_S3: ClickHouseS3StorageOptions = {
+  ...IRSA_S3,
+  diskType: 's3_plain_rewritable',
+};
+
+const BACKED_UP_S3: ClickHouseS3StorageOptions = {
+  ...IRSA_S3,
+  backup: { schedule: '0 2 * * *', retention: { days: 14 } },
+};
+
+describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
+  it('serializes the storage XML, the policy default, and the IRSA ServiceAccount', () => {
+    const clickhouse = makeClickHouseCluster({ storage: IRSA_S3 });
+    const yaml = clickhouse.toYaml();
+
+    expect(yaml).toContain('kind: ResourceGraphDefinition');
+    expect(yaml).toContain('kind: ClickHouseInstallation');
+    expect(yaml).toContain('kind: ServiceAccount');
+    expect(yaml).toContain(
+      'eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/clickhouse-s3'
+    );
+    expect(yaml).toContain('<storage_configuration>');
+    expect(yaml).toContain('merge_tree/storage_policy: s3_main');
+    // The local volume size stays a runtime schema ref — it is the ONLY
+    // per-instance half of storage.
+    expect(yaml).toContain('${schema.spec.storage.size}');
+  });
+
+  it('names the ServiceAccount after the instance and runs the pod template as it', () => {
+    const yaml = makeClickHouseCluster({ storage: IRSA_S3 }).toYaml();
+    // Both the SA metadata.name and the pod template's serviceAccountName are
+    // derived from the same instance name expression, so they always match.
+    expect(yaml).toContain('serviceAccountName: ${string(schema.spec.name)}-s3');
+    expect(yaml).toContain('name: ${string(schema.spec.name)}-s3');
+  });
+
+  it('honors an explicit ServiceAccount name', () => {
+    const yaml = makeClickHouseCluster({
+      storage: {
+        ...IRSA_S3,
+        auth: { irsa: { roleArn: 'arn:aws:iam::1:role/a', serviceAccountName: 'byo-sa' } },
+      },
+    }).toYaml();
+    expect(yaml).toContain('serviceAccountName: byo-sa');
+  });
+
+  it('creates NO ServiceAccount for Secret-backed credentials', () => {
+    const yaml = makeClickHouseCluster({
+      storage: {
+        mode: 's3',
+        bucket: 'clickhouse-data',
+        endpoint: 'http://minio.minio.svc.cluster.local:9000',
+        diskType: 's3_plain_rewritable',
+        cache: { size: '5Gi' },
+        auth: { secretRef: { name: 'minio-credentials' } },
+      },
+    }).toYaml();
+
+    expect(yaml).not.toContain('kind: ServiceAccount');
+    expect(yaml).toContain('CLICKHOUSE_S3_ACCESS_KEY_ID');
+    expect(yaml).toContain('<metadata_type>plain_rewritable</metadata_type>');
+    // The Secret is referenced, never inlined.
+    expect(yaml).toContain('name: minio-credentials');
+  });
+
+  it('renders the backup CronJob only when a schedule is declared', () => {
+    const withoutBackup = makeClickHouseCluster({ storage: IRSA_S3 }).toYaml();
+    expect(withoutBackup).not.toContain('kind: CronJob');
+
+    const withBackup = makeClickHouseCluster({ storage: BACKED_UP_S3 }).toYaml();
+    expect(withBackup).toContain('kind: CronJob');
+    expect(withBackup).toContain('BACKUP DATABASE');
+    expect(withBackup).toContain('amazon/aws-cli');
+  });
+
+  it('surfaces the durability decision on the status contract', () => {
+    const plainRewritable = makeClickHouseCluster({ storage: PLAIN_REWRITABLE_S3 });
+    const plan = plainRewritable.plan?.(
+      {
+        name: 'observability',
+        namespace: 'observability',
+        version: '25.12.5',
+        storage: { size: '100Gi' },
+      },
+      { strict: true }
+    );
+    const serialized = JSON.stringify(plan);
+
+    expect(serialized).toContain(
+      '"key":"diskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
+    );
+    expect(serialized).toContain(
+      '"key":"selfDescribingBucket","value":{"kind":"literal","value":true}'
+    );
+    expect(serialized).toContain(
+      '"key":"bucket","value":{"kind":"literal","value":"example-observability"}'
+    );
+  });
+
+  it('reports pvc mode on the default topology', () => {
+    const plan = clickHouseCluster.plan?.(
+      {
+        name: 'observability',
+        namespace: 'observability',
+        version: '25.12.5',
+        storage: { size: '10Gi' },
+      },
+      { strict: true }
+    );
+    const serialized = JSON.stringify(plan);
+
+    // The storage block is a client-only static projection carrying just the
+    // mode — no S3 fields at all on the PVC default.
+    expect(serialized).toContain('"key":"mode","value":{"kind":"literal","value":"pvc"}');
+    // `selfDescribingBucket` appears in the status SCHEMA (it is an optional
+    // field) but must not be PROJECTED for a PVC cluster.
+    expect(serialized).not.toContain('"key":"selfDescribingBucket"');
+  });
+
+  it('leaves the PVC default byte-for-byte unchanged', () => {
+    const explicitPvc = makeClickHouseCluster({ storage: { mode: 'pvc' } }).toYaml();
+    expect(explicitPvc).toBe(clickHouseCluster.toYaml());
+  });
+
+  it('rejects a schema reference in the build-time storage option', () => {
+    expect(() =>
+      makeClickHouseCluster({
+        storage: {
+          ...IRSA_S3,
+          bucket: {
+            [KUBERNETES_REF_BRAND]: true,
+            resourceId: '__schema__',
+            fieldPath: 'spec.bucket',
+          } as unknown as string,
+        },
+      })
+    ).toThrow(/contains a schema\/resource reference/);
+  });
+
+  it('rejects s3_plain_rewritable with more than one replica at CONSTRUCTION time', () => {
+    expect(() => makeClickHouseCluster({ replicas: 2, storage: PLAIN_REWRITABLE_S3 })).toThrow(
+      /requires replicas: 1/
+    );
+  });
+
+  it('rejects a bad S3 shape at CONSTRUCTION time, not first serialization', () => {
+    expect(() =>
+      makeClickHouseCluster({
+        storage: {
+          mode: 's3',
+          bucket: 'example-observability',
+          region: 'us-east-2',
+          cache: { size: '1Gi' },
+        } as ClickHouseS3StorageOptions,
+      })
+    ).toThrow(/'storage.auth' is required in S3 mode/);
+  });
+});
