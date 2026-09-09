@@ -66,15 +66,15 @@ describe('traefikMiddleware', () => {
     const middleware = traefikMiddleware({
       name: 'retry',
       namespace: NAMESPACE,
-      labels: { 'sela.dev/tier': 'edge' },
-      annotations: { 'sela.dev/owner': 'platform' },
+      labels: { 'example.dev/tier': 'edge' },
+      annotations: { 'example.dev/owner': 'platform' },
       spec: { retry: { attempts: 3, initialInterval: '100ms' } },
       id: 'retry',
     });
 
-    expect(middleware.metadata.labels?.['sela.dev/tier']).toBe('edge');
+    expect(middleware.metadata.labels?.['example.dev/tier']).toBe('edge');
     expect(middleware.metadata.labels?.['app.kubernetes.io/managed-by']).toBe('typekro');
-    expect(middleware.metadata.annotations?.['sela.dev/owner']).toBe('platform');
+    expect(middleware.metadata.annotations?.['example.dev/owner']).toBe('platform');
   });
 
   it('accepts one variant per OSS middleware kind', () => {
@@ -171,9 +171,9 @@ describe('Middleware spec validation (negative cases)', () => {
     expect(() =>
       assertTraefikMiddlewareSpec(
         { forwardAuth: { address: 'http://authz' }, chain: { middlewares: [] } },
-        'cost-api-edge'
+        'orders-api-edge'
       )
-    ).toThrow('Invalid Traefik Middleware "cost-api-edge"');
+    ).toThrow('Invalid Traefik Middleware "orders-api-edge"');
   });
 
   it('refuses to build a Middleware whose spec sets two middlewares', () => {
@@ -203,23 +203,23 @@ describe('Middleware spec validation (negative cases)', () => {
 describe('Middleware builders', () => {
   it('forwardAuth defaults to trustForwardHeader: false with an explicit allowlist', () => {
     const middleware = traefikForwardAuthMiddleware({
-      name: 'cost-api-authz',
+      name: 'orders-api-authz',
       namespace: NAMESPACE,
-      address: 'http://cost-api-authorizer.edge.svc.cluster.local:8080/authorize',
-      authResponseHeaders: ['X-Sela-Principal', 'X-Sela-Tier', 'X-Sela-Customer'],
-      authRequestHeaders: ['Authorization', 'X-Sela-Api-Key'],
+      address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
+      authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
+      authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
       id: 'costApiAuthz',
     });
 
     expect(middleware.spec.forwardAuth?.trustForwardHeader).toBe(false);
     expect(middleware.spec.forwardAuth?.authResponseHeaders).toEqual([
-      'X-Sela-Principal',
-      'X-Sela-Tier',
-      'X-Sela-Customer',
+      'X-Edge-Principal',
+      'X-Edge-Tier',
+      'X-Edge-Customer',
     ]);
     expect(middleware.spec.forwardAuth?.authRequestHeaders).toEqual([
       'Authorization',
-      'X-Sela-Api-Key',
+      'X-Edge-Api-Key',
     ]);
     // No regex escape hatch is added implicitly — the allowlist is the contract.
     expect(middleware.spec.forwardAuth?.authResponseHeadersRegex).toBeUndefined();
@@ -230,7 +230,7 @@ describe('Middleware builders', () => {
       name: 'internal-authz',
       namespace: NAMESPACE,
       address: 'http://authz.edge.svc.cluster.local:8080',
-      authResponseHeaders: ['X-Sela-Principal'],
+      authResponseHeaders: ['X-Edge-Principal'],
       trustForwardHeader: true,
       id: 'internalAuthz',
     });
@@ -240,12 +240,12 @@ describe('Middleware builders', () => {
 
   it('rateLimit keys on a request header and carries the Redis backend', () => {
     const middleware = traefikRateLimitMiddleware({
-      name: 'cost-api-rate-limit',
+      name: 'orders-api-rate-limit',
       namespace: NAMESPACE,
       average: 50,
       burst: 100,
       period: '1s',
-      requestHeaderName: 'X-Sela-Principal',
+      requestHeaderName: 'X-Edge-Principal',
       redis: {
         endpoints: ['valkey-primary.edge.svc.cluster.local:6379'],
         secret: 'valkey-auth',
@@ -259,7 +259,7 @@ describe('Middleware builders', () => {
     expect(middleware.spec.rateLimit?.burst).toBe(100);
     expect(middleware.spec.rateLimit?.period).toBe('1s');
     expect(middleware.spec.rateLimit?.sourceCriterion).toEqual({
-      requestHeaderName: 'X-Sela-Principal',
+      requestHeaderName: 'X-Edge-Principal',
     });
     expect(middleware.spec.rateLimit?.redis?.endpoints).toEqual([
       'valkey-primary.edge.svc.cluster.local:6379',
@@ -298,22 +298,22 @@ describe('Middleware builders', () => {
 
   it('inFlightReq caps concurrency per source', () => {
     const middleware = traefikInFlightReqMiddleware({
-      name: 'cost-api-concurrency',
+      name: 'orders-api-concurrency',
       namespace: NAMESPACE,
       amount: 20,
-      requestHeaderName: 'X-Sela-Customer',
+      requestHeaderName: 'X-Edge-Customer',
       id: 'costApiConcurrency',
     });
 
     expect(middleware.spec.inFlightReq?.amount).toBe(20);
     expect(middleware.spec.inFlightReq?.sourceCriterion).toEqual({
-      requestHeaderName: 'X-Sela-Customer',
+      requestHeaderName: 'X-Edge-Customer',
     });
   });
 
   it('headers carries the CORS and security header set verbatim', () => {
     const middleware = traefikHeadersMiddleware({
-      name: 'cost-api-headers',
+      name: 'orders-api-headers',
       namespace: NAMESPACE,
       headers: {
         accessControlAllowOriginList: ['https://console.example.com'],
@@ -352,7 +352,7 @@ describe('Middleware builders', () => {
 
   it('buffering carries the body limits', () => {
     const middleware = traefikBufferingMiddleware({
-      name: 'cost-api-body-limit',
+      name: 'orders-api-body-limit',
       namespace: NAMESPACE,
       buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
       id: 'costApiBodyLimit',
@@ -364,20 +364,20 @@ describe('Middleware builders', () => {
 
   it('chain preserves middleware order', () => {
     const middleware = traefikChainMiddleware({
-      name: 'cost-api-edge',
+      name: 'orders-api-edge',
       namespace: NAMESPACE,
       middlewares: [
-        { name: 'cost-api-headers' },
-        { name: 'cost-api-authz' },
-        { name: 'cost-api-rate-limit' },
+        { name: 'orders-api-headers' },
+        { name: 'orders-api-authz' },
+        { name: 'orders-api-rate-limit' },
       ],
       id: 'costApiEdgeChain',
     });
 
     expect(middleware.spec.chain?.middlewares.map((entry) => entry.name)).toEqual([
-      'cost-api-headers',
-      'cost-api-authz',
-      'cost-api-rate-limit',
+      'orders-api-headers',
+      'orders-api-authz',
+      'orders-api-rate-limit',
     ]);
   });
 });

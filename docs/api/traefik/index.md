@@ -162,7 +162,7 @@ literal. KRO leaves literal status fields unset; direct mode reports them.
 
 ```typescript
 const route = traefik.traefikIngressRoute({
-  name: 'cost-api',
+  name: 'orders-api',
   namespace: 'edge',
   spec: {
     entryPoints: ['websecure'],
@@ -171,12 +171,12 @@ const route = traefik.traefikIngressRoute({
         match: 'Host(`api.example.com`) && PathPrefix(`/v1`)',
         kind: 'Rule',
         priority: 100,
-        middlewares: [{ name: 'cost-api-edge' }],
-        services: [{ name: 'cost-api', port: 8080, serversTransport: 'cost-api-slow' }],
+        middlewares: [{ name: 'orders-api-edge' }],
+        services: [{ name: 'orders-api', port: 8080, serversTransport: 'orders-api-slow' }],
       },
     ],
     tls: {
-      secretName: 'cost-api-tls',
+      secretName: 'orders-api-tls',
       options: { name: 'default', namespace: 'traefik' },
     },
   },
@@ -199,7 +199,7 @@ entrypoints: { websecure: { readTimeout: '120s', writeTimeout: '120s', idleTimeo
 
 // Upstream side
 const transport = traefik.traefikServersTransport({
-  name: 'cost-api-slow',
+  name: 'orders-api-slow',
   namespace: 'edge',
   spec: {
     forwardingTimeouts: { responseHeaderTimeout: '120s', idleConnTimeout: '150s' },
@@ -229,12 +229,12 @@ traefik.traefikMiddleware({
 
 ```typescript
 const authz = traefik.traefikForwardAuthMiddleware({
-  name: 'cost-api-authz',
+  name: 'orders-api-authz',
   namespace: 'edge',
-  address: 'http://cost-api-authorizer.edge.svc.cluster.local:8080/authorize',
+  address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
   // Explicit allowlist: only these headers are copied onto the upstream request
-  authResponseHeaders: ['X-Sela-Principal', 'X-Sela-Tier', 'X-Sela-Customer'],
-  authRequestHeaders: ['Authorization', 'X-Sela-Api-Key'],
+  authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
+  authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
   id: 'costApiAuthz',
 });
 ```
@@ -247,13 +247,13 @@ reaching the entrypoint is already behind a trusted proxy that rewrites
 
 ```typescript
 const rateLimit = traefik.traefikRateLimitMiddleware({
-  name: 'cost-api-rate-limit',
+  name: 'orders-api-rate-limit',
   namespace: 'edge',
   average: 50,
   burst: 100,
   period: '1s',
   // The principal a preceding forwardAuth injected
-  requestHeaderName: 'X-Sela-Principal',
+  requestHeaderName: 'X-Edge-Principal',
   redis: {
     endpoints: ['valkey-primary.edge.svc.cluster.local:6379'],
     secret: 'valkey-auth',
@@ -273,15 +273,15 @@ hold for the whole edge. The `secret` names a Secret with `username` /
 
 ```typescript
 const concurrency = traefik.traefikInFlightReqMiddleware({
-  name: 'cost-api-concurrency',
+  name: 'orders-api-concurrency',
   namespace: 'edge',
   amount: 20,
-  requestHeaderName: 'X-Sela-Customer',
+  requestHeaderName: 'X-Edge-Customer',
   id: 'costApiConcurrency',
 });
 
 const headers = traefik.traefikHeadersMiddleware({
-  name: 'cost-api-headers',
+  name: 'orders-api-headers',
   namespace: 'edge',
   headers: {
     accessControlAllowOriginList: ['https://console.example.com'],
@@ -300,7 +300,7 @@ const headers = traefik.traefikHeadersMiddleware({
 });
 
 const bodyLimit = traefik.traefikBufferingMiddleware({
-  name: 'cost-api-body-limit',
+  name: 'orders-api-body-limit',
   namespace: 'edge',
   buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
   id: 'costApiBodyLimit',
@@ -308,14 +308,14 @@ const bodyLimit = traefik.traefikBufferingMiddleware({
 
 // One reference several routes can share
 const chain = traefik.traefikChainMiddleware({
-  name: 'cost-api-edge',
+  name: 'orders-api-edge',
   namespace: 'edge',
   middlewares: [
-    { name: 'cost-api-headers' },
-    { name: 'cost-api-authz' },
-    { name: 'cost-api-rate-limit' },
-    { name: 'cost-api-concurrency' },
-    { name: 'cost-api-body-limit' },
+    { name: 'orders-api-headers' },
+    { name: 'orders-api-authz' },
+    { name: 'orders-api-rate-limit' },
+    { name: 'orders-api-concurrency' },
+    { name: 'orders-api-body-limit' },
   ],
   id: 'costApiEdgeChain',
 });
@@ -378,7 +378,7 @@ shared `src/factories/gateway-api` module — the same module
 providers: { crd: true, gatewayApi: true }
 
 const route = traefik.traefikHTTPRoute({
-  name: 'cost-api',
+  name: 'orders-api',
   namespace: 'edge',
   spec: {
     parentRefs: [{ name: 'traefik-gateway', namespace: 'traefik' }],
@@ -388,8 +388,8 @@ const route = traefik.traefikHTTPRoute({
         matches: [{ path: { type: 'PathPrefix', value: '/v1' } }],
         // Gateway API has no vendor-neutral forwardAuth/rateLimit filter, so a
         // Traefik Middleware attaches through an ExtensionRef
-        filters: [traefik.traefikMiddlewareFilter('cost-api-authz')],
-        backendRefs: [{ name: 'cost-api', port: 8080 }],
+        filters: [traefik.traefikMiddlewareFilter('orders-api-authz')],
+        backendRefs: [{ name: 'orders-api', port: 8080 }],
         timeouts: { request: '120s' },
       },
     ],
@@ -461,6 +461,6 @@ behind a LoadBalancer, missing resource requests.
 
 ## See also
 
-- [`examples/traefik-edge.ts`](https://github.com/yehudacohen/typekro/blob/master/examples/traefik-edge.ts) — the full cost-API edge scenario
+- [`examples/traefik-edge.ts`](https://github.com/yehudacohen/typekro/blob/master/examples/traefik-edge.ts) — the full orders API edge scenario
 - [Envoy AI Gateway](/api/envoy-ai-gateway/) — the other Gateway API implementation, sharing the same `gateway-api` module
 - [cert-manager](/api/cert-manager/) — certificate issuance for the TLS store

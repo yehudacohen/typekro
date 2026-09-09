@@ -66,7 +66,7 @@ setDefaultTimeout(1_200_000);
 /**
  * Stub authorizer.
  *
- * Allows `X-Sela-Api-Key: allow` and answers 403 otherwise. On success it
+ * Allows `X-Edge-Api-Key: allow` and answers 403 otherwise. On success it
  * returns the three headers the edge allowlists plus one it does not, so the
  * suite can prove the allowlist is an allowlist.
  */
@@ -75,13 +75,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        key = self.headers.get("x-sela-api-key", "")
+        key = self.headers.get("x-example-api-key", "")
         if key == "allow":
             self.send_response(200)
-            self.send_header("X-Sela-Principal", "svc-integration")
-            self.send_header("X-Sela-Tier", "gold")
-            self.send_header("X-Sela-Customer", "acme")
-            self.send_header("X-Sela-Not-Allowlisted", "leaked")
+            self.send_header("X-Edge-Principal", "svc-integration")
+            self.send_header("X-Edge-Tier", "gold")
+            self.send_header("X-Edge-Customer", "acme")
+            self.send_header("X-Edge-Not-Allowlisted", "leaked")
             self.send_header("content-length", "0")
             self.end_headers()
             return
@@ -106,10 +106,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         payload = json.dumps({
             "path": self.path,
-            "principal": self.headers.get("x-sela-principal", ""),
-            "tier": self.headers.get("x-sela-tier", ""),
-            "customer": self.headers.get("x-sela-customer", ""),
-            "notAllowlisted": self.headers.get("x-sela-not-allowlisted", ""),
+            "principal": self.headers.get("x-example-principal", ""),
+            "tier": self.headers.get("x-example-tier", ""),
+            "customer": self.headers.get("x-example-customer", ""),
+            "notAllowlisted": self.headers.get("x-example-not-allowlisted", ""),
         }).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -143,7 +143,7 @@ const costApiEdge = kubernetesComposition(
       headers: {
         accessControlAllowOriginList: ['https://console.example.test'],
         accessControlAllowMethods: ['GET', 'OPTIONS'],
-        accessControlAllowHeaders: ['authorization', 'x-sela-api-key'],
+        accessControlAllowHeaders: ['authorization', 'x-example-api-key'],
         accessControlMaxAge: 600,
         addVaryHeader: true,
         frameDeny: true,
@@ -156,8 +156,8 @@ const costApiEdge = kubernetesComposition(
       name: `${spec.name}-authz`,
       namespace: spec.namespace,
       address: spec.authorizerUrl,
-      authResponseHeaders: ['X-Sela-Principal', 'X-Sela-Tier', 'X-Sela-Customer'],
-      authRequestHeaders: ['X-Sela-Api-Key'],
+      authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
+      authRequestHeaders: ['X-Edge-Api-Key'],
       id: 'edgeAuthz',
     });
 
@@ -167,7 +167,7 @@ const costApiEdge = kubernetesComposition(
       average: 1,
       burst: 2,
       period: '1m',
-      requestHeaderName: 'X-Sela-Principal',
+      requestHeaderName: 'X-Edge-Principal',
       id: 'edgeRateLimit',
     });
 
@@ -277,7 +277,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
   const traefikNs = `traefik-e2e-${runId}`;
   const appNs = `traefik-e2e-app-${runId}`;
   const traefikName = 'traefik';
-  const routeName = 'cost-api';
+  const routeName = 'orders-api';
   const namespaceLeases: TestNamespaceLease[] = [];
 
   let kubeConfig: k8s.KubeConfig;
@@ -420,7 +420,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
           '-ec',
           `for attempt in $(seq 1 60); do ` +
             `body=$(curl --silent --max-time 10 -o /dev/stdout -w '\\nHTTP:%{http_code}' ` +
-            `-H 'X-Sela-Api-Key: allow' ${entrypoint}/v1/costs); ` +
+            `-H 'X-Edge-Api-Key: allow' ${entrypoint}/v1/costs); ` +
             `case "$body" in *HTTP:200*) echo "$body"; exit 0;; esac; ` +
             `sleep 2; done; ` +
             `echo "edge never answered 200: $body" >&2; exit 1`,
@@ -449,7 +449,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
           'sh',
           '-ec',
           `curl --silent --max-time 10 -o /dev/null -w 'HTTP:%{http_code}\\n' ` +
-            `-H 'X-Sela-Api-Key: deny' ${entrypoint}/v1/costs`,
+            `-H 'X-Edge-Api-Key: deny' ${entrypoint}/v1/costs`,
         ],
         timeoutMs: 180_000,
       },
@@ -472,7 +472,7 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
           // injects: a short burst of identical requests must be throttled.
           `for attempt in $(seq 1 20); do ` +
             `curl --silent --max-time 10 -o /dev/null -w '%{http_code}\\n' ` +
-            `-H 'X-Sela-Api-Key: allow' ${entrypoint}/v1/costs; ` +
+            `-H 'X-Edge-Api-Key: allow' ${entrypoint}/v1/costs; ` +
             `done`,
         ],
         timeoutMs: 180_000,

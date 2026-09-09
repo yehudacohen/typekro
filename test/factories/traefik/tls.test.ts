@@ -166,7 +166,7 @@ describe('cert-manager → TLSStore → IngressRoute composition pattern', () =>
             routes: [
               {
                 match: 'Host(`api.example.com`)',
-                services: [{ name: 'cost-api', port: 8080 }],
+                services: [{ name: 'orders-api', port: 8080 }],
               },
             ],
             tls: {

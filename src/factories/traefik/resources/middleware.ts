@@ -109,14 +109,14 @@ export interface TraefikForwardAuthMiddlewareConfig extends TraefikMiddlewareMet
  * `trustForwardHeader` is `false` unless explicitly overridden, and
  * `authResponseHeaders` is an explicit allowlist.
  *
- * @example The Sela cost-api authorizer, returning principal/tier/customer
+ * @example The Example orders-api authorizer, returning principal/tier/customer
  * ```typescript
  * traefikForwardAuthMiddleware({
- *   name: 'cost-api-authz',
+ *   name: 'orders-api-authz',
  *   namespace: 'edge',
- *   address: 'http://cost-api-authorizer.edge.svc.cluster.local:8080/authorize',
- *   authResponseHeaders: ['X-Sela-Principal', 'X-Sela-Tier', 'X-Sela-Customer'],
- *   authRequestHeaders: ['Authorization', 'X-Sela-Api-Key'],
+ *   address: 'http://orders-authorizer.edge.svc.cluster.local:8080/authorize',
+ *   authResponseHeaders: ['X-Edge-Principal', 'X-Edge-Tier', 'X-Edge-Customer'],
+ *   authRequestHeaders: ['Authorization', 'X-Edge-Api-Key'],
  *   id: 'costApiAuthz',
  * });
  * ```
@@ -166,12 +166,12 @@ export interface TraefikRateLimitMiddlewareConfig extends TraefikMiddlewareMetad
  * @example Per-principal budget shared across replicas through Valkey
  * ```typescript
  * traefikRateLimitMiddleware({
- *   name: 'cost-api-rate-limit',
+ *   name: 'orders-api-rate-limit',
  *   namespace: 'edge',
  *   average: 50,
  *   burst: 100,
  *   period: '1s',
- *   requestHeaderName: 'X-Sela-Principal',
+ *   requestHeaderName: 'X-Edge-Principal',
  *   redis: {
  *     endpoints: ['valkey-primary.edge.svc.cluster.local:6379'],
  *     secret: 'valkey-auth',
@@ -215,10 +215,10 @@ export interface TraefikInFlightReqMiddlewareConfig extends TraefikMiddlewareMet
  * @example
  * ```typescript
  * traefikInFlightReqMiddleware({
- *   name: 'cost-api-concurrency',
+ *   name: 'orders-api-concurrency',
  *   namespace: 'edge',
  *   amount: 20,
- *   requestHeaderName: 'X-Sela-Customer',
+ *   requestHeaderName: 'X-Edge-Customer',
  *   id: 'costApiConcurrency',
  * });
  * ```
@@ -249,7 +249,7 @@ export interface TraefikHeadersMiddlewareConfig extends TraefikMiddlewareMetadat
  * @example
  * ```typescript
  * traefikHeadersMiddleware({
- *   name: 'cost-api-headers',
+ *   name: 'orders-api-headers',
  *   namespace: 'edge',
  *   headers: {
  *     accessControlAllowOriginList: ['https://console.example.com'],
@@ -313,7 +313,7 @@ export interface TraefikBufferingMiddlewareConfig extends TraefikMiddlewareMetad
  * @example A 1 MiB request-body cap
  * ```typescript
  * traefikBufferingMiddleware({
- *   name: 'cost-api-body-limit',
+ *   name: 'orders-api-body-limit',
  *   namespace: 'edge',
  *   buffering: { maxRequestBodyBytes: 1_048_576, memRequestBodyBytes: 262_144 },
  *   id: 'costApiBodyLimit',
@@ -339,14 +339,14 @@ export interface TraefikChainMiddlewareConfig extends TraefikMiddlewareMetadata 
  * @example
  * ```typescript
  * traefikChainMiddleware({
- *   name: 'cost-api-edge',
+ *   name: 'orders-api-edge',
  *   namespace: 'edge',
  *   middlewares: [
- *     { name: 'cost-api-headers' },
- *     { name: 'cost-api-authz' },
- *     { name: 'cost-api-rate-limit' },
- *     { name: 'cost-api-concurrency' },
- *     { name: 'cost-api-body-limit' },
+ *     { name: 'orders-api-headers' },
+ *     { name: 'orders-api-authz' },
+ *     { name: 'orders-api-rate-limit' },
+ *     { name: 'orders-api-concurrency' },
+ *     { name: 'orders-api-body-limit' },
  *   ],
  *   id: 'costApiEdgeChain',
  * });
