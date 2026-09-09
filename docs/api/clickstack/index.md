@@ -150,10 +150,11 @@ const bootstrap = makeClickstackBootstrap({
   mongo: { mode: 'internal', storage: { storageClassName: 'gp3-expandable' } },
   storage: {
     mode: 's3',
-    diskType: 's3_plain_rewritable',
+    diskType: 's3',
     // Per-signal TTL, applied by an idempotent DDL CronJob.
+    // NOT available with `diskType: 's3_plain_rewritable'` — see below.
     retention: { logs: '30d', traces: '7d', metrics: '90d' },
-    // Survive a ClickHouse restart during a node rebuild.
+    // Survive a collector or ClickHouse restart during a node rebuild.
     persistentQueue: { enabled: true, size: '10Gi' },
   },
 });
@@ -175,13 +176,44 @@ the idempotence probe directly comparable.
 
 It runs as a **CronJob**, not a one-shot Job, for two honest reasons: the tables do not exist until
 the collector has migrated, and TypeKro does not own their DDL. The script therefore skips a missing
-table and re-checks on a later run, and only issues `MODIFY TTL` when the table's current
-`create_table_query` does not already carry the target interval — so a converged cluster does no
-metadata churn. `retentionSchedule` defaults to `'17 * * * *'`.
+table and re-checks on a later run, and only issues `MODIFY TTL` when the table's current TTL is not
+already the intended one — so a converged cluster does no metadata churn. `retentionSchedule`
+defaults to `'17 * * * *'`.
+
+The idempotence probe compares the **complete** TTL clause, not a substring of it: it extracts
+everything between `TTL ` and the trailing ` SETTINGS …` out of `system.tables.engine_full`,
+collapses whitespace, and tests that for equality against the intended clause. A substring probe was
+wrong in both directions — `toIntervalDay(3)` occurs inside `toIntervalDay(30)`, so a needed change
+would be skipped, and a table carrying the intended interval *plus* extra clauses (a `WHERE`, a
+second `TO VOLUME` entry) would also be reported as converged. On a mismatch the job logs the clause
+it actually found, so a change in ClickHouse's rendering shows up in the Job log rather than as
+silent per-run churn.
 
 Every statement carries `SETTINGS materialize_ttl_after_modify = 0`, because the materialization
 pass is a **mutation** and the `plain_rewritable` metadata type does not support mutations. Expiry
 still happens during merges.
+
+::: danger `retention` is incompatible with `diskType: 's3_plain_rewritable'`
+The combination is **rejected at construction**. `materialize_ttl_after_modify = 0` skips the
+materialization mutation, but that is not enough: the immutable metadata type refuses the metadata
+`ALTER` itself. Verified live against ClickHouse 25.7 —
+
+```text
+Code: 344. DB::Exception: ALTER TABLE commands are not supported on immutable disk 's3',
+except for setting and comment alteration. (SUPPORT_IS_DISABLED)
+```
+
+— while the identical statement against a table on the server's local policy succeeds, so this is a
+property of the disk type, not of the statement. Rendering the CronJob anyway would ship a job that
+CrashLoops on every run while reporting a retention policy that never takes effect.
+
+**The two durability stories therefore trade off against TTL:**
+
+| ClickHouse `diskType` | Node loss | TypeKro-managed `retention` |
+| --- | --- | --- |
+| `s3_plain_rewritable` | restart and reattach, no restore step | ✗ — keep the 30-day TTL the collector's migrations create |
+| `s3` + `storage.backup` | restore from the scheduled backup | ✓ |
+:::
 
 The job reads its connection from the chart-owned `clickstack-config` ConfigMap and
 `clickstack-secret` Secret via `envFrom` — the same pair the gateway collector uses — so it works
@@ -202,8 +234,55 @@ collector config before relying on this in production.
 The gateway buffers in memory by default, so a ClickHouse restart — exactly what an S3-backed node
 rebuild causes — drops in-flight telemetry. `persistentQueue: { enabled: true }` adds a
 `file_storage` extension, points the exporter's `sending_queue` at it, and pins the volume backing
-its directory. Omit `size` for an `emptyDir` (survives a ClickHouse restart, not a collector pod
-restart); pass `size` for an ephemeral PVC that survives both.
+its directory.
+
+That volume is a **standalone `PersistentVolumeClaim` owned by the composition**, mounted by
+`claimName`. It is deliberately neither of the two shapes a chart can template for you: an
+`emptyDir` is deleted with the Pod, and a *generic ephemeral volume*'s PVC is
+[deleted along with the Pod that owns it](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/) —
+so either would be destroyed by exactly the collector restart the queue exists to survive. There is
+no ephemeral fallback and no "omit `size`" path: `size` defaults to `'10Gi'`.
+
+`accessModes` defaults to `['ReadWriteOnce']`. Because the gateway collector is a **Deployment**
+sharing one claim, that pins it to `replicaCount: 1`, and a build-time
+`values['otel-collector'].replicaCount` above 1 is **rejected at construction**:
+
+```typescript
+// throws: one ReadWriteOnce claim cannot back a multi-replica Deployment
+makeClickstackBootstrap({
+  storage: { mode: 's3', persistentQueue: { enabled: true } },
+  values: { 'otel-collector': { replicaCount: 3 } },
+});
+
+// correct: every replica can mount the same queue directory
+makeClickstackBootstrap({
+  storage: {
+    mode: 's3',
+    persistentQueue: { enabled: true, accessModes: ['ReadWriteMany'], storageClassName: 'efs-sc' },
+  },
+  values: { 'otel-collector': { replicaCount: 3 } },
+});
+```
+
+The HelmRelease depends on the claim, so it exists before the collector's first Pod. The claim is
+treated as ready while `Pending`, because a `WaitForFirstConsumer` StorageClass (the common default)
+does not bind a claim until a Pod mounts it — and that Pod comes from the HelmRelease waiting on it.
+
+::: warning The queue values re-emit the chart's own `custom-config` volume
+Helm **replaces** a list-valued override rather than appending to it, and the chart mounts the
+ConfigMap it renders from `global.otelCollector.customConfig` through the same
+`extraVolumes` / `extraVolumeMounts` the queue needs — its `values.yaml` carries the warning itself:
+
+> if you override extraVolumes/extraVolumeMounts yourself, Helm replaces these lists entirely
+
+Verified live what happens otherwise: the queue volume evicts the custom-config mount, the OpAMP
+supervisor logs `Could not read local config file: open
+/etc/otelcol-contrib/custom/custom.config.yaml: no such file or directory` on every poll, and the
+agent starts **without** the overlay — losing both the ingest pipelines and the queue's own
+`file_storage` wiring, while the Pod still reports Ready (readiness comes from the *supervisor's*
+health_check, not the agent's). TypeKro therefore re-emits the chart's entry alongside the queue's,
+and both a unit test and the integration suite assert the two mounts coexist.
+:::
 
 ## Status Contract
 

@@ -58,6 +58,7 @@ import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js'
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
 import {
   type ResolvedClickStackStorage,
+  clickStackQueueClaimName,
   renderPersistentQueueConfig,
   renderPersistentQueueValues,
 } from './storage.js';
@@ -500,8 +501,11 @@ export function mapClickStackConfigToHelmValues(
   // win — including over a graph-aware per-instance `customValues` override.
   // The persistent sending queue extends the SAME `customConfig` overlay the
   // ingest pipelines use, and pins the volume that backs its directory — a
-  // queue whose directory is not writable degrades silently, so both halves
-  // travel together and beat the values passthrough.
+  // queue whose directory is not writable degrades silently, and one backed by
+  // a Pod-scoped volume degrades just as silently on the next restart, so both
+  // halves travel together and beat the values passthrough. The mounted claim
+  // is the standalone PVC the composition creates; the name comes from the
+  // shared helper so the mount and the claim cannot drift.
   const queue = options.storage?.persistentQueue;
   const pins: Record<string, unknown> = {
     global: {
@@ -515,7 +519,9 @@ export function mapClickStackConfigToHelmValues(
     clickhouse: { enabled: false },
     mongodb: { enabled: false },
     fullnameOverride: config.name,
-    ...(queue !== undefined ? renderPersistentQueueValues(queue) : {}),
+    ...(queue !== undefined
+      ? renderPersistentQueueValues(queue, clickStackQueueClaimName(config.name))
+      : {}),
   };
 
   // Per-instance `customValues` is a DIRECT-mode-only convenience: only a CONCRETE object merges.

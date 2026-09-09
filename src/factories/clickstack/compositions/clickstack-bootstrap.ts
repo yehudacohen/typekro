@@ -76,7 +76,7 @@
  * ```
  */
 
-import type { V1CronJob } from '@kubernetes/client-node';
+import type { V1CronJob, V1PersistentVolumeClaim } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { registerPortableReadinessEvaluator } from '../../../core/readiness/portable-strategies.js';
@@ -85,6 +85,7 @@ import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import {
   CLICKSTACK_API_PORT,
@@ -126,6 +127,9 @@ import {
   CLICKSTACK_CONFIG_MAP_NAME,
   CLICKSTACK_SECRET_NAME,
   type ResolvedClickStackStorage,
+  assertQueueReplicaCompatible,
+  clickStackQueueClaimName,
+  renderPersistentQueueClaimSpec,
   renderRetentionScript,
   resolveClickStackStorage,
 } from '../utils/storage.js';
@@ -147,6 +151,42 @@ interface ResolvedBuildConfig {
 }
 
 const CLICKSTACK_CHART_PLACEHOLDER_API_KEY = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+
+/**
+ * Readiness for the collector queue's PersistentVolumeClaim.
+ *
+ * `Pending` counts as ready ON PURPOSE. The default binding mode of most
+ * dynamic provisioners — and of kind's `local-path` StorageClass — is
+ * `WaitForFirstConsumer`, which does not bind a claim until a Pod that mounts
+ * it is scheduled. That Pod comes from the HelmRelease which DEPENDS on this
+ * claim, so requiring `Bound` here would deadlock every such cluster. What
+ * this evaluator does still catch is a claim the API server rejected the
+ * provisioning of (`Lost`), and a claim whose status has not appeared at all.
+ */
+const clickstackQueueClaimReadiness = registerPortableReadinessEvaluator<V1PersistentVolumeClaim>(
+  'typekro.readiness.clickstack.queue-claim',
+  '1',
+  (liveResource) => {
+    const phase = liveResource.status?.phase;
+    if (phase === 'Bound') {
+      return { ready: true, reason: 'Bound', message: 'The queue claim is bound to a volume' };
+    }
+    if (phase === 'Pending') {
+      return {
+        ready: true,
+        reason: 'WaitingForConsumer',
+        message:
+          'The queue claim is Pending — expected until the collector Pod is scheduled on a ' +
+          'WaitForFirstConsumer StorageClass',
+      };
+    }
+    return {
+      ready: false,
+      reason: phase === undefined ? 'NoStatus' : 'UnexpectedPhase',
+      message: `The queue claim is in phase ${phase ?? '<none>'}, expected Bound or Pending`,
+    };
+  }
+);
 const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1CronJob>(
   'typekro.readiness.clickstack.team-bootstrap',
   '1',
@@ -322,6 +362,39 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       });
     }
 
+    // ── Collector persistent sending queue (PVC) ─────────────────────────
+    //
+    // A "persistent queue" has to outlive the collector Pod, and the two
+    // volume kinds a chart can template for you do NOT: an `emptyDir` dies
+    // with the Pod, and a *generic ephemeral volume*'s PVC is deleted along
+    // with the Pod that owns it
+    // (https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/). So the
+    // claim is a STANDALONE PersistentVolumeClaim owned by this composition,
+    // mounted by `claimName` through the chart's `extraVolumes` seam. It is
+    // created before the HelmRelease so the collector's first Pod can bind it.
+    //
+    // READINESS: the claim is treated as ready while `Pending`, because a
+    // `WaitForFirstConsumer` StorageClass (the common default, and kind's) does
+    // not bind a claim until a Pod mounts it — and that Pod is created by the
+    // HelmRelease that waits on this resource. Gating on `Bound` here would
+    // deadlock the deployment on every such cluster.
+    const queueClaim =
+      build.clickhouseStorage.persistentQueue === undefined
+        ? undefined
+        : persistentVolumeClaim({
+            id: 'clickstackQueueClaim',
+            metadata: {
+              name: clickStackQueueClaimName(spec.name),
+              namespace: resolvedNamespace as string,
+              labels: {
+                'app.kubernetes.io/name': 'clickstack-otel-queue',
+                'app.kubernetes.io/instance': spec.name,
+                'app.kubernetes.io/managed-by': 'typekro',
+              },
+            },
+            spec: renderPersistentQueueClaimSpec(build.clickhouseStorage.persistentQueue),
+          }).withReadinessEvaluator(clickstackQueueClaimReadiness);
+
     // ── ClickStack HelmRelease ───────────────────────────────────────────
     //
     // The HelmRelease does not set `disableWait`, so helm-controller waits
@@ -351,6 +424,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         : {}),
       id: 'clickstackHelmRelease',
     });
+    // The collector Pod mounts the queue claim by name, so the claim has to
+    // exist before helm-controller creates the Deployment.
+    if (queueClaim !== undefined) {
+      _clickstackHelmRelease.dependsOn(queueClaim);
+    }
 
     // HyperDX's production OpAMP controller activates OTLP only after its
     // authoritative Team collection contains an ingestion key. The chart's
@@ -574,13 +652,37 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
   }
 }
 
+/**
+ * Resolve the ClickHouse-storage half of a build, with the queue's
+ * replica constraint checked against the build-time chart values.
+ *
+ * The persistent queue is ONE PersistentVolumeClaim shared by the collector
+ * Deployment, so a `ReadWriteOnce` claim and `replicaCount > 1` cannot both be
+ * honoured — that combination is rejected at construction rather than
+ * deploying a Deployment whose extra Pods wedge on `Multi-Attach`.
+ */
+function resolveClickHouseStorageForBuild(
+  options: Pick<ClickStackInternalMongoBuildOptions, 'storage' | 'values'>
+): ResolvedClickStackStorage {
+  const resolved = resolveClickStackStorage('makeClickstackBootstrap', options.storage);
+  const collectorValues = (options.values as Record<string, unknown> | undefined)?.[
+    'otel-collector'
+  ];
+  const replicaCount =
+    typeof collectorValues === 'object' && collectorValues !== null
+      ? (collectorValues as { replicaCount?: unknown }).replicaCount
+      : undefined;
+  assertQueueReplicaCompatible('makeClickstackBootstrap', resolved, replicaCount);
+  return resolved;
+}
+
 function resolveInternalBuild(options: ClickStackInternalMongoBuildOptions): ResolvedBuildConfig {
   return {
     mongoMode: 'internal',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.mongo?.storage !== undefined && { storage: options.mongo.storage }),
     ...(options.values !== undefined && { values: options.values }),
-    clickhouseStorage: resolveClickStackStorage('makeClickstackBootstrap', options.storage),
+    clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
 
@@ -589,7 +691,7 @@ function resolveExternalBuild(options: ClickStackExternalMongoBuildOptions): Res
     mongoMode: 'external',
     credentialSource: options.credentials?.source ?? 'inline',
     ...(options.values !== undefined && { values: options.values }),
-    clickhouseStorage: resolveClickStackStorage('makeClickstackBootstrap', options.storage),
+    clickhouseStorage: resolveClickHouseStorageForBuild(options),
   };
 }
 

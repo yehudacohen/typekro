@@ -61,8 +61,12 @@ const clickstack = makeClickstackBootstrap({
   storage: {
     mode: 's3',
     diskType: 's3_plain_rewritable',
-    // TTL is the one thing the server-default policy cannot express.
-    retention: { logs: '30d', traces: '7d', metrics: '90d' },
+    // NO `retention` here on purpose: `s3_plain_rewritable` is an IMMUTABLE
+    // metadata type and ClickHouse refuses every `ALTER TABLE` on it except
+    // settings and comments, so a TTL CronJob could never apply. The
+    // combination is rejected at construction. The collector's own migrations
+    // already create a 30-day TTL; use `diskType: 's3'` with `storage.backup`
+    // on the ClickHouse side when you need TypeKro-managed retention.
     // A ClickHouse restart during a node rebuild must not drop telemetry.
     // Read the persistent-queue caveat in docs/api/clickstack/index.md first.
     persistentQueue: { enabled: true, size: '10Gi' },

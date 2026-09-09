@@ -22,7 +22,10 @@
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/index.js';
+import {
+  createBunCompatibleBatchV1Api,
+  createBunCompatibleCustomObjectsApi,
+} from '../../../src/core/kubernetes/index.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
   createCoreV1ApiClient,
@@ -298,9 +301,10 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       storage: {
         mode: 's3',
         diskType: 's3_plain_rewritable',
-        // Short retention so the DDL is observable inside a test run.
-        retention: { logs: '7d', traces: '7d', metrics: '30d' },
-        retentionSchedule: '*/2 * * * *',
+        // NO `retention` here, and the factory would reject it: this CHI is
+        // `s3_plain_rewritable`, an IMMUTABLE metadata type that refuses every
+        // `ALTER TABLE` except settings and comments — proven below. The
+        // collector's own migrations keep their 30-day TTL.
         persistentQueue: { enabled: true },
       },
     });
@@ -330,6 +334,46 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     gatewayEndpoint = instance.status.gateway.otlpHttpEndpoint;
     expect(gatewayEndpoint).toContain('4318');
   }, 1_500_000);
+
+  it("keeps the chart's custom-config mount alongside the queue volume", async () => {
+    // LIVE FINDING: Helm REPLACES a list-valued override, and the chart mounts
+    // its `global.otelCollector.customConfig` ConfigMap through the same
+    // `extraVolumes`/`extraVolumeMounts` the queue uses. Overriding them with
+    // only the queue volume evicted that mount, the OpAMP supervisor could not
+    // read `custom.config.yaml`, and the agent never started its OTLP
+    // receivers — while the Pod stayed Ready off the supervisor's own
+    // health_check. Assert BOTH mounts are present on the live Pod.
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
+    const collector = pods.items.find((pod) =>
+      pod.metadata?.name?.includes('otel-collector')
+    );
+    expect(collector).toBeDefined();
+
+    const mounts = (collector?.spec?.containers ?? [])
+      .flatMap((container) => container.volumeMounts ?? [])
+      .map((mount) => mount.mountPath);
+    expect(mounts).toContain('/etc/otelcol-contrib/custom');
+    expect(mounts).toContain('/var/lib/otelcol/file_storage');
+
+    const volumes = collector?.spec?.volumes ?? [];
+    expect(
+      volumes.some((volume) => volume.configMap?.name === 'clickstack-otel-custom-config')
+    ).toBe(true);
+    expect(
+      volumes.some((volume) => volume.persistentVolumeClaim?.claimName === `${stackName}-otel-queue`)
+    ).toBe(true);
+  }, 300_000);
+
+  it('renders no retention CronJob for an immutable plain_rewritable ClickHouse', async () => {
+    const batchApi = createBunCompatibleBatchV1Api(kubeConfig);
+    const cronJobs = await batchApi.listNamespacedCronJob({ namespace: stackNs });
+    const names = cronJobs.items.map((job) => job.metadata?.name ?? '');
+    // The Team bootstrap CronJob is always there; a retention one would
+    // CrashLoop forever on this disk type, so it must not exist.
+    expect(names.some((name) => name.includes('team-bootstrap'))).toBe(true);
+    expect(names.some((name) => name.includes('otel-retention'))).toBe(false);
+  }, 300_000);
 
   it('lands the collector-created OTel tables on the S3 policy with no per-table DDL', async () => {
     // The goose migrations create these; TypeKro never issues their DDL. The
@@ -374,9 +418,21 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
             'set -eu',
             // OTLP/HTTP wants nanoseconds; `date +%s` gives seconds.
             'TS="$(date +%s)000000000"',
-            `curl -sS --fail-with-body -X POST "${gatewayEndpoint}/v1/logs" ` +
+            // LIVE-VERIFIED: the collector Pod reports Ready off its
+            // health_check extension, which the OpAMP supervisor brings up
+            // BEFORE the OTLP receivers are listening — a single-shot post
+            // gets "Could not connect to server" on a freshly rolled gateway.
+            // Retry until the receiver accepts, rather than racing it.
+            'i=0',
+            'while [ "$i" -lt 60 ]; do',
+            `  if curl -sS --fail-with-body -X POST "${gatewayEndpoint}/v1/logs" ` +
               `-H 'Content-Type: application/json' ` +
-              `-H "authorization: $HYPERDX_API_KEY" --data '${payload}'`,
+              `-H "authorization: $HYPERDX_API_KEY" --data '${payload}'; then`,
+            '    echo "OTLP post accepted"; exit 0',
+            '  fi',
+            '  i=$((i + 1)); sleep 5',
+            'done',
+            'echo "gateway never accepted the OTLP post"; exit 1',
           ].join('\n'),
         ],
         env: [{ name: 'HYPERDX_API_KEY', value: apiKey }],
@@ -435,25 +491,188 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     expect(Number(rows)).toBeGreaterThan(0);
   }, 900_000);
 
-  it('applies the configured TTL to the collector-created tables', async () => {
-    // The retention CronJob converges on its own schedule once the tables
-    // exist, so poll rather than assuming the first run already landed.
-    // LIVE-VERIFIED: the collector's own migration already sets
-    // `TTL toDateTime(Timestamp) + toIntervalDay(30)`, so "the table has a TTL"
-    // is true before the retention CronJob has ever run. Poll for OUR interval.
-    const deadline = Date.now() + 600_000;
-    let ttl = '';
-    while (Date.now() < deadline) {
-      ttl = await query(
-        "SELECT create_table_query FROM system.tables WHERE database = 'default' " +
-          "AND name = 'otel_logs'",
-        'ttl'
+  it('proves an immutable plain_rewritable table REFUSES the retention ALTER', async () => {
+    // This is why `resolveClickStackStorage` rejects
+    // `retention` + `diskType: 's3_plain_rewritable'` at construction. The OTel
+    // tables here live on the s3_plain_rewritable policy (asserted above), and
+    // `materialize_ttl_after_modify = 0` does not save the statement: it only
+    // skips the materialization MUTATION, while it is the metadata ALTER
+    // itself that the immutable metadata type refuses.
+    let message = '';
+    try {
+      await query(
+        'ALTER TABLE `otel_logs` MODIFY TTL toDateTime(Timestamp) + INTERVAL 7 DAY DELETE ' +
+          'SETTINGS materialize_ttl_after_modify = 0',
+        'ttlrefused'
       );
-      if (/toIntervalDay\(7\)|INTERVAL 7 DAY/.test(ttl)) break;
-      await Bun.sleep(15_000);
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
     }
 
-    expect(ttl).toContain('TTL');
-    expect(ttl).toMatch(/toIntervalDay\(7\)|INTERVAL 7 DAY/);
+    expect(message).not.toBe('');
+    expect(message).toMatch(/immutable disk|SUPPORT_IS_DISABLED/);
+
+    // The identical statement on the server's LOCAL policy succeeds, so the
+    // refusal is a property of the disk type and not of the statement.
+    await query(
+      'CREATE TABLE IF NOT EXISTS ttl_local_probe (ts DateTime, v String) ' +
+        "ENGINE = MergeTree ORDER BY ts SETTINGS storage_policy = 'default'",
+      'ttllocalcreate'
+    );
+    await query(
+      'ALTER TABLE ttl_local_probe MODIFY TTL toDateTime(ts) + INTERVAL 7 DAY DELETE ' +
+        'SETTINGS materialize_ttl_after_modify = 0',
+      'ttllocalalter'
+    );
   }, 900_000);
+
+  it('reads back the COMPLETE TTL clause the idempotence probe compares', async () => {
+    // The retention CronJob's idempotence check extracts the whole TTL clause
+    // out of `engine_full` and compares it for EQUALITY. Both halves run
+    // against a real server here rather than against a rendered string: the
+    // extraction SQL is the exact expression the generated script uses, and
+    // the expected clauses come from the resolver.
+    //
+    // The collector's own migration sets `toDateTime(Timestamp) +
+    // toIntervalDay(30)`, so a resolver asked for 30d must say "already
+    // applied" and one asked for 7d must say "needs a change" — which is
+    // precisely the discrimination the old substring probe got wrong.
+    const extracted = await query(
+      "SELECT trim(replaceRegexpAll(extract(replaceRegexpOne(engine_full, ' SETTINGS .*', ''), " +
+        "'TTL (.*)'), '[[:space:]]+', ' ')) FROM system.tables " +
+        "WHERE database = 'default' AND name = 'otel_logs'",
+      'ttlclause'
+    );
+
+    const { resolveClickStackStorage, ttlAlreadyApplied } = await import(
+      '../../../src/factories/clickstack/utils/storage.js'
+    );
+    function entryFor(duration: string) {
+      const entry = resolveClickStackStorage('integration', {
+        mode: 's3',
+        retention: { logs: duration },
+      }).retentionEntries.find((candidate) => candidate.table === 'otel_logs');
+      if (entry === undefined) throw new Error('expected an otel_logs entry');
+      return entry;
+    }
+
+    // The clause comes back WHOLE: no ` SETTINGS …` tail, no `TTL ` prefix.
+    expect(extracted.length).toBeGreaterThan(0);
+    expect(extracted).not.toContain('SETTINGS');
+    expect(extracted).not.toContain('TTL ');
+    expect(extracted).toBe('toDateTime(Timestamp) + toIntervalDay(30)');
+
+    expect(ttlAlreadyApplied(extracted, entryFor('30d'))).toBe(true);
+    expect(ttlAlreadyApplied(extracted, entryFor('7d'))).toBe(false);
+    // The near miss that broke the old substring probe: 'toIntervalDay(3)'
+    // occurs inside the live 'toIntervalDay(30)'.
+    expect(ttlAlreadyApplied(extracted, entryFor('3d'))).toBe(false);
+  }, 900_000);
+
+  it('keeps the collector queue directory across a collector Pod restart', async () => {
+    // THE POINT OF THE PVC: an emptyDir dies with the Pod and a generic
+    // ephemeral volume's claim is deleted with the Pod that owns it, so
+    // neither would survive this. A standalone claim does.
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const claimName = `${stackName}-otel-queue`;
+    const queueDirectory = '/var/lib/otelcol/file_storage';
+    const sentinel = `${queueDirectory}/typekro-queue-sentinel`;
+    const sentinelValue = crypto.randomUUID();
+
+    /** Mount the queue claim from a throwaway Pod and run a script on it. */
+    async function onQueueVolume(label: string, script: string): Promise<string> {
+      return (
+        await runTestPodAndReadLogs(
+          {
+            namespace: stackNs,
+            name: `queue-${label}-${crypto.randomUUID().slice(0, 6)}`,
+            image: 'busybox:1.37',
+            command: ['sh', '-c', script],
+            volumes: [{ name: 'queue', persistentVolumeClaim: { claimName } }],
+            volumeMounts: [{ name: 'queue', mountPath: queueDirectory }],
+            timeoutMs: 240_000,
+          },
+          kubeConfig
+        )
+      ).trim();
+    }
+
+    const claimBefore = await coreApi.readNamespacedPersistentVolumeClaim({
+      namespace: stackNs,
+      name: claimName,
+    });
+    // The collector Pod has been running since the deploy step, so a
+    // WaitForFirstConsumer claim is bound by now.
+    expect(claimBefore.status?.phase).toBe('Bound');
+    const volumeBefore = claimBefore.spec?.volumeName ?? '';
+    expect(volumeBefore).not.toBe('');
+
+    // A sentinel written THROUGH the claim is indistinguishable, as far as the
+    // volume is concerned, from a queue file the collector wrote.
+    await onQueueVolume(
+      'write',
+      `set -eu; printf '%s' '${sentinelValue}' > ${sentinel}; ls -l ${queueDirectory}`
+    );
+
+    const collectorSelector = 'app.kubernetes.io/name=hdx-oss-v2-otel-collector';
+    const collectorsBefore = await coreApi.listNamespacedPod({
+      namespace: stackNs,
+      labelSelector: collectorSelector,
+    });
+    // The subchart's label values are chart-version-dependent, so fall back to
+    // matching the Pod name the release produces rather than failing on a
+    // label rename.
+    const allPods = await coreApi.listNamespacedPod({ namespace: stackNs });
+    const collectorPods =
+      collectorsBefore.items.length > 0
+        ? collectorsBefore.items
+        : allPods.items.filter((pod) => pod.metadata?.name?.includes('otel-collector'));
+    const oldPodName = collectorPods[0]?.metadata?.name;
+    expect(oldPodName).toBeDefined();
+
+    await coreApi.deleteNamespacedPod({ namespace: stackNs, name: oldPodName as string });
+
+    // Wait for the Deployment to bring a DIFFERENT Pod up and running.
+    const deadline = Date.now() + 600_000;
+    let newPodName: string | undefined;
+    while (Date.now() < deadline) {
+      const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
+      const candidate = pods.items.find(
+        (pod) =>
+          pod.metadata?.name?.includes('otel-collector') &&
+          pod.metadata.name !== oldPodName &&
+          pod.status?.phase === 'Running'
+      );
+      if (candidate !== undefined) {
+        newPodName = candidate.metadata?.name;
+        break;
+      }
+      await Bun.sleep(10_000);
+    }
+    expect(newPodName).toBeDefined();
+    expect(newPodName).not.toBe(oldPodName);
+
+    // The claim survived the Pod, still bound to the SAME PersistentVolume…
+    const claimAfter = await coreApi.readNamespacedPersistentVolumeClaim({
+      namespace: stackNs,
+      name: claimName,
+    });
+    expect(claimAfter.status?.phase).toBe('Bound');
+    expect(claimAfter.spec?.volumeName).toBe(volumeBefore);
+
+    // …and so did the contents of the queue directory.
+    const readBack = await onQueueVolume('read', `set -eu; cat ${sentinel}`);
+    expect(readBack).toBe(sentinelValue);
+
+    // The replacement Pod mounts that same claim, so the queue it resumes from
+    // is the directory that just survived.
+    const newPod = await coreApi.readNamespacedPod({
+      namespace: stackNs,
+      name: newPodName as string,
+    });
+    const mountedClaims = (newPod.spec?.volumes ?? [])
+      .map((volume) => volume.persistentVolumeClaim?.claimName)
+      .filter((name): name is string => name !== undefined);
+    expect(mountedClaims).toContain(claimName);
+  }, 1_200_000);
 });

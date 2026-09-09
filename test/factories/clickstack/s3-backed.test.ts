@@ -12,10 +12,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import {
   CLICKSTACK_RETENTION_TABLES,
+  clickStackQueueClaimName,
+  normalizeRenderedTtl,
   parseRetentionDuration,
+  renderPersistentQueueClaimSpec,
   renderPersistentQueueConfig,
+  renderPersistentQueueValues,
   renderRetentionScript,
   resolveClickStackStorage,
+  ttlAlreadyApplied,
 } from '../../../src/factories/clickstack/utils/storage.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
@@ -72,6 +77,43 @@ describe('resolveClickStackStorage', () => {
     );
   });
 
+  // LIVE FINDING (ClickHouse 25.7): a table on an `s3_plain_rewritable` policy
+  // refuses `ALTER TABLE … MODIFY TTL` outright — "ALTER TABLE commands are not
+  // supported on immutable disk 's3'", code 344 SUPPORT_IS_DISABLED — while the
+  // identical statement succeeds on the server's local policy. Rendering the
+  // CronJob anyway would ship a job that CrashLoops on every run while
+  // reporting a retention policy that never takes effect.
+  it('rejects retention on an immutable s3_plain_rewritable ClickHouse', () => {
+    expect(() =>
+      resolveClickStackStorage('t', {
+        mode: 's3',
+        diskType: 's3_plain_rewritable',
+        retention: { logs: '30d' },
+      })
+    ).toThrow(
+      /cannot be applied to a ClickHouse whose 'storage.diskType' is 's3_plain_rewritable'/
+    );
+  });
+
+  it('allows retention on the mutable s3 disk type', () => {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      diskType: 's3',
+      retention: { logs: '30d' },
+    });
+    expect(resolved.retentionEntries.length).toBeGreaterThan(0);
+  });
+
+  it('allows s3_plain_rewritable with no retention (the collector keeps its own TTL)', () => {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      diskType: 's3_plain_rewritable',
+      persistentQueue: { enabled: true },
+    });
+    expect(resolved.retentionEntries).toEqual([]);
+    expect(resolved.persistentQueue).toBeDefined();
+  });
+
   it('expands each signal to every table the collector creates for it', () => {
     const resolved = resolveClickStackStorage('t', {
       mode: 's3',
@@ -118,9 +160,43 @@ describe('renderRetentionScript', () => {
 
   it('probes the NORMALIZED ClickHouse rendering, not the text it sent', () => {
     // A stored TTL comes back re-rendered from the AST, so probing for the
-    // source spelling alone would re-ALTER on every run.
-    expect(script).toContain("position(create_table_query, 'toIntervalDay(30)') > 0");
-    expect(script).toContain("position(create_table_query, 'INTERVAL 30 DAY') > 0");
+    // source spelling alone would re-ALTER on every run. Both COMPLETE
+    // clauses are accepted; the AST form is what a live server returns.
+    expect(script).toContain('[ "$CURRENT" != "toDateTime(Timestamp) + toIntervalDay(30)" ]');
+    expect(script).toContain('[ "$CURRENT" != "toDateTime(Timestamp) + INTERVAL 30 DAY" ]');
+  });
+
+  it('compares the COMPLETE clause, never a substring of create_table_query', () => {
+    // A substring probe matches a partial or different TTL — see the near-miss
+    // cases exercised against ttlAlreadyApplied below.
+    expect(script).not.toContain('position(create_table_query');
+    expect(script).not.toContain('countIf(');
+    // The clause is extracted whole out of engine_full: strip the trailing
+    // ` SETTINGS …`, take everything after `TTL `, collapse whitespace.
+    expect(script).toContain(
+      "extract(replaceRegexpOne(engine_full, ' SETTINGS .*', ''), 'TTL (.*)')"
+    );
+    expect(script).toContain("'[[:space:]]+', ' '");
+  });
+
+  it('keeps the extraction SQL free of shell-hostile escapes', () => {
+    // The expression is nested inside a double-quoted command substitution, so
+    // a `$` anchor or a backslash escape would be mangled by the shell before
+    // ClickHouse ever saw it.
+    const extraction = script
+      .split('\n')
+      .filter((line) => line.includes('replaceRegexpOne(engine_full'));
+    expect(extraction.length).toBe(resolved.retentionEntries.length);
+    for (const line of extraction) {
+      expect(line).not.toContain('\\');
+      // The only `$` on the line is the `$(run_query …)` substitution itself.
+      expect(line.replace('$(run_query', '')).not.toContain('$');
+    }
+  });
+
+  it('echoes the actual clause on a mismatch, so a rendering change is visible', () => {
+    expect(script).toContain('(current: [$CURRENT])');
+    expect(script).toContain('already matches 30d');
   });
 
   it('disables TTL materialization, because plain_rewritable rejects mutations', () => {
@@ -133,7 +209,7 @@ describe('renderRetentionScript', () => {
 
   it('is idempotent: it checks for the table and for the TTL already being set', () => {
     expect(script).toContain('EXISTS TABLE');
-    expect(script).toContain('position(create_table_query');
+    expect(script).toContain('FROM system.tables WHERE database = currentDatabase()');
     expect(script).toContain('does not exist yet');
   });
 
@@ -141,6 +217,67 @@ describe('renderRetentionScript', () => {
     expect(script).toContain('${CLICKHOUSE_SERVER_ENDPOINT');
     expect(script).toContain('${CLICKHOUSE_PASSWORD');
     expect(script).not.toContain('test-only');
+  });
+});
+
+describe('ttlAlreadyApplied (the comparison the retention script implements)', () => {
+  const entry = resolveClickStackStorage('t', {
+    mode: 's3',
+    retention: { logs: '3d' },
+  }).retentionEntries.find((candidate) => candidate.table === 'otel_logs');
+  if (entry === undefined) throw new Error('expected an otel_logs entry');
+
+  it('accepts the exact AST rendering a live server returns', () => {
+    expect(ttlAlreadyApplied('toDateTime(Timestamp) + toIntervalDay(3)', entry)).toBe(true);
+  });
+
+  it('accepts the source spelling, in case a release renders it verbatim', () => {
+    expect(ttlAlreadyApplied('toDateTime(Timestamp) + INTERVAL 3 DAY', entry)).toBe(true);
+  });
+
+  it('tolerates whitespace differences but nothing else', () => {
+    expect(ttlAlreadyApplied('  toDateTime(Timestamp)  +   toIntervalDay(3) ', entry)).toBe(true);
+    expect(normalizeRenderedTtl('a   b\n c ')).toBe('a b c');
+  });
+
+  // NEAR MISSES — every one of these is a FALSE POSITIVE for a substring
+  // probe (`position(create_table_query, 'toIntervalDay(3)') > 0`), which is
+  // the bug this comparison replaces: it would report the table as converged
+  // and skip a change that is genuinely needed.
+  it('rejects a longer interval that merely CONTAINS the intended one', () => {
+    // 30 days when 3 was asked for: 'toIntervalDay(3' is a prefix of
+    // 'toIntervalDay(30)'.
+    expect(ttlAlreadyApplied('toDateTime(Timestamp) + toIntervalDay(30)', entry)).toBe(false);
+    expect(ttlAlreadyApplied('toDateTime(Timestamp) + toIntervalDay(365)', entry)).toBe(false);
+  });
+
+  it('rejects the intended interval with extra clauses appended', () => {
+    expect(
+      ttlAlreadyApplied("toDateTime(Timestamp) + toIntervalDay(3) TO VOLUME 'cold'", entry)
+    ).toBe(false);
+    expect(
+      ttlAlreadyApplied(
+        "toDateTime(Timestamp) + toIntervalDay(3) WHERE ServiceName != 'audit'",
+        entry
+      )
+    ).toBe(false);
+  });
+
+  it('rejects a multi-entry TTL whose FIRST entry is the intended one', () => {
+    expect(
+      ttlAlreadyApplied(
+        'toDateTime(Timestamp) + toIntervalDay(3), toDateTime(Timestamp) + toIntervalDay(90)',
+        entry
+      )
+    ).toBe(false);
+  });
+
+  it('rejects the same interval keyed off a different column', () => {
+    expect(ttlAlreadyApplied('toDateTime(TimestampTime) + toIntervalDay(3)', entry)).toBe(false);
+  });
+
+  it('rejects a table with no TTL at all', () => {
+    expect(ttlAlreadyApplied('', entry)).toBe(false);
   });
 });
 
@@ -178,6 +315,107 @@ describe('renderPersistentQueueConfig', () => {
   });
 });
 
+describe('the persistent queue outlives the collector Pod', () => {
+  function resolveQueue(options: Record<string, unknown>) {
+    const resolved = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true, ...options } as never,
+    });
+    if (resolved.persistentQueue === undefined) throw new Error('expected a queue');
+    return resolved.persistentQueue;
+  }
+
+  it('mounts a STANDALONE claim by name — never emptyDir, never a generic ephemeral volume', () => {
+    // Kubernetes deletes an emptyDir with the Pod, and deletes a generic
+    // ephemeral volume's PVC with the Pod that owns it, so neither survives
+    // the collector restart the queue exists to survive.
+    const values = renderPersistentQueueValues(resolveQueue({}), 'clickstack-otel-queue');
+    const collector = values['otel-collector'] as Record<string, unknown>;
+    const volumes = collector.extraVolumes as Record<string, unknown>[];
+
+    expect(volumes).toContainEqual({
+      name: 'otel-file-storage',
+      persistentVolumeClaim: { claimName: 'clickstack-otel-queue' },
+    });
+    expect(JSON.stringify(values)).not.toContain('emptyDir');
+    expect(JSON.stringify(values)).not.toContain('ephemeral');
+    expect(collector.extraVolumeMounts).toContainEqual({
+      name: 'otel-file-storage',
+      mountPath: '/var/lib/otelcol/file_storage',
+    });
+  });
+
+  // LIVE FINDING: Helm REPLACES a list-valued override rather than appending,
+  // and the chart mounts its `global.otelCollector.customConfig` ConfigMap
+  // through these same two lists (its own values.yaml says so). Overriding
+  // them with only the queue volume evicted that mount, so the OpAMP
+  // supervisor logged "Could not read local config file: open
+  // /etc/otelcol-contrib/custom/custom.config.yaml: no such file or directory"
+  // on every poll and never started the agent's OTLP receivers — with the Pod
+  // still Ready, because readiness comes from the supervisor's health_check.
+  // Enabling the queue silently took the whole gateway down.
+  it("re-emits the chart's own custom-config volume, which Helm would otherwise drop", () => {
+    const values = renderPersistentQueueValues(resolveQueue({}), 'clickstack-otel-queue');
+    const collector = values['otel-collector'] as Record<string, unknown>;
+
+    expect(collector.extraVolumes).toContainEqual({
+      name: 'custom-config',
+      configMap: { name: 'clickstack-otel-custom-config', optional: true },
+    });
+    expect(collector.extraVolumeMounts).toContainEqual({
+      name: 'custom-config',
+      mountPath: '/etc/otelcol-contrib/custom',
+      readOnly: true,
+    });
+    // Both lists carry the chart entry AND the queue entry, in that order.
+    expect((collector.extraVolumes as unknown[]).length).toBe(2);
+    expect((collector.extraVolumeMounts as unknown[]).length).toBe(2);
+  });
+
+  it('claims a real volume with a default size, with no ephemeral fallback', () => {
+    // There is no "omit size for an emptyDir" path any more: enabling the
+    // queue always renders a claim.
+    expect(resolveQueue({}).size).toBe('10Gi');
+    expect(resolveQueue({ size: '40Gi' }).size).toBe('40Gi');
+    expect(renderPersistentQueueClaimSpec(resolveQueue({}))).toEqual({
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: '10Gi' } },
+    });
+    expect(
+      renderPersistentQueueClaimSpec(resolveQueue({ size: '5Gi', storageClassName: 'gp3' }))
+    ).toEqual({
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: '5Gi' } },
+      storageClassName: 'gp3',
+    });
+  });
+
+  it('pins the collector to one replica for a ReadWriteOnce claim', () => {
+    const rwo = renderPersistentQueueValues(resolveQueue({}), 'c-otel-queue');
+    expect((rwo['otel-collector'] as Record<string, unknown>).replicaCount).toBe(1);
+  });
+
+  it('leaves the replica count alone for a shareable (RWX) claim', () => {
+    const shared = resolveQueue({ accessModes: ['ReadWriteMany'], storageClassName: 'efs-sc' });
+    expect(shared.shared).toBe(true);
+    const values = renderPersistentQueueValues(shared, 'c-otel-queue');
+    expect((values['otel-collector'] as Record<string, unknown>).replicaCount).toBeUndefined();
+    expect(renderPersistentQueueClaimSpec(shared).accessModes).toEqual(['ReadWriteMany']);
+  });
+
+  it('treats ReadWriteOncePod as NOT shareable — it is stricter than RWO', () => {
+    expect(resolveQueue({ accessModes: ['ReadWriteOncePod'] }).shared).toBe(false);
+  });
+
+  it('rejects an empty access-mode list', () => {
+    expect(() => resolveQueue({ accessModes: [] })).toThrow(/at least one access mode/);
+  });
+
+  it('derives the claim name from the release name, for mount and claim alike', () => {
+    expect(clickStackQueueClaimName('clickstack')).toBe('clickstack-otel-queue');
+  });
+});
+
 describe('makeClickstackBootstrap({ storage })', () => {
   it('renders the retention CronJob and keeps the collector overlay intact', () => {
     const bootstrap = makeClickstackBootstrap({
@@ -185,7 +423,9 @@ describe('makeClickstackBootstrap({ storage })', () => {
       kind: 'ClickStackS3Bootstrap',
       storage: {
         mode: 's3',
-        diskType: 's3_plain_rewritable',
+        // `diskType: 's3'`, not `s3_plain_rewritable`: that metadata type is
+        // immutable and refuses the retention ALTER (see the guard below).
+        diskType: 's3',
         retention: { logs: '30d', traces: '7d', metrics: '90d' },
       },
     });
@@ -226,13 +466,101 @@ describe('makeClickstackBootstrap({ storage })', () => {
     expect(yaml).toContain('storage: 10Gi');
   });
 
+  it('OWNS a PersistentVolumeClaim for the queue and mounts it by claimName', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-pvc',
+      kind: 'ClickStackS3QueuePvc',
+      storage: {
+        mode: 's3',
+        persistentQueue: { enabled: true, size: '25Gi', storageClassName: 'gp3' },
+      },
+    });
+    const yaml = bootstrap.toYaml();
+
+    // The claim is a resource of the composition, not a chart-templated
+    // Pod-scoped volume.
+    expect(yaml).toContain('kind: PersistentVolumeClaim');
+    expect(yaml).toContain('-otel-queue');
+    expect(yaml).toContain('claimName:');
+    expect(yaml).toContain('storage: 25Gi');
+    expect(yaml).toContain('storageClassName: gp3');
+    // The HelmRelease waits on the claim, so the collector's first Pod can
+    // bind it.
+    expect(yaml).toContain('typekro.dev/depends-on-clickstackQueueClaim');
+    // The RWO claim pins the collector Deployment to one replica.
+    expect(yaml).toContain('replicaCount: 1');
+
+    // The two volume shapes Kubernetes deletes with the Pod must not appear in
+    // the collector's own values. (`volumeClaimTemplates` legitimately appears
+    // elsewhere in the document — the internal Mongo StatefulSet uses one.)
+    const collectorValues = yaml.slice(
+      yaml.indexOf('otel-collector:'),
+      yaml.indexOf('- id: clickstackMongoService')
+    );
+    expect(collectorValues).toContain('claimName:');
+    expect(collectorValues).not.toContain('emptyDir');
+    expect(collectorValues).not.toContain('ephemeral');
+    expect(collectorValues).not.toContain('volumeClaimTemplate');
+  });
+
+  it('renders NO queue claim when the queue is off', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-noqueue',
+      kind: 'ClickStackS3NoQueue',
+      storage: { mode: 's3' },
+    });
+    const yaml = bootstrap.toYaml();
+    expect(yaml).not.toContain('kind: PersistentVolumeClaim');
+    expect(yaml).not.toContain('-otel-queue');
+  });
+
+  it('rejects several collector replicas on a ReadWriteOnce queue at CONSTRUCTION', () => {
+    // One RWO claim cannot back a multi-replica Deployment: the extra Pods
+    // would wedge on Multi-Attach, or two collectors would write the same
+    // file_storage directory.
+    expect(() =>
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-queue-replicas',
+        kind: 'ClickStackS3QueueReplicas',
+        storage: { mode: 's3', persistentQueue: { enabled: true } },
+        values: { 'otel-collector': { replicaCount: 3 } },
+      })
+    ).toThrow(/must run\s+one replica|must run one replica/);
+  });
+
+  it('allows several collector replicas once the queue claim is ReadWriteMany', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-queue-rwx',
+      kind: 'ClickStackS3QueueRwx',
+      storage: {
+        mode: 's3',
+        persistentQueue: { enabled: true, accessModes: ['ReadWriteMany'], storageClassName: 'efs' },
+      },
+      values: { 'otel-collector': { replicaCount: 3 } },
+    });
+    const yaml = bootstrap.toYaml();
+    expect(yaml).toContain('ReadWriteMany');
+    expect(yaml).toContain('replicaCount: 3');
+  });
+
+  it('does not constrain replicas when no queue is requested', () => {
+    expect(() =>
+      makeClickstackBootstrap({
+        name: 'clickstack-s3-noqueue-replicas',
+        kind: 'ClickStackS3NoQueueReplicas',
+        storage: { mode: 's3' },
+        values: { 'otel-collector': { replicaCount: 3 } },
+      })
+    ).not.toThrow();
+  });
+
   it('surfaces storage next to the gateway endpoint on the status contract', () => {
     const bootstrap = makeClickstackBootstrap({
       name: 'clickstack-s3-status',
       kind: 'ClickStackS3Status',
       storage: {
         mode: 's3',
-        diskType: 's3_plain_rewritable',
+        diskType: 's3',
         policyName: 's3_main',
         retention: { logs: '30d' },
         persistentQueue: { enabled: true },
@@ -241,10 +569,26 @@ describe('makeClickstackBootstrap({ storage })', () => {
     const serialized = JSON.stringify(bootstrap.plan?.(SPEC, { strict: true }));
 
     expect(serialized).toContain('"key":"mode","value":{"kind":"literal","value":"s3"}');
+    expect(serialized).toContain('"key":"diskType","value":{"kind":"literal","value":"s3"}');
+    expect(serialized).toContain('"key":"persistentQueue","value":{"kind":"literal","value":true}');
+  });
+
+  it('still echoes s3_plain_rewritable on the status contract (without retention)', () => {
+    const bootstrap = makeClickstackBootstrap({
+      name: 'clickstack-s3-status-pr',
+      kind: 'ClickStackS3StatusPr',
+      storage: {
+        mode: 's3',
+        diskType: 's3_plain_rewritable',
+        policyName: 's3_main',
+        persistentQueue: { enabled: true },
+      },
+    });
+    const serialized = JSON.stringify(bootstrap.plan?.(SPEC, { strict: true }));
+
     expect(serialized).toContain(
       '"key":"diskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
     );
-    expect(serialized).toContain('"key":"persistentQueue","value":{"kind":"literal","value":true}');
   });
 
   it('reports pvc mode and no queue by default', () => {

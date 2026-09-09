@@ -15,17 +15,26 @@
  *    LIVE-VERIFIED: the collector's own migration already sets a 30-day TTL
  *    (`toDateTime(Timestamp) + toIntervalDay(30)` with `ttl_only_drop_parts`),
  *    so `retention` OVERRIDES that default rather than establishing the first
- *    one — which is exactly why the idempotence probe compares intervals rather
- *    than merely asking whether a TTL exists.
+ *    one — which is exactly why the idempotence probe compares the COMPLETE
+ *    TTL clause rather than merely asking whether a TTL exists.
  * 2. **Persistent queue** — a `file_storage`-backed exporter queue so a
  *    ClickHouse restart (which is exactly what an S3-backed node rebuild
- *    causes) does not drop in-flight telemetry.
+ *    causes) does not drop in-flight telemetry. Its directory is backed by a
+ *    STANDALONE PersistentVolumeClaim owned by the composition: an `emptyDir`
+ *    or a generic ephemeral volume is deleted with the collector Pod, so
+ *    neither survives the collector restart the queue exists to survive.
  *
- * S3_PLAIN_REWRITABLE NOTE: `MODIFY TTL` normally schedules a materialization
- * MUTATION, and the `plain_rewritable` metadata type does not support
- * mutations. Every statement this module emits therefore carries
- * `SETTINGS materialize_ttl_after_modify = 0`; TTL-driven expiry then happens
- * during merges, which plain_rewritable does support.
+ * S3_PLAIN_REWRITABLE NOTE: retention and that disk type are MUTUALLY
+ * EXCLUSIVE, and `resolveClickStackStorage` rejects the combination.
+ * `MODIFY TTL` normally schedules a materialization MUTATION, which
+ * plain_rewritable does not support — every statement this module emits
+ * therefore carries `SETTINGS materialize_ttl_after_modify = 0` so expiry
+ * happens during merges instead. LIVE-VERIFIED (ClickHouse 25.7) that this is
+ * not enough: the immutable metadata type refuses the metadata ALTER itself
+ * ("ALTER TABLE commands are not supported on immutable disk", code 344), and
+ * the identical statement succeeds against a table on the server's local
+ * policy. The setting is kept for the `diskType: 's3'` path, where the
+ * materialization pass is the only thing worth skipping.
  */
 
 import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
@@ -60,6 +69,67 @@ export const DEFAULT_QUEUE_EXTENSIONS = ['health_check', QUEUE_EXTENSION_NAME] a
 
 /** Volume name used for the persistent-queue directory. */
 export const QUEUE_VOLUME_NAME = 'otel-file-storage';
+
+/**
+ * The gateway subchart's OWN `extraVolumes` entry, which we must re-emit.
+ *
+ * Helm REPLACES a list-valued override rather than appending to it, and the
+ * chart mounts the ConfigMap rendered from `global.otelCollector.customConfig`
+ * through exactly these two lists. Chart 3.2.0's `values.yaml` says so in a
+ * comment on the defaults:
+ *
+ *   "NOTE: if you override extraVolumes/extraVolumeMounts yourself, Helm
+ *    replaces these lists entirely -- re-include the entries below to keep
+ *    global.otelCollector.customConfig working."
+ *
+ * LIVE-VERIFIED what happens when you don't: the queue volume alone evicts the
+ * custom-config mount, the OpAMP supervisor logs `Could not read local config
+ * file: open /etc/otelcol-contrib/custom/custom.config.yaml: no such file or
+ * directory` on every poll, never composes a merged agent config, and the
+ * collector never starts its OTLP receivers — while the Pod still reports
+ * Ready, because readiness comes from the SUPERVISOR's health_check and not
+ * from the agent. Enabling the persistent queue would silently take the whole
+ * gateway down.
+ */
+export const CHART_CUSTOM_CONFIG_VOLUME_NAME = 'custom-config';
+
+/** ConfigMap the chart renders `global.otelCollector.customConfig` into. */
+export const CHART_CUSTOM_CONFIG_CONFIG_MAP_NAME = 'clickstack-otel-custom-config';
+
+/** Directory the chart mounts {@link CHART_CUSTOM_CONFIG_CONFIG_MAP_NAME} at. */
+export const CHART_CUSTOM_CONFIG_MOUNT_PATH = '/etc/otelcol-contrib/custom';
+
+/** Default size of the persistent-queue PersistentVolumeClaim. */
+export const DEFAULT_QUEUE_SIZE = '10Gi';
+
+/** Default access modes of the persistent-queue PersistentVolumeClaim. */
+export const DEFAULT_QUEUE_ACCESS_MODES = ['ReadWriteOnce'] as const;
+
+/**
+ * Access modes that let more than one collector Pod mount the queue at once.
+ *
+ * `ReadWriteOncePod` is deliberately absent: it is STRICTER than
+ * `ReadWriteOnce` (one Pod, not one node), so it never permits extra replicas.
+ */
+const SHAREABLE_QUEUE_ACCESS_MODES: readonly string[] = ['ReadWriteMany'];
+
+/** Name suffix of the queue PersistentVolumeClaim (and its resource id). */
+export const QUEUE_CLAIM_NAME_SUFFIX = '-otel-queue';
+
+/**
+ * Name of the queue PersistentVolumeClaim for a release.
+ *
+ * Shared by the composition (which CREATES the claim) and the values mapper
+ * (which MOUNTS it by `claimName`), so the two cannot drift. Accepts a schema
+ * reference for `name` the same way every other name in this family does — the
+ * template literal serializes to CEL in KRO mode.
+ *
+ * @param releaseName - Helm release name (`spec.name`)
+ * @returns The claim name
+ */
+export function clickStackQueueClaimName(releaseName: string): string {
+  return `${releaseName}${QUEUE_CLAIM_NAME_SUFFIX}`;
+}
 
 /** ConfigMap the ClickStack chart renders the shared non-secret env into. */
 export const CLICKSTACK_CONFIG_MAP_NAME = 'clickstack-config';
@@ -153,16 +223,58 @@ export interface ResolvedRetentionEntry extends ClickStackRetentionTable {
   /** The `MODIFY TTL` expression to apply. */
   readonly ttlExpression: string;
   /**
-   * Fragments to look for in `system.tables.create_table_query` to decide the
-   * TTL is ALREADY applied.
+   * COMPLETE normalized TTL clauses that mean "the intended TTL is already
+   * applied" — matched by EQUALITY, never by substring.
    *
-   * ClickHouse re-renders a stored TTL from its AST, so the text that comes
-   * back is NOT the text that went in: `INTERVAL 30 DAY` normally renders as
-   * `toIntervalDay(30)`. Both spellings are checked so the idempotence probe
-   * does not silently degrade into "re-ALTER on every run" if the renderer
-   * changes.
+   * WHY EQUALITY: a substring probe is wrong in both directions. Looking for
+   * `toIntervalDay(3)` matches a table that actually carries
+   * `toIntervalDay(30)`, so a needed change is skipped; and a table carrying
+   * the intended interval plus extra clauses (`… + toIntervalDay(30) WHERE
+   * …`, or a second `TO VOLUME` entry) also matches, so a DIFFERENT retention
+   * policy is reported as converged. Comparing the whole clause makes both
+   * cases mismatches, which is the correct answer.
+   *
+   * TWO SPELLINGS: ClickHouse re-renders a stored TTL from its AST, so the
+   * text that comes back is not the text that went in — `INTERVAL 30 DAY`
+   * renders as `toIntervalDay(30)`, and the default `DELETE` action is not
+   * rendered at all. The AST form is what a live server returns
+   * (LIVE-VERIFIED); the source spelling is kept as a second accepted value so
+   * the probe does not degrade into "re-ALTER on every run" if a release
+   * renders the clause verbatim.
    */
-  readonly ttlMarkers: readonly string[];
+  readonly ttlRenderings: readonly string[];
+}
+
+/**
+ * Collapse a TTL clause read back from ClickHouse into its comparable form.
+ *
+ * The server's own rendering is already canonical apart from whitespace, so
+ * this only collapses runs of blanks and trims — enough to compare clauses
+ * across formatting differences without pretending to normalize SQL.
+ *
+ * @param rendered - A TTL clause as extracted from `engine_full`
+ * @returns The clause with whitespace runs collapsed to single spaces
+ */
+export function normalizeRenderedTtl(rendered: string): string {
+  return rendered.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Whether a TTL clause read back from a live table already expresses the
+ * intended retention.
+ *
+ * This is the exact predicate the rendered CronJob script implements in shell
+ * (an equality test against {@link ResolvedRetentionEntry.ttlRenderings}); it
+ * exists as a function so the comparison semantics — in particular the
+ * near-miss cases a substring probe gets wrong — are directly testable.
+ *
+ * @param currentClause - TTL clause extracted from `system.tables.engine_full`
+ * @param entry - The resolved retention entry being converged
+ * @returns True when no `MODIFY TTL` is needed
+ */
+export function ttlAlreadyApplied(currentClause: string, entry: ResolvedRetentionEntry): boolean {
+  const normalized = normalizeRenderedTtl(currentClause);
+  return entry.ttlRenderings.includes(normalized);
 }
 
 /** Fully defaulted, validated ClickStack storage consumption options. */
@@ -180,8 +292,15 @@ export interface ResolvedClickStackStorage {
   readonly retentionImage: string;
   readonly persistentQueue?: {
     readonly directory: string;
-    readonly size?: string;
+    /** PVC size — always present: there is no ephemeral fallback. */
+    readonly size: string;
     readonly storageClassName?: string;
+    readonly accessModes: readonly string[];
+    /**
+     * True when {@link accessModes} lets more than one collector Pod mount the
+     * claim. False pins the collector Deployment to one replica.
+     */
+    readonly shared: boolean;
     readonly exporterName: string;
     readonly extensions: readonly string[];
   };
@@ -209,6 +328,33 @@ export function resolveClickStackStorage(
     );
   }
 
+  // LIVE FINDING (ClickHouse 25.7, kind + MinIO): a table on an
+  // `s3_plain_rewritable` policy rejects the retention DDL outright —
+  //
+  //   Code: 344. DB::Exception: ALTER TABLE commands are not supported on
+  //   immutable disk 's3', except for setting and comment alteration.
+  //   (SUPPORT_IS_DISABLED)
+  //
+  // `SETTINGS materialize_ttl_after_modify = 0` does not help: it only skips
+  // the materialization MUTATION, and it is the metadata ALTER itself that the
+  // immutable metadata type refuses. The same statement against a table on the
+  // server's local policy succeeds, so this is specific to the disk type and
+  // not to the statement. Rendering the CronJob anyway would ship a job that
+  // CrashLoops forever while reporting a retention policy that is never
+  // applied, so the combination is rejected here instead.
+  if (options?.diskType === 's3_plain_rewritable' && options?.retention !== undefined) {
+    throw new Error(
+      `${context}: 'storage.retention' cannot be applied to a ClickHouse whose ` +
+        `'storage.diskType' is 's3_plain_rewritable'. Retention converges through ` +
+        `\`ALTER TABLE … MODIFY TTL\`, and ClickHouse refuses every ALTER except settings and ` +
+        `comments on that immutable metadata type ("ALTER TABLE commands are not supported on ` +
+        `immutable disk", SUPPORT_IS_DISABLED) — so the CronJob would fail on every run while ` +
+        `reporting a retention policy that never takes effect. Use diskType: 's3' (with ` +
+        `storage.backup on the ClickHouse side) if you need TypeKro-managed TTL, or drop ` +
+        `'storage.retention' and keep the TTL the collector's own migrations create.`
+    );
+  }
+
   const retentionEntries: ResolvedRetentionEntry[] = [];
   for (const signal of ['logs', 'traces', 'metrics'] as const) {
     const duration = options?.retention?.[signal];
@@ -229,18 +375,30 @@ export function resolveClickStackStorage(
         // DateTime64. Emitting the same form keeps the stored expression — and
         // therefore the idempotence probe below — directly comparable.
         ttlExpression: `toDateTime(${target.column}) + INTERVAL ${amount} ${unit} DELETE`,
-        ttlMarkers: [
+        ttlRenderings: [
           // Normalized AST rendering — exactly what ClickHouse stores and what
-          // `create_table_query` returns.
-          `toInterval${unit.charAt(0)}${unit.slice(1).toLowerCase()}(${amount})`,
-          // Source spelling, in case a release renders it verbatim.
-          `INTERVAL ${amount} ${unit}`,
+          // `engine_full` / `create_table_query` return. The default `DELETE`
+          // action is not part of the rendered clause.
+          `toDateTime(${target.column}) + toInterval${unit.charAt(0)}${unit
+            .slice(1)
+            .toLowerCase()}(${amount})`,
+          // Source spelling, in case a release renders the clause verbatim.
+          `toDateTime(${target.column}) + INTERVAL ${amount} ${unit}`,
         ],
       });
     }
   }
 
   const queue = options?.persistentQueue;
+  if (queue?.accessModes !== undefined && queue.accessModes.length === 0) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.accessModes' must list at least one access mode ` +
+        `(omit it for ${JSON.stringify(DEFAULT_QUEUE_ACCESS_MODES[0])}).`
+    );
+  }
+  const accessModes =
+    queue?.accessModes !== undefined ? [...queue.accessModes] : [...DEFAULT_QUEUE_ACCESS_MODES];
+
   return {
     mode,
     ...(options?.diskType !== undefined && { diskType: options.diskType }),
@@ -252,15 +410,52 @@ export function resolveClickStackStorage(
     ...(queue?.enabled === true && {
       persistentQueue: {
         directory: queue.directory ?? DEFAULT_QUEUE_DIRECTORY,
-        ...(queue.size !== undefined && { size: queue.size }),
+        // Always a real claim size: the ephemeral fallback is gone on purpose
+        // (see ClickStackPersistentQueueOptions.size).
+        size: queue.size ?? DEFAULT_QUEUE_SIZE,
         ...(queue.storageClassName !== undefined && {
           storageClassName: queue.storageClassName,
         }),
+        accessModes,
+        shared: accessModes.some((accessMode) => SHAREABLE_QUEUE_ACCESS_MODES.includes(accessMode)),
         exporterName: queue.exporterName ?? DEFAULT_QUEUE_EXPORTER_NAME,
         extensions: queue.extensions ?? DEFAULT_QUEUE_EXTENSIONS,
       },
     }),
   };
+}
+
+/**
+ * Reject a collector replica count the queue's access modes cannot support.
+ *
+ * The gateway collector is a Deployment sharing ONE claim, so with
+ * `ReadWriteOnce` (the default) more than one replica is not a degraded
+ * configuration — it is a wedged one: the extra Pods stay `Pending` on
+ * `Multi-Attach`, or, worse, land on the same node and two collectors write
+ * the same `file_storage` directory. Fail at construction with the fix in the
+ * message instead.
+ *
+ * @param context - Entry point name for the error message
+ * @param resolved - Resolved storage options
+ * @param replicaCount - Collector replica count from the build-time chart
+ *   values, when one was set
+ * @throws Error when several replicas would share a non-shareable claim
+ */
+export function assertQueueReplicaCompatible(
+  context: string,
+  resolved: ResolvedClickStackStorage,
+  replicaCount: unknown
+): void {
+  const queue = resolved.persistentQueue;
+  if (queue === undefined || queue.shared) return;
+  if (typeof replicaCount !== 'number' || replicaCount <= 1) return;
+  throw new Error(
+    `${context}: the persistent sending queue is backed by a single ` +
+      `${queue.accessModes.join('/')} PersistentVolumeClaim, so the gateway collector must run ` +
+      `one replica — got values['otel-collector'].replicaCount = ${replicaCount}. Either drop ` +
+      `to one replica, or set storage.persistentQueue.accessModes: ['ReadWriteMany'] with a ` +
+      `storage class that supports it so every replica can mount the same queue directory.`
+  );
 }
 
 /**
@@ -270,8 +465,21 @@ export function resolveClickStackStorage(
  * tables do not exist until the gateway collector's goose migrations have run,
  * and TypeKro does not own their DDL — so the script waits for each table to
  * appear, and re-checks on every run. It only issues `MODIFY TTL` when the
- * table's current `create_table_query` does NOT already contain the target
- * expression, so a converged cluster does no metadata churn.
+ * table's current TTL clause is not already the intended one, so a converged
+ * cluster does no metadata churn.
+ *
+ * THE IDEMPOTENCE PROBE COMPARES WHOLE CLAUSES. It extracts the complete TTL
+ * clause out of `system.tables.engine_full` — everything between `TTL ` and
+ * the trailing ` SETTINGS …`, whitespace-collapsed — and tests it for EQUALITY
+ * against {@link ResolvedRetentionEntry.ttlRenderings}. A substring probe was
+ * wrong in both directions (see the doc on `ttlRenderings`), and the actual
+ * clause is echoed on a mismatch so a rendering change is visible in the Job
+ * log instead of showing up as silent per-run churn.
+ *
+ * Notes on the SQL: the extraction deliberately contains no backslash escapes
+ * and no `$` anchors — it strips the `SETTINGS` tail with `replaceRegexpOne`
+ * first and uses the POSIX class `[[:space:]]` — because the expression has to
+ * survive being nested inside a double-quoted shell command substitution.
  *
  * @param resolved - Resolved storage options carrying `retentionEntries`
  * @returns A POSIX shell script for `sh -c`
@@ -303,22 +511,32 @@ export function renderRetentionScript(resolved: ResolvedClickStackStorage): stri
 
   for (const entry of resolved.retentionEntries) {
     const ttl = entry.ttlExpression;
-    const applied = entry.ttlMarkers
-      .map((marker) => `position(create_table_query, '${marker}') > 0`)
-      .join(' OR ');
+    // Whole-clause equality — one `[ "$CURRENT" != … ]` test per accepted
+    // rendering, so ANY difference (a shorter interval that is a prefix of the
+    // intended one, an extra WHERE/GROUP BY, a second TTL entry) is a
+    // mismatch and gets re-applied.
+    const mismatch = entry.ttlRenderings
+      .map((rendering) => `[ "$CURRENT" != "${rendering}" ]`)
+      .join(' && ');
     lines.push(
       '',
       `# ${entry.signal}: ${entry.table} -> ${entry.duration}`,
       `if [ "$(run_query "EXISTS TABLE \\\`${entry.table}\\\`")" = "1" ]; then`,
-      `  CURRENT="$(run_query "SELECT countIf(${applied})` +
+      // Strip the ` SETTINGS …` tail, take everything after `TTL `, collapse
+      // whitespace. Empty when the table carries no TTL at all.
+      `  CURRENT="$(run_query "SELECT trim(replaceRegexpAll(` +
+        `extract(replaceRegexpOne(engine_full, ' SETTINGS .*', ''), 'TTL (.*)'),` +
+        ` '[[:space:]]+', ' '))` +
         ` FROM system.tables WHERE database = currentDatabase() AND name = '${entry.table}'")"`,
-      '  if [ "$CURRENT" = "0" ]; then',
-      `    echo "Applying TTL ${ttl} to ${entry.table}"`,
+      `  if ${mismatch}; then`,
+      `    echo "Applying TTL ${ttl} to ${entry.table} (current: [$CURRENT])"`,
       // materialize_ttl_after_modify = 0: the materialization pass is a
       // MUTATION, which s3_plain_rewritable does not support. Expiry still
       // happens during merges.
       `    run_query "ALTER TABLE \\\`${entry.table}\\\` MODIFY TTL ${ttl}` +
         ` SETTINGS materialize_ttl_after_modify = 0"`,
+      '  else',
+      `    echo "TTL on ${entry.table} already matches ${entry.duration}"`,
       '  fi',
       'else',
       `  echo "Table ${entry.table} does not exist yet; retention will be applied on a later run"`,
@@ -360,39 +578,76 @@ export function renderPersistentQueueConfig(
 }
 
 /**
- * Chart values that give the gateway collector a writable queue directory.
+ * Chart values that mount the queue's PersistentVolumeClaim on the collector.
  *
- * An `emptyDir` survives a ClickHouse restart but not a collector pod restart;
- * pass `persistentQueue.size` for a PVC that survives both.
+ * The claim is a STANDALONE PersistentVolumeClaim owned by the composition
+ * (rendered next to the retention CronJob) and referenced here by
+ * `claimName` — never an `emptyDir` and never a *generic ephemeral volume*.
+ * Kubernetes deletes a generic ephemeral volume's PVC together with the Pod
+ * that owns it, so an ephemeral claim would be destroyed by exactly the
+ * collector restart the queue exists to survive.
+ *
+ * With a non-shareable access mode the collector is also PINNED to one
+ * replica, because one `ReadWriteOnce` claim cannot back a multi-replica
+ * Deployment. A build-time `replicaCount` above 1 never reaches this point —
+ * {@link assertQueueReplicaCompatible} rejects it at construction — so the pin
+ * only makes the single-replica guarantee explicit against later values drift.
+ *
+ * ⚠️ THE CHART'S OWN `custom-config` VOLUME IS RE-EMITTED HERE, and must be:
+ * Helm REPLACES a list override instead of appending to it, and these are the
+ * lists through which the chart mounts the ConfigMap it renders from
+ * `global.otelCollector.customConfig` — the overlay that carries the ingest
+ * pipelines AND this queue's own `file_storage` wiring. Dropping it makes the
+ * OpAMP supervisor fail to read `custom.config.yaml` and never start the
+ * agent's receivers, with the Pod still Ready. See
+ * {@link CHART_CUSTOM_CONFIG_VOLUME_NAME} for the live evidence.
  *
  * @param queue - Resolved persistent-queue configuration
+ * @param claimName - Name of the PVC the composition creates
+ *   ({@link clickStackQueueClaimName})
  * @returns Values under the `otel-collector` subchart alias
  */
 export function renderPersistentQueueValues(
-  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
+  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>,
+  claimName: string
 ): Record<string, unknown> {
-  const volume =
-    queue.size === undefined
-      ? { name: QUEUE_VOLUME_NAME, emptyDir: {} }
-      : {
-          name: QUEUE_VOLUME_NAME,
-          ephemeral: {
-            volumeClaimTemplate: {
-              spec: {
-                accessModes: ['ReadWriteOnce'],
-                resources: { requests: { storage: queue.size } },
-                ...(queue.storageClassName !== undefined && {
-                  storageClassName: queue.storageClassName,
-                }),
-              },
-            },
-          },
-        };
-
   return {
     'otel-collector': {
-      extraVolumes: [volume],
-      extraVolumeMounts: [{ name: QUEUE_VOLUME_NAME, mountPath: queue.directory }],
+      extraVolumes: [
+        // The chart's own entry, re-emitted because Helm replaces the list.
+        {
+          name: CHART_CUSTOM_CONFIG_VOLUME_NAME,
+          configMap: { name: CHART_CUSTOM_CONFIG_CONFIG_MAP_NAME, optional: true },
+        },
+        { name: QUEUE_VOLUME_NAME, persistentVolumeClaim: { claimName } },
+      ],
+      extraVolumeMounts: [
+        {
+          name: CHART_CUSTOM_CONFIG_VOLUME_NAME,
+          mountPath: CHART_CUSTOM_CONFIG_MOUNT_PATH,
+          readOnly: true,
+        },
+        { name: QUEUE_VOLUME_NAME, mountPath: queue.directory },
+      ],
+      ...(queue.shared ? {} : { replicaCount: 1 }),
     },
+  };
+}
+
+/**
+ * Spec of the standalone PersistentVolumeClaim backing the collector queue.
+ *
+ * @param queue - Resolved persistent-queue configuration
+ * @returns A `V1PersistentVolumeClaim.spec` object
+ */
+export function renderPersistentQueueClaimSpec(
+  queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
+): Record<string, unknown> {
+  return {
+    accessModes: [...queue.accessModes],
+    resources: { requests: { storage: queue.size } },
+    ...(queue.storageClassName !== undefined && {
+      storageClassName: queue.storageClassName,
+    }),
   };
 }

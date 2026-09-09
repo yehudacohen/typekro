@@ -201,6 +201,13 @@ export type ClickStackMongoBuildOptions =
  * Values are duration strings — `'30d'`, `'720h'`, `'90m'` — compiled into
  * `ALTER TABLE ... MODIFY TTL <timestamp column> + INTERVAL <n> <unit> DELETE`.
  * Omit a signal to leave its table's TTL alone.
+ *
+ * ⚠️ NOT COMPATIBLE WITH `diskType: 's3_plain_rewritable'`, and the
+ * combination is rejected at construction. That metadata type is immutable:
+ * ClickHouse refuses every `ALTER TABLE` on it except settings and comments
+ * (code 344, `SUPPORT_IS_DISABLED` — LIVE-VERIFIED against 25.7), so the
+ * retention CronJob could never apply a TTL there. Use `diskType: 's3'` for
+ * TypeKro-managed TTL, or keep the TTL the collector's own migrations create.
  */
 export interface ClickStackRetentionOptions {
   /** `otel_logs` (and `hyperdx_sessions`, which is a log-kind table). */
@@ -216,7 +223,11 @@ export interface ClickStackRetentionOptions {
  *
  * WHY: the gateway buffers in memory by default, so a ClickHouse restart —
  * exactly what an S3-backed node rebuild causes — drops whatever is in flight.
- * A `file_storage`-backed queue survives it.
+ * A `file_storage`-backed queue survives it, PROVIDED the directory backing it
+ * outlives the collector Pod. Enabling this therefore renders a standalone
+ * PersistentVolumeClaim owned by the composition and mounts it by
+ * `claimName` — never an `emptyDir` or a generic ephemeral volume, both of
+ * which Kubernetes deletes with the Pod.
  *
  * ⚠️ NOT VERIFIED AGAINST A LIVE CHART RENDER. This is emitted through the
  * chart's supported `global.otelCollector.customConfig` merge seam, and a YAML
@@ -233,12 +244,32 @@ export interface ClickStackPersistentQueueOptions {
   /** Queue directory inside the collector pod. */
   directory?: string;
   /**
-   * PVC size for the queue directory. Omit for an `emptyDir`, which survives a
-   * ClickHouse restart but NOT a collector pod restart.
+   * Size of the queue's PersistentVolumeClaim (default: `'10Gi'`).
+   *
+   * There is deliberately NO ephemeral fallback: enabling the queue always
+   * renders a standalone PVC owned by the composition, because a queue that
+   * does not outlive the collector Pod is not a persistent queue. An
+   * `emptyDir` and a *generic ephemeral volume* are both deleted together with
+   * their owning Pod
+   * (https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/), so
+   * either would make this option a no-op under exactly the restart it exists
+   * to survive.
    */
   size?: string;
-  /** StorageClass for the queue PVC (only meaningful with `size`). */
+  /** StorageClass for the queue PVC (cluster default when omitted). */
   storageClassName?: string;
+  /**
+   * Access modes for the queue PVC (default: `['ReadWriteOnce']`).
+   *
+   * The gateway collector is a **Deployment**, so a `ReadWriteOnce` claim can
+   * only be mounted by Pods on one node: the collector is pinned to
+   * `replicaCount: 1`, and a build-time
+   * `values['otel-collector'].replicaCount` above 1 is REJECTED at
+   * construction. Declare `['ReadWriteMany']` (with a storage class that
+   * supports it) to run several collector replicas off one shared queue
+   * directory.
+   */
+  accessModes?: readonly string[];
   /** Exporter whose `sending_queue` is switched to file storage. */
   exporterName?: string;
   /**

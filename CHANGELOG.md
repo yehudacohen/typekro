@@ -44,10 +44,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ClickStack bootstraps may now declare the external ClickHouse's storage story.
   Per-signal `retention` renders an idempotent CronJob applying `TTL … DELETE` to
   the OTel tables the gateway collector creates, skipping tables that have not
-  been migrated yet and leaving a converged cluster untouched. An opt-in
-  persistent sending queue backs the gateway collector with file storage so a
-  ClickHouse restart during a node rebuild does not drop in-flight telemetry, and
-  the bootstrap status now carries `storage` next to the gateway endpoints.
+  been migrated yet and leaving a converged cluster untouched. Convergence
+  compares the COMPLETE TTL clause read back from `system.tables.engine_full`
+  against the intended one, so neither a partial interval match nor extra
+  clauses can report a different retention policy as converged. Retention is
+  rejected at construction together with `diskType: 's3_plain_rewritable'`:
+  that metadata type is immutable and ClickHouse refuses every `ALTER TABLE` on
+  it except settings and comments, so the CronJob could never apply a TTL
+  there.
+
+  An opt-in persistent sending queue backs the gateway collector with file
+  storage so a ClickHouse restart during a node rebuild does not drop in-flight
+  telemetry. That queue is backed by a standalone PersistentVolumeClaim owned by
+  the composition and mounted by `claimName` — never an `emptyDir` or a generic
+  ephemeral volume, both of which Kubernetes deletes together with the collector
+  Pod. `accessModes` defaults to `['ReadWriteOnce']`, which pins the collector
+  Deployment to one replica and rejects a build-time
+  `values['otel-collector'].replicaCount` above 1; declare `['ReadWriteMany']`
+  to run several replicas off one shared queue directory. The queue's chart
+  values re-emit the gateway subchart's own `custom-config` volume alongside
+  the claim, because Helm replaces a list-valued override and that mount is how
+  the collector receives `global.otelCollector.customConfig` — without it the
+  OpAMP supervisor cannot read the overlay and the agent starts without the
+  ingest pipelines or the queue wiring, while the Pod still reports Ready. The
+  bootstrap status now carries `storage` next to the gateway endpoints.
 
 ### Changed
 
