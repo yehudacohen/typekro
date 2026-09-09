@@ -42,6 +42,14 @@
       "import": "./dist/factories/kubernetes/index.js",
       "types": "./dist/factories/kubernetes/index.d.ts"
     },
+    "./traefik": {
+      "import": "./dist/factories/traefik/index.js",
+      "types": "./dist/factories/traefik/index.d.ts"
+    },
+    "./gateway-api": {
+      "import": "./dist/factories/gateway-api/index.js",
+      "types": "./dist/factories/gateway-api/index.d.ts"
+    },
     "./cilium": {
       "import": "./dist/factories/cilium/index.js",
       "types": "./dist/factories/cilium/index.d.ts"
