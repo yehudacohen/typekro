@@ -4,16 +4,25 @@
  *
  * A composition rarely uses `spec.name` verbatim and nothing else: it — or the
  * chart it installs, or a controller downstream of it — derives further object
- * names from it by appending a suffix (`<name>-udp`) or by generating one
- * (`<name>-<pod-template-hash>-<pod-suffix>`). Each of those derived names has
- * to satisfy a limit of its own, so the real bound on `spec.name` is
- * `min(limit - reserved)` across every name the composition can produce.
+ * names from it by appending a suffix (`<name>-udp`) or by counting up from it
+ * (`<name>-<ordinal>`). Each of those derived names has to satisfy a limit of
+ * its own, so the real bound on `spec.name` is `min(limit - reserved)` across
+ * every name the composition can produce.
  *
  * Writing that minimum into a schema as a literal (`'string <= 40'`) hides
  * which name produced it, so nobody can tell whether the number is still right
  * after a chart bump adds a longer suffix. {@link deriveNameLengthLimit} takes
  * the derived names instead and computes the bound, keeping the reasoning in
  * the source and putting the binding constraint into the validation message.
+ *
+ * **Only names that can actually FAIL belong in a derivation.** A name the API
+ * server produces through `metadata.generateName` — a ReplicaSet's Pods, a
+ * Job's Pods — cannot fail on a long prefix: the generator truncates the base
+ * to `MaxGeneratedNameLength = 63 - 5` before appending its random suffix, so
+ * the result is always within the limit no matter how long the prefix was. See
+ * `staging/src/k8s.io/apiserver/pkg/storage/names/generate.go` in
+ * kubernetes/kubernetes. Reserving room for a suffix Kubernetes will truncate
+ * anyway only makes the schema reject names that would have worked.
  */
 
 /**
@@ -39,17 +48,6 @@ export const DNS_SUBDOMAIN_MAX_LENGTH = 253;
  */
 export const HELM_RELEASE_NAME_MAX_LENGTH = 53;
 
-/**
- * Number of characters a Deployment's Pod names add to the Deployment name.
- *
- * A Deployment named `<name>` produces ReplicaSets named
- * `<name>-<pod-template-hash>` and Pods named
- * `<name>-<pod-template-hash>-<pod-suffix>`. The hash is up to 10 characters
- * and the Pod suffix is 5, plus the two separators — and the Pod name becomes
- * the Pod's hostname, which must be a DNS label.
- */
-export const DEPLOYMENT_POD_NAME_RESERVED = 17;
-
 /** One name a composition derives from the name its caller supplies. */
 export interface GeneratedNameConstraint {
   /**
@@ -61,8 +59,14 @@ export interface GeneratedNameConstraint {
   /** Literal suffix appended to the caller's name. Omit when there is none. */
   readonly suffix?: string;
   /**
-   * Characters a controller generates on top of {@link suffix} — a
-   * pod-template hash, a StatefulSet ordinal, a revision counter.
+   * Characters a controller appends on top of {@link suffix} that are not a
+   * literal — a StatefulSet ordinal, a revision counter, a timestamp.
+   *
+   * Count characters only where an over-long result would be REJECTED. Names
+   * the API server builds with `metadata.generateName` do not qualify: its
+   * generator truncates the base to `MaxGeneratedNameLength = 63 - 5` first
+   * (`staging/src/k8s.io/apiserver/pkg/storage/names/generate.go`), so those
+   * names always fit and reserving for them only over-constrains the caller.
    */
   readonly generatedChars?: number;
   /** Length limit the derived name has to satisfy. */

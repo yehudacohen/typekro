@@ -36,9 +36,9 @@
 
 import { type } from 'arktype';
 import {
-  DEPLOYMENT_POD_NAME_RESERVED,
   deriveNameLengthLimit,
   DNS_LABEL_MAX_LENGTH,
+  DNS_SUBDOMAIN_MAX_LENGTH,
   HELM_RELEASE_NAME_MAX_LENGTH,
 } from '../../core/kubernetes/naming.js';
 import type { TypeKroChartValues } from '../../core/types/common.js';
@@ -67,6 +67,36 @@ import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js'
  * Suffixes read off chart 41.5.0's templates rather than guessed; the chart
  * itself carries the `-udp` case as a hard `len(fullname) < 60` check in
  * `templates/_service.tpl`.
+ *
+ * Only names that a long `name` can actually make FAIL are listed, and each is
+ * held to the limit its own object kind is validated against:
+ *
+ * - **Services** (`<name>`, `<name>-udp`, `<name>-metrics`) are the real
+ *   constraints. A Service name is an RFC 1035 label, capped at 63 characters,
+ *   because it has to be resolvable as the first label of a cluster DNS name.
+ * - **The file-provider ConfigMap** is held to the DNS SUBDOMAIN limit, not the
+ *   label limit: `metadata.name` on a ConfigMap is validated as a DNS
+ *   subdomain (253). The same is true of the Deployment, ServiceAccount, RBAC
+ *   and IngressClass the chart names from `fullnameOverride`, which is why
+ *   none of them appears here — at 253 they cannot bind before the Services do.
+ * - **Pods are deliberately absent.** A Traefik Pod is named by the
+ *   API server through `metadata.generateName`, and the generator truncates
+ *   the base to `MaxGeneratedNameLength = 63 - 5` before appending its random
+ *   suffix (`staging/src/k8s.io/apiserver/pkg/storage/names/generate.go` in
+ *   kubernetes/kubernetes), so a generated Pod name can never exceed 63 and
+ *   never fails on a long prefix. Reserving for one only rejected names that
+ *   would have deployed fine. The truncation is not a functional concern
+ *   either: nothing in this factory — or in Traefik — addresses a Pod by its
+ *   hostname. The entrypoint Service selects Pods by the pinned
+ *   `app.kubernetes.io/name` / `app.kubernetes.io/instance` labels, and there
+ *   is no headless Service or `subdomain` giving these Pods per-Pod DNS.
+ *
+ * The Helm release name is the binding constraint, at Helm's own 53. Note that
+ * Flux composes the release name as `<targetNamespace>-<name>` when
+ * `spec.releaseName` is unset, so the install namespace eats into that 53 as
+ * well — a term this derivation cannot express, because the namespace is a
+ * runtime spec field (and a CEL reference in KRO mode) rather than something
+ * known when the schema is built.
  */
 const TRAEFIK_GENERATED_NAMES = [
   {
@@ -90,12 +120,7 @@ const TRAEFIK_GENERATED_NAMES = [
   {
     describedAs: "the chart's file-provider ConfigMap `<name>-file-provider`",
     suffix: '-file-provider',
-    limit: DNS_LABEL_MAX_LENGTH,
-  },
-  {
-    describedAs: 'a Traefik Pod `<name>-<pod-template-hash>-<pod-suffix>`',
-    generatedChars: DEPLOYMENT_POD_NAME_RESERVED,
-    limit: DNS_LABEL_MAX_LENGTH,
+    limit: DNS_SUBDOMAIN_MAX_LENGTH,
   },
 ] as const;
 

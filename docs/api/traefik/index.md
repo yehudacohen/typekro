@@ -115,6 +115,16 @@ interface TraefikBootstrapConfig {
 `dashboard` is typed as the literal `false`. There is no value of this contract
 that turns the dashboard on.
 
+`name` is capped at **53 characters**, and the cap is derived rather than
+picked: it is the tightest of every object name the composition and the chart
+build out of it. Helm's own `releaseNameMaxLen` of 53 is the binding one; the
+chart's suffixed Services (`<name>-udp`, `<name>-metrics`) allow 59 and 55, and
+the file-provider ConfigMap — a DNS *subdomain*, not a label — allows 239. The
+validation message names whichever constraint bound the limit. Nothing is
+reserved for Pod names: the API server generates those with
+`metadata.generateName`, which truncates the base before appending its random
+suffix, so a long `name` can never produce an invalid Pod name.
+
 ### Build-time options
 
 Choices that decide **which** resources the graph contains cannot come from the

@@ -9,12 +9,21 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  DEPLOYMENT_POD_NAME_RESERVED,
   deriveNameLengthLimit,
   DNS_LABEL_MAX_LENGTH,
   DNS_SUBDOMAIN_MAX_LENGTH,
   HELM_RELEASE_NAME_MAX_LENGTH,
 } from '../../../src/core/kubernetes/naming.js';
+
+/**
+ * `-<ordinal>` on a StatefulSet's Pods, for the `generatedChars` case.
+ *
+ * A StatefulSet names its Pods `<name>-<ordinal>` DETERMINISTICALLY, so an
+ * over-long one is rejected — which is what makes it a legitimate reservation.
+ * A Deployment's Pods are not: those go through `metadata.generateName`, which
+ * truncates the base before appending its suffix.
+ */
+const STATEFULSET_ORDINAL_RESERVED = 3;
 
 describe('deriveNameLengthLimit', () => {
   it('subtracts a literal suffix from that name\'s own limit', () => {
@@ -40,15 +49,15 @@ describe('deriveNameLengthLimit', () => {
   it('counts generated characters alongside a literal suffix', () => {
     const limit = deriveNameLengthLimit([
       {
-        describedAs: 'a Pod of the worker Deployment',
+        describedAs: 'a Pod of the worker StatefulSet `<name>-worker-<ordinal>`',
         suffix: '-worker',
-        generatedChars: DEPLOYMENT_POD_NAME_RESERVED,
+        generatedChars: STATEFULSET_ORDINAL_RESERVED,
         limit: DNS_LABEL_MAX_LENGTH,
       },
     ]);
 
     expect(limit.maxLength).toBe(
-      DNS_LABEL_MAX_LENGTH - '-worker'.length - DEPLOYMENT_POD_NAME_RESERVED
+      DNS_LABEL_MAX_LENGTH - '-worker'.length - STATEFULSET_ORDINAL_RESERVED
     );
   });
 
