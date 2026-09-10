@@ -229,7 +229,12 @@ describe('OpenSearch integration', () => {
     expect(yaml).toContain('cluster.status.version == cluster.spec.general.version');
     expect(yaml).not.toContain('version: ${cluster.spec.general.version}');
     expect(yaml).toContain('cluster.spec.security.config.adminCredentialsSecret.name != ""');
-    expect(yaml).toContain('cluster.spec.general.snapshotRepositories.size() > 0');
+    // The optional nested list is projected through the dual-dialect-safe guard
+    // form: chained has(), a filter, and a lazy ternary.
+    expect(yaml).toContain('has(cluster.spec) && has(cluster.spec.general)');
+    expect(yaml).toContain(
+      'size(cluster.spec.general.snapshotRepositories.filter(entry, has(entry.name))) > 0'
+    );
     expect(yaml).toContain('credentialsSecret:');
     expect(yaml).toContain('snapshotRepository:');
     expect(instance).toContain('kind: OpenSearchClusterInstallation');

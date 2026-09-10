@@ -797,7 +797,15 @@ describe('Envoy AI Gateway integration', () => {
     expect(status).toHaveProperty('acceptedProviderCount');
     expect(status).toHaveProperty('routeAccepted');
     expect(status).toHaveProperty('gatewayProgrammed');
-    expect(String(status.endpoint)).toContain('size(gateway.status.addresses)');
+    // The address comes from the dual-dialect-safe guard form for an optional
+    // nested list: chained has(), a filter, and a lazy ternary. The port is
+    // only indexed inside the branch that runs once an address exists.
+    expect(String(status.endpoint)).toContain(
+      'has(gateway.status) && has(gateway.status.addresses)'
+    );
+    expect(String(status.endpoint)).toContain(
+      'size(gateway.status.addresses.filter(entry, has(entry.value))) > 0'
+    );
     expect(String(status.endpoint)).toContain('"/v1"');
     expect(String(status.endpoint)).not.toContain('.size()');
     expect(status).toHaveProperty('aiGatewayVersion', '${gatewayContract.data.aiGatewayVersion}');
