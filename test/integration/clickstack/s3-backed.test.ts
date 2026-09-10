@@ -1519,7 +1519,19 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         // the guide's KRO-mode budget (a simultaneous deploy restarts HyperDX
         // while Mongo comes up).
         const pods = await coreApi.listNamespacedPod({ namespace: kroStackNs });
-        const workloads = pods.items.filter((pod) => !pod.metadata?.deletionTimestamp);
+        // LONG-RUNNING workloads only. The composition also owns a CronJob
+        // (the ClickStack Team credential convergence), whose completed Job
+        // Pod sits in `Succeeded` by design — asserting `Running` over it
+        // would be asserting the wrong contract, so it gets its own check
+        // below.
+        const workloads = pods.items.filter(
+          (pod) =>
+            !pod.metadata?.deletionTimestamp &&
+            pod.metadata?.ownerReferences?.some(
+              (owner) => owner.kind === 'ReplicaSet' || owner.kind === 'StatefulSet'
+            )
+        );
+        // HyperDX app, the gateway collector, and Mongo.
         expect(workloads.length).toBeGreaterThanOrEqual(3);
         for (const pod of workloads) {
           expect(pod.status?.phase).toBe('Running');
@@ -1531,6 +1543,16 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
             0
           );
           expect(restarts).toBeLessThanOrEqual(10);
+        }
+
+        // The credential-convergence Job the readiness contract gates on ran
+        // to completion — the other half of the pod ground truth.
+        const bootstrapPods = pods.items.filter((pod) =>
+          pod.metadata?.ownerReferences?.some((owner) => owner.kind === 'Job')
+        );
+        expect(bootstrapPods.length).toBeGreaterThan(0);
+        for (const pod of bootstrapPods) {
+          expect(pod.status?.phase).toBe('Succeeded');
         }
 
         // The contract ConfigMap the status is projected from is a real graph

@@ -750,7 +750,12 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
         // expression evaluation produced the configuration the server reads.
         expect(chi.status?.status).toBe('Completed');
         const storageXml = chi.spec?.configuration?.files?.['config.d/storage.xml'] ?? '';
-        expect(storageXml).toContain('<type>s3_plain_rewritable</type>');
+        // The `plain_rewritable` choice is rendered as ClickHouse's three-element
+        // object-storage form, not a single `<type>` value — verified against
+        // the live document rather than assumed.
+        expect(storageXml).toContain('<type>object_storage</type>');
+        expect(storageXml).toContain('<object_storage_type>s3</object_storage_type>');
+        expect(storageXml).toContain('<metadata_type>plain_rewritable</metadata_type>');
         expect(storageXml).toContain(
           `${minio.endpoint.replace(/\/+$/, '')}/${minio.bucket}/chi-kro/`
         );
