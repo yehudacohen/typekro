@@ -246,6 +246,17 @@ unguarded list index inside `&&` / `||`. Collection-macro bodies and nested
 ternaries are lazy in both engines and are excluded, as is a map lookup such as
 `metadata.annotations["key"]`.
 
+Both halves of the check cost about a microsecond per character, so the check
+has an analysis budget: **16 KiB per expression**, several times the largest
+expression TypeKro emits in practice. An expression past the budget is not
+analyzed at all and is reported as `expression-too-large` instead, because a
+status field that size is a runaway expansion rather than authored status —
+usually a nested composition whose inlined status re-expands into itself. Such
+an expression cannot work on either engine anyway: cel-js spends seconds parsing
+it on every direct-mode reconcile, and a ResourceGraphDefinition carrying it is
+past the Kubernetes object size limit. Give the inner composition an explicit
+status field and reference that instead.
+
 ### `Cel.string()` / `Cel.int()` / `Cel.double()`
 
 Type conversion functions:

@@ -1689,7 +1689,8 @@ function collectOmitFields(specFields: Record<string, unknown>, specType: Type):
 
 /**
  * Fail (strict) or warn (default) when an emitted status expression is only
- * accepted by one of the two CEL engines TypeKro targets.
+ * accepted by one of the two CEL engines TypeKro targets, or when it could not
+ * be checked against either of them.
  *
  * Strictness follows the shared CEL diagnostics convention: the
  * `strictCelDiagnostics` factory option first, then `TYPEKRO_STRICT_CEL`.
@@ -1707,14 +1708,14 @@ function assertStatusCelDialectCompatibility(
   const details = formatCelDialectFindings(findings);
   if (isStrictCelDiagnosticsEnabled({ strictCelDiagnostics })) {
     throw new TypeKroError(
-      `Status CEL in ResourceGraphDefinition '${name}' is not accepted by both CEL dialects.\n${details}`,
+      `Status CEL in ResourceGraphDefinition '${name}' did not pass the dual-dialect check.\n${details}`,
       'CEL_DIALECT_INCOMPATIBLE',
       { findings }
     );
   }
 
   logger.warn(
-    'Status CEL is not accepted by both CEL dialects — direct mode and Kro mode will disagree',
+    'Status CEL did not pass the dual-dialect check — direct mode and Kro mode may disagree',
     {
       resourceGraphDefinition: name,
       findings: findings.map((found) => ({
