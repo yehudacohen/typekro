@@ -505,3 +505,75 @@ export const BackendTLSPolicySpecSchema = type({
 
 /** `BackendTLSPolicy.spec`. */
 export type BackendTLSPolicySpec = typeof BackendTLSPolicySpecSchema.infer;
+
+// ============================================================================
+// Resource configuration
+//
+// The identity half of every Gateway API factory's config. `spec` is the only
+// part that varies by kind, so it stays a type parameter (see
+// `resources/gateway.ts`) while everything a caller types by hand is declared
+// once, here, and inferred from.
+// ============================================================================
+
+const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 253');
+const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
+
+/**
+ * Identity fields every Gateway API resource factory accepts.
+ *
+ * These schemas are the source of truth for the TYPES and the target of the
+ * schema tests; the factories do not run them over their input, because inside
+ * a composition `name` may be a `KubernetesRef` proxy rather than a string and
+ * every constraint here would reject it.
+ */
+export const gatewayApiClusterResourceMetadataShape = {
+  name: kubernetesName,
+  /** Extra labels merged onto `metadata.labels`. */
+  'labels?': 'Record<string, string>',
+  /** Extra annotations merged onto `metadata.annotations`. */
+  'annotations?': 'Record<string, string>',
+  /** Resource graph id. Required when `name` is a schema reference. */
+  'id?': 'string > 0',
+} as const;
+
+/** Identity fields every namespaced Gateway API resource factory accepts. */
+export const gatewayApiNamespacedResourceMetadataShape = {
+  ...gatewayApiClusterResourceMetadataShape,
+  namespace: kubernetesDnsLabel,
+} as const;
+
+/** Identity of a cluster-scoped Gateway API resource, without its spec. */
+export const GatewayApiClusterResourceMetadataSchema = type(gatewayApiClusterResourceMetadataShape);
+
+/** Identity of a cluster-scoped Gateway API resource, without its spec. */
+export type GatewayApiClusterResourceMetadata =
+  typeof GatewayApiClusterResourceMetadataSchema.infer;
+
+/** Identity of a namespaced Gateway API resource, without its spec. */
+export const GatewayApiNamespacedResourceMetadataSchema = type(
+  gatewayApiNamespacedResourceMetadataShape
+);
+
+/** Identity of a namespaced Gateway API resource, without its spec. */
+export type GatewayApiNamespacedResourceMetadata =
+  typeof GatewayApiNamespacedResourceMetadataSchema.infer;
+
+/**
+ * Configuration for `backendTLSPolicy`.
+ *
+ * Fully inferred rather than generic: a `BackendTLSPolicy` has exactly one
+ * spec shape, so there is nothing for a type parameter to vary.
+ */
+export const BackendTLSPolicyConfigSchema = type({
+  ...gatewayApiNamespacedResourceMetadataShape,
+  /**
+   * The `GatewayClass.spec.controllerName` whose ancestor conditions decide
+   * readiness. A cluster can run several Gateway API controllers, and each one
+   * publishes its own ancestor entry.
+   */
+  controllerName: 'string > 0',
+  spec: BackendTLSPolicySpecSchema,
+});
+
+/** Configuration for `backendTLSPolicy`. */
+export type BackendTLSPolicyConfig = typeof BackendTLSPolicyConfigSchema.infer;

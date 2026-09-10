@@ -7,18 +7,22 @@
 
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Composable, ReadinessEvaluator } from '../../../core/types/index.js';
+import type { TraefikResourceMetadata } from '../types.js';
 
-/** Configuration accepted by every namespaced Traefik CRD factory. */
-export interface TraefikResourceConfig<TSpec extends object> {
-  readonly name: string;
-  readonly namespace: string;
+/**
+ * Configuration accepted by every namespaced Traefik CRD factory.
+ *
+ * Nothing here is hand-written. The identity half is
+ * {@link TraefikResourceMetadata}, inferred from
+ * `TraefikResourceMetadataSchema`; `spec` stays a TYPE PARAMETER because it is
+ * a different schema per kind — `TraefikIngressRouteSpec`,
+ * `TraefikMiddlewareSpec`, `TraefikTLSOptionSpec` and the rest, each already
+ * inferred from its own ArkType schema — so the caller binds it rather than
+ * this file re-declaring any of them.
+ */
+export type TraefikResourceConfig<TSpec extends object> = TraefikResourceMetadata & {
   readonly spec: TSpec;
-  /** Extra labels merged onto the managed label set. */
-  readonly labels?: Readonly<Record<string, string>>;
-  readonly annotations?: Readonly<Record<string, string>>;
-  /** Resource graph id. Required when `name` is a schema reference. */
-  readonly id?: string;
-}
+};
 
 /**
  * Readiness evaluator for a Traefik CRD.

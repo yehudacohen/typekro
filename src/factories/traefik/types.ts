@@ -43,6 +43,7 @@ import type {
   SecurityContext,
   Toleration,
 } from '../cert-manager/types.js';
+import { gatewayApiClusterResourceMetadataShape } from '../gateway-api/types.js';
 import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
 import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js';
 
@@ -794,7 +795,7 @@ export type TraefikGrpcWebMiddleware = typeof TraefikGrpcWebMiddlewareSchema.inf
 export const TraefikPluginMiddlewareSchema = type('Record<string, unknown>');
 
 /** A Traefik plugin middleware, keyed by plugin name. */
-export type TraefikPluginMiddleware = Record<string, unknown>;
+export type TraefikPluginMiddleware = typeof TraefikPluginMiddlewareSchema.infer;
 
 /**
  * Every OSS middleware keyed by its CRD field name, all keys optional.
@@ -878,6 +879,204 @@ export type TraefikMiddlewareSpec = ExactlyOne<TraefikMiddlewareSpecMap>;
 export const TRAEFIK_FORWARD_AUTH_SECURE_DEFAULTS = {
   trustForwardHeader: false,
 } as const;
+
+// ============================================================================
+// Resource configuration
+//
+// The identity half of every namespaced Traefik CRD factory's config. `spec`
+// is the only part that varies by kind, so it stays a type parameter (see
+// `resources/common.ts`) while everything a caller actually types by hand is
+// declared once, here, and inferred from.
+// ============================================================================
+
+/**
+ * Identity of a namespaced Traefik CRD, without its behaviour.
+ *
+ * Extracted as a shape rather than re-declared per factory so the middleware
+ * builders' configs and {@link TraefikResourceConfig} cannot drift apart.
+ *
+ * These schemas are the source of truth for the TYPES and the target of the
+ * schema tests; the factories do not run them over their input, because inside
+ * a composition `name` may be a `KubernetesRef` proxy rather than a string and
+ * every one of these constraints would reject it.
+ */
+export const traefikResourceMetadataShape = {
+  name: kubernetesName,
+  namespace: kubernetesDnsLabel,
+  /** Extra labels merged onto the managed label set. */
+  'labels?': 'Record<string, string>',
+  'annotations?': 'Record<string, string>',
+  /** Resource graph id. Required when `name` is a schema reference. */
+  'id?': 'string > 0',
+} as const;
+
+/** Identity of a namespaced Traefik CRD, without its behaviour. */
+export const TraefikResourceMetadataSchema = type(traefikResourceMetadataShape);
+
+/** Identity of a namespaced Traefik CRD, without its behaviour. */
+export type TraefikResourceMetadata = typeof TraefikResourceMetadataSchema.infer;
+
+/**
+ * Configuration for `traefikGatewayClass`.
+ *
+ * A `GatewayClass` is cluster-scoped, and its spec is pinned to Traefik's
+ * controller by the factory rather than supplied by the caller, so this config
+ * is the shared Gateway API identity shape plus one Traefik-specific field —
+ * fully inferred, with no `spec` to parameterise.
+ */
+export const TraefikGatewayClassConfigSchema = type({
+  ...gatewayApiClusterResourceMetadataShape,
+  /** Optional description recorded on the class. */
+  'description?': 'string > 0',
+});
+
+/** Configuration for `traefikGatewayClass`. */
+export type TraefikGatewayClassConfig = typeof TraefikGatewayClassConfigSchema.infer;
+
+/** Identity of a `Middleware`, without its behavior. */
+export const TraefikMiddlewareMetadataSchema = TraefikResourceMetadataSchema;
+
+/** Identity of a `Middleware`, without its behavior. */
+export type TraefikMiddlewareMetadata = TraefikResourceMetadata;
+
+/**
+ * Configuration for `traefikForwardAuthMiddleware`.
+ *
+ * `authResponseHeaders` is REQUIRED here although the CRD leaves it optional:
+ * an implicit "copy everything" would let an authorizer bug leak headers to
+ * the upstream, and a route with no allowlist silently drops the principal the
+ * upstream expects.
+ */
+export const TraefikForwardAuthMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  /** Authorizer URL, e.g. `http://authorizer.edge.svc.cluster.local:8080/authorize`. */
+  address: 'string > 0',
+  /** Headers copied from the authorizer's 2xx response onto the upstream request. */
+  authResponseHeaders: 'string[]',
+  /** Client headers forwarded to the authorizer. Omit to forward all of them. */
+  'authRequestHeaders?': 'string[]',
+  /**
+   * @security Defaults to `false`. Only enable when every client reaching this
+   * entrypoint is already behind a trusted proxy that rewrites
+   * `X-Forwarded-*`; otherwise a caller can assert its own source address.
+   */
+  'trustForwardHeader?': 'boolean',
+  'forwardBody?': 'boolean',
+  'maxBodySize?': 'number.integer',
+  'tls?': middlewareClientTlsShape,
+});
+
+/** Configuration for `traefikForwardAuthMiddleware`. */
+export type TraefikForwardAuthMiddlewareConfig =
+  typeof TraefikForwardAuthMiddlewareConfigSchema.infer;
+
+/** Every way a rate/concurrency budget can be keyed. Exactly one, or none. */
+const middlewareBudgetKeyShape = {
+  /**
+   * Request header the budget is keyed on — typically the principal or tenant
+   * header a preceding `forwardAuth` produced. Mutually exclusive with
+   * `sourceCriterion`.
+   */
+  'requestHeaderName?': 'string > 0',
+  /** Full source-criterion form, for IP-strategy or host keying. */
+  'sourceCriterion?': TraefikSourceCriterionSchema,
+} as const;
+
+/**
+ * Reject a config that keys its budget two ways at once.
+ *
+ * `requestHeaderName` is sugar for `sourceCriterion.requestHeaderName`, so
+ * setting both is not a merge: the builder keeps `sourceCriterion` and
+ * silently drops the header name, which is the kind of quiet substitution the
+ * exactly-one middleware narrow exists to prevent. The rule was prose until
+ * now; the schema is where it belongs.
+ */
+function narrowBudgetKey(
+  data: { requestHeaderName?: string | undefined; sourceCriterion?: unknown },
+  ctx: { mustBe: (expected: string) => false }
+): boolean {
+  if (data.requestHeaderName !== undefined && data.sourceCriterion !== undefined) {
+    return ctx.mustBe(
+      'keyed either by requestHeaderName or by sourceCriterion, not both ' +
+        '(requestHeaderName is shorthand for sourceCriterion.requestHeaderName)'
+    );
+  }
+  return true;
+}
+
+/** Configuration for `traefikRateLimitMiddleware`. */
+export const TraefikRateLimitMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  ...middlewareBudgetKeyShape,
+  /** Sustained requests allowed per `period`. */
+  average: 'number >= 0',
+  /** Requests absorbed above `average` before Traefik answers 429. */
+  burst: 'number >= 0',
+  /** Window `average` is measured over. @default '1s' */
+  'period?': 'string > 0',
+  /**
+   * Shared Redis/Valkey backend. Without it each Traefik replica counts
+   * independently, so the effective budget is `average x replicas`.
+   */
+  'redis?': TraefikRateLimitRedisSchema,
+}).narrow(narrowBudgetKey);
+
+/** Configuration for `traefikRateLimitMiddleware`. */
+export type TraefikRateLimitMiddlewareConfig = typeof TraefikRateLimitMiddlewareConfigSchema.infer;
+
+/** Configuration for `traefikInFlightReqMiddleware`. */
+export const TraefikInFlightReqMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  ...middlewareBudgetKeyShape,
+  /** Maximum requests handled concurrently per source. */
+  amount: 'number >= 0',
+}).narrow(narrowBudgetKey);
+
+/** Configuration for `traefikInFlightReqMiddleware`. */
+export type TraefikInFlightReqMiddlewareConfig =
+  typeof TraefikInFlightReqMiddlewareConfigSchema.infer;
+
+/** Configuration for `traefikHeadersMiddleware`. */
+export const TraefikHeadersMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  headers: TraefikHeadersMiddlewareSchema,
+});
+
+/** Configuration for `traefikHeadersMiddleware`. */
+export type TraefikHeadersMiddlewareConfig = typeof TraefikHeadersMiddlewareConfigSchema.infer;
+
+/** Configuration for `traefikRedirectSchemeMiddleware`. */
+export const TraefikRedirectSchemeMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  /** @default 'https' */
+  'scheme?': '"http" | "https"',
+  /** @default true */
+  'permanent?': 'boolean',
+  'port?': 'string > 0',
+});
+
+/** Configuration for `traefikRedirectSchemeMiddleware`. */
+export type TraefikRedirectSchemeMiddlewareConfig =
+  typeof TraefikRedirectSchemeMiddlewareConfigSchema.infer;
+
+/** Configuration for `traefikBufferingMiddleware`. */
+export const TraefikBufferingMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  buffering: TraefikBufferingMiddlewareSchema,
+});
+
+/** Configuration for `traefikBufferingMiddleware`. */
+export type TraefikBufferingMiddlewareConfig = typeof TraefikBufferingMiddlewareConfigSchema.infer;
+
+/** Configuration for `traefikChainMiddleware`. */
+export const TraefikChainMiddlewareConfigSchema = type({
+  ...traefikResourceMetadataShape,
+  /** Middlewares applied in order. */
+  middlewares: TraefikMiddlewareRefSchema.array(),
+});
+
+/** Configuration for `traefikChainMiddleware`. */
+export type TraefikChainMiddlewareConfig = typeof TraefikChainMiddlewareConfigSchema.infer;
 
 // ============================================================================
 // Helm chart values
@@ -1028,7 +1227,10 @@ export interface TraefikPortValues {
  * Each plugin owns its own value shape, so this stays an `unknown` map by
  * necessity — the same boundary as {@link TraefikPluginMiddleware}.
  */
-export type TraefikPluginChartConfig = Record<string, unknown>;
+export const TraefikPluginChartConfigSchema = type('Record<string, unknown>');
+
+/** Plugin declarations for `experimental.plugins`, keyed by plugin name. */
+export type TraefikPluginChartConfig = typeof TraefikPluginChartConfigSchema.infer;
 
 /**
  * The chart values this factory maps, pins, or reads back — a CLOSED type.
@@ -1212,36 +1414,63 @@ export type TraefikMappedHelmValues = TypeKroChartValues<TraefikHelmValues>;
 // Helm resource configuration
 // ============================================================================
 
-/** Configuration for the Traefik `HelmRepository`. */
-export interface TraefikHelmRepositoryConfig {
-  readonly name: string;
-  /** Flux namespace holding the repository. Defaults to the Flux namespace. */
-  readonly namespace?: string;
-  /** @default DEFAULT_TRAEFIK_REPOSITORY_URL */
-  readonly url?: string;
-  /** @default '1h' */
-  readonly interval?: string;
-  readonly id?: string;
-}
+/**
+ * A Go duration as Flux's helm-controller parses it: one or more
+ * `<number><unit>` segments, e.g. `'1h'`, `'5m'`, `'90s'`, `'1h30m'`.
+ *
+ * Encoded as a schema constraint rather than a bare `string` because Flux
+ * rejects a malformed interval at ADMISSION — the HelmRelease is created and
+ * then never reconciles, which reads in the cluster as "Flux is broken"
+ * rather than as a typo.
+ */
+const fluxDuration = type(/^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$/);
 
-/** Configuration for the Traefik `HelmRelease`. */
-export interface TraefikHelmReleaseConfig {
-  readonly name: string;
+/**
+ * CRD policy accepted by the Flux helm-controller.
+ *
+ * Kept as a literal union in the schema and re-stated as
+ * {@link HelmReleaseCrdsPolicy} in `factories/helm/types.ts`; the assertion
+ * below is what keeps the two from drifting.
+ */
+const helmReleaseCrdsPolicy = '"Skip" | "Create" | "CreateReplace"';
+
+/** Configuration for the Traefik `HelmRepository`. */
+export const TraefikHelmRepositoryConfigSchema = type({
+  name: kubernetesName,
+  /** Flux namespace holding the repository. Defaults to the Flux namespace. */
+  'namespace?': kubernetesDnsLabel,
+  /** @default DEFAULT_TRAEFIK_REPOSITORY_URL */
+  'url?': 'string > 0',
+  /** @default '1h' */
+  'interval?': fluxDuration,
+  'id?': 'string > 0',
+});
+
+/** Configuration for the Traefik `HelmRepository`. */
+export type TraefikHelmRepositoryConfig = typeof TraefikHelmRepositoryConfigSchema.infer;
+
+/**
+ * Configuration for the Traefik `HelmRelease`, minus `values`.
+ *
+ * @see TraefikHelmReleaseConfig for why `values` is declared separately.
+ */
+export const TraefikHelmReleaseConfigSchema = type({
+  name: kubernetesName,
   /** Namespace of the HelmRelease object. Defaults to the Flux namespace. */
-  readonly namespace?: string;
+  'namespace?': kubernetesDnsLabel,
   /** Namespace Traefik itself is installed into. */
-  readonly targetNamespace?: string;
+  'targetNamespace?': kubernetesDnsLabel,
   /** @default DEFAULT_TRAEFIK_CHART_VERSION */
-  readonly version?: string;
+  'version?': 'string > 0',
   /** @default DEFAULT_TRAEFIK_REPOSITORY_NAME */
-  readonly repositoryName?: string;
-  readonly repositoryNamespace?: string;
+  'repositoryName?': kubernetesDnsLabel,
+  'repositoryNamespace?': kubernetesDnsLabel,
   /** @default '5m' */
-  readonly interval?: string;
+  'interval?': fluxDuration,
   /** @default '10m' */
-  readonly timeout?: string;
+  'timeout?': fluxDuration,
   /** Whether Flux should create `targetNamespace`. @default false */
-  readonly createNamespace?: boolean;
+  'createNamespace?': 'boolean',
   /**
    * CRD policy applied to BOTH `install.crds` and `upgrade.crds`.
    *
@@ -1250,10 +1479,29 @@ export interface TraefikHelmReleaseConfig {
    *
    * @default DEFAULT_TRAEFIK_CRDS_POLICY (`'CreateReplace'`)
    */
-  readonly crds?: HelmReleaseCrdsPolicy;
+  'crds?': helmReleaseCrdsPolicy,
+  'id?': 'string > 0',
+});
+
+/**
+ * Configuration for the Traefik `HelmRelease`.
+ *
+ * **Accepted exception to schema-first inference, for `values` only.** Every
+ * other field is inferred from {@link TraefikHelmReleaseConfigSchema}. `values`
+ * is typed {@link TraefikMappedHelmValues}, which is
+ * `TypeKroChartValues<TraefikHelmValues>` — a union of the chart values with
+ * `KubernetesRef`/`CelExpression` PROXY types. Those describe graph wiring
+ * that exists only at build time, not data an ArkType schema could validate at
+ * runtime: by the time this object reaches Flux the refs are resolved, and
+ * while it is being built the tree is deliberately not plain JSON. A schema
+ * field here could only be `unknown`, which would erase the typed chart
+ * surface the mapper exists to provide. The values themselves ARE schema-
+ * checked — one level down, by {@link TraefikManagedHelmValues} and the
+ * mapper's own tests.
+ */
+export type TraefikHelmReleaseConfig = typeof TraefikHelmReleaseConfigSchema.infer & {
   readonly values?: TraefikMappedHelmValues;
-  readonly id?: string;
-}
+};
 
 // ============================================================================
 // Bootstrap composition contract (ArkType)
