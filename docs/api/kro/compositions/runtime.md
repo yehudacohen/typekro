@@ -69,29 +69,76 @@ There is **no configuration option**. The guard is a floor, not a feature.
 `'unavailable'` when it is not, so operator factories and e2e suites can branch
 on it.
 
-### Clusters without the API
+### How the group version is resolved
 
 `MutatingAdmissionPolicy` is beta from Kubernetes 1.34
 (`admissionregistration.k8s.io/v1beta1`) and GA from 1.36
 (`admissionregistration.k8s.io/v1`); a given API server serves one or the
-other, never both. A composition is built synchronously with no cluster
-connection, so the group version is settled before the graph is rendered:
+other, never both, and nothing below 1.34 serves the kind at all. TypeKro
+therefore **never assumes** a group version — it is discovered from the target
+cluster, or the guard is not emitted.
+
+Direct mode does this for you. Before it materializes the graph, the direct
+deployment path runs API discovery for `admissionregistration.k8s.io` against
+the cluster it is deploying to and builds the guard at the version that cluster
+actually serves:
+
+```typescript
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+const runtime = typeKroRuntimeBootstrap();
+const factory = await runtime.factory('direct', { namespace: 'flux-system' });
+
+// Discovery runs here. On 1.36+ the policy is applied as
+// admissionregistration.k8s.io/v1; on 1.34/1.35 as .../v1beta1; on anything
+// older the guard is skipped with a warning and
+// status.labelPropagationGuard reports 'unavailable'.
+await factory.deploy({ namespace: 'flux-system' });
+```
+
+The answer is cached per **cluster** — server URL, CA material and context
+cluster name — with a bounded lifetime, so a process that talks to two clusters
+never reuses one cluster's answer for the other. `resetLabelGuardCapabilityCache()`
+clears it, which is what tests want between fixtures.
+
+Resolution order, highest precedence first:
+
+| Input | Result |
+|-------|--------|
+| `TYPEKRO_DISABLE_LABEL_GUARD=1` | Break-glass. Nothing is emitted; `status.labelPropagationGuard` is `'unavailable'`. |
+| `TYPEKRO_LABEL_GUARD_API_VERSION` | Used verbatim, e.g. `admissionregistration.k8s.io/v1beta1`. No cluster is contacted. |
+| A capability resolved for the deployment's target cluster | The served group version — `.../v1` or `.../v1beta1`. |
+| The cluster serves neither | Skipped, with a warning; status `'unavailable'`. |
+| Nothing above — no pin, no cluster | Skipped, with a warning; status `'unavailable'`. |
+
+That last row is the case that matters for a build with no cluster connection:
+the guard is **not** emitted at a guessed GA version, because a `.../v1` policy
+applied to a 1.34 cluster fails the apply of the whole runtime bootstrap.
+
+You can resolve the capability yourself when you build a graph outside a
+deployment — a GitOps render aimed at a known cluster:
 
 ```typescript
 import { probeLabelPropagationGuardSupport, typeKroRuntimeBootstrap } from 'typekro';
 
-// Ask the cluster once, then build. Only needed when the target may predate
-// 1.36 — with no probe the bootstrap assumes the GA group version.
+// Ask that cluster once, then build. The answer is cached under that
+// cluster's identity and used by the build that follows.
 await probeLabelPropagationGuardSupport(kubeConfig);
 const runtime = typeKroRuntimeBootstrap();
 ```
 
-Two environment variables, both read at build time:
+### Kro mode and offline renders
 
-| Variable | Effect |
-|----------|--------|
-| `TYPEKRO_DISABLE_LABEL_GUARD=1` | Break-glass. Builds the bootstrap without the guard and reports `status.labelPropagationGuard: 'unavailable'`. Use it only when the policy misbehaves on a specific cluster. |
-| `TYPEKRO_LABEL_GUARD_API_VERSION` | Pins the group version, e.g. `admissionregistration.k8s.io/v1beta1` for a 1.34/1.35 cluster or an offline `toYaml()` render. |
+`toYaml()` and Kro-mode rendering have no cluster to ask, so they follow the
+same rule: with no pin, the guard is left out of the rendered
+ResourceGraphDefinition and the status projects `'unavailable'` — a rendered
+manifest never carries an unverified group version. Set
+`TYPEKRO_LABEL_GUARD_API_VERSION` to the version your target cluster serves to
+render the guard into a GitOps artifact.
+
+In practice the runtime bootstrap is deployed in **direct** mode — it is what
+installs Kro, so there is no Kro controller yet to reconcile it — which is why
+direct mode is the path that resolves the capability from the cluster.
 
 When the guard is skipped, the two alternatives are the operator's own
 propagation filter (configured from `KRO_OWNERSHIP_LABELS`) and isolating the CR
