@@ -51,8 +51,8 @@ import {
   TraefikResourceMetadataSchema,
 } from '../../../src/factories/traefik/types.js';
 import {
-  DEPLOYMENT_POD_NAME_RESERVED,
   DNS_LABEL_MAX_LENGTH,
+  DNS_SUBDOMAIN_MAX_LENGTH,
   HELM_RELEASE_NAME_MAX_LENGTH,
 } from '../../../src/core/kubernetes/naming.js';
 
@@ -345,19 +345,45 @@ describe('Middleware builder configuration schemas', () => {
 describe('Derived name-length limit', () => {
   /**
    * `name` is not bounded by a number somebody picked. It is bounded by the
-   * longest name the composition and its chart derive from it: a Traefik Pod,
-   * `<name>-<pod-template-hash>-<pod-suffix>`, which reserves 17 characters of
-   * the 63-character DNS label limit. That derivation lives in
-   * `deriveNameLengthLimit`; these tests assert the derivation rather than the
-   * number that falls out of it, so a chart bump that adds a longer suffix
-   * fails here instead of failing in a cluster.
+   * tightest name the composition and its chart derive from it, which is the
+   * Helm release name at Helm's own `releaseNameMaxLen` of 53. That derivation
+   * lives in `deriveNameLengthLimit`; these tests assert the derivation rather
+   * than the number that falls out of it, so a chart bump that adds a longer
+   * suffix fails here instead of failing in a cluster.
+   *
+   * Nothing reserves room for a Traefik Pod. Pod names come from
+   * `metadata.generateName`, whose generator truncates the base to
+   * `MaxGeneratedNameLength = 63 - 5` before appending the random suffix
+   * (`staging/src/k8s.io/apiserver/pkg/storage/names/generate.go`), so a long
+   * `name` cannot produce an invalid Pod name.
    */
-  it('derives the limit from the longest generated name, not from a literal', () => {
-    expect(TRAEFIK_NAME_LIMIT.maxLength).toBe(DNS_LABEL_MAX_LENGTH - DEPLOYMENT_POD_NAME_RESERVED);
-    expect(TRAEFIK_NAME_LIMIT.binding.generatedChars).toBe(DEPLOYMENT_POD_NAME_RESERVED);
-    expect(TRAEFIK_NAME_LIMIT.binding.limit).toBe(DNS_LABEL_MAX_LENGTH);
-    // Tighter than Helm's release-name limit, which the name also has to fit.
-    expect(TRAEFIK_NAME_LIMIT.maxLength).toBeLessThanOrEqual(HELM_RELEASE_NAME_MAX_LENGTH);
+  it('derives the limit from the tightest generated name, not from a literal', () => {
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBe(HELM_RELEASE_NAME_MAX_LENGTH);
+    expect(TRAEFIK_NAME_LIMIT.binding.limit).toBe(HELM_RELEASE_NAME_MAX_LENGTH);
+    // The binding constraint uses the name verbatim, so it reserves nothing.
+    expect(TRAEFIK_NAME_LIMIT.binding.suffix).toBeUndefined();
+    expect(TRAEFIK_NAME_LIMIT.binding.generatedChars).toBeUndefined();
+    // Still leaves room for every suffixed Service the chart creates.
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBeLessThanOrEqual(
+      DNS_LABEL_MAX_LENGTH - '-metrics'.length
+    );
+  });
+
+  it('reserves nothing for a Pod name Kubernetes truncates for itself', () => {
+    // A Pod entry at the DNS label limit would reserve ~17 characters and bind
+    // well below the Helm limit. Its absence is the point of this test.
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBeGreaterThan(DNS_LABEL_MAX_LENGTH - 17);
+    expect(TRAEFIK_NAME_LIMIT.binding.describedAs).not.toContain('Pod');
+  });
+
+  it('holds the file-provider ConfigMap to the DNS subdomain limit, not the label limit', () => {
+    // A ConfigMap `metadata.name` is a DNS subdomain (253), so `-file-provider`
+    // cannot bind — a 63-character limit here would have cost 14 characters for
+    // nothing.
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBeLessThanOrEqual(
+      DNS_SUBDOMAIN_MAX_LENGTH - '-file-provider'.length
+    );
+    expect(TRAEFIK_NAME_LIMIT.binding.describedAs).not.toContain('ConfigMap');
   });
 
   it('accepts a name exactly at the derived limit', () => {
@@ -372,7 +398,7 @@ describe('Derived name-length limit', () => {
     expect(rejects(result)).toBe(true);
     const message = String(result);
     expect(message).toContain(String(TRAEFIK_NAME_LIMIT.maxLength));
-    expect(message).toContain('<pod-template-hash>-<pod-suffix>');
+    expect(message).toContain("the HelmRelease's Helm release name");
   });
 
   it('still reports the PATTERN when a name breaks the character rule', () => {
@@ -380,7 +406,7 @@ describe('Derived name-length limit', () => {
     // an illegal character must not be told it is too long.
     const message = String(TraefikBootstrapConfigSchema({ name: 'Traefik_Edge' }));
     expect(message).toContain('must be matched by');
-    expect(message).not.toContain('<pod-template-hash>');
+    expect(message).not.toContain("the HelmRelease's Helm release name");
   });
 });
 
