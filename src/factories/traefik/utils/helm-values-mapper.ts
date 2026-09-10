@@ -31,6 +31,7 @@ import type {
   TraefikManagedHelmValues,
   TraefikPodSecurityContext,
   TraefikPortValues,
+  TraefikRawHelmValues,
   TraefikServiceType,
 } from '../types.js';
 
@@ -112,10 +113,12 @@ export const TRAEFIK_OWNERSHIP_PINS = {
 /** Build-time inputs that shape which configuration the values tree contains. */
 export interface TraefikHelmValuesMapperOptions {
   /**
-   * Concrete chart values merged BEFORE the mapped values and the security
-   * pins, both of which win. Use for chart surface this factory does not model.
+   * Concrete raw chart values merged BEFORE the mapped values and the security
+   * pins, both of which win. Use for chart surface this factory does not
+   * model; see `TraefikBootstrapBuildOptions.values` for why this side of the
+   * boundary is {@link TraefikRawHelmValues} rather than the managed type.
    */
-  readonly baseValues?: TraefikHelmValues;
+  readonly baseValues?: TraefikRawHelmValues;
   /**
    * Emit a permanent `web` → `websecure` redirect. The chart disables the
    * redirect by omitting `ports.web.http.redirections.entryPoint`, so this is
@@ -159,7 +162,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * key-by-key rather than recursively, which keeps the merge from ever spreading
  * a nested schema reference.
  */
-function mergeSections(base: TraefikHelmValues, override: TraefikHelmValues): TraefikHelmValues {
+function mergeSections(
+  base: TraefikRawHelmValues,
+  override: TraefikHelmValues
+): TraefikHelmValues {
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const existing = merged[key];

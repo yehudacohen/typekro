@@ -280,6 +280,27 @@ describe('traefikBootstrap (defaults)', () => {
     expect(loadBalancer?.hostname).not.toContain('"hostname" in ');
   });
 
+  it('projects version from the release Flux actually installed', () => {
+    const status = (
+      rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap').spec as {
+        schema?: { status?: Record<string, unknown> };
+      }
+    ).schema?.status;
+    const version = String(status?.version);
+
+    // A RESOURCE projection, not a literal and not an echo of the request: KRO
+    // drops literal status fields (#188), and `spec.chartVersion` is what was
+    // ASKED for rather than what is running.
+    expect(version).toContain('traefikHelmRelease.status.history');
+    expect(version).toContain('filter(entry, has(entry.chartVersion))');
+    expect(version).not.toContain('schema.spec.chartVersion');
+    expect(version).not.toContain(DEFAULT_TRAEFIK_CHART_VERSION);
+    // Same laziness contract as the load-balancer projection, for the same
+    // cel-js/cel-go reasons.
+    expect(version).toContain('has(traefikHelmRelease.status.history) ? (size(');
+    expect(version).not.toContain('has(traefikHelmRelease.status.history[');
+  });
+
   it('accepts the declared status contract shape', () => {
     const result = TraefikBootstrapStatusSchema({
       ready: true,
@@ -415,6 +436,77 @@ describe('makeTraefikBootstrap build-time variants', () => {
     // The mapped values still win where they overlap.
     // The ownership pins still win where they overlap.
     expect((values.service as { enabled?: boolean }).enabled).toBe(false);
+  });
+
+  it('survives a whole-map values merge with the graph-aware siblings intact', () => {
+    // The guide's whole-map graph-aware values regression. A raw passthrough
+    // section that OVERLAPS a mapped one must not replace the mapped section's
+    // graph-aware siblings. `metrics` and `tracing` are the sharp cases: the
+    // mapper fills their `otlp` subtree from schema references, while
+    // `metrics.prometheus` and `tracing.capturedRequestHeaders` are chart
+    // surface this factory does not model.
+    const bootstrap = makeTraefikBootstrap({
+      name: 'traefik-whole-map',
+      kind: 'TraefikWholeMap',
+      values: {
+        metrics: { prometheus: { entryPoint: 'metrics', addRoutersLabels: true } },
+        tracing: { capturedRequestHeaders: ['X-Edge-Principal'] },
+        env: [{ name: 'TZ', value: 'UTC' }],
+      },
+    });
+    const consumer = rgd(bootstrap.toYaml(), 'TraefikWholeMap');
+    const values = resource(consumer, 'traefikHelmRelease').template?.spec?.values as Record<
+      string,
+      Record<string, unknown> | unknown[]
+    >;
+    const section = (key: string) => values[key] as Record<string, unknown> | undefined;
+
+    // The raw keys survived the merge...
+    expect(section('metrics')?.prometheus).toEqual({
+      entryPoint: 'metrics',
+      addRoutersLabels: true,
+    });
+    expect(section('tracing')?.capturedRequestHeaders).toEqual(['X-Edge-Principal']);
+    expect(values.env).toEqual([{ name: 'TZ', value: 'UTC' }]);
+    // ...and so did the graph-aware siblings the mapper wrote beside them.
+    expect(JSON.stringify(section('metrics')?.otlp)).toContain('schema.spec.otlp.endpoint');
+    expect(String(section('tracing')?.serviceName)).toContain('schema.spec.otlp.serviceName');
+
+    // No serialization casualties anywhere in the merged tree.
+    const serialized = JSON.stringify(values);
+    expect(serialized).not.toContain('[object Object]');
+    expect(serialized).not.toContain('__KUBERNETES_REF_');
+    expect(serialized).not.toContain('__CEL_EXPRESSION__');
+    expect(serialized).not.toContain('undefined');
+  });
+
+  it('cannot be talked out of the security pins by raw values', () => {
+    // Raw values merge BENEATH the pins, which is the whole reason they are
+    // build-time (see TraefikBootstrapBuildOptions.values): a shallow runtime
+    // merge could not both keep the pins and preserve a caller's siblings.
+    const bootstrap = makeTraefikBootstrap({
+      name: 'traefik-pin-attempt',
+      kind: 'TraefikPinAttempt',
+      values: {
+        api: { dashboard: true, insecure: true, basePath: '/dashboard' },
+        service: { enabled: true, annotations: { 'example.com/note': 'kept' } },
+        podSecurityContext: { runAsNonRoot: false, fsGroup: 65532 },
+      },
+    });
+    const consumer = rgd(bootstrap.toYaml(), 'TraefikPinAttempt');
+    const values = resource(consumer, 'traefikHelmRelease').template?.spec?.values as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    expect(values.api?.dashboard).toBe(false);
+    expect(values.api?.insecure).toBe(false);
+    expect(values.service?.enabled).toBe(false);
+    expect(values.podSecurityContext?.runAsNonRoot).toBe(true);
+    // The pins are surgical: unpinned siblings in the same sections survive.
+    expect(values.api?.basePath).toBe('/dashboard');
+    expect(values.service?.annotations).toEqual({ 'example.com/note': 'kept' });
+    expect(values.podSecurityContext?.fsGroup).toBe(65532);
   });
 
   it('can hand the CRD lifecycle to something else', () => {

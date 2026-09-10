@@ -1453,9 +1453,14 @@ export interface TraefikBootstrapBuildOptions {
    * Raw chart values, merged BEFORE the mapped values and the security pins —
    * both of which win.
    *
-   * Typed as {@link TraefikHelmValues}: a path this factory models is checked,
-   * anything else still reaches the chart through
-   * {@link TraefikRawHelmValues}.
+   * This is the raw boundary, so it is typed as {@link TraefikRawHelmValues}
+   * rather than as the managed surface: an override often has to reach a
+   * SIBLING of a path TypeKro maps (`metrics.prometheus` next to the mapped
+   * `metrics.otlp`, say), which a closed type would reject. Type safety on
+   * this side of the boundary would be a fiction anyway — the shape belongs to
+   * whichever chart version is installed. What TypeKro writes is checked
+   * precisely; what a caller passes through is not, and the security pins
+   * still overwrite it.
    *
    * **Build-time only, on purpose.** The guide's per-instance passthrough
    * pattern (a `spec.values` field serialized as
@@ -1473,5 +1478,5 @@ export interface TraefikBootstrapBuildOptions {
    * precedence at build time, where the merge can be deep and auditable. Pass
    * chart surface this factory does not model here, at construction.
    */
-  readonly values?: TraefikHelmValues;
+  readonly values?: TraefikRawHelmValues;
 }
