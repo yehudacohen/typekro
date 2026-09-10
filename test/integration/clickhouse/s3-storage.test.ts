@@ -36,6 +36,7 @@ import {
   createBunCompatibleBatchV1Api,
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
+import type { ClickHouseClusterStatus } from '../../../src/factories/clickhouse/types.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
   createCoreV1ApiClient,
@@ -48,6 +49,10 @@ import {
   runTestPodAndReadLogs,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
+import {
+  assertClickHouseS3StatusContract,
+  readClickHouseInstallation,
+} from './shared-clickhouse-s3-e2e.js';
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
@@ -74,7 +79,7 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
   let operatorFactory: { deleteInstance?: unknown } | undefined;
   let clickhouseFactory:
     | {
-        deploy: (spec: unknown) => Promise<{ status: { ready: boolean; storage: unknown } }>;
+        deploy: (spec: unknown) => Promise<{ status: ClickHouseClusterStatus }>;
       }
     | undefined;
   let operatorDeployed = false;
@@ -329,11 +334,27 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     });
     clickhouseDeployed = true;
 
-    expect(instance.status.ready).toBe(true);
-    // The storage contract is a client-hydrated build-time constant.
-    expect(instance.status.storage.mode).toBe('s3');
-    expect(instance.status.storage.diskType).toBe('s3_plain_rewritable');
-    expect(instance.status.storage.selfDescribingBucket).toBe(true);
+    // THE WHOLE DECLARED STATUS CONTRACT, through the SHARED assertion the
+    // KRO-mode block below also calls. Direct mode hydrates status client-side
+    // (the cel-js reference resolver over the live CHI and contract ConfigMap)
+    // and KRO evaluates the same expressions server-side, so neither mode gets
+    // to pass on a subset of the fields the schema promises.
+    assertClickHouseS3StatusContract(instance.status, {
+      instanceName: chiName,
+      namespace: chiNs,
+      user: chiUser,
+      clusterName: 'cluster',
+      database: 'default',
+      storage: {
+        mode: 's3',
+        diskType: 's3_plain_rewritable',
+        policyName: 's3_main',
+        bucket: minio.bucket,
+        selfDescribingBucket: true,
+        backupSchedule: '0 3 * * *',
+      },
+      chi: (await readClickHouseInstallation(chiNs, chiName, kubeConfig)).status ?? {},
+    });
   }, 1_200_000);
 
   it('makes the S3 policy the MergeTree default, so a plain CREATE TABLE lands on it', async () => {
@@ -586,95 +607,32 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
           liveCr = await readKroInstance();
         }
 
-        // Read the KRO-generated CHI first: the two host counters are
-        // projections of ITS status, and the operator's own behaviour decides
-        // whether the optional one is populated at all.
-        const chiRaw = (await kroApi.getNamespacedCustomObject({
-          group: 'clickhouse.altinity.com',
-          version: 'v1',
+        // Read the KRO-generated CHI first: the `installation` block is a
+        // projection of ITS status, and the operator's own behaviour decides
+        // whether the optional counter is populated at all.
+        const chi = await readClickHouseInstallation(chiNs, kroInstanceName, kubeConfig);
+
+        // THE WHOLE DECLARED STATUS CONTRACT, on the LIVE CR — through the
+        // SAME shared assertion the direct-mode case above calls, so KRO's
+        // server-side evaluation and direct mode's client-side hydration are
+        // held to one bar. Only the instance name and the backup schedule
+        // differ between the two calls; every field is asserted in both.
+        assertClickHouseS3StatusContract(liveCr.status as unknown as ClickHouseClusterStatus, {
+          instanceName: kroInstanceName,
           namespace: chiNs,
-          plural: 'clickhouseinstallations',
-          name: kroInstanceName,
-        })) as { body?: unknown };
-        const chi = (chiRaw.body ?? chiRaw) as {
-          status?: { status?: string; hosts?: number; hostsCompleted?: number };
-          spec?: {
-            configuration?: {
-              files?: Record<string, string>;
-              settings?: Record<string, string>;
-            };
-          };
-        };
-
-        const status = liveCr.status as unknown as {
-          ready: boolean;
-          phase: string;
-          clickhouse: {
-            host: string;
-            port: number;
-            nativeUrl: string;
-            httpUrl: string;
-            clusterName: string;
-            database: string;
-            user: string;
-          };
+          user: chiUser,
+          clusterName: 'cluster',
+          database: 'default',
           storage: {
-            mode: string;
-            diskType: string;
-            policyName: string;
-            bucket: string;
-            selfDescribingBucket: boolean;
-            backupSchedule: string;
-          };
-          installation: {
-            name: string;
-            namespace: string;
-            endpoint: string;
-            hostsCount?: number;
-            hostsCompletedCount?: number;
-          };
-        };
-
-        // EVERY field of ClickHouseClusterStatusSchema, on the LIVE CR — not
-        // just readiness and three of them. `keeper` is the only optional
-        // branch and this topology has no keeper, so it is legitimately absent.
-        expect(status.ready).toBe(true);
-        expect(status.phase).toBe('Ready');
-        expect(status.clickhouse.host).toBe(
-          `clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local`
-        );
-        expect(status.clickhouse.port).toBe(9000);
-        expect(status.clickhouse.nativeUrl).toBe(
-          `clickhouse://clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local:9000`
-        );
-        expect(status.clickhouse.httpUrl).toBe(
-          `http://clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local:8123`
-        );
-        expect(status.clickhouse.clusterName).toBe('cluster');
-        expect(status.clickhouse.database).toBe('default');
-        expect(status.clickhouse.user).toBe(chiUser);
-        expect(status.storage.mode).toBe('s3');
-        expect(status.storage.diskType).toBe('s3_plain_rewritable');
-        expect(status.storage.policyName).toBe('s3_main');
-        expect(status.storage.bucket).toBe(minio.bucket);
-        expect(status.storage.selfDescribingBucket).toBe(true);
-        expect(status.storage.backupSchedule).toBe('0 4 * * *');
-        expect(status.installation.name).toBe(kroInstanceName);
-        expect(status.installation.namespace).toBe(chiNs);
-        expect(status.installation.endpoint).toContain(kroInstanceName);
-        expect(status.installation.hostsCount).toBe(1);
-        // LIVE FINDING (operator release-0.27.1): the CHI's `hostsCompleted`
-        // is not populated once the reconcile has finished, so this DECLARED
-        // OPTIONAL field is legitimately absent on a settled cluster. Asserted
-        // as agreeing with its source rather than pinned to a number, which
-        // would be asserting the operator's mid-reconcile behaviour.
-        expect(status.installation.hostsCompletedCount).toBe(
-          chi.status?.hostsCompleted as number
-        );
-        expect(status.installation.hostsCount).toBe(chi.status?.hosts as number);
-        // `keeper` is the only other optional branch, and this topology has no
-        // keeper — so it is legitimately absent rather than unhydrated.
-        expect((liveCr.status as { keeper?: unknown }).keeper).toBeUndefined();
+            mode: 's3',
+            diskType: 's3_plain_rewritable',
+            policyName: 's3_main',
+            bucket: minio.bucket,
+            selfDescribingBucket: true,
+            backupSchedule: '0 4 * * *',
+          },
+          chi: chi.status ?? {},
+        });
 
         // THE VERSION FLOOR, ENFORCED BY THE GENERATED SCHEMA. The build-time
         // gate cannot see a per-instance `spec.version`, so the

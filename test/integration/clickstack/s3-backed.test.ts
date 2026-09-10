@@ -28,6 +28,7 @@ import {
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
 import { DEFAULT_CLICKSTACK_VERSION } from '../../../src/factories/clickstack/resources/helm.js';
+import type { ClickStackBootstrapStatus } from '../../../src/factories/clickstack/types.js';
 import { DEFAULT_QUEUE_EXPORTER_NAMES } from '../../../src/factories/clickstack/utils/storage.js';
 import { type BackgroundSampler, startBackgroundSampler } from '../../utils/background-sampler.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
@@ -44,6 +45,10 @@ import {
   runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
+import {
+  assertClickStackS3StatusContract,
+  readClickStackHelmRelease,
+} from './shared-clickstack-s3-e2e.js';
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
@@ -371,11 +376,21 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       });
       stackDeployed = true;
 
-      expect(instance.status.ready).toBe(true);
-      expect(instance.status.storage.mode).toBe('s3');
-      expect(instance.status.storage.persistentQueue).toBe(true);
+      // THE WHOLE DECLARED STATUS CONTRACT, through the SHARED assertion the
+      // KRO-mode case below also calls. Direct mode hydrates status client-side
+      // (the cel-js reference resolver over the live HelmRelease and contract
+      // ConfigMap) and KRO evaluates the same expressions server-side, so
+      // neither mode gets to pass on a subset of the fields the schema
+      // promises. `version` in particular is read off the owned HelmRelease's
+      // chart pin, so this proves the projection in both modes.
+      assertClickStackS3StatusContract(instance.status, {
+        instanceName: stackName,
+        namespace: stackNs,
+        chartVersion: DEFAULT_CLICKSTACK_VERSION,
+        helmRelease: await readClickStackHelmRelease(stackNs, stackName, kubeConfig),
+        storage: { mode: 's3', diskType: 's3_plain_rewritable', persistentQueue: true },
+      });
       gatewayEndpoint = instance.status.gateway.otlpHttpEndpoint;
-      expect(gatewayEndpoint).toContain('4318');
     },
     1_500_000
   );
@@ -1406,37 +1421,19 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
           liveCr = await readKroInstance();
         }
 
-        const status = liveCr.status as unknown as {
-          ready: boolean;
-          phase: string;
-          version: string;
-          ui: { url: string };
-          gateway: { otlpHttpEndpoint: string; otlpGrpcEndpoint: string };
-          app: { host: string; appPort: number; apiPort: number };
-          storage: { mode: string; diskType: string; persistentQueue: boolean };
-        };
-
-        // EVERY field of ClickStackBootstrapStatusSchema, on the LIVE CR — not
-        // readiness plus the endpoints. `version`, the ports and the storage
-        // block are the ones that used to be literals KRO dropped.
-        expect(status.ready).toBe(true);
-        expect(status.phase).toBe('Ready');
-        expect(status.version).toBe(DEFAULT_CLICKSTACK_VERSION);
-        expect(status.ui.url).toBe(
-          `http://${kroInstanceName}.${kroStackNs}.svc.cluster.local:3000`
-        );
-        expect(status.gateway.otlpHttpEndpoint).toBe(
-          `http://${kroInstanceName}-otel-collector.${kroStackNs}.svc.cluster.local:4318`
-        );
-        expect(status.gateway.otlpGrpcEndpoint).toBe(
-          `http://${kroInstanceName}-otel-collector.${kroStackNs}.svc.cluster.local:4317`
-        );
-        expect(status.app.host).toBe(`${kroInstanceName}.${kroStackNs}.svc.cluster.local`);
-        expect(status.app.appPort).toBe(3000);
-        expect(status.app.apiPort).toBe(8000);
-        expect(status.storage.mode).toBe('s3');
-        expect(status.storage.diskType).toBe('s3_plain_rewritable');
-        expect(status.storage.persistentQueue).toBe(true);
+        // THE WHOLE DECLARED STATUS CONTRACT, on the LIVE CR — through the SAME
+        // shared assertion the direct-mode case above calls, so KRO's
+        // server-side evaluation and direct mode's client-side hydration are
+        // held to one bar. Only the instance name and namespace differ between
+        // the two calls; every field is asserted in both.
+        const status = liveCr.status as unknown as ClickStackBootstrapStatus;
+        assertClickStackS3StatusContract(status, {
+          instanceName: kroInstanceName,
+          namespace: kroStackNs,
+          chartVersion: DEFAULT_CLICKSTACK_VERSION,
+          helmRelease: await readClickStackHelmRelease(kroStackNs, kroInstanceName, kubeConfig),
+          storage: { mode: 's3', diskType: 's3_plain_rewritable', persistentQueue: true },
+        });
         phase('KRO CR status carries the whole declared contract');
 
         // 3. THE KRO-GENERATED IN-CLUSTER HELMRELEASE. Local RGD YAML proves
@@ -1561,10 +1558,14 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
           namespace: kroStackNs,
           name: `${kroInstanceName}-contract`,
         });
-        expect(contract.data?.version).toBe(DEFAULT_CLICKSTACK_VERSION);
         expect(contract.data?.appPort).toBe('3000');
         expect(contract.data?.storageDiskType).toBe('s3_plain_rewritable');
         expect(contract.data?.storagePersistentQueue).toBe('true');
+        // `version` is NOT in the contract ConfigMap: the status projects it
+        // from the HelmRelease's own chart pin (asserted against the live
+        // release by the shared status contract above). Asserting the absence
+        // keeps the two from drifting back into two copies of one fact.
+        expect(contract.data?.version).toBeUndefined();
       } finally {
         if (deploymentAttempted) {
           // 5. `deleteInstance()` + KRO finalizer, through the shared helper —
