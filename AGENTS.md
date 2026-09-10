@@ -282,7 +282,7 @@ const myGraph = toResourceGraph(
 - **Comparisons**: `Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')`
 - **Equality**: `Cel.expr<boolean>(resources.helmrelease.status.phase, ' == "Ready"')`
 - **Conditionals**: `Cel.expr<string>(resources.resource.status.field, ' == "value" ? "result1" : "result2"')`
-- **Static values**: `Cel.expr<string>\`'static_value'\`` (backticks + quotes for static strings)
+- **Static values**: there is no safe form in KRO mode — see "Every KRO status leaf must project" below. `Cel.expr<string>\`'static_value'\`` is a literal in CEL clothing and is dropped just like a bare string.
 - **Templates**: `Cel.template('Hello %s', schema.spec.name)`
 
 ### Status Builder Rules
@@ -302,11 +302,12 @@ phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed'>(
 // Boolean readiness (Enhanced types — no ?.)
 ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
 
-// Static string values
+// WRONG — both are literals KRO leaves unset on the instance (#188)
 phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
-
-// Static fallbacks for yamlFile resources
 fluxReady: true, // yamlFile doesn't have status, assume ready
+
+// Right — project the value from a resource the graph owns
+fluxReady: Cel.expr<boolean>(resources.fluxDeployment.status.readyReplicas, ' > 0'),
 
 // Comparison with schema values
 webAppReady: Cel.expr<boolean>(resources.webapp.status.readyReplicas, ' == ', resources.webapp.spec.replicas)
@@ -318,6 +319,28 @@ webAppReady: Cel.expr<boolean>(resources.webapp.status.readyReplicas, ' == ', re
 - Do NOT omit type parameters: `Cel.expr()` — always specify `<boolean>`, `<string>`, etc.
 - Do NOT use JavaScript operators: `resources.a.ready || false` — use CEL expressions
 - Do NOT access non-existent status on yamlFile resources (they return DeploymentClosure, not Enhanced)
+
+### Every KRO status leaf must project (#188)
+KRO fills an instance's `status` only from expressions it can resolve against the graph's own
+resources. A leaf that is a bare literal — `true`, `5432`, `'http'`, `['web', 'websecure']` — is
+left unset, so the declared status schema promises a field the custom resource never carries.
+TypeKro hydrates those leaves client-side in `getStatus()`, which means **the author sees the value
+and nobody else does**: `kubectl get`, another controller, and an `externalRef` from a second
+composition all see `undefined`.
+
+- A leaf is valid if it references a resource id (`<id>.status.*`, `<id>.metadata.*`, `<id>.spec.*`)
+  or `schema.spec.*`.
+- A reference-free CEL expression is **not** an escape: `Cel.expr<string>\`'running'\`` is dropped
+  exactly like a bare string.
+- Watch for silent degradation. `conditions?.some(c => ...) || false` cannot be expressed in CEL, so
+  the analyzer collapses the whole leaf to the `|| false` fallback — a literal, and the field ends
+  up absent rather than `false`. That is a real bug in several bundled compositions today; see
+  `test/unit/literal-status-repo-scan.test.ts`.
+- To keep a genuinely static value, put it in a ConfigMap the composition creates and project it:
+  `mode: myConfigMap.data.mode`. Otherwise drop the field from the status schema.
+- Serialization warns by default and throws with `allowLiteralStatus: false`, set on the composition
+  options or on `factory('kro', { ... })` (the factory setting wins). Direct mode is unaffected —
+  it assembles status locally, with no reconciler, so literals are fine there.
 
 ## PROJECT-SPECIFIC CONTEXT
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- KRO-mode serialization now reports status leaves that resolve to a bare
+  literal. KRO fills an instance's `status` only from expressions it can
+  resolve against the graph's own resources, so a literal leaf is left unset
+  and the declared status schema promises a field the custom resource never
+  carries — invisible until now, because TypeKro hydrated those leaves
+  client-side in `getStatus()`. The diagnostic names every offending path and
+  suggests projecting the value from an owned resource or dropping the field. A
+  reference-free CEL expression counts as a literal; KRO drops it the same way.
+  `allowLiteralStatus` selects the severity, on the composition or on the
+  factory (the factory wins, so CI can hold a graph it does not own to
+  projection). It defaults to warn for this release and flips to error in the
+  next major — set `allowLiteralStatus: false` now on compositions you want
+  held to projection. Direct mode is unaffected: it assembles status locally,
+  with no reconciler, so literals are legitimate there.
+
 ### Changed
 
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
