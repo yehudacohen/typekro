@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deployment with an error naming the reference, its `dependsOn` targets and the
   elapsed wait; it is never silently skipped. References with no in-graph
   dependencies keep the existing up-front read, and KRO mode is unchanged.
+- Waiting for an observed resource now stops on a failure that waiting cannot
+  fix. A read that returns 401/403, 400/405/422, a 404 for an apiVersion/kind the
+  cluster does not serve, or that throws a non-Kubernetes error fails the
+  deployment immediately, naming the reference, its `dependsOn` targets, the
+  classification and the API server's own message. Only a 404 for the object
+  itself, 429, 5xx and transport failures keep polling, so a misconfigured
+  reference no longer spends the whole read budget before reporting a generic
+  timeout.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their

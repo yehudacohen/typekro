@@ -755,6 +755,187 @@ describe('DirectDeploymentEngine Simple', () => {
       expect(message).toMatch(/after waiting \d+ms/);
     });
 
+    describe('deferred external reference read errors', () => {
+      const liveObserved = {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'chart-service', namespace: 'test-namespace' },
+        spec: { clusterIP: '10.0.0.7' },
+      };
+
+      // A graph whose observed Service is produced by `simple`, so its read is deferred behind it.
+      function graphWithDeferredService(): DeploymentResourceGraph {
+        const graph = createSimpleGraph();
+        const observed = createMockResource({
+          id: 'chartService',
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: { name: 'chart-service', namespace: 'test-namespace' },
+        });
+        graph.externalReferences = [
+          { id: 'chartService', manifest: observed, dependsOn: ['simple'] },
+        ];
+        return graph;
+      }
+
+      /**
+       * Fail the observed Service read with `failures` in order, then serve it live. Reads for
+       * anything else stay 404 so the owning Deployment still takes the create path.
+       */
+      function failServiceReadsThenServe(failures: unknown[]): void {
+        let attempt = 0;
+        mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+          if (target?.kind !== 'Service') return Promise.reject({ statusCode: 404 });
+          const failure = failures[attempt++];
+          return failure === undefined
+            ? Promise.resolve(liveObserved)
+            : Promise.reject(failure as Record<string, unknown>);
+        });
+      }
+
+      /** Always fail the observed Service read with the same error. */
+      function failServiceReads(failure: unknown): void {
+        mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) =>
+          Promise.reject(
+            (target?.kind === 'Service' ? failure : { statusCode: 404 }) as Record<string, unknown>
+          )
+        );
+      }
+
+      // A budget wide enough that spending it would take ~10s — long enough for the fail-fast
+      // assertions below to be unambiguous, and long enough to allow one poll interval of retry.
+      const retryOptions = { timeout: 12_000 };
+
+      it('keeps polling a 404 until the observed resource appears', async () => {
+        failServiceReadsThenServe([{ statusCode: 404 }]);
+
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('success');
+        const serviceReads = mockK8sApi.read.mock.calls.filter(
+          ([target]) => (target as Record<string, unknown> | undefined)?.kind === 'Service'
+        );
+        expect(serviceReads.length).toBeGreaterThanOrEqual(2);
+      });
+
+      it('keeps polling a 500 until the read succeeds', async () => {
+        failServiceReadsThenServe([{ statusCode: 500, body: { code: 500, message: 'etcd busy' } }]);
+
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('success');
+      });
+
+      it('keeps polling a transport failure until the read succeeds', async () => {
+        failServiceReadsThenServe([new Error('connect ECONNREFUSED 127.0.0.1:6443')]);
+
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('success');
+      });
+
+      it('fails immediately on a 403 instead of spending the read budget', async () => {
+        failServiceReads({
+          statusCode: 403,
+          body: {
+            code: 403,
+            reason: 'Forbidden',
+            message: 'services "chart-service" is forbidden: User cannot get resource "services"',
+          },
+        });
+
+        const startedAt = Date.now();
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+        const elapsed = Date.now() - startedAt;
+
+        expect(result.status).toBe('failed');
+        // The budget is ~10s; a fail-fast must land nowhere near it.
+        expect(elapsed).toBeLessThan(2_000);
+        const message = result.errors[0]?.error.message ?? '';
+        expect(message).toContain('Service/chart-service');
+        expect(message).toContain("reference 'chartService'");
+        expect(message).toContain('permission denied (HTTP 403)');
+        expect(message).toContain('dependsOn targets [simple]');
+        expect(message).toContain('is forbidden');
+        expect(message).not.toMatch(/after waiting \d+ms/);
+        // Exactly one attempt — no polling at all.
+        const serviceReads = mockK8sApi.read.mock.calls.filter(
+          ([target]) => (target as Record<string, unknown> | undefined)?.kind === 'Service'
+        );
+        expect(serviceReads).toHaveLength(1);
+      });
+
+      it('fails immediately on a 422', async () => {
+        failServiceReads({
+          statusCode: 422,
+          body: { code: 422, reason: 'Invalid', message: 'Service "chart-service" is invalid' },
+        });
+
+        const startedAt = Date.now();
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('failed');
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
+        const message = result.errors[0]?.error.message ?? '';
+        expect(message).toContain("reference 'chartService'");
+        expect(message).toContain('invalid request (HTTP 422)');
+      });
+
+      it('fails immediately when the resource type itself is not served', async () => {
+        failServiceReads({
+          statusCode: 404,
+          body: {
+            code: 404,
+            reason: 'NotFound',
+            message: 'the server could not find the requested resource',
+            details: {},
+          },
+        });
+
+        const startedAt = Date.now();
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('failed');
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
+        const message = result.errors[0]?.error.message ?? '';
+        expect(message).toContain('unknown resource type (HTTP 404)');
+      });
+
+      it('fails immediately on a programming error with no Kubernetes shape', async () => {
+        failServiceReads(new TypeError('resourceRef.metadata is undefined'));
+
+        const startedAt = Date.now();
+        const result = await engine.deploy(graphWithDeferredService(), {
+          ...defaultOptions,
+          ...retryOptions,
+        });
+
+        expect(result.status).toBe('failed');
+        expect(Date.now() - startedAt).toBeLessThan(2_000);
+        const message = result.errors[0]?.error.message ?? '';
+        expect(message).toContain('not a Kubernetes API error');
+        expect(message).toContain('resourceRef.metadata is undefined');
+      });
+    });
+
     it('should handle deployment failures gracefully', async () => {
       // Test deployment failure by making the create call fail
       const resource = createMockResource({

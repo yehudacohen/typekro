@@ -59,6 +59,7 @@ import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debu
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { logHandleSnapshot } from './handle-tracing.js';
+import { classifyReadError } from './k8s-helpers.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -919,7 +920,8 @@ export class DirectDeploymentEngine {
 
     const readStartedAt = Date.now();
     const deadline = readStartedAt + (settings.retry?.budgetMs ?? 0);
-    let lastError: Error | undefined;
+    const dependsOnTargets = (reference.dependsOn ?? []).join(', ') || 'none';
+    let lastDetail: string | undefined;
 
     for (;;) {
       settings.retry?.abortSignal.throwIfAborted();
@@ -935,7 +937,29 @@ export class DirectDeploymentEngine {
         });
         return;
       } catch (error: unknown) {
-        lastError = ensureError(error);
+        const assessment = classifyReadError(error);
+        lastDetail = assessment.detail;
+
+        // A permanent failure — bad credentials, a rejected request, a kind the cluster does not
+        // serve — reads the same on every attempt. Polling it to the deadline only delays the
+        // deployment by minutes and then reports a timeout that hides the actual cause.
+        if (!assessment.retryable) {
+          settings.logger.debug('External reference read failed permanently', {
+            referenceId,
+            apiVersion: manifest.apiVersion,
+            kind: manifest.kind,
+            name,
+            classification: assessment.classification,
+            statusCode: assessment.statusCode,
+          });
+          throw new ResourceGraphFactoryError(
+            `Required external resource ${manifest.kind}/${name} (reference '${referenceId}') could not be read: ` +
+              `${assessment.summary}. Waiting cannot fix this, so the deployment failed immediately ` +
+              `instead of polling its dependsOn targets [${dependsOnTargets}]: ${assessment.detail}`,
+            graph.name,
+            'deployment'
+          );
+        }
       }
 
       const remaining = deadline - Date.now();
@@ -947,18 +971,17 @@ export class DirectDeploymentEngine {
     }
 
     if (settings.retry) {
-      const targets = (reference.dependsOn ?? []).join(', ') || 'none';
       throw new ResourceGraphFactoryError(
         `Required external resource ${manifest.kind}/${name} (reference '${referenceId}') could not be read ` +
-          `after waiting ${Date.now() - readStartedAt}ms for its dependsOn targets [${targets}] ` +
-          `to produce it: ${lastError?.message ?? 'unknown error'}`,
+          `after waiting ${Date.now() - readStartedAt}ms for its dependsOn targets [${dependsOnTargets}] ` +
+          `to produce it: ${lastDetail ?? 'unknown error'}`,
         graph.name,
         'deployment'
       );
     }
 
     throw new ResourceGraphFactoryError(
-      `Required external resource ${manifest.kind}/${name} could not be read: ${lastError?.message ?? 'unknown error'}`,
+      `Required external resource ${manifest.kind}/${name} could not be read: ${lastDetail ?? 'unknown error'}`,
       graph.name,
       'deployment'
     );

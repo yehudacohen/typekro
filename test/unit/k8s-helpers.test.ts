@@ -7,6 +7,8 @@
 
 import { describe, expect, it, type mock } from 'bun:test';
 import {
+  classifyReadError,
+  describeReadError,
   enhanceResourceForEvaluation,
   extractAcceptedMediaTypes,
   isNotFoundError,
@@ -59,6 +61,135 @@ describe('isNotFoundError', () => {
 
   it('returns false for an empty object', () => {
     expect(isNotFoundError({})).toBe(false);
+  });
+});
+
+// =============================================================================
+// classifyReadError
+// =============================================================================
+
+describe('classifyReadError', () => {
+  it('treats a bare 404 as a retryable missing object', () => {
+    const assessment = classifyReadError({ statusCode: 404 });
+
+    expect(assessment.classification).toBe('object-not-found');
+    expect(assessment.retryable).toBe(true);
+    expect(assessment.statusCode).toBe(404);
+  });
+
+  it('treats a 404 that names the object as a retryable missing object', () => {
+    const assessment = classifyReadError({
+      statusCode: 404,
+      body: {
+        code: 404,
+        reason: 'NotFound',
+        message: 'services "chart-service" not found',
+        details: { name: 'chart-service', kind: 'services' },
+      },
+    });
+
+    expect(assessment.classification).toBe('object-not-found');
+    expect(assessment.retryable).toBe(true);
+    expect(assessment.detail).toContain('chart-service');
+  });
+
+  it('treats a 404 for an unserved path as a permanent unknown resource type', () => {
+    // The API server has no object to name when the type itself is not served.
+    const assessment = classifyReadError({
+      statusCode: 404,
+      body: {
+        code: 404,
+        reason: 'NotFound',
+        message: 'the server could not find the requested resource',
+        details: {},
+      },
+    });
+
+    expect(assessment.classification).toBe('unknown-resource-type');
+    expect(assessment.retryable).toBe(false);
+  });
+
+  it('treats a structured NotFound that names nothing as a permanent unknown resource type', () => {
+    const assessment = classifyReadError({
+      statusCode: 404,
+      body: { code: 404, reason: 'NotFound', details: {} },
+    });
+
+    expect(assessment.classification).toBe('unknown-resource-type');
+    expect(assessment.retryable).toBe(false);
+  });
+
+  it('treats the client-side discovery miss as a permanent unknown resource type', () => {
+    // KubernetesObjectApi refuses to build a URL for a kind missing from discovery, with no status.
+    const assessment = classifyReadError(
+      new Error('Unrecognized API version and kind: example.com/v1 Widget')
+    );
+
+    expect(assessment.classification).toBe('unknown-resource-type');
+    expect(assessment.retryable).toBe(false);
+    expect(assessment.statusCode).toBeUndefined();
+  });
+
+  it.each([401, 403])('fails fast on %i', (statusCode) => {
+    const assessment = classifyReadError(createK8sError('Forbidden', statusCode));
+
+    expect(assessment.classification).toBe('permission-denied');
+    expect(assessment.retryable).toBe(false);
+    expect(assessment.summary).toBe(`permission denied (HTTP ${statusCode})`);
+  });
+
+  it.each([400, 405, 422])('fails fast on %i', (statusCode) => {
+    const assessment = classifyReadError(createK8sError('Rejected', statusCode));
+
+    expect(assessment.classification).toBe('invalid-request');
+    expect(assessment.retryable).toBe(false);
+  });
+
+  it.each([408, 429, 500, 502, 503, 504])('retries %i', (statusCode) => {
+    const assessment = classifyReadError(createK8sError('Server trouble', statusCode));
+
+    expect(assessment.classification).toBe('transient');
+    expect(assessment.retryable).toBe(true);
+  });
+
+  it('retries a transport failure that carries no status code', () => {
+    const assessment = classifyReadError(new Error('connect ECONNREFUSED 127.0.0.1:6443'));
+
+    expect(assessment.classification).toBe('transient');
+    expect(assessment.retryable).toBe(true);
+  });
+
+  it('fails fast on a programming error with no Kubernetes shape', () => {
+    const assessment = classifyReadError(new TypeError('resourceRef.metadata is undefined'));
+
+    expect(assessment.classification).toBe('not-a-kubernetes-error');
+    expect(assessment.retryable).toBe(false);
+    expect(assessment.summary).toBe('not a Kubernetes API error');
+    expect(assessment.detail).toContain('resourceRef.metadata is undefined');
+  });
+});
+
+// =============================================================================
+// describeReadError
+// =============================================================================
+
+describe('describeReadError', () => {
+  it('prefers the Status body message', () => {
+    expect(
+      describeReadError({
+        statusCode: 403,
+        message: 'HTTP request failed',
+        body: { code: 403, message: 'configmaps "secrets" is forbidden' },
+      })
+    ).toBe('configmaps "secrets" is forbidden');
+  });
+
+  it('never yields the useless stringification of a bare status object', () => {
+    // `ensureError({ statusCode: 403 })` produces `[object Object]`, which tells an operator nothing.
+    const detail = describeReadError({ statusCode: 403 });
+
+    expect(detail).not.toContain('[object Object]');
+    expect(detail).toContain('403');
   });
 });
 
