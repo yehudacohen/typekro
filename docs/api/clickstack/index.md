@@ -221,14 +221,39 @@ identically in inline and Secret-backed credential modes and keeps no credential
 
 ### Persistent collector queue
 
-::: warning NOT VERIFIED AGAINST A LIVE CHART RENDER
-This is emitted through the chart's supported `global.otelCollector.customConfig` merge seam, and a
-YAML **list** in that overlay *replaces* the supervisor's own list rather than appending to it. So
-`persistentQueue.extensions` must enumerate every extension the collector needs (default:
-`['health_check', 'file_storage/hyperdx']`) and `persistentQueue.exporterName` must match the
-exporter the OpAMP supervisor actually defines (default: `'clickhouse'`). Both are options precisely
-because the correct values depend on the ClickStack version you deploy — inspect the rendered
-collector config before relying on this in production.
+::: warning THE OVERLAY IS ONE YAML DOCUMENT
+This is emitted through the chart's supported `global.otelCollector.customConfig` merge seam — the
+same overlay that carries the ingest pipelines — and a YAML **list** in it *replaces* the
+supervisor's own list rather than appending to it. So `persistentQueue.extensions` must enumerate
+every extension the collector needs (default: `['health_check', 'file_storage/hyperdx']`) and
+`persistentQueue.exporterNames` must name exporters the OpAMP supervisor actually defines (default:
+`['clickhouse']`). Both are options precisely because the correct values depend on the ClickStack
+version you deploy — inspect the rendered collector config before relying on this in production.
+
+An exporter name the agent does not define **cannot be rejected at build time**: the exporter set
+lives in the remote configuration the supervisor hands the agent, not in anything TypeKro renders.
+It fails silently at runtime — the `exporters` map grows an exporter no pipeline references while
+the real one keeps its in-memory queue. Check the rendered config, or check the queue directory on
+the claim: the `file_storage` extension names its bbolt database `exporter_<name>_<signal>` after
+the component that opened it.
+:::
+
+::: tip LIVE-VERIFIED, AND IT USED TO BE BROKEN
+The overlay's contributors are composed structurally and serialised once
+(`utils/collector-config.ts`). They used to be YAML **strings** that were concatenated, and both
+open a top-level `service:` key, so the rendered document declared `service` twice and the
+supervisor rejected the whole file on every poll:
+
+```
+Could not merge local config file: /etc/otelcol-contrib/custom/custom.config.yaml
+yaml: unmarshal errors: line 18: mapping key "service" already defined at line 1
+```
+
+The agent then ran with **neither** the ingest pipelines **nor** the queue, while the Pod reported
+Ready — readiness comes from the supervisor's own `health_check`, not from the agent. Enabling the
+queue was a silent no-op that also took OTLP ingestion down. The integration suite now asserts that
+the rendered ConfigMap declares `service` exactly once, that the supervisor's log carries no merge
+rejection, and that a bbolt database for each queued exporter exists on the claim.
 :::
 
 The gateway buffers in memory by default, so a ClickHouse restart — exactly what an S3-backed node
