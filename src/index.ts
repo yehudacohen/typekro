@@ -209,11 +209,18 @@ export {
 } from './core/serialization/index.js';
 // Schema conversion
 export { arktypeToKroSchema } from './core/serialization/schema.js';
-// KRO ownership labels — the label set only KRO may introduce on an object
+// KRO ownership labels and the always-on label-propagation guard
 export {
+  DISABLE_LABEL_GUARD_ENV,
   isKroOwnershipLabel,
   KRO_OWNERSHIP_LABELS,
+  LABEL_GUARD_ALTERNATIVES,
+  LABEL_GUARD_API_VERSION_ENV,
   type KroOwnershipLabel,
+  type LabelPropagationGuardCapability,
+  type LabelPropagationGuardStatus,
+  probeLabelPropagationGuardSupport,
+  resolveLabelPropagationGuardCapability,
 } from './core/kro/index.js';
 export { singleton } from './core/singleton/singleton.js';
 export type {

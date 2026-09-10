@@ -10,6 +10,14 @@ export interface TypeKroRuntimeStatusType {
     fluxSystem: boolean;
     kroSystem: boolean;
   };
+  /**
+   * Whether the always-on KRO label-propagation guard is installed on this
+   * cluster. `unavailable` means the cluster does not serve
+   * `MutatingAdmissionPolicy` (Kubernetes < 1.34) or the break-glass
+   * `TYPEKRO_DISABLE_LABEL_GUARD` env var was set at build time; operator
+   * factories and e2e suites branch on it.
+   */
+  labelPropagationGuard: 'active' | 'unavailable';
 }
 
 export const TypeKroRuntimeSpec: Type<TypeKroRuntimeSpecType> = type({
@@ -22,6 +30,7 @@ export const TypeKroRuntimeStatus: Type<TypeKroRuntimeStatusType> = type({
     fluxSystem: 'boolean',
     kroSystem: 'boolean',
   },
+  labelPropagationGuard: '"active" | "unavailable"',
 });
 
 /**
