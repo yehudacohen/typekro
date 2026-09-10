@@ -9,6 +9,8 @@
 
 import { type } from 'arktype';
 
+import type { TypeKroChartValue } from '../../core/types/common.js';
+
 // ============================================================================
 // Common Kubernetes Types
 // ============================================================================
@@ -597,4 +599,12 @@ export const CnpgHelmReleaseConfigSchema = type({
 });
 
 /** Configuration for the CNPG Helm release. */
-export type CnpgHelmReleaseConfig = typeof CnpgHelmReleaseConfigSchema.infer;
+export type CnpgHelmReleaseConfig = Omit<typeof CnpgHelmReleaseConfigSchema.infer, 'values'> & {
+  /**
+   * Graph-aware Helm values serialized recursively by TypeKro. Accepts a
+   * whole-object schema reference or a runtime values-merge node so per-instance
+   * overrides survive KRO serialization instead of being enumerated at build
+   * time (issue #190).
+   */
+  values?: TypeKroChartValue<Record<string, unknown>>;
+};

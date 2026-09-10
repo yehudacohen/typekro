@@ -47,6 +47,35 @@ Keep these boundaries explicit:
   setup code lazy.
 - **KRO schema visibility is intentional.** If generated YAML field-selects a path, ArkType must expose
   that path structurally. If a field is truly opaque raw passthrough, do not field-select inside it.
+- **A runtime spec value may decide what a field contains, never what exists.** The RGD is fixed at
+  build time, so `schema.spec.*` cannot decide which resources are emitted, how long a list is, or what
+  an object's keys are called. Those decisions belong to a **build-time factory option** — an argument
+  to the function that builds the composition, shipping one RGD per shape — the way
+  `makeClickHouseCluster(...)` takes its storage topology. This is the same call PR #186 made when it
+  removed `entrypoints.*.expose` from the Traefik runtime spec, and PR #185 when it moved the ClickHouse
+  S3 storage configuration to a build-time option.
+
+### Build-time structure vs runtime values
+
+Concretely, in a composition body:
+
+| shape | why it is wrong in KRO mode | what to do instead |
+|---|---|---|
+| `const on = spec.on; if (on) { … }` | the alias hides the spec from the control-flow analyzer, so no `includeWhen` is attached and the resource ships in every instance | write `if (spec.on)` directly, or make it a build-time option |
+| `switch (spec.mode) { … }` | no `case` matches a proxy, so `default` is baked in and the other branches become empty stubs | `if (spec.mode === 'x')` compiles to `includeWhen`; a topology switch belongs at build time |
+| `{ ...spec.settings }`, `Object.keys(spec.settings)` | a `Record<string, V>` field has no build-time keys; the proxy answers with one `__typekroSchemaKey` placeholder | pass the whole object through — for chart values, the graph-aware values merge (`mergeValuesExpression`) compiles to a KRO runtime map-merge |
+| `{ [spec.key]: value }` | KRO substitutes references in values only, so the key stays a raw marker string | keep the key fixed and put the spec value on the right-hand side |
+| `spec.items.length` in a template | the proxy always answers `1` | in a **status** expression `.length` is fine (it compiles to `size(...)`); in a template, use a fixed count |
+
+KRO-mode serialization rejects the cases TypeKro can detect (issue #190), naming the resource, the
+`spec.<path>` and the two legitimate shapes. Detection is necessarily incomplete — a predicate laundered
+through a helper function is invisible to it — so treat the check as a backstop, not a substitute for
+drawing the line yourself.
+
+`allowStructuralSpecDependence: true` in the composition options downgrades the error to a warning for
+an in-flight migration. It changes nothing about the emitted RGD, so it documents the defect rather than
+fixing it. `TYPEKRO_STRUCTURAL_SPEC=strict` re-enables the error everywhere, ignoring every escape hatch,
+to audit a whole repository.
 
 For Helm-chart integrations, the main design decision is not "how can we model the whole chart?" It is
 "which chart paths need TypeKro validation, defaults, references, or status-safe access?" Model those
@@ -615,6 +644,19 @@ Then verify each item:
 - [ ] Labels use app version (stripped of `-chart` suffix if needed)
 - [ ] Optional schema-proxy defaults use `Cel.default`; runtime comparisons/string interpolation use
       `Cel.expr`/`Cel.template` rather than eager JavaScript operators in graph setup code
+
+**Build-time structure vs runtime values:**
+- [ ] No `spec` value decides which resources exist, how long a list is, or what an object's keys are
+      called. Options that select a topology are arguments to the composition's factory function, not
+      spec fields — see "Build-time structure vs runtime values" above
+- [ ] Map-typed spec fields (`Record<string, V>`, raw chart `values`) are passed through whole, never
+      spread or enumerated at build time; chart values use the graph-aware values merge
+- [ ] `bun run test` passes with no `allowStructuralSpecDependence` added to the new composition. Adding
+      it means shipping a graph that ignores the option it advertises, so it needs a written reason and a
+      follow-up issue
+- [ ] `bun test test/unit/structural-spec-repo-scan.test.ts` still passes. That scan re-runs every
+      bundled composition with `TYPEKRO_STRUCTURAL_SPEC=strict`, which ignores every escape hatch, and
+      fails if anything beyond the pinned inventory is flagged
 
 **Helm:**
 - [ ] If the integration implements `sanitizeHelmValues` directly, it uses `isKubernetesRef`/`isCelExpression` type guards. If it delegates to `helmRelease()`, no local sanitizer is needed.

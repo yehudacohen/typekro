@@ -318,6 +318,21 @@ export interface SerializationOptions {
    * custom types so their validation markers preserve the nested type surface.
    */
   schemaFieldValidations?: Readonly<Record<string, string>>;
+  /**
+   * Escape hatch for the structural spec-dependence check.
+   *
+   * KRO-mode serialization normally FAILS when a runtime `schema.spec.*` value
+   * decided build-time structure — which resources exist, how long a list is,
+   * or what an object's keys are called — because a ResourceGraphDefinition can
+   * only encode the build-time guess. Setting this to `true` emits the RGD
+   * unchanged and downgrades the diagnostic to a warning naming every path.
+   *
+   * Intended for migrating an existing composition, not as a steady state: the
+   * emitted graph still ignores the instance's value.
+   *
+   * @default false
+   */
+  allowStructuralSpecDependence?: boolean;
 }
 
 export interface SerializationContext {
