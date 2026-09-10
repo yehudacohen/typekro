@@ -123,6 +123,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Always-on KRO label-propagation guard.** `typeKroRuntimeBootstrap()` now installs a cluster-scoped
+  `MutatingAdmissionPolicy` enforcing that only KRO may introduce KRO's ownership labels on an object.
+  Operators that copy the parent CR's whole label map onto their children previously handed KRO's ApplySet
+  pruner objects it never applied, which it then deleted on every requeue (`kubernetes-sigs/kro#1153`).
+  On CREATE the labels are removed if present; on UPDATE only if absent from the old object, so labels KRO
+  already placed survive Flux patches, HPA scaling and human annotations. `spec.selector` on a Service and a
+  workload's pod-template labels are covered too, so the guard cannot create a selector mismatch, and
+  `failurePolicy: Ignore` means a guard that cannot evaluate never blocks a write. There is no config
+  option; `TYPEKRO_DISABLE_LABEL_GUARD=1` is the documented break-glass. The bootstrap reports
+  `status.labelPropagationGuard: 'active' | 'unavailable'`. Pre-existing operator children that already
+  carry the labels self-heal through one prune-and-recreate cycle; expect a minute of churn the first time.
+
+  The policy's group version is **discovered, never assumed**: `MutatingAdmissionPolicy` is beta at
+  `admissionregistration.k8s.io/v1beta1` on Kubernetes 1.34/1.35, GA at `.../v1` from 1.36, and absent below
+  1.34. Direct-mode deployment runs API discovery for the group against the cluster it is deploying to
+  before it materializes the graph, so the applied policy always carries the version that cluster serves.
+  Where nothing can be resolved — no pin and no cluster, as in an offline `toYaml()` render — the guard is
+  skipped with a warning and the status projects `'unavailable'`, rather than emitting a GA policy that a
+  1.34 cluster would reject and so fail the apply of the whole bootstrap.
+  `TYPEKRO_LABEL_GUARD_API_VERSION` pins the version for exactly those offline renders.
+
+  A build that targets a cluster says so **explicitly**. `probeLabelPropagationGuardSupport(kubeConfig)`
+  returns the resolved capability and `withLabelPropagationGuardCapability(capability, () => build())`
+  scopes it to one build; `factory('direct').deploy()` does the equivalent internally. There is no ambient
+  "last cluster anyone probed" fallback, which previously let a probe of cluster A supply the group version
+  for an untargeted build meant for cluster B.
+- **Cluster API capability resolution.** `resolveClusterCapability()` and the deploy-time capability
+  registry behind it discover which group version a cluster serves a kind at, caching per **cluster
+  identity** (server URL, CA material, context cluster name) with a bounded lifetime and entry count, so a
+  process talking to two clusters never reuses one cluster's answer for the other.
+  `resetLabelGuardCapabilityCache()` clears it for tests.
+
+  Discovery is **three-way**: `served`, `unserved`, `unknown`. `unserved` is reported only when the API
+  server actually answered — a 404 for the group version, or a resource list without the kind — and is
+  cached for the full lifetime. Every other outcome (unreachable server, RBAC, timeout, TLS) is `unknown`,
+  carries the classified reason, and is never cached as an answer: the next call re-probes. Previously all
+  of these collapsed into `unserved`, so a transient error made the guard report "the cluster does not serve
+  MutatingAdmissionPolicy" — and cached that false claim for five minutes.
+- **`KRO_OWNERSHIP_LABELS`.** The shared set of label keys only KRO may introduce, exported from the package
+  root for operator-side propagation filters and for the new `assertNoForeignApplySetLabels()` e2e assertion.
+  It adds `kro.run/kro-version` to the four keys factories were copying privately: a KRO upgrade rewrites
+  that value, and an operator that re-derives a Service selector from the parent's labels moves the selector
+  off its own running pods.
+- **`mutatingAdmissionPolicy()` / `mutatingAdmissionPolicyBinding()`.** Typed factories for KEP-3962 mutating
+  admission policies, at either the beta or GA group version.
 - **`allowBreakingChanges` factory option.** Stamps `kro.run/allow-breaking-changes: "true"` on the generated
   RGD. The same option already existed at composition level, but a consumer of a SHIPPED composition
   (`dagsterBootstrap`, `apisixBootstrap`, …) cannot reach that, so there was no way to migrate an

@@ -28,6 +28,10 @@ import {
   TypeKroError,
   ValidationError,
 } from '../errors.js';
+import {
+  resolveDeployTimeCapabilities,
+  runWithDeployTarget,
+} from '../kubernetes/api-capability.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleCoreV1Api } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -106,6 +110,7 @@ interface FactoryHealthDetails {
   errors: DeploymentError[];
 }
 
+import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import {
   extractSerializableKubeConfigOptions,
   generateInstanceName,
@@ -117,7 +122,6 @@ import {
   assertNoDiscoveredSingletonSpecDrift,
   singletonSpecFingerprintAnnotationValue,
 } from './singleton-owner-drift.js';
-import { SINGLETON_SPEC_FINGERPRINT_ANNOTATION } from './resource-tagging.js';
 import { DirectDeploymentStrategy } from './strategies/index.js';
 
 interface DirectArtifactExecution {
@@ -314,7 +318,21 @@ export class DirectResourceFactoryImpl<
 
     await this.ensureSingletonOwners(spec, abortSignal);
 
-    const instance = await strategy.deploy(spec, { ...opts, abortSignal });
+    // Resolve-before-apply seam. A resource whose group version depends on the
+    // API server's version (MutatingAdmissionPolicy: beta on 1.34/1.35, GA from
+    // 1.36, absent below) cannot be rendered from a synchronous composition
+    // body. Discovery runs once here, against the cluster this deployment
+    // actually targets, and the answer is published for the duration of the
+    // deploy so composition re-execution builds the graph at the served
+    // version. When there is no cluster to ask, nothing is resolved, and every
+    // gated resource is skipped with a warning rather than emitted at a guessed
+    // version that would fail the whole apply.
+    const clusterId = await this.resolveDeployTimeCapabilities();
+
+    const runDeploy = () => strategy.deploy(spec, { ...opts, abortSignal });
+    const instance = clusterId
+      ? await runWithDeployTarget(clusterId, runDeploy)
+      : await runDeploy();
 
     // Check if deployment failed and throw for user-facing error handling
     if (instance.metadata?.annotations?.['typekro.io/deployment-status'] === 'failed') {
@@ -329,6 +347,26 @@ export class DirectResourceFactoryImpl<
     this.deployedInstances.set(instanceName, instance);
 
     return instance;
+  }
+
+  /**
+   * Run API discovery for every registered deploy-time capability against this
+   * factory's cluster and return that cluster's identity.
+   *
+   * Returns `undefined` when there is no usable client — no kubeconfig, no
+   * current cluster, an unreachable server. That is not an error here: it means
+   * no capability was resolved, so capability-gated resources are skipped.
+   */
+  private async resolveDeployTimeCapabilities(): Promise<string | undefined> {
+    try {
+      const kubeConfig = this.factoryOptions.kubeConfig ?? this.getClientProvider().getKubeConfig();
+      return await resolveDeployTimeCapabilities(kubeConfig);
+    } catch (error: unknown) {
+      this.logger.debug('Deploy-time capability resolution unavailable', {
+        error: ensureError(error).message,
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -1656,10 +1694,7 @@ export class DirectResourceFactoryImpl<
         logicalId: getResourceId(manifest as Enhanced<unknown, unknown>) ?? graphId,
       };
     });
-    const candidateByKubernetesIdentity = new Map<
-      string,
-      (typeof nodeCandidates)[number]
-    >();
+    const candidateByKubernetesIdentity = new Map<string, (typeof nodeCandidates)[number]>();
     for (const candidate of nodeCandidates) {
       const existing = candidateByKubernetesIdentity.get(candidate.identity.key);
       if (existing) {
@@ -1686,10 +1721,7 @@ export class DirectResourceFactoryImpl<
       const alchemyId =
         legacyAlchemyIdCounts.get(candidate.legacyAlchemyId) === 1
           ? candidate.legacyAlchemyId
-          : disambiguatedAlchemyResourceId(
-              candidate.legacyAlchemyId,
-              candidate.identity.key
-            );
+          : disambiguatedAlchemyResourceId(candidate.legacyAlchemyId, candidate.identity.key);
       if (assignedAlchemyIds.has(alchemyId)) {
         throw new ValidationError(
           `Direct Alchemy materialization could not derive a unique declaration ID for ` +
@@ -1867,9 +1899,7 @@ export class DirectResourceFactoryImpl<
     ];
   }
 
-  private async singletonAlchemyDeclarations(
-    spec: TSpec
-  ): Promise<AlchemyResourceDeclaration[]> {
+  private async singletonAlchemyDeclarations(spec: TSpec): Promise<AlchemyResourceDeclaration[]> {
     const definitions = this.discoverSingletonDefinitions(spec);
     if (definitions.length === 0) return [];
 
@@ -3084,7 +3114,7 @@ function directAlchemyKubernetesIdentity(
   const namespace =
     getMetadataField(resource, 'scope') === 'cluster'
       ? undefined
-      : resource.metadata?.namespace ?? factoryNamespace;
+      : (resource.metadata?.namespace ?? factoryNamespace);
   const identity = {
     group: kubernetesApiGroup(resource.apiVersion),
     kind: resource.kind,
