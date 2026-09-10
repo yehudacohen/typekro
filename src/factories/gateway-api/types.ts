@@ -26,6 +26,15 @@
 
 import { type } from 'arktype';
 
+/**
+ * A Gateway API port.
+ *
+ * Every `port` in the API — listener, `parentRef`, `backendRef`,
+ * `requestRedirect` — carries `minimum: 1` / `maximum: 65535` in the CRD, so
+ * the bound is declared once here rather than repeated (or dropped) per field.
+ */
+const gatewayApiPort = '1 <= number.integer <= 65535';
+
 // ============================================================================
 // Status types — hand-written: these describe controller output, not input
 // ============================================================================
@@ -224,7 +233,7 @@ export type GatewayTLSConfig = typeof GatewayTLSConfigSchema.infer;
 export const GatewayListenerSchema = type({
   name: 'string',
   protocol: '"HTTP" | "HTTPS" | "TLS" | "TCP" | "UDP"',
-  port: 'number.integer',
+  port: gatewayApiPort,
   'hostname?': 'string',
   'tls?': GatewayTLSConfigSchema,
   'allowedRoutes?': AllowedRoutesSchema,
@@ -279,7 +288,7 @@ export const ParentReferenceSchema = type({
   name: 'string',
   'namespace?': 'string',
   'sectionName?': 'string',
-  'port?': 'number.integer',
+  'port?': gatewayApiPort,
 });
 
 /** A route's reference to the Gateway (or listener) it attaches to. */
@@ -291,8 +300,9 @@ export const BackendRefSchema = type({
   'kind?': 'string',
   name: 'string',
   'namespace?': 'string',
-  'port?': 'number.integer',
-  'weight?': 'number.integer',
+  'port?': gatewayApiPort,
+  /** Relative share of the rule's traffic. The CRD caps it at 1,000,000. */
+  'weight?': '0 <= number.integer <= 1000000',
 });
 
 /** A backend a route rule forwards to. */
@@ -341,7 +351,7 @@ export const HTTPRouteFilterSchema = type({
   'requestRedirect?': {
     'scheme?': '"http" | "https"',
     'hostname?': 'string',
-    'port?': 'number.integer',
+    'port?': gatewayApiPort,
     'statusCode?': '301 | 302',
     'path?': httpPathModifierShape,
   },
@@ -352,10 +362,11 @@ export const HTTPRouteFilterSchema = type({
   'requestMirror?': {
     backendRef: BackendRefSchema,
     /** Mirror only a share of the requests. `percent` and `fraction` are exclusive. */
-    'percent?': 'number.integer',
+    'percent?': '0 <= number.integer <= 100',
     'fraction?': {
-      numerator: 'number.integer',
-      'denominator?': 'number.integer',
+      numerator: 'number.integer >= 0',
+      /** Defaults to 100 in the CRD, which also requires it to be positive. */
+      'denominator?': 'number.integer >= 1',
     },
   },
   'extensionRef?': {
@@ -384,7 +395,9 @@ export const HTTPRouteRuleSchema = type({
     'backendRequest?': 'string',
   },
   'retry?': {
-    'codes?': 'number.integer[]',
+    /** Retriable response codes. The CRD admits 400-599. */
+    'codes?': '(400 <= number.integer <= 599)[]',
+    /** Unbounded in the CRD, so unbounded here. */
     'attempts?': 'number.integer',
     'backoff?': 'string',
   },

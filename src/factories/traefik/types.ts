@@ -49,7 +49,8 @@ import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js'
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
 const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
-const kubernetesPort = type('number.integer >= 1').and('number <= 65535');
+/** A published port. Bounded as the Service/container port range, 1-65535. */
+const kubernetesPort = '1 <= number.integer <= 65535';
 
 /** Make every key of an inferred all-optional schema present and non-nullable. */
 type AllPresent<T> = { [K in keyof T]-?: NonNullable<T[K]> };
@@ -63,8 +64,23 @@ type AllPresent<T> = { [K in keyof T]-?: NonNullable<T[K]> };
  *
  * The CRDs accept an integer (nanoseconds) or a Go duration string such as
  * `'90s'`; prefer the string form for readability.
+ *
+ * The numeric branch is `number.integer`, not a bare `number`: these are
+ * `x-kubernetes-int-or-string` fields whose integer branch the API server
+ * enforces, so `interval: 1.5` is rejected at admission. KRO SimpleSchema
+ * collapses a union to `object`, so ArkType is where that integrality is
+ * caught — which is why it has to be declared here.
  */
-const traefikDuration = 'string | number';
+const traefikDuration = 'string | number.integer';
+
+/**
+ * ArkType definition of a Traefik service port: a port number or a named port.
+ *
+ * Structurally identical to {@link traefikDuration} — both are
+ * `x-kubernetes-int-or-string` with an integral numeric branch — but named
+ * apart because a port and a duration are not interchangeable to a reader.
+ */
+const traefikPortValue = 'string | number.integer';
 
 /** A Traefik duration: a Go duration string, or an integer of nanoseconds. */
 export type TraefikDuration = string | number;
@@ -75,7 +91,7 @@ export type TraefikPortValue = string | number;
 /** How Traefik derives the client IP from proxy headers. */
 export const TraefikIpStrategySchema = type({
   /** Depth position in `X-Forwarded-For`, counted from the right. */
-  'depth?': 'number.integer',
+  'depth?': 'number.integer >= 0',
   'excludedIPs?': 'string[]',
   /** Group IPv6 clients into a shared subnet before keying. */
   'ipv6Subnet?': 'number.integer',
@@ -160,9 +176,9 @@ export const TraefikServiceRefSchema = type({
   'namespace?': 'string',
   'kind?': '"Service" | "TraefikService"',
   /** Port number or named port — the CRD accepts either. */
-  'port?': traefikDuration,
+  'port?': traefikPortValue,
   'scheme?': 'string',
-  'weight?': 'number.integer',
+  'weight?': 'number.integer >= 0',
   'strategy?': traefikLoadBalancerStrategy,
   'passHostHeader?': 'boolean',
   'nativeLB?': 'boolean',
@@ -243,14 +259,15 @@ export type TraefikIngressRouteSpec = typeof TraefikIngressRouteSpecSchema.infer
 /** One backend of an `IngressRouteTCP` route. */
 export const TraefikTCPServiceRefSchema = type({
   name: 'string',
-  port: traefikDuration,
+  port: traefikPortValue,
   'namespace?': 'string',
-  'weight?': 'number.integer',
+  'weight?': 'number.integer >= 0',
   'tls?': 'boolean',
   'nativeLB?': 'boolean',
   'nodePortLB?': 'boolean',
   'serversTransport?': 'string',
-  'proxyProtocol?': { 'version?': 'number.integer' },
+  /** PROXY protocol version. The CRD admits only 1 or 2. */
+  'proxyProtocol?': { 'version?': '1 <= number.integer <= 2' },
 });
 
 /** One backend of an `IngressRouteTCP` route. */
@@ -326,7 +343,8 @@ export const TraefikServersTransportSpecSchema = type({
     'configMap?': 'string',
   }).array(),
   'certificatesSecrets?': 'string[]',
-  'maxIdleConnsPerHost?': 'number.integer',
+  /** `-1` disables the pool; the CRD's own minimum. */
+  'maxIdleConnsPerHost?': 'number.integer >= -1',
   'disableHTTP2?': 'boolean',
   'peerCertURI?': 'string',
   'minVersion?': 'string',
@@ -486,9 +504,9 @@ export type TraefikRateLimitRedis = typeof TraefikRateLimitRedisSchema.infer;
  */
 export const TraefikRateLimitMiddlewareSchema = type({
   /** Sustained requests allowed per `period`. */
-  'average?': 'number.integer',
+  'average?': 'number.integer >= 0',
   /** Requests absorbed above `average` before Traefik answers 429. */
-  'burst?': 'number.integer',
+  'burst?': 'number.integer >= 0',
   /** Window `average` is measured over. Defaults to one second. */
   'period?': traefikDuration,
   'sourceCriterion?': TraefikSourceCriterionSchema,
@@ -500,7 +518,7 @@ export type TraefikRateLimitMiddleware = typeof TraefikRateLimitMiddlewareSchema
 
 /** Cap on requests being handled concurrently, per source. */
 export const TraefikInFlightReqMiddlewareSchema = type({
-  'amount?': 'number.integer',
+  'amount?': 'number.integer >= 0',
   'sourceCriterion?': TraefikSourceCriterionSchema,
 });
 
@@ -528,7 +546,7 @@ export const TraefikHeadersMiddlewareSchema = type({
   'allowedHosts?': 'string[]',
   'hostsProxyHeaders?': 'string[]',
   'sslProxyHeaders?': 'Record<string, string>',
-  'stsSeconds?': 'number.integer',
+  'stsSeconds?': 'number.integer >= 0',
   'stsIncludeSubdomains?': 'boolean',
   'stsPreload?': 'boolean',
   'forceSTSHeader?': 'boolean',
@@ -634,11 +652,12 @@ export type TraefikBufferingMiddleware = typeof TraefikBufferingMiddlewareSchema
 
 /** Retry a request against the next available server. */
 export const TraefikRetryMiddlewareSchema = type({
-  'attempts?': 'number.integer',
+  'attempts?': 'number.integer >= 0',
   'initialInterval?': traefikDuration,
   'timeout?': traefikDuration,
   'status?': 'string[]',
-  'maxRequestBodyBytes?': 'number.integer',
+  /** `-1` means unlimited, which is the CRD's own minimum. */
+  'maxRequestBodyBytes?': 'number.integer >= -1',
   'disableRetryOnNetworkError?': 'boolean',
   'retryNonIdempotentMethod?': 'boolean',
 });
@@ -652,7 +671,7 @@ export const TraefikCircuitBreakerMiddlewareSchema = type({
   'checkPeriod?': traefikDuration,
   'fallbackDuration?': traefikDuration,
   'recoveryDuration?': traefikDuration,
-  'responseCode?': 'number.integer',
+  'responseCode?': '100 <= number.integer <= 599',
 });
 
 /** Trip a circuit when the guard expression evaluates true. */
@@ -686,7 +705,7 @@ export const TraefikCompressMiddlewareSchema = type({
   'defaultEncoding?': 'string',
   'includedContentTypes?': 'string[]',
   'excludedContentTypes?': 'string[]',
-  'minResponseBodyBytes?': 'number.integer',
+  'minResponseBodyBytes?': 'number.integer >= 0',
 });
 
 /** Response compression. */
@@ -700,7 +719,8 @@ export type TraefikCompressMiddleware = typeof TraefikCompressMiddlewareSchema.i
  */
 export const TraefikErrorsMiddlewareSchema = type({
   'status?': 'string[]',
-  'statusRewrites?': 'Record<string, number>',
+  /** Rewrites are HTTP status codes, which the CRD types as integers. */
+  'statusRewrites?': 'Record<string, number.integer>',
   'query?': 'string',
   service: TraefikServiceRefSchema,
   /** Client headers forwarded to the error-page service. */
@@ -1009,9 +1029,9 @@ export const TraefikRateLimitMiddlewareConfigSchema = type({
   ...traefikResourceMetadataShape,
   ...middlewareBudgetKeyShape,
   /** Sustained requests allowed per `period`. */
-  average: 'number >= 0',
+  average: 'number.integer >= 0',
   /** Requests absorbed above `average` before Traefik answers 429. */
-  burst: 'number >= 0',
+  burst: 'number.integer >= 0',
   /** Window `average` is measured over. @default '1s' */
   'period?': 'string > 0',
   /**
@@ -1029,7 +1049,7 @@ export const TraefikInFlightReqMiddlewareConfigSchema = type({
   ...traefikResourceMetadataShape,
   ...middlewareBudgetKeyShape,
   /** Maximum requests handled concurrently per source. */
-  amount: 'number >= 0',
+  amount: 'number.integer >= 0',
 }).narrow(narrowBudgetKey);
 
 /** Configuration for `traefikInFlightReqMiddleware`. */
