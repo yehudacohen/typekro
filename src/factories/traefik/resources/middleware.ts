@@ -11,17 +11,20 @@ import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import { TRAEFIK_API_VERSION } from '../constants.js';
 import type {
-  TraefikBufferingMiddleware,
+  TraefikBufferingMiddlewareConfig,
   TraefikChainMiddleware,
+  TraefikChainMiddlewareConfig,
   TraefikForwardAuthMiddleware,
-  TraefikHeadersMiddleware,
+  TraefikForwardAuthMiddlewareConfig,
+  TraefikHeadersMiddlewareConfig,
   TraefikInFlightReqMiddleware,
-  TraefikMiddlewareRef,
+  TraefikInFlightReqMiddlewareConfig,
+  TraefikMiddlewareMetadata,
   TraefikMiddlewareSpec,
   TraefikRateLimitMiddleware,
-  TraefikRateLimitRedis,
+  TraefikRateLimitMiddlewareConfig,
   TraefikRedirectSchemeMiddleware,
-  TraefikSourceCriterion,
+  TraefikRedirectSchemeMiddlewareConfig,
 } from '../types.js';
 import { assertTraefikMiddlewareSpec } from '../utils/middleware-validation.js';
 import {
@@ -31,16 +34,23 @@ import {
 } from './common.js';
 import type { TraefikNoStatus } from './routing.js';
 
-/** Identity of a `Middleware`, without its behavior. */
-export interface TraefikMiddlewareMetadata {
-  readonly name: string;
-  readonly namespace: string;
-  /** Extra labels merged onto the managed label set. */
-  readonly labels?: Readonly<Record<string, string>>;
-  readonly annotations?: Readonly<Record<string, string>>;
-  /** Resource graph id. Required when `name` is a schema reference. */
-  readonly id?: string;
-}
+/**
+ * The builders' configuration types.
+ *
+ * They are DECLARED in `../types.js`, next to the ArkType schemas they are
+ * inferred from — the guide keeps every schema in one file — and re-exported
+ * here so the public import path stays `resources/middleware.js`.
+ */
+export type {
+  TraefikBufferingMiddlewareConfig,
+  TraefikChainMiddlewareConfig,
+  TraefikForwardAuthMiddlewareConfig,
+  TraefikHeadersMiddlewareConfig,
+  TraefikInFlightReqMiddlewareConfig,
+  TraefikMiddlewareMetadata,
+  TraefikRateLimitMiddlewareConfig,
+  TraefikRedirectSchemeMiddlewareConfig,
+} from '../types.js';
 
 function middlewareResource(
   metadata: Composable<TraefikMiddlewareMetadata>,
@@ -79,30 +89,6 @@ export function traefikMiddleware(
   ).withReadinessEvaluator(traefikStatuslessReadinessEvaluator('Middleware'));
 }
 
-/** Configuration for {@link traefikForwardAuthMiddleware}. */
-export interface TraefikForwardAuthMiddlewareConfig extends TraefikMiddlewareMetadata {
-  /** Authorizer URL, e.g. `http://authorizer.edge.svc.cluster.local:8080/authorize`. */
-  readonly address: string;
-  /**
-   * Headers copied from the authorizer's 2xx response onto the upstream
-   * request. Required rather than optional: an implicit "copy everything"
-   * would let an authorizer bug leak headers to the upstream, and a route with
-   * no allowlist silently drops the principal the upstream expects.
-   */
-  readonly authResponseHeaders: readonly string[];
-  /** Client headers forwarded to the authorizer. Omit to forward all of them. */
-  readonly authRequestHeaders?: readonly string[];
-  /**
-   * @security Defaults to `false`. Only enable when every client reaching this
-   * entrypoint is already behind a trusted proxy that rewrites
-   * `X-Forwarded-*`; otherwise a caller can assert its own source address.
-   */
-  readonly trustForwardHeader?: boolean;
-  readonly forwardBody?: boolean;
-  readonly maxBodySize?: number;
-  readonly tls?: TraefikForwardAuthMiddleware['tls'];
-}
-
 /**
  * Create a `forwardAuth` `Middleware` with the secure edge defaults.
  *
@@ -135,29 +121,6 @@ export function traefikForwardAuthMiddleware(
     ...(config.tls ? { tls: config.tls } : {}),
   };
   return middlewareResource(metadataOf(config), { forwardAuth });
-}
-
-/** Configuration for {@link traefikRateLimitMiddleware}. */
-export interface TraefikRateLimitMiddlewareConfig extends TraefikMiddlewareMetadata {
-  /** Sustained requests allowed per {@link period}. */
-  readonly average: number;
-  /** Requests absorbed above {@link average} before Traefik answers 429. */
-  readonly burst: number;
-  /** Window `average` is measured over. @default '1s' */
-  readonly period?: string;
-  /**
-   * Request header the budget is keyed on — typically the principal or tenant
-   * header a preceding `forwardAuth` produced. Mutually exclusive with
-   * {@link sourceCriterion}.
-   */
-  readonly requestHeaderName?: string;
-  /** Full source-criterion form, for IP-strategy or host keying. */
-  readonly sourceCriterion?: TraefikSourceCriterion;
-  /**
-   * Shared Redis/Valkey backend. Without it each Traefik replica counts
-   * independently, so the effective budget is `average × replicas`.
-   */
-  readonly redis?: TraefikRateLimitRedis;
 }
 
 /**
@@ -199,15 +162,6 @@ export function traefikRateLimitMiddleware(
   return middlewareResource(metadataOf(config), { rateLimit });
 }
 
-/** Configuration for {@link traefikInFlightReqMiddleware}. */
-export interface TraefikInFlightReqMiddlewareConfig extends TraefikMiddlewareMetadata {
-  /** Maximum requests handled concurrently per source. */
-  readonly amount: number;
-  /** Key the concurrency budget on a request header. */
-  readonly requestHeaderName?: string;
-  readonly sourceCriterion?: TraefikSourceCriterion;
-}
-
 /**
  * Create an `inFlightReq` `Middleware` — a concurrency cap that protects an
  * upstream from a slow-request pile-up that a rate limit alone would allow.
@@ -236,11 +190,6 @@ export function traefikInFlightReqMiddleware(
     ...(sourceCriterion ? { sourceCriterion } : {}),
   };
   return middlewareResource(metadataOf(config), { inFlightReq });
-}
-
-/** Configuration for {@link traefikHeadersMiddleware}. */
-export interface TraefikHeadersMiddlewareConfig extends TraefikMiddlewareMetadata {
-  readonly headers: TraefikHeadersMiddleware;
 }
 
 /**
@@ -274,15 +223,6 @@ export function traefikHeadersMiddleware(
   return middlewareResource(metadataOf(config), { headers: config.headers });
 }
 
-/** Configuration for {@link traefikRedirectSchemeMiddleware}. */
-export interface TraefikRedirectSchemeMiddlewareConfig extends TraefikMiddlewareMetadata {
-  /** @default 'https' */
-  readonly scheme?: 'http' | 'https';
-  /** @default true */
-  readonly permanent?: boolean;
-  readonly port?: string;
-}
-
 /**
  * Create a `redirectScheme` `Middleware`, the route-level counterpart to the
  * entrypoint-level `web` → `websecure` redirect.
@@ -302,11 +242,6 @@ export function traefikRedirectSchemeMiddleware(
   return middlewareResource(metadataOf(config), { redirectScheme });
 }
 
-/** Configuration for {@link traefikBufferingMiddleware}. */
-export interface TraefikBufferingMiddlewareConfig extends TraefikMiddlewareMetadata {
-  readonly buffering: TraefikBufferingMiddleware;
-}
-
 /**
  * Create a `buffering` `Middleware` enforcing request/response body limits.
  *
@@ -324,12 +259,6 @@ export function traefikBufferingMiddleware(
   config: Composable<TraefikBufferingMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   return middlewareResource(metadataOf(config), { buffering: config.buffering });
-}
-
-/** Configuration for {@link traefikChainMiddleware}. */
-export interface TraefikChainMiddlewareConfig extends TraefikMiddlewareMetadata {
-  /** Middlewares applied in order. */
-  readonly middlewares: readonly TraefikMiddlewareRef[];
 }
 
 /**

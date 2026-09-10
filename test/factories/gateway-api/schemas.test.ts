@@ -10,8 +10,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
+import { backendTLSPolicy } from '../../../src/factories/gateway-api/resources/gateway.js';
 import {
+  type BackendTLSPolicyConfig,
+  BackendTLSPolicyConfigSchema,
   BackendTLSPolicySpecSchema,
+  GatewayApiClusterResourceMetadataSchema,
+  GatewayApiNamespacedResourceMetadataSchema,
   GatewayListenerSchema,
   GatewaySpecSchema,
   HTTPRouteFilterSchema,
@@ -64,9 +69,9 @@ describe('Gateway spec schema', () => {
 
   it('rejects a protocol the API does not define', () => {
     // Narrower than the CRD's bare string, on purpose.
-    expect(
-      rejects(GatewayListenerSchema({ name: 'ws', protocol: 'WEBSOCKET', port: 8080 }))
-    ).toBe(true);
+    expect(rejects(GatewayListenerSchema({ name: 'ws', protocol: 'WEBSOCKET', port: 8080 }))).toBe(
+      true
+    );
   });
 });
 
@@ -169,5 +174,80 @@ describe('ReferenceGrant and BackendTLSPolicy schemas', () => {
     });
 
     expect(rejects(result)).toBe(true);
+  });
+});
+
+describe('Resource configuration schemas', () => {
+  it('accepts the identity every namespaced Gateway API factory takes', () => {
+    const result = GatewayApiNamespacedResourceMetadataSchema({
+      name: 'orders-api-route',
+      namespace: 'edge',
+      labels: { 'example.com/team': 'platform' },
+      annotations: { 'example.com/owner': 'platform' },
+      id: 'ordersApiRoute',
+    });
+
+    expect(rejects(result)).toBe(false);
+  });
+
+  it('rejects a name the API server would reject', () => {
+    expect(
+      rejects(GatewayApiNamespacedResourceMetadataSchema({ name: 'Orders_API', namespace: 'edge' }))
+    ).toBe(true);
+  });
+
+  it('requires a namespace on the namespaced shape and forbids one on the cluster shape', () => {
+    expect(rejects(GatewayApiNamespacedResourceMetadataSchema({ name: 'orders-api-route' }))).toBe(
+      true
+    );
+
+    const cluster = GatewayApiClusterResourceMetadataSchema.onUndeclaredKey('reject');
+    expect(rejects(cluster({ name: 'traefik-edge' }))).toBe(false);
+    expect(rejects(cluster({ name: 'traefik-edge', namespace: 'edge' }))).toBe(true);
+  });
+
+  it('requires the controllerName that decides BackendTLSPolicy readiness', () => {
+    // A cluster can run several Gateway API controllers and each publishes its
+    // own ancestor entry, so a policy with no controller to watch would be
+    // ready-forever or never-ready depending on whose entry landed first.
+    const spec = {
+      targetRefs: [{ group: '', kind: 'Service', name: 'orders-api' }],
+      validation: { hostname: 'orders-api.example.com', wellKnownCACertificates: 'System' },
+    };
+
+    expect(
+      rejects(BackendTLSPolicyConfigSchema({ name: 'orders-api-tls', namespace: 'edge', spec }))
+    ).toBe(true);
+    expect(
+      rejects(
+        BackendTLSPolicyConfigSchema({
+          name: 'orders-api-tls',
+          namespace: 'edge',
+          controllerName: 'traefik.io/gateway-controller',
+          spec,
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('builds a BackendTLSPolicy from its own schema output', () => {
+    // The config type is inferred from this schema, so the schema and the
+    // factory cannot drift while this passes.
+    const config = BackendTLSPolicyConfigSchema.assert({
+      name: 'orders-api-tls',
+      namespace: 'edge',
+      controllerName: 'traefik.io/gateway-controller',
+      spec: {
+        targetRefs: [{ group: '', kind: 'Service', name: 'orders-api' }],
+        validation: { hostname: 'orders-api.example.com', wellKnownCACertificates: 'System' },
+      },
+      id: 'ordersApiTls',
+    }) as BackendTLSPolicyConfig;
+
+    const policy = backendTLSPolicy(config);
+
+    expect(policy.kind).toBe('BackendTLSPolicy');
+    expect(policy.metadata?.namespace).toBe('edge');
+    expect(policy.spec?.validation?.hostname).toBe('orders-api.example.com');
   });
 });

@@ -22,7 +22,10 @@ import {
 } from '../readiness.js';
 import type {
   AcceptedResourceStatus,
+  BackendTLSPolicyConfig,
   BackendTLSPolicySpec,
+  GatewayApiClusterResourceMetadata,
+  GatewayApiNamespacedResourceMetadata,
   GatewayClassSpec,
   GatewayObservedStatus,
   GatewayPolicyObservedStatus,
@@ -33,30 +36,36 @@ import type {
   RouteObservedStatus,
 } from '../types.js';
 
-/** Configuration for a namespaced Gateway API resource. */
-export interface GatewayApiNamespacedResourceConfig<TSpec extends object> {
-  readonly name: string;
-  readonly namespace: string;
-  readonly spec: TSpec;
-  /** Extra labels merged onto `metadata.labels`. */
-  readonly labels?: Readonly<Record<string, string>>;
-  /** Extra annotations merged onto `metadata.annotations`. */
-  readonly annotations?: Readonly<Record<string, string>>;
-  /** Resource graph id. Required when `name` is a schema reference. */
-  readonly id?: string;
-}
+/**
+ * `backendTLSPolicy`'s configuration type.
+ *
+ * DECLARED in `../types.js`, next to the ArkType schema it is inferred from,
+ * and re-exported here so the public import path stays
+ * `resources/gateway.js`.
+ */
+export type { BackendTLSPolicyConfig } from '../types.js';
 
-/** Configuration for a cluster-scoped Gateway API resource. */
-export interface GatewayApiClusterResourceConfig<TSpec extends object> {
-  readonly name: string;
-  readonly spec: TSpec;
-  /** Extra labels merged onto `metadata.labels`. */
-  readonly labels?: Readonly<Record<string, string>>;
-  /** Extra annotations merged onto `metadata.annotations`. */
-  readonly annotations?: Readonly<Record<string, string>>;
-  /** Resource graph id. Required when `name` is a schema reference. */
-  readonly id?: string;
-}
+/**
+ * Configuration for a namespaced Gateway API resource.
+ *
+ * Nothing here is hand-written. The identity half is
+ * {@link GatewayApiNamespacedResourceMetadata}, inferred from its ArkType
+ * schema; `spec` stays a TYPE PARAMETER because it is a different schema per
+ * kind — `GatewaySpec`, `HTTPRouteSpec`, `GRPCRouteSpec`,
+ * `ReferenceGrantSpec` — each already inferred from its own schema, so the
+ * caller binds it rather than this file re-declaring any of them.
+ */
+export type GatewayApiNamespacedResourceConfig<TSpec extends object> =
+  GatewayApiNamespacedResourceMetadata & { readonly spec: TSpec };
+
+/**
+ * Configuration for a cluster-scoped Gateway API resource.
+ *
+ * Same split as {@link GatewayApiNamespacedResourceConfig}, without a
+ * namespace.
+ */
+export type GatewayApiClusterResourceConfig<TSpec extends object> =
+  GatewayApiClusterResourceMetadata & { readonly spec: TSpec };
 
 function namespacedDefinition<TSpec extends object>(
   apiVersion: string,
@@ -168,17 +177,6 @@ export function referenceGrant(
     namespacedDefinition(GATEWAY_API_REFERENCE_GRANT_VERSION, 'ReferenceGrant', config),
     { scope: 'namespaced' }
   ).withReadinessEvaluator(createAlwaysReadyEvaluator('ReferenceGrant'));
-}
-
-/** Configuration for {@link backendTLSPolicy}. */
-export interface BackendTLSPolicyConfig
-  extends GatewayApiNamespacedResourceConfig<BackendTLSPolicySpec> {
-  /**
-   * The `GatewayClass.spec.controllerName` whose ancestor conditions decide
-   * readiness. A cluster can run several Gateway API controllers, and each one
-   * publishes its own ancestor entry.
-   */
-  readonly controllerName: string;
 }
 
 /**

@@ -15,7 +15,6 @@ import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   gateway as gatewayApiGateway,
   gatewayClass as gatewayApiGatewayClass,
-  type GatewayApiClusterResourceConfig,
   type GatewayApiNamespacedResourceConfig,
   grpcRoute as gatewayApiGrpcRoute,
   httpRoute as gatewayApiHttpRoute,
@@ -31,19 +30,19 @@ import type {
   RouteObservedStatus,
 } from '../../gateway-api/types.js';
 import { TRAEFIK_API_VERSION, TRAEFIK_GATEWAY_CONTROLLER_NAME } from '../constants.js';
+import type { TraefikGatewayClassConfig } from '../types.js';
 import { traefikManagedLabels } from './common.js';
 
 /** `GatewayClass.spec` pinned to Traefik's controller. */
 export type TraefikGatewayClassSpec = GatewayClassSpec<typeof TRAEFIK_GATEWAY_CONTROLLER_NAME>;
 
-/** Configuration for {@link traefikGatewayClass}. */
-export type TraefikGatewayClassConfig = Omit<
-  GatewayApiClusterResourceConfig<TraefikGatewayClassSpec>,
-  'spec'
-> & {
-  /** Optional description recorded on the class. */
-  readonly description?: string;
-};
+/**
+ * `traefikGatewayClass`'s configuration type.
+ *
+ * DECLARED in `../types.js`, next to the ArkType schema it is inferred from,
+ * and re-exported here so the public import path stays `resources/gateway.js`.
+ */
+export type { TraefikGatewayClassConfig } from '../types.js';
 
 /**
  * Create a `GatewayClass` claimed by Traefik.
