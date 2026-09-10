@@ -209,6 +209,12 @@ export {
 } from './core/serialization/index.js';
 // Schema conversion
 export { arktypeToKroSchema } from './core/serialization/schema.js';
+// KRO ownership labels — the label set only KRO may introduce on an object
+export {
+  isKroOwnershipLabel,
+  KRO_OWNERSHIP_LABELS,
+  type KroOwnershipLabel,
+} from './core/kro/index.js';
 export { singleton } from './core/singleton/singleton.js';
 export type {
   ResolutionContext,
