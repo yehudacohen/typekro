@@ -30,6 +30,7 @@ import {
   separateStatusFields,
   validateStatusCelExpressions,
 } from '../validation/cel-validator.js';
+import { arkConstraintRule } from './arktype-ast.js';
 import { celLiteralForValueTree, serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
@@ -65,28 +66,38 @@ function getKroTypeFromJson(node: unknown): string {
     if (nodeObj.proto === 'Array' && nodeObj.sequence) {
       const arrayType = `[]${getKroTypeFromJson(nodeObj.sequence)}`;
       const markers: string[] = [];
-      if (typeof nodeObj.minLength === 'number') markers.push(`minItems=${nodeObj.minLength}`);
-      if (typeof nodeObj.maxLength === 'number') markers.push(`maxItems=${nodeObj.maxLength}`);
+      const minItems = arkConstraintRule(nodeObj.minLength);
+      const maxItems = arkConstraintRule(nodeObj.maxLength);
+      if (typeof minItems === 'number') markers.push(`minItems=${minItems}`);
+      if (typeof maxItems === 'number') markers.push(`maxItems=${maxItems}`);
       return markers.length > 0 ? `${arrayType} | ${markers.join(' ')}` : arrayType;
     }
-    if (nodeObj.domain === 'number') {
-      const baseType = nodeObj.divisor === 1 ? 'integer' : 'float';
+    const domain = arkConstraintRule(nodeObj.domain);
+    if (domain === 'number') {
+      const baseType = arkConstraintRule(nodeObj.divisor) === 1 ? 'integer' : 'float';
       const markers: string[] = [];
-      if (typeof nodeObj.min === 'number') markers.push(`minimum=${nodeObj.min}`);
-      if (typeof nodeObj.max === 'number') markers.push(`maximum=${nodeObj.max}`);
+      const min = arkConstraintRule(nodeObj.min);
+      const max = arkConstraintRule(nodeObj.max);
+      if (typeof min === 'number') markers.push(`minimum=${min}`);
+      if (typeof max === 'number') markers.push(`maximum=${max}`);
       return markers.length > 0 ? `${baseType} | ${markers.join(' ')}` : baseType;
     }
-    if (nodeObj.domain === 'string') {
+    if (domain === 'string') {
       const markers: string[] = [];
-      if (typeof nodeObj.minLength === 'number') markers.push(`minLength=${nodeObj.minLength}`);
-      if (typeof nodeObj.maxLength === 'number') markers.push(`maxLength=${nodeObj.maxLength}`);
+      const minLength = arkConstraintRule(nodeObj.minLength);
+      const maxLength = arkConstraintRule(nodeObj.maxLength);
+      if (typeof minLength === 'number') markers.push(`minLength=${minLength}`);
+      if (typeof maxLength === 'number') markers.push(`maxLength=${maxLength}`);
       if (Array.isArray(nodeObj.pattern)) {
         if (nodeObj.pattern.length > 1) {
           throw new Error(
             'KRO SimpleSchema supports one string pattern per field; combine intersecting ArkType patterns before serialization.',
           );
         }
-        const pattern = nodeObj.pattern[0];
+        const patternNode = nodeObj.pattern[0];
+        const pattern = isArkTypeFlaggedPattern(patternNode)
+          ? patternNode
+          : arkConstraintRule(patternNode);
         if (typeof pattern === 'string') {
           markers.push(`pattern="${kubernetesRegexPattern(pattern)}"`);
         } else if (isArkTypeFlaggedPattern(pattern)) {
@@ -104,7 +115,7 @@ function getKroTypeFromJson(node: unknown): string {
     // Map / Record types — arktype represents `Record<string, V>` as
     // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
     // KRO SimpleSchema uses `map[string]<value-type>` notation for these.
-    if (nodeObj.domain === 'object' && Array.isArray(nodeObj.index) && nodeObj.index.length === 1) {
+    if (domain === 'object' && Array.isArray(nodeObj.index) && nodeObj.index.length === 1) {
       const indexEntry = nodeObj.index[0] as { signature?: unknown; value?: unknown };
       if (indexEntry.signature === 'string') {
         // `Record<string, unknown>` is an unstructured object, not a string
@@ -121,7 +132,7 @@ function getKroTypeFromJson(node: unknown): string {
         return `map[string]${getKroTypeFromJson(indexEntry.value)}`;
       }
     }
-    if (nodeObj.domain === 'object' || nodeObj.required || nodeObj.optional) {
+    if (domain === 'object' || nodeObj.required || nodeObj.optional) {
       return 'object';
     }
   }

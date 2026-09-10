@@ -33,6 +33,31 @@ describe('SchemaIR portable profile', () => {
     expect(encodeSchemaIR(result)).toContain(result.digest);
   });
 
+  it('lowers a constraint carrying a custom message, and keeps the message out of the IR', () => {
+    // A factory that explains a derived limit to its caller configures the
+    // message on the constraint, which makes ArkType serialize it as
+    // `{ rule, meta }`. Reading that without unwrapping rejects the whole
+    // composition as "outside the portable planning profile" — and the message
+    // itself is prose, so it must not reach the IR digest either.
+    const schema = type({
+      name: type(/^[a-z]+$/).and(
+        type.string.atMostLength(46).configure({ message: 'at most 46 characters' }),
+      ),
+    });
+
+    const result = schemaToIR(schema, { strict: true });
+
+    expect(result.diagnostics).toEqual([]);
+    if (result.root.kind !== 'object') throw new Error('Expected object schema');
+    const name = result.root.properties.find((property) => property.name === 'name');
+    expect(name?.schema).toEqual({
+      kind: 'primitive',
+      type: 'string',
+      constraints: { maxLength: 46, pattern: ['^[a-z]+$'] },
+    });
+    expect(encodeSchemaIR(result)).not.toContain('at most 46 characters');
+  });
+
   it('is stable across equivalent object key order', () => {
     const left = schemaToIR(type({ b: 'boolean', a: 'string' }));
     const right = schemaToIR(type({ a: 'string', b: 'boolean' }));
