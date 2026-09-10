@@ -3,9 +3,12 @@ import type * as k8s from '@kubernetes/client-node';
 import {
   type ApiGroupDiscovery,
   CLUSTER_CAPABILITY_CACHE_MAX_ENTRIES,
+  CLUSTER_CAPABILITY_CACHE_TTL_MS,
+  CLUSTER_CAPABILITY_UNKNOWN_CACHE_TTL_MS,
   type ClusterCapabilityRequirement,
   clusterCapabilityCacheSize,
   clusterIdentity,
+  type DiscoveryFailure,
   getCachedClusterCapability,
   getCurrentDeployTarget,
   listDeployTimeCapabilities,
@@ -35,15 +38,39 @@ function fakeKubeConfig(overrides: Record<string, unknown> = {}): k8s.KubeConfig
   } as unknown as k8s.KubeConfig;
 }
 
-function fakeDiscovery(served: Record<string, string[]>): ApiGroupDiscovery & { calls: string[] } {
+/**
+ * Discovery over a literal `group/version → kinds` map.
+ *
+ * A group version present in `served` answers with that kind list (a 200); one
+ * present in `failures` could not be reached at all; anything else answers 404.
+ */
+function fakeDiscovery(
+  served: Record<string, string[]>,
+  failures: Record<string, DiscoveryFailure> = {}
+): ApiGroupDiscovery & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     async servedKinds(group, version) {
-      calls.push(`${group}/${version}`);
-      return served[`${group}/${version}`];
+      const groupVersion = `${group}/${version}`;
+      calls.push(groupVersion);
+      const failure = failures[groupVersion];
+      if (failure) {
+        return { status: 'unknown', failure, message: `${failure} talking to ${groupVersion}` };
+      }
+      const kinds = served[groupVersion];
+      if (kinds) return { status: 'served', kinds };
+      return { status: 'unserved' };
     },
   };
+}
+
+/** Every candidate group version fails the same way. */
+function unreachableDiscovery(failure: DiscoveryFailure) {
+  return fakeDiscovery(
+    {},
+    { 'example.io/v1': failure, 'example.io/v1beta1': failure }
+  );
 }
 
 afterEach(() => {
@@ -106,6 +133,99 @@ describe('resolveClusterCapability', () => {
     });
     expect(resolution.status).toBe('unserved');
     expect(resolution.status === 'unserved' && resolution.reason).toContain('example.io/v1beta1');
+  });
+
+  it('reports unserved for a 200 list that does not contain the kind', async () => {
+    // The group version exists — 1.32/1.33 serve admissionregistration/v1 for
+    // webhook configs — it just does not carry this kind. That is an answer.
+    const resolution = await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: fakeDiscovery({
+        'example.io/v1': ['SomethingElse'],
+        'example.io/v1beta1': ['SomethingElse'],
+      }),
+    });
+    expect(resolution.status).toBe('unserved');
+    expect(getCachedClusterCapability(REQUIREMENT, 'cluster-a')?.status).toBe('unserved');
+  });
+
+  it('caches a definitive 404 as unserved', async () => {
+    const resolution = await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: fakeDiscovery({}),
+    });
+    expect(resolution.status).toBe('unserved');
+    expect(getCachedClusterCapability(REQUIREMENT, 'cluster-a')).toEqual(resolution);
+  });
+
+  it.each([['forbidden'], ['unreachable'], ['timeout'], ['other']] as const)(
+    'reports unknown rather than unserved when discovery fails (%s)',
+    async (failure) => {
+      const resolution = await resolveClusterCapability(REQUIREMENT, {
+        clusterId: 'cluster-a',
+        discovery: unreachableDiscovery(failure),
+      });
+
+      expect(resolution.status).toBe('unknown');
+      expect(resolution.status === 'unknown' && resolution.failure).toBe(failure);
+      // The reason must not claim anything about what the cluster serves.
+      const reason = resolution.status === 'unknown' ? resolution.reason : '';
+      expect(reason).toContain('discovery against the cluster failed');
+      expect(reason).not.toContain('does not serve');
+    }
+  );
+
+  it('does not let an unknown answer a later call — a retry re-probes and can serve', async () => {
+    const failing = unreachableDiscovery('forbidden');
+    expect(
+      (await resolveClusterCapability(REQUIREMENT, { clusterId: 'cluster-a', discovery: failing }))
+        .status
+    ).toBe('unknown');
+
+    // Same cluster key, no refresh flag, RBAC now fixed. The stored unknown is
+    // a failure note, not an answer, so it must not short-circuit this.
+    const recovered = fakeDiscovery({ 'example.io/v1': ['Widget'] });
+    expect(
+      await resolveClusterCapability(REQUIREMENT, { clusterId: 'cluster-a', discovery: recovered })
+    ).toEqual({ status: 'served', apiVersion: 'example.io/v1' });
+    expect(recovered.calls).toEqual(['example.io/v1']);
+  });
+
+  it('keeps the unknown reportable so a caller can say discovery failed', async () => {
+    await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: unreachableDiscovery('unreachable'),
+    });
+    // Readable by the reporting path — that is the whole reason it is retained.
+    expect(getCachedClusterCapability(REQUIREMENT, 'cluster-a')?.status).toBe('unknown');
+  });
+
+  it('expires an unknown far sooner than a real answer', async () => {
+    await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: unreachableDiscovery('timeout'),
+      unknownTtlMs: -1,
+    });
+    expect(getCachedClusterCapability(REQUIREMENT, 'cluster-a')).toBeUndefined();
+    expect(CLUSTER_CAPABILITY_UNKNOWN_CACHE_TTL_MS).toBeLessThan(CLUSTER_CAPABILITY_CACHE_TTL_MS);
+  });
+
+  it('is unknown when the served version is checked but a candidate could not be', async () => {
+    // v1 answered 404, v1beta1 could not be reached. The kind may well be
+    // served at v1beta1, so "not served" would be a fabrication.
+    const resolution = await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: fakeDiscovery({}, { 'example.io/v1beta1': 'forbidden' }),
+    });
+    expect(resolution.status).toBe('unknown');
+  });
+
+  it('still serves when an earlier candidate failed but a later one serves the kind', async () => {
+    const resolution = await resolveClusterCapability(REQUIREMENT, {
+      clusterId: 'cluster-a',
+      discovery: fakeDiscovery({ 'example.io/v1beta1': ['Widget'] }, { 'example.io/v1': 'timeout' }),
+    });
+    expect(resolution).toEqual({ status: 'served', apiVersion: 'example.io/v1beta1' });
   });
 
   it('never answers one cluster from another cluster cache entry', async () => {

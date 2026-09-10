@@ -12,15 +12,26 @@
  * 1. `TYPEKRO_DISABLE_LABEL_GUARD` — break-glass, nothing is emitted.
  * 2. `TYPEKRO_LABEL_GUARD_API_VERSION` — an explicit pin, used verbatim. This
  *    is what an offline `toYaml()` render or a GitOps pipeline uses.
- * 3. A capability resolved against the cluster this deployment targets. The
- *    direct deployment path resolves it before it re-executes the composition,
- *    so the graph is built at the version the API server actually serves.
+ * 3. A capability resolved against the cluster this build **explicitly** names.
+ *    The direct deployment path resolves it and publishes the target for the
+ *    duration of the deploy; a caller building outside a deployment probes and
+ *    then wraps the build in `withLabelPropagationGuardCapability()`. Either
+ *    way the cluster is carried by an `AsyncLocalStorage` scope, so the graph
+ *    is built at the version *that* API server serves and concurrent builds for
+ *    different clusters cannot see each other's answer.
  * 4. Otherwise — no pin and no cluster to ask — the guard is **skipped with a
  *    warning**. A composition built with no cluster knowledge does not get to
  *    guess a GA API that a 1.34 cluster would reject, taking the whole runtime
  *    bootstrap down with it.
+ *
+ * A skip is reported with the reason that actually applies: the cluster does
+ * not serve `MutatingAdmissionPolicy`, or discovery against it failed, or no
+ * cluster was named. The three are not interchangeable — telling a user their
+ * 1.36 cluster is too old because a probe hit an RBAC error sends them to fix
+ * the wrong thing.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type * as k8s from '@kubernetes/client-node';
 import type { MutatingAdmissionPolicyApiVersion } from '../../factories/kubernetes/admission/mutating-admission-policy.js';
 import { MUTATING_ADMISSION_POLICY_API_VERSIONS } from '../../factories/kubernetes/admission/mutating-admission-policy.js';
@@ -92,19 +103,30 @@ export const LABEL_GUARD_UNRESOLVED_REASON =
   `(no live deployment target and no ${LABEL_GUARD_API_VERSION_ENV})`;
 
 /**
- * An explicitly asserted capability, used when a caller knows the answer and
- * there is no cluster to ask — an offline render, or a test. Deliberately
- * cluster-independent: the caller asserted it, so it is not a probe result and
- * is not subject to the per-cluster cache.
+ * A capability scoped to one build.
+ *
+ * This is the supported way to carry a probe result into a build:
+ * {@link withLabelPropagationGuardCapability} runs the build inside it, and two
+ * concurrent builds for different clusters each see their own. Same mechanism
+ * as the deploy target — `AsyncLocalStorage`, not a module variable — so
+ * nothing can bleed from one build into the next.
  */
-let assertedCapability: LabelPropagationGuardCapability | undefined;
+const SCOPED_CAPABILITY = new AsyncLocalStorage<LabelPropagationGuardCapability>();
 
 /**
- * The cluster {@link probeLabelPropagationGuardSupport} last ran against, used
- * as the deploy target when no deployment has published one. Lets the documented
- * "probe, then build" flow work at the top level of a script.
+ * A process-wide asserted capability, used when a caller knows the answer and
+ * there is no cluster to ask — an offline render, or a test.
+ *
+ * This one really is a module global, and it is kept that way deliberately:
+ * it exists for the "set it once for the whole process" case (a CLI that has
+ * decided the group version before it builds anything), which is exactly what a
+ * scope cannot express. That makes it a leak path by construction — it outlives
+ * any single build — so it is only ever written by an explicit
+ * {@link setLabelPropagationGuardCapability} call, never by a probe, and
+ * {@link resetLabelGuardCapabilityCache} clears it for tests. Prefer
+ * {@link withLabelPropagationGuardCapability}, which outranks it.
  */
-let lastProbedClusterId: string | undefined;
+let assertedCapability: LabelPropagationGuardCapability | undefined;
 
 function isTruthyEnv(value: string | undefined): boolean {
   return value === '1' || value === 'true';
@@ -132,11 +154,16 @@ function asGuardApiVersion(apiVersion: string): MutatingAdmissionPolicyApiVersio
 /**
  * Resolve the guard's capability for the cluster this build targets.
  *
- * Order: break-glass env var, explicit group-version env var, an explicitly
- * asserted capability, the capability resolved for the current deploy target,
- * then **skip**. There is no assumed group version at the end of the chain —
- * that is what makes the guard safe on a cluster below 1.36 rather than an
- * apply failure for the whole bootstrap.
+ * Order: break-glass env var, explicit group-version env var, a capability
+ * scoped to this build, the process-wide asserted capability, the capability
+ * resolved for the current deploy target, then **skip**. There is no assumed
+ * group version at the end of the chain — that is what makes the guard safe on
+ * a cluster below 1.36 rather than an apply failure for the whole bootstrap.
+ *
+ * Every cluster-derived answer comes from an explicitly scoped target. There is
+ * no ambient "last cluster anyone probed" fallback: a build that names no
+ * cluster gets no cluster's answer, rather than silently inheriting one from an
+ * unrelated probe elsewhere in the process.
  */
 export function resolveLabelPropagationGuardCapability(): LabelPropagationGuardCapability {
   if (isTruthyEnv(process.env[DISABLE_LABEL_GUARD_ENV])) {
@@ -151,18 +178,27 @@ export function resolveLabelPropagationGuardCapability(): LabelPropagationGuardC
     return { status: 'active', apiVersion: pinned };
   }
 
+  const scoped = SCOPED_CAPABILITY.getStore();
+  if (scoped) {
+    return scoped;
+  }
+
   if (assertedCapability) {
     return assertedCapability;
   }
 
-  const clusterId = getCurrentDeployTarget() ?? lastProbedClusterId;
+  const clusterId = getCurrentDeployTarget();
   if (clusterId) {
     const resolved = getCachedClusterCapability(LABEL_GUARD_CAPABILITY, clusterId);
     if (resolved?.status === 'served') {
       const apiVersion = asGuardApiVersion(resolved.apiVersion);
       if (apiVersion) return { status: 'active', apiVersion };
     }
-    if (resolved?.status === 'unserved') {
+    if (resolved?.status === 'unserved' || resolved?.status === 'unknown') {
+      // Both are `unavailable`, but the reason strings differ: `unserved` says
+      // the cluster does not serve the kind, `unknown` says discovery failed.
+      // Collapsing them here is what made the guard claim a 1.36 cluster was
+      // too old whenever a probe hit an RBAC or network error.
       return { status: 'unavailable', reason: resolved.reason };
     }
   }
@@ -171,23 +207,45 @@ export function resolveLabelPropagationGuardCapability(): LabelPropagationGuardC
 }
 
 /**
- * Resolve the guard's capability against a cluster and cache it under that
- * cluster's identity, so a subsequent build targeting the same cluster renders
- * the guard at the served group version.
+ * Run `build` with `capability` as the guard's answer, for exactly that build.
+ *
+ * This is the explicit half of the "probe, then build" flow: the cluster is
+ * carried by the scope rather than by a module global, so two concurrent builds
+ * for two clusters cannot see each other's answer.
+ *
+ * ```typescript
+ * const capability = await probeLabelPropagationGuardSupport(kubeConfig);
+ * const runtime = withLabelPropagationGuardCapability(capability, () =>
+ *   typeKroRuntimeBootstrap()
+ * );
+ * ```
+ */
+export function withLabelPropagationGuardCapability<T>(
+  capability: LabelPropagationGuardCapability,
+  build: () => T
+): T {
+  return SCOPED_CAPABILITY.run(capability, build);
+}
+
+/**
+ * Resolve the guard's capability against a cluster and **return** it.
+ *
+ * The result is the caller's to carry: pass it to
+ * {@link withLabelPropagationGuardCapability}, or scope the build with
+ * `runWithDeployTarget(clusterId, build)`. Probing does not make this cluster
+ * ambiently current for anything else in the process — that fallback existed
+ * and was removed, because a probe of cluster A followed by an untargeted build
+ * for cluster B rendered A's answer into B's graph.
  *
  * The direct deployment path calls this before it re-executes the composition.
  * Callers who build a graph outside a deployment (an RGD render aimed at a
- * known cluster) can call it themselves and then build.
+ * known cluster) can call it themselves and then build inside the scope.
  */
 export async function probeLabelPropagationGuardSupport(
   kubeConfig: k8s.KubeConfig,
   options: { discovery?: ApiGroupDiscovery; refresh?: boolean } = {}
 ): Promise<LabelPropagationGuardCapability> {
   const capability = await discoverLabelPropagationGuardSupport(kubeConfig, options);
-  const clusterId = clusterIdentity(kubeConfig);
-  if (clusterId) {
-    lastProbedClusterId = clusterId;
-  }
   if (capability.status === 'unavailable') {
     logger.warn(
       `KRO label-propagation guard unavailable: ${capability.reason}. ${LABEL_GUARD_ALTERNATIVES}`
@@ -227,18 +285,21 @@ export async function discoverLabelPropagationGuardSupport(
     };
   }
 
+  // `unserved` and `unknown` are both unavailable, and both carry a reason that
+  // says which: the cluster does not serve the kind, or discovery failed.
   return { status: 'unavailable', reason: resolution.reason };
 }
 
 /**
- * Reset every cached capability answer and the asserted override. Test seam.
+ * Reset every cached capability answer and the process-wide asserted override.
+ * Test seam.
  *
  * Clears the whole per-cluster cache rather than one cluster's entry: a test
- * that has finished with one fake cluster has finished with all of them.
+ * that has finished with one fake cluster has finished with all of them. The
+ * scoped capability needs no reset — it ends with its scope.
  */
 export function resetLabelGuardCapabilityCache(): void {
   assertedCapability = undefined;
-  lastProbedClusterId = undefined;
   resetClusterCapabilityCache();
 }
 
@@ -246,8 +307,12 @@ export function resetLabelGuardCapabilityCache(): void {
 export const resetLabelPropagationGuardCapabilityCache = resetLabelGuardCapabilityCache;
 
 /**
- * Assert the capability directly, for an offline build that knows the answer
- * and for tests. Overrides cluster resolution; `undefined` clears the assertion.
+ * Assert the capability process-wide, for an offline build that knows the
+ * answer and for tests. Overrides cluster resolution; `undefined` clears it.
+ *
+ * Prefer {@link withLabelPropagationGuardCapability} where the assertion covers
+ * one build: it cannot outlive that build, whereas this value persists until it
+ * is cleared and is therefore visible to everything built afterwards.
  */
 export function setLabelPropagationGuardCapability(
   capability: LabelPropagationGuardCapability | undefined

@@ -10,7 +10,13 @@ import {
   resetLabelGuardCapabilityCache,
   resolveLabelPropagationGuardCapability,
   setLabelPropagationGuardCapability,
+  withLabelPropagationGuardCapability,
 } from '../../src/core/kro/label-guard-capability.js';
+import type {
+  ApiGroupDiscovery,
+  ApiGroupProbe,
+  DiscoveryFailure,
+} from '../../src/core/kubernetes/api-capability.js';
 import {
   clusterIdentity,
   resolveDeployTimeCapabilities,
@@ -37,17 +43,34 @@ function fakeKubeConfig(name: string, server: string): k8s.KubeConfig {
 /**
  * Discovery over a literal map of `group/version` to the kinds served there,
  * counting calls so the per-cluster memoization is observable.
+ *
+ * A group version in `served` answers 200 with that kind list; one in
+ * `failures` could not be reached at all; anything else answers 404.
  */
-function fakeDiscovery(served: Record<string, string[]>) {
+function fakeDiscovery(
+  served: Record<string, string[]>,
+  failures: Record<string, DiscoveryFailure> = {}
+): ApiGroupDiscovery & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
-    async servedKinds(group: string, version: string): Promise<readonly string[] | undefined> {
+    async servedKinds(group: string, version: string): Promise<ApiGroupProbe> {
       const groupVersion = `${group}/${version}`;
       calls.push(groupVersion);
-      return served[groupVersion];
+      const failure = failures[groupVersion];
+      if (failure) {
+        return { status: 'unknown', failure, message: `${failure} talking to ${groupVersion}` };
+      }
+      const kinds = served[groupVersion];
+      if (kinds) return { status: 'served', kinds };
+      return { status: 'unserved' };
     },
   };
+}
+
+/** Every candidate group version fails the same way. */
+function failingDiscovery(failure: DiscoveryFailure) {
+  return fakeDiscovery({}, { [GA]: failure, [BETA]: failure });
 }
 
 const GUARD_KIND = 'MutatingAdmissionPolicy';
@@ -344,8 +367,8 @@ describe('label-guard capability cache', () => {
     const callsAfterFirst = discovery.calls.length;
 
     resetLabelGuardCapabilityCache();
-    // The reset also clears the "last probed cluster" pointer, so a build with
-    // no deploy target falls back to a skip rather than the stale answer.
+    // A build that names no cluster is a skip either way — there is no ambient
+    // pointer to a previously probed cluster to go stale in the first place.
     expect(resolveLabelPropagationGuardCapability().status).toBe('unavailable');
 
     await probeLabelPropagationGuardSupport(kubeConfig, { discovery });
@@ -368,14 +391,97 @@ describe('label-guard capability cache', () => {
     expect(policies[0]?.apiVersion).toBe(BETA);
   });
 
-  it('lets a probed cluster serve as the deploy target for a later build', async () => {
+  it('does NOT let a probed cluster leak into an untargeted build', async () => {
+    clearEnv();
+    // The bug this replaced: probing cluster A made A the process-global
+    // "last probed cluster", so any later build with no target of its own
+    // rendered A's group version into its graph.
+    const clusterA = fakeKubeConfig('probe-only', 'https://a-only.invalid:6443');
+    expect(
+      await probeLabelPropagationGuardSupport(clusterA, {
+        discovery: fakeDiscovery({ [BETA]: [GUARD_KIND] }),
+      })
+    ).toEqual({ status: 'active', apiVersion: BETA });
+
+    expect(resourcesOfKind(GUARD_KIND)).toHaveLength(0);
+    expect(resolveLabelPropagationGuardCapability()).toEqual({
+      status: 'unavailable',
+      reason: LABEL_GUARD_UNRESOLVED_REASON,
+    });
+  });
+
+  it('carries a probe result into a build when the caller scopes it explicitly', async () => {
     clearEnv();
     const kubeConfig = fakeKubeConfig('probe-then-build', 'https://ptb.invalid:6443');
-    await probeLabelPropagationGuardSupport(kubeConfig, {
+    const capability = await probeLabelPropagationGuardSupport(kubeConfig, {
       discovery: fakeDiscovery({ [BETA]: [GUARD_KIND] }),
     });
-    // The documented "probe, then build" flow: no ambient deploy target, but
-    // the caller explicitly named the cluster it cares about.
-    expect(resourcesOfKind(GUARD_KIND)[0]?.apiVersion).toBe(BETA);
+
+    // The documented "probe, then build" flow, with the cluster carried
+    // explicitly rather than ambiently.
+    const policies = withLabelPropagationGuardCapability(capability, () =>
+      resourcesOfKind(GUARD_KIND)
+    );
+    expect(policies).toHaveLength(1);
+    expect(policies[0]?.apiVersion).toBe(BETA);
+
+    // ...and the scope does not outlive the build.
+    expect(resourcesOfKind(GUARD_KIND)).toHaveLength(0);
+  });
+
+  it('keeps two concurrent scoped builds for different clusters apart', async () => {
+    clearEnv();
+    const ga = fakeKubeConfig('concurrent-ga', 'https://cga.invalid:6443');
+    const beta = fakeKubeConfig('concurrent-beta', 'https://cbeta.invalid:6443');
+    const [gaCapability, betaCapability] = await Promise.all([
+      probeLabelPropagationGuardSupport(ga, { discovery: fakeDiscovery({ [GA]: [GUARD_KIND] }) }),
+      probeLabelPropagationGuardSupport(beta, {
+        discovery: fakeDiscovery({ [BETA]: [GUARD_KIND] }),
+      }),
+    ]);
+
+    const buildIn = async (capability: typeof gaCapability): Promise<string | undefined> =>
+      withLabelPropagationGuardCapability(capability, async () => {
+        // Interleave the two builds so a module-global would be observably wrong.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return resourcesOfKind(GUARD_KIND)[0]?.apiVersion;
+      });
+
+    expect(await Promise.all([buildIn(gaCapability), buildIn(betaCapability)])).toEqual([GA, BETA]);
+  });
+
+  it('reports a discovery failure as a failure, not as an unsupported cluster', async () => {
+    clearEnv();
+    const kubeConfig = fakeKubeConfig('rbac-denied', 'https://denied.invalid:6443');
+    const capability = await probeLabelPropagationGuardSupport(kubeConfig, {
+      discovery: failingDiscovery('forbidden'),
+    });
+
+    expect(capability.status).toBe('unavailable');
+    const reason = capability.status === 'unavailable' ? capability.reason : '';
+    // The distinction the user acts on: fix RBAC, not "upgrade your cluster".
+    expect(reason).toContain('discovery against the cluster failed');
+    expect(reason).not.toContain('does not serve');
+
+    // And the build that follows the resolve step says the same thing.
+    const clusterId = clusterIdentity(kubeConfig) as string;
+    const built = runWithDeployTarget(clusterId, resolveLabelPropagationGuardCapability);
+    expect(built.status).toBe('unavailable');
+    expect(built.status === 'unavailable' && built.reason).toContain(
+      'discovery against the cluster failed'
+    );
+    expect(runWithDeployTarget(clusterId, () => resourcesOfKind(GUARD_KIND))).toHaveLength(0);
+  });
+
+  it('reports an unserved cluster as unserved', async () => {
+    clearEnv();
+    const kubeConfig = fakeKubeConfig('too-old', 'https://old.invalid:6443');
+    const capability = await probeLabelPropagationGuardSupport(kubeConfig, {
+      // Every candidate group version answers 404.
+      discovery: fakeDiscovery({}),
+    });
+
+    expect(capability.status).toBe('unavailable');
+    expect(capability.status === 'unavailable' && capability.reason).toContain('does not serve');
   });
 });
