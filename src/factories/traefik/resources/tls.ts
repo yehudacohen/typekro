@@ -17,7 +17,7 @@
  * namespace that is via `providers.kubernetesCRD.defaultTLSResourcesNamespace`.
  */
 
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import { TRAEFIK_API_VERSION } from '../constants.js';
 import type { TraefikTLSOptionSpec, TraefikTLSStoreSpec } from '../types.js';
@@ -65,10 +65,10 @@ export const TRAEFIK_TLS_OPTION_SECURE_DEFAULTS = {
  * ```
  */
 export function traefikTLSOption(
-  config: TraefikResourceConfig<TraefikTLSOptionSpec>
+  config: Composable<TraefikResourceConfig<TraefikTLSOptionSpec>>
 ): Enhanced<TraefikTLSOptionSpec, TraefikNoStatus> {
   const spec: TraefikTLSOptionSpec = {
-    ...config.spec,
+    ...(config.spec as TraefikTLSOptionSpec),
     minVersion: config.spec.minVersion ?? TRAEFIK_TLS_OPTION_SECURE_DEFAULTS.minVersion,
     sniStrict: config.spec.sniStrict ?? TRAEFIK_TLS_OPTION_SECURE_DEFAULTS.sniStrict,
   };
@@ -104,7 +104,7 @@ export function traefikTLSOption(
  * ```
  */
 export function traefikTLSStore(
-  config: TraefikResourceConfig<TraefikTLSStoreSpec>
+  config: Composable<TraefikResourceConfig<TraefikTLSStoreSpec>>
 ): Enhanced<TraefikTLSStoreSpec, TraefikNoStatus> {
   return createResource<TraefikTLSStoreSpec, TraefikNoStatus>(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'TLSStore', config),

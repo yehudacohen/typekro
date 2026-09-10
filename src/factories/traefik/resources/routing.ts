@@ -7,7 +7,7 @@
  * always-ready rather than condition-based.
  */
 
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import { TRAEFIK_API_VERSION } from '../constants.js';
 import type {
@@ -60,7 +60,7 @@ export type TraefikNoStatus = Record<string, never>;
  * ```
  */
 export function traefikIngressRoute(
-  config: TraefikResourceConfig<TraefikIngressRouteSpec>
+  config: Composable<TraefikResourceConfig<TraefikIngressRouteSpec>>
 ): Enhanced<TraefikIngressRouteSpec, TraefikNoStatus> {
   return createResource<TraefikIngressRouteSpec, TraefikNoStatus>(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'IngressRoute', config),
@@ -89,7 +89,7 @@ export function traefikIngressRoute(
  * ```
  */
 export function traefikIngressRouteTCP(
-  config: TraefikResourceConfig<TraefikIngressRouteTCPSpec>
+  config: Composable<TraefikResourceConfig<TraefikIngressRouteTCPSpec>>
 ): Enhanced<TraefikIngressRouteTCPSpec, TraefikNoStatus> {
   return createResource<TraefikIngressRouteTCPSpec, TraefikNoStatus>(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'IngressRouteTCP', config),
@@ -121,7 +121,7 @@ export function traefikIngressRouteTCP(
  * ```
  */
 export function traefikService(
-  config: TraefikResourceConfig<TraefikServiceSpec>
+  config: Composable<TraefikResourceConfig<TraefikServiceSpec>>
 ): Enhanced<TraefikServiceSpec, TraefikNoStatus> {
   return createResource<TraefikServiceSpec, TraefikNoStatus>(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'TraefikService', config),
@@ -148,7 +148,7 @@ export function traefikService(
  * ```
  */
 export function traefikServersTransport(
-  config: TraefikResourceConfig<TraefikServersTransportSpec>
+  config: Composable<TraefikResourceConfig<TraefikServersTransportSpec>>
 ): Enhanced<TraefikServersTransportSpec, TraefikNoStatus> {
   return createResource<TraefikServersTransportSpec, TraefikNoStatus>(
     traefikResourceDefinition(TRAEFIK_API_VERSION, 'ServersTransport', config),

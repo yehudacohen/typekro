@@ -1,14 +1,32 @@
 /**
  * Traefik type definitions.
  *
- * Two distinct layers live here:
+ * **ArkType is the single source of truth.** Every configuration type in this
+ * file — the `traefik.io/v1alpha1` CRD specs, the middleware set, and the
+ * bootstrap composition's spec — is INFERRED from the ArkType schema declared
+ * next to it (`typeof XSchema.infer`), per `docs/advanced/integration-skill.md`
+ * Step 2. One declaration then validates at runtime, generates the KRO
+ * SimpleSchema, and types the factory, so the three cannot drift. Only STATUS
+ * types stay hand-written: they describe what a controller publishes rather
+ * than user input.
  *
- * 1. **CRD spec types** — hand-typed against the `traefik.io/v1alpha1` CRDs
- *    shipped by chart 41.5.0 (Traefik v3.7.13). None of the Traefik CRDs has a
- *    `status` subresource, which is why the resource factories register an
- *    always-ready evaluator (see `resources/routing.ts`).
- * 2. **ArkType schemas** — the runtime spec/status contract of the bootstrap
- *    composition. Following the ClickStack convention, these carry only
+ * Three layers live here:
+ *
+ * 1. **CRD spec schemas** — verified field-by-field against the
+ *    `traefik.io/v1alpha1` CRDs shipped by chart 41.5.0 (Traefik v3.7.13), read
+ *    back from a live API server with
+ *    `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec}'`.
+ *    None of the Traefik CRDs has a `status` subresource, which is why the
+ *    resource factories register an always-ready evaluator (see
+ *    `resources/routing.ts`). Where a schema is stricter than the CRD it is
+ *    deliberate and noted inline.
+ * 2. **Helm chart values** — {@link TraefikManagedHelmValues} is a CLOSED,
+ *    precise description of the chart paths this factory maps, pins or reads
+ *    back (verified against chart 41.5.0's `values.schema.json`). It carries no
+ *    index signatures at any depth; {@link TraefikRawHelmValues} is the single,
+ *    explicitly named raw-passthrough boundary for the rest of the chart.
+ * 3. **Bootstrap contract** — the runtime spec/status of the bootstrap
+ *    composition. Following the ClickStack convention these carry only
  *    proxy-safe VALUES (names, namespaces, versions, ports, endpoints) that
  *    serialize cleanly as CEL refs in KRO mode. Choices that decide WHICH
  *    resources exist are build-time options on `makeTraefikBootstrap(...)`.
@@ -18,33 +36,52 @@
 
 import { type } from 'arktype';
 import type { TypeKroChartValues } from '../../core/types/common.js';
+import type {
+  Affinity,
+  EnvVar,
+  LabelSelector,
+  SecurityContext,
+  Toleration,
+} from '../cert-manager/types.js';
 import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
+import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js';
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
 const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
 const kubernetesPort = type('number.integer >= 1').and('number <= 65535');
+
+/** Make every key of an inferred all-optional schema present and non-nullable. */
+type AllPresent<T> = { [K in keyof T]-?: NonNullable<T[K]> };
 
 // ============================================================================
 // Shared primitives
 // ============================================================================
 
 /**
- * A Traefik duration. The CRDs accept an integer (nanoseconds) or a Go
- * duration string such as `'90s'`; prefer the string form for readability.
+ * ArkType definition of a Traefik duration.
+ *
+ * The CRDs accept an integer (nanoseconds) or a Go duration string such as
+ * `'90s'`; prefer the string form for readability.
  */
+const traefikDuration = 'string | number';
+
+/** A Traefik duration: a Go duration string, or an integer of nanoseconds. */
 export type TraefikDuration = string | number;
 
 /** A Kubernetes Service port: a number or a named port. */
 export type TraefikPortValue = string | number;
 
 /** How Traefik derives the client IP from proxy headers. */
-export interface TraefikIpStrategy {
+export const TraefikIpStrategySchema = type({
   /** Depth position in `X-Forwarded-For`, counted from the right. */
-  readonly depth?: number;
-  readonly excludedIPs?: readonly string[];
+  'depth?': 'number.integer',
+  'excludedIPs?': 'string[]',
   /** Group IPv6 clients into a shared subnet before keying. */
-  readonly ipv6Subnet?: number;
-}
+  'ipv6Subnet?': 'number.integer',
+});
+
+/** How Traefik derives the client IP from proxy headers. */
+export type TraefikIpStrategy = typeof TraefikIpStrategySchema.infer;
 
 /**
  * What a `rateLimit` / `inFlightReq` middleware keys its counters on.
@@ -52,267 +89,343 @@ export interface TraefikIpStrategy {
  * Exactly one of these should be set; Traefik falls back to the client IP when
  * none is given.
  */
-export interface TraefikSourceCriterion {
+export const TraefikSourceCriterionSchema = type({
   /** Key on a request header, e.g. the principal emitted by `forwardAuth`. */
-  readonly requestHeaderName?: string;
-  readonly requestHost?: boolean;
-  readonly ipStrategy?: TraefikIpStrategy;
-}
+  'requestHeaderName?': 'string',
+  'requestHost?': 'boolean',
+  'ipStrategy?': TraefikIpStrategySchema,
+});
+
+/** What a `rateLimit` / `inFlightReq` middleware keys its counters on. */
+export type TraefikSourceCriterion = typeof TraefikSourceCriterionSchema.infer;
 
 /** Sticky-session cookie configuration for a load-balanced service. */
-export interface TraefikStickyCookie {
-  readonly cookie?: {
-    readonly name?: string;
-    readonly secure?: boolean;
-    readonly httpOnly?: boolean;
-    readonly sameSite?: 'none' | 'lax' | 'strict' | 'None' | 'Lax' | 'Strict';
-    readonly maxAge?: number;
-    readonly path?: string;
-    readonly domain?: string;
-  };
-}
+export const TraefikStickyCookieSchema = type({
+  'cookie?': {
+    'name?': 'string',
+    'secure?': 'boolean',
+    'httpOnly?': 'boolean',
+    'sameSite?': '"none" | "lax" | "strict" | "None" | "Lax" | "Strict"',
+    'maxAge?': 'number.integer',
+    'path?': 'string',
+    'domain?': 'string',
+  },
+});
+
+/** Sticky-session cookie configuration for a load-balanced service. */
+export type TraefikStickyCookie = typeof TraefikStickyCookieSchema.infer;
+
+/**
+ * Active health check performed by Traefik against a service's servers.
+ *
+ * The CRD spells the Host override `hostname`; there is no `host` field.
+ */
+export const TraefikHealthCheckSchema = type({
+  'path?': 'string',
+  'hostname?': 'string',
+  'scheme?': 'string',
+  'mode?': 'string',
+  'method?': 'string',
+  'status?': 'number.integer',
+  'port?': 'number.integer',
+  'interval?': traefikDuration,
+  'unhealthyInterval?': traefikDuration,
+  'timeout?': traefikDuration,
+  'headers?': 'Record<string, string>',
+  'followRedirects?': 'boolean',
+});
 
 /** Active health check performed by Traefik against a service's servers. */
-export interface TraefikHealthCheck {
-  readonly path?: string;
-  readonly host?: string;
-  readonly hostname?: string;
-  readonly scheme?: string;
-  readonly mode?: string;
-  readonly method?: string;
-  readonly status?: number;
-  readonly port?: number;
-  readonly interval?: TraefikDuration;
-  readonly unhealthyInterval?: TraefikDuration;
-  readonly timeout?: TraefikDuration;
-  readonly headers?: Readonly<Record<string, string>>;
-  readonly followRedirects?: boolean;
-}
+export type TraefikHealthCheck = typeof TraefikHealthCheckSchema.infer;
 
 /** A reference to a `Middleware` resource. */
-export interface TraefikMiddlewareRef {
-  readonly name: string;
-  readonly namespace?: string;
-}
+export const TraefikMiddlewareRefSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+});
+
+/** A reference to a `Middleware` resource. */
+export type TraefikMiddlewareRef = typeof TraefikMiddlewareRefSchema.infer;
+
+/** ArkType definition of the load-balancing strategies the CRD enumerates. */
+const traefikLoadBalancerStrategy = '"wrr" | "p2c" | "hrw" | "leasttime" | "RoundRobin"';
 
 /** Load-balancing strategy across a service's servers. */
 export type TraefikLoadBalancerStrategy = 'wrr' | 'p2c' | 'hrw' | 'leasttime' | 'RoundRobin';
 
 /** One backend of an `IngressRoute` route or a `TraefikService`. */
-export interface TraefikServiceRef {
-  readonly name: string;
-  readonly namespace?: string;
-  readonly kind?: 'Service' | 'TraefikService';
-  readonly port?: TraefikPortValue;
-  readonly scheme?: string;
-  readonly weight?: number;
-  readonly strategy?: TraefikLoadBalancerStrategy;
-  readonly passHostHeader?: boolean;
-  readonly nativeLB?: boolean;
-  readonly nodePortLB?: boolean;
-  readonly serversTransport?: string;
-  readonly sticky?: TraefikStickyCookie;
-  readonly healthCheck?: TraefikHealthCheck;
-  readonly passiveHealthCheck?: {
-    readonly failureWindow?: TraefikDuration;
-    readonly maxFailedAttempts?: number;
-  };
-  readonly responseForwarding?: { readonly flushInterval?: string };
-  readonly middlewares?: readonly TraefikMiddlewareRef[];
-}
+export const TraefikServiceRefSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'kind?': '"Service" | "TraefikService"',
+  /** Port number or named port — the CRD accepts either. */
+  'port?': traefikDuration,
+  'scheme?': 'string',
+  'weight?': 'number.integer',
+  'strategy?': traefikLoadBalancerStrategy,
+  'passHostHeader?': 'boolean',
+  'nativeLB?': 'boolean',
+  'nodePortLB?': 'boolean',
+  'serversTransport?': 'string',
+  'sticky?': TraefikStickyCookieSchema,
+  'healthCheck?': TraefikHealthCheckSchema,
+  'passiveHealthCheck?': {
+    'failureWindow?': traefikDuration,
+    'maxFailedAttempts?': 'number.integer',
+  },
+  'responseForwarding?': { 'flushInterval?': 'string' },
+  'middlewares?': TraefikMiddlewareRefSchema.array(),
+});
+
+/** One backend of an `IngressRoute` route or a `TraefikService`. */
+export type TraefikServiceRef = typeof TraefikServiceRefSchema.infer;
 
 /** TLS configuration attached to a router. */
-export interface TraefikRouterTLS {
+export const TraefikRouterTLSSchema = type({
   /** Secret holding the certificate, e.g. one written by cert-manager. */
-  readonly secretName?: string;
-  readonly options?: { readonly name: string; readonly namespace?: string };
-  readonly store?: { readonly name: string; readonly namespace?: string };
-  readonly certResolver?: string;
-  readonly domains?: readonly {
-    readonly main?: string;
-    readonly sans?: readonly string[];
-  }[];
-}
+  'secretName?': 'string',
+  'options?': { name: 'string', 'namespace?': 'string' },
+  'store?': { name: 'string', 'namespace?': 'string' },
+  'certResolver?': 'string',
+  'domains?': type({
+    'main?': 'string',
+    'sans?': 'string[]',
+  }).array(),
+});
+
+/** TLS configuration attached to a router. */
+export type TraefikRouterTLS = typeof TraefikRouterTLSSchema.infer;
 
 // ============================================================================
 // IngressRoute / IngressRouteTCP
 // ============================================================================
 
 /** Per-route observability overrides. */
-export interface TraefikRouteObservability {
-  readonly accessLogs?: boolean;
-  readonly metrics?: boolean;
-  readonly tracing?: boolean;
-  readonly traceVerbosity?: 'minimal' | 'detailed';
-}
+export const TraefikRouteObservabilitySchema = type({
+  'accessLogs?': 'boolean',
+  'metrics?': 'boolean',
+  'tracing?': 'boolean',
+  'traceVerbosity?': '"minimal" | "detailed"',
+});
+
+/** Per-route observability overrides. */
+export type TraefikRouteObservability = typeof TraefikRouteObservabilitySchema.infer;
 
 /** One `IngressRoute.spec.routes[]` entry. */
-export interface TraefikIngressRouteRule {
+export const TraefikIngressRouteRuleSchema = type({
   /** Traefik v3 rule expression, e.g. ``Host(`api.example.com`)``. */
-  readonly match: string;
-  readonly kind?: 'Rule';
+  match: 'string',
+  'kind?': '"Rule"',
   /** Higher priority wins; Traefik defaults to the rule length. */
-  readonly priority?: number;
-  readonly syntax?: string;
-  readonly services?: readonly TraefikServiceRef[];
-  readonly middlewares?: readonly TraefikMiddlewareRef[];
-  readonly observability?: TraefikRouteObservability;
-}
+  'priority?': 'number.integer',
+  'syntax?': 'string',
+  'services?': TraefikServiceRefSchema.array(),
+  'middlewares?': TraefikMiddlewareRefSchema.array(),
+  'observability?': TraefikRouteObservabilitySchema,
+});
+
+/** One `IngressRoute.spec.routes[]` entry. */
+export type TraefikIngressRouteRule = typeof TraefikIngressRouteRuleSchema.infer;
 
 /** `IngressRoute.spec`. */
-export interface TraefikIngressRouteSpec {
-  readonly routes: readonly TraefikIngressRouteRule[];
-  readonly entryPoints?: readonly string[];
-  readonly ingressClassName?: string;
-  readonly tls?: TraefikRouterTLS;
-  readonly parentRefs?: readonly { readonly name: string; readonly namespace?: string }[];
-}
+export const TraefikIngressRouteSpecSchema = type({
+  routes: TraefikIngressRouteRuleSchema.array(),
+  'entryPoints?': 'string[]',
+  'ingressClassName?': 'string',
+  'tls?': TraefikRouterTLSSchema,
+  'parentRefs?': type({ name: 'string', 'namespace?': 'string' }).array(),
+});
+
+/** `IngressRoute.spec`. */
+export type TraefikIngressRouteSpec = typeof TraefikIngressRouteSpecSchema.infer;
 
 /** One backend of an `IngressRouteTCP` route. */
-export interface TraefikTCPServiceRef {
-  readonly name: string;
-  readonly port: TraefikPortValue;
-  readonly namespace?: string;
-  readonly weight?: number;
-  readonly tls?: boolean;
-  readonly nativeLB?: boolean;
-  readonly nodePortLB?: boolean;
-  readonly serversTransport?: string;
-  readonly proxyProtocol?: { readonly version?: number };
-}
+export const TraefikTCPServiceRefSchema = type({
+  name: 'string',
+  port: traefikDuration,
+  'namespace?': 'string',
+  'weight?': 'number.integer',
+  'tls?': 'boolean',
+  'nativeLB?': 'boolean',
+  'nodePortLB?': 'boolean',
+  'serversTransport?': 'string',
+  'proxyProtocol?': { 'version?': 'number.integer' },
+});
+
+/** One backend of an `IngressRouteTCP` route. */
+export type TraefikTCPServiceRef = typeof TraefikTCPServiceRefSchema.infer;
 
 /** One `IngressRouteTCP.spec.routes[]` entry. */
-export interface TraefikIngressRouteTCPRule {
+export const TraefikIngressRouteTCPRuleSchema = type({
   /** TCP rule expression, e.g. ``HostSNI(`db.example.com`)``. */
-  readonly match: string;
-  readonly priority?: number;
-  readonly syntax?: 'v3' | 'v2';
-  readonly services?: readonly TraefikTCPServiceRef[];
-  readonly middlewares?: readonly TraefikMiddlewareRef[];
-}
+  match: 'string',
+  'priority?': 'number.integer',
+  'syntax?': '"v3" | "v2"',
+  'services?': TraefikTCPServiceRefSchema.array(),
+  'middlewares?': TraefikMiddlewareRefSchema.array(),
+});
+
+/** One `IngressRouteTCP.spec.routes[]` entry. */
+export type TraefikIngressRouteTCPRule = typeof TraefikIngressRouteTCPRuleSchema.infer;
 
 /** `IngressRouteTCP.spec`. */
-export interface TraefikIngressRouteTCPSpec {
-  readonly routes: readonly TraefikIngressRouteTCPRule[];
-  readonly entryPoints?: readonly string[];
-  readonly ingressClassName?: string;
-  readonly tls?: TraefikRouterTLS & { readonly passthrough?: boolean };
-}
+export const TraefikIngressRouteTCPSpecSchema = type({
+  routes: TraefikIngressRouteTCPRuleSchema.array(),
+  'entryPoints?': 'string[]',
+  'ingressClassName?': 'string',
+  'tls?': TraefikRouterTLSSchema.and({ 'passthrough?': 'boolean' }),
+});
+
+/** `IngressRouteTCP.spec`. */
+export type TraefikIngressRouteTCPSpec = typeof TraefikIngressRouteTCPSpecSchema.infer;
 
 // ============================================================================
 // TraefikService / ServersTransport
 // ============================================================================
 
-/** `TraefikService.spec` — exactly one composition mode should be set. */
-export interface TraefikServiceSpec {
-  readonly weighted?: {
-    readonly services?: readonly TraefikServiceRef[];
-    readonly sticky?: TraefikStickyCookie;
-  };
-  readonly mirroring?: TraefikServiceRef & {
-    readonly maxBodySize?: number;
-    readonly mirrorBody?: boolean;
-    readonly mirrors?: readonly (TraefikServiceRef & { readonly percent?: number })[];
-  };
-  readonly failover?: {
-    readonly service: TraefikServiceRef;
-    readonly fallback: TraefikServiceRef;
-    readonly errors?: {
-      readonly status?: readonly string[];
-      readonly maxRequestBodyBytes?: number;
-    };
-  };
-  readonly highestRandomWeight?: {
-    readonly services?: readonly TraefikServiceRef[];
-  };
-}
+/**
+ * `TraefikService.spec` — exactly one composition mode should be set.
+ *
+ * `failover.errors` is required because the CRD requires it alongside
+ * `service` and `fallback`.
+ */
+export const TraefikServiceSpecSchema = type({
+  'weighted?': {
+    'services?': TraefikServiceRefSchema.array(),
+    'sticky?': TraefikStickyCookieSchema,
+  },
+  'mirroring?': TraefikServiceRefSchema.and({
+    'maxBodySize?': 'number.integer',
+    'mirrorBody?': 'boolean',
+    'mirrors?': TraefikServiceRefSchema.and({ 'percent?': 'number.integer' }).array(),
+  }),
+  'failover?': {
+    service: TraefikServiceRefSchema,
+    fallback: TraefikServiceRefSchema,
+    errors: {
+      'status?': 'string[]',
+      'maxRequestBodyBytes?': 'number.integer',
+    },
+  },
+  'highestRandomWeight?': {
+    'services?': TraefikServiceRefSchema.array(),
+  },
+});
+
+/** `TraefikService.spec`. */
+export type TraefikServiceSpec = typeof TraefikServiceSpecSchema.infer;
 
 /** `ServersTransport.spec` — how Traefik dials upstream servers. */
-export interface TraefikServersTransportSpec {
-  readonly serverName?: string;
-  readonly insecureSkipVerify?: boolean;
-  readonly rootCAsSecrets?: readonly string[];
-  readonly rootCAs?: readonly {
-    readonly secret?: string;
-    readonly configMap?: string;
-  }[];
-  readonly certificatesSecrets?: readonly string[];
-  readonly maxIdleConnsPerHost?: number;
-  readonly disableHTTP2?: boolean;
-  readonly peerCertURI?: string;
-  readonly minVersion?: string;
-  readonly maxVersion?: string;
-  readonly cipherSuites?: readonly string[];
-  readonly spiffe?: {
-    readonly ids?: readonly string[];
-    readonly trustDomain?: string;
-  };
+export const TraefikServersTransportSpecSchema = type({
+  'serverName?': 'string',
+  'insecureSkipVerify?': 'boolean',
+  'rootCAsSecrets?': 'string[]',
+  'rootCAs?': type({
+    'secret?': 'string',
+    'configMap?': 'string',
+  }).array(),
+  'certificatesSecrets?': 'string[]',
+  'maxIdleConnsPerHost?': 'number.integer',
+  'disableHTTP2?': 'boolean',
+  'peerCertURI?': 'string',
+  'minVersion?': 'string',
+  'maxVersion?': 'string',
+  'cipherSuites?': 'string[]',
+  'spiffe?': {
+    'ids?': 'string[]',
+    'trustDomain?': 'string',
+  },
   /**
    * Upstream timeouts. An edge fronting long-running requests must raise
    * `responseHeaderTimeout` above the default 60s alongside the entrypoint's
    * `respondingTimeouts`.
    */
-  readonly forwardingTimeouts?: {
-    readonly dialTimeout?: TraefikDuration;
-    readonly responseHeaderTimeout?: TraefikDuration;
-    readonly idleConnTimeout?: TraefikDuration;
-    readonly readIdleTimeout?: TraefikDuration;
-    readonly pingTimeout?: TraefikDuration;
-  };
-}
+  'forwardingTimeouts?': {
+    'dialTimeout?': traefikDuration,
+    'responseHeaderTimeout?': traefikDuration,
+    'idleConnTimeout?': traefikDuration,
+    'readIdleTimeout?': traefikDuration,
+    'pingTimeout?': traefikDuration,
+  },
+});
+
+/** `ServersTransport.spec`. */
+export type TraefikServersTransportSpec = typeof TraefikServersTransportSpecSchema.infer;
 
 // ============================================================================
 // TLSOption / TLSStore
 // ============================================================================
 
 /** Mutual-TLS behavior of a `TLSOption`. */
-export interface TraefikClientAuth {
-  readonly secretNames?: readonly string[];
-  readonly clientAuthType?:
-    | 'NoClientCert'
-    | 'RequestClientCert'
-    | 'RequireAnyClientCert'
-    | 'VerifyClientCertIfGiven'
-    | 'RequireAndVerifyClientCert';
-}
+export const TraefikClientAuthSchema = type({
+  'secretNames?': 'string[]',
+  'clientAuthType?':
+    '"NoClientCert" | "RequestClientCert" | "RequireAnyClientCert" | "VerifyClientCertIfGiven" | "RequireAndVerifyClientCert"',
+});
+
+/** Mutual-TLS behavior of a `TLSOption`. */
+export type TraefikClientAuth = typeof TraefikClientAuthSchema.infer;
+
+/**
+ * `TLSOption.spec`.
+ *
+ * `minVersion`/`maxVersion` are narrower than the CRD's bare string: those four
+ * are the values Traefik accepts, so a typo is caught here instead of by the
+ * proxy at runtime. The CRD's deprecated `preferServerCipherSuites` is
+ * deliberately absent — Traefik v3 ignores it.
+ */
+export const TraefikTLSOptionSpecSchema = type({
+  'minVersion?': '"VersionTLS10" | "VersionTLS11" | "VersionTLS12" | "VersionTLS13"',
+  'maxVersion?': '"VersionTLS10" | "VersionTLS11" | "VersionTLS12" | "VersionTLS13"',
+  'cipherSuites?': 'string[]',
+  'curvePreferences?': 'string[]',
+  /** Reject connections whose SNI does not match a configured certificate. */
+  'sniStrict?': 'boolean',
+  'alpnProtocols?': 'string[]',
+  'disableSessionTickets?': 'boolean',
+  'clientAuth?': TraefikClientAuthSchema,
+});
 
 /** `TLSOption.spec`. */
-export interface TraefikTLSOptionSpec {
-  readonly minVersion?: 'VersionTLS10' | 'VersionTLS11' | 'VersionTLS12' | 'VersionTLS13';
-  readonly maxVersion?: 'VersionTLS10' | 'VersionTLS11' | 'VersionTLS12' | 'VersionTLS13';
-  readonly cipherSuites?: readonly string[];
-  readonly curvePreferences?: readonly string[];
-  /** Reject connections whose SNI does not match a configured certificate. */
-  readonly sniStrict?: boolean;
-  readonly alpnProtocols?: readonly string[];
-  readonly disableSessionTickets?: boolean;
-  readonly clientAuth?: TraefikClientAuth;
-}
+export type TraefikTLSOptionSpec = typeof TraefikTLSOptionSpecSchema.infer;
 
 /** `TLSStore.spec`. */
-export interface TraefikTLSStoreSpec {
+export const TraefikTLSStoreSpecSchema = type({
   /**
    * Default certificate served when SNI matches no router certificate. Point
    * this at the Secret a cert-manager `Certificate` writes.
    */
-  readonly defaultCertificate?: { readonly secretName: string };
+  'defaultCertificate?': { secretName: 'string' },
   /** ACME resolver used to generate the default certificate instead. */
-  readonly defaultGeneratedCert?: {
-    readonly resolver?: string;
-    readonly domain?: {
-      readonly main?: string;
-      readonly sans?: readonly string[];
-    };
-  };
-  readonly certificates?: readonly { readonly secretName: string }[];
-}
+  'defaultGeneratedCert?': {
+    'resolver?': 'string',
+    'domain?': {
+      'main?': 'string',
+      'sans?': 'string[]',
+    },
+  },
+  'certificates?': type({ secretName: 'string' }).array(),
+});
+
+/** `TLSStore.spec`. */
+export type TraefikTLSStoreSpec = typeof TraefikTLSStoreSpecSchema.infer;
 
 // ============================================================================
 // Middleware — the OSS middleware set as a discriminated union
 // ============================================================================
 
+/** TLS client config shared by `forwardAuth` and the `rateLimit` Redis backend. */
+const middlewareClientTlsShape = {
+  'caSecret?': 'string',
+  'certSecret?': 'string',
+  'insecureSkipVerify?': 'boolean',
+} as const;
+
 /**
  * Delegate authentication and authorization to an in-cluster authorizer.
+ *
+ * `address` is required although the CRD allows it to be absent: a
+ * `forwardAuth` with no authorizer fails every request.
  *
  * @security `trustForwardHeader` defaults to `false` in
  * {@link TRAEFIK_FORWARD_AUTH_SECURE_DEFAULTS}: trusting `X-Forwarded-*` from
@@ -320,149 +433,185 @@ export interface TraefikTLSStoreSpec {
  * is an explicit allowlist — only the listed headers are copied from the
  * authorizer response onto the upstream request.
  */
-export interface TraefikForwardAuthMiddleware {
+export const TraefikForwardAuthMiddlewareSchema = type({
   /** URL of the authorizer, e.g. `http://authorizer.edge.svc.cluster.local:8080/auth`. */
-  readonly address: string;
+  address: 'string',
   /** Copy `X-Forwarded-*` from the client to the authorizer. Keep `false` at an edge. */
-  readonly trustForwardHeader?: boolean;
+  'trustForwardHeader?': 'boolean',
   /** Headers copied from the authorizer's response onto the upstream request. */
-  readonly authResponseHeaders?: readonly string[];
-  /** Regex alternative to {@link authResponseHeaders}. Prefer the explicit list. */
-  readonly authResponseHeadersRegex?: string;
+  'authResponseHeaders?': 'string[]',
+  /** Regex alternative to `authResponseHeaders`. Prefer the explicit list. */
+  'authResponseHeadersRegex?': 'string',
   /** Client headers forwarded to the authorizer. Empty means all of them. */
-  readonly authRequestHeaders?: readonly string[];
-  readonly addAuthCookiesToResponse?: readonly string[];
-  readonly authSigninURL?: string;
-  readonly forwardBody?: boolean;
-  readonly maxBodySize?: number;
-  readonly maxResponseBodySize?: number;
-  readonly headerField?: string;
-  readonly preserveLocationHeader?: boolean;
-  readonly preserveRequestMethod?: boolean;
-  readonly tls?: {
-    readonly caSecret?: string;
-    readonly certSecret?: string;
-    readonly insecureSkipVerify?: boolean;
-  };
-}
+  'authRequestHeaders?': 'string[]',
+  'addAuthCookiesToResponse?': 'string[]',
+  'authSigninURL?': 'string',
+  'forwardBody?': 'boolean',
+  'maxBodySize?': 'number.integer',
+  'maxResponseBodySize?': 'number.integer',
+  'headerField?': 'string',
+  'preserveLocationHeader?': 'boolean',
+  'preserveRequestMethod?': 'boolean',
+  'tls?': middlewareClientTlsShape,
+});
+
+/** Delegate authentication and authorization to an in-cluster authorizer. */
+export type TraefikForwardAuthMiddleware = typeof TraefikForwardAuthMiddlewareSchema.infer;
 
 /** Redis (or Valkey) backend making a rate limit shared across Traefik replicas. */
-export interface TraefikRateLimitRedis {
-  readonly endpoints: readonly string[];
+export const TraefikRateLimitRedisSchema = type({
+  endpoints: 'string[]',
   /** Secret holding `username` / `password` keys. */
-  readonly secret?: string;
-  readonly db?: number;
-  readonly poolSize?: number;
-  readonly minIdleConns?: number;
-  readonly maxActiveConns?: number;
-  readonly dialTimeout?: TraefikDuration;
-  readonly readTimeout?: TraefikDuration;
-  readonly writeTimeout?: TraefikDuration;
-  readonly tls?: {
-    readonly caSecret?: string;
-    readonly certSecret?: string;
-    readonly insecureSkipVerify?: boolean;
-  };
-}
+  'secret?': 'string',
+  'db?': 'number.integer',
+  'poolSize?': 'number.integer',
+  'minIdleConns?': 'number.integer',
+  'maxActiveConns?': 'number.integer',
+  'dialTimeout?': traefikDuration,
+  'readTimeout?': traefikDuration,
+  'writeTimeout?': traefikDuration,
+  'tls?': middlewareClientTlsShape,
+});
+
+/** Redis (or Valkey) backend making a rate limit shared across Traefik replicas. */
+export type TraefikRateLimitRedis = typeof TraefikRateLimitRedisSchema.infer;
 
 /**
  * Token-bucket rate limit.
  *
- * Without {@link TraefikRateLimitMiddleware.redis} each Traefik replica keeps
- * its own counters, so the effective limit is `average × replicas`. Supply the
- * Redis backend whenever the budget must hold for the whole edge.
+ * Without `redis` each Traefik replica keeps its own counters, so the effective
+ * limit is `average × replicas`. Supply the Redis backend whenever the budget
+ * must hold for the whole edge.
  */
-export interface TraefikRateLimitMiddleware {
-  /** Sustained requests allowed per {@link period}. */
-  readonly average?: number;
-  /** Requests absorbed above {@link average} before Traefik answers 429. */
-  readonly burst?: number;
-  /** Window {@link average} is measured over. Defaults to one second. */
-  readonly period?: TraefikDuration;
-  readonly sourceCriterion?: TraefikSourceCriterion;
-  readonly redis?: TraefikRateLimitRedis;
-}
+export const TraefikRateLimitMiddlewareSchema = type({
+  /** Sustained requests allowed per `period`. */
+  'average?': 'number.integer',
+  /** Requests absorbed above `average` before Traefik answers 429. */
+  'burst?': 'number.integer',
+  /** Window `average` is measured over. Defaults to one second. */
+  'period?': traefikDuration,
+  'sourceCriterion?': TraefikSourceCriterionSchema,
+  'redis?': TraefikRateLimitRedisSchema,
+});
+
+/** Token-bucket rate limit. */
+export type TraefikRateLimitMiddleware = typeof TraefikRateLimitMiddlewareSchema.infer;
 
 /** Cap on requests being handled concurrently, per source. */
-export interface TraefikInFlightReqMiddleware {
-  readonly amount?: number;
-  readonly sourceCriterion?: TraefikSourceCriterion;
-}
+export const TraefikInFlightReqMiddlewareSchema = type({
+  'amount?': 'number.integer',
+  'sourceCriterion?': TraefikSourceCriterionSchema,
+});
+
+/** Cap on requests being handled concurrently, per source. */
+export type TraefikInFlightReqMiddleware = typeof TraefikInFlightReqMiddlewareSchema.infer;
+
+/**
+ * CORS and browser security headers.
+ *
+ * The CRD's `sslRedirect`, `sslTemporaryRedirect`, `sslHost` and `sslForceHost`
+ * are deliberately absent: Traefik v3 dropped them in favour of the
+ * `redirectScheme` middleware, and the CRD keeps them only for v2 manifests.
+ */
+export const TraefikHeadersMiddlewareSchema = type({
+  'customRequestHeaders?': 'Record<string, string>',
+  'customResponseHeaders?': 'Record<string, string>',
+  'accessControlAllowCredentials?': 'boolean',
+  'accessControlAllowHeaders?': 'string[]',
+  'accessControlAllowMethods?': 'string[]',
+  'accessControlAllowOriginList?': 'string[]',
+  'accessControlAllowOriginListRegex?': 'string[]',
+  'accessControlExposeHeaders?': 'string[]',
+  'accessControlMaxAge?': 'number.integer',
+  'addVaryHeader?': 'boolean',
+  'allowedHosts?': 'string[]',
+  'hostsProxyHeaders?': 'string[]',
+  'sslProxyHeaders?': 'Record<string, string>',
+  'stsSeconds?': 'number.integer',
+  'stsIncludeSubdomains?': 'boolean',
+  'stsPreload?': 'boolean',
+  'forceSTSHeader?': 'boolean',
+  'frameDeny?': 'boolean',
+  'customFrameOptionsValue?': 'string',
+  'contentTypeNosniff?': 'boolean',
+  'browserXssFilter?': 'boolean',
+  'customBrowserXSSValue?': 'string',
+  'contentSecurityPolicy?': 'string',
+  'contentSecurityPolicyReportOnly?': 'string',
+  'publicKey?': 'string',
+  'referrerPolicy?': 'string',
+  'permissionsPolicy?': 'string',
+  'featurePolicy?': 'string',
+  /** Relaxes header enforcement for local development. Never enable in production. */
+  'isDevelopment?': 'boolean',
+});
 
 /** CORS and browser security headers. */
-export interface TraefikHeadersMiddleware {
-  readonly customRequestHeaders?: Readonly<Record<string, string>>;
-  readonly customResponseHeaders?: Readonly<Record<string, string>>;
-  readonly accessControlAllowCredentials?: boolean;
-  readonly accessControlAllowHeaders?: readonly string[];
-  readonly accessControlAllowMethods?: readonly string[];
-  readonly accessControlAllowOriginList?: readonly string[];
-  readonly accessControlAllowOriginListRegex?: readonly string[];
-  readonly accessControlExposeHeaders?: readonly string[];
-  readonly accessControlMaxAge?: number;
-  readonly addVaryHeader?: boolean;
-  readonly allowedHosts?: readonly string[];
-  readonly hostsProxyHeaders?: readonly string[];
-  readonly sslProxyHeaders?: Readonly<Record<string, string>>;
-  readonly stsSeconds?: number;
-  readonly stsIncludeSubdomains?: boolean;
-  readonly stsPreload?: boolean;
-  readonly forceSTSHeader?: boolean;
-  readonly frameDeny?: boolean;
-  readonly customFrameOptionsValue?: string;
-  readonly contentTypeNosniff?: boolean;
-  readonly browserXssFilter?: boolean;
-  readonly customBrowserXSSValue?: string;
-  readonly contentSecurityPolicy?: string;
-  readonly contentSecurityPolicyReportOnly?: string;
-  readonly publicKey?: string;
-  readonly referrerPolicy?: string;
-  readonly permissionsPolicy?: string;
-  readonly featurePolicy?: string;
-  /** Relaxes header enforcement for local development. Never enable in production. */
-  readonly isDevelopment?: boolean;
-}
+export type TraefikHeadersMiddleware = typeof TraefikHeadersMiddlewareSchema.infer;
 
 /** Redirect a request to another scheme, e.g. `web` → `websecure`. */
-export interface TraefikRedirectSchemeMiddleware {
-  readonly scheme: 'http' | 'https';
-  readonly port?: string;
-  readonly permanent?: boolean;
-}
+export const TraefikRedirectSchemeMiddlewareSchema = type({
+  scheme: '"http" | "https"',
+  'port?': 'string',
+  'permanent?': 'boolean',
+});
+
+/** Redirect a request to another scheme. */
+export type TraefikRedirectSchemeMiddleware = typeof TraefikRedirectSchemeMiddlewareSchema.infer;
 
 /** Regex-based redirect. */
-export interface TraefikRedirectRegexMiddleware {
-  readonly regex: string;
-  readonly replacement: string;
-  readonly permanent?: boolean;
-}
+export const TraefikRedirectRegexMiddlewareSchema = type({
+  regex: 'string',
+  replacement: 'string',
+  'permanent?': 'boolean',
+});
+
+/** Regex-based redirect. */
+export type TraefikRedirectRegexMiddleware = typeof TraefikRedirectRegexMiddlewareSchema.infer;
 
 /** Remove one of `prefixes` from the request path before forwarding. */
-export interface TraefikStripPrefixMiddleware {
-  readonly prefixes: readonly string[];
-  readonly forceSlash?: boolean;
-}
+export const TraefikStripPrefixMiddlewareSchema = type({
+  prefixes: 'string[]',
+  'forceSlash?': 'boolean',
+});
+
+/** Remove one of `prefixes` from the request path before forwarding. */
+export type TraefikStripPrefixMiddleware = typeof TraefikStripPrefixMiddlewareSchema.infer;
 
 /** Remove a regex-matched prefix from the request path. */
-export interface TraefikStripPrefixRegexMiddleware {
-  readonly regex: readonly string[];
-}
+export const TraefikStripPrefixRegexMiddlewareSchema = type({
+  regex: 'string[]',
+});
+
+/** Remove a regex-matched prefix from the request path. */
+export type TraefikStripPrefixRegexMiddleware =
+  typeof TraefikStripPrefixRegexMiddlewareSchema.infer;
 
 /** Prepend a prefix to the request path. */
-export interface TraefikAddPrefixMiddleware {
-  readonly prefix: string;
-}
+export const TraefikAddPrefixMiddlewareSchema = type({
+  prefix: 'string',
+});
+
+/** Prepend a prefix to the request path. */
+export type TraefikAddPrefixMiddleware = typeof TraefikAddPrefixMiddlewareSchema.infer;
 
 /** Replace the whole request path. */
-export interface TraefikReplacePathMiddleware {
-  readonly path: string;
-}
+export const TraefikReplacePathMiddlewareSchema = type({
+  path: 'string',
+});
+
+/** Replace the whole request path. */
+export type TraefikReplacePathMiddleware = typeof TraefikReplacePathMiddlewareSchema.infer;
 
 /** Replace a regex-matched request path. */
-export interface TraefikReplacePathRegexMiddleware {
-  readonly regex: string;
-  readonly replacement: string;
-}
+export const TraefikReplacePathRegexMiddlewareSchema = type({
+  regex: 'string',
+  replacement: 'string',
+});
+
+/** Replace a regex-matched request path. */
+export type TraefikReplacePathRegexMiddleware =
+  typeof TraefikReplacePathRegexMiddlewareSchema.infer;
 
 /**
  * Body buffering and size limits.
@@ -471,169 +620,243 @@ export interface TraefikReplacePathRegexMiddleware {
  * cannot be flooded; a `retryExpression` requires buffering to be able to
  * replay the body.
  */
-export interface TraefikBufferingMiddleware {
-  readonly maxRequestBodyBytes?: number;
-  readonly memRequestBodyBytes?: number;
-  readonly maxResponseBodyBytes?: number;
-  readonly memResponseBodyBytes?: number;
-  readonly retryExpression?: string;
-}
+export const TraefikBufferingMiddlewareSchema = type({
+  'maxRequestBodyBytes?': 'number.integer',
+  'memRequestBodyBytes?': 'number.integer',
+  'maxResponseBodyBytes?': 'number.integer',
+  'memResponseBodyBytes?': 'number.integer',
+  'retryExpression?': 'string',
+});
+
+/** Body buffering and size limits. */
+export type TraefikBufferingMiddleware = typeof TraefikBufferingMiddlewareSchema.infer;
 
 /** Retry a request against the next available server. */
-export interface TraefikRetryMiddleware {
-  readonly attempts?: number;
-  readonly initialInterval?: TraefikDuration;
-  readonly timeout?: TraefikDuration;
-  readonly status?: readonly string[];
-  readonly maxRequestBodyBytes?: number;
-  readonly disableRetryOnNetworkError?: boolean;
-  readonly retryNonIdempotentMethod?: boolean;
-}
+export const TraefikRetryMiddlewareSchema = type({
+  'attempts?': 'number.integer',
+  'initialInterval?': traefikDuration,
+  'timeout?': traefikDuration,
+  'status?': 'string[]',
+  'maxRequestBodyBytes?': 'number.integer',
+  'disableRetryOnNetworkError?': 'boolean',
+  'retryNonIdempotentMethod?': 'boolean',
+});
+
+/** Retry a request against the next available server. */
+export type TraefikRetryMiddleware = typeof TraefikRetryMiddlewareSchema.infer;
 
 /** Trip a circuit when the guard expression evaluates true. */
-export interface TraefikCircuitBreakerMiddleware {
-  readonly expression?: string;
-  readonly checkPeriod?: TraefikDuration;
-  readonly fallbackDuration?: TraefikDuration;
-  readonly recoveryDuration?: TraefikDuration;
-  readonly responseCode?: number;
-}
+export const TraefikCircuitBreakerMiddlewareSchema = type({
+  'expression?': 'string',
+  'checkPeriod?': traefikDuration,
+  'fallbackDuration?': traefikDuration,
+  'recoveryDuration?': traefikDuration,
+  'responseCode?': 'number.integer',
+});
+
+/** Trip a circuit when the guard expression evaluates true. */
+export type TraefikCircuitBreakerMiddleware = typeof TraefikCircuitBreakerMiddlewareSchema.infer;
 
 /** Allow only the listed source ranges. */
-export interface TraefikIpAllowListMiddleware {
-  readonly sourceRange: readonly string[];
-  readonly ipStrategy?: TraefikIpStrategy;
-  readonly rejectStatusCode?: number;
-}
+export const TraefikIpAllowListMiddlewareSchema = type({
+  sourceRange: 'string[]',
+  'ipStrategy?': TraefikIpStrategySchema,
+  'rejectStatusCode?': 'number.integer',
+});
+
+/** Allow only the listed source ranges. */
+export type TraefikIpAllowListMiddleware = typeof TraefikIpAllowListMiddlewareSchema.infer;
 
 /** HTTP basic or digest auth backed by a Secret of htpasswd users. */
-export interface TraefikCredentialAuthMiddleware {
+export const TraefikCredentialAuthMiddlewareSchema = type({
   /** Secret containing a `users` key in htpasswd format. */
-  readonly secret: string;
-  readonly realm?: string;
-  readonly removeHeader?: boolean;
-  readonly headerField?: string;
-}
+  secret: 'string',
+  'realm?': 'string',
+  'removeHeader?': 'boolean',
+  'headerField?': 'string',
+});
+
+/** HTTP basic or digest auth backed by a Secret of htpasswd users. */
+export type TraefikCredentialAuthMiddleware = typeof TraefikCredentialAuthMiddlewareSchema.infer;
 
 /** Response compression. */
-export interface TraefikCompressMiddleware {
-  readonly encodings?: readonly string[];
-  readonly defaultEncoding?: string;
-  readonly includedContentTypes?: readonly string[];
-  readonly excludedContentTypes?: readonly string[];
-  readonly minResponseBodyBytes?: number;
-}
+export const TraefikCompressMiddlewareSchema = type({
+  'encodings?': 'string[]',
+  'defaultEncoding?': 'string',
+  'includedContentTypes?': 'string[]',
+  'excludedContentTypes?': 'string[]',
+  'minResponseBodyBytes?': 'number.integer',
+});
+
+/** Response compression. */
+export type TraefikCompressMiddleware = typeof TraefikCompressMiddlewareSchema.infer;
+
+/**
+ * Serve custom error pages from another service.
+ *
+ * `service` is required although the CRD allows it to be absent: without a
+ * backend there is nothing to serve the error page from.
+ */
+export const TraefikErrorsMiddlewareSchema = type({
+  'status?': 'string[]',
+  'statusRewrites?': 'Record<string, number>',
+  'query?': 'string',
+  service: TraefikServiceRefSchema,
+  /** Client headers forwarded to the error-page service. */
+  'errorRequestHeaders?': 'string[]',
+});
 
 /** Serve custom error pages from another service. */
-export interface TraefikErrorsMiddleware {
-  readonly status?: readonly string[];
-  readonly statusRewrites?: Readonly<Record<string, number>>;
-  readonly query?: string;
-  readonly service: TraefikServiceRef;
-}
+export type TraefikErrorsMiddleware = typeof TraefikErrorsMiddlewareSchema.infer;
 
 /** Apply an ordered list of other middlewares. */
-export interface TraefikChainMiddleware {
-  readonly middlewares: readonly TraefikMiddlewareRef[];
-}
+export const TraefikChainMiddlewareSchema = type({
+  middlewares: TraefikMiddlewareRefSchema.array(),
+});
+
+/** Apply an ordered list of other middlewares. */
+export type TraefikChainMiddleware = typeof TraefikChainMiddlewareSchema.infer;
 
 /** Forward client-certificate information to the upstream. */
-export interface TraefikPassTLSClientCertMiddleware {
-  readonly pem?: boolean;
-  readonly info?: {
-    readonly notAfter?: boolean;
-    readonly notBefore?: boolean;
-    readonly sans?: boolean;
-    readonly serialNumber?: boolean;
-    readonly subject?: {
-      readonly commonName?: boolean;
-      readonly country?: boolean;
-      readonly domainComponent?: boolean;
-      readonly locality?: boolean;
-      readonly organization?: boolean;
-      readonly organizationalUnit?: boolean;
-      readonly province?: boolean;
-      readonly serialNumber?: boolean;
-    };
-    readonly issuer?: {
-      readonly commonName?: boolean;
-      readonly country?: boolean;
-      readonly domainComponent?: boolean;
-      readonly locality?: boolean;
-      readonly organization?: boolean;
-      readonly province?: boolean;
-      readonly serialNumber?: boolean;
-    };
-  };
-}
+export const TraefikPassTLSClientCertMiddlewareSchema = type({
+  'pem?': 'boolean',
+  'info?': {
+    'notAfter?': 'boolean',
+    'notBefore?': 'boolean',
+    'sans?': 'boolean',
+    'serialNumber?': 'boolean',
+    'subject?': {
+      'commonName?': 'boolean',
+      'country?': 'boolean',
+      'domainComponent?': 'boolean',
+      'locality?': 'boolean',
+      'organization?': 'boolean',
+      'organizationalUnit?': 'boolean',
+      'province?': 'boolean',
+      'serialNumber?': 'boolean',
+    },
+    /** The CRD's issuer block has no `organizationalUnit`. */
+    'issuer?': {
+      'commonName?': 'boolean',
+      'country?': 'boolean',
+      'domainComponent?': 'boolean',
+      'locality?': 'boolean',
+      'organization?': 'boolean',
+      'province?': 'boolean',
+      'serialNumber?': 'boolean',
+    },
+  },
+});
+
+/** Forward client-certificate information to the upstream. */
+export type TraefikPassTLSClientCertMiddleware =
+  typeof TraefikPassTLSClientCertMiddlewareSchema.infer;
 
 /** Auto-detect the response `Content-Type` when the upstream omits it. */
-export interface TraefikContentTypeMiddleware {
-  readonly autoDetect?: boolean;
-}
+export const TraefikContentTypeMiddlewareSchema = type({
+  'autoDetect?': 'boolean',
+});
+
+/** Auto-detect the response `Content-Type` when the upstream omits it. */
+export type TraefikContentTypeMiddleware = typeof TraefikContentTypeMiddlewareSchema.infer;
 
 /** Allow otherwise-rejected percent-encoded characters in the request path. */
-export interface TraefikEncodedCharactersMiddleware {
-  readonly allowEncodedSlash?: boolean;
-  readonly allowEncodedBackSlash?: boolean;
-  readonly allowEncodedNullCharacter?: boolean;
-  readonly allowEncodedSemicolon?: boolean;
-  readonly allowEncodedPercent?: boolean;
-  readonly allowEncodedQuestionMark?: boolean;
-  readonly allowEncodedHash?: boolean;
-}
+export const TraefikEncodedCharactersMiddlewareSchema = type({
+  'allowEncodedSlash?': 'boolean',
+  'allowEncodedBackSlash?': 'boolean',
+  'allowEncodedNullCharacter?': 'boolean',
+  'allowEncodedSemicolon?': 'boolean',
+  'allowEncodedPercent?': 'boolean',
+  'allowEncodedQuestionMark?': 'boolean',
+  'allowEncodedHash?': 'boolean',
+});
+
+/** Allow otherwise-rejected percent-encoded characters in the request path. */
+export type TraefikEncodedCharactersMiddleware =
+  typeof TraefikEncodedCharactersMiddlewareSchema.infer;
 
 /** Bridge gRPC-Web clients to a gRPC upstream. */
-export interface TraefikGrpcWebMiddleware {
-  readonly allowOrigins?: readonly string[];
-}
+export const TraefikGrpcWebMiddlewareSchema = type({
+  'allowOrigins?': 'string[]',
+});
+
+/** Bridge gRPC-Web clients to a gRPC upstream. */
+export type TraefikGrpcWebMiddleware = typeof TraefikGrpcWebMiddlewareSchema.infer;
 
 /**
  * A Traefik plugin middleware.
  *
  * Keyed by the plugin name declared in `experimental.plugins`; the value shape
- * is defined by the plugin itself, so it stays `unknown` rather than `any`.
+ * belongs to the plugin itself. This is one of the boundaries where `unknown`
+ * is correct rather than lazy — the CRD marks it
+ * `x-kubernetes-preserve-unknown-fields`, so there is no schema to model.
  */
-export type TraefikPluginMiddleware = Readonly<Record<string, unknown>>;
+export const TraefikPluginMiddlewareSchema = type('Record<string, unknown>');
+
+/** A Traefik plugin middleware, keyed by plugin name. */
+export type TraefikPluginMiddleware = Record<string, unknown>;
+
+/**
+ * Every OSS middleware keyed by its CRD field name, all keys optional.
+ *
+ * A `Middleware` object carries exactly one of them, which
+ * {@link TraefikMiddlewareSpecSchema} enforces with `.narrow()` while keeping
+ * this base object shape intact so KRO SimpleSchema generation can still
+ * discover the fields.
+ */
+const TraefikMiddlewareSpecMapSchema = type({
+  'addPrefix?': TraefikAddPrefixMiddlewareSchema,
+  'basicAuth?': TraefikCredentialAuthMiddlewareSchema,
+  'buffering?': TraefikBufferingMiddlewareSchema,
+  'chain?': TraefikChainMiddlewareSchema,
+  'circuitBreaker?': TraefikCircuitBreakerMiddlewareSchema,
+  'compress?': TraefikCompressMiddlewareSchema,
+  'contentType?': TraefikContentTypeMiddlewareSchema,
+  'digestAuth?': TraefikCredentialAuthMiddlewareSchema,
+  'encodedCharacters?': TraefikEncodedCharactersMiddlewareSchema,
+  'errors?': TraefikErrorsMiddlewareSchema,
+  'forwardAuth?': TraefikForwardAuthMiddlewareSchema,
+  'grpcWeb?': TraefikGrpcWebMiddlewareSchema,
+  'headers?': TraefikHeadersMiddlewareSchema,
+  'inFlightReq?': TraefikInFlightReqMiddlewareSchema,
+  'ipAllowList?': TraefikIpAllowListMiddlewareSchema,
+  'passTLSClientCert?': TraefikPassTLSClientCertMiddlewareSchema,
+  'plugin?': TraefikPluginMiddlewareSchema,
+  'rateLimit?': TraefikRateLimitMiddlewareSchema,
+  'redirectRegex?': TraefikRedirectRegexMiddlewareSchema,
+  'redirectScheme?': TraefikRedirectSchemeMiddlewareSchema,
+  'replacePath?': TraefikReplacePathMiddlewareSchema,
+  'replacePathRegex?': TraefikReplacePathRegexMiddlewareSchema,
+  'retry?': TraefikRetryMiddlewareSchema,
+  'stripPrefix?': TraefikStripPrefixMiddlewareSchema,
+  'stripPrefixRegex?': TraefikStripPrefixRegexMiddlewareSchema,
+});
 
 /** Every OSS middleware keyed by its CRD field name. */
-export interface TraefikMiddlewareSpecMap {
-  addPrefix: TraefikAddPrefixMiddleware;
-  basicAuth: TraefikCredentialAuthMiddleware;
-  buffering: TraefikBufferingMiddleware;
-  chain: TraefikChainMiddleware;
-  circuitBreaker: TraefikCircuitBreakerMiddleware;
-  compress: TraefikCompressMiddleware;
-  contentType: TraefikContentTypeMiddleware;
-  digestAuth: TraefikCredentialAuthMiddleware;
-  encodedCharacters: TraefikEncodedCharactersMiddleware;
-  errors: TraefikErrorsMiddleware;
-  forwardAuth: TraefikForwardAuthMiddleware;
-  grpcWeb: TraefikGrpcWebMiddleware;
-  headers: TraefikHeadersMiddleware;
-  inFlightReq: TraefikInFlightReqMiddleware;
-  ipAllowList: TraefikIpAllowListMiddleware;
-  passTLSClientCert: TraefikPassTLSClientCertMiddleware;
-  plugin: TraefikPluginMiddleware;
-  rateLimit: TraefikRateLimitMiddleware;
-  redirectRegex: TraefikRedirectRegexMiddleware;
-  redirectScheme: TraefikRedirectSchemeMiddleware;
-  replacePath: TraefikReplacePathMiddleware;
-  replacePathRegex: TraefikReplacePathRegexMiddleware;
-  retry: TraefikRetryMiddleware;
-  stripPrefix: TraefikStripPrefixMiddleware;
-  stripPrefixRegex: TraefikStripPrefixRegexMiddleware;
-}
+export type TraefikMiddlewareSpecMap = AllPresent<typeof TraefikMiddlewareSpecMapSchema.infer>;
 
 /** The name of one middleware kind. */
 export type TraefikMiddlewareKind = keyof TraefikMiddlewareSpecMap;
 
 /**
+ * `Middleware.spec` — exactly one middleware kind.
+ *
+ * The exactly-one invariant is a schema-level `.narrow()` rather than only a
+ * factory guard, per `integration-skill.md` ("Schema invariants"): two keys in
+ * one object is not a merge — Traefik applies one and silently drops the other.
+ * The narrow delegates to {@link validateTraefikMiddlewareSpec} so the rule has
+ * exactly one runtime implementation.
+ */
+export const TraefikMiddlewareSpecSchema = TraefikMiddlewareSpecMapSchema.narrow((data, ctx) => {
+  const issues = validateTraefikMiddlewareSpec(data);
+  return issues.length === 0 ? true : ctx.mustBe(issues.join(' '));
+});
+
+/**
  * Exactly one key of `TMap`, with every other key typed `never`.
  *
- * This is what makes `{ forwardAuth: ..., rateLimit: ... }` a compile error: a
- * `Middleware` configures a single behavior, and two keys in one object is a
- * silent misconfiguration that Traefik resolves by picking one.
+ * The compile-time counterpart to the schema's `.narrow()`: this is what makes
+ * `{ forwardAuth: ..., rateLimit: ... }` a compile error.
  */
 type ExactlyOne<TMap> = {
   [K in keyof TMap]: { readonly [P in K]: TMap[P] } & {
@@ -657,8 +880,72 @@ export const TRAEFIK_FORWARD_AUTH_SECURE_DEFAULTS = {
 } as const;
 
 // ============================================================================
-// Helm chart values (typed subset of the official chart's values.yaml)
+// Helm chart values
+//
+// `TraefikManagedHelmValues` is CLOSED: no index signatures, at any depth. It
+// describes exactly the chart paths this factory maps, pins or reads back,
+// verified against chart 41.5.0's `values.schema.json`. Everything else in the
+// chart's surface reaches Helm through the ONE named raw boundary,
+// `TraefikRawHelmValues` — the escape hatch `integration-skill.md` permits for
+// raw passthrough.
 // ============================================================================
+
+/** Kubernetes Service type usable for the Traefik entrypoint Service. */
+export type TraefikServiceType = 'LoadBalancer' | 'NodePort' | 'ClusterIP';
+
+/** A pod or container seccomp profile. */
+export interface TraefikSeccompProfile {
+  type: 'RuntimeDefault' | 'Unconfined' | 'Localhost';
+  localhostProfile?: string;
+}
+
+/**
+ * Pod-level security context (chart `podSecurityContext`).
+ *
+ * Extends the repository's shared {@link SecurityContext} with the seccomp
+ * profile the chart exposes and this factory pins.
+ */
+export interface TraefikPodSecurityContext extends SecurityContext {
+  seccompProfile?: TraefikSeccompProfile;
+}
+
+/**
+ * Container-level security context (chart `securityContext`).
+ *
+ * Extends the shared {@link SecurityContext} with the container-only fields
+ * this factory pins: no privilege escalation, a read-only root filesystem, and
+ * all capabilities dropped.
+ */
+export interface TraefikContainerSecurityContext extends SecurityContext {
+  allowPrivilegeEscalation?: boolean;
+  readOnlyRootFilesystem?: boolean;
+  privileged?: boolean;
+  capabilities?: {
+    add?: string[];
+    drop?: string[];
+  };
+  seccompProfile?: TraefikSeccompProfile;
+}
+
+/** One `topologySpreadConstraints[]` entry as the chart forwards it. */
+export interface TraefikTopologySpreadConstraint {
+  maxSkew: number;
+  topologyKey: string;
+  whenUnsatisfiable: 'DoNotSchedule' | 'ScheduleAnyway';
+  labelSelector?: LabelSelector;
+  minDomains?: number;
+  matchLabelKeys?: string[];
+  nodeAffinityPolicy?: 'Honor' | 'Ignore';
+  nodeTaintsPolicy?: 'Honor' | 'Ignore';
+}
+
+/** TLS material an OTLP exporter presents to the collector. */
+export interface TraefikOtlpTlsValues {
+  ca?: string;
+  cert?: string;
+  key?: string;
+  insecureSkipVerify?: boolean;
+}
 
 /** OTLP exporter shape shared by the chart's log/accessLog/metrics/tracing keys. */
 export interface TraefikOtlpValues {
@@ -669,15 +956,14 @@ export interface TraefikOtlpValues {
     enabled?: boolean;
     endpoint?: string;
     headers?: Record<string, string>;
-    tls?: Record<string, unknown>;
+    tls?: TraefikOtlpTlsValues;
   };
   grpc?: {
     enabled?: boolean;
     endpoint?: string;
     insecure?: boolean;
-    tls?: Record<string, unknown>;
+    tls?: TraefikOtlpTlsValues;
   };
-  [key: string]: unknown;
 }
 
 /** One entry of the chart's `ports` map (an entrypoint). */
@@ -689,7 +975,7 @@ export interface TraefikPortValues {
   nodePort?: number;
   protocol?: 'TCP' | 'UDP';
   asDefault?: boolean;
-  expose?: { default?: boolean; [key: string]: unknown };
+  expose?: { default?: boolean };
   http?: {
     redirections?: {
       entryPoint?: {
@@ -701,6 +987,7 @@ export interface TraefikPortValues {
     };
     middlewares?: string[];
     maxHeaderBytes?: number;
+    sanitizePath?: boolean;
     /**
      * TLS termination for the entrypoint. Nested under `http`, which is where
      * chart 41.5.0's `values.schema.json` puts it — `ports.<name>.tls` is
@@ -712,9 +999,12 @@ export interface TraefikPortValues {
       certResolver?: string;
       domains?: { main?: string; sans?: string[] }[];
     };
-    [key: string]: unknown;
   };
-  forwardedHeaders?: { trustedIPs?: string[]; insecure?: boolean; [key: string]: unknown };
+  forwardedHeaders?: {
+    trustedIPs?: string[];
+    insecure?: boolean;
+    notAppendXForwardedFor?: boolean;
+  };
   proxyProtocol?: { trustedIPs?: string[]; insecure?: boolean };
   /** Entrypoint-level timeouts. Raise these for requests longer than 60s. */
   transport?: {
@@ -730,20 +1020,30 @@ export interface TraefikPortValues {
     keepAliveMaxRequests?: number;
     keepAliveMaxTime?: TraefikDuration;
   };
-  observability?: Record<string, unknown>;
-  [key: string]: unknown;
 }
 
 /**
- * Typed subset of the official `traefik` chart values this factory maps or
- * pins (verified against chart 41.5.0). The index signature keeps the rest of
- * the chart's surface reachable through the build-time values passthrough.
+ * Plugin declarations for `experimental.plugins`.
+ *
+ * Each plugin owns its own value shape, so this stays an `unknown` map by
+ * necessity — the same boundary as {@link TraefikPluginMiddleware}.
+ */
+export type TraefikPluginChartConfig = Record<string, unknown>;
+
+/**
+ * The chart values this factory maps, pins, or reads back — a CLOSED type.
+ *
+ * Nothing here has an index signature: if a chart path is not listed, this
+ * factory does not model it and it belongs in {@link TraefikRawHelmValues}.
+ * That is what makes `applyTraefikSecurityPins`' precedence auditable — every
+ * pinned path is a named field with a known type, so a pin that stopped
+ * matching the chart would be a compile error rather than a silent no-op.
  *
  * Note the shapes that changed in the 3x chart line and are easy to get wrong:
  * the Service type lives under `service.spec.type` (not `service.type`), and
  * the Gateway API provider is `providers.kubernetesGateway`.
  */
-export interface TraefikHelmValues {
+export interface TraefikManagedHelmValues {
   image?: { registry?: string; repository?: string; tag?: string; pullPolicy?: string };
   commonLabels?: Record<string, string>;
   deployment?: {
@@ -755,7 +1055,8 @@ export interface TraefikHelmValues {
     podAnnotations?: Record<string, string>;
     podLabels?: Record<string, string>;
     terminationGracePeriodSeconds?: number;
-    [key: string]: unknown;
+    minReadySeconds?: number;
+    revisionHistoryLimit?: number;
   };
   /** @security Pinned off by the values mapper. */
   api?: {
@@ -763,13 +1064,12 @@ export interface TraefikHelmValues {
     insecure?: boolean;
     debug?: boolean;
     basePath?: string;
-    [key: string]: unknown;
+    disableDashboardAd?: boolean;
   };
   /** @security Pinned off by the values mapper. */
   ingressRoute?: {
-    dashboard?: { enabled?: boolean; [key: string]: unknown };
-    healthcheck?: { enabled?: boolean; [key: string]: unknown };
-    [key: string]: unknown;
+    dashboard?: { enabled?: boolean };
+    healthcheck?: { enabled?: boolean };
   };
   ingressClass?: { enabled?: boolean; isDefaultClass?: boolean; name?: string };
   providers?: {
@@ -781,56 +1081,56 @@ export interface TraefikHelmValues {
       allowExternalNameServices?: boolean;
       allowEmptyServices?: boolean;
       nativeLBByDefault?: boolean;
-      [key: string]: unknown;
+      defaultTLSResourcesNamespace?: string;
     };
     kubernetesIngress?: {
       enabled?: boolean;
       ingressClass?: string;
+      namespaces?: string[];
+      allowExternalNameServices?: boolean;
+      allowEmptyServices?: boolean;
       /**
        * Service whose address Traefik copies onto `Ingress.status`. The chart
        * emits the flag only when it created the Service itself OR when
        * `pathOverride` names one — this factory owns the Service, so the mapper
        * always sets `pathOverride`.
        */
-      publishedService?: { enabled?: boolean; pathOverride?: string; [key: string]: unknown };
-      [key: string]: unknown;
+      publishedService?: { enabled?: boolean; pathOverride?: string };
     };
     kubernetesGateway?: {
       enabled?: boolean;
       experimentalChannel?: boolean;
       namespaces?: string[];
-      statusAddress?: Record<string, unknown>;
-      [key: string]: unknown;
+      statusAddress?: {
+        service?: { name?: string; namespace?: string };
+        ip?: string;
+        hostname?: string;
+      };
     };
-    file?: { enabled?: boolean; watch?: boolean; content?: Record<string, unknown> };
-    [key: string]: unknown;
+    file?: { enabled?: boolean; watch?: boolean; content?: string };
   };
-  gateway?: { enabled?: boolean; [key: string]: unknown };
-  gatewayClass?: { enabled?: boolean; name?: string; [key: string]: unknown };
-  log?: { level?: string; format?: string; otlp?: TraefikOtlpValues; [key: string]: unknown };
+  gateway?: { enabled?: boolean; name?: string; namespace?: string };
+  gatewayClass?: { enabled?: boolean; name?: string; labels?: Record<string, string> };
+  log?: { level?: string; format?: string; filePath?: string; otlp?: TraefikOtlpValues };
   accessLog?: {
     enabled?: boolean;
     format?: string;
+    filePath?: string;
     addInternals?: boolean;
-    fields?: Record<string, unknown>;
-    filters?: Record<string, unknown>;
+    bufferingSize?: number;
     otlp?: TraefikOtlpValues;
-    [key: string]: unknown;
   };
   metrics?: {
     addInternals?: boolean;
-    prometheus?: Record<string, unknown> | null;
     otlp?: TraefikOtlpValues;
-    [key: string]: unknown;
   };
   tracing?: {
     addInternals?: boolean;
     serviceName?: string;
     sampleRate?: number;
     otlp?: TraefikOtlpValues;
-    [key: string]: unknown;
   };
-  experimental?: { otlpLogs?: boolean; plugins?: Record<string, unknown>; [key: string]: unknown };
+  experimental?: { otlpLogs?: boolean; plugins?: TraefikPluginChartConfig };
   ports?: Record<string, TraefikPortValues>;
   service?: {
     /**
@@ -844,12 +1144,9 @@ export interface TraefikHelmValues {
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
     /** The Service type lives here in chart 3x, not at `service.type`. */
-    spec?: { type?: TraefikServiceType; [key: string]: unknown };
-    [key: string]: unknown;
+    spec?: { type?: TraefikServiceType };
   };
-  tlsOptions?: Record<string, unknown>;
-  tlsStore?: Record<string, unknown>;
-  rbac?: { enabled?: boolean; namespaced?: boolean; [key: string]: unknown };
+  rbac?: { enabled?: boolean; namespaced?: boolean };
   /**
    * Pinned to the release name by the values mapper so the resource-name anchor
    * — and therefore the name of the Service this factory owns — is
@@ -875,22 +1172,38 @@ export interface TraefikHelmValues {
     limits?: Record<string, string>;
   };
   /** @security Pinned to a non-root, read-only-root-filesystem profile. */
-  securityContext?: Record<string, unknown>;
+  securityContext?: TraefikContainerSecurityContext;
   /** @security Pinned to a non-root profile. */
-  podSecurityContext?: Record<string, unknown>;
+  podSecurityContext?: TraefikPodSecurityContext;
   additionalArguments?: string[];
-  env?: Record<string, unknown>[];
+  env?: EnvVar[];
   nodeSelector?: Record<string, string>;
-  tolerations?: Record<string, unknown>[];
-  affinity?: Record<string, unknown>;
-  topologySpreadConstraints?: Record<string, unknown>[];
+  tolerations?: Toleration[];
+  affinity?: Affinity;
+  topologySpreadConstraints?: TraefikTopologySpreadConstraint[];
   priorityClassName?: string;
-  global?: { checkNewVersion?: boolean; sendAnonymousUsage?: boolean; [key: string]: unknown };
-  [key: string]: unknown;
+  global?: { checkNewVersion?: boolean; sendAnonymousUsage?: boolean };
 }
 
-/** Kubernetes Service type usable for the Traefik entrypoint Service. */
-export type TraefikServiceType = 'LoadBalancer' | 'NodePort' | 'ClusterIP';
+/**
+ * The single raw Helm-values escape hatch.
+ *
+ * Chart surface this factory does not model reaches Helm through here
+ * unchanged. `unknown` is correct at this boundary and nowhere else in the
+ * values types: the shape belongs to whichever chart version is installed, so
+ * TypeKro has nothing to validate it against.
+ */
+export type TraefikRawHelmValues = Record<string, unknown>;
+
+/**
+ * Chart values as they leave the mapper: the closed managed surface plus the
+ * one raw passthrough boundary.
+ *
+ * Reading a managed path (`values.api?.dashboard`, `values.ports?.web`) is
+ * fully typed; an unmodelled chart key is accepted but carries no type, which
+ * is precisely the trade this split makes explicit.
+ */
+export type TraefikHelmValues = TraefikManagedHelmValues & TraefikRawHelmValues;
 
 /** Chart values accepted by {@link TraefikHelmReleaseConfig}. */
 export type TraefikMappedHelmValues = TypeKroChartValues<TraefikHelmValues>;
@@ -963,7 +1276,7 @@ export const TraefikBootstrapConfigSchema = type({
   'ingressClass?': kubernetesDnsLabel,
   'service?': {
     'type?': traefikServiceTypeSchema,
-    /** Cloud load-balancer annotations, e.g. the AWS NLB set. */
+    /** Cloud load-balancer annotations. */
     'annotations?': 'Record<string, string>',
   },
   /**
@@ -1022,11 +1335,16 @@ export type TraefikBootstrapConfig = typeof TraefikBootstrapConfigSchema.infer;
  * `NodePort` services or while a cloud controller is still provisioning an
  * address.
  *
+ * `version` is the chart version Flux actually installed, read back from the
+ * owned `HelmRelease`'s `status.history[]` — an OBSERVED value rather than the
+ * requested one, so a pinned-but-unavailable version can never be reported as
+ * though it were live. It is empty until Flux records its first release.
+ *
  * EVERY field here is a projection of a resource this composition owns, so it
  * hydrates identically in direct and KRO mode. That rules out literals: KRO
  * drops literal status fields, so declaring one would require a field the
- * instance never carries. The entrypoint NAMES are therefore not in this
- * contract — they are fixed by this composition and exported as
+ * instance never carries (#188). The entrypoint NAMES are therefore not in
+ * this contract — they are fixed by this composition and exported as
  * `TRAEFIK_WEB_ENTRYPOINT` / `TRAEFIK_WEBSECURE_ENTRYPOINT` instead. Read the
  * live port names off the Service named by `serviceName` if a consumer needs
  * them at runtime.
@@ -1040,6 +1358,7 @@ export const TraefikBootstrapStatusSchema = type({
     ip: 'string',
   },
   serviceName: 'string',
+  version: 'string',
 });
 
 /** Inferred status of {@link TraefikBootstrapStatusSchema}. */
@@ -1131,8 +1450,28 @@ export interface TraefikBootstrapBuildOptions {
    */
   readonly crds?: HelmReleaseCrdsPolicy;
   /**
-   * Concrete chart values merged BEFORE the security pins, which always win.
-   * Use for chart surface this factory does not model.
+   * Raw chart values, merged BEFORE the mapped values and the security pins —
+   * both of which win.
+   *
+   * Typed as {@link TraefikHelmValues}: a path this factory models is checked,
+   * anything else still reaches the chart through
+   * {@link TraefikRawHelmValues}.
+   *
+   * **Build-time only, on purpose.** The guide's per-instance passthrough
+   * pattern (a `spec.values` field serialized as
+   * `json.unmarshal(json.marshal(schema.spec.values))` and merged last) does
+   * not apply to this composition, because KRO's `map.merge()` is SHALLOW:
+   * - merging raw values LAST would let any KRO instance re-enable
+   *   `api.dashboard` / `api.insecure` or hand the entrypoint Service back to
+   *   the chart, which this factory's contract (#172) forbids; and
+   * - merging the pins last to prevent that would replace whole top-level
+   *   sections, silently discarding a user's sibling keys under `api`,
+   *   `ingressRoute`, `securityContext`, `podSecurityContext`, `service` and
+   *   `global`.
+   *
+   * A values contract with non-negotiable pins therefore has to resolve
+   * precedence at build time, where the merge can be deep and auditable. Pass
+   * chart surface this factory does not model here, at construction.
    */
   readonly values?: TraefikHelmValues;
 }

@@ -287,12 +287,14 @@ describe('traefikBootstrap (defaults)', () => {
       phase: 'Ready',
       loadBalancer: { hostname: 'edge.example.test', ip: '' },
       serviceName: 'traefik',
+      version: '41.5.0',
     });
 
     expect(result).toHaveProperty('phase');
     if ('phase' in result) {
       expect(result.phase).toBe('Ready');
       expect(result.serviceName).toBe('traefik');
+      expect(result.version).toBe('41.5.0');
     }
   });
 

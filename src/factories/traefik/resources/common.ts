@@ -6,7 +6,7 @@
  */
 
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
-import type { ReadinessEvaluator } from '../../../core/types/index.js';
+import type { Composable, ReadinessEvaluator } from '../../../core/types/index.js';
 
 /** Configuration accepted by every namespaced Traefik CRD factory. */
 export interface TraefikResourceConfig<TSpec extends object> {
@@ -57,11 +57,17 @@ export function traefikManagedLabels(instance: string): Record<string, string> {
   };
 }
 
-/** Build the resource definition passed to `createResource`. */
+/**
+ * Build the resource definition passed to `createResource`.
+ *
+ * Takes `Composable<...>` so a composition can pass proxy-sourced optional
+ * fields straight through (integration-skill.md: "All factory functions use
+ * `Composable<MyConfig>`").
+ */
 export function traefikResourceDefinition<TSpec extends object>(
   apiVersion: string,
   kind: string,
-  config: TraefikResourceConfig<TSpec>
+  config: Composable<TraefikResourceConfig<TSpec>>
 ) {
   return {
     apiVersion,
@@ -72,7 +78,7 @@ export function traefikResourceDefinition<TSpec extends object>(
       labels: { ...traefikManagedLabels(config.name), ...config.labels },
       ...(config.annotations ? { annotations: { ...config.annotations } } : {}),
     },
-    spec: config.spec,
+    spec: config.spec as TSpec,
     ...(config.id ? { id: config.id } : {}),
   };
 }
