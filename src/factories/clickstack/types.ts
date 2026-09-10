@@ -760,50 +760,79 @@ export const ClickStackHelmRepositoryConfigSchema = type({
 /** Configuration for the ClickStack HelmRepository wrapper. */
 export type ClickStackHelmRepositoryConfig = typeof ClickStackHelmRepositoryConfigSchema.infer;
 
-/** Configuration for the ClickStack HelmRelease wrapper. */
-export interface ClickStackHelmReleaseConfig {
-  name: string;
-  namespace?: string;
-  version?: string;
-  repositoryName?: string;
-  repositoryNamespace?: string;
+/**
+ * ArkType schema for ClickStackHelmReleaseConfig.
+ *
+ * `values` and `valuesFrom` are validated as `object` / `object[]` and carry
+ * their precise TypeScript types through `.as<>()`. Neither is a shape ArkType
+ * can describe: a values tree is an OPEN chart-values document that may also
+ * be a runtime {@link ValuesMergeExpression}, and `valuesFrom` entries may be
+ * graph-aware {@link TypeKroValue}s. Restating either as a schema shape would
+ * make it a second source of truth for the chart's own values contract; the
+ * cast keeps the config INFERRED whole from this schema instead of needing a
+ * hand-written widening layer on top of `.infer`.
+ */
+export const ClickStackHelmReleaseConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
   /** Official clickstack chart values (graph-aware trees / runtime merges allowed). */
-  values?: ClickStackMappedHelmValues;
+  'values?': type('object').as<ClickStackMappedHelmValues>(),
   /** Secret/ConfigMap values overlays resolved by Flux before inline values. */
-  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
-  id?: string;
-}
+  'valuesFrom?': type('object[]').as<TypeKroValue<HelmReleaseValuesFromSource>[]>(),
+  'id?': 'string',
+});
+
+/** Configuration for the ClickStack HelmRelease wrapper. */
+export type ClickStackHelmReleaseConfig = typeof ClickStackHelmReleaseConfigSchema.infer;
+
+/**
+ * ArkType schema for OtelCollectorHelmReleaseConfig.
+ *
+ * See {@link ClickStackHelmReleaseConfigSchema} for why `values` is an
+ * `object` carrying its precise type through `.as<>()`.
+ */
+export const OtelCollectorHelmReleaseConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  /** Stock opentelemetry-collector chart values (graph-aware trees / runtime merges allowed). */
+  'values?': type('object').as<OtelCollectorMappedHelmValues>(),
+  'id?': 'string',
+});
 
 /** Configuration for a stock opentelemetry-collector HelmRelease wrapper. */
-export interface OtelCollectorHelmReleaseConfig {
-  name: string;
-  namespace?: string;
-  version?: string;
-  repositoryName?: string;
-  repositoryNamespace?: string;
-  /** Stock opentelemetry-collector chart values (graph-aware trees / runtime merges allowed). */
-  values?: OtelCollectorMappedHelmValues;
-  id?: string;
-}
+export type OtelCollectorHelmReleaseConfig = typeof OtelCollectorHelmReleaseConfigSchema.infer;
 
 // ============================================================================
 // Internal Mongo resources
 // ============================================================================
 
-/** Configuration for the internal-mode MongoDB StatefulSet/Service pair. */
-export interface ClickStackMongoConfig {
+/**
+ * ArkType schema for ClickStackMongoConfig.
+ *
+ * Configuration for the internal-mode MongoDB StatefulSet/Service pair.
+ */
+export const ClickStackMongoConfigSchema = type({
   /** ClickStack instance name; resources are named `<name>-mongodb`. */
-  name: string;
+  name: 'string',
   /** Target namespace. */
-  namespace: string;
+  namespace: 'string',
   /** PVC size (default: '5Gi'). Build-time concrete value. */
-  storageSize?: string;
+  'storageSize?': 'string',
   /** Optional StorageClass for the PVC. Build-time concrete value. */
-  storageClassName?: string;
+  'storageClassName?': 'string',
   /** Mongo image (default: 'mongo:7'). */
-  image?: string;
+  'image?': 'string',
   /** Resource id for the StatefulSet. */
-  statefulSetId?: string;
+  'statefulSetId?': 'string',
   /** Resource id for the Service. */
-  serviceId?: string;
-}
+  'serviceId?': 'string',
+});
+
+/** Configuration for the internal-mode MongoDB StatefulSet/Service pair. */
+export type ClickStackMongoConfig = typeof ClickStackMongoConfigSchema.infer;

@@ -54,6 +54,7 @@ import type {
   V1CronJobStatus,
   V1EnvVar,
 } from '@kubernetes/client-node';
+import { type } from 'arktype';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import type { ResolvedClickHouseS3Storage } from '../utils/s3-storage.js';
@@ -86,25 +87,53 @@ export type ComposableClickHouseS3BackupCronJobConfig = Composable<
   storage: ResolvedClickHouseS3Storage;
 };
 
-/** Configuration for {@link clickHouseS3BackupCronJob}. */
-export interface ClickHouseS3BackupCronJobConfig {
+/** What `storage` has to be, quoted into the ArkType error on a bad value. */
+export const RESOLVED_S3_STORAGE_REQUIREMENT =
+  "a resolved S3 storage (mode: 's3'), as returned by resolveClickHouseStorage()";
+
+/**
+ * The `storage` input: an already-RESOLVED S3 storage.
+ *
+ * `ResolvedClickHouseS3Storage` is a RESULT shape, not user input — it is what
+ * `resolveClickHouseStorage()` returns after defaulting and validating the
+ * user-facing `ClickHouseInstallationStorageSchema`, and every invariant
+ * it carries has already been enforced there. So this schema does not restate
+ * that shape field by field (which would be a second source of truth for the
+ * resolution, exactly the drift the schema-first rule exists to prevent): it
+ * checks the discriminant that says the value came out of the S3 branch of the
+ * resolver, and carries the resolved type through `.narrow()`'s predicate so
+ * {@link ClickHouseS3BackupCronJobConfig} is still inferred WHOLE from this
+ * schema — no hand-written widening layer on top of `.infer`.
+ */
+export const ClickHouseS3BackupStorageSchema = type('object').narrow(
+  (storage, ctx): storage is ResolvedClickHouseS3Storage =>
+    (storage as ResolvedClickHouseS3Storage).mode === 's3' ||
+    ctx.mustBe(RESOLVED_S3_STORAGE_REQUIREMENT)
+);
+
+/**
+ * ArkType schema for ClickHouseS3BackupCronJobConfig.
+ *
+ * Configuration for {@link clickHouseS3BackupCronJob}.
+ */
+export const ClickHouseS3BackupCronJobConfigSchema = type({
   /** CHI name — anchors the CronJob name and the ClickHouse service host. */
-  name: string;
+  name: 'string',
   /** CHI namespace. */
-  namespace: string;
+  namespace: 'string',
   /** ClickHouse server version, used for the `clickhouse-client` image. */
-  version: string;
+  version: 'string',
   /** Resolved S3 storage (must carry a `backup` schedule). */
-  storage: ResolvedClickHouseS3Storage;
+  storage: ClickHouseS3BackupStorageSchema,
   /** Native TCP port of the ClickHouse service. */
-  nativePort: number;
+  nativePort: 'number',
   /**
-   * CHI cluster name, required when {@link onCluster} is set — it becomes the
+   * CHI cluster name, required when `onCluster` is set — it becomes the
    * `ON CLUSTER '<name>'` target. Passed to the container as an env var rather
    * than baked into the script text so a schema reference (the runtime
    * `spec.clusterName`) survives serialization the way `database` does.
    */
-  clusterName?: string;
+  'clusterName?': 'string',
   /**
    * Render `BACKUP ... ON CLUSTER` instead of a single-host statement.
    *
@@ -112,10 +141,20 @@ export interface ClickHouseS3BackupCronJobConfig {
    * Keeper is configured. See the module doc for why a single-host statement is
    * a partial backup on a sharded cluster.
    */
-  onCluster?: boolean;
+  'onCluster?': 'boolean',
   /** Resource id for composition references. */
-  id?: string;
-}
+  'id?': 'string',
+});
+
+/**
+ * Configuration for {@link clickHouseS3BackupCronJob}.
+ *
+ * INFERRED WHOLE from {@link ClickHouseS3BackupCronJobConfigSchema}, including
+ * `storage` — a field cannot exist in the type without existing in the schema
+ * that validates it.
+ */
+export type ClickHouseS3BackupCronJobConfig =
+  typeof ClickHouseS3BackupCronJobConfigSchema.infer;
 
 /**
  * Env var carrying the `ON CLUSTER` target into the backup container.

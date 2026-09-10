@@ -12,6 +12,8 @@ import { clickHouseInstallation } from '../../../src/factories/clickhouse/resour
 import {
   BACKUP_CLUSTER_ENV,
   clickHouseS3BackupCronJob,
+  ClickHouseS3BackupCronJobConfigSchema,
+  RESOLVED_S3_STORAGE_REQUIREMENT,
 } from '../../../src/factories/clickhouse/resources/s3-backup.js';
 import {
   assertAwsRegion,
@@ -955,6 +957,52 @@ describe('clickHouseS3BackupCronJob', () => {
       expect(() =>
         script({ onCluster: true, clusterName: { __brand: 'KubernetesRef' } })
       ).not.toThrow();
+    });
+  });
+
+  describe('ClickHouseS3BackupCronJobConfigSchema', () => {
+    // `ClickHouseS3BackupCronJobConfig` is INFERRED from this schema, so the
+    // schema is the only description of the config. These cases pin that it
+    // validates at RUN time too, rather than being a type-level shell.
+    const validConfig = () => ({
+      name: 'test-ch',
+      namespace: 'observability',
+      version: '25.12.5',
+      storage: resolvedWithBackup({ schedule: '0 2 * * *' }),
+      nativePort: 9000,
+    });
+
+    it('accepts a well-formed config', () => {
+      expect(ClickHouseS3BackupCronJobConfigSchema(validConfig())).not.toBeInstanceOf(
+        type.errors
+      );
+    });
+
+    it('rejects a missing required field', () => {
+      const { name: _name, ...withoutName } = validConfig();
+      const result = ClickHouseS3BackupCronJobConfigSchema(withoutName);
+      expect(result).toBeInstanceOf(type.errors);
+      expect(String(result)).toContain('name');
+    });
+
+    it('rejects a mistyped field', () => {
+      const result = ClickHouseS3BackupCronJobConfigSchema({
+        ...validConfig(),
+        nativePort: '9000',
+      });
+      expect(result).toBeInstanceOf(type.errors);
+      expect(String(result)).toContain('nativePort');
+    });
+
+    it('rejects storage that did not come out of the S3 branch of the resolver', () => {
+      // `storage` is typed as the RESOLVED S3 shape; a PVC resolution is not
+      // one, and the schema says so instead of letting it reach the factory.
+      const result = ClickHouseS3BackupCronJobConfigSchema({
+        ...validConfig(),
+        storage: { mode: 'pvc' },
+      });
+      expect(result).toBeInstanceOf(type.errors);
+      expect(String(result)).toContain(RESOLVED_S3_STORAGE_REQUIREMENT);
     });
   });
 });
