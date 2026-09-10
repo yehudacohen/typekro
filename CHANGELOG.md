@@ -143,11 +143,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped with a warning and the status projects `'unavailable'`, rather than emitting a GA policy that a
   1.34 cluster would reject and so fail the apply of the whole bootstrap.
   `TYPEKRO_LABEL_GUARD_API_VERSION` pins the version for exactly those offline renders.
+
+  A build that targets a cluster says so **explicitly**. `probeLabelPropagationGuardSupport(kubeConfig)`
+  returns the resolved capability and `withLabelPropagationGuardCapability(capability, () => build())`
+  scopes it to one build; `factory('direct').deploy()` does the equivalent internally. There is no ambient
+  "last cluster anyone probed" fallback, which previously let a probe of cluster A supply the group version
+  for an untargeted build meant for cluster B.
 - **Cluster API capability resolution.** `resolveClusterCapability()` and the deploy-time capability
   registry behind it discover which group version a cluster serves a kind at, caching per **cluster
   identity** (server URL, CA material, context cluster name) with a bounded lifetime and entry count, so a
   process talking to two clusters never reuses one cluster's answer for the other.
   `resetLabelGuardCapabilityCache()` clears it for tests.
+
+  Discovery is **three-way**: `served`, `unserved`, `unknown`. `unserved` is reported only when the API
+  server actually answered — a 404 for the group version, or a resource list without the kind — and is
+  cached for the full lifetime. Every other outcome (unreachable server, RBAC, timeout, TLS) is `unknown`,
+  carries the classified reason, and is never cached as an answer: the next call re-probes. Previously all
+  of these collapsed into `unserved`, so a transient error made the guard report "the cluster does not serve
+  MutatingAdmissionPolicy" — and cached that false claim for five minutes.
 - **`KRO_OWNERSHIP_LABELS`.** The shared set of label keys only KRO may introduce, exported from the package
   root for operator-side propagation filters and for the new `assertNoForeignApplySetLabels()` e2e assertion.
   It adds `kro.run/kro-version` to the four keys factories were copying privately: a KRO upgrade rewrites

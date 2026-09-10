@@ -234,8 +234,16 @@ There is no configuration option — the bootstrap reports
 policy misbehaves. The policy's group version is discovered from the target
 cluster at deploy time, never assumed: `v1beta1` on Kubernetes 1.34/1.35, `v1`
 from 1.36, and below 1.34 the API is not served, so the guard is skipped and
-reports `unavailable`. An offline `toYaml()` render has no cluster to ask and
-so leaves the guard out unless `TYPEKRO_LABEL_GUARD_API_VERSION` pins it. See
+reports `unavailable`. If discovery cannot reach the cluster at all — an
+unreachable API server, RBAC, a timeout — the guard is skipped too, but the
+warning says *discovery failed* rather than claiming the cluster is too old, and
+the failure is not cached as an answer. An offline `toYaml()` render has no
+cluster to ask and so leaves the guard out unless
+`TYPEKRO_LABEL_GUARD_API_VERSION` pins it. To build a graph for a known cluster
+outside a deployment, probe it and wrap the build:
+`withLabelPropagationGuardCapability(await probeLabelPropagationGuardSupport(kubeConfig), () => …)`
+— the cluster is always carried explicitly, never inherited from an earlier
+probe. See
 [Runtime Bootstrap](/api/kro/compositions/runtime#label-propagation-guard).
 
 ## YAML Generation

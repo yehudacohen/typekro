@@ -192,6 +192,7 @@ export {
   probeLabelPropagationGuardSupport,
   resetLabelGuardCapabilityCache,
   resolveLabelPropagationGuardCapability,
+  withLabelPropagationGuardCapability,
 } from './core/kro/index.js';
 export type {
   DurableKubeConfigOptions,

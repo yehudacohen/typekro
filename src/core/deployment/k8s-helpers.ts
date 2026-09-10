@@ -58,6 +58,123 @@ export function isConflictError(error: unknown): boolean {
 }
 
 /**
+ * Why a read against the API server did not produce an answer.
+ *
+ * `notFound` is the only *definitive* outcome in this list: the server answered,
+ * and the answer was "that does not exist". Every other member means the
+ * question was never actually put to the server, so a caller must not read them
+ * as a negative answer. That distinction is what capability discovery keys its
+ * `unserved` / `unknown` split on.
+ */
+export type ApiReadFailure = 'notFound' | 'forbidden' | 'timeout' | 'unreachable' | 'other';
+
+/** Read the HTTP status off any of the shapes the client-node stack uses. */
+function apiErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const k8sError = error as KubernetesApiError & { code?: number | string };
+  const numericCode = typeof k8sError.code === 'number' ? k8sError.code : undefined;
+  return (
+    k8sError.statusCode ?? k8sError.response?.statusCode ?? k8sError.body?.code ?? numericCode
+  );
+}
+
+/** The `code` string Node sets on socket/DNS/TLS errors, when there is one. */
+function systemErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT']);
+
+const UNREACHABLE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'EPROTO',
+  // TLS: the transport never came up, so the server was never asked. The
+  // message keeps the certificate detail for the human reading the log.
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+/**
+ * Classify why a read against the API server failed.
+ *
+ * Deliberately conservative: anything not positively recognised is `other`,
+ * which callers treat the same as `unreachable` — "we did not learn the answer"
+ * — rather than as a negative answer.
+ */
+export function classifyApiReadError(error: unknown): ApiReadFailure {
+  if (isNotFoundError(error)) return 'notFound';
+
+  const status = apiErrorStatus(error);
+  if (status === 401 || status === 403) return 'forbidden';
+  if (status === 408 || status === 504) return 'timeout';
+
+  const code = systemErrorCode(error);
+  if (code && TIMEOUT_CODES.has(code)) return 'timeout';
+  if (code && UNREACHABLE_CODES.has(code)) return 'unreachable';
+
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const lowered = message.toLowerCase();
+  if (error instanceof Error && error.name === 'AbortError') return 'timeout';
+  if (lowered.includes('timeout') || lowered.includes('timed out')) return 'timeout';
+  if (
+    lowered.includes('forbidden') ||
+    lowered.includes('unauthorized') ||
+    lowered.includes('http-code: 401') ||
+    lowered.includes('http-code: 403')
+  ) {
+    return 'forbidden';
+  }
+  if (
+    lowered.includes('certificate') ||
+    lowered.includes('unable to verify') ||
+    lowered.includes('econnrefused') ||
+    lowered.includes('getaddrinfo') ||
+    lowered.includes('socket hang up')
+  ) {
+    return 'unreachable';
+  }
+
+  return 'other';
+}
+
+/** Short human phrase for an {@link ApiReadFailure}, for a log line or a reason string. */
+export function describeApiReadFailure(failure: ApiReadFailure): string {
+  switch (failure) {
+    case 'notFound':
+      return 'the server answered 404';
+    case 'forbidden':
+      return 'the request was refused (RBAC)';
+    case 'timeout':
+      return 'the request timed out';
+    case 'unreachable':
+      return 'the API server was unreachable';
+    default:
+      return 'the request failed';
+  }
+}
+
+/**
+ * One-line description of a failed API read: what went wrong, plus the
+ * underlying message so the log is actionable.
+ */
+export function describeApiReadError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
+  return `${describeApiReadFailure(classifyApiReadError(error))}: ${message}`;
+}
+
+/**
  * Check if an error is an HTTP 415 Unsupported Media Type error
  */
 export function isUnsupportedMediaTypeError(error: unknown): boolean {

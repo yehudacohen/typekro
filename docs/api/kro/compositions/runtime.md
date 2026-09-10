@@ -107,25 +107,53 @@ Resolution order, highest precedence first:
 |-------|--------|
 | `TYPEKRO_DISABLE_LABEL_GUARD=1` | Break-glass. Nothing is emitted; `status.labelPropagationGuard` is `'unavailable'`. |
 | `TYPEKRO_LABEL_GUARD_API_VERSION` | Used verbatim, e.g. `admissionregistration.k8s.io/v1beta1`. No cluster is contacted. |
-| A capability resolved for the deployment's target cluster | The served group version — `.../v1` or `.../v1beta1`. |
-| The cluster serves neither | Skipped, with a warning; status `'unavailable'`. |
+| A capability scoped to this build, or resolved for the deployment's target cluster | The served group version — `.../v1` or `.../v1beta1`. |
+| The cluster serves neither | Skipped, with a warning naming the versions asked for; status `'unavailable'`. |
+| Discovery against the cluster **failed** — unreachable, RBAC, timeout, TLS | Skipped, with a warning saying discovery failed; status `'unavailable'`. |
 | Nothing above — no pin, no cluster | Skipped, with a warning; status `'unavailable'`. |
 
-That last row is the case that matters for a build with no cluster connection:
-the guard is **not** emitted at a guessed GA version, because a `.../v1` policy
-applied to a 1.34 cluster fails the apply of the whole runtime bootstrap.
+The last three rows all end in `'unavailable'`, but they are not the same
+problem and the warning says which. "The cluster does not serve
+`MutatingAdmissionPolicy`" is a statement about the cluster, and it is only made
+when the API server actually answered — a 404 for the group version, or a
+resource list without the kind. If the probe could not reach the server or was
+refused by RBAC, nothing is known about the cluster, so the guard reports a
+*discovery failure* instead, which points at the credentials or the network
+rather than at the cluster's version. A failed probe is also not cached as an
+answer: the next deployment re-probes instead of repeating a guess for five
+minutes.
+
+The "no pin, no cluster" row is the case that matters for a build with no
+cluster connection: the guard is **not** emitted at a guessed GA version,
+because a `.../v1` policy applied to a 1.34 cluster fails the apply of the whole
+runtime bootstrap.
 
 You can resolve the capability yourself when you build a graph outside a
-deployment — a GitOps render aimed at a known cluster:
+deployment — a GitOps render aimed at a known cluster. Probe, then build inside
+the capability's scope:
 
 ```typescript
-import { probeLabelPropagationGuardSupport, typeKroRuntimeBootstrap } from 'typekro';
+import {
+  probeLabelPropagationGuardSupport,
+  typeKroRuntimeBootstrap,
+  withLabelPropagationGuardCapability,
+} from 'typekro';
 
-// Ask that cluster once, then build. The answer is cached under that
-// cluster's identity and used by the build that follows.
-await probeLabelPropagationGuardSupport(kubeConfig);
-const runtime = typeKroRuntimeBootstrap();
+// Ask that cluster once, then build with the answer carried explicitly.
+const capability = await probeLabelPropagationGuardSupport(kubeConfig);
+const runtime = withLabelPropagationGuardCapability(capability, () =>
+  typeKroRuntimeBootstrap()
+);
 ```
+
+The capability has to be carried into the build, because probing a cluster does
+not make it ambiently current. A build outside any scope targets no cluster and
+gets no cluster's answer — deliberately: an implicit "last cluster anyone
+probed" would render one cluster's group version into another cluster's graph
+as soon as a process talks to more than one. Inside `factory('direct').deploy()`
+none of this is your problem; the deployment publishes its own target for the
+duration of the deploy, and concurrent deploys to different clusters stay
+independent.
 
 ### Kro mode and offline renders
 
