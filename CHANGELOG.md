@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nested-composition status inlining is now linear in the size of the
+  nested-status mapping. The inliner previously made up to 16 whole-string
+  substitution passes, each re-scanning text the previous pass had
+  substituted; once a mapping referenced its own flattened child id — the
+  normal shape when that id is also a concrete graph resource — the emitted
+  expression doubled on every pass, so a two-level composition could emit a
+  6 MB status expression that exceeds the Kubernetes object size limit. Each
+  `<id>.status.<field>` mapping is now resolved recursively with an
+  in-progress set, substituted output is never re-scanned, and a mapping
+  already being expanded on the current path keeps its concrete resource
+  reference. Emitted YAML is unchanged for compositions that were not hitting
+  the runaway path. The 16-level depth guard remains a safety net for
+  genuinely deep, acyclic nesting and is now an error under strict CEL
+  diagnostics (`strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`).
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
