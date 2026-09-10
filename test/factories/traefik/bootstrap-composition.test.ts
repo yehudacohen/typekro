@@ -134,6 +134,21 @@ describe('traefikBootstrap (defaults)', () => {
     });
   });
 
+  it('pins the release name to the same schema reference as `fullnameOverride`', () => {
+    const consumer = rgd(traefikBootstrap.toYaml(), 'TraefikBootstrap');
+    const release = resource(consumer, 'traefikHelmRelease');
+    const spec = release.template?.spec as Record<string, unknown>;
+    const values = spec.values as Record<string, unknown>;
+
+    // Unset, Flux's GetReleaseName() would compose `<targetNamespace>-<name>`
+    // whenever `targetNamespace` is set — which this composition always sets —
+    // and the install namespace would eat into Helm's 53-character
+    // release-name budget, which is what bounds `name`.
+    expect(spec.targetNamespace).toBeDefined();
+    expect(spec.releaseName).toBe('${schema.spec.name}');
+    expect(spec.releaseName).toBe(values.fullnameOverride);
+  });
+
   it('points the singleton at the official repository URL', () => {
     const yaml = traefikBootstrap.factory('kro', { namespace: 'traefik' }).toYaml({
       name: 'traefik',

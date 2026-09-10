@@ -125,6 +125,14 @@ reserved for Pod names: the API server generates those with
 `metadata.generateName`, which truncates the base before appending its random
 suffix, so a long `name` can never produce an invalid Pod name.
 
+The 53 binds on `name` by itself. The `HelmRelease` pins `spec.releaseName` to
+`name`, so the Helm release is installed under exactly that name. Left unset,
+Flux composes the release name as `<targetNamespace>-<name>` whenever
+`spec.targetNamespace` is set — which this composition always sets — and the
+install namespace would quietly spend part of the same 53. Pinning it also
+keeps the release name stable when `namespace` changes, which Helm would
+otherwise see as a different release.
+
 ### Build-time options
 
 Choices that decide **which** resources the graph contains cannot come from the
@@ -235,7 +243,8 @@ The factory therefore disables the chart's Service (`service.enabled: false`)
 and creates a typed one instead, selecting the chart's pods through
 `app.kubernetes.io/name` and `app.kubernetes.io/instance`. Both label sources
 are pinned (`nameOverride`, `instanceLabelOverride`) so the selector cannot
-drift with the Helm release name Flux composes. Two consequences worth knowing:
+drift with whatever the chart would derive from the Helm release name. Two
+consequences worth knowing:
 
 - The Service type, its annotations and its published ports are properties of a
   resource TypeKro owns, not chart values. A `LoadBalancer` Service therefore

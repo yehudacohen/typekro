@@ -128,6 +128,16 @@ export function traefikHelmRelease(
         },
       },
       targetNamespace: config.targetNamespace ?? DEFAULT_TRAEFIK_NAMESPACE,
+      // Pinned to the same `name` the values mapper pins as the chart's
+      // `fullnameOverride`. Left unset, Flux's `GetReleaseName()` composes
+      // `<targetNamespace>-<name>` — this factory always sets
+      // `targetNamespace`, so the install namespace would spend part of Helm's
+      // 53-character release-name budget and a `name` at exactly the schema's
+      // limit would fail the install. Pinning it makes the release name `name`
+      // itself, so that limit binds on `name` alone. It also stops the release
+      // name from moving when a caller changes the install namespace, which
+      // Helm treats as a different release entirely.
+      releaseName: config.name,
       install: {
         createNamespace: config.createNamespace ?? false,
         crds,

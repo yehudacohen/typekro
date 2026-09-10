@@ -211,6 +211,26 @@ describe('traefikBootstrap — direct mode', () => {
     expect(documents(yaml).some((document) => document.kind === 'HelmRepository')).toBe(false);
   });
 
+  it('pins the Helm release name to `name` rather than letting Flux compose one', () => {
+    const yaml = traefikBootstrap
+      .factory('direct', { namespace: 'flux-system' })
+      .toYaml(CONCRETE_SPEC);
+    const release = documents(yaml).find((document) => document.kind === 'HelmRelease');
+    const spec = release?.spec as {
+      releaseName?: string;
+      targetNamespace?: string;
+      values?: { fullnameOverride?: string };
+    };
+
+    // Unset, Flux's GetReleaseName() would compose `<targetNamespace>-<name>`
+    // — 'traefik-traefik' here — and the install namespace would eat into
+    // Helm's 53-character release-name budget, which is what bounds `name`.
+    expect(spec.targetNamespace).toBe('traefik');
+    expect(spec.releaseName).toBe('traefik');
+    // The release name and the chart's resource-name anchor are the same value.
+    expect(spec.values?.fullnameOverride).toBe('traefik');
+  });
+
   it('exposes a direct factory with the deployment surface', () => {
     const factory = traefikBootstrap.factory('direct', { namespace: 'flux-system' });
 

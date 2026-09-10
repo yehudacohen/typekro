@@ -99,8 +99,9 @@ export const TRAEFIK_SECURITY_PINS = {
  * - `service.enabled: false` — the chart skips its whole Service template.
  * - `nameOverride` — fixes the chart's `app.kubernetes.io/name` pod label.
  * - `instanceLabelOverride` — fixes `app.kubernetes.io/instance`, which the
- *   chart otherwise derives from the Helm release name (Flux composes that from
- *   the HelmRelease name and the target namespace).
+ *   chart otherwise derives from the Helm release name. `traefikHelmRelease`
+ *   pins `spec.releaseName` to the same name, so the two agree; the pin keeps
+ *   the selector exact even if a release ever arrives under another name.
  *
  * Together those two labels are exactly the chart's own pod selector, so the
  * owned Service front-ends the same pods the chart's Service would have.

@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`HelmReleaseCrdsPolicy`). Flux defaults the upgrade action to `Skip`, so a
   chart that ships its CRDs in `crds/` otherwise keeps serving the schemas it
   was first installed with.
+- `HelmReleaseSpec` gained `releaseName`. Flux composes the Helm release name as
+  `<targetNamespace>-<name>` whenever `spec.targetNamespace` is set and
+  `spec.releaseName` is not, so the install namespace spends part of Helm's
+  53-character release-name budget. The Traefik factory pins it to the `name` it
+  already pins as the chart's `fullnameOverride`, which makes that factory's
+  derived 53-character `name` limit exact and keeps the release name stable
+  across a change of install namespace.
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
   catalog and Distilled AWS `1.0.0-rc.6`; TypeKro's Effect runtime cohort moves
   with it to `4.0.0-rc.110`. CI now locks all three dependency boundaries so a
