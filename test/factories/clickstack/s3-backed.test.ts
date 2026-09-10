@@ -13,6 +13,7 @@ import * as yaml from 'js-yaml';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
 import type { ClickStackPersistentQueueOptions } from '../../../src/factories/clickstack/types.js';
 import {
+  type CollectorConfigFragment,
   mergeCollectorConfig,
   renderCollectorConfig,
 } from '../../../src/factories/clickstack/utils/collector-config.js';
@@ -576,6 +577,191 @@ describe('mergeCollectorConfig conflict policy', () => {
       .map((line) => line.slice(0, line.indexOf(':')));
 
     expect(new Set(topLevel).size).toBe(topLevel.length);
+  });
+});
+
+/**
+ * REGRESSION: the merge used to write straight into `Object.prototype`.
+ *
+ * `mergeInto` tested `key in target`, and `'__proto__' in {}` is TRUE — it is
+ * an accessor inherited from `Object.prototype`. So the "already present, merge
+ * into it" branch read `target.__proto__` (which IS `Object.prototype`), saw a
+ * mapping on both sides, and recursed into it. One fragment with a top-level
+ * `__proto__` key mutated every object in the process.
+ *
+ * The exporter map hit the accessor's other half: `Object.fromEntries` defines
+ * an own property rather than polluting, but the merge's CLONE then assigned
+ * `copy[key] = …` onto a plain `{}`, where `__proto__` calls the inherited
+ * SETTER and re-parents the copy instead of adding a key. An
+ * `exporterNames: ['__proto__']` install rendered `exporters: {}` and the queue
+ * silently configured nothing.
+ *
+ * Each case asserts BOTH that the construction is refused with the path named
+ * AND that `Object.prototype` is untouched afterwards.
+ */
+describe('collector overlay keys cannot reach the object model', () => {
+  /** A fragment with a genuine OWN `__proto__` key — a literal cannot make one. */
+  function withOwnProtoKey(value: unknown, path: readonly string[] = []): CollectorConfigFragment {
+    const leaf = Object.create(null) as Record<string, unknown>;
+    leaf.__proto__ = value;
+    return path.reduceRight<Record<string, unknown>>(
+      (inner, segment) => ({ [segment]: inner }),
+      leaf
+    );
+  }
+
+  /** Nothing in this describe block may leave a mark on Object.prototype. */
+  function expectPrototypeClean() {
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.hasOwn(Object.prototype, 'polluted')).toBe(false);
+  }
+
+  it('sanity-checks the fixture: the fragment really carries an own __proto__ key', () => {
+    const fragment = withOwnProtoKey({ polluted: 'yes' });
+    expect(Object.getOwnPropertyNames(fragment)).toEqual(['__proto__']);
+    expect(Object.keys(fragment)).toEqual(['__proto__']);
+  });
+
+  it('REFUSES a top-level __proto__ key, naming the path, and leaves the prototype alone', () => {
+    expect(() => mergeCollectorConfig([withOwnProtoKey({ polluted: 'yes' })])).toThrow(
+      /Unsafe collector configuration key at '__proto__'/
+    );
+    expectPrototypeClean();
+  });
+
+  it('REFUSES a NESTED __proto__ key, naming the full path', () => {
+    // Nested under a key another fragment already contributed, so the merge
+    // takes the "already present" branch — the one that used to recurse into
+    // `Object.prototype`.
+    expect(() =>
+      mergeCollectorConfig([
+        { service: { pipelines: { logs: { receivers: ['otlp'] } } } },
+        withOwnProtoKey({ polluted: 'yes' }, ['service', 'pipelines']),
+      ])
+    ).toThrow(/Unsafe collector configuration key at 'service\.pipelines\.__proto__'/);
+    expectPrototypeClean();
+  });
+
+  it('REFUSES __proto__ inside a sequence item, too', () => {
+    expect(() =>
+      mergeCollectorConfig([
+        { processors: [withOwnProtoKey({ polluted: 'yes' })] },
+        { processors: ['batch'] },
+      ])
+    ).toThrow(/Unsafe collector configuration key at 'processors\.0\.__proto__'/);
+    expectPrototypeClean();
+  });
+
+  it('REFUSES `constructor` and `prototype` as mapping keys as well', () => {
+    expect(() => mergeCollectorConfig([{ exporters: { constructor: {} } }])).toThrow(
+      /Unsafe collector configuration key at 'exporters\.constructor'/
+    );
+    expect(() => mergeCollectorConfig([{ exporters: { prototype: {} } }])).toThrow(
+      /Unsafe collector configuration key at 'exporters\.prototype'/
+    );
+    expectPrototypeClean();
+  });
+
+  it('REFUSES an exporterNames entry that names an object-model member', () => {
+    for (const name of ['__proto__', 'constructor', 'prototype']) {
+      expect(() =>
+        resolveClickStackStorage('makeClickstackBootstrap', {
+          mode: 's3',
+          persistentQueue: { enabled: true, exporterNames: [name] },
+        })
+      ).toThrow(
+        new RegExp(
+          `'storage\\.persistentQueue\\.exporterNames\\[0\\]' is "${name}"`.replace(/[$]/g, '\\$')
+        )
+      );
+    }
+    expectPrototypeClean();
+  });
+
+  it('REFUSES an extensions entry that names an object-model member', () => {
+    expect(() =>
+      resolveClickStackStorage('makeClickstackBootstrap', {
+        mode: 's3',
+        persistentQueue: {
+          enabled: true,
+          extensions: ['file_storage/hyperdx', '__proto__'],
+        },
+      })
+    ).toThrow(/'storage\.persistentQueue\.extensions\[1\]' is "__proto__"/);
+    expectPrototypeClean();
+  });
+
+  /**
+   * The resolver is not the only door: `persistentQueueConfigFragment` is
+   * exported and takes a resolved object, which a caller can hand-build.
+   */
+  it('REFUSES the name again in persistentQueueConfigFragment itself', () => {
+    expect(() =>
+      persistentQueueConfigFragment({
+        directory: '/var/lib/otelcol/file_storage',
+        size: '10Gi',
+        accessModes: ['ReadWriteOnce'],
+        exporterNames: ['__proto__'],
+        extensions: ['health_check', 'file_storage/hyperdx'],
+      })
+    ).toThrow(/Unsafe collector configuration key at 'exporters\.__proto__'/);
+    expectPrototypeClean();
+  });
+
+  it('builds every mapping in the merged result WITHOUT a prototype', () => {
+    const merged = mergeCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      { exporters: { clickhouse: { sending_queue: { enabled: true } } } },
+    ]);
+
+    expect(Object.getPrototypeOf(merged)).toBeNull();
+    const service = merged.service as Record<string, unknown>;
+    expect(Object.getPrototypeOf(service)).toBeNull();
+    expect(Object.getPrototypeOf(service.pipelines as object)).toBeNull();
+    // So `__proto__` is a plain missing key on the result, not an accessor.
+    expect(Object.hasOwn(merged, '__proto__')).toBe(false);
+    expect((merged as Record<string, unknown>).__proto__).toBeUndefined();
+  });
+
+  /**
+   * Where the danger is NOT: js-yaml. On the default schema `dump` emits a
+   * `__proto__` key and `load` reads it back as an ordinary own property
+   * without touching `Object.prototype`, so the document round-trips
+   * faithfully both ways. Pinned here because the fix is placed on the
+   * assumption that the serialiser is innocent and our own merge was not.
+   */
+  it('pins js-yaml as SAFE in both directions, which is why the guard sits upstream', () => {
+    const loaded = yaml.load('__proto__:\n  polluted: yes\n') as Record<string, unknown>;
+    expect(Object.getOwnPropertyNames(loaded)).toEqual(['__proto__']);
+    expectPrototypeClean();
+
+    const dumpable = Object.create(null) as Record<string, unknown>;
+    dumpable.__proto__ = { polluted: 'yes' };
+    dumpable.keep = 1;
+    expect(yaml.dump(dumpable)).toBe("__proto__:\n  polluted: 'yes'\nkeep: 1\n");
+    expectPrototypeClean();
+  });
+
+  it('renders a document that contains no __proto__ key, and re-loads clean', () => {
+    const queue = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true, exporterNames: ['clickhouse', 'clickhouse/2'] },
+    }).persistentQueue;
+    if (queue === undefined) throw new Error('expected a queue');
+    const rendered = renderCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      persistentQueueConfigFragment(queue),
+    ]);
+
+    expect(rendered).not.toContain('__proto__');
+    expect(rendered).not.toContain('constructor');
+
+    const reloaded = yaml.load(rendered) as Record<string, unknown>;
+    const exporters = reloaded.exporters as Record<string, unknown>;
+    // The whole point of the guard: every requested exporter SURVIVED the
+    // round trip, instead of an `exporters: {}` nobody noticed.
+    expect(Object.keys(exporters).sort()).toEqual(['clickhouse', 'clickhouse/2']);
+    expectPrototypeClean();
   });
 });
 

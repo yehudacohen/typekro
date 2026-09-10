@@ -38,7 +38,7 @@
  */
 
 import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
-import type { CollectorConfigFragment } from './collector-config.js';
+import { assertSafeCollectorConfigKey, type CollectorConfigFragment } from './collector-config.js';
 
 /** Default cron schedule for the retention DDL CronJob. */
 export const DEFAULT_RETENTION_SCHEDULE = '17 * * * *';
@@ -333,13 +333,46 @@ export interface ResolvedClickStackStorage {
 }
 
 /**
+ * Reject a collector component name that JavaScript's object model claims.
+ *
+ * Every name in `exporterNames` and `extensions` ends up as a MAPPING KEY in
+ * the rendered overlay, so `__proto__`, `constructor` and `prototype` are
+ * refused before they get there — see {@link assertSafeCollectorConfigKey} for
+ * the two silent failure modes. The error names the caller's own option path
+ * and the offending index.
+ *
+ * @param context - Entry point name for the error message
+ * @param field - The offending option, relative to `storage.persistentQueue`
+ * @param names - The supplied component names
+ * @throws Error when any name is an object-model member
+ */
+function assertQueueComponentNames(
+  context: string,
+  field: 'exporterNames' | 'extensions',
+  names: readonly string[]
+): void {
+  names.forEach((name, index) => {
+    try {
+      assertSafeCollectorConfigKey(name);
+    } catch (cause) {
+      throw new Error(
+        `${context}: 'storage.persistentQueue.${field}[${index}]' is ` +
+          `${JSON.stringify(name)}, which cannot name a collector component. ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`
+      );
+    }
+  });
+}
+
+/**
  * Resolve and validate the build-time storage options.
  *
  * @param context - Entry point name for every error message
  * @param options - Build-time storage options (omit for the PVC default)
  * @returns The resolved options, with retention expanded per table
- * @throws Error when a retention duration is unparseable, or when an
- *   S3-specific option is set on the PVC default
+ * @throws Error when a retention duration is unparseable, when an
+ *   S3-specific option is set on the PVC default, or when a queue component
+ *   name is an object-model member (see {@link assertQueueComponentNames})
  */
 export function resolveClickStackStorage(
   context: string,
@@ -434,6 +467,22 @@ export function resolveClickStackStorage(
         `exporters reference is never started and the collector refuses the config. Got ` +
         `${JSON.stringify([...queueExtensions])}.`
     );
+  }
+  if (queue?.enabled === true) {
+    // BOTH lists carry COMPONENT NAMES, and a component name becomes a mapping
+    // key in the rendered overlay — `exporters.<name>` directly, and an
+    // extension instance name under `extensions.<name>`. JavaScript reserves a
+    // few of those, and the failure was silent in both directions: a
+    // `__proto__` exporter name rendered as `exporters: {}` (the overlay clone
+    // re-parented the copy instead of copying the key) while the merge's
+    // `key in target` test could hand `Object.prototype` to the deep merge and
+    // mutate it process-wide. Rejected
+    // HERE, at the option that supplied the name, so the message names the
+    // caller's own path rather than a position inside a fragment. The merge
+    // itself re-checks every key independently — see
+    // {@link assertSafeCollectorConfigKey}.
+    assertQueueComponentNames(context, 'exporterNames', exporterNames);
+    assertQueueComponentNames(context, 'extensions', queueExtensions);
   }
 
   return {
@@ -631,12 +680,44 @@ export function renderRetentionScript(resolved: ResolvedClickStackStorage): stri
  * the agent does not define is inert rather than fatal — see
  * {@link DEFAULT_QUEUE_EXPORTER_NAMES} for why it cannot be checked here.
  *
+ * ⚠️ THE EXPORTER MAP IS BUILT KEY BY KEY, on a NULL-PROTOTYPE dictionary, and
+ * every name is re-checked. It used to be an `Object.fromEntries` over
+ * `exporterNames`, which is honest enough on its own — `fromEntries` DEFINES an
+ * own property, so it does not pollute — but the overlay merge then copied the
+ * map with `copy[key] = …` onto a plain `{}`, where assigning `__proto__` calls
+ * the inherited SETTER and re-parents the copy instead of adding a key. An
+ * `exporterNames: ['__proto__']` install therefore rendered `exporters: {}`: a
+ * queue that configured nothing, reported no error, and left the real exporter
+ * on its in-memory queue. `resolveClickStackStorage` rejects such a name at the
+ * option, and this function refuses it again so no caller holding a
+ * hand-built `ResolvedClickStackStorage` can route around that.
+ *
  * @param queue - Resolved persistent-queue configuration
  * @returns A fragment for `global.otelCollector.customConfig`
+ * @throws Error when a component name is a JavaScript object-model member
  */
 export function persistentQueueConfigFragment(
   queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
 ): CollectorConfigFragment {
+  const exporters = Object.create(null) as Record<string, unknown>;
+  for (const exporterName of queue.exporterNames) {
+    assertSafeCollectorConfigKey(exporterName, ['exporters']);
+    // `defineProperty`, not assignment: on a prototype-less dictionary the two
+    // are equivalent, and spelling it out keeps the guarantee local — this line
+    // cannot become a setter call however the dictionary above is later built.
+    Object.defineProperty(exporters, exporterName, {
+      value: { sending_queue: { enabled: true, storage: QUEUE_EXTENSION_NAME } },
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const extensionName of queue.extensions) {
+    // A `service.extensions` entry is a sequence item here, but it NAMES an
+    // extension instance whose name is a mapping key under `extensions:` — the
+    // same guard applies, at the same construction time.
+    assertSafeCollectorConfigKey(extensionName, ['service', 'extensions']);
+  }
   return {
     extensions: {
       [QUEUE_EXTENSION_NAME]: {
@@ -644,12 +725,7 @@ export function persistentQueueConfigFragment(
         create_directory: true,
       },
     },
-    exporters: Object.fromEntries(
-      queue.exporterNames.map((exporterName) => [
-        exporterName,
-        { sending_queue: { enabled: true, storage: QUEUE_EXTENSION_NAME } },
-      ])
-    ),
+    exporters,
     service: { extensions: [...queue.extensions] },
   };
 }

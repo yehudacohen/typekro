@@ -214,18 +214,28 @@ export type ResolvedClickHouseStorage = ResolvedClickHousePvcStorage | ResolvedC
 // Small validated parsers
 // ============================================================================
 
-const BYTE_SUFFIXES: Readonly<Record<string, number>> = {
-  '': 1,
-  k: 1000,
-  K: 1000,
-  M: 1000 ** 2,
-  G: 1000 ** 3,
-  T: 1000 ** 4,
-  Ki: 1024,
-  Mi: 1024 ** 2,
-  Gi: 1024 ** 3,
-  Ti: 1024 ** 4,
-};
+/**
+ * Byte multiplier per Kubernetes quantity suffix.
+ *
+ * A `Map` rather than an object literal: the suffix is taken from CALLER input,
+ * and an object lookup keyed on caller input reads `Object.prototype` on a miss
+ * (`'constructor'`, `'__proto__'`), returning something that is not a number
+ * and is not `undefined` either. The regex in {@link parseByteQuantity} already
+ * bounds the suffix to this exact set, so the two guards are independent — the
+ * lookup does not depend on the pattern staying that tight.
+ */
+const BYTE_SUFFIXES = new Map<string, number>([
+  ['', 1],
+  ['k', 1000],
+  ['K', 1000],
+  ['M', 1000 ** 2],
+  ['G', 1000 ** 3],
+  ['T', 1000 ** 4],
+  ['Ki', 1024],
+  ['Mi', 1024 ** 2],
+  ['Gi', 1024 ** 3],
+  ['Ti', 1024 ** 4],
+]);
 
 /**
  * Parse a Kubernetes-style quantity into bytes.
@@ -250,7 +260,7 @@ export function parseByteQuantity(context: string, field: string, value: string)
         `(e.g. '100Gi', '50G', '1048576') — got ${JSON.stringify(value)}.`
     );
   }
-  const bytes = Math.floor(Number(digits) * (BYTE_SUFFIXES[suffix] ?? 1));
+  const bytes = Math.floor(Number(digits) * (BYTE_SUFFIXES.get(suffix) ?? 1));
   if (!Number.isFinite(bytes) || bytes < 1) {
     throw new Error(
       `${context}: '${field}' must resolve to at least one byte — got ${JSON.stringify(value)}.`

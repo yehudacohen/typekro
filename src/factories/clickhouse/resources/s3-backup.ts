@@ -272,12 +272,18 @@ function pruneEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
   // env helper emits ClickHouse-specific ones, so map them here rather than
   // duplicating the secretKeyRef shape. IRSA needs no mapping at all — the CLI
   // picks up the same projected web-identity token as the server.
-  const awsNameByChName: Readonly<Record<string, string>> = {
-    [S3_ACCESS_KEY_ID_ENV]: 'AWS_ACCESS_KEY_ID',
-    [S3_SECRET_ACCESS_KEY_ENV]: 'AWS_SECRET_ACCESS_KEY',
-  };
+  //
+  // A `Map`, not an object literal, so the lookup below cannot read
+  // `Object.prototype`: `({})['constructor']` is a FUNCTION, not `undefined`,
+  // so the "unexpected env var" guard would have passed such a name straight
+  // through and pushed a container env var whose `name` is not a string. The
+  // env names are ours today, but the guard is the thing that has to hold.
+  const awsNameByChName = new Map<string, string>([
+    [S3_ACCESS_KEY_ID_ENV, 'AWS_ACCESS_KEY_ID'],
+    [S3_SECRET_ACCESS_KEY_ENV, 'AWS_SECRET_ACCESS_KEY'],
+  ]);
   for (const entry of clickHouseS3ContainerEnv(config.storage)) {
-    const awsName = awsNameByChName[entry.name];
+    const awsName = awsNameByChName.get(entry.name);
     if (awsName === undefined) {
       throw new Error(
         `clickHouseS3BackupCronJob: unexpected S3 credential env var '${entry.name}'.`
