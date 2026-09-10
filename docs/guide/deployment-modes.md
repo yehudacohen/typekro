@@ -220,6 +220,21 @@ const stack = kubernetesComposition(definition, (spec) => {
 });
 ```
 
+### Label-Propagation Guard
+
+The runtime bootstrap also installs a cluster-scoped `MutatingAdmissionPolicy`
+that stops anything other than the Kro controller from introducing Kro's
+ownership labels on an object. Without it, an operator that copies the parent
+CR's label map onto its children feeds those children to Kro's ApplySet pruner,
+which deletes them on every requeue.
+
+There is no configuration option — the bootstrap reports
+`status.labelPropagationGuard: 'active' | 'unavailable'`, and
+`TYPEKRO_DISABLE_LABEL_GUARD=1` is the break-glass for a cluster where the
+policy misbehaves. On Kubernetes below 1.34 the API is not served and the guard
+reports `unavailable`. See
+[Runtime Bootstrap](/api/kro/compositions/runtime#label-propagation-guard).
+
 ## YAML Generation
 
 Generate deterministic YAML for GitOps workflows. Works with ArgoCD, Flux, or any GitOps tool.

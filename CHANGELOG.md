@@ -123,6 +123,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Always-on KRO label-propagation guard.** `typeKroRuntimeBootstrap()` now installs a cluster-scoped
+  `MutatingAdmissionPolicy` enforcing that only KRO may introduce KRO's ownership labels on an object.
+  Operators that copy the parent CR's whole label map onto their children previously handed KRO's ApplySet
+  pruner objects it never applied, which it then deleted on every requeue (`kubernetes-sigs/kro#1153`).
+  On CREATE the labels are removed if present; on UPDATE only if absent from the old object, so labels KRO
+  already placed survive Flux patches, HPA scaling and human annotations. `spec.selector` on a Service and a
+  workload's pod-template labels are covered too, so the guard cannot create a selector mismatch, and
+  `failurePolicy: Ignore` means a guard that cannot evaluate never blocks a write. There is no config
+  option; `TYPEKRO_DISABLE_LABEL_GUARD=1` is the documented break-glass and
+  `TYPEKRO_LABEL_GUARD_API_VERSION` pins the group version for a Kubernetes 1.34/1.35 cluster (the API is
+  beta at `v1beta1` there and GA at `v1` from 1.36). The bootstrap reports
+  `status.labelPropagationGuard: 'active' | 'unavailable'`. Pre-existing operator children that already
+  carry the labels self-heal through one prune-and-recreate cycle; expect a minute of churn the first time.
+- **`KRO_OWNERSHIP_LABELS`.** The shared set of label keys only KRO may introduce, exported from the package
+  root for operator-side propagation filters and for the new `assertNoForeignApplySetLabels()` e2e assertion.
+  It adds `kro.run/kro-version` to the four keys factories were copying privately: a KRO upgrade rewrites
+  that value, and an operator that re-derives a Service selector from the parent's labels moves the selector
+  off its own running pods.
+- **`mutatingAdmissionPolicy()` / `mutatingAdmissionPolicyBinding()`.** Typed factories for KEP-3962 mutating
+  admission policies, at either the beta or GA group version.
 - **`allowBreakingChanges` factory option.** Stamps `kro.run/allow-breaking-changes: "true"` on the generated
   RGD. The same option already existed at composition level, but a consumer of a SHIPPED composition
   (`dagsterBootstrap`, `apisixBootstrap`, …) cannot reach that, so there was no way to migrate an
