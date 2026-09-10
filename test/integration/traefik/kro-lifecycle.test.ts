@@ -53,13 +53,13 @@ import {
   runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
+import { waitUntilGone } from '../shared-absence.js';
 import {
   assertTraefikHelmReleaseValues,
   assertTraefikPodsHealthy,
   assertTraefikStatusContract,
   type ObservedTraefikStatus,
   readHelmRelease,
-  waitUntilGone,
 } from './shared-traefik-e2e.js';
 
 const clusterAvailable = await isClusterAvailable();

@@ -31,8 +31,21 @@ describe('isNotFoundError', () => {
     expect(isNotFoundError(error)).toBe(true);
   });
 
+  it("returns true when the Status body's reason is NotFound", () => {
+    // The API server always sets `reason` on a Status; some client paths hand
+    // the body on without the numeric code, and a deletion gate that missed
+    // this shape would keep polling a resource that is already gone.
+    const error: KubernetesApiError = { body: { reason: 'NotFound', message: 'not found' } };
+    expect(isNotFoundError(error)).toBe(true);
+  });
+
   it('returns false for a 500 status code', () => {
     const error = createK8sError('Internal Server Error', 500);
+    expect(isNotFoundError(error)).toBe(false);
+  });
+
+  it('returns false for a 403, so an auth failure never reads as absence', () => {
+    const error = createK8sError('Forbidden', 403);
     expect(isNotFoundError(error)).toBe(false);
   });
 

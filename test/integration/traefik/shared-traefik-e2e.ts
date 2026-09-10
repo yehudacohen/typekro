@@ -180,25 +180,3 @@ export async function assertTraefikPodsHealthy(
     }
   }
 }
-
-/**
- * Poll until `read` reports the resource is gone.
- *
- * KRO and Flux process deletions through finalizers, so absence lags a beat
- * behind the call that requested it.
- */
-export async function waitUntilGone(
-  read: () => Promise<unknown>,
-  timeoutMs = 180_000
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      await read();
-    } catch {
-      return true;
-    }
-    await Bun.sleep(5_000);
-  }
-  return false;
-}
