@@ -40,6 +40,7 @@ import {
 import { clickHouseInstallation, DEFAULT_CHI_CLUSTER_NAME } from '../resources/installation.js';
 import { clickHouseS3BackupCronJob } from '../resources/s3-backup.js';
 import {
+  ClickHouseS3PlainRewritableVersionSchema,
   IRSA_ROLE_ARN_ANNOTATION,
   isS3Storage,
   type ResolvedClickHouseS3Storage,
@@ -191,7 +192,16 @@ function buildSpecSchema(topology: ResolvedTopology) {
   const definition: Record<string, unknown> = {
     name: 'string',
     namespace: 'string',
-    version: 'string',
+    // NOT a bare `'string'` when the topology selects `s3_plain_rewritable`:
+    // that disk type needs a server >= MIN_S3_PLAIN_REWRITABLE_VERSION, and in
+    // kro mode `version` is a per-INSTANCE value that no construction-time
+    // check can see. Carrying the floor as a `pattern=` marker takes it into
+    // the RGD schema, so KRO rejects an instance that selects an older server
+    // instead of the disk failing at query time on a live cluster.
+    version:
+      topology.s3?.diskType === 's3_plain_rewritable'
+        ? ClickHouseS3PlainRewritableVersionSchema
+        : 'string',
     // NOT a bare `'string'`: this value reaches ClickHouse twice — as the
     // cluster identity the operator concatenates into every generated object
     // name, and as the `ON CLUSTER '<name>'` target the backup CronJob

@@ -9,10 +9,13 @@
  * expression the new fields add is proven strict-CEL-clean.
  */
 
+import { type } from 'arktype';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import {
   clickHouseCluster,
+  ClickHouseS3PlainRewritableVersionSchema,
   makeClickHouseCluster,
+  S3_PLAIN_REWRITABLE_VERSION_PATTERN,
 } from '../../../src/factories/clickhouse/index.js';
 import type { ClickHouseS3StorageOptions } from '../../../src/factories/clickhouse/types.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
@@ -243,5 +246,47 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
         } as ClickHouseS3StorageOptions,
       })
     ).toThrow(/'storage.auth' is required in S3 mode/);
+  });
+});
+
+describe('the s3_plain_rewritable version floor travels into the generated schema', () => {
+  it('carries the floor as a pattern on spec.version so KRO rejects a bad instance', () => {
+    // The finding this covers: the build-time gate silently skipped a version
+    // it could not read, and in kro mode `spec.version` is a REFERENCE at
+    // construction — so an instance could select a server that cannot run the
+    // plain_rewritable metadata type with nothing rejecting it. The floor is
+    // now a `pattern=` marker in the RGD schema, which the API server
+    // enforces with RE2 before the CHI is ever created.
+    const yaml = makeClickHouseCluster({ storage: PLAIN_REWRITABLE_S3 }).toYaml();
+    const versionLine = yaml
+      .split('\n')
+      .find((line) => line.trim().startsWith('version: string'));
+
+    expect(versionLine).toBeDefined();
+    expect(versionLine).toContain('pattern=');
+    expect(versionLine).toContain(S3_PLAIN_REWRITABLE_VERSION_PATTERN.source.replace(/\\/g, '\\\\'));
+  });
+
+  it('leaves spec.version unconstrained for diskType: s3 and for PVC mode', () => {
+    // The floor is specific to the plain_rewritable metadata type; `s3` and
+    // PVC topologies must not inherit a constraint they do not need.
+    for (const storage of [IRSA_S3, undefined]) {
+      const yaml = makeClickHouseCluster(
+        storage === undefined ? {} : { storage }
+      ).toYaml();
+      const versionLine = yaml
+        .split('\n')
+        .find((line) => line.trim().startsWith('version: string'));
+      expect(versionLine?.trim()).toBe('version: string');
+    }
+  });
+
+  it('accepts the versions the floor allows and rejects the ones it does not', () => {
+    const spec = makeClickHouseCluster({ storage: PLAIN_REWRITABLE_S3 });
+    // The same pattern is the direct-mode gate: ArkType validates the spec
+    // before deploy, so both modes reject an unsupported server.
+    expect(ClickHouseS3PlainRewritableVersionSchema('24.5') instanceof type.errors).toBe(false);
+    expect(ClickHouseS3PlainRewritableVersionSchema('24.4') instanceof type.errors).toBe(true);
+    expect(spec).toBeDefined();
   });
 });

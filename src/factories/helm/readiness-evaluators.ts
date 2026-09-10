@@ -24,6 +24,14 @@ import type {
   ResourceStatus,
 } from '../../core/types/index.js';
 
+/** One entry of Flux v2's `status.history` release snapshot stack. */
+interface HelmReleaseHistoryEntry {
+  chartVersion?: string;
+  digest?: string;
+  version?: number;
+  status?: string;
+}
+
 interface HelmReleaseLike {
   status?: {
     phase?: string;
@@ -32,6 +40,12 @@ interface HelmReleaseLike {
     observedGeneration?: number;
     conditions?: KubernetesCondition[];
     lastDeployed?: string;
+    /** Chart revision Flux last TRIED to install/upgrade to (Flux v2). */
+    lastAttemptedRevision?: string;
+    /** Chart revision Flux last SUCCESSFULLY applied (Flux v2 beta shape). */
+    lastAppliedRevision?: string;
+    /** Release snapshot stack, newest first (Flux v2 GA shape). */
+    history?: HelmReleaseHistoryEntry[];
   };
   metadata?: {
     creationTimestamp?: string;
@@ -43,14 +57,66 @@ interface HelmReleaseLike {
 const HELM_RELEASE_STRATEGY = 'typekro.readiness.flux.helm-release';
 const HELM_RELEASE_REVISION_STRATEGY = 'typekro.readiness.flux.helm-release-revision';
 const HELM_RELEASE_TEST_STRATEGY = 'typekro.readiness.flux.helm-release-test';
-const HELM_READINESS_REVISION = '1';
+/**
+ * Bumped to '2' with the #191 tightening (Reconciling/Stalled gating, exact
+ * generation observation, released-revision currency). The revision is part of
+ * the portable strategy identity, so a graph serialized by an older TypeKro
+ * cannot silently rehydrate the looser evaluator.
+ */
+const HELM_READINESS_REVISION = '2';
+
+/** Flux condition types this evaluator gates on, beyond `Ready`. */
+const RECONCILING_CONDITION = 'Reconciling';
+const STALLED_CONDITION = 'Stalled';
+const RELEASED_CONDITION = 'Released';
+
+function findCondition(
+  conditions: KubernetesCondition[] | undefined,
+  type: string
+): KubernetesCondition | undefined {
+  return conditions?.find((condition) => condition.type === type);
+}
+
+/**
+ * The chart revision Flux has actually RELEASED, across both v2 status shapes.
+ *
+ * Flux v2 GA keeps a `history` snapshot stack (newest first); the beta shape
+ * exposed a single `lastAppliedRevision`. Either is compared against
+ * `lastAttemptedRevision` to tell "the attempt succeeded" from "the attempt
+ * failed and an older release is still what is installed".
+ */
+function releasedRevision(status: NonNullable<HelmReleaseLike['status']>): string | undefined {
+  const fromHistory = status.history?.[0]?.chartVersion;
+  if (typeof fromHistory === 'string' && fromHistory !== '') return fromHistory;
+  const applied = status.lastAppliedRevision;
+  if (typeof applied === 'string' && applied !== '') return applied;
+  return undefined;
+}
 
 /**
  * Create a readiness evaluator for HelmRelease resources.
  *
- * Checks multiple readiness criteria in priority order: status phase,
- * Flux CD conditions array, and installation/upgrade progress. Wraps
- * the evaluation in a try/catch for resilience.
+ * READINESS CONTRACT (tightened by issue #191). A HelmRelease is ready only
+ * when ALL of the following hold, checked in this order:
+ *
+ * 1. `status` exists at all (Flux adds it a beat after creation).
+ * 2. Every generation-bearing observation Flux publishes — the top-level
+ *    `status.observedGeneration` and the `Ready`/`Released` conditions' own —
+ *    is EXACTLY `metadata.generation`. Readiness evidence from a neighbouring
+ *    generation describes a different spec.
+ * 3. `Reconciling` is not `True`. Flux holds that condition for the whole
+ *    install/upgrade, so a `Ready=True` beside it belongs to the PREVIOUS
+ *    release — the state that made `waitForReady` on a Helm-backed bootstrap
+ *    return before the chart's workloads existed.
+ * 4. `Stalled` is not `True` (a stalled release does not retry itself).
+ * 5. The revision Flux last ATTEMPTED (`status.lastAttemptedRevision`) is the
+ *    revision actually released (`status.history[0].chartVersion`, or the
+ *    beta-shape `status.lastAppliedRevision`). A failed upgrade that
+ *    remediates leaves the older chart deployed with a `Ready=True` that must
+ *    not read as success.
+ * 6. A present `Released` condition is `True`.
+ * 7. Then, and only then, the legacy `status.phase` and the Flux v2 `Ready`
+ *    condition decide readiness.
  *
  * @param label - Optional label prefix for log messages (e.g., `'Cert-Manager'`).
  *   Defaults to no prefix (`'HelmRelease'`).
@@ -79,24 +145,26 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
       // An apply can advance metadata.generation before Flux has observed the
       // new spec. Never reuse readiness evidence from the preceding
       // generation: doing so makes a direct factory update return while Flux
-      // is still reconciling the replacement values. Prefer the top-level
-      // observedGeneration and also honor generation-aware Ready conditions
-      // when the controller supplies them.
+      // is still reconciling the replacement values. Every generation-bearing
+      // observation Flux publishes — the top-level `observedGeneration` and
+      // the `Ready`/`Released` conditions' own — must be EXACTLY the desired
+      // generation (#191): a lagging one is stale evidence, and an
+      // unexpectedly leading one is not evidence about this spec at all.
       const desiredGeneration = live.metadata?.generation;
-      const readyCondition = status.conditions?.find(
-        (condition: KubernetesCondition) => condition.type === 'Ready'
-      );
+      const readyCondition = findCondition(status.conditions, 'Ready');
+      const releasedCondition = findCondition(status.conditions, RELEASED_CONDITION);
       const observedGenerations = [
         status.observedGeneration,
         readyCondition?.observedGeneration,
+        releasedCondition?.observedGeneration,
       ].filter((generation): generation is number => typeof generation === 'number');
-      const staleGenerations =
+      const mismatchedGenerations =
         typeof desiredGeneration === 'number'
-          ? observedGenerations.filter((generation) => generation < desiredGeneration)
+          ? observedGenerations.filter((generation) => generation !== desiredGeneration)
           : [];
       if (
         typeof desiredGeneration === 'number' &&
-        (observedGenerations.length === 0 || staleGenerations.length > 0)
+        (observedGenerations.length === 0 || mismatchedGenerations.length > 0)
       ) {
         return {
           ready: false,
@@ -108,6 +176,69 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
               ? { observedGeneration: Math.max(...observedGenerations) }
               : {}),
           },
+        };
+      }
+
+      // #191: Flux keeps `Reconciling=True` for the WHOLE duration of an
+      // install/upgrade and removes it when the release settles. A `Ready`
+      // condition (or a legacy `phase`) that co-exists with it describes the
+      // PREVIOUS release, so an in-flight reconcile is never ready — this is
+      // the state that let `waitForReady` return ~90s before the ClickHouse
+      // operator's chart had actually installed.
+      const reconciling = findCondition(status.conditions, RECONCILING_CONDITION);
+      if (reconciling?.status === 'True') {
+        return {
+          ready: false,
+          reason: 'Reconciling',
+          message:
+            reconciling.message ??
+            `${prefix}HelmRelease is still reconciling (Reconciling=True), so any Ready ` +
+              `condition describes the preceding release`,
+        };
+      }
+
+      // A stalled release will not retry on its own; surface it as a failure
+      // rather than letting the caller wait out its timeout.
+      const stalled = findCondition(status.conditions, STALLED_CONDITION);
+      if (stalled?.status === 'True') {
+        return {
+          ready: false,
+          reason: stalled.reason ?? 'Stalled',
+          message: stalled.message ?? `${prefix}HelmRelease is stalled and will not retry`,
+        };
+      }
+
+      // #191: the release Flux last ATTEMPTED must be the release that is
+      // actually installed. A failed upgrade that remediates leaves the older
+      // chart deployed (`history[0].chartVersion`) while
+      // `lastAttemptedRevision` names the version that failed — the exact
+      // shape where a lingering `Ready=True` would otherwise read as success.
+      const attemptedRevision = status.lastAttemptedRevision;
+      const currentRevision = releasedRevision(status);
+      if (
+        typeof attemptedRevision === 'string' &&
+        attemptedRevision !== '' &&
+        currentRevision !== undefined &&
+        attemptedRevision !== currentRevision
+      ) {
+        return {
+          ready: false,
+          reason: 'RevisionNotReleased',
+          message:
+            `${prefix}HelmRelease last attempted revision ${attemptedRevision} but the ` +
+            `released revision is still ${currentRevision}`,
+          details: { attemptedRevision, releasedRevision: currentRevision },
+        };
+      }
+
+      // A `Released` condition that is present and not True means the chart
+      // was not handed to Helm successfully, whatever `Ready` says.
+      if (releasedCondition !== undefined && releasedCondition.status !== 'True') {
+        return {
+          ready: false,
+          reason: releasedCondition.reason ?? 'NotReleased',
+          message:
+            releasedCondition.message ?? `${prefix}HelmRelease has not released its chart yet`,
         };
       }
 

@@ -54,7 +54,7 @@ import type {
   V1CronJobStatus,
   V1EnvVar,
 } from '@kubernetes/client-node';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import type { ResolvedClickHouseS3Storage } from '../utils/s3-storage.js';
 import { assertClickHouseClusterName } from '../utils/validation.js';
@@ -67,6 +67,24 @@ import {
 
 /** Image used for the prune step (the ClickHouse image has no AWS CLI). */
 export const DEFAULT_S3_PRUNE_IMAGE = 'amazon/aws-cli:2.22.35';
+
+/**
+ * The composition-facing form of {@link ClickHouseS3BackupCronJobConfig}.
+ *
+ * `Composable<T>` everywhere EXCEPT `storage`: the resolved S3 storage is
+ * build-time concrete by construction (`resolveClickHouseStorage` rejects a
+ * schema reference in S3 mode, because the values compile into a
+ * `storage_configuration` XML document), so loosening it into proxy form would
+ * describe a value this factory can never receive — and would make every
+ * optional field of the resolution nullable for no reason. The RUNTIME fields
+ * (`name`, `namespace`, `version`, `clusterName`) are exactly the ones that may
+ * be schema references, and they are the ones `Composable` covers here.
+ */
+export type ComposableClickHouseS3BackupCronJobConfig = Composable<
+  Omit<ClickHouseS3BackupCronJobConfig, 'storage'>
+> & {
+  storage: ResolvedClickHouseS3Storage;
+};
 
 /** Configuration for {@link clickHouseS3BackupCronJob}. */
 export interface ClickHouseS3BackupCronJobConfig {
@@ -229,7 +247,9 @@ function pruneScript(): string {
 }
 
 /** ClickHouse connection env for the backup step. */
-function clickHouseConnectionEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
+function clickHouseConnectionEnv(
+  config: ComposableClickHouseS3BackupCronJobConfig
+): V1EnvVar[] {
   const backup = config.storage.backup;
   const auth = backup?.auth;
   return [
@@ -266,7 +286,7 @@ function clickHouseConnectionEnv(config: ClickHouseS3BackupCronJobConfig): V1Env
 }
 
 /** AWS env for the prune step: bucket coordinates plus the same credentials. */
-function pruneEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
+function pruneEnv(config: ComposableClickHouseS3BackupCronJobConfig): V1EnvVar[] {
   const backup = config.storage.backup;
   const env: V1EnvVar[] = [
     { name: 'BACKUP_BUCKET', value: backup?.bucket ?? '' },
@@ -330,7 +350,7 @@ function pruneEnv(config: ClickHouseS3BackupCronJobConfig): V1EnvVar[] {
  * ```
  */
 export function clickHouseS3BackupCronJob(
-  config: ClickHouseS3BackupCronJobConfig
+  config: ComposableClickHouseS3BackupCronJobConfig
 ): Enhanced<V1CronJobSpec, V1CronJobStatus> {
   const backup = config.storage.backup;
   if (backup === undefined) {

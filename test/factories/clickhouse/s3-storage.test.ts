@@ -6,26 +6,36 @@
  * the discriminated `diskType`, the fact that the rendered configuration never
  * carries key material, and the refusal to mix PVC and S3 options.
  */
+import { type } from 'arktype';
 import { describe, expect, it } from 'bun:test';
 import { clickHouseInstallation } from '../../../src/factories/clickhouse/resources/installation.js';
-import { clickHouseS3BackupCronJob } from '../../../src/factories/clickhouse/resources/s3-backup.js';
+import {
+  BACKUP_CLUSTER_ENV,
+  clickHouseS3BackupCronJob,
+} from '../../../src/factories/clickhouse/resources/s3-backup.js';
 import {
   assertAwsRegion,
   assertS3BucketName,
   CHI_STORAGE_CONFIG_FILE,
   composeS3EndpointUrl,
   MERGE_TREE_STORAGE_POLICY_SETTING,
+  ClickHouseS3PlainRewritableVersionSchema,
   MIN_S3_PLAIN_REWRITABLE_VERSION,
   parseByteQuantity,
   parseClickHouseVersion,
+  parseS3EndpointUrl,
   renderStorageConfigurationXml,
   resolveClickHouseStorage,
   S3_ACCESS_KEY_ID_ENV,
+  S3_PLAIN_REWRITABLE_VERSION_PATTERN,
   S3_SECRET_ACCESS_KEY_ENV,
 } from '../../../src/factories/clickhouse/utils/s3-storage.js';
-import type {
-  ClickHouseS3StorageOptions,
-  ResolvedClickHouseS3Storage,
+import {
+  ClickHouseInstallationStorageSchema,
+  ClickHouseS3AuthSchema,
+  type ClickHouseS3StorageOptions,
+  ClickHouseS3StorageOptionsSchema,
+  type ResolvedClickHouseS3Storage,
 } from '../../../src/factories/clickhouse/index.js';
 import {
   assertClickHouseIdentifier,
@@ -139,6 +149,9 @@ describe('resolveClickHouseStorage', () => {
   });
 
   it('rejects both credential transports at once', () => {
+    // `as unknown as` because the SCHEMA now rejects this shape at the type
+    // level too (each auth branch pins the other transport to `undefined`),
+    // so the runtime guard is only reachable through an explicit cast.
     expect(() =>
       resolveClickHouseStorage('test', {
         size: '100Gi',
@@ -146,9 +159,94 @@ describe('resolveClickHouseStorage', () => {
         auth: {
           irsa: { roleArn: 'arn:aws:iam::1:role/a' },
           secretRef: { name: 's' },
-        } as ClickHouseS3StorageOptions['auth'],
+        } as unknown as ClickHouseS3StorageOptions['auth'],
       })
     ).toThrow(/exactly one credential transport/);
+  });
+
+  it('rejects both (and neither) credential transport in the ArkType schema', () => {
+    expect(
+      ClickHouseS3AuthSchema({
+        irsa: { roleArn: 'arn:aws:iam::1:role/a' },
+        secretRef: { name: 's' },
+      }) instanceof type.errors
+    ).toBe(true);
+    expect(ClickHouseS3AuthSchema({}) instanceof type.errors).toBe(true);
+    expect(ClickHouseS3AuthSchema({ irsa: { roleArn: 'arn:aws:iam::1:role/a' } })).toEqual({
+      irsa: { roleArn: 'arn:aws:iam::1:role/a' },
+    });
+    expect(ClickHouseS3AuthSchema({ secretRef: { name: 's' } })).toEqual({
+      secretRef: { name: 's' },
+    });
+  });
+
+  it('requires an AWS region or a custom endpoint in the ArkType schema', () => {
+    const targetless = ClickHouseS3StorageOptionsSchema({
+      mode: 's3',
+      bucket: 'ch-data',
+      cache: { size: '10Gi' },
+      auth: { irsa: { roleArn: 'arn:aws:iam::1:role/a' } },
+    });
+    expect(targetless instanceof type.errors).toBe(true);
+    expect(String(targetless)).toContain('an S3 target');
+
+    expect(
+      ClickHouseS3StorageOptionsSchema({
+        mode: 's3',
+        bucket: 'ch-data',
+        region: 'us-east-2',
+        cache: { size: '10Gi' },
+        auth: { irsa: { roleArn: 'arn:aws:iam::1:role/a' } },
+      }) instanceof type.errors
+    ).toBe(false);
+  });
+
+  it('models the S3 branch of the installation storage schema field by field', () => {
+    // The finding this covers: the schema described only `size` /
+    // `storageClassName` / `mode` while the exported type was widened with the
+    // whole S3 configuration, so a bad S3 field was entirely unvalidated.
+    expect(
+      ClickHouseInstallationStorageSchema({
+        size: '20Gi',
+        storageClassName: 'gp3',
+        mode: 's3',
+        bucket: 'ch-data',
+        prefix: 'chi',
+        region: 'us-east-2',
+        diskType: 's3_plain_rewritable',
+        cache: { size: '5Gi', path: '/var/lib/clickhouse/disks/s3_cache/' },
+        policyName: 's3_main',
+        auth: { secretRef: { name: 'ch-s3', accessKeyIdKey: 'id' } },
+        backup: { schedule: '0 2 * * *', prefix: 'backups', retention: { days: 7 } },
+      }) instanceof type.errors
+    ).toBe(false);
+
+    // A bad value INSIDE the S3 branch is now a schema error.
+    expect(
+      ClickHouseInstallationStorageSchema({
+        size: '20Gi',
+        mode: 's3',
+        bucket: 'ch-data',
+        region: 'us-east-2',
+        diskType: 's3_plain',
+        cache: { size: '5Gi' },
+        auth: { secretRef: { name: 'ch-s3' } },
+      }) instanceof type.errors
+    ).toBe(true);
+    expect(
+      ClickHouseInstallationStorageSchema({
+        size: '20Gi',
+        mode: 's3',
+        bucket: 'ch-data',
+        region: 'us-east-2',
+        cache: { size: '5Gi' },
+        auth: { secretRef: { name: 'ch-s3' } },
+        backup: { schedule: '0 2 * * *', retention: { days: 0 } },
+      }) instanceof type.errors
+    ).toBe(true);
+
+    // The PVC branch is still the byte-for-byte default.
+    expect(ClickHouseInstallationStorageSchema({ size: '20Gi' })).toEqual({ size: '20Gi' });
   });
 
   it('requires a cache size, because the cache is the whole design', () => {
@@ -380,11 +478,45 @@ describe('s3_plain_rewritable version gate', () => {
     ).not.toThrow();
   });
 
-  it('skips the gate for a version tag it cannot read, rather than guessing', () => {
+  it('refuses a version tag it cannot read instead of silently accepting it', () => {
+    // The replaced behaviour returned silently here, so `diskType:
+    // 's3_plain_rewritable'` on a moving tag or a digest pin was unchecked.
+    // "Unreadable" is not evidence the server supports the metadata type.
     expect(parseClickHouseVersion('latest')).toBeUndefined();
+    for (const version of ['latest', 'head', 'sha256:deadbeef', '']) {
+      expect(() =>
+        resolveClickHouseStorage('test', { size: '10Gi', ...SECRET_S3 }, version)
+      ).toThrow(/requires a CONCRETE ClickHouse version/);
+    }
+  });
+
+  it('leaves a schema-reference version to the generated schema pattern', () => {
+    // In kro mode `spec.version` is a reference at construction: its value
+    // does not exist yet, so the floor travels into the RGD schema as
+    // ClickHouseS3PlainRewritableVersionSchema instead (see the composition
+    // suite). Nothing here can check it, and pretending otherwise would make
+    // the composition unusable in kro mode.
     expect(() =>
-      resolveClickHouseStorage('test', { size: '10Gi', ...SECRET_S3 }, 'latest')
+      resolveClickHouseStorage('test', { size: '10Gi', ...SECRET_S3 }, fakeRef('spec.version'))
     ).not.toThrow();
+    expect(() =>
+      resolveClickHouseStorage('test', { size: '10Gi', ...SECRET_S3 }, undefined)
+    ).not.toThrow();
+  });
+
+  it('encodes the version floor as an RE2 pattern KRO can enforce', () => {
+    for (const ok of ['24.5', '24.9', '24.10', '25.7', '25.12.5', '24.8.14.39', 'v26.1', '100.1']) {
+      expect(
+        ClickHouseS3PlainRewritableVersionSchema(ok) instanceof type.errors
+      ).toBe(false);
+    }
+    for (const bad of ['24.4', '24.0', '23.8', '9.9', 'latest', '', '24', 'v24.4.1']) {
+      expect(ClickHouseS3PlainRewritableVersionSchema(bad) instanceof type.errors).toBe(true);
+    }
+    // RE2-compatible: no lookaround or backreference, because the same source
+    // becomes the generated schema's `pattern=` and Kubernetes uses RE2.
+    expect(S3_PLAIN_REWRITABLE_VERSION_PATTERN.source).not.toMatch(/\(\?[=!<]/);
+    expect(S3_PLAIN_REWRITABLE_VERSION_PATTERN.source).not.toMatch(/\\[1-9]/);
   });
 
   it('rejects more than one replica (no replication on plain_rewritable)', () => {
@@ -569,6 +701,34 @@ describe('clickHouseS3BackupCronJob', () => {
     if (resolved.mode !== 's3') throw new Error('expected S3 mode');
     return resolved;
   }
+
+  it('accepts Composable<Config> — schema proxies in the runtime fields', () => {
+    // The factory signature is `ComposableClickHouseS3BackupCronJobConfig`, so
+    // the RUNTIME fields (`name`, `namespace`, `version`, `clusterName`) may be
+    // composition proxy objects — which is exactly how the composition passes
+    // `spec.name` / `spec.version` in kro mode. `storage` stays concrete: the
+    // resolver refuses a reference there because it compiles into XML.
+    const job = clickHouseS3BackupCronJob({
+      name: fakeRef('spec.name') as unknown as string,
+      namespace: fakeRef('spec.namespace') as unknown as string,
+      version: fakeRef('spec.version') as unknown as string,
+      storage: resolvedWithBackup({ schedule: '0 2 * * *' }),
+      nativePort: 9000,
+      onCluster: true,
+      clusterName: fakeRef('spec.clusterName') as unknown as string,
+      id: 'clickhouseBackup',
+    });
+
+    // The refs survive into the rendered resource rather than collapsing to a
+    // string — the whole point of the Composable signature.
+    expect(job.spec.schedule).toBe('0 2 * * *');
+    const podSpec = job.spec.jobTemplate.spec?.template.spec;
+    const clusterEnv = (podSpec?.containers?.[0]?.env ?? []).find(
+      (entry) => entry.name === BACKUP_CLUSTER_ENV
+    );
+    expect(clusterEnv?.value).toBeDefined();
+    expect(KUBERNETES_REF_BRAND in (clusterEnv?.value as unknown as object)).toBe(true);
+  });
 
   it('renders a single-container CronJob without retention', () => {
     const job = clickHouseS3BackupCronJob({
@@ -903,7 +1063,7 @@ describe('XML identifier validation', () => {
           cache: { size: '1Gi' },
           auth: { secretRef: { name: 'minio-credentials' } },
         })
-      ).toThrow(/must use only URL characters/);
+      ).toThrow(/must be an absolute http\(s\) URL/);
     }
   });
 
@@ -1072,5 +1232,175 @@ describe('XML escaping of caller-supplied text', () => {
 </clickhouse>
 `
     );
+  });
+});
+
+describe('parseS3EndpointUrl — structure, not just characters', () => {
+  it('accepts the endpoint shapes an S3-compatible service actually uses', () => {
+    expect(parseS3EndpointUrl('test', 'http://minio.minio.svc.cluster.local:9000')).toBe(
+      'http://minio.minio.svc.cluster.local:9000'
+    );
+    // A trailing slash is normalized away so the caller can append cleanly.
+    expect(parseS3EndpointUrl('test', 'https://s3.example.com/')).toBe('https://s3.example.com');
+    // A bare single-label host (an in-namespace Service) is a DNS name.
+    expect(parseS3EndpointUrl('test', 'http://minio:9000')).toBe('http://minio:9000');
+    // An IPv4 literal.
+    expect(parseS3EndpointUrl('test', 'http://10.0.0.7:9000')).toBe('http://10.0.0.7:9000');
+    // A base path is legitimate for a gateway mounted under a prefix.
+    expect(parseS3EndpointUrl('test', 'https://gw.example.com/object/v1/')).toBe(
+      'https://gw.example.com/object/v1'
+    );
+    // The default port for the scheme is dropped by URL parsing, which is the
+    // same endpoint.
+    expect(parseS3EndpointUrl('test', 'https://s3.example.com:443')).toBe(
+      'https://s3.example.com'
+    );
+  });
+
+  it('names the specific part of the URL that is unusable', () => {
+    const cases: [string, RegExp][] = [
+      // A scheme-less host:port parses as scheme `minio...:` with path `9000`
+      // — a character allow-list accepts it verbatim and the server then has
+      // no endpoint at all.
+      ['minio.minio.svc.cluster.local:9000', /its scheme is 'minio/],
+      ['ftp://minio:9000', /its scheme is 'ftp'/],
+      ['s3://bucket', /its scheme is 's3'/],
+      // The exact case a character allow-list waves through while it writes
+      // credentials into `config.d/storage.xml`.
+      ['http://key:secret@minio:9000', /userinfo credentials/],
+      ['http://minio:9000?versionId=1', /carries a query string/],
+      ['http://minio:9000#frag', /carries a fragment/],
+      ['http://', /not a parseable absolute URL/],
+      ['http://minio_host:9000', /is not a DNS name or IPv4 literal/],
+      ['http://minio:9000/a//b', /empty or traversal segment/],
+    ];
+    for (const [endpoint, expected] of cases) {
+      expect(() => parseS3EndpointUrl('test', endpoint)).toThrow(expected);
+    }
+  });
+
+  it('resolves a traversal segment instead of appending it to the bucket path', () => {
+    // WHATWG URL parsing collapses `..` while parsing, so the value that
+    // reaches the storage XML is the RESOLVED path — never a literal `..`
+    // segment that an S3 gateway would have to interpret.
+    expect(parseS3EndpointUrl('test', 'http://minio:9000/a/../b')).toBe('http://minio:9000/b');
+  });
+
+  it('still refuses characters that would escape the XML or the SQL literal', () => {
+    for (const endpoint of [
+      "http://minio:9000/'",
+      'http://minio:9000/ x',
+      'http://minio:9000/<x',
+      'http://minio:9000/"x',
+      'http://minio:9000/&x',
+      'http://minio:9000/\\x',
+      'http://münchen.example.com',
+    ]) {
+      expect(() => parseS3EndpointUrl('test', endpoint)).toThrow(
+        /uses characters outside|not a parseable absolute URL/
+      );
+    }
+  });
+
+  it('is the same validation the composed disk URL goes through', () => {
+    expect(() =>
+      resolveClickHouseStorage('test', {
+        size: '10Gi',
+        mode: 's3',
+        bucket: 'clickhouse-data',
+        endpoint: 'http://key:secret@minio:9000',
+        cache: { size: '1Gi' },
+        auth: { secretRef: { name: 'minio-credentials' } },
+      })
+    ).toThrow(/userinfo credentials/);
+
+    // And the composed result keeps the base path.
+    const resolved = resolveClickHouseStorage('test', {
+      size: '10Gi',
+      mode: 's3',
+      bucket: 'clickhouse-data',
+      prefix: 'chi',
+      endpoint: 'https://gw.example.com/object/v1',
+      cache: { size: '1Gi' },
+      auth: { secretRef: { name: 'minio-credentials' } },
+    });
+    if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+    expect(resolved.endpointUrl).toBe('https://gw.example.com/object/v1/clickhouse-data/chi/');
+  });
+});
+
+describe('assertS3BucketName — the complete AWS rule set', () => {
+  it('accepts names AWS accepts', () => {
+    for (const name of [
+      'abc',
+      'clickhouse-data',
+      'my.bucket.name',
+      'a-b-c-1-2-3',
+      'x'.repeat(63),
+    ]) {
+      expect(() => assertS3BucketName('test', 'storage.bucket', name)).not.toThrow();
+    }
+  });
+
+  it('rejects every documented general-purpose-bucket rule, naming the rule', () => {
+    const cases: [unknown, RegExp][] = [
+      [42, /it is not a string/],
+      // Length: 3-63.
+      ['ab', /does not match/],
+      ['x'.repeat(64), /does not match/],
+      // Charset: lowercase letters, digits, '.', '-'.
+      ['MyBucket', /does not match/],
+      ['my_bucket', /does not match/],
+      ['my bucket', /does not match/],
+      // Start and end alphanumeric.
+      ['-bucket', /does not match/],
+      ['bucket-', /does not match/],
+      ['.bucket', /does not match/],
+      ['bucket.', /does not match/],
+      // No adjacent periods.
+      ['my..bucket', /it contains '\.\.'/],
+      // Not IP-shaped.
+      ['192.168.5.4', /formatted as an IP address/],
+      // Reserved prefixes.
+      ['xn--bucket', /reserved 'xn--'/],
+      ['sthree-bucket', /reserved 'sthree-'/],
+      ['sthree-configurator-x', /reserved 'sthree-'/],
+      ['amzn-s3-demo-bucket', /reserved 'amzn-s3-demo-'/],
+      // Reserved suffixes.
+      ['bucket-s3alias', /reserved '-s3alias'/],
+      ['bucket--ol-s3', /reserved '--ol-s3'/],
+      ['bucket.mrap', /reserved '\.mrap'/],
+      ['bucket--x-s3', /reserved '--x-s3'/],
+    ];
+    for (const [name, expected] of cases) {
+      expect(() => assertS3BucketName('test', 'storage.bucket', name)).toThrow(expected);
+    }
+  });
+
+  it('is applied to the backup bucket override too', () => {
+    expect(() =>
+      resolveClickHouseStorage(
+        'test',
+        {
+          size: '100Gi',
+          ...IRSA_S3,
+          backup: { schedule: '0 2 * * *', bucket: 'xn--backups' },
+        },
+        '25.7'
+      )
+    ).toThrow(/'storage.backup.bucket'.*reserved 'xn--'/s);
+  });
+
+  it('refuses a dotted bucket on the AWS virtual-hosted endpoint it composes', () => {
+    // A dot is legal S3 but unusable over HTTPS in
+    // `https://<bucket>.s3.<region>.amazonaws.com/`: the wildcard certificate
+    // does not cover the extra label. Path-style custom endpoints are fine.
+    expect(() =>
+      composeS3EndpointUrl('test', 'storage', 'my.bucket', '', 'us-east-2', undefined)
+    ).toThrow(/not usable over HTTPS in the virtual-hosted-style endpoint/);
+
+    expect(
+      composeS3EndpointUrl('test', 'storage', 'my.bucket', '', undefined, 'http://minio:9000')
+    ).toBe('http://minio:9000/my.bucket/');
   });
 });

@@ -44,6 +44,7 @@
  * @see https://clickhouse.com/docs/operations/storing-data
  */
 
+import { type } from 'arktype';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
 import type {
   ClickHouseInstallationStorage,
@@ -168,6 +169,32 @@ export const S3_BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const IP_SHAPED_BUCKET_NAME = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$/;
 
 /**
+ * Bucket-name PREFIXES AWS reserves, with the reason each is reserved.
+ *
+ * These are the published general-purpose-bucket rules, not TypeKro policy —
+ * a name carrying one of these is rejected by S3's own CreateBucket, so
+ * accepting it here would only move the failure to the first write. `sthree-`
+ * subsumes the separately documented `sthree-configurator`.
+ *
+ * @see https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+ */
+const RESERVED_BUCKET_NAME_PREFIXES: readonly { readonly prefix: string; readonly why: string }[] =
+  [
+    { prefix: 'xn--', why: 'AWS reserves it for punycode-encoded names' },
+    { prefix: 'sthree-', why: 'AWS reserves it (including sthree-configurator)' },
+    { prefix: 'amzn-s3-demo-', why: 'AWS reserves it for documentation examples' },
+  ];
+
+/** Bucket-name SUFFIXES AWS reserves, with the reason each is reserved. */
+const RESERVED_BUCKET_NAME_SUFFIXES: readonly { readonly suffix: string; readonly why: string }[] =
+  [
+    { suffix: '-s3alias', why: 'AWS reserves it for S3 access-point aliases' },
+    { suffix: '--ol-s3', why: 'AWS reserves it for Object Lambda access points' },
+    { suffix: '.mrap', why: 'AWS reserves it for multi-region access points' },
+    { suffix: '--x-s3', why: 'AWS reserves it for S3 Express directory buckets' },
+  ];
+
+/**
  * Region shape accepted for `storage.region`.
  *
  * Two lowercase letters (the geography — `us`, `eu`, `ap`, `cn`), one or more
@@ -198,6 +225,46 @@ const KEY_PREFIX_SEGMENT_CHARACTERS = /^[A-Za-z0-9._~!$()*+,;=:@-]+$/;
  * `metadata_type: plain_rewritable` form emitted here, so 24.5 is the floor.
  */
 export const MIN_S3_PLAIN_REWRITABLE_VERSION = '24.5';
+
+/**
+ * The {@link MIN_S3_PLAIN_REWRITABLE_VERSION} floor, expressed as a PATTERN so
+ * it can travel into a generated KRO schema.
+ *
+ * WHY A PATTERN AND NOT ONLY A BUILD-TIME COMPARISON. `storage.diskType` is a
+ * build-time choice, but `version` is per-INSTANCE runtime spec: in kro mode it
+ * arrives at construction as a schema reference, so no build-time comparison
+ * can see the value an instance will actually carry. Encoding the floor as a
+ * pattern lets `makeClickHouseCluster` put it on `spec.version` in the
+ * generated RGD (`string | pattern="…"`), so the API server / KRO REJECT an
+ * instance that selects an unsupported server — the case the build-time check
+ * structurally cannot reach.
+ *
+ * Reads as "major.minor >= 24.5": `24.5`-`24.9` and `24.10`+, any `25`-`99`
+ * major, and any three-or-more-digit major. A trailing `.patch.build`, or a
+ * `-`/`_` suffix, is accepted after the minor because ClickHouse tags look
+ * like `25.7`, `25.12.5`, and `24.8.14.39`.
+ *
+ * RE2-compatible on purpose (no lookaround, no backreferences): the same
+ * source becomes the `pattern=` marker of the generated KRO schema, and
+ * Kubernetes validates OpenAPI patterns with RE2.
+ */
+export const S3_PLAIN_REWRITABLE_VERSION_PATTERN =
+  /^v?(?:24\.(?:[5-9]|[1-9][0-9]+)|2[5-9]\.[0-9]+|[3-9][0-9]\.[0-9]+|[1-9][0-9]{2,}\.[0-9]+)(?:[._-][0-9A-Za-z._-]*)?$/;
+
+/**
+ * ArkType schema for a `version` that may back
+ * `diskType: 's3_plain_rewritable'`.
+ *
+ * `makeClickHouseCluster` uses this as the spec-schema type of `version`
+ * whenever the build-time topology selects `s3_plain_rewritable`, so the floor
+ * travels into the generated RGD and KRO rejects a bad INSTANCE. Compositions
+ * that wire `clickHouseInstallation()` by hand should do the same — see
+ * {@link assertS3PlainRewritableVersion} for why a build-time check alone is
+ * not enough there.
+ */
+export const ClickHouseS3PlainRewritableVersionSchema = type(
+  S3_PLAIN_REWRITABLE_VERSION_PATTERN
+);
 
 /** Keys that only ever make sense on the `s3` storage mode. */
 const S3_ONLY_STORAGE_KEYS = [
@@ -350,15 +417,45 @@ export function parseClickHouseVersion(
 /**
  * Assert the server version can run `s3_plain_rewritable` MergeTree writes.
  *
+ * TWO ENFORCEMENT SITES, ONE FLOOR. A CONCRETE version is checked here and
+ * rejected loudly — including a version this function cannot READ (`'latest'`,
+ * a digest pin), because "unreadable" is not evidence that the server supports
+ * the `plain_rewritable` metadata type, and silently accepting it was the gap
+ * this replaces. A version that is NOT a concrete string is a per-instance
+ * schema reference: its value does not exist at construction, so no check here
+ * can see it, and the floor must instead travel into the generated schema as
+ * {@link ClickHouseS3PlainRewritableVersionSchema} — which
+ * `makeClickHouseCluster` does automatically, so KRO rejects an instance that
+ * selects an older server. A composition that wires `clickHouseInstallation()`
+ * by hand with a schema-reference `version` MUST use that schema for its own
+ * `version` field; nothing else can enforce the floor for it.
+ *
  * @param context - Entry point name for the error message
- * @param version - The configured ClickHouse server version tag
- * @throws Error when the parsed version is below
- *   {@link MIN_S3_PLAIN_REWRITABLE_VERSION}
+ * @param version - The configured ClickHouse server version tag, or a schema
+ *   reference (skipped — see above)
+ * @throws Error when a concrete version is below
+ *   {@link MIN_S3_PLAIN_REWRITABLE_VERSION} or cannot be parsed as
+ *   `major.minor`
  */
 export function assertS3PlainRewritableVersion(context: string, version: unknown): void {
+  // Not a concrete string: a schema/resource reference whose value only exists
+  // per instance. Enforced by the generated schema's pattern instead.
+  if (typeof version !== 'string') return;
+
   const parsed = parseClickHouseVersion(version);
-  if (parsed === undefined) return;
+  if (parsed === undefined) {
+    throw new Error(
+      `${context}: storage.diskType 's3_plain_rewritable' requires a CONCRETE ClickHouse ` +
+        `version of at least ${MIN_S3_PLAIN_REWRITABLE_VERSION}, and ` +
+        `${JSON.stringify(version)} cannot be read as 'major.minor'. A moving tag or a ` +
+        `digest pin is not evidence that the server supports the metadata_type: ` +
+        `plain_rewritable form this factory emits, so it is refused rather than assumed — ` +
+        `pin an explicit version (e.g. '25.7'), or use diskType: 's3' with a backup schedule.`
+    );
+  }
   const floor = parseClickHouseVersion(MIN_S3_PLAIN_REWRITABLE_VERSION);
+  // Unreachable: the constant is a literal this function can parse. Kept as a
+  // total branch rather than a non-null assertion.
   if (floor === undefined) return;
   const below =
     parsed.major < floor.major || (parsed.major === floor.major && parsed.minor < floor.minor);
@@ -393,10 +490,13 @@ export function assertS3BucketName(context: string, field: string, value: unknow
     throw new Error(
       `${context}: '${field}' must be a valid S3 bucket name — ${why} (got ` +
         `${JSON.stringify(value)}). AWS requires 3-63 characters of lowercase letters, ` +
-        `digits, '.' and '-', starting and ending alphanumeric, with no '..' and no ` +
-        `IP-address shape. The name is appended into the disk endpoint URL that the ` +
-        `server's \`config.d/storage.xml\` and the \`BACKUP … TO S3('<url>')\` statement ` +
-        `both read, so it is constrained rather than escaped.`
+        `digits, '.' and '-', starting and ending alphanumeric, with no '..', no ` +
+        `IP-address shape, and none of the reserved prefixes ` +
+        `(${RESERVED_BUCKET_NAME_PREFIXES.map((entry) => entry.prefix).join(', ')}) or ` +
+        `suffixes (${RESERVED_BUCKET_NAME_SUFFIXES.map((entry) => entry.suffix).join(', ')}). ` +
+        `The name is appended into the disk endpoint URL that the server's ` +
+        `\`config.d/storage.xml\` and the \`BACKUP … TO S3('<url>')\` statement both read, so ` +
+        `it is constrained rather than escaped.`
     );
   };
   if (typeof value !== 'string') invalid('it is not a string');
@@ -404,10 +504,18 @@ export function assertS3BucketName(context: string, field: string, value: unknow
   if (!S3_BUCKET_NAME_PATTERN.test(name)) {
     invalid(`it does not match ${S3_BUCKET_NAME_PATTERN.source}`);
   }
-  // Not expressible in the pattern above without making it unreadable, and
-  // both are real AWS rejections rather than TypeKro policy.
+  // The rules below are the rest of AWS's published general-purpose-bucket
+  // naming rules — every one a real CreateBucket rejection rather than TypeKro
+  // policy. They are separate checks because folding them into one pattern
+  // makes it unreadable, and because each one gets to name itself in the error.
   if (name.includes('..')) invalid("it contains '..'");
   if (IP_SHAPED_BUCKET_NAME.test(name)) invalid('it is formatted as an IP address');
+  for (const { prefix, why } of RESERVED_BUCKET_NAME_PREFIXES) {
+    if (name.startsWith(prefix)) invalid(`it starts with the reserved '${prefix}' — ${why}`);
+  }
+  for (const { suffix, why } of RESERVED_BUCKET_NAME_SUFFIXES) {
+    if (name.endsWith(suffix)) invalid(`it ends with the reserved '${suffix}' — ${why}`);
+  }
 }
 
 /**
@@ -444,6 +552,110 @@ export function isS3Storage(
   storage: ClickHouseStorageInput
 ): storage is ClickHouseStorageInput & ClickHouseS3StorageOptions {
   return (storage as { mode?: string }).mode === 's3';
+}
+
+/**
+ * Host shape accepted for a custom `storage.endpoint`.
+ *
+ * A DNS name (`minio.minio.svc.cluster.local`, `s3.example.com`, `minio`) or a
+ * dotted-quad IPv4 literal. Labels are the RFC 1123 shape the Kubernetes API
+ * uses for a Service/DNS name. An IPv6 literal in brackets is deliberately not
+ * accepted: ClickHouse's `<endpoint>` parser and the `BACKUP … TO S3()` URL
+ * both take the value as a plain string, and a bracketed authority has not been
+ * verified against either — an explicit refusal beats a silent surprise.
+ */
+const ENDPOINT_HOST_PATTERN =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+/**
+ * Parse and VALIDATE a custom S3-compatible endpoint, returning it normalized
+ * with no trailing slash so the caller can append `/<bucket>/<prefix>/`.
+ *
+ * STRUCTURE, not just characters. The character allow-list on the composed URL
+ * ({@link ENDPOINT_URL_CHARACTERS}) stops injection into the storage XML and
+ * the `BACKUP … TO S3('<url>')` SQL literal, but it happily accepts strings
+ * that are not usable endpoints — a userinfo section that would write
+ * credentials into `config.d/storage.xml`, a query string or fragment that the
+ * appended bucket path turns into nonsense, or an out-of-range port. Each of
+ * those is a different mistake and gets its own message.
+ *
+ * @param context - Entry point name for the error message
+ * @param endpoint - The caller's `storage.endpoint` value
+ * @returns The endpoint as `<scheme>://<host>[:<port>][<path>]`, no trailing
+ *   slash
+ * @throws Error naming the specific part of the URL that is unusable
+ */
+export function parseS3EndpointUrl(context: string, endpoint: string): string {
+  const invalid = (why: string): never => {
+    throw new Error(
+      `${context}: 'storage.endpoint' must be an absolute http(s) URL of the ` +
+        `S3-compatible service (e.g. 'http://minio.minio.svc.cluster.local:9000') — ${why} ` +
+        `(got ${JSON.stringify(endpoint)}). The bucket and prefix are appended by the ` +
+        `factory, so do not include them here; the value is rendered into the server's ` +
+        `\`config.d/storage.xml\` and into the \`BACKUP … TO S3('<url>')\` string literal.`
+    );
+  };
+
+  // Checked before parsing so the message can say `storage.endpoint` rather
+  // than point at a composed URL the caller never typed.
+  if (!ENDPOINT_URL_CHARACTERS.test(endpoint)) {
+    invalid(
+      `it uses characters outside ${ENDPOINT_URL_CHARACTERS.source} — no whitespace, ` +
+        `quotes, angle brackets, '&', backslash, control characters or non-ASCII (pass an ` +
+        `internationalized host in punycode)`
+    );
+  }
+
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return invalid('it is not a parseable absolute URL');
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    invalid(`its scheme is '${url.protocol.replace(/:$/, '')}', not http or https`);
+  }
+  if (url.username !== '' || url.password !== '') {
+    invalid(
+      'it carries userinfo credentials — S3 keys come from `storage.auth` (IRSA or a ' +
+        'Secret reference), never from the endpoint URL'
+    );
+  }
+  if (url.search !== '') invalid('it carries a query string');
+  if (url.hash !== '') invalid('it carries a fragment');
+  if (url.hostname === '') invalid('it has no host');
+  if (!ENDPOINT_HOST_PATTERN.test(url.hostname)) {
+    invalid(
+      `its host ${JSON.stringify(url.hostname)} is not a DNS name or IPv4 literal ` +
+        `(matching ${ENDPOINT_HOST_PATTERN.source})`
+    );
+  }
+  if (url.port !== '') {
+    // `new URL` already rejects a non-numeric or >65535 port, and drops the
+    // default port for the scheme. Re-check the range so a future parser
+    // change cannot let one through, and so 0 is refused explicitly.
+    const port = Number(url.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      invalid(`its port ${JSON.stringify(url.port)} is not in 1-65535`);
+    }
+  }
+
+  // A base PATH is legitimate (a gateway mounted under a prefix), but it is
+  // joined with `/<bucket>/<prefix>/`, so it must be a clean path: no traversal
+  // segment, no empty segment that would double a slash.
+  const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+  if (path !== '') {
+    const segments = path.slice(1).split('/');
+    if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+      invalid(
+        `its path ${JSON.stringify(url.pathname)} has an empty or traversal segment; a base ` +
+          `path is allowed but must be a plain '/a/b' prefix`
+      );
+    }
+  }
+
+  return `${url.protocol}//${url.host}${path}`;
 }
 
 /**
@@ -530,36 +742,37 @@ export function composeS3EndpointUrl(
   const suffix = prefix === '' ? '' : `${prefix}/`;
   let composed: string;
   if (endpoint !== undefined) {
-    if (!/^https?:\/\//.test(endpoint)) {
-      throw new Error(
-        `${context}: 'storage.endpoint' must be an absolute http(s) URL of the ` +
-          `S3-compatible service (e.g. 'http://minio.minio.svc.cluster.local:9000') — got ` +
-          `${JSON.stringify(endpoint)}. The bucket and prefix are appended by the factory, ` +
-          `so do not include them here.`
-      );
-    }
-    // Checked on its own as well as in the composed string, so the message can
-    // say `storage.endpoint` instead of pointing at a URL the caller never
-    // typed.
-    if (!ENDPOINT_URL_CHARACTERS.test(endpoint)) {
-      throw new Error(
-        `${context}: 'storage.endpoint' must use only URL characters matching ` +
-          `${ENDPOINT_URL_CHARACTERS.source} — no whitespace, quotes, angle brackets, '&', ` +
-          `backslash or control characters (got ${JSON.stringify(endpoint)}). The value is ` +
-          `rendered into the server's storage XML and into the ` +
-          `\`BACKUP … TO S3('<url>')\` string literal of the generated CronJob, and none of ` +
-          `those characters belong in a URL.`
-      );
-    }
+    // STRUCTURE first, characters second. An allow-list alone accepts strings
+    // that are not URLs at all (`http:///x`, `http://a b`… well, not that one,
+    // but `http://user:pw@host`, `http://host?x=1`, `http://host:99999`), and
+    // every one of those either silently changes what the server talks to or
+    // leaks credentials into `config.d/storage.xml`. So the endpoint is PARSED
+    // and each part is checked, and the character allow-list stays as the
+    // backstop on the composed result.
+    const base = parseS3EndpointUrl(context, endpoint);
     // Path-style addressing: MinIO and most S3-compatible services serve
     // virtual-hosted-style only behind extra DNS configuration.
-    composed = `${endpoint.replace(/\/+$/, '')}/${bucket}/${suffix}`;
+    composed = `${base}/${bucket}/${suffix}`;
   } else {
     if (region === undefined || region.trim() === '') {
       throw new Error(
         `${context}: 'storage.region' is required for AWS S3 (it forms the disk endpoint ` +
           `https://<bucket>.s3.<region>.amazonaws.com/<prefix>/). Set 'storage.endpoint' ` +
           `instead when targeting a custom S3-compatible service such as MinIO.`
+      );
+    }
+    // A dot in the bucket name is legal S3 but breaks the VIRTUAL-HOSTED-style
+    // URL this branch composes: the wildcard certificate for
+    // `*.s3.<region>.amazonaws.com` does not cover a further label, so TLS
+    // verification fails. AWS documents this restriction for virtual-hosted
+    // access; path-style custom endpoints (the branch above) are unaffected.
+    if (bucket.includes('.')) {
+      throw new Error(
+        `${context}: '${field}.bucket' ${JSON.stringify(bucket)} contains a '.', which is ` +
+          `legal for S3 but not usable over HTTPS in the virtual-hosted-style endpoint this ` +
+          `factory composes for AWS (https://<bucket>.s3.<region>.amazonaws.com/): the ` +
+          `wildcard certificate does not cover an extra label, so TLS verification fails. ` +
+          `Use a dot-free bucket name, or set 'storage.endpoint' to a path-style endpoint.`
       );
     }
     composed = `https://${bucket}.s3.${region}.amazonaws.com/${suffix}`;
