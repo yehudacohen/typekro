@@ -12,7 +12,15 @@
  * - Outbound access to https://traefik.github.io/charts and to the
  *   `traefik`, `python:3.12-alpine` and `curlimages/curl` images.
  *
+ * Its KRO-mode counterpart is `kro-lifecycle.test.ts`; the two share their
+ * status, HelmRelease-values and pod-health assertions through
+ * `shared-traefik-e2e.ts` so neither mode can pass on weaker evidence than
+ * the other.
+ *
  * WHAT IS PROVEN END TO END
+ * 0. Every field the status schema declares is hydrated, the in-cluster
+ *    HelmRelease carries the expected final `spec.values`, and every Traefik
+ *    pod is Running with its containers ready.
  * 1. `traefikBootstrap` deploys FROM SCRATCH into an empty namespace — the
  *    reviewer's bar for #186: nothing in the graph may be read before it is
  *    applied. The HelmRepository singleton, the release, the CRDs the chart
@@ -44,7 +52,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { DEFAULT_TRAEFIK_CHART_VERSION } from '../../../src/factories/traefik/constants.js';
 import { traefikBootstrap } from '../../../src/factories/traefik/compositions/traefik-bootstrap.js';
 import {
   traefikForwardAuthMiddleware,
@@ -59,10 +67,17 @@ import {
   createTestNamespace,
   deleteTestFactoryInstanceAndRecoverNamespaces,
   deleteTestNamespaceAndWait,
+  getIntegrationTestKubeConfig,
   isClusterAvailable,
   runTestPodAndReadLogs,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
+import {
+  assertTraefikHelmReleaseValues,
+  assertTraefikPodsHealthy,
+  assertTraefikStatusContract,
+  readHelmRelease,
+} from './shared-traefik-e2e.js';
 
 const clusterAvailable = await isClusterAvailable();
 const describeOrSkip =
@@ -311,7 +326,10 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
   let secureEntrypoint = '';
 
   beforeAll(async () => {
-    kubeConfig = getKubeConfig({ skipTLSVerify: true });
+    // The harness contract: cluster configuration comes from the shared
+    // helper, so `bun run test:integration:required` and a focused run see the
+    // same cluster.
+    kubeConfig = getIntegrationTestKubeConfig();
     namespaceLeases.push(await createTestNamespace(appNs, kubeConfig));
     webEntrypoint = `http://${traefikName}.${traefikNs}.svc.cluster.local`;
     secureEntrypoint = `https://${traefikName}.${traefikNs}.svc.cluster.local`;
@@ -371,13 +389,32 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
     });
     bootstrapDeployed = true;
 
-    expect(instance.status.ready).toBe(true);
-    expect(instance.status.failed).toBe(false);
-    expect(instance.status.phase).toBe('Ready');
-    expect(instance.status.serviceName).toBe(traefikName);
+    // Every field the status schema declares, held to the same bar as KRO mode.
     // Documented behavior for a non-LoadBalancer Service: no address to report.
-    expect(instance.status.loadBalancer.hostname).toBe('');
-    expect(instance.status.loadBalancer.ip).toBe('');
+    assertTraefikStatusContract(instance.status, {
+      serviceName: traefikName,
+      chartVersion: DEFAULT_TRAEFIK_CHART_VERSION,
+      loadBalancer: { hostname: '', ip: '' },
+    });
+  });
+
+  it('reconciles a HelmRelease whose final values carry the pins', async () => {
+    // In-cluster values, not local YAML: this is what proves the Flux handoff
+    // produced the chart config the factory promises.
+    const release = await readHelmRelease('flux-system', traefikName, kubeConfig);
+
+    assertTraefikHelmReleaseValues(release, {
+      instanceName: traefikName,
+      targetNamespace: traefikNs,
+      chartVersion: DEFAULT_TRAEFIK_CHART_VERSION,
+    });
+    expect(release.status?.history?.[0]?.chartVersion).toBe(DEFAULT_TRAEFIK_CHART_VERSION);
+  });
+
+  it('runs healthy pods, not merely existing ones', async () => {
+    // A CrashLooping pod exists too. Direct mode applies in dependency order,
+    // so the restart budget is tighter than KRO mode's.
+    await assertTraefikPodsHealthy(traefikNs, traefikName, kubeConfig, { maxRestarts: 3 });
   });
 
   it('owns the entrypoint Service rather than letting the chart create it', async () => {
@@ -395,13 +432,9 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       'app.kubernetes.io/instance': traefikName,
     });
 
-    // Proof the selector is not merely self-consistent: it actually matches the
-    // pods the chart created.
-    const pods = await coreApi.listNamespacedPod({
-      namespace: traefikNs,
-      labelSelector: `app.kubernetes.io/name=traefik,app.kubernetes.io/instance=${traefikName}`,
-    });
-    expect(pods.items.length).toBeGreaterThan(0);
+    // Proof the selector is not merely self-consistent: it matches pods the
+    // chart created AND those pods are actually serving.
+    await assertTraefikPodsHealthy(traefikNs, traefikName, kubeConfig, { maxRestarts: 3 });
 
     // And that traffic can reach them: the Service has ready endpoints.
     const endpoints = await coreApi.readNamespacedEndpoints({
@@ -599,9 +632,12 @@ describeOrSkip('Traefik bootstrap + edge policy integration', () => {
       kubeConfig,
     });
     const assigned = await readyFactory.deploy(lbSpec);
-    expect(assigned.status.loadBalancer.hostname).toBe(LOAD_BALANCER_HOSTNAME);
     // The entry carries a hostname and no ip; the guarded CEL reports the
     // absent sibling as '' rather than failing the whole status object.
-    expect(assigned.status.loadBalancer.ip).toBe('');
+    assertTraefikStatusContract(assigned.status, {
+      serviceName: traefikName,
+      chartVersion: DEFAULT_TRAEFIK_CHART_VERSION,
+      loadBalancer: { hostname: LOAD_BALANCER_HOSTNAME, ip: '' },
+    });
   });
 });
