@@ -52,6 +52,63 @@ For Helm-chart integrations, the main design decision is not "how can we model t
 "which chart paths need TypeKro validation, defaults, references, or status-safe access?" Model those
 paths. Leave the rest to `values`.
 
+## Operators that copy parent labels
+
+Many operators clone the entire label map of the custom resource they reconcile
+onto the children they create — Hyperspike Valkey does `maps.Clone(valkey.Labels)`,
+and the Altinity ClickHouse operator defaults to `label.include: []`, meaning
+"include all". When that CR is a node in a KRO graph, the children inherit KRO's
+ApplySet labels. KRO's pruner then deletes any object carrying its applyset id
+whose UID it did not itself apply, for every GroupKind the graph declares: the
+operator's Services, ConfigMaps and StatefulSets are deleted on every requeue
+(~3s), continuously, with the CR stuck `InProgress` and no error anywhere.
+Upstream closed `kubernetes-sigs/kro#1153` as expected behaviour, so the
+mitigation is on our side.
+
+**The guard is the default and you do not opt into it.** `typeKroRuntimeBootstrap()`
+installs a cluster-scoped `MutatingAdmissionPolicy` that removes any label in
+`KRO_OWNERSHIP_LABELS` that a non-KRO caller *introduces* — on CREATE, and on
+UPDATE only when the label is absent from the old object, so labels KRO already
+placed are never touched. It covers a Service's `spec.selector` and a workload's
+pod-template labels too, so it cannot create a selector mismatch. New
+integrations get this for free; there is nothing to pass.
+
+The remaining choices are optimisations and fallbacks, in this order:
+
+1. **Operator-side exclude config**, where the operator exposes one (Altinity's
+   `label.exclude`). Cheaper than admission for that operator, and it stops the
+   labels at the source. Configure it from `KRO_OWNERSHIP_LABELS` — importing
+   the shared constant, never copying the list.
+2. **Single-kind RGD isolation** via `singleton()`, for clusters below
+   Kubernetes 1.34 where `MutatingAdmissionPolicy` is not served. Hoisting the
+   CR into its own ResourceGraphDefinition keeps the prune sweep from ever
+   listing the operator-created kinds.
+3. **Pre-declaring the children as graph nodes**, so KRO claims them with their
+   own `kro.run/node-id` and the operator's upsert patches an object KRO already
+   owns. This is what `web-app-with-processing.ts` still does for Valkey; it
+   works, but it couples the composition to the operator's child names.
+
+`kro.run/kro-version` is in the set for a reason that only shows up on upgrade:
+bumping KRO rewrites that label on the parent CR, the operator re-copies the new
+value onto the children, and where the operator also derives a `spec.selector`
+from the same map, the Service selector moves to a value no running pod carries.
+The Service loses its endpoints silently.
+
+**Prove it in the KRO-mode e2e.** After the instance is ready, call the shared
+assertion:
+
+```typescript
+import { assertNoForeignApplySetLabels } from '../../utils/kro-ownership-labels.js';
+
+const sweep = await assertNoForeignApplySetLabels(kubeConfig, appNamespace);
+expect(sweep.kroApplied.length).toBeGreaterThan(0);
+```
+
+It lists the kinds operators typically create, fails when an object KRO did not
+apply carries any ownership label, and reports the objects KRO did apply so you
+can assert the complement — KRO's own writes must keep their labels, or
+ownership breaks the other way round.
+
 ## Generation Prompt
 
 Use the following as a system prompt or task description:
@@ -640,6 +697,7 @@ Then verify each item:
 **Resource metadata:**
 - [ ] Cluster-scoped resources use `{ scope: 'cluster' }` in `createResource`
 - [ ] Resources that operators copy labels from have required `app.kubernetes.io/*` labels
+- [ ] If the operator copies parent labels to children, the KRO-mode e2e calls `assertNoForeignApplySetLabels()` and any operator-side propagation filter is configured from `KRO_OWNERSHIP_LABELS` — never a local copy of the list (see "Operators that copy parent labels")
 - [ ] K8s API catch blocks check `statusCode ?? code ?? body?.code` (not just `statusCode`)
 - [ ] KRO graph does not own the namespace containing its own instance
 - [ ] Nested config fields named `id` are preserved when they are chart/CRD config, not TypeKro metadata
