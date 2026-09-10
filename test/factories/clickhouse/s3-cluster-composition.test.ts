@@ -178,15 +178,29 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
     );
     const serialized = JSON.stringify(plan);
 
+    // The durability decision is a CONSTRUCTION-TIME value, so it lives as a
+    // literal in the contract ConfigMap this composition owns...
     expect(serialized).toContain(
-      '"key":"diskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
+      '"key":"storageDiskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
     );
     expect(serialized).toContain(
-      '"key":"selfDescribingBucket","value":{"kind":"literal","value":true}'
+      '"key":"storageSelfDescribingBucket","value":{"kind":"literal","value":"true"}'
     );
     expect(serialized).toContain(
-      '"key":"bucket","value":{"kind":"literal","value":"example-observability"}'
+      '"key":"storageBucket","value":{"kind":"literal","value":"example-observability"}'
     );
+
+    // ...and the STATUS reads it back from that resource, so it survives KRO
+    // instead of being a literal leaf KRO drops from the instance.
+    const outputs = serialized.slice(serialized.indexOf('"outputs"'));
+    for (const field of ['diskType', 'selfDescribingBucket', 'bucket', 'policyName', 'mode']) {
+      expect(outputs).toContain(`"key":"${field}"`);
+    }
+    expect(outputs).toContain('clickhouseContract.data.storageDiskType');
+    expect(outputs).toContain('clickhouseContract.data.storageSelfDescribingBucket ==');
+    // Nothing in the status is a literal any more: every leaf is an
+    // expression, a template, or a reference over a resource in the graph.
+    expect(outputs).not.toContain('"kind":"literal","value":"s3_plain_rewritable"');
   });
 
   it('reports pvc mode on the default topology', () => {
@@ -201,12 +215,16 @@ describe('makeClickHouseCluster({ storage: { mode: "s3" } })', () => {
     );
     const serialized = JSON.stringify(plan);
 
-    // The storage block is a client-only static projection carrying just the
-    // mode — no S3 fields at all on the PVC default.
-    expect(serialized).toContain('"key":"mode","value":{"kind":"literal","value":"pvc"}');
-    // `selfDescribingBucket` appears in the status SCHEMA (it is an optional
-    // field) but must not be PROJECTED for a PVC cluster.
+    // The storage block carries just the mode — no S3 fields at all on the
+    // PVC default — and it is projected from the contract ConfigMap.
+    expect(serialized).toContain('"key":"storageMode","value":{"kind":"literal","value":"pvc"}');
+    expect(serialized).toContain('clickhouseContract.data.storageMode');
+    // The S3 fields appear in the status SCHEMA (they are optional) but must
+    // not be PROJECTED — nor written to the contract — for a PVC cluster.
     expect(serialized).not.toContain('"key":"selfDescribingBucket"');
+    expect(serialized).not.toContain('storageSelfDescribingBucket');
+    expect(serialized).not.toContain('storageBucket');
+    expect(serialized).not.toContain('storageDiskType');
   });
 
   it('leaves the PVC default byte-for-byte unchanged', () => {

@@ -824,18 +824,18 @@ export type ClickHouseClusterSpec = ClickHouseClusterSpecBase & {
  *   (`pkg/apis/clickhouse.altinity.com/v1/type_host.go`
  *   ChDefaultTCPPortNumber / ChDefaultHTTPPortNumber)
  *
- * KRO STATUS vs CLIENT-HYDRATED SPLIT: fields derived from the owned CHI
- * resource serialize as KRO status CEL and appear on the live KRO CR's
- * status (GitOps/KRO consumers can read them):
- * `ready`, `phase`, `clickhouse.host`, `clickhouse.nativeUrl`,
- * `clickhouse.httpUrl`, `clickhouse.clusterName`, `keeper.host`,
- * `keeper.port`, `installation.*`.
- * The remaining fields are BARE build-time constants with no resource
- * anchor (KRO status CEL cannot reference schema.spec.* or literals-only
- * expressions), so they are hydrated CLIENT-SIDE by TypeKro and are NOT on
- * the KRO CR status: `clickhouse.port` (9000 — also visible inside the
- * KRO-serialized `nativeUrl`), `clickhouse.database` ('default'), and
- * `clickhouse.user` (first declared user name).
+ * EVERY DECLARED FIELD IS OBSERVABLE THROUGH KRO. Fields derived from the
+ * owned CHI serialize as KRO status CEL directly: `ready`, `phase`,
+ * `clickhouse.host`, `clickhouse.nativeUrl`, `clickhouse.httpUrl`,
+ * `clickhouse.clusterName`, `keeper.host`, `keeper.port`, `installation.*`.
+ * The rest are CONSTRUCTION-TIME values with no natural CHI field to read —
+ * `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole
+ * `storage` durability block. Rather than emit them as literals (which KRO
+ * drops from the instance status, so the declared schema would promise fields
+ * the live CR never carries), the composition writes them into a ConfigMap it
+ * OWNS (`<installation>-contract`) and projects them back from that resource.
+ * The result is that `kubectl get clickhouseclusters -o yaml` shows the whole
+ * contract, durability included, in both factory modes.
  *
  * NOTE: operator health is NOT surfaced here — the operator is separate
  * one-per-cluster infrastructure installed by `clickhouseOperatorBootstrap`,
@@ -901,10 +901,11 @@ export interface ClickHouseClusterStatus {
    * is, so consumers (and operators reading `kubectl get clickhousecluster`)
    * never have to infer it from the CHI's XML.
    *
-   * BARE BUILD-TIME CONSTANTS: these come from the construction-time topology,
-   * not from the owned CHI, so — like `clickhouse.port`/`database` — they have
-   * no resource anchor and are hydrated CLIENT-SIDE by TypeKro rather than
-   * appearing on the live KRO CR status.
+   * PROJECTED FROM THE OWNED CONTRACT CONFIGMAP: these come from the
+   * construction-time topology, not from the owned CHI, so the composition
+   * writes them into a ConfigMap it owns (`<installation>-contract`) and reads
+   * them back from there. That gives them a resource anchor, so — unlike a
+   * bare literal, which KRO omits — they appear on the live KRO CR status.
    */
   storage: {
     /** 'pvc' (local MergeTree volume) or 's3' (object storage). */

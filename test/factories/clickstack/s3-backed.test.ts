@@ -1120,9 +1120,27 @@ describe('makeClickstackBootstrap({ storage })', () => {
     });
     const serialized = JSON.stringify(bootstrap.plan?.(SPEC, { strict: true }));
 
-    expect(serialized).toContain('"key":"mode","value":{"kind":"literal","value":"s3"}');
-    expect(serialized).toContain('"key":"diskType","value":{"kind":"literal","value":"s3"}');
-    expect(serialized).toContain('"key":"persistentQueue","value":{"kind":"literal","value":true}');
+    // The durability decision is a CONSTRUCTION-TIME value, so it lives as a
+    // literal in the contract ConfigMap this composition owns...
+    expect(serialized).toContain('"key":"storageMode","value":{"kind":"literal","value":"s3"}');
+    expect(serialized).toContain(
+      '"key":"storageDiskType","value":{"kind":"literal","value":"s3"}'
+    );
+    expect(serialized).toContain(
+      '"key":"storagePersistentQueue","value":{"kind":"literal","value":"true"}'
+    );
+    expect(serialized).toContain(
+      '"key":"storageRetentionLogs","value":{"kind":"literal","value":"30d"}'
+    );
+
+    // ...and the STATUS reads it back from that resource, so it survives KRO
+    // instead of being a literal leaf KRO drops from the instance.
+    const outputs = serialized.slice(serialized.indexOf('"outputs"'));
+    expect(outputs).toContain('clickstackContract.data.storageMode');
+    expect(outputs).toContain('clickstackContract.data.storageDiskType');
+    expect(outputs).toContain('clickstackContract.data.storagePersistentQueue ==');
+    expect(outputs).toContain('clickstackContract.data.storageRetentionLogs');
+    expect(outputs).not.toContain('"kind":"literal","value":"s3_main"');
   });
 
   it('still echoes s3_plain_rewritable on the status contract (without retention)', () => {
@@ -1139,7 +1157,10 @@ describe('makeClickstackBootstrap({ storage })', () => {
     const serialized = JSON.stringify(bootstrap.plan?.(SPEC, { strict: true }));
 
     expect(serialized).toContain(
-      '"key":"diskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
+      '"key":"storageDiskType","value":{"kind":"literal","value":"s3_plain_rewritable"}'
+    );
+    expect(serialized.slice(serialized.indexOf('"outputs"'))).toContain(
+      'clickstackContract.data.storageDiskType'
     );
   });
 
@@ -1150,10 +1171,17 @@ describe('makeClickstackBootstrap({ storage })', () => {
     });
     const serialized = JSON.stringify(bootstrap.plan?.(SPEC, { strict: true }));
 
-    expect(serialized).toContain('"key":"mode","value":{"kind":"literal","value":"pvc"}');
+    expect(serialized).toContain('"key":"storageMode","value":{"kind":"literal","value":"pvc"}');
     expect(serialized).toContain(
-      '"key":"persistentQueue","value":{"kind":"literal","value":false}'
+      '"key":"storagePersistentQueue","value":{"kind":"literal","value":"false"}'
     );
+    // No S3 fields are written to the contract — nor projected — on the PVC
+    // default.
+    expect(serialized).not.toContain('storageDiskType');
+    expect(serialized).not.toContain('storagePolicyName');
+    const outputs = serialized.slice(serialized.indexOf('"outputs"'));
+    expect(outputs).toContain('clickstackContract.data.storageMode');
+    expect(outputs).not.toContain('"key":"diskType"');
   });
 
   it('rejects a schema reference in the build-time storage option', () => {

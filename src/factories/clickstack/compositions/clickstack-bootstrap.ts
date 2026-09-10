@@ -84,6 +84,7 @@ import { Cel } from '../../../core/references/cel.js';
 import { singleton } from '../../../core/singleton/singleton.js';
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { helmReleaseConditionSummary } from '../../helm/status.js';
+import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
 import { cronJob } from '../../kubernetes/workloads/cron-job.js';
@@ -218,6 +219,35 @@ const clickstackTeamBootstrapReadiness = registerPortableReadinessEvaluator<V1Cr
     };
   }
 );
+/**
+ * Resource id of the owned ClickStack HelmRelease inside the graph.
+ *
+ * Extracted as a constant because the status now READS BACK from it
+ * (`spec.chart.spec.version`), so the id appears in two places and must not
+ * drift.
+ */
+const CLICKSTACK_HELM_RELEASE_RESOURCE_ID = 'clickstackHelmRelease';
+
+/**
+ * Resource id of the CONTRACT ConfigMap inside the composition graph.
+ *
+ * WHY THIS RESOURCE EXISTS. The HyperDX app/API ports and the whole `storage`
+ * durability block come from the CONSTRUCTION-TIME build, not from the owned
+ * HelmRelease. As bare constants they were dropped by KRO (status CEL cannot
+ * express a literal-only leaf, nor reference `schema.spec.*`), so the declared
+ * schema promised fields the live CR never carried — a GitOps consumer reading
+ * `kubectl get clickstackbootstraps -o yaml` saw the ingest endpoints but not
+ * what happens to the telemetry after it arrives. Writing them into a
+ * ConfigMap this composition owns gives them a resource to be projected from,
+ * and the ConfigMap is a readable artifact in its own right.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/188
+ */
+const CLICKSTACK_CONTRACT_RESOURCE_ID = 'clickstackContract';
+
+/** Suffix of the contract ConfigMap's name (`<release>-contract`). */
+export const CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
+
 const inlineSchemaFieldValidations = {
   apiKey: `self != "${CLICKSTACK_CHART_PLACEHOLDER_API_KEY}"`,
 } as const;
@@ -422,7 +452,7 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
             ],
           }
         : {}),
-      id: 'clickstackHelmRelease',
+      id: CLICKSTACK_HELM_RELEASE_RESOURCE_ID,
     });
     // The collector Pod mounts the queue claim by name, so the claim has to
     // exist before helm-controller creates the Deployment.
@@ -574,6 +604,54 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       _retention.dependsOn(_clickstackHelmRelease);
     }
 
+    // The build-time half of the status contract, written to a resource this
+    // composition OWNS so it can be projected into status rather than emitted
+    // as a literal KRO drops. See CLICKSTACK_CONTRACT_RESOURCE_ID.
+    const _clickstackContract = configMap({
+      id: CLICKSTACK_CONTRACT_RESOURCE_ID,
+      metadata: {
+        name: `${spec.name}${CLICKSTACK_CONTRACT_CONFIGMAP_SUFFIX}`,
+        namespace: resolvedNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'clickstack',
+          'app.kubernetes.io/instance': spec.name,
+          'app.kubernetes.io/component': 'contract',
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      // ConfigMap values are strings by definition, so the numeric ports come
+      // back through `int(...)` and the boolean through an `== "true"`
+      // comparison — both live-verified to resolve in kro mode (KRO status
+      // CEL) and in direct mode (the cel-js reference resolver).
+      data: {
+        // The RESOLVED chart version. Unlike a status field, a resource field
+        // may reference `schema.spec.*`, so `resolvedVersion` (which in kro
+        // mode is `Cel.default(schema.spec.version, …)`) is substituted by KRO
+        // when it creates this ConfigMap — and the status then reads the
+        // concrete value back from a resource.
+        version: resolvedVersion,
+        appPort: String(CLICKSTACK_APP_PORT),
+        apiPort: String(CLICKSTACK_API_PORT),
+        storageMode: build.clickhouseStorage.mode,
+        ...(build.clickhouseStorage.diskType !== undefined
+          ? { storageDiskType: build.clickhouseStorage.diskType }
+          : {}),
+        ...(build.clickhouseStorage.policyName !== undefined
+          ? { storagePolicyName: build.clickhouseStorage.policyName }
+          : {}),
+        ...(build.clickhouseStorage.retention?.logs !== undefined
+          ? { storageRetentionLogs: build.clickhouseStorage.retention.logs }
+          : {}),
+        ...(build.clickhouseStorage.retention?.traces !== undefined
+          ? { storageRetentionTraces: build.clickhouseStorage.retention.traces }
+          : {}),
+        ...(build.clickhouseStorage.retention?.metrics !== undefined
+          ? { storageRetentionMetrics: build.clickhouseStorage.retention.metrics }
+          : {}),
+        storagePersistentQueue: String(build.clickhouseStorage.persistentQueue !== undefined),
+      },
+    });
+
     const helmReleaseStatus = helmReleaseConditionSummary(_clickstackHelmRelease);
     const teamBootstrapReady = Cel.expr<boolean>(
       'has(clickstackTeamBootstrap.status.lastScheduleTime) && ',
@@ -616,7 +694,19 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         teamBootstrapReady,
         ' ? "Ready" : "Installing")'
       ),
-      version: resolvedVersion,
+      // Read back from the owned contract ConfigMap rather than echoed from
+      // `resolvedVersion`. In kro mode `resolvedVersion` is
+      // `Cel.default(schema.spec.version, …)` — a schema-only expression KRO
+      // drops from the instance status, so the declared `version` field never
+      // appeared on the live CR at all.
+      //
+      // The HelmRelease's own chart pin
+      // (`clickstackHelmRelease.spec.chart.spec.version`) would be the more
+      // direct anchor, but TypeKro's RGD validator mis-reads the second `spec`
+      // segment of that path as a resource id ("Referenced resource 'chart'
+      // does not exist"), so the same value is projected from the contract
+      // ConfigMap instead — where KRO has already substituted it.
+      version: Cel.expr<string>(`${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.version`),
       ui: {
         url: `http://${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_APP_PORT}`,
       },
@@ -626,27 +716,52 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       },
       app: {
         host: `${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local`,
-        // Bare numeric constants — no resource anchor, so client-hydrated
-        // only; both ports are KRO-visible inside the URL fields above.
-        appPort: CLICKSTACK_APP_PORT,
-        apiPort: CLICKSTACK_API_PORT,
+        // Projected from the owned contract ConfigMap through `int(...)`.
+        // These were bare numeric constants, which KRO omits from the instance
+        // status — so the declared `app` object arrived with only `host`.
+        appPort: Cel.expr<number>(`int(${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.appPort)`),
+        apiPort: Cel.expr<number>(`int(${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.apiPort)`),
       },
       // Storage sits next to `gateway.otlpHttpEndpoint` so one read answers
-      // both "where do I send telemetry" and "what happens to it". These are
-      // BARE build-time constants (client-hydrated, absent from the KRO CR
-      // status) — the same class as the ports above.
+      // both "where do I send telemetry" and "what happens to it".
+      //
+      // PROJECTED FROM THE OWNED CONTRACT CONFIGMAP, not inlined: as bare
+      // build-time constants KRO dropped the whole block, so the declared
+      // schema promised a durability contract the live CR never carried.
       storage: {
-        mode: build.clickhouseStorage.mode,
+        mode: Cel.expr<'pvc' | 's3'>(`${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageMode`),
         ...(build.clickhouseStorage.diskType !== undefined && {
-          diskType: build.clickhouseStorage.diskType,
+          diskType: Cel.expr<'s3' | 's3_plain_rewritable'>(
+            `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageDiskType`
+          ),
         }),
         ...(build.clickhouseStorage.policyName !== undefined && {
-          policyName: build.clickhouseStorage.policyName,
+          policyName: Cel.expr<string>(
+            `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePolicyName`
+          ),
         }),
         ...(build.clickhouseStorage.retention !== undefined && {
-          retention: build.clickhouseStorage.retention,
+          retention: {
+            ...(build.clickhouseStorage.retention.logs !== undefined && {
+              logs: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionLogs`
+              ),
+            }),
+            ...(build.clickhouseStorage.retention.traces !== undefined && {
+              traces: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionTraces`
+              ),
+            }),
+            ...(build.clickhouseStorage.retention.metrics !== undefined && {
+              metrics: Cel.expr<string>(
+                `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storageRetentionMetrics`
+              ),
+            }),
+          },
         }),
-        persistentQueue: build.clickhouseStorage.persistentQueue !== undefined,
+        persistentQueue: Cel.expr<boolean>(
+          `${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.storagePersistentQueue == "true"`
+        ),
       },
     };
   }

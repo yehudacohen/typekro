@@ -26,6 +26,7 @@ import { Cel } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import type { Composable } from '../../../core/types/index.js';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
+import { configMap } from '../../kubernetes/config/config-map.js';
 import { serviceAccount } from '../../kubernetes/rbac/service-account.js';
 import {
   type ClickHouseClusterSpec,
@@ -70,6 +71,31 @@ const S3_SERVICE_ACCOUNT_RESOURCE_ID = 'clickhouseS3ServiceAccount';
 
 /** Resource id of the scheduled S3 backup CronJob. */
 const S3_BACKUP_RESOURCE_ID = 'clickhouseS3Backup';
+
+/**
+ * Resource id of the CONTRACT ConfigMap inside the composition graph.
+ *
+ * WHY THIS RESOURCE EXISTS. Several fields of the declared status contract —
+ * the default database, the first declared user, the native port, and the whole
+ * `storage` durability block — come from the CONSTRUCTION-TIME topology, not
+ * from the owned CHI. As bare constants they were dropped by KRO (status CEL
+ * cannot express a literal-only leaf, nor reference `schema.spec.*`), so the
+ * declared schema promised fields the live CR never carried: a GitOps consumer
+ * running `kubectl get clickhouseclusters -o yaml` saw readiness and endpoints
+ * but no durability contract, which is the one thing it most needs to know.
+ *
+ * Writing them into a ConfigMap this composition OWNS gives them a resource to
+ * be projected from, so every declared field appears on the live instance
+ * status in both factory modes. The ConfigMap is useful in its own right — it
+ * is the cluster's durability contract in a readable place — and it is a graph
+ * child, so it is created and deleted with the instance.
+ *
+ * @see https://github.com/yehudacohen/typekro/issues/188
+ */
+const CONTRACT_RESOURCE_ID = 'clickhouseContract';
+
+/** Suffix of the contract ConfigMap's name (`<installation>-contract`). */
+export const CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX = '-contract';
 
 /**
  * Normalized build-time topology (defaults applied once, at construction).
@@ -413,6 +439,50 @@ export function makeClickHouseCluster(
         _s3Backup.dependsOn(clickhouse);
       }
 
+      // The build-time half of the status contract, written to a resource this
+      // composition owns so it can be PROJECTED into status instead of being a
+      // literal KRO drops. See CONTRACT_RESOURCE_ID for why. Every value here
+      // is construction-time concrete; nothing runtime is smuggled in.
+      const _contract = configMap({
+        id: CONTRACT_RESOURCE_ID,
+        metadata: {
+          name: `${spec.name}${CLICKHOUSE_CONTRACT_CONFIGMAP_SUFFIX}`,
+          namespace: spec.namespace,
+          labels: {
+            'app.kubernetes.io/name': 'clickhouse',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/component': 'contract',
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        // ConfigMap values are strings by definition, so the two non-string
+        // status fields are projected back with `int(...)` and an `== "true"`
+        // comparison below — both live-verified to resolve in kro mode (KRO
+        // status CEL) and in direct mode (the cel-js reference resolver).
+        data: {
+          database: CLICKHOUSE_DEFAULT_DATABASE,
+          nativePort: String(CLICKHOUSE_NATIVE_PORT),
+          httpPort: String(CLICKHOUSE_HTTP_PORT),
+          ...(firstUserName !== undefined ? { user: firstUserName } : {}),
+          storageMode: resolved.s3 === undefined ? 'pvc' : 's3',
+          ...(resolved.s3 !== undefined
+            ? {
+                storageDiskType: resolved.s3.diskType,
+                storagePolicyName: resolved.s3.policyName,
+                storageBucket: resolved.s3.bucket,
+                // ONLY plain_rewritable keeps its metadata in the bucket, so
+                // only it survives node loss without a backup.
+                storageSelfDescribingBucket: String(
+                  resolved.s3.diskType === 's3_plain_rewritable'
+                ),
+                ...(resolved.s3.backup !== undefined
+                  ? { storageBackupSchedule: resolved.s3.backup.schedule }
+                  : {}),
+              }
+            : {}),
+        },
+      });
+
       // Connection contract derived from the operator's ACTUAL naming
       // (release-0.27.1): the CR-level Service is `clickhouse-{chi-name}`
       // (type ClusterIP; pkg/model/chi/namer/patterns.go +
@@ -435,9 +505,10 @@ export function makeClickHouseCluster(
       //     live-status re-execution evaluates it against the real resource
       //     values and hydrates a concrete string — where the old raw
       //     `Cel.expr("...literal CEL...")` strings stayed opaque markers.
-      // The port constants inline as literals; the BARE constant fields
-      // (port/database/user) have no resource anchor — see
-      // ClickHouseClusterStatus for the split.
+      // The build-time fields (port/database/user and the whole `storage`
+      // block) are projected from the OWNED contract ConfigMap rather than
+      // inlined as literals, so they too land on the live CR — see
+      // CONTRACT_RESOURCE_ID and ClickHouseClusterStatus.
       return {
         ready: clickhouse.status.status === 'Completed',
         phase:
@@ -448,9 +519,13 @@ export function makeClickHouseCluster(
               : 'Installing',
         clickhouse: {
           host: `clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local`,
-          // Bare numeric constant — client-hydrated only (no resource
-          // anchor); the port also appears in the KRO-visible URLs below.
-          port: CLICKHOUSE_NATIVE_PORT,
+          // Projected from the owned contract ConfigMap, whose values are
+          // strings by definition — `int(...)` converts back to the number the
+          // status schema declares. Live-verified in BOTH modes: KRO status
+          // CEL evaluates it (`port: 9000` on the instance CR) and the cel-js
+          // reference resolver evaluates it against the live ConfigMap in
+          // direct mode. It was previously a bare literal, so KRO dropped it.
+          port: Cel.expr<number>(`int(${CONTRACT_RESOURCE_ID}.data.nativePort)`),
           nativeUrl: `clickhouse://clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local:${CLICKHOUSE_NATIVE_PORT}`,
           httpUrl: `http://clickhouse-${clickhouse.metadata.name}.${clickhouse.metadata.namespace}.svc.cluster.local:${CLICKHOUSE_HTTP_PORT}`,
           // The resolved logical cluster name is IN the owned CHI
@@ -467,8 +542,15 @@ export function makeClickHouseCluster(
           // `factory('direct')` (proven concrete — `'cluster'` — in the
           // integration suite). Same for keeper.* below.
           clusterName: Cel.expr<string>(`${CHI_RESOURCE_ID}.spec.configuration.clusters[0].name`),
-          database: CLICKHOUSE_DEFAULT_DATABASE,
-          ...(firstUserName ? { user: firstUserName } : {}),
+          // Also projected from the contract ConfigMap. `Cel.expr` rather than
+          // natural `_contract.data.database` access only because the
+          // ConfigMap factory types its spec as `Record<string, never>` (a
+          // ConfigMap has no `spec`), so `.data` is not on the Enhanced type —
+          // a framework typing gap, not a hydration limitation.
+          database: Cel.expr<string>(`${CONTRACT_RESOURCE_ID}.data.database`),
+          ...(firstUserName !== undefined
+            ? { user: Cel.expr<string>(`${CONTRACT_RESOURCE_ID}.data.user`) }
+            : {}),
         },
         ...(resolved.keeper
           ? {
@@ -490,22 +572,36 @@ export function makeClickHouseCluster(
               },
             }
           : {}),
-        // Storage contract: BARE build-time constants (no resource anchor),
-        // so — like `clickhouse.port`/`database` — these hydrate client-side
-        // and are absent from the live KRO CR status. They exist so a consumer
-        // never has to read the CHI's XML to learn what durability it has.
+        // Storage contract — the durability guarantee of this cluster, so a
+        // consumer never has to read the CHI's XML to learn what it has.
+        //
+        // PROJECTED FROM THE OWNED CONTRACT CONFIGMAP, not inlined. These are
+        // construction-time values, and as bare literals KRO dropped every one
+        // of them: the declared schema promised a `storage` block the live CR
+        // did not carry. Reading them back from a resource makes the whole
+        // declared contract observable through KRO — the durability fields
+        // most of all, since they are what a GitOps consumer cannot infer.
         storage: {
-          mode: resolved.s3 === undefined ? ('pvc' as const) : ('s3' as const),
+          mode: Cel.expr<'pvc' | 's3'>(`${CONTRACT_RESOURCE_ID}.data.storageMode`),
           ...(resolved.s3 !== undefined
             ? {
-                diskType: resolved.s3.diskType,
-                policyName: resolved.s3.policyName,
-                bucket: resolved.s3.bucket,
-                // ONLY plain_rewritable keeps its metadata in the bucket, so
-                // only it survives node loss without a backup.
-                selfDescribingBucket: resolved.s3.diskType === 's3_plain_rewritable',
+                diskType: Cel.expr<'s3' | 's3_plain_rewritable'>(
+                  `${CONTRACT_RESOURCE_ID}.data.storageDiskType`
+                ),
+                policyName: Cel.expr<string>(`${CONTRACT_RESOURCE_ID}.data.storagePolicyName`),
+                bucket: Cel.expr<string>(`${CONTRACT_RESOURCE_ID}.data.storageBucket`),
+                // ConfigMap values are strings, so the boolean comes back as a
+                // CEL comparison. ONLY plain_rewritable keeps its metadata in
+                // the bucket, so only it survives node loss with no restore.
+                selfDescribingBucket: Cel.expr<boolean>(
+                  `${CONTRACT_RESOURCE_ID}.data.storageSelfDescribingBucket == "true"`
+                ),
                 ...(resolved.s3.backup !== undefined
-                  ? { backupSchedule: resolved.s3.backup.schedule }
+                  ? {
+                      backupSchedule: Cel.expr<string>(
+                        `${CONTRACT_RESOURCE_ID}.data.storageBackupSchedule`
+                      ),
+                    }
                   : {}),
               }
             : {}),

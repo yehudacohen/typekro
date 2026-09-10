@@ -233,7 +233,7 @@ status: {
 }
 ```
 
-These are bare build-time constants, so — like `clickhouse.port` and `clickhouse.database` — they hydrate client-side and are absent from the live KRO CR status.
+These are construction-time values, so — like `clickhouse.port`, `clickhouse.database` and `clickhouse.user` — they have no natural CHI field to read. Rather than emit them as literals (which KRO drops from the instance status, leaving the declared schema promising fields the live CR never carries), the composition writes them into a **ConfigMap it owns**, `<installation>-contract`, and projects them back from that resource. They therefore appear on the live KRO CR status in both factory modes, and the ConfigMap itself is a readable copy of the cluster's durability contract.
 
 ### What gets rendered
 
@@ -488,7 +488,14 @@ The connection details are derived from the operator's **verified naming convent
 - `keeper.host` / `keeper.port` — `clickhouse.spec.configuration.zookeeper.nodes[0].*`.
 - `installation.name` / `installation.namespace` — `clickhouse.metadata.*`.
 
-Only the **bare build-time constants** — `clickhouse.port` (9000), `clickhouse.database` (`'default'`), `clickhouse.user` (first declared user), and the whole `storage` block — are hydrated client-side and absent from the KRO CR status: KRO status CEL cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest resource field to anchor them on. The native port is still KRO-visible inside `nativeUrl`/`httpUrl`.
+The remaining fields — `clickhouse.port`, `clickhouse.database`, `clickhouse.user`, and the whole `storage` block — are **construction-time values with no natural CHI field to read**. KRO status CEL cannot express a literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared schema promised fields the live CR never carried. They are instead written into a ConfigMap the composition **owns** (`<installation>-contract`, resource id `clickhouseContract`) and projected back from it:
+
+- `clickhouse.database` / `clickhouse.user` — `clickhouseContract.data.database` / `.user`.
+- `clickhouse.port` — `int(clickhouseContract.data.nativePort)`; ConfigMap values are strings, so the CEL `int(...)` conversion restores the declared number.
+- `storage.mode` / `diskType` / `policyName` / `bucket` / `backupSchedule` — `clickhouseContract.data.storage*`.
+- `storage.selfDescribingBucket` — `clickhouseContract.data.storageSelfDescribingBucket == "true"`.
+
+Every declared status leaf is therefore a resource projection, and `kubectl get clickhouseclusters -o yaml` shows the whole contract — durability included — in both factory modes. See [typekro#188](https://github.com/yehudacohen/typekro/issues/188) for the underlying framework gap (a literal status leaf is accepted at build time and then silently dropped by KRO).
 
 Operator health is deliberately **not** part of this contract: the operator is separate
 one-per-cluster infrastructure whose own bootstrap status carries `ready`, `failed`, `phase`, and

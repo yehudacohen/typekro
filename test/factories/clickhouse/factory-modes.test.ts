@@ -250,9 +250,12 @@ describe('makeClickHouseCluster factory modes', () => {
       } as never);
       const docs = splitDocs(yaml);
 
-      // The cluster composition owns exactly one resource: the CHI.
-      expect(docs).toHaveLength(1);
-      expect(docKind(docs[0]!)).toBe('ClickHouseInstallation');
+      // The cluster composition owns two resources: the CHI, and the contract
+      // ConfigMap the build-time half of the status contract is projected from
+      // (a literal status leaf is dropped by KRO, so the values need a
+      // resource to be read back off — see clickhouse-cluster.ts).
+      expect(docs).toHaveLength(2);
+      expect(docs.map(docKind).sort()).toEqual(['ClickHouseInstallation', 'ConfigMap']);
 
       expect(yaml).toContain('name: ch');
       expect(yaml).toContain('namespace: observability');

@@ -137,11 +137,39 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
     );
     // KRO status CEL can never reference schema.spec.*.
     expect(JSON.stringify(status)).not.toContain('schema.spec');
-    // BARE constants (app.appPort/apiPort, version) have no resource anchor
-    // and stay CLIENT-HYDRATED — absent from KRO status; the ports remain
-    // KRO-visible inside the URL fields above.
-    expect(JSON.stringify(status)).not.toContain('appPort');
-    expect(JSON.stringify(status)).not.toContain('apiPort');
+
+    // The CONSTRUCTION-TIME fields (`version`, the ports, the storage block)
+    // are projected from the contract ConfigMap this composition owns, so they
+    // reach the live CR too instead of being literals KRO drops. ConfigMap
+    // values are strings, so the ports come back through `int(...)`.
+    const projected = root.spec.schema.status as {
+      version: string;
+      app: { appPort: string; apiPort: string };
+      storage: { mode: string; persistentQueue: string };
+    };
+    expect(projected.version).toBe('${clickstackContract.data.version}');
+    expect(projected.app.appPort).toBe('${int(clickstackContract.data.appPort)}');
+    expect(projected.app.apiPort).toBe('${int(clickstackContract.data.apiPort)}');
+    expect(projected.storage.mode).toBe('${clickstackContract.data.storageMode}');
+    expect(projected.storage.persistentQueue).toBe(
+      '${clickstackContract.data.storagePersistentQueue == "true"}'
+    );
+
+    // EVERY declared status leaf is a resource projection — no literal leaf
+    // survives to promise a field the instance CR will not carry.
+    const leaves: string[] = [];
+    const walk = (value: unknown): void => {
+      if (typeof value === 'object' && value !== null) {
+        for (const nested of Object.values(value)) walk(nested);
+      } else {
+        leaves.push(String(value));
+      }
+    };
+    walk(status);
+    expect(leaves.length).toBeGreaterThan(0);
+    for (const leaf of leaves) {
+      expect(leaf).toMatch(/\$\{/);
+    }
 
     // The typed contract itself is declared on the status schema (client-hydrated fields included).
     const valid = ClickStackBootstrapStatusSchema({

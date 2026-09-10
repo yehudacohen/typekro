@@ -405,13 +405,27 @@ status (GitOps/KRO consumers can read it):
   the release name, so the HyperDX Service is `<name>` and the gateway Service is
   `<name>-otel-collector`), with the chart-default ports embedded in the URL strings.
 
-Only the **bare build-time constants** `app.appPort` (3000), `app.apiPort` (8000) and the whole
-`storage` block (`mode`, `diskType`, `policyName`, `retention`, `persistentQueue` — sitting next to
-`gateway.otlpHttpEndpoint` so one read answers both "where do I send telemetry" and "what happens to
-it"), plus the spec-derived `version`, are **client-hydrated** and absent from the KRO CR status — KRO status CEL
-cannot express a literal-only field (nor reference `schema.spec.*`), and there is no honest
-HelmRelease field to anchor them on. Both ports are still KRO-visible inside `ui.url` and the
-gateway endpoints.
+The remaining fields — `app.appPort` (3000), `app.apiPort` (8000), the spec-derived `version`, and
+the whole `storage` block (`mode`, `diskType`, `policyName`, `retention`, `persistentQueue` —
+sitting next to `gateway.otlpHttpEndpoint` so one read answers both "where do I send telemetry" and
+"what happens to it") — are **construction-time values**. KRO status CEL cannot express a
+literal-only leaf (nor reference `schema.spec.*`), so emitting them as literals meant the declared
+schema promised fields the live CR never carried. They are instead written into a ConfigMap the
+composition **owns** (`<release>-contract`, resource id `clickstackContract`) and projected back
+from it:
+
+- `version` — `clickstackContract.data.version`, the resolved chart version. A resource field *may*
+  reference `schema.spec.*`, so KRO substitutes `spec.version` when it creates the ConfigMap and the
+  status reads the concrete value back off a resource.
+- `app.appPort` / `app.apiPort` — `int(clickstackContract.data.appPort)` / `.apiPort`; ConfigMap
+  values are strings, so the CEL `int(...)` conversion restores the declared numbers.
+- `storage.mode` / `diskType` / `policyName` / `retention.*` — `clickstackContract.data.storage*`.
+- `storage.persistentQueue` — `clickstackContract.data.storagePersistentQueue == "true"`.
+
+Every declared status leaf is therefore a resource projection, and
+`kubectl get clickstackbootstraps -o yaml` shows the whole contract in both factory modes. See
+[typekro#188](https://github.com/yehudacohen/typekro/issues/188) for the underlying framework gap (a
+literal status leaf is accepted at build time and then silently dropped by KRO).
 
 ## Kubernetes Telemetry
 

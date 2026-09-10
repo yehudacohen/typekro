@@ -562,18 +562,24 @@ export type ClickStackBootstrapRuntimeConfig = (
  * `fullnameOverride` is set) and the gateway Service is
  * `<name>-otel-collector` (subchart naming off `.Release.Name`).
  *
- * KRO STATUS vs CLIENT-HYDRATED SPLIT: fields anchored on the owned
- * HelmRelease resource serialize as KRO status CEL and appear on the live
- * KRO CR's status (GitOps/KRO consumers can read them): `ready`, `phase`,
+ * EVERY DECLARED FIELD IS OBSERVABLE THROUGH KRO. Fields anchored on the owned
+ * HelmRelease serialize as KRO status CEL directly: `ready`, `phase`,
  * `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`,
  * `app.host` — natural JS template literals over
  * `clickstackHelmRelease.metadata.name`/`.namespace` (bimodal on typekro
  * >= 0.24.0: status CEL in `factory('kro')`, concrete strings via direct-mode
  * re-execution), never `schema.spec.*` (KRO status CEL cannot reference the
- * instance spec). The BARE build-time constants `app.appPort` (3000) and
- * `app.apiPort` (8000), plus the spec-derived `version`, have no resource
- * anchor and are hydrated CLIENT-SIDE by TypeKro (absent from the KRO CR
- * status); the ports remain KRO-visible inside the URL fields.
+ * instance spec).
+ *
+ * The remaining fields — `version`, `app.appPort`, `app.apiPort`, and the whole
+ * `storage` block — are CONSTRUCTION-TIME values. Emitted as literals they were
+ * dropped by KRO, so the declared schema promised fields the live CR never
+ * carried. The composition instead writes them into a ConfigMap it OWNS
+ * (`<release>-contract`) and projects them back from that resource, so
+ * `kubectl get clickstackbootstraps -o yaml` shows the whole contract. The
+ * ConfigMap's values are strings, so the ports come back through CEL `int(...)`
+ * and `persistentQueue` through an `== "true"` comparison.
+ *
  * Ports are the chart defaults (`hyperdx.ports`, `otel-collector.ports`);
  * port overrides via build-time raw values are NOT reflected here.
  */
@@ -608,8 +614,9 @@ export const ClickStackBootstrapStatusSchema = type({
   /**
    * Storage contract of the external ClickHouse this stack writes to, next to
    * `gateway.otlpHttpEndpoint` so a consumer reads durability and ingest from
-   * one place. BARE build-time constants — client-hydrated, absent from the
-   * live KRO CR status (same class as `app.appPort`).
+   * one place. Construction-time values, PROJECTED from the owned
+   * `<release>-contract` ConfigMap so they appear on the live KRO CR status
+   * (same treatment as `app.appPort`/`apiPort` and `version`).
    */
   storage: {
     /** 'pvc' or 's3'. */

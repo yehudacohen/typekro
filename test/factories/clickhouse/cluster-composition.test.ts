@@ -231,13 +231,29 @@ describe('makeClickHouseCluster (build-time topology, runtime spec)', () => {
       // KRO status CEL can never reference schema.spec.*.
       expect(JSON.stringify(status)).not.toContain('schema.spec');
 
-      // BARE constants (clickhouse.port/database/user) have no resource
-      // anchor, so they stay CLIENT-HYDRATED — absent from KRO status. The
-      // native port is still KRO-visible inside nativeUrl above.
-      const serializedStatus = JSON.stringify(status);
-      expect(serializedStatus).not.toContain('database');
-      expect(serializedStatus).not.toContain('user');
-      expect(serializedStatus).not.toContain('"port":9000');
+      // The CONSTRUCTION-TIME fields are projected from the contract ConfigMap
+      // this composition owns, so they reach the live CR too instead of being
+      // literals KRO drops. ConfigMap values are strings, so the numeric port
+      // comes back through `int(...)`.
+      expect(status.clickhouse.database).toBe('${clickhouseContract.data.database}');
+      expect(status.clickhouse.user).toBe('${clickhouseContract.data.user}');
+      expect(status.clickhouse.port).toBe('${int(clickhouseContract.data.nativePort)}');
+
+      // EVERY declared status leaf is now a resource projection — no literal
+      // leaf survives to promise a field the instance CR will not carry.
+      const leaves: string[] = [];
+      const walk = (value: unknown): void => {
+        if (typeof value === 'object' && value !== null) {
+          for (const nested of Object.values(value)) walk(nested);
+        } else {
+          leaves.push(String(value));
+        }
+      };
+      walk(status);
+      expect(leaves.length).toBeGreaterThan(0);
+      for (const leaf of leaves) {
+        expect(leaf).toMatch(/\$\{/);
+      }
     });
 
     it('derives the connection contract from verified operator naming and ports', () => {
