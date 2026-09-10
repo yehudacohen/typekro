@@ -31,6 +31,7 @@ export interface ObservedHelmRelease {
   spec?: {
     chart?: { spec?: { chart?: string; version?: string } };
     targetNamespace?: string;
+    releaseName?: string;
     install?: { crds?: string };
     upgrade?: { crds?: string };
     values?: Record<string, Record<string, unknown> | unknown>;
@@ -82,6 +83,9 @@ export function assertTraefikHelmReleaseValues(
   expect(release.spec?.chart?.spec?.chart).toBe('traefik');
   expect(release.spec?.chart?.spec?.version).toBe(expected.chartVersion);
   expect(release.spec?.targetNamespace).toBe(expected.targetNamespace);
+  // Unset, Flux would install under `<targetNamespace>-<name>`, spending part
+  // of Helm's 53-character release-name budget on the install namespace.
+  expect(release.spec?.releaseName).toBe(expected.instanceName);
   // Flux SKIPS a chart's crds/ on upgrade by default, which would strand the
   // traefik.io CRDs at the first-installed chart version.
   expect(release.spec?.install?.crds).toBe('CreateReplace');

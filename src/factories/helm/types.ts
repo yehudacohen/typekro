@@ -88,6 +88,17 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
   /** Kustomize transformations applied by Flux after Helm renders the chart. */
   postRenderers?: HelmReleasePostRenderer[];
   targetNamespace?: string;
+  /**
+   * Name Helm installs the release under.
+   *
+   * Flux composes one only when this is unset: `HelmRelease.GetReleaseName()`
+   * returns `<targetNamespace>-<name>` whenever `spec.targetNamespace` is set,
+   * and the bare `metadata.name` otherwise. The composed form silently spends
+   * part of Helm's 53-character release-name budget on the install namespace,
+   * so a factory that derives a name limit from that 53 pins this field to keep
+   * the limit exact.
+   */
+  releaseName?: string;
   install?: {
     createNamespace?: boolean;
     timeout?: string;

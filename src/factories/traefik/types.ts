@@ -56,8 +56,9 @@ import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js'
 /**
  * Every Kubernetes name this factory derives from the `name` a caller supplies.
  *
- * The name is not used once: it names the Flux `HelmRelease` (so Helm sees it
- * as the release name), it is pinned as the chart's `fullnameOverride` (so it
+ * The name is not used once: it names the Flux `HelmRelease` and is pinned as
+ * that release's `spec.releaseName`, it is pinned as the chart's
+ * `fullnameOverride` (so it
  * names the ServiceAccount, RBAC, Deployment, IngressClass and the chart's own
  * Services), and it names the entrypoint `Service` this factory owns. Each of
  * those has a limit, and several of them append a suffix first — so the bound
@@ -91,12 +92,14 @@ import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js'
  *   `app.kubernetes.io/name` / `app.kubernetes.io/instance` labels, and there
  *   is no headless Service or `subdomain` giving these Pods per-Pod DNS.
  *
- * The Helm release name is the binding constraint, at Helm's own 53. Note that
- * Flux composes the release name as `<targetNamespace>-<name>` when
- * `spec.releaseName` is unset, so the install namespace eats into that 53 as
- * well — a term this derivation cannot express, because the namespace is a
- * runtime spec field (and a CEL reference in KRO mode) rather than something
- * known when the schema is built.
+ * The Helm release name is the binding constraint, at Helm's own 53, and that
+ * 53 binds on `name` alone: `traefikHelmRelease` pins `spec.releaseName` to
+ * `name`, so the release name IS `name`. Left unset, Flux's
+ * `GetReleaseName()` would compose `<targetNamespace>-<name>` — this factory
+ * always sets `targetNamespace` — and the install namespace would eat into the
+ * 53, a term this derivation cannot express because the namespace is a runtime
+ * spec field (and a CEL reference in KRO mode) rather than something known when
+ * the schema is built.
  */
 const TRAEFIK_GENERATED_NAMES = [
   {
@@ -1475,9 +1478,9 @@ export interface TraefikManagedHelmValues {
   nameOverride?: string;
   /**
    * Pinned to the release name. Feeds the chart's `app.kubernetes.io/instance`
-   * pod label — otherwise derived from the Helm release name, which Flux
-   * composes from the HelmRelease name and target namespace — so the owned
-   * Service's selector is exact and stable.
+   * pod label — otherwise derived from the Helm release name — so the owned
+   * Service's selector is exact and stable regardless of how the release is
+   * named.
    */
   instanceLabelOverride?: string;
   serviceAccount?: { name?: string };
