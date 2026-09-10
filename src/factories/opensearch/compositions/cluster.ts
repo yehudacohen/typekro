@@ -427,8 +427,11 @@ export function makeOpenSearchCluster<
         version: cluster.status.version,
         availableNodes: cluster.status.availableNodes,
         health: cluster.status.health,
-        snapshotRepository: Cel.expr<string>(
-          'has(cluster.spec.general.snapshotRepositories) && cluster.spec.general.snapshotRepositories.size() > 0 ? cluster.spec.general.snapshotRepositories[0].name : ""'
+        // `snapshotRepositories` is an optional nested list; the helper emits
+        // the guarded filter form that cel-js and cel-go both accept.
+        snapshotRepository: Cel.firstWhereHas<string>(
+          'cluster.spec.general.snapshotRepositories',
+          'name'
         ),
       };
     },
