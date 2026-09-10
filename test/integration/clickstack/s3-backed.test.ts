@@ -1083,6 +1083,32 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       // pod annotation through the HelmRelease's values, which Flux rolls into
       // the Deployment's pod template. `add` on an existing object replaces it,
       // and the chart's own checksum annotation is deep-merged back in by Helm.
+      // ⚠️ SAMPLE ACROSS THE TRANSITION, NOT AFTER IT. The two-writer assertion
+      // is this case's headline claim, and counting live Pods only inside the
+      // rollout-status loop can miss the window entirely. LIVE-OBSERVED: Flux's
+      // upgrade AND the whole Recreate rollout finished inside the 5s gap
+      // between two template polls, so the status loop's very first read
+      // already reported the rollout complete ("completed in 0s") and every
+      // Pod count it took was 1 because there was nothing left to see. A count
+      // of 1 taken after the fact is not evidence of anything. Sampling
+      // therefore starts BEFORE the patch and runs continuously at 500ms until
+      // the rollout is done, and the case asserts it took enough samples for
+      // the claim to mean something.
+      let maxLivePods = 0;
+      let liveSamples = 0;
+      let sampling = true;
+      const sampler = (async () => {
+        while (sampling) {
+          try {
+            maxLivePods = Math.max(maxLivePods, (await liveCollectorPods()).length);
+            liveSamples += 1;
+          } catch {
+            // A transient list failure must not decide the rollout assertion.
+          }
+          if (sampling) await Bun.sleep(500);
+        }
+      })();
+
       const probeValue = crypto.randomUUID();
       step(`patching the HelmRelease with rollout probe ${probeValue}`);
       await customApi.patchNamespacedCustomObject({
@@ -1155,7 +1181,6 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       // promptly is the point.
       const rolloutDeadline = Date.now() + 300_000;
       let rolledOut = false;
-      let maxLivePods = 0;
       let lastState = 'no status yet';
       let lastRolloutReport = 0;
       while (Date.now() < rolloutDeadline) {
@@ -1165,7 +1190,6 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
             `still rolling out (${Math.round((Date.now() - templateAt) / 1000)}s): ${lastState}`
           );
         }
-        maxLivePods = Math.max(maxLivePods, (await liveCollectorPods()).length);
         const deployment = await appsApi.readNamespacedDeployment({
           namespace: stackNs,
           name: deploymentName,
@@ -1192,18 +1216,33 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         await Bun.sleep(5_000);
       }
       const finishedAt = Date.now();
+      sampling = false;
+      await sampler;
       step(`rollout loop finished (rolledOut=${rolledOut})`);
       console.log(
         `[rollout] helm upgrade reached the template in ${Math.round(
           (templateAt - startedAt) / 1000
         )}s; rollout completed in ${Math.round(
           (finishedAt - templateAt) / 1000
-        )}s; max concurrent live collector Pods: ${maxLivePods}`
+        )}s; max concurrent live collector Pods: ${maxLivePods} over ${liveSamples} samples ` +
+          `spanning ${Math.round((finishedAt - startedAt) / 1000)}s`
       );
       expect(rolledOut, `rollout never completed; last status ${lastState}`).toBe(true);
 
       // Recreate's whole contract: the old collector is gone before the new one
       // exists, so the single-writer queue never has two claimants.
+      //
+      // The SAMPLE COUNT is asserted first, and deliberately. `maxLivePods <= 1`
+      // is vacuous if nothing was watching while the Pods changed over, so the
+      // claim is only worth making next to evidence that the window was
+      // covered. The lower bound on `maxLivePods` is the same guard from the
+      // other side: zero would mean the sampler never saw a collector at all.
+      expect(
+        liveSamples,
+        `only ${liveSamples} live-Pod samples were taken across the rollout — too few to ` +
+          `substantiate the never-two-collectors claim`
+      ).toBeGreaterThanOrEqual(4);
+      expect(maxLivePods).toBeGreaterThanOrEqual(1);
       expect(maxLivePods).toBeLessThanOrEqual(1);
 
       // A genuinely NEW Pod ran, carrying the annotation that caused the roll.
