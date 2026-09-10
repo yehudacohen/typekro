@@ -3,6 +3,7 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
 import {
   DISABLE_LABEL_GUARD_ENV,
   LABEL_GUARD_ALTERNATIVES,
+  LABEL_GUARD_API_VERSION_ENV,
   type LabelPropagationGuardStatus,
   resolveLabelPropagationGuardCapability,
 } from '../../core/kro/label-guard-capability.js';
@@ -201,7 +202,15 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       // depending on each factory author remembering.
       //
       // There is no config option. The only escape hatch is the break-glass
-      // env var, read at build time by resolveLabelPropagationGuardCapability.
+      // env var, read by resolveLabelPropagationGuardCapability.
+      //
+      // The group version is never assumed. This body runs twice: once when
+      // the composition is built (no cluster, so the guard is emitted only if
+      // TYPEKRO_LABEL_GUARD_API_VERSION pins it) and again when the direct
+      // deployment path re-executes it, by which time that path has resolved
+      // MutatingAdmissionPolicy against the target cluster. The graph that is
+      // actually applied therefore carries the served group version — or no
+      // guard at all on a cluster that does not serve the kind.
       //
       // Ordering against the KRO HelmRelease is not load-bearing: the
       // exemption is a username string comparison, so a policy that exists
@@ -220,7 +229,10 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
           `Skipping the KRO label-propagation guard: ${guardCapability.reason}. ` +
             `Operators that copy the parent CR's labels onto their children will ` +
             `have those children pruned by KRO's ApplySet. ${LABEL_GUARD_ALTERNATIVES}`,
-          { disableEnvVar: DISABLE_LABEL_GUARD_ENV }
+          {
+            disableEnvVar: DISABLE_LABEL_GUARD_ENV,
+            apiVersionEnvVar: LABEL_GUARD_API_VERSION_ENV,
+          }
         );
       }
 

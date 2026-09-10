@@ -231,8 +231,11 @@ which deletes them on every requeue.
 There is no configuration option — the bootstrap reports
 `status.labelPropagationGuard: 'active' | 'unavailable'`, and
 `TYPEKRO_DISABLE_LABEL_GUARD=1` is the break-glass for a cluster where the
-policy misbehaves. On Kubernetes below 1.34 the API is not served and the guard
-reports `unavailable`. See
+policy misbehaves. The policy's group version is discovered from the target
+cluster at deploy time, never assumed: `v1beta1` on Kubernetes 1.34/1.35, `v1`
+from 1.36, and below 1.34 the API is not served, so the guard is skipped and
+reports `unavailable`. An offline `toYaml()` render has no cluster to ask and
+so leaves the guard out unless `TYPEKRO_LABEL_GUARD_API_VERSION` pins it. See
 [Runtime Bootstrap](/api/kro/compositions/runtime#label-propagation-guard).
 
 ## YAML Generation
