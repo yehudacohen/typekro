@@ -796,7 +796,7 @@ function expandNestedEntry(
  * the cluster. By default it stays a warning, matching the lenient posture
  * the rest of the CEL emission layer takes for unprovable expressions.
  */
-function reportNestedRefDepthExceeded(expr: string): never | void {
+function reportNestedRefDepthExceeded(expr: string): void {
   if (isStrictCelDiagnosticsEnabled()) {
     throw new ConversionError(
       `Nested composition resolution exceeded ${NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels of nesting (strict CEL diagnostics)`,
