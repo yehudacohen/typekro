@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import { cnpgHelmRepository, cnpgHelmRelease } from '../../../src/factories/cnpg/resources/helm.js';
-import { isValuesMergeExpression } from '../../../src/core/aspects/values-merge.js';
+import { cnpgBootstrap } from '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js';
+import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+  type ValuesMergeExpression,
+} from '../../../src/core/aspects/values-merge.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import {
   type CnpgHelmValues,
   type CnpgMappedHelmValues,
@@ -99,6 +105,46 @@ describe('CNPG Helm Resources', () => {
     it('should have a readiness evaluator', () => {
       const release = cnpgHelmRelease({ name: 'cnpg' });
       expect(release.readinessEvaluator).toBeDefined();
+    });
+
+    /**
+     * The chart default must survive whatever shape the caller's values
+     * arrive in. A reference or a merge node whose base is a reference cannot
+     * be merged now, so the default becomes the BASE of a runtime merge node
+     * and KRO layers the instance's overrides on top — it is never dropped.
+     */
+    it('keeps the CRD default when the values are a whole-object reference', () => {
+      const ref = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.customValues',
+      } as unknown as Record<string, unknown>;
+
+      const release = cnpgHelmRelease({ name: 'cnpg', values: ref });
+      const values = release.spec.values as unknown;
+      expect(isValuesMergeExpression(values)).toBe(true);
+      expect((values as ValuesMergeExpression).base).toEqual({ crds: { create: true } });
+      expect((values as ValuesMergeExpression).overlays).toEqual([ref]);
+    });
+
+    it('keeps the CRD default when the values are a merge node with a reference base', () => {
+      const ref = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.customValues',
+      } as unknown as Record<string, unknown>;
+
+      const release = cnpgHelmRelease({
+        name: 'cnpg',
+        values: mergeValuesExpression(ref, { replicaCount: 2 }) as unknown as Record<
+          string,
+          unknown
+        >,
+      });
+      const values = release.spec.values as unknown;
+      expect(isValuesMergeExpression(values)).toBe(true);
+      expect((values as ValuesMergeExpression).base).toEqual({ crds: { create: true } });
+      expect((values as ValuesMergeExpression).overlays).toEqual([ref, { replicaCount: 2 }]);
     });
 
     it('should allow overriding version and namespace', () => {
@@ -207,5 +253,26 @@ describe('CNPG Helm Values Mapper', () => {
       });
       expect(warnings).toEqual([]);
     });
+  });
+});
+
+/**
+ * End of the chain: whatever shape the defaults took inside the factory, the
+ * RGD KRO actually receives has to carry them. `customValues` is a whole-object
+ * schema reference in KRO mode, so the chart values compile to a runtime
+ * map-merge and the `crds.create` default has to appear inside it as the
+ * fallback the override is layered over.
+ */
+describe('CNPG bootstrap RGD', () => {
+  it('emits the CRD default underneath the per-instance customValues merge', () => {
+    const yaml = cnpgBootstrap.toYaml();
+    const values = yaml.slice(yaml.indexOf('values:'));
+
+    expect(values).toContain('schema.spec.customValues');
+    expect(values).toContain('"crds"');
+    expect(values).toContain('"create"');
+    // The default is the fallback, not an override: the instance's own value
+    // for `crds.create` wins when it supplies one.
+    expect(values).toMatch(/"create":\s*"create" in .+ : true/);
   });
 });
