@@ -631,6 +631,130 @@ describe('DirectDeploymentEngine Simple', () => {
       expect(mockK8sApi.create).toHaveBeenCalledTimes(1);
     });
 
+    it('reads an external reference with in-graph dependencies only after they are applied', async () => {
+      // The observed Service is created by `owner`, so reading it before `owner` is applied is
+      // exactly the 404 that issue #187 reports.
+      const graph = createSimpleGraph();
+      const consumer = createMockResource({
+        id: 'consumer',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'consumer' },
+      });
+      graph.resources.push({ id: 'consumer', manifest: consumer });
+      graph.dependencyGraph.addNode('consumer', consumer);
+      graph.dependencyGraph.addEdge('consumer', 'simple');
+
+      const observed = createMockResource({
+        id: 'chartService',
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'chart-service', namespace: 'test-namespace' },
+      });
+      graph.externalReferences = [
+        { id: 'chartService', manifest: observed, dependsOn: ['simple'] },
+      ];
+
+      const liveObserved = {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'chart-service', namespace: 'test-namespace' },
+        spec: { clusterIP: '10.0.0.7' },
+      };
+      let ownerApplied = false;
+      const ownerAppliedAtServiceRead: boolean[] = [];
+      mockK8sApi.create.mockImplementation((resource?: Record<string, unknown>) => {
+        if (resource?.kind === 'Deployment') ownerApplied = true;
+        return Promise.resolve({
+          apiVersion: resource?.apiVersion,
+          kind: resource?.kind,
+          metadata: resource?.metadata,
+        } as Record<string, unknown>);
+      });
+      mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+        if (target?.kind === 'Service') {
+          ownerAppliedAtServiceRead.push(ownerApplied);
+          return ownerApplied ? Promise.resolve(liveObserved) : Promise.reject({ statusCode: 404 });
+        }
+        return Promise.reject({ statusCode: 404 });
+      });
+
+      let observedSeenByConsumer: unknown;
+      mockReferenceResolver.resolveReferences.mockImplementation(
+        async (
+          resource: KubernetesResource,
+          context?: { resourceKeyMapping?: Map<string, unknown> }
+        ) => {
+          if (resource.kind === 'ConfigMap') {
+            observedSeenByConsumer = context?.resourceKeyMapping?.get('chartService');
+          }
+          return resource;
+        }
+      );
+
+      const result = await engine.deploy(graph, defaultOptions);
+
+      expect(result.status).toBe('success');
+      // Every attempt to read the observed Service happened after its owner was applied.
+      expect(ownerAppliedAtServiceRead.length).toBeGreaterThan(0);
+      expect(ownerAppliedAtServiceRead.every(Boolean)).toBe(true);
+      // …and a resource scheduled after the observed Service sees the live read in its context.
+      expect(observedSeenByConsumer).toBe(liveObserved);
+    });
+
+    it('resolves an external reference without in-graph dependencies before applying anything', async () => {
+      const graph = createSimpleGraph();
+      const external = createMockResource({
+        id: 'platformConfig',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+      });
+      graph.externalReferences = [{ id: 'platformConfig', manifest: external }];
+      const liveExternal = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'platform-config', namespace: 'platform-system' },
+      };
+      let createsBeforeExternalRead: number | undefined;
+      mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
+        if (target?.kind === 'ConfigMap') {
+          createsBeforeExternalRead ??= mockK8sApi.create.mock.calls.length;
+          return Promise.resolve(liveExternal);
+        }
+        return Promise.reject({ statusCode: 404 });
+      });
+
+      const result = await engine.deploy(graph, defaultOptions);
+
+      expect(result.status).toBe('success');
+      expect(createsBeforeExternalRead).toBe(0);
+    });
+
+    it('fails naming an external reference that never appears after its dependencies', async () => {
+      const graph = createSimpleGraph();
+      const observed = createMockResource({
+        id: 'chartService',
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'chart-service', namespace: 'test-namespace' },
+      });
+      graph.externalReferences = [
+        { id: 'chartService', manifest: observed, dependsOn: ['simple'] },
+      ];
+      mockK8sApi.read.mockImplementation(() => Promise.reject({ statusCode: 404 }));
+
+      // A short deployment timeout leaves no read budget, so the wait ends on the first attempt.
+      const result = await engine.deploy(graph, { ...defaultOptions, timeout: 200 });
+
+      expect(result.status).toBe('failed');
+      const message = result.errors[0]?.error.message ?? '';
+      expect(message).toContain('Service/chart-service');
+      expect(message).toContain("reference 'chartService'");
+      expect(message).toContain('dependsOn targets [simple]');
+      expect(message).toMatch(/after waiting \d+ms/);
+    });
+
     it('should handle deployment failures gracefully', async () => {
       // Test deployment failure by making the create call fail
       const resource = createMockResource({
