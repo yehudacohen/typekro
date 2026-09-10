@@ -52,6 +52,17 @@ export interface HelmReleasePostRenderer {
   };
 }
 
+/**
+ * How the helm-controller handles a chart's `crds/` directory.
+ *
+ * Flux applies different defaults per action — `Create` on install, `Skip` on
+ * upgrade — so a chart that ships CRDs in `crds/` keeps serving the CRDs of the
+ * version it was FIRST installed at unless `upgrade.crds` is set explicitly.
+ *
+ * @see https://fluxcd.io/flux/components/helm/api/v2/
+ */
+export type HelmReleaseCrdsPolicy = 'Skip' | 'Create' | 'CreateReplace';
+
 // Helm Release Resource Types
 export interface HelmReleaseSpec<TValues extends object = Record<string, unknown>> {
   interval?: string;
@@ -77,9 +88,22 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
   /** Kustomize transformations applied by Flux after Helm renders the chart. */
   postRenderers?: HelmReleasePostRenderer[];
   targetNamespace?: string;
+  /**
+   * Name Helm installs the release under.
+   *
+   * Flux composes one only when this is unset: `HelmRelease.GetReleaseName()`
+   * returns `<targetNamespace>-<name>` whenever `spec.targetNamespace` is set,
+   * and the bare `metadata.name` otherwise. The composed form silently spends
+   * part of Helm's 53-character release-name budget on the install namespace,
+   * so a factory that derives a name limit from that 53 pins this field to keep
+   * the limit exact.
+   */
+  releaseName?: string;
   install?: {
     createNamespace?: boolean;
     timeout?: string;
+    /** CRD handling on install. Flux defaults to `Create`. */
+    crds?: HelmReleaseCrdsPolicy;
     remediation?: {
       retries?: number;
       remediateLastFailure?: boolean;
@@ -88,6 +112,11 @@ export interface HelmReleaseSpec<TValues extends object = Record<string, unknown
   };
   upgrade?: {
     timeout?: string;
+    /**
+     * CRD handling on upgrade. Flux defaults to `Skip`, which leaves the CRDs
+     * of the originally installed chart version in place after a bump.
+     */
+    crds?: HelmReleaseCrdsPolicy;
     remediation?: {
       retries?: number;
       remediateLastFailure?: boolean;
