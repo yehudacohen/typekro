@@ -146,6 +146,106 @@ const maxReplicas = Cel.max(deploy.status.readyReplicas, 1);
 const containerCount = Cel.size(deploy.spec.template.spec.containers);
 ```
 
+## Optional Nested Lists
+
+An optional nested list — `service.status.loadBalancer.ingress`,
+`helmRelease.status.history`, `gateway.status.addresses` — does not exist until
+a controller fills it in, and the two CEL engines TypeKro targets disagree about
+how to guard it. Use these helpers instead of writing the guard by hand; they
+emit the one form both engines accept.
+
+### `Cel.firstWhereHas()`
+
+First entry of a list that carries a given field.
+
+```typescript
+function firstWhereHas<T = string>(
+  list: RefOrValue<unknown> | string,
+  field: string,
+  fallback?: RefOrValue<string | number | boolean | null | undefined>
+): CelExpression<T> & T
+```
+
+```typescript
+// The first ingress entry that reports a hostname, or '' while none does.
+hostname: Cel.firstWhereHas<string>(service.status.loadBalancer.ingress, 'hostname')
+
+// Naming a graph resource by id, as bootstrap compositions do.
+version: Cel.firstWhereHas<string>('release.status.history', 'chartVersion')
+```
+
+Emits:
+
+```
+has(a.status) && has(a.status.list)
+  ? (size(<matching>) > 0 ? <matching>[0].<field> : <fallback>)
+  : <fallback>
+```
+
+where `<matching>` is `<list>.filter(entry, has(entry.<field>))`.
+
+### `Cel.loadBalancerAddress()`
+
+`Cel.firstWhereHas` bound to a Service's load balancer address, whose entries
+carry `ip` **or** `hostname` depending on the provider.
+
+```typescript
+loadBalancer: {
+  ip: Cel.loadBalancerAddress(gatewayService, 'ip'),
+  hostname: Cel.loadBalancerAddress(gatewayService, 'hostname'),
+}
+```
+
+### `Cel.firstOf()`
+
+The same guard for a list of scalars, where there is no field to filter on.
+
+```typescript
+endpoint: Cel.firstOf<string>('objectStore.status.endpoints.secure')
+```
+
+### Why not write the guard by hand
+
+| Form | Rejected by | Why |
+|------|-------------|-----|
+| `has(list[0].field)` | cel-js | "has() does not support atomic expressions" |
+| `"field" in list[0]` | cel-go (KRO) | KRO's type env types a list entry as a message, not a map |
+| `size(list) > 0 && has(list)` | cel-js | cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard |
+| `size(list) > 0 && list[0].field != ""` | cel-js | same — the second operand errors before the first can decide the result |
+
+`Cel.firstWhereHas` avoids all four: it guards every hop of the path with
+`has()` **before** any access, selects entries with `filter`, and keeps the
+index inside a lazy ternary, which both engines evaluate lazily.
+
+## Dual-Dialect Validation
+
+TypeKro runs every emitted status CEL expression through **cel-js** (direct
+mode's evaluator) and through a curated denylist of confirmed cel-go
+divergences before it emits a ResourceGraphDefinition. A form only one engine
+accepts is reported with the status leaf, the expression, and the dialect that
+rejects it — at serialization time, rather than when KRO marks the RGD
+`Inactive` on a live cluster.
+
+The check is lenient by default (a structured warning). Enable strict mode to
+fail serialization instead:
+
+```typescript
+const factory = graph.factory('kro', { strictCelDiagnostics: true });
+factory.toYaml(); // throws on a dialect-divergent status expression
+```
+
+```bash
+TYPEKRO_STRICT_CEL=1   # same, as a global default
+```
+
+There is no in-process cel-go for a TypeScript serializer to consult, so the
+denylist is deliberately curated rather than a full type checker. It currently
+covers: an unparseable expression, `has()` on an index expression, `in` on a
+typed list entry, a `has()` guard written after the access it guards, and an
+unguarded list index inside `&&` / `||`. Collection-macro bodies and nested
+ternaries are lazy in both engines and are excluded, as is a map lookup such as
+`metadata.annotations["key"]`.
+
 ### `Cel.string()` / `Cel.int()` / `Cel.double()`
 
 Type conversion functions:
@@ -208,6 +308,14 @@ const hasAvailable = Cel.expr('deployment.status.conditions.exists(c, c.type == 
 const endpoint = Cel.expr(
   'has(service.status.loadBalancer.ingress) ? service.status.loadBalancer.ingress[0].ip : "pending"'
 );
+```
+
+For an optional nested list, prefer the helper over a hand-written guard — it
+also handles an absent intermediate object (`status.loadBalancer` itself
+missing) and an entry that carries the other field:
+
+```typescript
+const endpoint = Cel.loadBalancerAddress(service, 'ip', 'pending');
 ```
 
 ### Complex Conditions
