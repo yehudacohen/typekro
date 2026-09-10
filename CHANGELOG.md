@@ -202,6 +202,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allowStructuralSpecDependence: true` in the composition options downgrades the
   error to a warning naming every path, for migrating an existing composition;
   `TYPEKRO_STRUCTURAL_SPEC=strict` re-enables it everywhere to audit a repository.
+- `Cel.firstWhereHas()`, `Cel.firstOf()` and `Cel.loadBalancerAddress()` project
+  an optional nested list — a Service's `status.loadBalancer.ingress`, a
+  HelmRelease's `status.history` — in the one guard form cel-js and cel-go both
+  accept. They chain a `has()` guard for every hop of the path, select entries
+  with `filter`, and keep the index inside a lazy ternary, so an absent
+  intermediate object yields the fallback instead of an evaluation error.
+- Every emitted status CEL expression is now checked against both CEL dialects
+  at serialization time: cel-js's own parser, plus a curated denylist of
+  confirmed cel-go divergences (`has()` on an index expression, `in` on a typed
+  list entry, a `has()` guard written after the access it guards, and an
+  unguarded list index inside `&&` / `||`). A finding names the status leaf, the
+  expression and the dialect that rejects it. It warns by default and fails
+  serialization under `strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`.
+- `getStatusLeafDiagnostics()` reads the per-field diagnostics recorded during
+  direct-mode status resolution.
 
 ### Changed
 
@@ -333,6 +348,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emitted RGD carried a single placeholder key instead of the instance's chart
   overrides; it now routes a reference through the graph-aware runtime values
   merge, as the ClickHouse operator bootstrap already did.
+- Direct-mode status fields now resolve independently. A CEL leaf that reached
+  into an optional nested field the controller had not populated yet — the
+  canonical case being `service.status.loadBalancer.ingress` on a Service with
+  no address — threw during resolution and took the *entire* status object to
+  unresolved, blanking `ready`, `failed` and `phase` along with it. Each leaf
+  now has its own error boundary: the failing field comes back `undefined` and
+  is reported with its path and error, and its siblings keep their values.
+- The Rook, Envoy AI Gateway and OpenSearch compositions guarded their optional
+  nested lists with a single `has()` on the full path, which raises "Identifier
+  not found" under cel-js when an intermediate object is absent — exactly the
+  state those lists are in before their controller populates them. All three
+  now use the guarded-list helpers.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their

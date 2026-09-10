@@ -52,6 +52,14 @@ The table below shows how each value type is handled across factory modes and op
 
 All references are emitted as CEL expressions for the Kro controller. This is always Kro-mode output regardless of how you later create factories.
 
+Every emitted status expression is checked against **both** CEL engines before
+the ResourceGraphDefinition is produced: cel-js, which direct mode evaluates
+with, and a curated denylist of confirmed cel-go divergences. A form only one
+engine accepts is reported with the status leaf, the expression, and the
+dialect that rejects it — as a warning by default, or as a serialization
+failure under `strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`. See
+[Dual-Dialect Validation](/api/cel#dual-dialect-validation).
+
 > **Why does direct mode `toYaml()` error on CEL/KubernetesRef?**
 >
 > Direct mode `toYaml()` generates plain Kubernetes manifests. These must be valid YAML that
@@ -104,6 +112,39 @@ await factory.deploy({ name: 'my-app', image: 'nginx:latest', replicas: 2 });
 2. Resources deploy in dependency order
 3. Waits for readiness (configurable)
 4. Returns live status from cluster
+
+### Status Fields Resolve Independently
+
+Each status field is resolved on its own. A field that cannot be resolved —
+most often a CEL expression reaching into an optional nested field a controller
+has not populated yet, such as `service.status.loadBalancer.ingress` on a fresh
+`LoadBalancer` Service — comes back `undefined`. Its siblings, and sibling
+subtrees, keep their resolved values, so a composition that is in fact ready
+still reports `ready`, `failed` and `phase`.
+
+Each failing field is logged with its path and error, and recorded on the
+returned status object as a diagnostic:
+
+```typescript
+import { getStatusLeafDiagnostics } from 'typekro';
+
+const app = await factory.deploy({ name: 'my-app' });
+
+app.status.ready;            // true — resolved normally
+app.status.loadBalancerIp;   // undefined — this leaf failed
+
+for (const diagnostic of getStatusLeafDiagnostics(app.status)) {
+  console.log(diagnostic.path, diagnostic.expression, diagnostic.error.message);
+}
+```
+
+The diagnostics are attached non-enumerably, so they never appear in
+`Object.keys()`, JSON, or emitted YAML.
+
+If a status field is *expected* to be absent for a while, write the expression
+so both engines return a fallback rather than erroring — `Cel.firstWhereHas()`
+and `Cel.loadBalancerAddress()` do exactly that. See
+[CEL Expressions](/api/cel#optional-nested-lists).
 
 ### Streaming Control Plane Logs
 
