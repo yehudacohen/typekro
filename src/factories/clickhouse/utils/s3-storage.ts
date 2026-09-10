@@ -51,6 +51,8 @@ import type {
   ClickHouseS3StorageOptions,
   ClickHouseStorageTopology,
 } from '../types.js';
+import { assertClickHouseIdentifier } from './validation.js';
+import { xmlAttr, xmlText } from './xml.js';
 
 /**
  * Deeply loosen optional properties so a `Composable<T>` value — where TypeKro's
@@ -129,6 +131,17 @@ export const DEFAULT_BACKUP_DATABASE = 'default';
 
 /** `<s3>` credential section name used by `BACKUP ... TO S3(...)`. */
 export const S3_BACKUP_CONFIG_SECTION = 'backup';
+
+/**
+ * Characters a custom `storage.endpoint` may use.
+ *
+ * The unreserved + reserved sets of RFC 3986 MINUS the characters that are an
+ * injection somewhere downstream rather than a malformed URL — `&`, `'`, `"`,
+ * `<`, `>` and a backslash. Whitespace and control characters are excluded by
+ * construction, since the pattern is an allow-list; so is non-ASCII, which
+ * means an internationalized host must be passed in its punycode form.
+ */
+const ENDPOINT_URL_CHARACTERS = /^[A-Za-z0-9._~:/?#@!$()*+,;=%[\]-]+$/;
 
 /**
  * Minimum ClickHouse version this factory accepts for
@@ -351,6 +364,23 @@ function buildEndpointUrl(
           `S3-compatible service (e.g. 'http://minio.minio.svc.cluster.local:9000') — got ` +
           `${JSON.stringify(endpoint)}. The bucket and prefix are appended by the factory, ` +
           `so do not include them here.`
+      );
+    }
+    // Beyond "is a URL": an ALLOW-LIST of the characters RFC 3986 actually
+    // permits, because this value lands in two places with two different
+    // injection stories — `<endpoint>` text in `config.d/storage.xml` (escaped
+    // on the way out, but a raw newline there is still a silent value change),
+    // and the `BACKUP … TO S3('<url>')` string literal the backup CronJob
+    // builds, where a quote is extra SQL rather than a bad URL. Constraining
+    // the input is cheaper to reason about than escaping correctly for both.
+    if (!ENDPOINT_URL_CHARACTERS.test(endpoint)) {
+      throw new Error(
+        `${context}: 'storage.endpoint' must use only URL characters matching ` +
+          `${ENDPOINT_URL_CHARACTERS.source} — no whitespace, quotes, angle brackets, '&', ` +
+          `backslash or control characters (got ${JSON.stringify(endpoint)}). The value is ` +
+          `rendered into the server's storage XML and into the ` +
+          `\`BACKUP … TO S3('<url>')\` string literal of the generated CronJob, and none of ` +
+          `those characters belong in a URL.`
       );
     }
     // Path-style addressing: MinIO and most S3-compatible services serve
@@ -585,6 +615,15 @@ export function resolveClickHouseStorage(
     );
   }
 
+  // The policy name is rendered as an XML ELEMENT NAME (`<s3_main>`) inside
+  // `config.d/storage.xml` and is also the value of the
+  // `merge_tree/storage_policy` setting that every table then references, so
+  // it has to be a bare identifier — a `<`, a quote or a space there produces
+  // a different element or a malformed document, and escaping is not available
+  // in element-name position.
+  const policyName = storage.policyName ?? DEFAULT_S3_POLICY_NAME;
+  assertClickHouseIdentifier(context, 'storage.policyName', policyName);
+
   return {
     mode: 's3',
     bucket: storage.bucket,
@@ -592,7 +631,7 @@ export function resolveClickHouseStorage(
     ...(storage.region !== undefined && { region: storage.region }),
     ...(storage.endpoint !== undefined && { endpoint: storage.endpoint }),
     diskType,
-    policyName: storage.policyName ?? DEFAULT_S3_POLICY_NAME,
+    policyName,
     cacheMaxSizeBytes,
     cachePath: storage.cache.path ?? DEFAULT_S3_CACHE_PATH,
     auth: resolveAuth(context, storage.auth),
@@ -619,16 +658,6 @@ export function resolveClickHouseStorage(
 // XML rendering
 // ============================================================================
 
-/** Escape the five XML predefined entities in element text. */
-function escapeXmlText(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 function indent(depth: number): string {
   return '    '.repeat(depth);
 }
@@ -644,8 +673,10 @@ function renderCredentialElements(auth: ResolvedClickHouseS3Auth, depth: number)
   // `from_env` substitution: the XML names the env var, the pod template
   // supplies it from the Secret. The key material never enters the CHI spec.
   return [
-    `${indent(depth)}<access_key_id from_env="${S3_ACCESS_KEY_ID_ENV}"></access_key_id>`,
-    `${indent(depth)}<secret_access_key from_env="${S3_SECRET_ACCESS_KEY_ENV}"></secret_access_key>`,
+    `${indent(depth)}<access_key_id from_env="${xmlAttr(S3_ACCESS_KEY_ID_ENV)}"></access_key_id>`,
+    `${indent(depth)}<secret_access_key from_env="${xmlAttr(
+      S3_SECRET_ACCESS_KEY_ENV
+    )}"></secret_access_key>`,
   ];
 }
 
@@ -668,6 +699,27 @@ function renderDiskTypeElements(
 }
 
 /**
+ * Every value the storage document interpolates as an XML ELEMENT NAME, paired
+ * with the option (or constant) it came from so the error can name it.
+ *
+ * Kept as one list rather than checked inline at each `lines.push` so that the
+ * set of element-name sites is auditable in a single place — the point of the
+ * check is that this list and the `<${...}>` interpolations below stay the same
+ * set.
+ */
+function elementNameSites(
+  resolved: ResolvedClickHouseS3Storage
+): readonly (readonly [string, string])[] {
+  return [
+    ['storage.policyName', resolved.policyName],
+    ['S3_DISK_NAME', S3_DISK_NAME],
+    ['S3_CACHE_DISK_NAME', S3_CACHE_DISK_NAME],
+    ['S3_POLICY_VOLUME_NAME', S3_POLICY_VOLUME_NAME],
+    ['S3_BACKUP_CONFIG_SECTION', S3_BACKUP_CONFIG_SECTION],
+  ];
+}
+
+/**
  * Render the `storage_configuration` (and, with a backup schedule, the `<s3>`
  * credential section) XML for the CHI's `configuration.files`.
  *
@@ -679,19 +731,29 @@ function renderDiskTypeElements(
  * @returns The XML document text, newline-terminated
  */
 export function renderStorageConfigurationXml(resolved: ResolvedClickHouseS3Storage): string {
+  // Every value below is checked at the XML BOUNDARY, not only at resolve
+  // time. This function is exported and takes a `ResolvedClickHouseS3Storage`,
+  // so a caller can hand it a hand-built object that never went through
+  // `resolveClickHouseStorage`; and re-checking the four module constants
+  // means a later change that makes any of them configurable inherits the rule
+  // instead of quietly bypassing it.
+  for (const [field, name] of elementNameSites(resolved)) {
+    assertClickHouseIdentifier('renderStorageConfigurationXml', field, name);
+  }
+
   const lines: string[] = ['<clickhouse>', `${indent(1)}<storage_configuration>`];
 
   lines.push(`${indent(2)}<disks>`);
   lines.push(`${indent(3)}<${S3_DISK_NAME}>`);
   lines.push(...renderDiskTypeElements(resolved.diskType, 4));
-  lines.push(`${indent(4)}<endpoint>${escapeXmlText(resolved.endpointUrl)}</endpoint>`);
+  lines.push(`${indent(4)}<endpoint>${xmlText(resolved.endpointUrl)}</endpoint>`);
   lines.push(...renderCredentialElements(resolved.auth, 4));
   lines.push(`${indent(3)}</${S3_DISK_NAME}>`);
   lines.push(`${indent(3)}<${S3_CACHE_DISK_NAME}>`);
   lines.push(`${indent(4)}<type>cache</type>`);
   lines.push(`${indent(4)}<disk>${S3_DISK_NAME}</disk>`);
-  lines.push(`${indent(4)}<path>${escapeXmlText(resolved.cachePath)}</path>`);
-  lines.push(`${indent(4)}<max_size>${resolved.cacheMaxSizeBytes}</max_size>`);
+  lines.push(`${indent(4)}<path>${xmlText(resolved.cachePath)}</path>`);
+  lines.push(`${indent(4)}<max_size>${xmlText(String(resolved.cacheMaxSizeBytes))}</max_size>`);
   // Write-through caching: freshly inserted parts stay locally readable, which
   // is what makes an object-store-backed cluster usable for recent-data
   // queries (the dominant observability access pattern).
@@ -716,7 +778,7 @@ export function renderStorageConfigurationXml(resolved: ResolvedClickHouseS3Stor
     // that keeps keys out of the query text and therefore out of query_log.
     lines.push(`${indent(1)}<s3>`);
     lines.push(`${indent(2)}<${S3_BACKUP_CONFIG_SECTION}>`);
-    lines.push(`${indent(3)}<endpoint>${escapeXmlText(resolved.backup.endpointUrl)}</endpoint>`);
+    lines.push(`${indent(3)}<endpoint>${xmlText(resolved.backup.endpointUrl)}</endpoint>`);
     lines.push(...renderCredentialElements(resolved.auth, 3));
     lines.push(`${indent(2)}</${S3_BACKUP_CONFIG_SECTION}>`);
     lines.push(`${indent(1)}</s3>`);

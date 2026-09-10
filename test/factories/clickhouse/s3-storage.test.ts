@@ -20,7 +20,15 @@ import {
   S3_ACCESS_KEY_ID_ENV,
   S3_SECRET_ACCESS_KEY_ENV,
 } from '../../../src/factories/clickhouse/utils/s3-storage.js';
-import type { ClickHouseS3StorageOptions } from '../../../src/factories/clickhouse/types.js';
+import type {
+  ClickHouseS3StorageOptions,
+  ResolvedClickHouseS3Storage,
+} from '../../../src/factories/clickhouse/index.js';
+import {
+  assertClickHouseIdentifier,
+  CLICKHOUSE_IDENTIFIER_MAX_LENGTH,
+} from '../../../src/factories/clickhouse/utils/validation.js';
+import { xmlAttr, xmlText } from '../../../src/factories/clickhouse/utils/xml.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
 /** A fake schema-proxy ref, shaped like the analyzer's KubernetesRef marker. */
@@ -601,6 +609,196 @@ describe('parseByteQuantity', () => {
   it('rejects an unparseable quantity loudly', () => {
     expect(() => parseByteQuantity('t', 'storage.cache.size', 'lots')).toThrow(
       /must be a Kubernetes-style byte quantity/
+    );
+  });
+});
+
+describe('XML identifier validation', () => {
+  /**
+   * `policyName` is the one caller-supplied value that lands in ELEMENT-NAME
+   * position (`<s3_main>`), where XML has no escaping mechanism at all — so it
+   * is validated rather than encoded, the same way `clusterName` is validated
+   * before it reaches `ON CLUSTER '<name>'`.
+   */
+  const rejected: readonly (readonly [string, unknown])[] = [
+    ['a closing angle bracket', 's3_main><injected'],
+    ['an opening angle bracket', '<s3_main'],
+    ['whitespace', 's3 main'],
+    ['a newline', 's3_main\nmain'],
+    ['a leading digit', '3_main'],
+    ['a dash', 's3-main'],
+    ['a quote', "s3_main'"],
+    ['a double quote', 's3_main"'],
+    ['an ampersand', 's3&main'],
+    ['the empty string', ''],
+    ['over the length bound', `p${'x'.repeat(CLICKHOUSE_IDENTIFIER_MAX_LENGTH)}`],
+    ['a non-string', 7],
+  ];
+
+  for (const [label, value] of rejected) {
+    it(`rejects a policy name with ${label}`, () => {
+      expect(() =>
+        resolveClickHouseStorage('test', {
+          size: '100Gi',
+          ...IRSA_S3,
+          policyName: value as string,
+        })
+      ).toThrow(/must be a bare ClickHouse identifier/);
+    });
+  }
+
+  it('names the offending option and the value it received', () => {
+    expect(() =>
+      resolveClickHouseStorage('test', { size: '100Gi', ...IRSA_S3, policyName: 'bad>name' })
+    ).toThrow(/test: 'storage\.policyName'[\s\S]*"bad>name"/);
+  });
+
+  it('accepts the identifier shapes ClickHouse itself accepts', () => {
+    for (const policyName of ['s3_main', '_leading', 'P0licy', 'x'.repeat(64)]) {
+      const resolved = resolveClickHouseStorage('test', { size: '100Gi', ...IRSA_S3, policyName });
+      if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+      expect(resolved.policyName).toBe(policyName);
+      expect(renderStorageConfigurationXml(resolved)).toContain(`<${policyName}>`);
+    }
+  });
+
+  it('re-checks element names at the XML boundary, not only at resolve time', () => {
+    // `renderStorageConfigurationXml` is exported and takes a resolved object,
+    // so a caller can bypass `resolveClickHouseStorage` entirely.
+    const handBuilt = {
+      mode: 's3',
+      bucket: 'example-observability',
+      prefix: '',
+      region: 'us-east-2',
+      diskType: 's3',
+      policyName: 'evil><policy',
+      cacheMaxSizeBytes: 1024,
+      cachePath: '/var/lib/clickhouse/disks/s3_cache/',
+      auth: { kind: 'irsa', roleArn: 'arn:aws:iam::123456789012:role/x' },
+      endpointUrl: 'https://example-observability.s3.us-east-2.amazonaws.com/',
+    } as ResolvedClickHouseS3Storage;
+
+    expect(() => renderStorageConfigurationXml(handBuilt)).toThrow(
+      /renderStorageConfigurationXml: 'storage\.policyName'/
+    );
+  });
+
+  it('rejects a custom endpoint carrying characters no URL contains', () => {
+    for (const endpoint of [
+      "http://minio:9000/'",
+      'http://minio:9000/ x',
+      'http://minio:9000/<x',
+      'http://minio:9000/"x',
+      'http://minio:9000/&x',
+      'http://minio:9000/\\x',
+    ]) {
+      expect(() =>
+        resolveClickHouseStorage('test', {
+          size: '10Gi',
+          mode: 's3',
+          bucket: 'clickhouse-data',
+          endpoint,
+          cache: { size: '1Gi' },
+          auth: { secretRef: { name: 'minio-credentials' } },
+        })
+      ).toThrow(/must use only URL characters/);
+    }
+  });
+
+  it('is reusable as a standalone assertion', () => {
+    expect(() => assertClickHouseIdentifier('ctx', 'field', 'ok_name')).not.toThrow();
+    expect(() => assertClickHouseIdentifier('ctx', 'field', 'not ok')).toThrow(
+      /ctx: 'field' must be a bare ClickHouse identifier/
+    );
+  });
+});
+
+describe('XML escaping of caller-supplied text', () => {
+  /**
+   * No XML parser is a first-party dependency of this package, so the escaped
+   * bytes are asserted literally rather than round-tripped through a parse —
+   * which is the stronger assertion anyway: it pins the exact output, not just
+   * that *some* parser accepts it.
+   */
+  it('escapes the predefined entities in a cache path', () => {
+    const resolved = resolveClickHouseStorage('test', {
+      size: '100Gi',
+      ...IRSA_S3,
+      cache: { size: '10Gi', path: `/mnt/a&b<c>d"e'f/` },
+    });
+    if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+    const xml = renderStorageConfigurationXml(resolved);
+
+    expect(xml).toContain('<path>/mnt/a&amp;b&lt;c&gt;d&quot;e&apos;f/</path>');
+    // The decisive part: no element the caller's value invented.
+    expect(xml).not.toContain('<c>');
+    expect(xml).not.toContain('/mnt/a&b');
+  });
+
+  it('escapes text, including the carriage return XML would rewrite', () => {
+    expect(xmlText('a&b')).toBe('a&amp;b');
+    expect(xmlText('<x>')).toBe('&lt;x&gt;');
+    expect(xmlText(`"'`)).toBe('&quot;&apos;');
+    expect(xmlText('a\rb')).toBe('a&#13;b');
+    expect(xmlText('plain/path/')).toBe('plain/path/');
+  });
+
+  it('escapes attribute values, including the whitespace normalization eats', () => {
+    // Attribute-value normalization turns a literal tab/newline into a SPACE,
+    // so an unescaped one is a silent value change rather than a parse error.
+    expect(xmlAttr('a\tb')).toBe('a&#9;b');
+    expect(xmlAttr('a\nb')).toBe('a&#10;b');
+    expect(xmlAttr('a\rb')).toBe('a&#13;b');
+    expect(xmlAttr('a"b')).toBe('a&quot;b');
+    expect(xmlAttr('&#9;')).toBe('&amp;#9;');
+    expect(xmlAttr(S3_ACCESS_KEY_ID_ENV)).toBe(S3_ACCESS_KEY_ID_ENV);
+  });
+
+  it('renders the whole document byte for byte for valid input', () => {
+    const resolved = resolveClickHouseStorage('test', {
+      size: '100Gi',
+      ...IRSA_S3,
+      backup: { schedule: '0 2 * * *' },
+    });
+    if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+
+    // Pinned in full: the validation and escaping added for the element-name
+    // hardening must not move a single byte of the output for valid input.
+    expect(renderStorageConfigurationXml(resolved)).toBe(
+      `<clickhouse>
+    <storage_configuration>
+        <disks>
+            <s3>
+                <type>s3</type>
+                <endpoint>https://example-observability.s3.us-east-2.amazonaws.com/clickhouse/</endpoint>
+                <use_environment_credentials>true</use_environment_credentials>
+            </s3>
+            <s3_cache>
+                <type>cache</type>
+                <disk>s3</disk>
+                <path>/var/lib/clickhouse/disks/s3_cache/</path>
+                <max_size>53687091200</max_size>
+                <cache_on_write_operations>true</cache_on_write_operations>
+            </s3_cache>
+        </disks>
+        <policies>
+            <s3_main>
+                <volumes>
+                    <main>
+                        <disk>s3_cache</disk>
+                    </main>
+                </volumes>
+            </s3_main>
+        </policies>
+    </storage_configuration>
+    <s3>
+        <backup>
+            <endpoint>https://example-observability.s3.us-east-2.amazonaws.com/backups/</endpoint>
+            <use_environment_credentials>true</use_environment_credentials>
+        </backup>
+    </s3>
+</clickhouse>
+`
     );
   });
 });
