@@ -32,6 +32,7 @@ import type { ClickStackBootstrapStatus } from '../../../src/factories/clickstac
 import { DEFAULT_QUEUE_EXPORTER_NAMES } from '../../../src/factories/clickstack/utils/storage.js';
 import { type BackgroundSampler, startBackgroundSampler } from '../../utils/background-sampler.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
+import { waitUntilGone } from '../shared-absence.js';
 import {
   createAppsV1ApiClient,
   createCoreV1ApiClient,
@@ -1584,19 +1585,11 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
 
       // 6. FINALIZER CLEANUP VERIFIED. Graph deletion runs behind KRO's
       // finalizer, so each of these lags `deleteInstance` returning; poll to a
-      // bounded deadline rather than asserting instant absence.
-      const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
-        const deadline = Date.now() + 300_000;
-        while (Date.now() < deadline) {
-          try {
-            await read();
-            await Bun.sleep(5_000);
-          } catch {
-            return true;
-          }
-        }
-        return false;
-      };
+      // bounded deadline rather than asserting instant absence. `waitUntilGone`
+      // counts ONLY a 404 as gone and re-throws everything else, so a 5xx or an
+      // auth failure cannot pass these assertions.
+      const pollGone = (read: () => Promise<unknown>): Promise<boolean> =>
+        waitUntilGone(read, 300_000);
 
       expect(
         await pollGone(() =>

@@ -38,6 +38,7 @@ import {
 } from '../../../src/core/kubernetes/index.js';
 import type { ClickHouseClusterStatus } from '../../../src/factories/clickhouse/types.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
+import { waitUntilGone } from '../shared-absence.js';
 import {
   createCoreV1ApiClient,
   createTestNamespace,
@@ -798,19 +799,11 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
       // 7. FINALIZER CLEANUP VERIFIED. KRO processes graph deletion behind its
       // finalizer, so each of these lags `deleteInstance` returning by a beat;
       // poll to a bounded deadline rather than asserting instant absence.
+      // `waitUntilGone` counts ONLY a 404 as gone and re-throws everything
+      // else, so a 5xx or an auth failure cannot pass these assertions.
       const teardownApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-      const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
-        const deadline = Date.now() + 180_000;
-        while (Date.now() < deadline) {
-          try {
-            await read();
-            await Bun.sleep(5_000);
-          } catch {
-            return true;
-          }
-        }
-        return false;
-      };
+      const pollGone = (read: () => Promise<unknown>): Promise<boolean> =>
+        waitUntilGone(read, 180_000);
 
       // The instance CR itself — proof KRO released its finalizer.
       expect(await pollGone(() => readKroInstance())).toBe(true);

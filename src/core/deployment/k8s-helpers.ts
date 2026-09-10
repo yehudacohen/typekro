@@ -16,16 +16,19 @@ const logger = getComponentLogger('k8s-helpers');
  */
 export function isNotFoundError(error: unknown): boolean {
   if (error && typeof error === 'object') {
-    // Cover all three shapes the @kubernetes/client-node stack surfaces a 404 as:
-    // `statusCode` (typed API errors), `body.code` (parsed Status body), and the
-    // bare `code` some code paths set — the KRO teardown reads all three, so the
-    // engine's shared 404 check must too or a gate would miss a real 404.
+    // Cover every shape the @kubernetes/client-node stack surfaces a 404 as:
+    // `statusCode` (typed API errors), `body.code` (parsed Status body), the
+    // bare `code` some code paths set, and `body.reason` — the Status object's
+    // own machine-readable reason, which is what the API server sets and which
+    // `kro-readiness.ts` already reads. The KRO teardown reads all of them, so
+    // the engine's shared 404 check must too or a gate would miss a real 404.
     const k8sError = error as KubernetesApiError & { code?: number };
     return (
       k8sError.statusCode === 404 ||
       k8sError.response?.statusCode === 404 ||
       k8sError.body?.code === 404 ||
       k8sError.code === 404 ||
+      k8sError.body?.reason === 'NotFound' ||
       (typeof k8sError.message === 'string' && k8sError.message.includes('HTTP-Code: 404'))
     );
   }
