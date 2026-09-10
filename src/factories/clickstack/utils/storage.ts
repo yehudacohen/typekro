@@ -38,6 +38,7 @@
  */
 
 import type { ClickStackPersistentQueueOptions, ClickStackStorageOptions } from '../types.js';
+import type { CollectorConfigFragment } from './collector-config.js';
 
 /** Default cron schedule for the retention DDL CronJob. */
 export const DEFAULT_RETENTION_SCHEDULE = '17 * * * *';
@@ -55,8 +56,18 @@ export const DEFAULT_QUEUE_DIRECTORY = '/var/lib/otelcol/file_storage';
 /** Default `file_storage` extension instance name. */
 export const QUEUE_EXTENSION_NAME = 'file_storage/hyperdx';
 
-/** Default exporter whose `sending_queue` is switched to file storage. */
-export const DEFAULT_QUEUE_EXPORTER_NAME = 'clickhouse';
+/**
+ * Default exporters whose `sending_queue` is switched to file storage.
+ *
+ * The ClickStack collector defines a single ClickHouse exporter, `clickhouse`,
+ * and all three signal pipelines export through it. A name that is NOT one the
+ * agent defines fails silently: the supervisor merges the overlay, the
+ * `exporters` map simply grows an exporter no pipeline uses, and the real one
+ * keeps its in-memory queue. That is why the integration suite asserts these
+ * names against the agent's own EFFECTIVE configuration instead of trusting
+ * the default.
+ */
+export const DEFAULT_QUEUE_EXPORTER_NAMES = ['clickhouse'] as const;
 
 /**
  * Default `service.extensions` list emitted with the queue overlay.
@@ -315,7 +326,8 @@ export interface ResolvedClickStackStorage {
     readonly storageClassName?: string;
     /** Always {@link QUEUE_ACCESS_MODES} — see the constant for why. */
     readonly accessModes: readonly string[];
-    readonly exporterName: string;
+    /** Always non-empty — `resolveClickStackStorage` rejects an empty list. */
+    readonly exporterNames: readonly string[];
     readonly extensions: readonly string[];
   };
 }
@@ -404,6 +416,25 @@ export function resolveClickStackStorage(
   }
 
   const queue = options?.persistentQueue;
+  const exporterNames = queue?.exporterNames ?? DEFAULT_QUEUE_EXPORTER_NAMES;
+  if (queue?.enabled === true && exporterNames.length === 0) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.exporterNames' cannot be empty — the queue exists ` +
+        `to back an exporter's \`sending_queue\`, and an empty list would render a ` +
+        `\`file_storage\` extension that nothing sends through. Omit the option to use ` +
+        `${JSON.stringify(DEFAULT_QUEUE_EXPORTER_NAMES)}.`
+    );
+  }
+  const queueExtensions = queue?.extensions ?? DEFAULT_QUEUE_EXTENSIONS;
+  if (queue?.enabled === true && !queueExtensions.includes(QUEUE_EXTENSION_NAME)) {
+    throw new Error(
+      `${context}: 'storage.persistentQueue.extensions' must include ` +
+        `'${QUEUE_EXTENSION_NAME}' — the list REPLACES the supervisor's own ` +
+        `\`service.extensions\`, so leaving it out means the file_storage extension the ` +
+        `exporters reference is never started and the collector refuses the config. Got ` +
+        `${JSON.stringify([...queueExtensions])}.`
+    );
+  }
 
   return {
     mode,
@@ -423,8 +454,8 @@ export function resolveClickStackStorage(
           storageClassName: queue.storageClassName,
         }),
         accessModes: [...QUEUE_ACCESS_MODES],
-        exporterName: queue.exporterName ?? DEFAULT_QUEUE_EXPORTER_NAME,
-        extensions: queue.extensions ?? DEFAULT_QUEUE_EXTENSIONS,
+        exporterNames,
+        extensions: queueExtensions,
       },
     }),
   };
@@ -572,32 +603,55 @@ export function renderRetentionScript(resolved: ResolvedClickStackStorage): stri
 }
 
 /**
- * Render the collector-config overlay that enables the persistent queue.
+ * The persistent queue's contribution to the collector-config overlay.
+ *
+ * ⚠️ A STRUCTURED FRAGMENT, NOT YAML TEXT, and that is the whole point. This
+ * used to return a YAML string that the values mapper CONCATENATED onto the
+ * ingest-pipeline string. Both opened a top-level `service:` key, so the
+ * rendered `custom.config.yaml` declared `service` twice and the OpAMP
+ * supervisor rejected the WHOLE file on every poll:
+ *
+ *   Could not merge local config file: …/custom/custom.config.yaml
+ *   yaml: unmarshal errors: line 18: mapping key "service" already defined at line 1
+ *
+ * The agent then ran with NEITHER the ingest pipelines NOR the queue, while
+ * the Pod still reported Ready off the supervisor's own `health_check` — so
+ * enabling the queue was a silent no-op that also took OTLP ingestion down.
+ * Fragments are merged by `mergeCollectorConfig` (see
+ * `utils/collector-config.ts`) and serialised exactly once, which makes a
+ * duplicate key unrepresentable.
  *
  * ⚠️ The YAML lists here REPLACE the supervisor's own lists (the chart's
  * `customConfig` is a merge, not a deep list append) — see the warning on
- * {@link ClickStackPersistentQueueOptions}.
+ * {@link ClickStackPersistentQueueOptions}. `service.extensions` is a sequence,
+ * so it UNIONS with any other fragment's contribution before that replacement
+ * happens.
+ *
+ * Every name in `exporterNames` gets its own `sending_queue.storage`. A name
+ * the agent does not define is inert rather than fatal — see
+ * {@link DEFAULT_QUEUE_EXPORTER_NAMES} for why it cannot be checked here.
  *
  * @param queue - Resolved persistent-queue configuration
- * @returns A YAML fragment appended to `global.otelCollector.customConfig`
+ * @returns A fragment for `global.otelCollector.customConfig`
  */
-export function renderPersistentQueueConfig(
+export function persistentQueueConfigFragment(
   queue: NonNullable<ResolvedClickStackStorage['persistentQueue']>
-): string {
-  return [
-    'extensions:',
-    `  ${QUEUE_EXTENSION_NAME}:`,
-    `    directory: ${queue.directory}`,
-    '    create_directory: true',
-    'exporters:',
-    `  ${queue.exporterName}:`,
-    '    sending_queue:',
-    '      enabled: true',
-    `      storage: ${QUEUE_EXTENSION_NAME}`,
-    'service:',
-    `  extensions: [${queue.extensions.join(', ')}]`,
-    '',
-  ].join('\n');
+): CollectorConfigFragment {
+  return {
+    extensions: {
+      [QUEUE_EXTENSION_NAME]: {
+        directory: queue.directory,
+        create_directory: true,
+      },
+    },
+    exporters: Object.fromEntries(
+      queue.exporterNames.map((exporterName) => [
+        exporterName,
+        { sending_queue: { enabled: true, storage: QUEUE_EXTENSION_NAME } },
+      ])
+    ),
+    service: { extensions: [...queue.extensions] },
+  };
 }
 
 /**

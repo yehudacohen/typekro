@@ -9,14 +9,25 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import * as yaml from 'js-yaml';
 import { makeClickstackBootstrap } from '../../../src/factories/clickstack/compositions/clickstack-bootstrap.js';
+import type { ClickStackPersistentQueueOptions } from '../../../src/factories/clickstack/types.js';
+import {
+  mergeCollectorConfig,
+  renderCollectorConfig,
+} from '../../../src/factories/clickstack/utils/collector-config.js';
+import {
+  CLICKSTACK_INGEST_PIPELINES_CONFIG,
+  CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+} from '../../../src/factories/clickstack/utils/helm-values-mapper.js';
 import {
   CLICKSTACK_RETENTION_TABLES,
+  DEFAULT_QUEUE_EXPORTER_NAMES,
   clickStackQueueClaimName,
   normalizeRenderedTtl,
   parseRetentionDuration,
+  persistentQueueConfigFragment,
   renderPersistentQueueClaimSpec,
-  renderPersistentQueueConfig,
   renderPersistentQueueValues,
   renderRetentionScript,
   resolveClickStackStorage,
@@ -281,37 +292,290 @@ describe('ttlAlreadyApplied (the comparison the retention script implements)', (
   });
 });
 
-describe('renderPersistentQueueConfig', () => {
-  it('wires file_storage into the exporter queue and the service extensions', () => {
+/**
+ * THE OVERLAY IS ONE YAML DOCUMENT — the defect these tests exist for.
+ *
+ * The overlay used to be two hand-written YAML strings concatenated. Both open
+ * a top-level `service:` key, so the rendered `custom.config.yaml` declared
+ * `service` twice and the OpAMP supervisor rejected the WHOLE file
+ * (`yaml: unmarshal errors: … mapping key "service" already defined`), leaving
+ * the agent with NEITHER the ingest pipelines nor the queue while the Pod
+ * still reported Ready off the supervisor's own health_check.
+ *
+ * Every assertion below therefore PARSES the rendered document. A substring
+ * probe is what let the duplicate key through in the first place: both
+ * `service:` blocks were present, and `toContain` was delighted by each of
+ * them.
+ */
+describe('the collector overlay is a single well-formed YAML document', () => {
+  /** Parse the overlay the way the supervisor does — one document, strictly. */
+  function parseOverlay(rendered: string): Record<string, unknown> {
+    const documents = yaml.loadAll(rendered);
+    // More than one document would mean a stray `---`; zero means empty.
+    expect(documents.length).toBe(1);
+    const parsed = documents[0];
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`overlay did not parse to a mapping: ${JSON.stringify(parsed)}`);
+    }
+    return parsed as Record<string, unknown>;
+  }
+
+  /**
+   * Count top-level mapping keys in the RAW TEXT.
+   *
+   * `yaml.load` silently keeps the last of two duplicate keys, so parsing
+   * alone cannot see the defect. Go's `yaml.v2` — which is what the OpAMP
+   * supervisor uses — errors instead. This counts the raw column-0 keys so a
+   * regression is caught the way the supervisor catches it.
+   */
+  function topLevelKeys(rendered: string): string[] {
+    return rendered
+      .split('\n')
+      .filter((line) => /^[A-Za-z_][^\s:]*:/.test(line))
+      .map((line) => line.slice(0, line.indexOf(':')));
+  }
+
+  function queueFor(options: Partial<ClickStackPersistentQueueOptions> = {}) {
     const resolved = resolveClickStackStorage('t', {
       mode: 's3',
-      persistentQueue: { enabled: true },
+      persistentQueue: { enabled: true, ...options },
     });
     if (resolved.persistentQueue === undefined) throw new Error('expected a queue');
-    const config = renderPersistentQueueConfig(resolved.persistentQueue);
+    return resolved.persistentQueue;
+  }
 
-    expect(config).toContain('file_storage/hyperdx:');
-    expect(config).toContain('directory: /var/lib/otelcol/file_storage');
-    expect(config).toContain('storage: file_storage/hyperdx');
-    expect(config).toContain('extensions: [health_check, file_storage/hyperdx]');
+  function renderOverlay(options?: Partial<ClickStackPersistentQueueOptions>) {
+    const fragments =
+      options === undefined
+        ? [CLICKSTACK_INGEST_PIPELINES_FRAGMENT]
+        : [CLICKSTACK_INGEST_PIPELINES_FRAGMENT, persistentQueueConfigFragment(queueFor(options))];
+    return renderCollectorConfig(fragments);
+  }
+
+  it('declares `service` EXACTLY ONCE with the queue enabled', () => {
+    const rendered = renderOverlay({});
+    const keys = topLevelKeys(rendered);
+
+    expect(keys.filter((key) => key === 'service').length).toBe(1);
+    // Every key is unique, not just `service`.
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.sort()).toEqual(['exporters', 'extensions', 'service']);
   });
 
-  it('honors an overridden exporter name and extension list', () => {
-    const resolved = resolveClickStackStorage('t', {
-      mode: 's3',
-      persistentQueue: {
-        enabled: true,
-        exporterName: 'clickhouse/hyperdx',
-        extensions: ['health_check', 'opamp', 'file_storage/hyperdx'],
-        directory: '/data/queue',
-      },
-    });
-    if (resolved.persistentQueue === undefined) throw new Error('expected a queue');
-    const config = renderPersistentQueueConfig(resolved.persistentQueue);
+  it('keeps BOTH contributions to `service` — pipelines and extensions', () => {
+    const parsed = parseOverlay(renderOverlay({}));
+    const service = parsed.service as Record<string, unknown>;
 
-    expect(config).toContain('clickhouse/hyperdx:');
-    expect(config).toContain('extensions: [health_check, opamp, file_storage/hyperdx]');
-    expect(config).toContain('directory: /data/queue');
+    // The ingest pipelines survived the merge…
+    const pipelines = service.pipelines as Record<string, { receivers: string[] }>;
+    expect(Object.keys(pipelines).sort()).toEqual(['logs/in', 'metrics', 'traces']);
+    expect(pipelines['logs/in']?.receivers).toEqual(['fluentforward', 'otlp/hyperdx']);
+    expect(pipelines.metrics?.receivers).toEqual(['prometheus', 'otlp/hyperdx']);
+    expect(pipelines.traces?.receivers).toEqual(['nop', 'otlp/hyperdx']);
+    // …and so did the queue's extension list, in the same mapping.
+    expect(service.extensions).toEqual(['health_check', 'file_storage/hyperdx']);
+  });
+
+  it("declares the file_storage extension the exporters' queue references", () => {
+    const parsed = parseOverlay(renderOverlay({}));
+    const extensions = parsed.extensions as Record<string, Record<string, unknown>>;
+
+    expect(Object.keys(extensions)).toEqual(['file_storage/hyperdx']);
+    expect(extensions['file_storage/hyperdx']).toEqual({
+      directory: '/var/lib/otelcol/file_storage',
+      create_directory: true,
+    });
+    // `service.extensions` must NAME it, or the extension is never started and
+    // the collector refuses a config whose exporters point at it.
+    expect(parsed.service as { extensions: string[] }).toHaveProperty('extensions');
+    expect((parsed.service as { extensions: string[] }).extensions).toContain(
+      'file_storage/hyperdx'
+    );
+  });
+
+  it('gives EVERY name in exporterNames its own sending_queue.storage', () => {
+    const exporterNames = ['clickhouse', 'clickhouse/sessions', 'clickhouse/metrics'];
+    const parsed = parseOverlay(renderOverlay({ exporterNames }));
+    const exporters = parsed.exporters as Record<string, Record<string, unknown>>;
+
+    expect(Object.keys(exporters).sort()).toEqual([...exporterNames].sort());
+    for (const name of exporterNames) {
+      expect(exporters[name]?.sending_queue).toEqual({
+        enabled: true,
+        storage: 'file_storage/hyperdx',
+      });
+    }
+  });
+
+  it('honors an overridden directory and extension list', () => {
+    const parsed = parseOverlay(
+      renderOverlay({
+        directory: '/data/queue',
+        extensions: ['health_check', 'opamp', 'file_storage/hyperdx'],
+      })
+    );
+
+    expect(
+      (parsed.extensions as Record<string, Record<string, unknown>>)['file_storage/hyperdx']
+        ?.directory
+    ).toBe('/data/queue');
+    expect((parsed.service as { extensions: string[] }).extensions).toEqual([
+      'health_check',
+      'opamp',
+      'file_storage/hyperdx',
+    ]);
+  });
+
+  /**
+   * DECIDED AND DOCUMENTED: an exporter name the agent does not define is
+   * SURFACED, not rejected.
+   *
+   * It cannot be rejected here. The exporter set lives in the remote
+   * configuration the OpAMP supervisor hands the agent — nothing this factory
+   * renders knows it — so the only honest build-time behaviour is to carry the
+   * operator's name through verbatim, document that it fails silently (the
+   * `exporters` map grows an exporter no pipeline uses while the real one keeps
+   * its in-memory queue), and assert the names against the agent's EFFECTIVE
+   * configuration on a live cluster. `test/integration/clickstack/s3-backed.test.ts`
+   * does exactly that.
+   */
+  it('carries an unknown exporter name through verbatim rather than guessing', () => {
+    const parsed = parseOverlay(renderOverlay({ exporterNames: ['clickhouse/not-a-real-one'] }));
+    const exporters = parsed.exporters as Record<string, Record<string, unknown>>;
+
+    expect(Object.keys(exporters)).toEqual(['clickhouse/not-a-real-one']);
+    // The default is the one name we CAN vouch for, and it is not silently
+    // substituted for the operator's choice.
+    expect(DEFAULT_QUEUE_EXPORTER_NAMES).toEqual(['clickhouse']);
+    expect(Object.keys(exporters)).not.toContain('clickhouse');
+  });
+
+  it('rejects an empty exporterNames list at construction', () => {
+    expect(() =>
+      resolveClickStackStorage('t', {
+        mode: 's3',
+        persistentQueue: { enabled: true, exporterNames: [] },
+      })
+    ).toThrow(/exporterNames' cannot be empty/);
+  });
+
+  it('rejects an extensions list that drops the file_storage extension', () => {
+    expect(() =>
+      resolveClickStackStorage('t', {
+        mode: 's3',
+        persistentQueue: { enabled: true, extensions: ['health_check'] },
+      })
+    ).toThrow(/must include 'file_storage\/hyperdx'/);
+  });
+
+  it('renders IDENTICALLY to the hand-written overlay when no queue is configured', () => {
+    // The queue fix must not churn the ConfigMap of every install that does
+    // not enable the queue. This is the exact text the concatenating
+    // implementation emitted, spelled out rather than derived.
+    expect(renderOverlay()).toBe(
+      [
+        'service:',
+        '  pipelines:',
+        '    logs/in:',
+        '      receivers: [fluentforward, otlp/hyperdx]',
+        '    metrics:',
+        '      receivers: [prometheus, otlp/hyperdx]',
+        '    traces:',
+        '      receivers: [nop, otlp/hyperdx]',
+        '',
+      ].join('\n')
+    );
+    // …and the exported constant is that same rendering.
+    expect(CLICKSTACK_INGEST_PIPELINES_CONFIG).toBe(renderOverlay());
+  });
+});
+
+describe('mergeCollectorConfig conflict policy', () => {
+  it('merges mappings key by key', () => {
+    expect(mergeCollectorConfig([{ a: { b: 1 } }, { a: { c: 2 } }])).toEqual({
+      a: { b: 1, c: 2 },
+    });
+  });
+
+  it('unions sequences in order, de-duplicating', () => {
+    expect(
+      mergeCollectorConfig([
+        { service: { extensions: ['health_check', 'opamp'] } },
+        { service: { extensions: ['opamp', 'file_storage/hyperdx'] } },
+      ])
+    ).toEqual({ service: { extensions: ['health_check', 'opamp', 'file_storage/hyperdx'] } });
+  });
+
+  it('keeps identical scalars', () => {
+    expect(mergeCollectorConfig([{ a: { b: 'x' } }, { a: { b: 'x' } }])).toEqual({ a: { b: 'x' } });
+  });
+
+  it('THROWS on two fragments disagreeing about a scalar, naming the path', () => {
+    expect(() =>
+      mergeCollectorConfig([
+        { extensions: { 'file_storage/hyperdx': { directory: '/a' } } },
+        { extensions: { 'file_storage/hyperdx': { directory: '/b' } } },
+      ])
+    ).toThrow(/extensions\.file_storage\/hyperdx\.directory.*"\/a" vs "\/b"/);
+  });
+
+  it('THROWS when one fragment makes a key a mapping and another a scalar', () => {
+    expect(() =>
+      mergeCollectorConfig([{ service: { extensions: {} } }, { service: { extensions: ['a'] } }])
+    ).toThrow(/Conflicting collector configuration at 'service\.extensions'/);
+  });
+
+  /**
+   * REGRESSION: merging used to ADOPT an incoming sub-object by reference.
+   *
+   * `CLICKSTACK_INGEST_PIPELINES_FRAGMENT` is a module constant shared by every
+   * composition in the process, so the queue's `service.extensions` was written
+   * straight into it — and the NEXT install, queue or no queue, inherited the
+   * previous one's overlay.
+   */
+  it('does not mutate its inputs, so a shared fragment constant stays clean', () => {
+    const before = JSON.stringify(CLICKSTACK_INGEST_PIPELINES_FRAGMENT);
+    const queue = resolveClickStackStorage('t', {
+      mode: 's3',
+      persistentQueue: { enabled: true, extensions: ['opamp', 'file_storage/hyperdx'] },
+    }).persistentQueue;
+    if (queue === undefined) throw new Error('expected a queue');
+
+    renderCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      persistentQueueConfigFragment(queue),
+    ]);
+
+    expect(JSON.stringify(CLICKSTACK_INGEST_PIPELINES_FRAGMENT)).toBe(before);
+    // And a second render is byte-identical to the first — the pollution
+    // showed up as drift between consecutive calls.
+    const first = renderCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      persistentQueueConfigFragment(queue),
+    ]);
+    const second = renderCollectorConfig([
+      CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+      persistentQueueConfigFragment(queue),
+    ]);
+    expect(second).toBe(first);
+    // …and the queue-free rendering is still the queue-free rendering.
+    expect(renderCollectorConfig([CLICKSTACK_INGEST_PIPELINES_FRAGMENT])).toBe(
+      CLICKSTACK_INGEST_PIPELINES_CONFIG
+    );
+  });
+
+  it('never lets a merged document carry a duplicate top-level key', () => {
+    const rendered = renderCollectorConfig([
+      { service: { pipelines: { logs: { receivers: ['otlp'] } } } },
+      { service: { extensions: ['health_check'] } },
+      { extensions: { health_check: {} } },
+    ]);
+    const topLevel = rendered
+      .split('\n')
+      .filter((line) => /^[A-Za-z_][^\s:]*:/.test(line))
+      .map((line) => line.slice(0, line.indexOf(':')));
+
+    expect(new Set(topLevel).size).toBe(topLevel.length);
   });
 });
 

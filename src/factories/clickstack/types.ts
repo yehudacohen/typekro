@@ -240,14 +240,22 @@ export interface ClickStackRetentionOptions {
  * `mode: statefulset` with `volumeClaimTemplates`, which this composition does
  * not model today.
  *
- * ⚠️ NOT VERIFIED AGAINST A LIVE CHART RENDER. This is emitted through the
- * chart's supported `global.otelCollector.customConfig` merge seam, and a YAML
- * list in that overlay REPLACES the supervisor's own list rather than appending
- * to it. That means `extensions` below must enumerate every extension the
- * collector needs, and `exporterName` must match the exporter the OpAMP
- * supervisor actually defines. Both are exposed as options precisely because
- * the correct values depend on the ClickStack version you deploy — check the
- * rendered collector config before relying on this in production.
+ * ⚠️ THE OVERLAY IS ONE YAML DOCUMENT. This is emitted through the chart's
+ * supported `global.otelCollector.customConfig` merge seam, which the ingest
+ * pipelines use too, and a YAML list in that overlay REPLACES the supervisor's
+ * own list rather than appending to it. That means `extensions` below must
+ * enumerate every extension the collector needs, and `exporterNames` must
+ * match exporters the OpAMP supervisor actually defines. Both are exposed as
+ * options precisely because the correct values depend on the ClickStack
+ * version you deploy — check the rendered collector config before relying on
+ * this in production.
+ *
+ * LIVE FINDING (fixed): the overlay used to be assembled by CONCATENATING the
+ * ingest-pipeline YAML and this queue's YAML, and both open a top-level
+ * `service:` key, so the supervisor rejected the whole file
+ * (`mapping key "service" already defined`) and the agent ran with NEITHER.
+ * Contributions are structured fragments now, deep-merged and serialised once
+ * — see `utils/collector-config.ts`.
  */
 export interface ClickStackPersistentQueueOptions {
   /** Enable the file-storage-backed sending queue (default: false). */
@@ -269,8 +277,21 @@ export interface ClickStackPersistentQueueOptions {
   size?: string;
   /** StorageClass for the queue PVC (cluster default when omitted). */
   storageClassName?: string;
-  /** Exporter whose `sending_queue` is switched to file storage. */
-  exporterName?: string;
+  /**
+   * Exporters whose `sending_queue` is switched to file storage. Must be
+   * non-empty when the queue is enabled; defaults to the single ClickHouse
+   * exporter the ClickStack collector defines.
+   *
+   * ⚠️ NOT VALIDATED AT BUILD TIME, BY DESIGN — a name TypeKro cannot check.
+   * The exporter set lives in the remote configuration the OpAMP supervisor
+   * hands the agent, not in anything this factory renders, so a name the agent
+   * does not define cannot be rejected here. It fails SILENTLY at runtime: the
+   * supervisor merges the overlay, the `exporters` map simply grows an exporter
+   * no pipeline references, and the real exporter keeps its in-memory queue.
+   * The integration suite therefore asserts these names against the agent's own
+   * EFFECTIVE configuration instead of trusting the default.
+   */
+  exporterNames?: readonly string[];
   /**
    * The complete `service.extensions` list to emit. It REPLACES the
    * supervisor's list, so it must name every extension the collector needs.

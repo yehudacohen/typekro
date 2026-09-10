@@ -56,10 +56,11 @@ import { Cel } from '../../../core/references/cel.js';
 import type { TypeKroChartValues } from '../../../core/types/common.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CLICKSTACK_MONGO_NAME_SUFFIX, CLICKSTACK_MONGO_PORT } from '../resources/mongo.js';
+import { type CollectorConfigFragment, renderCollectorConfig } from './collector-config.js';
 import {
   type ResolvedClickStackStorage,
   clickStackQueueClaimName,
-  renderPersistentQueueConfig,
+  persistentQueueConfigFragment,
   renderPersistentQueueValues,
 } from './storage.js';
 import type {
@@ -108,18 +109,37 @@ export const CLICKSTACK_CONNECTION_NAME = 'External ClickHouse';
  * Ready while 4317/4318 refuse connections. Chart 3.1+ provides the supported
  * `global.otelCollector.customConfig` merge seam; keep every built-in receiver
  * while attaching OTLP to all three signal pipelines.
+ *
+ * ⚠️ A STRUCTURED FRAGMENT, not YAML text. It shares the overlay — ONE YAML
+ * document — with the persistent queue's own wiring, and both contribute a
+ * top-level `service` key. Concatenating the two texts declared `service`
+ * twice and the supervisor rejected the whole file, so contributions are
+ * deep-merged and serialised exactly once through
+ * `renderCollectorConfig`. See `utils/collector-config.ts`.
  */
-export const CLICKSTACK_INGEST_PIPELINES_CONFIG = [
-  'service:',
-  '  pipelines:',
-  '    logs/in:',
-  '      receivers: [fluentforward, otlp/hyperdx]',
-  '    metrics:',
-  '      receivers: [prometheus, otlp/hyperdx]',
-  '    traces:',
-  '      receivers: [nop, otlp/hyperdx]',
-  '',
-].join('\n');
+export const CLICKSTACK_INGEST_PIPELINES_FRAGMENT: CollectorConfigFragment = {
+  service: {
+    pipelines: {
+      'logs/in': { receivers: ['fluentforward', 'otlp/hyperdx'] },
+      metrics: { receivers: ['prometheus', 'otlp/hyperdx'] },
+      traces: { receivers: ['nop', 'otlp/hyperdx'] },
+    },
+  },
+};
+
+/**
+ * The ingest-pipelines overlay on its own — the rendering emitted when no
+ * persistent queue is configured.
+ *
+ * BYTE-IDENTICAL to the hand-written string this constant replaced. That is
+ * not a coincidence: `renderCollectorConfig`'s flow level is chosen so the
+ * `receivers` lists stay inline, and a unit test pins the exact text. The
+ * queue fix must not churn the ConfigMap of every install that does not use
+ * the queue.
+ */
+export const CLICKSTACK_INGEST_PIPELINES_CONFIG = renderCollectorConfig([
+  CLICKSTACK_INGEST_PIPELINES_FRAGMENT,
+]);
 
 /** Concrete build-time options consumed by the bootstrap values mapper. */
 export interface ClickStackValuesMapperOptions {
@@ -506,14 +526,20 @@ export function mapClickStackConfigToHelmValues(
   // halves travel together and beat the values passthrough. The mounted claim
   // is the standalone PVC the composition creates; the name comes from the
   // shared helper so the mount and the claim cannot drift.
+  //
+  // ⚠️ The overlay is COMPOSED, never concatenated. Both contributors carry a
+  // top-level `service` key, and appending one YAML text to the other declared
+  // it twice — which the OpAMP supervisor rejects for the WHOLE file
+  // (`mapping key "service" already defined`), leaving the agent with neither
+  // the ingest pipelines nor the queue while the Pod still reported Ready.
+  // `renderCollectorConfig` deep-merges the fragments and serialises once.
   const queue = options.storage?.persistentQueue;
+  const collectorFragments: CollectorConfigFragment[] = [CLICKSTACK_INGEST_PIPELINES_FRAGMENT];
+  if (queue !== undefined) collectorFragments.push(persistentQueueConfigFragment(queue));
   const pins: Record<string, unknown> = {
     global: {
       otelCollector: {
-        customConfig:
-          queue === undefined
-            ? CLICKSTACK_INGEST_PIPELINES_CONFIG
-            : `${CLICKSTACK_INGEST_PIPELINES_CONFIG}${renderPersistentQueueConfig(queue)}`,
+        customConfig: renderCollectorConfig(collectorFragments),
       },
     },
     clickhouse: { enabled: false },
