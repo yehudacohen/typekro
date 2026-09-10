@@ -691,6 +691,23 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
    */
   allowBreakingChanges?: boolean;
 
+  /**
+   * Whether a status leaf that resolves to a bare literal is tolerated in KRO mode.
+   *
+   * KRO populates an instance's status only from expressions it can resolve against the graph's
+   * own resources, so a literal leaf is left unset and the declared status schema promises a field
+   * the custom resource never carries (issue #188). `false` turns that into a serialization error
+   * naming every offending path; `true` logs the paths and continues.
+   *
+   * Set here rather than on the composition to enforce projection across compositions you do not
+   * own — a CI job can serialize a third-party graph with
+   * `factory('kro', { allowLiteralStatus: false })` and fail on the literals. This overrides the
+   * composition's own setting.
+   *
+   * @default true — see `DEFAULT_ALLOW_LITERAL_STATUS`; flips to `false` in the next major.
+   */
+  allowLiteralStatus?: boolean;
+
   /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 

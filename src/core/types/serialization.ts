@@ -80,6 +80,15 @@ export interface KroSimpleSchemaWithMetadata extends KroSimpleSchema {
   readonly __omitFields?: string[];
   /** Nested composition status CEL mappings for virtual ID resolution. */
   readonly __nestedStatusCel?: Record<string, string>;
+  /**
+   * Status leaves KRO will leave unset because they resolve to bare literals
+   * (see issue #188). Only populated when `allowLiteralStatus` downgraded the
+   * error to a warning — otherwise serialization throws instead.
+   */
+  readonly __literalStatusLeaves?: readonly {
+    readonly path: string;
+    readonly literal: string;
+  }[];
 }
 
 export interface KroFieldDefinition {
@@ -311,6 +320,19 @@ export interface SerializationOptions {
   noRefs?: boolean;
   /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata. @default false */
   allowBreakingChanges?: boolean;
+  /**
+   * Whether a status leaf that resolves to a bare literal is tolerated in KRO mode.
+   *
+   * KRO leaves a literal status field unset on the instance, so the declared
+   * status schema promises a field the custom resource never carries (see issue
+   * #188). Set `false` to reject those at serialization time with an error
+   * naming every offending path; `true` logs the paths and continues — the
+   * fields are still dropped either way. Direct mode is unaffected.
+   *
+   * @default true — see `DEFAULT_ALLOW_LITERAL_STATUS`; flips to `false` in the
+   * next major, so set `false` now on compositions you want held to projection.
+   */
+  allowLiteralStatus?: boolean;
   /**
    * Kubernetes CEL admission rules attached to spec fields in the generated CRD.
    * Keys are dotted paths relative to `spec`; each rule evaluates with `self`
