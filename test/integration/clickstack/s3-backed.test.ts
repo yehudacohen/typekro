@@ -34,6 +34,11 @@ import { type BackgroundSampler, startBackgroundSampler } from '../../utils/back
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import { waitUntilGone } from '../shared-absence.js';
 import {
+  groupJobRunsByOwner,
+  latestCompletedRun,
+  selectLongRunningPods,
+} from '../shared-workload-pods.js';
+import {
   createAppsV1ApiClient,
   createCoreV1ApiClient,
   createTestNamespace,
@@ -1531,36 +1536,23 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
           batchApiForPods.listNamespacedJob({ namespace: kroStackNs }),
           batchApiForPods.listNamespacedCronJob({ namespace: kroStackNs }),
         ]);
-        const createdAt = (resource: { metadata?: { creationTimestamp?: Date } }): number =>
-          new Date(resource.metadata?.creationTimestamp ?? 0).getTime();
 
         // LONG-RUNNING workloads: the HyperDX app and the gateway collector
         // (chart-rendered Deployments, whose pods hang off a ReplicaSet) and
-        // Mongo (a StatefulSet the composition renders itself). Selected by
-        // ownerReference UID rather than by owner KIND, so a Job pod can never
-        // drift into this set and a long-running pod can never drop out of it.
-        const deploymentUids = new Set(
-          deployments.items.flatMap((deployment) => deployment.metadata?.uid ?? [])
-        );
-        const longRunningUids = new Set([
-          ...replicaSets.items
-            .filter((replicaSet) =>
-              (replicaSet.metadata?.ownerReferences ?? []).some((owner) =>
-                deploymentUids.has(owner.uid)
-              )
-            )
-            .flatMap((replicaSet) => replicaSet.metadata?.uid ?? []),
-          ...statefulSets.items.flatMap((statefulSet) => statefulSet.metadata?.uid ?? []),
-        ]);
-        // HyperDX app, the gateway collector, and Mongo — asserted on the
-        // workloads themselves so the pod filter below cannot pass vacuously
-        // by matching nothing.
+        // Mongo (a StatefulSet the composition renders itself). The selection
+        // rules — ownerReference UID rather than owner kind, terminating pods
+        // excluded — live in a cluster-free helper so they are pinned by
+        // `test/unit/workload-pods.test.ts` and not only here.
+        //
+        // The count is asserted on the WORKLOADS as well as on their pods, so
+        // a selection that matched nothing fails instead of passing vacuously.
         expect(deployments.items.length + statefulSets.items.length).toBeGreaterThanOrEqual(3);
-        const workloads = pods.items.filter(
-          (pod) =>
-            !pod.metadata?.deletionTimestamp &&
-            (pod.metadata?.ownerReferences ?? []).some((owner) => longRunningUids.has(owner.uid))
-        );
+        const workloads = selectLongRunningPods({
+          pods: pods.items,
+          deployments: deployments.items,
+          statefulSets: statefulSets.items,
+          replicaSets: replicaSets.items,
+        });
         expect(workloads.length).toBeGreaterThanOrEqual(3);
         // All Running, all containers ready, restarts inside the guide's
         // KRO-mode budget (a simultaneous deploy restarts HyperDX while Mongo
@@ -1584,33 +1576,9 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         // — an earlier run failing is the history `failedJobsHistoryLimit`
         // deliberately keeps. What the readiness contract claims, and what this
         // asserts, is that the convergence completed and that its latest
-        // completed run SUCCEEDED; a Failed latest run fails the test.
-        const latestAttemptByJob = new Map<string, (typeof pods.items)[number]>();
-        for (const pod of pods.items) {
-          const jobUid = (pod.metadata?.ownerReferences ?? []).find(
-            (owner) => owner.kind === 'Job'
-          )?.uid;
-          if (jobUid === undefined) continue;
-          const current = latestAttemptByJob.get(jobUid);
-          if (current === undefined || createdAt(pod) >= createdAt(current)) {
-            latestAttemptByJob.set(jobUid, pod);
-          }
-        }
-        // Group each run under the CronJob that scheduled it; a standalone Job
-        // is its own group.
-        const runsByOwner = new Map<string, { createdAt: number; phase: string | undefined }[]>();
-        for (const job of jobs.items) {
-          const jobUid = job.metadata?.uid;
-          if (jobUid === undefined) continue;
-          const attempt = latestAttemptByJob.get(jobUid);
-          if (attempt === undefined) continue;
-          const ownerUid =
-            (job.metadata?.ownerReferences ?? []).find((owner) => owner.kind === 'CronJob')?.uid ??
-            jobUid;
-          const runs = runsByOwner.get(ownerUid) ?? [];
-          runs.push({ createdAt: createdAt(job), phase: attempt.status?.phase });
-          runsByOwner.set(ownerUid, runs);
-        }
+        // completed run SUCCEEDED; a Failed latest run fails the test. Those
+        // rules are pinned by `test/unit/workload-pods.test.ts` too.
+        const runsByOwner = groupJobRunsByOwner(pods.items, jobs.items);
         // Non-vacuous: the credential-convergence CronJob the readiness
         // contract gates on is present and has runs to judge. It is the only
         // Job-shaped workload here — an immutable `s3_plain_rewritable` disk
@@ -1621,12 +1589,10 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         )?.metadata?.uid;
         expect(teamBootstrapUid).toBeDefined();
         expect(runsByOwner.has(teamBootstrapUid as string)).toBe(true);
-        for (const runs of runsByOwner.values()) {
-          const completed = runs
-            .filter((run) => run.phase === 'Succeeded' || run.phase === 'Failed')
-            .sort((a, b) => b.createdAt - a.createdAt);
-          expect(completed.length).toBeGreaterThan(0);
-          expect(completed[0]?.phase).toBe('Succeeded');
+        for (const [ownerUid, runs] of runsByOwner) {
+          const completed = latestCompletedRun(runs);
+          // `undefined` means no run of this workload has finished at all.
+          expect(`${ownerUid}: ${completed?.phase}`).toBe(`${ownerUid}: Succeeded`);
         }
 
         // The contract ConfigMap the status is projected from is a real graph
