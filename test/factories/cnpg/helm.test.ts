@@ -1,9 +1,27 @@
 import { describe, expect, it } from 'bun:test';
 import { cnpgHelmRepository, cnpgHelmRelease } from '../../../src/factories/cnpg/resources/helm.js';
+import { isValuesMergeExpression } from '../../../src/core/aspects/values-merge.js';
 import {
+  type CnpgHelmValues,
+  type CnpgMappedHelmValues,
   mapCnpgConfigToHelmValues,
   getCnpgHelmValueWarnings,
 } from '../../../src/factories/cnpg/utils/helm-values-mapper.js';
+
+/**
+ * Narrow the mapper result to plain chart values.
+ *
+ * Every case below passes CONCRETE config, so the mapper deep-merges at build
+ * time and never produces a runtime values-merge node. A reference-valued
+ * `customValues` takes the merge path instead — covered by the KRO
+ * serialization tests, which assert the emitted CEL.
+ */
+function plainValues(result: CnpgMappedHelmValues): CnpgHelmValues {
+  if (isValuesMergeExpression(result)) {
+    throw new Error('expected plain chart values, got a runtime values-merge node');
+  }
+  return result;
+}
 
 describe('CNPG Helm Resources', () => {
   describe('cnpgHelmRepository', () => {
@@ -98,59 +116,59 @@ describe('CNPG Helm Resources', () => {
 describe('CNPG Helm Values Mapper', () => {
   describe('mapCnpgConfigToHelmValues', () => {
     it('should return empty object for minimal config', () => {
-      const values = mapCnpgConfigToHelmValues({ name: 'cnpg' });
+      const values = plainValues(mapCnpgConfigToHelmValues({ name: 'cnpg' }));
       expect(values.crds).toEqual({ create: true });
     });
 
     it('should map replicaCount', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         replicaCount: 3,
-      });
+      }));
       expect(values.replicaCount).toBe(3);
     });
 
     it('should map resources', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         resources: {
           requests: { cpu: '100m', memory: '128Mi' },
           limits: { cpu: '500m', memory: '512Mi' },
         },
-      });
+      }));
       expect(values.resources?.requests?.cpu).toBe('100m');
       expect(values.resources?.limits?.memory).toBe('512Mi');
     });
 
     it('should map monitoring', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         monitoring: { enabled: true },
-      });
+      }));
       expect(values.monitoring?.podMonitorEnabled).toBe(true);
     });
 
     it('should set installCRDs to false when specified', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         installCRDs: false,
-      });
+      }));
       expect(values.crds?.create).toBe(false);
     });
 
     it('should spread custom values last', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         customValues: {
           nodeSelector: { 'kubernetes.io/os': 'linux' },
         },
-      });
+      }));
       expect(values.nodeSelector).toEqual({ 'kubernetes.io/os': 'linux' });
     });
 
     it('should remove undefined values', () => {
       // Test that the mapper doesn't include fields that weren't set
-      const values = mapCnpgConfigToHelmValues({ name: 'cnpg' });
+      const values = plainValues(mapCnpgConfigToHelmValues({ name: 'cnpg' }));
       expect('replicaCount' in values).toBe(false);
       expect('resources' in values).toBe(false);
     });

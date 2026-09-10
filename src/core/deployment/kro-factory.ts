@@ -139,6 +139,7 @@ import {
   createStatusResourceIdentityContext,
   validateStatusCelExpressions,
 } from '../validation/cel-validator.js';
+import { assertNoStructuralSpecDependence } from '../validation/structural-spec-dependence.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import {
   blockerForRemainingResource,
@@ -4615,6 +4616,19 @@ export class KroResourceFactoryImpl<
     // rewrite didn't structurally cover), fail LOUDLY here rather than shipping an
     // RGD KRO will reject at runtime with a dangling `${...}` reference.
     this.assertNoDanglingHoistedReferences(JSON.stringify(rgdManifest), new Set(hoistIds.keys()));
+
+    // REJECT (issue #190) rather than silently encode a build-time guess: the RGD
+    // is fixed at build time, so a runtime `schema.spec.*` value may decide what a
+    // field CONTAINS but never which resources, list entries or keys EXIST. Both
+    // detectors run on what is about to be emitted (plus the composition source),
+    // never on live proxies. Same honesty rule as the hoist checks above.
+    assertNoStructuralSpecDependence({
+      graphName: this.name,
+      resources: rgdManifest.spec.resources,
+      compositionSource: this.factoryOptions.semanticCapture?.diagnosticSource,
+      allow: (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
+        ?.allowStructuralSpecDependence,
+    });
 
     return rgdManifest;
   }
