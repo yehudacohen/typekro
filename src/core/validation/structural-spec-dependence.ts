@@ -160,7 +160,7 @@ export class StructuralSpecDependenceError extends TypeKroError {
 
 function schemaPathFromMarker(text: string): string | undefined {
   const match = new RegExp(`${SCHEMA_REF_MARKER_PREFIX}([A-Za-z0-9_.$[\\]?]+?)__`).exec(text);
-  return match?.[1];
+  return match?.[1] === undefined ? undefined : trimProxySentinelSuffix(match[1]);
 }
 
 /**
@@ -844,6 +844,19 @@ export function formatStructuralSpecDependence(
 }
 
 /**
+ * Whether the structural spec-dependence check ignores per-composition escape
+ * hatches.
+ *
+ * `TYPEKRO_STRUCTURAL_SPEC=strict` makes every structural use an error even
+ * when the composition sets `allowStructuralSpecDependence`, so a repository
+ * can audit what its shipped graphs still depend on without editing them.
+ * Resolved in ONE place, matching `isStrictCelDiagnosticsEnabled`.
+ */
+export function isStructuralSpecDependenceStrict(): boolean {
+  return process.env.TYPEKRO_STRUCTURAL_SPEC === 'strict';
+}
+
+/**
  * Gate KRO-mode serialization on structural spec-dependence.
  *
  * Throws {@link StructuralSpecDependenceError} unless `allow` is set, in which
@@ -872,7 +885,7 @@ export function assertNoStructuralSpecDependence(input: {
     findings,
     needsCandidates ? source.mapEnumerationSites : []
   );
-  if (input.allow) {
+  if (input.allow && !isStructuralSpecDependenceStrict()) {
     logger.warn(message, {
       graphName: input.graphName,
       specPaths: [...new Set(findings.flatMap((finding) => finding.specPaths))],
