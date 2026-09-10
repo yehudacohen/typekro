@@ -139,6 +139,7 @@ import {
   createStatusResourceIdentityContext,
   validateStatusCelExpressions,
 } from '../validation/cel-validator.js';
+import { resolveAllowLiteralStatus } from '../validation/literal-status.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import {
   blockerForRemainingResource,
@@ -4546,7 +4547,14 @@ export class KroResourceFactoryImpl<
       statusMappings,
       nestedCel,
       (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
-        ?.schemaFieldValidations
+        ?.schemaFieldValidations,
+      {
+        allowLiteralStatus: resolveAllowLiteralStatus(
+          this.factoryOptions.allowLiteralStatus,
+          (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
+            ?.allowLiteralStatus
+        ),
+      }
     );
     kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]map[string]string';
 

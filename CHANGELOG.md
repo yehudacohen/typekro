@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- KRO-mode serialization now reports status leaves KRO drops from the instance.
+  KRO requires every status field to refer to a RESOURCE in the graph
+  (`instance status field must refer to a resource`), and its status CEL
+  environment has no `schema` identifier, so a leaf that references no resource
+  is left unset and the declared status schema promises a field the custom
+  resource never carries — invisible until now, because TypeKro hydrated those
+  leaves client-side in `getStatus()`. Two shapes are reported: a bare
+  **literal** (a reference-free CEL expression counts as one; KRO drops it the
+  same way), and a bare **`schema.spec.*` reference**, which looks resolvable
+  because the CR does hold the value in its own spec but has no resource to
+  project from. A `schema.spec.*` INSIDE an expression that also references a
+  resource stays valid — the resource supplies the dependency KRO requires. The
+  diagnostic names every offending path, says which shape it is, and suggests
+  projecting the value through an owned resource (echo it into a ConfigMap or an
+  annotation and read it back) or dropping the field. `allowLiteralStatus`
+  selects the severity, on the composition or on the factory (the factory wins,
+  so CI can hold a graph it does not own to projection). It defaults to warn for
+  this release and flips to error in the next major — set
+  `allowLiteralStatus: false` now on compositions you want held to projection.
+  Direct mode is unaffected: it assembles status locally, with no reconciler, so
+  both shapes are legitimate there.
+
 ### Changed
 
 - Alchemy is upgraded to `2.0.0-beta.74`, bringing the current native provider
