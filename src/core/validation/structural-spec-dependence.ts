@@ -60,6 +60,15 @@
  *        string. The proxy always answers `1`, so the value is a build-time
  *        constant no matter what the instance holds.
  *
+ *    A branch only counts when it BUILDS something. That question is settled
+ *    by an allowlist, not by the callee's name: nothing in the source says
+ *    whether an imported binding is a factory, and casing least of all — most
+ *    of this repo's factories are camelCase (`helmRelease`, `serviceAccount`,
+ *    `persistentVolumeClaim`, `observedResource`, `singleton`). So any call in
+ *    the branch counts as building structure unless it is a pure JavaScript
+ *    builtin (`String(…)`, `JSON.stringify(…)`, `Math.max(…)`, `items.map(…)`)
+ *    or a `Cel.*` runtime expression. See {@link isPureHelperCall}.
+ *
  * ## What is NOT detected
  *
  * Static analysis of arbitrary JavaScript cannot be complete, and this check
@@ -73,6 +82,11 @@
  *   - Structure decided by a spec value that is **consumed by a factory** and
  *     collapsed inside it, if the collapse leaves no marker, sentinel or
  *     `$item` residue in the emitted RGD.
+ *   - A branch whose only call is a **method named like a builtin**
+ *     (`registry.push(…)`, `catalog.map(…)`): the pure-helper allowlist matches
+ *     on the method name without resolving the receiver, so such a call is
+ *     assumed pure. No factory in `src/factories/**` carries one of those
+ *     names, and a new one must not.
  *   - Anything reached through `eval`, dynamic imports, or a composition whose
  *     source cannot be parsed (the AST detector degrades to silence, never to
  *     a false positive).
@@ -514,8 +528,145 @@ function buildSpecAliasScope(body: AnyNode[], specParam: string): SpecAliasScope
   return aliases;
 }
 
-/** True when the subtree registers a resource (any call that is not a bare method chain). */
-function containsResourceRegistration(node: AnyNode | undefined): boolean {
+/**
+ * Global functions that only compute a value from their arguments.
+ *
+ * Casing says nothing about whether a call builds a resource — most of the
+ * repo's own factories are camelCase (`helmRelease`, `serviceAccount`,
+ * `persistentVolumeClaim`) — so {@link branchBuildsStructure} assumes a call
+ * builds structure and this allowlist is what buys silence back. Everything
+ * listed here is a pure JavaScript builtin: adding to it can only make the
+ * check quieter, so entries must be builtins, never project functions.
+ */
+const PURE_HELPER_GLOBALS: ReadonlySet<string> = new Set([
+  'Boolean',
+  'BigInt',
+  'Number',
+  'String',
+  'Symbol',
+  'decodeURI',
+  'decodeURIComponent',
+  'encodeURI',
+  'encodeURIComponent',
+  'isFinite',
+  'isNaN',
+  'parseFloat',
+  'parseInt',
+  'structuredClone',
+]);
+
+/**
+ * Namespaces whose every member call computes a value: `JSON.stringify(x)`,
+ * `Math.max(a, b)`, `Object.keys(x)`, and TypeKro's own `Cel.expr(...)` /
+ * `Cel.template(...)`, which are runtime expressions rather than structure.
+ */
+const PURE_HELPER_NAMESPACES: ReadonlySet<string> = new Set([
+  'Array',
+  'Boolean',
+  'Cel',
+  'Date',
+  'JSON',
+  'Math',
+  'Number',
+  'Object',
+  'Promise',
+  'Reflect',
+  'RegExp',
+  'String',
+  'Symbol',
+]);
+
+/**
+ * Builtin constructors that produce a plain value rather than graph structure.
+ * `if (flag) { index = new Map(…) }` is a value computation; nothing else in
+ * this repo is reached with `new`, and no factory is a class.
+ */
+const PURE_HELPER_CONSTRUCTORS: ReadonlySet<string> = new Set([
+  'Array',
+  'Date',
+  'Error',
+  'Map',
+  'Number',
+  'Object',
+  'RegExp',
+  'Set',
+  'String',
+  'TypeError',
+  'URL',
+  'URLSearchParams',
+  'WeakMap',
+  'WeakSet',
+]);
+
+/**
+ * Builtin array/string/map methods. These reshape, read or accumulate into a
+ * value; none of them registers a resource, because in TypeKro a resource
+ * enters the graph when its FACTORY is called, not when the returned object is
+ * pushed somewhere. Allowlisting `.map` costs nothing either: a factory called
+ * inside the callback is still reached by the walk, which never stops at a
+ * pure call.
+ *
+ * The receiver is not checked, so a project function that happened to share
+ * one of these names would be exempted by mistake. None does — every one of
+ * these names was checked against the exports of `src/factories/**` — and a
+ * new factory must not take one.
+ */
+const PURE_HELPER_METHODS: ReadonlySet<string> = new Set([
+  'at', 'charAt', 'concat', 'endsWith', 'entries', 'every', 'fill', 'filter',
+  'find', 'findIndex', 'findLast', 'findLastIndex', 'flat', 'flatMap',
+  'forEach', 'get', 'has', 'includes', 'indexOf', 'join', 'keys', 'lastIndexOf', 'map',
+  'match', 'normalize', 'padEnd', 'padStart', 'pop', 'push', 'reduce',
+  'reduceRight', 'repeat', 'replace', 'replaceAll', 'reverse', 'shift',
+  'slice', 'some', 'sort', 'split', 'splice', 'startsWith', 'substring',
+  'toFixed', 'toLowerCase', 'toString', 'toUpperCase', 'trim', 'trimEnd',
+  'trimStart', 'unshift', 'valueOf', 'values',
+]);
+
+/**
+ * True when a call is a known pure helper — the ONLY calls
+ * {@link branchBuildsStructure} lets through.
+ *
+ * The default runs the other way round on purpose. There is no reliable way to
+ * tell a factory call from any other call by looking at the source: the callee
+ * is an imported binding this module cannot resolve, and its name carries no
+ * signal (`helmRelease`, `observedResource`, `singleton` and
+ * `kubernetesComposition` all build structure; `ConfigMap` and
+ * `simple.Deployment` do too). So an unrecognised call — and any `new` that is
+ * not a builtin constructor — is treated as structure-building, and only the
+ * builtins above are exempt.
+ */
+function isPureHelperCall(node: AnyNode): boolean {
+  const callee = unwrap(node.callee as AnyNode | undefined);
+  if (!callee) return false;
+  if (node.type === 'NewExpression') {
+    return callee.type === 'Identifier' && PURE_HELPER_CONSTRUCTORS.has(callee.name as string);
+  }
+  if (callee.type === 'Identifier') return PURE_HELPER_GLOBALS.has(callee.name as string);
+  if (callee.type !== 'MemberExpression' && callee.type !== 'OptionalMemberExpression') {
+    return false;
+  }
+  // `fns[i]()` names nothing this side of runtime.
+  if (callee.computed) return false;
+  const method = (callee.property as AnyNode | undefined)?.name as string | undefined;
+  if (!method) return false;
+  const namespace = (unwrap(callee.object as AnyNode | undefined) ?? {}) as AnyNode;
+  if (
+    namespace.type === 'Identifier' &&
+    PURE_HELPER_NAMESPACES.has(namespace.name as string)
+  ) {
+    return true;
+  }
+  return PURE_HELPER_METHODS.has(method);
+}
+
+/**
+ * True when the subtree contains a call that may build graph structure — a
+ * factory, a nested composition, or any helper that wraps one.
+ *
+ * The walk does not stop at a pure helper, so `spec.items.map(() => Deployment(…))`
+ * still counts: `.map` is exempt, the `Deployment(…)` inside it is not.
+ */
+function branchBuildsStructure(node: AnyNode | undefined): boolean {
   if (!node) return false;
   let found = false;
   estraverse.traverse(node as never, {
@@ -523,19 +674,9 @@ function containsResourceRegistration(node: AnyNode | undefined): boolean {
       if (found) return estraverse.VisitorOption.Break;
       const current = raw as AnyNode;
       if (current.type !== 'CallExpression' && current.type !== 'NewExpression') return undefined;
-      const callee = current.callee as AnyNode;
-      // A factory/composition call is an Identifier callee (`ConfigMap(...)`)
-      // or a namespaced one (`simple.Deployment(...)`, `kubernetes.core.Service(...)`)
-      // whose final segment starts with an uppercase letter.
-      const name =
-        callee?.type === 'Identifier'
-          ? (callee.name as string)
-          : ((callee?.property as AnyNode)?.name as string | undefined);
-      if (name && /^[A-Z]/.test(name)) {
-        found = true;
-        return estraverse.VisitorOption.Break;
-      }
-      return undefined;
+      if (isPureHelperCall(current)) return undefined;
+      found = true;
+      return estraverse.VisitorOption.Break;
     },
     fallback: 'iteration',
   });
@@ -674,8 +815,8 @@ function analyzeCompositionSource(
       if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
         const test = node.test as AnyNode;
         const branchCarriesResources =
-          containsResourceRegistration(node.consequent as AnyNode) ||
-          containsResourceRegistration(node.alternate as AnyNode);
+          branchBuildsStructure(node.consequent as AnyNode) ||
+          branchBuildsStructure(node.alternate as AnyNode);
         if (!branchCarriesResources) return undefined;
         if (mentionsSpecLexically(test)) return undefined;
         const specPaths = specPathsOf(test, specParam, aliases);
@@ -685,15 +826,15 @@ function analyzeCompositionSource(
           location: `condition \`${excerpt(compositionSource, test)}\``,
           specPaths,
           detail:
-            'the branch decides which resources exist and reaches the spec only through a local ' +
-            'binding, so TypeKro could not compile it to a KRO includeWhen and the build-time ' +
-            'branch is baked into the RGD',
+            'the branch decides what the composition builds and reaches the spec only through a ' +
+            'local binding, so TypeKro could not compile it to a KRO includeWhen and the ' +
+            'build-time branch is baked into the RGD',
         });
         return undefined;
       }
 
       if (node.type === 'SwitchStatement') {
-        if (!containsResourceRegistration(node)) return undefined;
+        if (!branchBuildsStructure(node)) return undefined;
         const specPaths = specPathsOf(node.discriminant as AnyNode, specParam, aliases);
         if (specPaths.length === 0) return undefined;
         push({
