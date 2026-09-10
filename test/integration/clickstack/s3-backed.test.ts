@@ -21,11 +21,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
+import * as yaml from 'js-yaml';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import {
   createBunCompatibleBatchV1Api,
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
+import { DEFAULT_QUEUE_EXPORTER_NAMES } from '../../../src/factories/clickstack/utils/storage.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
   createAppsV1ApiClient,
@@ -366,6 +368,83 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     ).toBe(true);
   }, 300_000);
 
+  it('renders ONE overlay document, and the OpAMP supervisor merges it', async () => {
+    // THE #185 DEFECT, live. The overlay is one YAML document shared by the
+    // ingest pipelines and the queue's wiring, and both contribute a top-level
+    // `service` key. Concatenating the two texts declared `service` twice, so
+    // the supervisor rejected the WHOLE file on every poll —
+    //
+    //   Could not merge local config file: .../custom/custom.config.yaml
+    //   yaml: unmarshal errors: line 18: mapping key "service" already
+    //   defined at line 1
+    //
+    // — and the agent ran with NEITHER the pipelines NOR the queue while the
+    // Pod reported Ready off the supervisor's own health_check. Two halves are
+    // asserted here: the ConfigMap TypeKro renders is a single well-formed
+    // document, and the supervisor's own log shows it merged rather than
+    // rejected.
+    const coreApi = createCoreV1ApiClient(kubeConfig);
+    const configMap = await coreApi.readNamespacedConfigMap({
+      namespace: stackNs,
+      name: 'clickstack-otel-custom-config',
+    });
+    const overlay = configMap.data?.['custom.config.yaml'];
+    expect(overlay).toBeDefined();
+    console.log(`[overlay] rendered custom.config.yaml:\n${overlay}`);
+
+    // (a) EXACTLY ONE top-level `service`. Counted in the RAW TEXT, because
+    // `yaml.load` silently keeps the last of two duplicate keys while Go's
+    // yaml.v2 — what the supervisor uses — errors. This counts it the way the
+    // supervisor sees it.
+    const topLevelKeys = (overlay as string)
+      .split('\n')
+      .filter((line) => /^[A-Za-z_][^\s:]*:/.test(line))
+      .map((line) => line.slice(0, line.indexOf(':')));
+    expect(topLevelKeys.filter((key) => key === 'service').length).toBe(1);
+    expect(new Set(topLevelKeys).size).toBe(topLevelKeys.length);
+
+    // (b) Both contributions survived into that one document.
+    const parsed = yaml.load(overlay as string) as {
+      service?: { pipelines?: Record<string, { receivers?: string[] }>; extensions?: string[] };
+      extensions?: Record<string, unknown>;
+      exporters?: Record<string, { sending_queue?: { storage?: string } }>;
+    };
+    expect(Object.keys(parsed.service?.pipelines ?? {}).sort()).toEqual([
+      'logs/in',
+      'metrics',
+      'traces',
+    ]);
+    expect(parsed.service?.pipelines?.['logs/in']?.receivers).toContain('otlp/hyperdx');
+    expect(Object.keys(parsed.extensions ?? {})).toContain('file_storage/hyperdx');
+    expect(parsed.service?.extensions).toContain('file_storage/hyperdx');
+    for (const exporterName of DEFAULT_QUEUE_EXPORTER_NAMES) {
+      expect(parsed.exporters?.[exporterName]?.sending_queue?.storage).toBe('file_storage/hyperdx');
+    }
+
+    // (c) The supervisor's own verdict. It logs the merge failure on EVERY
+    // poll, so a clean log over the collector's whole life is the evidence
+    // that the file was accepted.
+    const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
+    const collectorName = pods.items.find((pod) => pod.metadata?.name?.includes('otel-collector'))
+      ?.metadata?.name;
+    expect(collectorName).toBeDefined();
+    const supervisorLog = await coreApi.readNamespacedPodLog({
+      namespace: stackNs,
+      name: collectorName as string,
+    });
+    const rejections = supervisorLog
+      .split('\n')
+      .filter((line) =>
+        /unmarshal errors|already defined|Could not merge local config file/i.test(line)
+      );
+    console.log(
+      `[supervisor] ${supervisorLog.split('\n').length} log lines, ` +
+        `${rejections.length} config-merge rejections`
+    );
+    if (rejections.length > 0) console.log(`[supervisor] ${rejections.slice(0, 5).join('\n')}`);
+    expect(rejections).toEqual([]);
+  }, 300_000);
+
   it('renders no retention CronJob for an immutable plain_rewritable ClickHouse', async () => {
     const batchApi = createBunCompatibleBatchV1Api(kubeConfig);
     const cronJobs = await batchApi.listNamespacedCronJob({ namespace: stackNs });
@@ -462,6 +541,86 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     // underlying object-storage disk — the point is that it is not `default`.
     expect(disks).toBe('s3');
   }, 900_000);
+
+  it('backs each queued exporter with a bbolt database on the PVC', async () => {
+    // THE PROOF THAT THE QUEUE IS REAL, and the one assertion the agent's
+    // effective configuration cannot be read for: the collector does not
+    // expose its merged config over the network, and its filesystem is not
+    // reachable from another Pod. What IS reachable is the file the
+    // `file_storage` extension creates — and the extension names its bbolt
+    // database after the component that opened it (`exporter_<name>_<signal>`),
+    // so the FILENAME is direct observational evidence of which exporter bound
+    // its `sending_queue` to file storage. That is a stronger statement than
+    // reading a config file: the binding is not merely configured, it ran.
+    //
+    // The overlay assertions above cover the rendered intent; this covers the
+    // effect. Together they close the silent-no-op hole: with the duplicate
+    // `service` key, the supervisor discarded the overlay and this directory
+    // stayed empty while the Pod reported Ready.
+    const queueDirectory = '/var/lib/otelcol/file_storage';
+    const claimName = `${stackName}-otel-queue`;
+
+    // The extension creates the database at startup, but the collector may
+    // still be rolling; poll rather than race it.
+    const deadline = Date.now() + 300_000;
+    let listing = '';
+    while (Date.now() < deadline) {
+      listing = (
+        await runTestPodAndReadLogs(
+          {
+            namespace: stackNs,
+            name: `queuedb-${crypto.randomUUID().slice(0, 6)}`,
+            image: 'busybox:1.37',
+            command: [
+              'sh',
+              '-c',
+              // `-a` so nothing is hidden, and dump the first 4 bytes of every
+              // regular file: bbolt stamps 0xED0CDAED as the page-0 magic.
+              `set -eu; ls -la ${queueDirectory}; ` +
+                `for f in ${queueDirectory}/*; do ` +
+                `  [ -f "$f" ] || continue; ` +
+                `  echo "MAGIC $f $(od -An -tx1 -N4 "$f" | tr -d ' \\n')"; ` +
+                'done',
+            ],
+            volumes: [{ name: 'queue', persistentVolumeClaim: { claimName } }],
+            volumeMounts: [{ name: 'queue', mountPath: queueDirectory }],
+            timeoutMs: 240_000,
+          },
+          kubeConfig
+        )
+      ).trim();
+      if (/^MAGIC /m.test(listing)) break;
+      await Bun.sleep(10_000);
+    }
+    console.log(`[queue] contents of ${queueDirectory}:\n${listing}`);
+
+    const magicLines = listing
+      .split('\n')
+      .filter((line) => line.startsWith('MAGIC '))
+      .map((line) => {
+        const [, path, magic] = line.split(' ');
+        return { file: (path ?? '').replace(`${queueDirectory}/`, ''), magic: magic ?? '' };
+      });
+    expect(magicLines.length).toBeGreaterThan(0);
+
+    // Every configured exporter has at least one database file named for it.
+    for (const exporterName of DEFAULT_QUEUE_EXPORTER_NAMES) {
+      const own = magicLines.filter((entry) => entry.file.startsWith(`exporter_${exporterName}`));
+      expect(
+        own.length,
+        `no file_storage database for exporter '${exporterName}' in ${JSON.stringify(
+          magicLines.map((entry) => entry.file)
+        )}`
+      ).toBeGreaterThan(0);
+      // …and it really is a bbolt database, not an empty placeholder. bolt
+      // writes its magic as a native-endian uint32, so accept either order
+      // rather than pinning the test to the runner's architecture.
+      for (const entry of own) {
+        // 0xED0CDAED: "ed0cdaed" big-endian, "edda0ced" little-endian.
+        expect(entry.magic).toMatch(/^(ed0cdaed|edda0ced)$/);
+      }
+    }
+  }, 600_000);
 
   it('keeps the telemetry queryable after the ClickHouse pod is deleted', async () => {
     const coreApi = createCoreV1ApiClient(kubeConfig);
@@ -690,6 +849,14 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     // extension). This test changes the template for real, requires the rollout
     // to finish, and requires it never to have two live collectors at once —
     // the last of which is exactly what a RollingUpdate surge would produce.
+    // PROGRESS MARKERS, deliberately. This case has the suite's longest wall
+    // clock, and when it stalled the runner printed nothing at all for it — a
+    // pass/fail line only appears once a case ends, so a silent hang is
+    // indistinguishable from a slow one. Every phase announces itself.
+    const step = (message: string) =>
+      console.log(`[rollout ${new Date().toISOString()}] ${message}`);
+    step('start');
+
     const coreApi = createCoreV1ApiClient(kubeConfig);
     const appsApi = createAppsV1ApiClient(kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
@@ -726,6 +893,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       ).trim();
     }
 
+    step('reading the collector Deployment');
     const deployments = await appsApi.listNamespacedDeployment({ namespace: stackNs });
     const collectorDeployment = deployments.items.find((deployment) =>
       deployment.metadata?.name?.includes('otel-collector')
@@ -742,11 +910,13 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
 
     const sentinel = `${queueDirectory}/typekro-rollout-sentinel`;
     const sentinelValue = crypto.randomUUID();
+    step('writing the queue sentinel through the claim');
     await onQueueVolume(
       'write',
       `set -eu; printf '%s' '${sentinelValue}' > ${sentinel}; ls -l ${queueDirectory}`
     );
 
+    step('reading the claim and the live collector Pods');
     const claimBefore = await coreApi.readNamespacedPersistentVolumeClaim({
       namespace: stackNs,
       name: claimName,
@@ -764,6 +934,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     // the Deployment's pod template. `add` on an existing object replaces it,
     // and the chart's own checksum annotation is deep-merged back in by Helm.
     const probeValue = crypto.randomUUID();
+    step(`patching the HelmRelease with rollout probe ${probeValue}`);
     await customApi.patchNamespacedCustomObject({
       group: 'helm.toolkit.fluxcd.io',
       version: 'v2',
@@ -780,6 +951,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     });
 
     const startedAt = Date.now();
+    step('waiting for Flux to roll the annotation into the pod template');
 
     // Flux has to run the upgrade before the Deployment's template changes.
     const templateDeadline = Date.now() + 900_000;
@@ -803,6 +975,8 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
     }
     expect(templateUpdated).toBe(true);
     const templateAt = Date.now();
+    step(`pod template carries the probe after ${Math.round((templateAt - startedAt) / 1000)}s`);
+    step('waiting for the rollout to complete');
 
     // (c) The rollout itself must FINISH — this is the assertion RollingUpdate
     // would fail. Equivalent to `kubectl rollout status`: the controller has
@@ -841,6 +1015,7 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       await Bun.sleep(5_000);
     }
     const finishedAt = Date.now();
+    step(`rollout loop finished (rolledOut=${rolledOut})`);
     console.log(
       `[rollout] helm upgrade reached the template in ${Math.round(
         (templateAt - startedAt) / 1000
@@ -876,6 +1051,8 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
 
     // …and the queue directory came through the rollout intact, which is what
     // makes the brief outage Recreate costs an acceptable trade.
+    step('reading the sentinel back through the claim');
     expect(await onQueueVolume('read', `set -eu; cat ${sentinel}`)).toBe(sentinelValue);
+    step('done');
   }, 2_400_000);
 });
