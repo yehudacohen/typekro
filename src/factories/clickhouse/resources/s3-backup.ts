@@ -126,6 +126,17 @@ function backupScript(onCluster: boolean): string {
   return [
     'set -eu',
     ...(onCluster ? clusterNameGuard() : []),
+    // DEFENCE IN DEPTH, mirroring `clusterNameGuard()`: the destination URL is
+    // composed and validated as a WHOLE at construction time (see
+    // `composeS3EndpointUrl` in `utils/s3-storage.ts`), and by that check it
+    // cannot contain a quote at all. But the value reaching this statement is an
+    // env var on a rendered CronJob, so the script escapes it the way
+    // ClickHouse escapes a quote in a string literal — doubling it — rather
+    // than trusting that the manifest was never edited. The pair's failure mode
+    // is a backup written to a nonsense path, never an injected statement; the
+    // construction-time validation is what makes the path correct, and this is
+    // only what keeps the LITERAL closed if that validation is ever weakened.
+    'ENDPOINT_SQL="$(printf \'%s\' "$BACKUP_ENDPOINT" | sed "s/\'/\'\'/g")"',
     'NAME="$(date -u +%Y%m%d%H%M%S)"',
     onCluster
       ? 'echo "Backing up database $CLICKHOUSE_DATABASE on cluster' +
@@ -135,11 +146,11 @@ function backupScript(onCluster: boolean): string {
     // (rendered by the storage compiler and matched by endpoint prefix), so the
     // statement itself carries none — nothing sensitive reaches query_log.
     // The database name is validated as a bare SQL identifier at resolve time;
-    // the cluster name is checked and escaped by the guard above.
+    // the cluster name and the endpoint are checked and escaped above.
     'clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT"' +
       ' --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD"' +
       ` --query "BACKUP DATABASE $CLICKHOUSE_DATABASE${onClusterClause} TO` +
-      " S3('$BACKUP_ENDPOINT$NAME')\"",
+      " S3('$ENDPOINT_SQL$NAME')\"",
     'echo "Backup $NAME complete"',
   ].join('\n');
 }

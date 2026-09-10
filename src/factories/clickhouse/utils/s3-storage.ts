@@ -133,15 +133,62 @@ export const DEFAULT_BACKUP_DATABASE = 'default';
 export const S3_BACKUP_CONFIG_SECTION = 'backup';
 
 /**
- * Characters a custom `storage.endpoint` may use.
+ * Characters a `storage.endpoint` — and the fully COMPOSED disk/backup URL —
+ * may use.
  *
  * The unreserved + reserved sets of RFC 3986 MINUS the characters that are an
  * injection somewhere downstream rather than a malformed URL — `&`, `'`, `"`,
  * `<`, `>` and a backslash. Whitespace and control characters are excluded by
  * construction, since the pattern is an allow-list; so is non-ASCII, which
  * means an internationalized host must be passed in its punycode form.
+ *
+ * Applied to the COMPOSED string, not only to the caller's `endpoint`: the
+ * bucket, region and prefix are appended AFTER the endpoint is checked, so an
+ * allow-list that only saw the endpoint would leave three other doors into the
+ * same `S3('<url>')` string literal. See {@link composeS3EndpointUrl}.
  */
 const ENDPOINT_URL_CHARACTERS = /^[A-Za-z0-9._~:/?#@!$()*+,;=%[\]-]+$/;
+
+/**
+ * Shape of an S3 bucket name, per AWS's general-purpose bucket naming rules.
+ *
+ * 3-63 characters of lowercase letters, digits, dots and hyphens, starting and
+ * ending alphanumeric. Two further AWS rules are not expressible in one
+ * readable pattern and are checked separately in {@link assertS3BucketName}:
+ * no `..`, and not IP-address-shaped.
+ *
+ * The length bound lives in the pattern (`{1,61}` between the two anchored
+ * alphanumerics) so the pattern alone is the whole character rule.
+ *
+ * @see https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+ */
+export const S3_BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+/** Bucket names AWS rejects as ambiguous with an IP address. */
+const IP_SHAPED_BUCKET_NAME = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$/;
+
+/**
+ * Region shape accepted for `storage.region`.
+ *
+ * Two lowercase letters (the geography — `us`, `eu`, `ap`, `cn`), one or more
+ * lowercase words, then a single digit: `us-east-2`, `eu-central-1`,
+ * `ap-southeast-3`, and the three-part partitions `us-gov-west-1` /
+ * `cn-north-1`. Deliberately a SHAPE rather than an enumeration of today's
+ * regions — a new region must not need a TypeKro release — but tight enough
+ * that the value cannot carry a quote, a dot or a slash into the composed URL,
+ * where it sits inside the host name.
+ */
+export const AWS_REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;
+
+/**
+ * Characters one segment of an object-key prefix may use.
+ *
+ * The RFC 3986 `pchar` set minus `&`, the quotes, the percent (a prefix is
+ * written into the URL verbatim, so a `%` there would be a half-finished
+ * escape) and the slash, which is the segment SEPARATOR and is handled by
+ * splitting rather than by the character class.
+ */
+const KEY_PREFIX_SEGMENT_CHARACTERS = /^[A-Za-z0-9._~!$()*+,;=:@-]+$/;
 
 /**
  * Minimum ClickHouse version this factory accepts for
@@ -326,6 +373,68 @@ export function assertS3PlainRewritableVersion(context: string, version: unknown
   }
 }
 
+/**
+ * Assert a value is a legal S3 bucket name.
+ *
+ * ONE validator for both bucket-shaped options — `storage.bucket` and the
+ * `storage.backup.bucket` override — because both are appended into the same
+ * composed URL and therefore into the same `BACKUP … TO S3('<url>')` string
+ * literal. A second, hand-inlined copy for the override is exactly how the
+ * override came to be unchecked in the first place.
+ *
+ * @param context - Entry point name for the error message
+ * @param field - Offending option path (e.g. `storage.backup.bucket`)
+ * @param value - The bucket name received
+ * @throws Error naming the option and the value when the name breaks AWS's
+ *   naming rules
+ */
+export function assertS3BucketName(context: string, field: string, value: unknown): void {
+  const invalid = (why: string): never => {
+    throw new Error(
+      `${context}: '${field}' must be a valid S3 bucket name — ${why} (got ` +
+        `${JSON.stringify(value)}). AWS requires 3-63 characters of lowercase letters, ` +
+        `digits, '.' and '-', starting and ending alphanumeric, with no '..' and no ` +
+        `IP-address shape. The name is appended into the disk endpoint URL that the ` +
+        `server's \`config.d/storage.xml\` and the \`BACKUP … TO S3('<url>')\` statement ` +
+        `both read, so it is constrained rather than escaped.`
+    );
+  };
+  if (typeof value !== 'string') invalid('it is not a string');
+  const name = value as string;
+  if (!S3_BUCKET_NAME_PATTERN.test(name)) {
+    invalid(`it does not match ${S3_BUCKET_NAME_PATTERN.source}`);
+  }
+  // Not expressible in the pattern above without making it unreadable, and
+  // both are real AWS rejections rather than TypeKro policy.
+  if (name.includes('..')) invalid("it contains '..'");
+  if (IP_SHAPED_BUCKET_NAME.test(name)) invalid('it is formatted as an IP address');
+}
+
+/**
+ * Assert a value is an AWS region identifier.
+ *
+ * The region is interpolated into the HOST of the composed endpoint
+ * (`<bucket>.s3.<region>.amazonaws.com`), so an unconstrained value reaches the
+ * XML and the backup SQL literal exactly like the bucket does.
+ *
+ * @param context - Entry point name for the error message
+ * @param field - Offending option path (e.g. `storage.region`)
+ * @param value - The region received
+ * @throws Error naming the option and the value when the region is not
+ *   {@link AWS_REGION_PATTERN}-shaped
+ */
+export function assertAwsRegion(context: string, field: string, value: unknown): void {
+  if (typeof value === 'string' && AWS_REGION_PATTERN.test(value)) return;
+  throw new Error(
+    `${context}: '${field}' must be an AWS region identifier matching ` +
+      `${AWS_REGION_PATTERN.source} — two lowercase letters, one or more lowercase words, ` +
+      `then a digit (e.g. 'us-east-2', 'eu-central-1', 'us-gov-west-1'); got ` +
+      `${JSON.stringify(value)}. The value becomes part of the endpoint HOST ` +
+      `(<bucket>.s3.<region>.amazonaws.com), which is rendered into the server's storage ` +
+      `XML and into the \`BACKUP … TO S3('<url>')\` string literal.`
+  );
+}
+
 // ============================================================================
 // Storage resolution
 // ============================================================================
@@ -337,26 +446,89 @@ export function isS3Storage(
   return (storage as { mode?: string }).mode === 's3';
 }
 
-function normalizePrefix(context: string, prefix: string | undefined): string {
+/**
+ * Normalize and VALIDATE an object-key prefix.
+ *
+ * Takes the option path as `field` because both `storage.prefix` and
+ * `storage.backup.prefix` come through here and the error has to name the one
+ * the caller actually set.
+ *
+ * The character rule is an allow-list per segment, for the same reason the
+ * endpoint has one: the prefix is appended verbatim into the composed URL that
+ * the `BACKUP … TO S3('<url>')` literal is built from. `..` is refused
+ * outright — as a path traversal it is meaningless against an S3 key namespace
+ * but it is exactly the shape that walks a backup out of its own prefix if the
+ * value is ever handed to something that resolves paths (the prune step's
+ * `aws s3 rm --recursive`, for one).
+ */
+function normalizePrefix(context: string, field: string, prefix: string | undefined): string {
   if (prefix === undefined) return '';
+  const invalid = (why: string): never => {
+    throw new Error(
+      `${context}: '${field}' must be a safe object-key prefix — ${why} (got ` +
+        `${JSON.stringify(prefix)}). Each '/'-separated segment must match ` +
+        `${KEY_PREFIX_SEGMENT_CHARACTERS.source}: no quotes, whitespace, control ` +
+        `characters, '&', '%' or '..'. The prefix is appended verbatim into the endpoint ` +
+        `URL that the server's storage XML and the \`BACKUP … TO S3('<url>')\` string ` +
+        `literal are both built from.`
+    );
+  };
+  if (typeof prefix !== 'string') invalid('it is not a string');
   const trimmed = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
   if (trimmed.includes('//')) {
     throw new Error(
-      `${context}: 'storage.prefix' must not contain empty path segments — got ` +
+      `${context}: '${field}' must not contain empty path segments — got ` +
         `${JSON.stringify(prefix)}.`
     );
+  }
+  if (trimmed === '') return '';
+  if (trimmed.includes('..')) invalid("it contains '..'");
+  for (const segment of trimmed.split('/')) {
+    if (segment === '.') invalid("it contains a '.' segment");
+    if (!KEY_PREFIX_SEGMENT_CHARACTERS.test(segment)) {
+      invalid(`the segment ${JSON.stringify(segment)} uses a character no key prefix may`);
+    }
   }
   return trimmed;
 }
 
-function buildEndpointUrl(
+/**
+ * Compose the disk/backup endpoint URL, then validate what was composed.
+ *
+ * ORDER IS THE POINT. Every component reaching this function is already
+ * checked on its own — bucket ({@link assertS3BucketName}), region
+ * ({@link assertAwsRegion}), prefix ({@link normalizePrefix}), and the
+ * `endpoint` right below — and each of those checks exists so the error can
+ * name the OPTION the caller set. But per-component checks are a set of doors
+ * that has to be complete, and the string that actually matters is the one the
+ * runtime sees: the `<endpoint>` text of `config.d/storage.xml` and the
+ * `BACKUP … TO S3('<url>')` literal the CronJob builds, where a `'` is extra
+ * SQL rather than a bad URL. So the composed result is re-checked against the
+ * same RFC 3986 allow-list as a BACKSTOP — a component check that is ever
+ * loosened, or a component that is ever added, cannot open that door quietly.
+ *
+ * @param context - Entry point name for the error message
+ * @param field - Option path prefix for the error (`storage` or
+ *   `storage.backup`), so a bad backup override does not report `storage.*`
+ * @param bucket - Validated bucket name
+ * @param prefix - Normalized, validated key prefix ('' for the bucket root)
+ * @param region - Validated region; required when `endpoint` is absent
+ * @param endpoint - Custom S3-compatible base URL, if any
+ * @returns The composed URL, always with a trailing slash
+ * @throws Error when the endpoint is not an absolute http(s) URL, when the
+ *   region is missing for AWS, or when the COMPOSED URL carries a character
+ *   the allow-list forbids
+ */
+export function composeS3EndpointUrl(
   context: string,
+  field: string,
   bucket: string,
   prefix: string,
   region: string | undefined,
   endpoint: string | undefined
 ): string {
   const suffix = prefix === '' ? '' : `${prefix}/`;
+  let composed: string;
   if (endpoint !== undefined) {
     if (!/^https?:\/\//.test(endpoint)) {
       throw new Error(
@@ -366,13 +538,9 @@ function buildEndpointUrl(
           `so do not include them here.`
       );
     }
-    // Beyond "is a URL": an ALLOW-LIST of the characters RFC 3986 actually
-    // permits, because this value lands in two places with two different
-    // injection stories — `<endpoint>` text in `config.d/storage.xml` (escaped
-    // on the way out, but a raw newline there is still a silent value change),
-    // and the `BACKUP … TO S3('<url>')` string literal the backup CronJob
-    // builds, where a quote is extra SQL rather than a bad URL. Constraining
-    // the input is cheaper to reason about than escaping correctly for both.
+    // Checked on its own as well as in the composed string, so the message can
+    // say `storage.endpoint` instead of pointing at a URL the caller never
+    // typed.
     if (!ENDPOINT_URL_CHARACTERS.test(endpoint)) {
       throw new Error(
         `${context}: 'storage.endpoint' must use only URL characters matching ` +
@@ -385,16 +553,30 @@ function buildEndpointUrl(
     }
     // Path-style addressing: MinIO and most S3-compatible services serve
     // virtual-hosted-style only behind extra DNS configuration.
-    return `${endpoint.replace(/\/+$/, '')}/${bucket}/${suffix}`;
+    composed = `${endpoint.replace(/\/+$/, '')}/${bucket}/${suffix}`;
+  } else {
+    if (region === undefined || region.trim() === '') {
+      throw new Error(
+        `${context}: 'storage.region' is required for AWS S3 (it forms the disk endpoint ` +
+          `https://<bucket>.s3.<region>.amazonaws.com/<prefix>/). Set 'storage.endpoint' ` +
+          `instead when targeting a custom S3-compatible service such as MinIO.`
+      );
+    }
+    composed = `https://${bucket}.s3.${region}.amazonaws.com/${suffix}`;
   }
-  if (region === undefined || region.trim() === '') {
+
+  if (!ENDPOINT_URL_CHARACTERS.test(composed)) {
     throw new Error(
-      `${context}: 'storage.region' is required for AWS S3 (it forms the disk endpoint ` +
-        `https://<bucket>.s3.<region>.amazonaws.com/<prefix>/). Set 'storage.endpoint' ` +
-        `instead when targeting a custom S3-compatible service such as MinIO.`
+      `${context}: the composed '${field}' endpoint URL ${JSON.stringify(composed)} must use ` +
+        `only URL characters matching ${ENDPOINT_URL_CHARACTERS.source} — no whitespace, ` +
+        `quotes, angle brackets, '&', backslash or control characters. Check ` +
+        `'${field}.bucket', '${field}.prefix', 'storage.region' and 'storage.endpoint': the ` +
+        `composed value is what lands in the server's storage XML and in the ` +
+        `\`BACKUP … TO S3('<url>')\` string literal, so it is validated as a whole and not ` +
+        `only component by component.`
     );
   }
-  return `https://${bucket}.s3.${region}.amazonaws.com/${suffix}`;
+  return composed;
 }
 
 function resolveAuth(context: string, auth: unknown): ResolvedClickHouseS3Auth {
@@ -484,7 +666,20 @@ function resolveBackup(
     );
   }
   const bucket = backup.bucket ?? diskBucket;
-  const prefix = normalizePrefix(context, backup.prefix ?? DEFAULT_BACKUP_PREFIX);
+  // The OVERRIDE is validated with the same validator as the primary bucket
+  // (`storage.bucket`), naming whichever option the value actually came from.
+  // It is appended into the composed backup URL, so "the disk bucket was
+  // checked" says nothing about it.
+  assertS3BucketName(
+    context,
+    backup.bucket === undefined ? 'storage.bucket' : 'storage.backup.bucket',
+    bucket
+  );
+  const prefix = normalizePrefix(
+    context,
+    'storage.backup.prefix',
+    backup.prefix ?? DEFAULT_BACKUP_PREFIX
+  );
   if (prefix === '') {
     throw new Error(
       `${context}: 'storage.backup.prefix' must be a non-empty key prefix — backups must not ` +
@@ -507,7 +702,7 @@ function resolveBackup(
     bucket,
     prefix,
     database,
-    endpointUrl: buildEndpointUrl(context, bucket, prefix, region, endpoint),
+    endpointUrl: composeS3EndpointUrl(context, 'storage.backup', bucket, prefix, region, endpoint),
     ...(retentionDays !== undefined && { retentionDays }),
     ...(secretRef !== undefined &&
       typeof secretRef.name === 'string' && {
@@ -576,11 +771,12 @@ export function resolveClickHouseStorage(
   if (typeof storage.bucket !== 'string' || storage.bucket.trim() === '') {
     throw new Error(`${context}: 'storage.bucket' is required in S3 mode.`);
   }
-  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(storage.bucket)) {
-    throw new Error(
-      `${context}: 'storage.bucket' must be a valid S3 bucket name (lowercase letters, ` +
-        `digits, '.' and '-', 3-63 characters) — got ${JSON.stringify(storage.bucket)}.`
-    );
+  assertS3BucketName(context, 'storage.bucket', storage.bucket);
+  // Validated whenever it is set, not only on the AWS path: it also travels to
+  // the prune container as `AWS_REGION`, and `storage.endpoint` being present
+  // must not turn the region into an unchecked field.
+  if (storage.region !== undefined) {
+    assertAwsRegion(context, 'storage.region', storage.region);
   }
   if (storage.cache === undefined || typeof storage.cache.size !== 'string') {
     throw new Error(
@@ -601,7 +797,7 @@ export function resolveClickHouseStorage(
     assertS3PlainRewritableVersion(context, version);
   }
 
-  const prefix = normalizePrefix(context, storage.prefix);
+  const prefix = normalizePrefix(context, 'storage.prefix', storage.prefix);
   const cacheMaxSizeBytes = parseByteQuantity(context, 'storage.cache.size', storage.cache.size);
   const localBytes =
     typeof (storage as { size?: unknown }).size === 'string'
@@ -635,8 +831,9 @@ export function resolveClickHouseStorage(
     cacheMaxSizeBytes,
     cachePath: storage.cache.path ?? DEFAULT_S3_CACHE_PATH,
     auth: resolveAuth(context, storage.auth),
-    endpointUrl: buildEndpointUrl(
+    endpointUrl: composeS3EndpointUrl(
       context,
+      'storage',
       storage.bucket,
       prefix,
       storage.region,

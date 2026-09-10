@@ -178,6 +178,21 @@ await objectStore.factory('kro').deploy({
 });
 ```
 
+### What the S3 coordinates must look like
+
+Every component of the object-storage location is validated at construction, and the *composed* URL is validated again as a whole. The reason is the destination's second life: the same string is the `<endpoint>` text of `config.d/storage.xml` **and** the `BACKUP … TO S3('<url>')` string literal the backup CronJob builds, where a `'` is not a bad URL but extra SQL. Validating components individually is a set of doors that has to stay complete, so the composed result is re-checked too.
+
+| Option | Rule |
+| --- | --- |
+| `bucket`, `backup.bucket` | AWS bucket naming: 3-63 characters of lowercase letters, digits, `.` and `-`, starting and ending alphanumeric, no `..`, not IP-address-shaped |
+| `region` | `^[a-z]{2}(-[a-z]+)+-\d$` — `us-east-2`, `eu-central-1`, `us-gov-west-1`. A shape, not an enumeration, so a new region needs no release; an availability *zone* (`us-east-1a`) is not a region and is rejected |
+| `prefix`, `backup.prefix` | `/`-separated segments of `[A-Za-z0-9._~!$()*+,;=:@-]` — no quotes, whitespace, control characters, `&`, `%` or `..` |
+| `endpoint` | An absolute `http(s)` URL made only of RFC 3986 URL characters (no whitespace, quotes, angle brackets, `&` or backslash). An internationalized host must be given in punycode |
+| `policyName` | A bare ClickHouse identifier — it is rendered as an XML *element name*, where escaping does not exist |
+| `backup.database` | A bare SQL identifier — it is interpolated into `BACKUP DATABASE <db>` |
+
+Errors name the option you set, including `storage.backup.bucket` / `storage.backup.prefix` rather than the disk's own.
+
 ### Why S3 configuration is build-time
 
 `storage.mode` and everything under it compiles into a `storage_configuration` XML document embedded in the CHI's `configuration.files`, **and** decides which resources exist (the IRSA ServiceAccount, the backup CronJob). That is the same class of choice `zones` already occupies, so it lives in the constructor and a schema ref there throws loudly rather than serializing a `__KUBERNETES_REF__` marker into server configuration.

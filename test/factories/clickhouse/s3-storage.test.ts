@@ -10,7 +10,10 @@ import { describe, expect, it } from 'bun:test';
 import { clickHouseInstallation } from '../../../src/factories/clickhouse/resources/installation.js';
 import { clickHouseS3BackupCronJob } from '../../../src/factories/clickhouse/resources/s3-backup.js';
 import {
+  assertAwsRegion,
+  assertS3BucketName,
   CHI_STORAGE_CONFIG_FILE,
+  composeS3EndpointUrl,
   MERGE_TREE_STORAGE_POLICY_SETTING,
   MIN_S3_PLAIN_REWRITABLE_VERSION,
   parseByteQuantity,
@@ -28,7 +31,11 @@ import {
   assertClickHouseIdentifier,
   CLICKHOUSE_IDENTIFIER_MAX_LENGTH,
 } from '../../../src/factories/clickhouse/utils/validation.js';
-import { xmlAttr, xmlText } from '../../../src/factories/clickhouse/utils/xml.js';
+import {
+  assertXmlRepresentable,
+  xmlAttr,
+  xmlText,
+} from '../../../src/factories/clickhouse/utils/xml.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
 /** A fake schema-proxy ref, shaped like the analyzer's KubernetesRef marker. */
@@ -171,6 +178,185 @@ describe('resolveClickHouseStorage', () => {
         bucket: fakeRef('spec.bucket') as string,
       })
     ).toThrow(/contains a schema\/resource reference/);
+  });
+});
+
+/**
+ * The COMPOSED endpoint URL is the value that reaches the runtime.
+ *
+ * Both places it lands read the whole string, not the components: the
+ * `<endpoint>` text of `config.d/storage.xml`, and the
+ * `BACKUP … TO S3('<url>')` string literal the CronJob builds — where a `'`
+ * terminates the literal and everything after it is extra SQL. An allow-list
+ * that only saw `storage.endpoint` therefore left three other doors into that
+ * literal open: `bucket`, `region` and `prefix` are appended AFTER it, and the
+ * backup section can override two of them again.
+ */
+describe('composed endpoint URL validation', () => {
+  /**
+   * One value per injection class in the finding: the quote that terminates
+   * the SQL literal, whitespace, a parent-directory hop, a control character,
+   * and the newline that is a silent value change in XML text.
+   */
+  const INJECTIONS = ["x'y", 'x y', 'x/../y', 'x\u0001y', 'x\ny'];
+
+  /**
+   * The same list minus `..`, which is an ordinary (if pointless) URL path
+   * construct. It is forbidden in a KEY PREFIX -- there it is the shape that
+   * walks a backup out of its own prefix -- not in the service base URL.
+   */
+  const ENDPOINT_INJECTIONS = INJECTIONS.filter((value) => value !== 'x/../y');
+
+  function resolveWith(overrides: Record<string, unknown>) {
+    return () => resolveClickHouseStorage('test', { size: '100Gi', ...IRSA_S3, ...overrides });
+  }
+
+  it('rejects every injection class in storage.bucket, naming the option', () => {
+    for (const value of INJECTIONS) {
+      expect(resolveWith({ bucket: value })).toThrow(/'storage\.bucket'/);
+    }
+  });
+
+  it('rejects every injection class in storage.prefix, naming the option', () => {
+    for (const value of INJECTIONS) {
+      expect(resolveWith({ prefix: value })).toThrow(/'storage\.prefix'/);
+    }
+  });
+
+  it('rejects every injection class in storage.region, naming the option', () => {
+    for (const value of INJECTIONS) {
+      expect(resolveWith({ region: value })).toThrow(
+        /'storage\.region' must be an AWS region identifier/
+      );
+    }
+  });
+
+  it('rejects every injection class in the storage.backup.bucket OVERRIDE', () => {
+    // The override was the actual hole: `storage.bucket` was checked and this
+    // value was appended into the same composed URL unchecked.
+    for (const value of INJECTIONS) {
+      expect(resolveWith({ backup: { schedule: '0 2 * * *', bucket: value } })).toThrow(
+        /'storage\.backup\.bucket'/
+      );
+    }
+  });
+
+  it('rejects every injection class in storage.backup.prefix', () => {
+    for (const value of INJECTIONS) {
+      expect(resolveWith({ backup: { schedule: '0 2 * * *', prefix: value } })).toThrow(
+        /'storage\.backup\.prefix'/
+      );
+    }
+  });
+
+  it('rejects the same injections in a custom endpoint, before composing', () => {
+    for (const value of ENDPOINT_INJECTIONS) {
+      expect(
+        resolveWith({
+          ...SECRET_S3,
+          endpoint: `http://minio:9000/${value}`,
+          backup: { schedule: '0 2 * * *' },
+        })
+      ).toThrow(/'storage\.endpoint'/);
+    }
+  });
+
+  it('reports the offending option, not the composed URL, for a bad component', () => {
+    // A per-component error is the useful one: the caller never typed the
+    // composed string, so an error quoting only that is a worse message.
+    expect(resolveWith({ backup: { schedule: '0 2 * * *', prefix: "b'c" } })).toThrow(
+      /'storage\.backup\.prefix' must be a safe object-key prefix/
+    );
+  });
+
+  it('rejects the AWS bucket names the naming rules forbid', () => {
+    for (const bucket of ['ab', 'x'.repeat(64), 'a..b', '192.168.0.1', '-lead', 'trail-']) {
+      expect(resolveWith({ bucket })).toThrow(/'storage\.bucket' must be a valid S3 bucket name/);
+    }
+  });
+
+  it('accepts the region shapes AWS actually uses', () => {
+    for (const region of ['us-east-2', 'eu-central-1', 'ap-southeast-3', 'us-gov-west-1']) {
+      const resolved = resolveClickHouseStorage('test', { size: '100Gi', ...IRSA_S3, region });
+      if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+      expect(resolved.endpointUrl).toContain(`.s3.${region}.amazonaws.com/`);
+    }
+  });
+
+  it('accepts a valid composition and pins the composed URLs', () => {
+    const resolved = resolveClickHouseStorage('test', {
+      size: '100Gi',
+      ...IRSA_S3,
+      prefix: 'clickhouse/data',
+      backup: { schedule: '0 2 * * *', bucket: 'example-backups', prefix: 'nightly/full' },
+    });
+    if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+
+    expect(resolved.endpointUrl).toBe(
+      'https://example-observability.s3.us-east-2.amazonaws.com/clickhouse/data/'
+    );
+    expect(resolved.backup?.endpointUrl).toBe(
+      'https://example-backups.s3.us-east-2.amazonaws.com/nightly/full/'
+    );
+  });
+
+  it('gives the CronJob its BACKUP_ENDPOINT from the validated composed value', () => {
+    const resolved = resolveClickHouseStorage('test', {
+      size: '100Gi',
+      ...IRSA_S3,
+      backup: { schedule: '0 2 * * *', bucket: 'example-backups' },
+    });
+    if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+    const job = clickHouseS3BackupCronJob({
+      name: 'test-ch',
+      namespace: 'observability',
+      version: '25.12.5',
+      storage: resolved,
+      nativePort: 9000,
+    });
+    const env = job.spec.jobTemplate.spec?.template.spec?.containers?.[0]?.env ?? [];
+    const composed = resolved.backup?.endpointUrl ?? '';
+
+    // The env var the `S3('…')` literal is built from IS the composed value
+    // that the allow-list checked — not a value re-assembled in the script.
+    expect(env.find((entry) => entry.name === 'BACKUP_ENDPOINT')?.value).toBe(composed);
+    expect(composed).toBe('https://example-backups.s3.us-east-2.amazonaws.com/backups/');
+  });
+
+  it('validates the COMPOSED string, not only the components', () => {
+    // The backstop, tested the only way it can be: `composeS3EndpointUrl` is
+    // exported and every per-component check lives OUTSIDE it, so a caller
+    // (including a future component this module forgets to check) can hand it
+    // a value the options path would have refused. The composed allow-list is
+    // what keeps that from reaching the `S3('<url>')` literal.
+    expect(() =>
+      composeS3EndpointUrl(
+        'test',
+        'storage.backup',
+        "evil'bucket",
+        'backups',
+        'us-east-2',
+        undefined
+      )
+    ).toThrow(/the composed 'storage\.backup' endpoint URL/);
+    expect(() =>
+      composeS3EndpointUrl('test', 'storage', 'ok-bucket', "a'b", 'us-east-2', undefined)
+    ).toThrow(/must use only URL characters/);
+    // And the valid composition passes it through untouched.
+    expect(
+      composeS3EndpointUrl('test', 'storage', 'ok-bucket', 'a/b', 'us-east-2', undefined)
+    ).toBe('https://ok-bucket.s3.us-east-2.amazonaws.com/a/b/');
+  });
+
+  it('is reusable as a standalone bucket assertion', () => {
+    expect(() => assertS3BucketName('ctx', 'field', 'ok-bucket')).not.toThrow();
+    expect(() => assertS3BucketName('ctx', 'field', "b'c")).toThrow(
+      /ctx: 'field' must be a valid S3 bucket name/
+    );
+    expect(() => assertAwsRegion('ctx', 'field', 'us-east-1')).not.toThrow();
+    expect(() => assertAwsRegion('ctx', 'field', 'US-EAST-1')).toThrow(
+      /ctx: 'field' must be an AWS region identifier/
+    );
   });
 });
 
@@ -542,9 +728,25 @@ describe('clickHouseS3BackupCronJob', () => {
       // Macros in the destination would produce N independent per-shard
       // backups needing N restore statements; ON CLUSTER produces one.
       const { text } = script({ onCluster: true, clusterName: 'cluster' });
-      expect(text).toContain("S3('$BACKUP_ENDPOINT$NAME')");
+      // The escaped copy of the endpoint, never the raw env var — see the
+      // endpoint-guard test below.
+      expect(text).toContain("S3('$ENDPOINT_SQL$NAME')");
       expect(text).not.toContain('{shard}');
       expect(text).not.toContain('{replica}');
+    });
+
+    it('escapes the destination endpoint INSIDE the container too', () => {
+      // Same argument as the cluster guard: `composeS3EndpointUrl` validates
+      // the COMPOSED url at construction time so it cannot carry a quote,
+      // but the value reaching the statement is an env var on a rendered
+      // CronJob. The doubling keeps the string literal closed if that
+      // validation is ever weakened; it is never what makes the URL correct.
+      for (const overrides of [{}, { onCluster: true, clusterName: 'cluster' }]) {
+        const { text } = script(overrides);
+        expect(text).toContain(`ENDPOINT_SQL="$(printf '%s' "$BACKUP_ENDPOINT" | sed "s/'/''/g")"`);
+        // The raw env var survives only in the human-readable echo.
+        expect(text).not.toContain("S3('$BACKUP_ENDPOINT");
+      }
     });
 
     it('still carries no credentials in the ON CLUSTER statement', () => {
@@ -752,6 +954,76 @@ describe('XML escaping of caller-supplied text', () => {
     expect(xmlAttr('a"b')).toBe('a&quot;b');
     expect(xmlAttr('&#9;')).toBe('&amp;#9;');
     expect(xmlAttr(S3_ACCESS_KEY_ID_ENV)).toBe(S3_ACCESS_KEY_ID_ENV);
+  });
+
+  /**
+   * The characters escaping cannot save you from.
+   *
+   * XML 1.0's `Char` production excludes these outright, and a numeric
+   * character reference to an excluded code point is itself a well-formedness
+   * error, so there is no encoding that makes them data. Escaping a NUL
+   * therefore produces a document `xmllint` and ClickHouse's own config parser
+   * both reject -- a build that "succeeded" and a server that will not boot.
+   * The only correct answer is to refuse the value at construction time.
+   */
+  describe('characters XML cannot represent', () => {
+    const FORBIDDEN: readonly (readonly [string, string, string])[] = [
+      ['NUL', '\u0000', 'U+0000'],
+      ['a C0 control', '\u0001', 'U+0001'],
+      ['a vertical tab', '\u000B', 'U+000B'],
+      ['a form feed', '\u000C', 'U+000C'],
+      ['a C1-range control', '\u001F', 'U+001F'],
+      ['the #xFFFE non-character', '\uFFFE', 'U+FFFE'],
+      ['the #xFFFF non-character', '\uFFFF', 'U+FFFF'],
+      ['a lone high surrogate', '\uD800', 'U+D800'],
+      ['a lone low surrogate', '\uDC00', 'U+DC00'],
+    ];
+
+    it('REFUSES them in text position, naming the code point and index', () => {
+      for (const [, character, codePoint] of FORBIDDEN) {
+        expect(() => xmlText(`/mnt/a${character}b`)).toThrow(codePoint);
+        // The index makes the message debuggable for an invisible character.
+        expect(() => xmlText(`/mnt/a${character}b`)).toThrow('at index 6');
+      }
+    });
+
+    it('REFUSES them in attribute position too', () => {
+      for (const [, character, codePoint] of FORBIDDEN) {
+        expect(() => xmlAttr(`a${character}b`)).toThrow(codePoint);
+      }
+    });
+
+    it('refuses a cache path carrying a NUL, rather than rendering it', () => {
+      // The concrete failure the check exists for: a NUL survives escaping
+      // unchanged and lands in `<path>`, so the server rejects its own config.
+      const resolved = resolveClickHouseStorage('test', {
+        size: '100Gi',
+        ...IRSA_S3,
+        cache: { size: '10Gi', path: '/var/lib/clickhouse/disks/s3\u0000/' },
+      });
+      if (resolved.mode !== 's3') throw new Error('expected S3 mode');
+      expect(() => renderStorageConfigurationXml(resolved)).toThrow(/U\+0000/);
+    });
+
+    it('ACCEPTS tab, LF and CR, still escaping them as before', () => {
+      expect(xmlText('a\tb')).toBe('a\tb');
+      expect(xmlText('a\nb')).toBe('a\nb');
+      expect(xmlText('a\rb')).toBe('a&#13;b');
+      expect(xmlAttr('a\tb')).toBe('a&#9;b');
+      expect(xmlAttr('a\nb')).toBe('a&#10;b');
+      expect(xmlAttr('a\rb')).toBe('a&#13;b');
+    });
+
+    it('ACCEPTS a well-formed surrogate PAIR — one astral character', () => {
+      // `[#x10000-#x10FFFF]` is legal `Char`; only a LONE surrogate is not.
+      expect(xmlText('a\u{1F600}b')).toBe('a\u{1F600}b');
+      expect(() => assertXmlRepresentable('a\u{10FFFF}b')).not.toThrow();
+    });
+
+    it('is reusable as a standalone assertion', () => {
+      expect(() => assertXmlRepresentable('/plain/path/')).not.toThrow();
+      expect(() => assertXmlRepresentable('bad\u0000')).toThrow(/U\+0000/);
+    });
   });
 
   it('renders the whole document byte for byte for valid input', () => {

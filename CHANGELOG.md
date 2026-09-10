@@ -48,6 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment variables that the rendered configuration reads through `from_env`,
   so no key material appears in the ClickHouseInstallation spec.
 
+  Every component of the object-storage location is validated at construction —
+  `bucket` and the `backup.bucket` override against AWS's bucket naming rules
+  through one shared validator, `region` against an AWS region shape, `prefix`
+  and `backup.prefix` against a safe path-segment allow-list — and the fully
+  COMPOSED endpoint URL is then validated again as a whole against the RFC 3986
+  character allow-list. The composed string is what the runtime sees, in the
+  `<endpoint>` element of `config.d/storage.xml` and in the
+  `BACKUP … TO S3('<url>')` literal the CronJob builds, so it is checked as a
+  unit rather than only component by component; the script's own quote-doubling
+  stays as defence in depth. Values that XML 1.0 cannot represent at all — NUL
+  and the other C0 controls, lone surrogates, the `#xFFFE`/`#xFFFF`
+  non-characters — are refused when the configuration is built, naming the
+  offending index and code point, because escaping cannot encode them and a
+  rendered document containing one is rejected by ClickHouse's own parser at
+  startup.
+
 - ClickStack bootstraps may now declare the external ClickHouse's storage story.
   Per-signal `retention` renders an idempotent CronJob applying `TTL … DELETE` to
   the OTel tables the gateway collector creates, skipping tables that have not
