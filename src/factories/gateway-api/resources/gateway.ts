@@ -7,7 +7,7 @@
  */
 
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import {
   GATEWAY_API_REFERENCE_GRANT_VERSION,
@@ -61,7 +61,7 @@ export interface GatewayApiClusterResourceConfig<TSpec extends object> {
 function namespacedDefinition<TSpec extends object>(
   apiVersion: string,
   kind: string,
-  config: GatewayApiNamespacedResourceConfig<TSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<TSpec>>
 ) {
   return {
     apiVersion,
@@ -72,7 +72,7 @@ function namespacedDefinition<TSpec extends object>(
       ...(config.labels ? { labels: { ...config.labels } } : {}),
       ...(config.annotations ? { annotations: { ...config.annotations } } : {}),
     },
-    spec: config.spec,
+    spec: config.spec as TSpec,
     ...(config.id ? { id: config.id } : {}),
   };
 }
@@ -92,7 +92,7 @@ function namespacedDefinition<TSpec extends object>(
  * ```
  */
 export function gatewayClass<TController extends string = string>(
-  config: GatewayApiClusterResourceConfig<GatewayClassSpec<TController>>
+  config: Composable<GatewayApiClusterResourceConfig<GatewayClassSpec<TController>>>
 ): Enhanced<GatewayClassSpec<TController>, AcceptedResourceStatus> {
   return createResource<GatewayClassSpec<TController>, AcceptedResourceStatus>(
     {
@@ -103,7 +103,7 @@ export function gatewayClass<TController extends string = string>(
         ...(config.labels ? { labels: { ...config.labels } } : {}),
         ...(config.annotations ? { annotations: { ...config.annotations } } : {}),
       },
-      spec: config.spec,
+      spec: config.spec as GatewayClassSpec<TController>,
       ...(config.id ? { id: config.id } : {}),
     },
     { scope: 'cluster' }
@@ -117,7 +117,7 @@ export function gatewayClass<TController extends string = string>(
  * for the current generation.
  */
 export function gateway(
-  config: GatewayApiNamespacedResourceConfig<GatewaySpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<GatewaySpec>>
 ): Enhanced<GatewaySpec, GatewayObservedStatus> {
   return createResource<GatewaySpec, GatewayObservedStatus>(
     namespacedDefinition(GATEWAY_API_VERSION, 'Gateway', config),
@@ -132,7 +132,7 @@ export function gateway(
  * reports `ResolvedRefs=False`.
  */
 export function httpRoute(
-  config: GatewayApiNamespacedResourceConfig<HTTPRouteSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<HTTPRouteSpec>>
 ): Enhanced<HTTPRouteSpec, RouteObservedStatus> {
   return createResource<HTTPRouteSpec, RouteObservedStatus>(
     namespacedDefinition(GATEWAY_API_VERSION, 'HTTPRoute', config),
@@ -146,7 +146,7 @@ export function httpRoute(
  * Shares the route readiness contract with {@link httpRoute}.
  */
 export function grpcRoute(
-  config: GatewayApiNamespacedResourceConfig<GRPCRouteSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<GRPCRouteSpec>>
 ): Enhanced<GRPCRouteSpec, RouteObservedStatus> {
   return createResource<GRPCRouteSpec, RouteObservedStatus>(
     namespacedDefinition(GATEWAY_API_VERSION, 'GRPCRoute', config),
@@ -162,7 +162,7 @@ export function grpcRoute(
  * than waiting forever for conditions that will never appear.
  */
 export function referenceGrant(
-  config: GatewayApiNamespacedResourceConfig<ReferenceGrantSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<ReferenceGrantSpec>>
 ): Enhanced<ReferenceGrantSpec, Record<string, never>> {
   return createResource<ReferenceGrantSpec, Record<string, never>>(
     namespacedDefinition(GATEWAY_API_REFERENCE_GRANT_VERSION, 'ReferenceGrant', config),
@@ -189,7 +189,7 @@ export interface BackendTLSPolicyConfig
  * terminal because a rejected policy will not self-heal.
  */
 export function backendTLSPolicy(
-  config: BackendTLSPolicyConfig
+  config: Composable<BackendTLSPolicyConfig>
 ): Enhanced<BackendTLSPolicySpec, GatewayPolicyObservedStatus> {
   return createResource<BackendTLSPolicySpec, GatewayPolicyObservedStatus>(
     namespacedDefinition(GATEWAY_API_TLS_POLICY_VERSION, 'BackendTLSPolicy', config),

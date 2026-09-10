@@ -11,7 +11,7 @@
  * `ExtensionRef` filter — see {@link traefikMiddlewareFilter}.
  */
 
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   gateway as gatewayApiGateway,
   gatewayClass as gatewayApiGatewayClass,
@@ -59,7 +59,7 @@ export type TraefikGatewayClassConfig = Omit<
  * ```
  */
 export function traefikGatewayClass(
-  config: TraefikGatewayClassConfig
+  config: Composable<TraefikGatewayClassConfig>
 ): Enhanced<TraefikGatewayClassSpec, AcceptedResourceStatus> {
   return gatewayApiGatewayClass<typeof TRAEFIK_GATEWAY_CONTROLLER_NAME>({
     name: config.name,
@@ -79,7 +79,7 @@ export function traefikGatewayClass(
  * `spec.gatewayClassName` must name a class Traefik has claimed.
  */
 export function traefikGateway(
-  config: GatewayApiNamespacedResourceConfig<GatewaySpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<GatewaySpec>>
 ): Enhanced<GatewaySpec, GatewayObservedStatus> {
   return gatewayApiGateway({
     ...config,
@@ -112,7 +112,7 @@ export function traefikGateway(
  * ```
  */
 export function traefikHTTPRoute(
-  config: GatewayApiNamespacedResourceConfig<HTTPRouteSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<HTTPRouteSpec>>
 ): Enhanced<HTTPRouteSpec, RouteObservedStatus> {
   return gatewayApiHttpRoute({
     ...config,
@@ -122,7 +122,7 @@ export function traefikHTTPRoute(
 
 /** Create a Gateway API `GRPCRoute` served by Traefik. */
 export function traefikGRPCRoute(
-  config: GatewayApiNamespacedResourceConfig<GRPCRouteSpec>
+  config: Composable<GatewayApiNamespacedResourceConfig<GRPCRouteSpec>>
 ): Enhanced<GRPCRouteSpec, RouteObservedStatus> {
   return gatewayApiGrpcRoute({
     ...config,

@@ -26,7 +26,10 @@ import {
 } from '../constants.js';
 import type {
   TraefikBootstrapConfig,
+  TraefikContainerSecurityContext,
   TraefikHelmValues,
+  TraefikManagedHelmValues,
+  TraefikPodSecurityContext,
   TraefikPortValues,
   TraefikServiceType,
 } from '../types.js';
@@ -36,13 +39,17 @@ import type {
  *
  * @security Matches the chart's own hardened defaults and is re-pinned here so
  * a values passthrough cannot drop `runAsNonRoot`.
+ *
+ * Annotated with {@link TraefikPodSecurityContext} rather than `as const`: the
+ * pin is then checked against the CLOSED managed-values type, so a chart field
+ * rename becomes a compile error instead of a silently ignored value.
  */
-export const TRAEFIK_POD_SECURITY_CONTEXT = {
+export const TRAEFIK_POD_SECURITY_CONTEXT: TraefikPodSecurityContext = {
   runAsNonRoot: true,
   runAsUser: 65532,
   runAsGroup: 65532,
   seccompProfile: { type: 'RuntimeDefault' },
-} as const;
+};
 
 /**
  * Container-level security context Traefik runs with.
@@ -51,11 +58,11 @@ export const TRAEFIK_POD_SECURITY_CONTEXT = {
  * filesystem. Traefik needs no writable root; ACME storage, when used, gets an
  * explicit volume.
  */
-export const TRAEFIK_CONTAINER_SECURITY_CONTEXT = {
+export const TRAEFIK_CONTAINER_SECURITY_CONTEXT: TraefikContainerSecurityContext = {
   allowPrivilegeEscalation: false,
   readOnlyRootFilesystem: true,
   capabilities: { drop: ['ALL'] },
-} as const;
+};
 
 /**
  * Values this factory pins unconditionally, applied after every other source.
@@ -73,7 +80,7 @@ export const TRAEFIK_SECURITY_PINS = {
   podSecurityContext: TRAEFIK_POD_SECURITY_CONTEXT,
   securityContext: TRAEFIK_CONTAINER_SECURITY_CONTEXT,
   global: { checkNewVersion: false, sendAnonymousUsage: false },
-} as const;
+} satisfies TraefikManagedHelmValues;
 
 /**
  * Values that hand ownership of the entrypoint Service to TypeKro.
@@ -100,7 +107,7 @@ export const TRAEFIK_SECURITY_PINS = {
 export const TRAEFIK_OWNERSHIP_PINS = {
   service: { enabled: false },
   nameOverride: TRAEFIK_POD_NAME_LABEL_VALUE,
-} as const;
+} satisfies TraefikManagedHelmValues;
 
 /** Build-time inputs that shape which configuration the values tree contains. */
 export interface TraefikHelmValuesMapperOptions {

@@ -7,7 +7,7 @@
  * almost always needs, each of which carries the secure defaults from #172.
  */
 
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import { TRAEFIK_API_VERSION } from '../constants.js';
 import type {
@@ -43,8 +43,8 @@ export interface TraefikMiddlewareMetadata {
 }
 
 function middlewareResource(
-  metadata: TraefikMiddlewareMetadata,
-  spec: TraefikMiddlewareSpec
+  metadata: Composable<TraefikMiddlewareMetadata>,
+  spec: Composable<TraefikMiddlewareSpec>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   return traefikMiddleware({ ...metadata, spec });
 }
@@ -70,7 +70,7 @@ function middlewareResource(
  * ```
  */
 export function traefikMiddleware(
-  config: TraefikResourceConfig<TraefikMiddlewareSpec>
+  config: Composable<TraefikResourceConfig<TraefikMiddlewareSpec>>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   assertTraefikMiddlewareSpec(config.spec, config.name);
   return createResource<TraefikMiddlewareSpec, TraefikNoStatus>(
@@ -122,9 +122,9 @@ export interface TraefikForwardAuthMiddlewareConfig extends TraefikMiddlewareMet
  * ```
  */
 export function traefikForwardAuthMiddleware(
-  config: TraefikForwardAuthMiddlewareConfig
+  config: Composable<TraefikForwardAuthMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
-  const forwardAuth: TraefikForwardAuthMiddleware = {
+  const forwardAuth: Composable<TraefikForwardAuthMiddleware> = {
     address: config.address,
     // @security Never inherit the client's own X-Forwarded-* by default.
     trustForwardHeader: config.trustForwardHeader ?? false,
@@ -182,14 +182,14 @@ export interface TraefikRateLimitMiddlewareConfig extends TraefikMiddlewareMetad
  * ```
  */
 export function traefikRateLimitMiddleware(
-  config: TraefikRateLimitMiddlewareConfig
+  config: Composable<TraefikRateLimitMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   const sourceCriterion =
     config.sourceCriterion ??
     (config.requestHeaderName === undefined
       ? undefined
       : { requestHeaderName: config.requestHeaderName });
-  const rateLimit: TraefikRateLimitMiddleware = {
+  const rateLimit: Composable<TraefikRateLimitMiddleware> = {
     average: config.average,
     burst: config.burst,
     period: config.period ?? '1s',
@@ -224,14 +224,14 @@ export interface TraefikInFlightReqMiddlewareConfig extends TraefikMiddlewareMet
  * ```
  */
 export function traefikInFlightReqMiddleware(
-  config: TraefikInFlightReqMiddlewareConfig
+  config: Composable<TraefikInFlightReqMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   const sourceCriterion =
     config.sourceCriterion ??
     (config.requestHeaderName === undefined
       ? undefined
       : { requestHeaderName: config.requestHeaderName });
-  const inFlightReq: TraefikInFlightReqMiddleware = {
+  const inFlightReq: Composable<TraefikInFlightReqMiddleware> = {
     amount: config.amount,
     ...(sourceCriterion ? { sourceCriterion } : {}),
   };
@@ -269,7 +269,7 @@ export interface TraefikHeadersMiddlewareConfig extends TraefikMiddlewareMetadat
  * ```
  */
 export function traefikHeadersMiddleware(
-  config: TraefikHeadersMiddlewareConfig
+  config: Composable<TraefikHeadersMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   return middlewareResource(metadataOf(config), { headers: config.headers });
 }
@@ -292,9 +292,9 @@ export interface TraefikRedirectSchemeMiddlewareConfig extends TraefikMiddleware
  * routes should redirect.
  */
 export function traefikRedirectSchemeMiddleware(
-  config: TraefikRedirectSchemeMiddlewareConfig
+  config: Composable<TraefikRedirectSchemeMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
-  const redirectScheme: TraefikRedirectSchemeMiddleware = {
+  const redirectScheme: Composable<TraefikRedirectSchemeMiddleware> = {
     scheme: config.scheme ?? 'https',
     permanent: config.permanent ?? true,
     ...(config.port === undefined ? {} : { port: config.port }),
@@ -321,7 +321,7 @@ export interface TraefikBufferingMiddlewareConfig extends TraefikMiddlewareMetad
  * ```
  */
 export function traefikBufferingMiddleware(
-  config: TraefikBufferingMiddlewareConfig
+  config: Composable<TraefikBufferingMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
   return middlewareResource(metadataOf(config), { buffering: config.buffering });
 }
@@ -353,13 +353,15 @@ export interface TraefikChainMiddlewareConfig extends TraefikMiddlewareMetadata 
  * ```
  */
 export function traefikChainMiddleware(
-  config: TraefikChainMiddlewareConfig
+  config: Composable<TraefikChainMiddlewareConfig>
 ): Enhanced<TraefikMiddlewareSpec, TraefikNoStatus> {
-  const chain: TraefikChainMiddleware = { middlewares: [...config.middlewares] };
+  const chain: Composable<TraefikChainMiddleware> = { middlewares: [...config.middlewares] };
   return middlewareResource(metadataOf(config), { chain });
 }
 
-function metadataOf(config: TraefikMiddlewareMetadata): TraefikMiddlewareMetadata {
+function metadataOf(
+  config: Composable<TraefikMiddlewareMetadata>
+): Composable<TraefikMiddlewareMetadata> {
   return {
     name: config.name,
     namespace: config.namespace,

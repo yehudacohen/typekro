@@ -185,7 +185,7 @@ describe('Traefik runs non-root with a read-only root filesystem', () => {
     expect(values.securityContext).toMatchObject(TRAEFIK_CONTAINER_SECURITY_CONTEXT);
     expect(TRAEFIK_POD_SECURITY_CONTEXT.runAsNonRoot).toBe(true);
     expect(TRAEFIK_CONTAINER_SECURITY_CONTEXT.readOnlyRootFilesystem).toBe(true);
-    expect(TRAEFIK_CONTAINER_SECURITY_CONTEXT.capabilities.drop).toEqual(['ALL']);
+    expect(TRAEFIK_CONTAINER_SECURITY_CONTEXT.capabilities?.drop).toEqual(['ALL']);
   });
 
   it('keeps the internal entrypoint off the Service and off the cluster default class', () => {

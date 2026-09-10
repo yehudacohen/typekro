@@ -55,17 +55,23 @@
  * - Optional fields (`?:`) additionally accept `undefined` as a value
  * - Recurses into nested objects (but not arrays or primitives)
  *
+ * Array fields pass through untouched, `readonly` ones included: the exclusion
+ * list tests `readonly unknown[]`, which both `T[]` and `readonly T[]` satisfy.
+ * Testing the mutable `unknown[]` alone let a `readonly T[]` field fall into
+ * the object branch, where the mapped type rebuilt the array element-wise as
+ * `Composable<T>[]` — a shape no factory can assign back to `readonly T[]`.
+ *
  * @typeParam T - The strict config interface to make composition-friendly
  */
 export type Composable<T> = {
   [K in keyof T]: undefined extends T[K]
     ? Exclude<T[K], undefined> extends object
-      ? Exclude<T[K], undefined> extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
+      ? Exclude<T[K], undefined> extends readonly unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
         ? T[K] | undefined
         : Composable<Exclude<T[K], undefined>> | undefined
       : T[K] | undefined
     : T[K] extends object
-      ? T[K] extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
+      ? T[K] extends readonly unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
         ? T[K]
         : Composable<T[K]>
       : T[K];

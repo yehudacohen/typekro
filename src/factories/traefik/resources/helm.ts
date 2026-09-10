@@ -8,7 +8,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -29,6 +29,7 @@ import type {
   TraefikHelmReleaseConfig,
   TraefikHelmRepositoryConfig,
   TraefikHelmValues,
+  TraefikMappedHelmValues,
 } from '../types.js';
 
 /** Traefik `HelmRepository` readiness (delegates to the shared Flux evaluator). */
@@ -54,7 +55,7 @@ export const traefikHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEval
  * ```
  */
 export function traefikHelmRepository(
-  config: TraefikHelmRepositoryConfig
+  config: Composable<TraefikHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return createResource<HelmRepositorySpec, HelmRepositoryStatus>({
     ...(config.id ? { id: config.id } : {}),
@@ -95,7 +96,7 @@ export function traefikHelmRepository(
  * ```
  */
 export function traefikHelmRelease(
-  config: TraefikHelmReleaseConfig
+  config: Composable<TraefikHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec<TraefikHelmValues>, HelmReleaseStatus> {
   const namespace = config.namespace ?? DEFAULT_FLUX_NAMESPACE;
   // Flux's own defaults are `install.crds: Create` and `upgrade.crds: Skip`.
@@ -136,7 +137,12 @@ export function traefikHelmRelease(
         crds,
         remediation: { retries: 3, remediateLastFailure: true, strategy: 'rollback' },
       },
-      ...(config.values ? { values: config.values } : {}),
+      // The mapper's output is a graph-aware value tree — refs and CEL
+      // expressions live inside it — so it is handed to Flux as-is. The cast
+      // re-states that: `Composable<>` widens every optional branch of the
+      // values tree, which `TypeKroChartValues` models as its own recursive
+      // union rather than as optional properties.
+      ...(config.values ? { values: config.values as TraefikMappedHelmValues } : {}),
     },
   }).withReadinessEvaluator(traefikHelmReleaseReadinessEvaluator);
 }

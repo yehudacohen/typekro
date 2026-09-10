@@ -109,6 +109,30 @@ function loadBalancerAddressExpression(resourceId: string, field: 'ip' | 'hostna
 }
 
 /**
+ * CEL reading the chart version Flux actually installed off the owned
+ * `HelmRelease`.
+ *
+ * This is a RESOURCE PROJECTION, deliberately not a literal: KRO drops literal
+ * status fields (#188), and echoing `schema.spec.chartVersion` would report a
+ * version the release may never have managed to install. `status.history[]` is
+ * Flux's own record of its releases, newest first, so entry 0 is the live one.
+ *
+ * The shape mirrors {@link loadBalancerAddressExpression}, for the same two
+ * reasons — both about running on KRO's cel-go AND the `cel-js` evaluator
+ * direct mode uses. A lazy ternary rather than an `&&` chain, because `size()`
+ * over an absent `history` is an evaluation error that cel-js propagates; and
+ * `filter(...)` rather than `has(history[0].chartVersion)`, which cel-js
+ * rejects as `has()` over an index expression while KRO rejects the
+ * `"chartVersion" in history[0]` workaround. Reports `''` until Flux has
+ * recorded its first release.
+ */
+function chartVersionExpression(resourceId: string): string {
+  const history = `${resourceId}.status.history`;
+  const matching = `${history}.filter(entry, has(entry.chartVersion))`;
+  return `has(${history}) ? (size(${matching}) > 0 ? ${matching}[0].chartVersion : "") : ""`;
+}
+
+/**
  * Build a Traefik bootstrap composition.
  *
  * Use this when the defaults of {@link traefikBootstrap} are not enough — to
@@ -313,6 +337,10 @@ export function makeTraefikBootstrap(options: TraefikBootstrapBuildOptions = {})
         // resource-scoped CEL form is deliberate: a `schema.spec` reference in
         // a status field is not a resource projection and KRO drops it.
         serviceName: Cel.expr<string>('traefikService.metadata.name'),
+        // The chart version Flux INSTALLED, off the owned release's history —
+        // the same reasoning as `serviceName`, and the reason `version` is not
+        // a deploy-time literal here (#188).
+        version: Cel.expr<string>(chartVersionExpression('traefikHelmRelease')),
       };
     }
   );

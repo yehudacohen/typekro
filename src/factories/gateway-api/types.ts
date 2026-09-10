@@ -8,7 +8,27 @@
  *
  * Vendor-specific policy CRDs (`BackendTrafficPolicy`, `AIGatewayRoute`,
  * Traefik `Middleware`, ...) deliberately stay in their own factory packages.
+ *
+ * **ArkType is the single source of truth for the SPEC types here.** Every
+ * `*Spec` / config type below is inferred from the schema next to it
+ * (`typeof XSchema.infer`), which is the repository's integration contract: one
+ * definition validates at runtime, generates KRO SimpleSchema, and types the
+ * factory. The shapes were verified field-by-field against the CRDs installed
+ * by the Gateway API v1.2.1 experimental channel, read back from a live API
+ * server with `kubectl get crd <name> -o jsonpath='{.spec.versions[*].schema.openAPIV3Schema}'`.
+ *
+ * STATUS types stay hand-written interfaces: they describe what a controller
+ * publishes, never user input, so there is nothing to validate or generate.
+ *
+ * Where a schema is narrower than the CRD it is deliberate and noted inline
+ * (for example `listeners[].protocol`, which the CRD types as a bare string).
  */
+
+import { type } from 'arktype';
+
+// ============================================================================
+// Status types — hand-written: these describe controller output, not input
+// ============================================================================
 
 /** A `metav1.Condition` as published by Gateway API controllers. */
 export interface KubernetesCondition {
@@ -62,122 +82,251 @@ export interface GatewayPolicyObservedStatus {
   }[];
 }
 
+// ============================================================================
+// Shared schema shapes
+//
+// Extracted as `as const` shapes wherever a CRD repeats the same object at
+// several paths, so the definitions cannot drift apart.
+// ============================================================================
+
+/** An object reference restricted to Secrets (and, historically, ConfigMaps). */
+export const SecretObjectReferenceSchema = type({
+  'group?': 'string',
+  'kind?': 'string',
+  name: 'string',
+  'namespace?': 'string',
+});
+
+/** A certificate or CA reference used by listener TLS configuration. */
+export type SecretObjectReference = typeof SecretObjectReferenceSchema.infer;
+
+/** `GatewayClass.spec.parametersRef` — an implementation-specific config object. */
+const parametersRefShape = {
+  group: 'string',
+  kind: 'string',
+  name: 'string',
+  'namespace?': 'string',
+} as const;
+
+/** A `metav1.LabelSelector` as Gateway API embeds it under `allowedRoutes`. */
+const labelSelectorShape = {
+  'matchLabels?': 'Record<string, string>',
+  'matchExpressions?': type({
+    key: 'string',
+    operator: 'string',
+    'values?': 'string[]',
+  }).array(),
+} as const;
+
+/** An `HTTPRoute`/`GRPCRoute` header (and query-param) match. */
+const headerMatchShape = {
+  'type?': '"Exact" | "RegularExpression"',
+  name: 'string',
+  value: 'string',
+} as const;
+
+/** One `name`/`value` pair of a header-modifier filter. */
+const headerValueShape = { name: 'string', value: 'string' } as const;
+
+/** `filters[].requestRedirect.path` / `filters[].urlRewrite.path`. */
+const httpPathModifierShape = {
+  type: '"ReplaceFullPath" | "ReplacePrefixMatch"',
+  'replaceFullPath?': 'string',
+  'replacePrefixMatch?': 'string',
+} as const;
+
+/** `sessionPersistence` — identical on `HTTPRoute` and `GRPCRoute` rules. */
+const sessionPersistenceShape = {
+  'sessionName?': 'string',
+  'absoluteTimeout?': 'string',
+  'idleTimeout?': 'string',
+  'type?': '"Cookie" | "Header"',
+  'cookieConfig?': {
+    'lifetimeType?': '"Permanent" | "Session"',
+  },
+} as const;
+
+/** A CA-certificate reference, which unlike a Secret ref requires group/kind. */
+const caCertificateRefShape = {
+  group: 'string',
+  kind: 'string',
+  name: 'string',
+} as const;
+
+// ============================================================================
+// GatewayClass
+// ============================================================================
+
+/** `GatewayClass.spec`. */
+export const GatewayClassSpecSchema = type({
+  controllerName: 'string',
+  'description?': 'string',
+  'parametersRef?': parametersRefShape,
+});
+
 /**
  * `GatewayClass.spec`.
  *
  * `TController` lets an implementation pin its own controller name as a literal
  * type (e.g. `GatewayClassSpec<'traefik.io/gateway-controller'>`) while the
- * unparameterized form stays usable for generic tooling.
+ * unparameterized form stays usable for generic tooling. The shape is inferred
+ * from {@link GatewayClassSpecSchema}; only `controllerName` is re-typed,
+ * because ArkType has no generic-literal equivalent.
  */
-export interface GatewayClassSpec<TController extends string = string> {
-  readonly controllerName: TController;
-  readonly description?: string;
-  readonly parametersRef?: {
-    readonly group: string;
-    readonly kind: string;
-    readonly name: string;
-    readonly namespace?: string;
-  };
-}
+export type GatewayClassSpec<TController extends string = string> = Omit<
+  typeof GatewayClassSpecSchema.infer,
+  'controllerName'
+> & { controllerName: TController };
+
+// ============================================================================
+// Gateway
+// ============================================================================
 
 /** Which namespaces a listener accepts routes from. */
-export interface AllowedRoutes {
-  readonly namespaces?: {
-    readonly from?: 'All' | 'Selector' | 'Same';
-    readonly selector?: {
-      readonly matchLabels?: Readonly<Record<string, string>>;
-    };
-  };
-  readonly kinds?: readonly {
-    readonly group?: string;
-    readonly kind: string;
-  }[];
-}
+export const AllowedRoutesSchema = type({
+  'namespaces?': {
+    'from?': '"All" | "Selector" | "Same"',
+    'selector?': labelSelectorShape,
+  },
+  'kinds?': type({
+    'group?': 'string',
+    kind: 'string',
+  }).array(),
+});
 
-/** A certificate or CA reference used by listener TLS configuration. */
-export interface SecretObjectReference {
-  readonly group?: string;
-  readonly kind?: string;
-  readonly name: string;
-  readonly namespace?: string;
-}
+/** Which namespaces a listener accepts routes from. */
+export type AllowedRoutes = typeof AllowedRoutesSchema.infer;
 
 /** `Gateway.spec.listeners[].tls`. */
-export interface GatewayTLSConfig {
-  readonly mode?: 'Terminate' | 'Passthrough';
-  readonly certificateRefs?: readonly SecretObjectReference[];
-  readonly options?: Readonly<Record<string, string>>;
-}
+export const GatewayTLSConfigSchema = type({
+  'mode?': '"Terminate" | "Passthrough"',
+  'certificateRefs?': SecretObjectReferenceSchema.array(),
+  /** Client-certificate validation for a terminating listener. */
+  'frontendValidation?': {
+    'caCertificateRefs?': type({
+      ...caCertificateRefShape,
+      'namespace?': 'string',
+    }).array(),
+  },
+  'options?': 'Record<string, string>',
+});
+
+/** `Gateway.spec.listeners[].tls`. */
+export type GatewayTLSConfig = typeof GatewayTLSConfigSchema.infer;
+
+/**
+ * A single `Gateway.spec.listeners[]` entry.
+ *
+ * `protocol` is narrower than the CRD, which types it as a bare string: these
+ * five are the protocols the API defines, and an unknown protocol is rejected
+ * by every controller rather than doing something useful.
+ */
+export const GatewayListenerSchema = type({
+  name: 'string',
+  protocol: '"HTTP" | "HTTPS" | "TLS" | "TCP" | "UDP"',
+  port: 'number.integer',
+  'hostname?': 'string',
+  'tls?': GatewayTLSConfigSchema,
+  'allowedRoutes?': AllowedRoutesSchema,
+});
 
 /** A single `Gateway.spec.listeners[]` entry. */
-export interface GatewayListener {
-  readonly name: string;
-  readonly protocol: 'HTTP' | 'HTTPS' | 'TLS' | 'TCP' | 'UDP';
-  readonly port: number;
-  readonly hostname?: string;
-  readonly tls?: GatewayTLSConfig;
-  readonly allowedRoutes?: AllowedRoutes;
-}
+export type GatewayListener = typeof GatewayListenerSchema.infer;
+
+/** A `Gateway.spec.addresses[]` entry. */
+const gatewayAddressShape = {
+  'type?': 'string',
+  value: 'string',
+} as const;
 
 /** `Gateway.spec`. */
-export interface GatewaySpec {
-  readonly gatewayClassName: string;
-  readonly listeners: readonly GatewayListener[];
-  readonly addresses?: readonly {
-    readonly type?: string;
-    readonly value: string;
-  }[];
-  readonly infrastructure?: {
-    readonly labels?: Readonly<Record<string, string>>;
-    readonly annotations?: Readonly<Record<string, string>>;
-  };
-}
+export const GatewaySpecSchema = type({
+  gatewayClassName: 'string',
+  listeners: GatewayListenerSchema.array(),
+  'addresses?': type(gatewayAddressShape).array(),
+  'infrastructure?': {
+    'labels?': 'Record<string, string>',
+    'annotations?': 'Record<string, string>',
+    'parametersRef?': {
+      group: 'string',
+      kind: 'string',
+      name: 'string',
+    },
+  },
+  /** Default client certificate the Gateway presents to backends. */
+  'backendTLS?': {
+    'clientCertificateRef?': SecretObjectReferenceSchema,
+  },
+});
+
+/** `Gateway.spec`. */
+export type GatewaySpec = typeof GatewaySpecSchema.infer;
+
+// ============================================================================
+// Routes
+// ============================================================================
+
+/**
+ * A route's reference to the Gateway (or listener) it attaches to.
+ *
+ * `kind` stays a plain string, matching the CRD: the mesh profile allows a
+ * `Service` parent, so pinning the literal `'Gateway'` would reject a valid
+ * upstream shape.
+ */
+export const ParentReferenceSchema = type({
+  'group?': 'string',
+  'kind?': 'string',
+  name: 'string',
+  'namespace?': 'string',
+  'sectionName?': 'string',
+  'port?': 'number.integer',
+});
 
 /** A route's reference to the Gateway (or listener) it attaches to. */
-export interface ParentReference {
-  readonly group?: string;
-  readonly kind?: 'Gateway';
-  readonly name: string;
-  readonly namespace?: string;
-  readonly sectionName?: string;
-  readonly port?: number;
-}
+export type ParentReference = typeof ParentReferenceSchema.infer;
 
 /** A backend a route rule forwards to. */
-export interface BackendRef {
-  readonly group?: string;
-  readonly kind?: string;
-  readonly name: string;
-  readonly namespace?: string;
-  readonly port?: number;
-  readonly weight?: number;
-}
+export const BackendRefSchema = type({
+  'group?': 'string',
+  'kind?': 'string',
+  name: 'string',
+  'namespace?': 'string',
+  'port?': 'number.integer',
+  'weight?': 'number.integer',
+});
+
+/** A backend a route rule forwards to. */
+export type BackendRef = typeof BackendRefSchema.infer;
+
+/**
+ * One `HTTPRoute.spec.rules[].matches[]` entry.
+ *
+ * `path.value` is optional exactly as the CRD has it — an omitted value means
+ * the `/` prefix — and `method` uses the CRD's enum rather than a bare string.
+ */
+export const HTTPRouteMatchSchema = type({
+  'path?': {
+    'type?': '"Exact" | "PathPrefix" | "RegularExpression"',
+    'value?': 'string',
+  },
+  'headers?': type(headerMatchShape).array(),
+  'queryParams?': type(headerMatchShape).array(),
+  'method?':
+    '"GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE" | "PATCH"',
+});
 
 /** One `HTTPRoute.spec.rules[].matches[]` entry. */
-export interface HTTPRouteMatch {
-  readonly path?: {
-    readonly type?: 'Exact' | 'PathPrefix' | 'RegularExpression';
-    readonly value: string;
-  };
-  readonly headers?: readonly {
-    readonly type?: 'Exact' | 'RegularExpression';
-    readonly name: string;
-    readonly value: string;
-  }[];
-  readonly queryParams?: readonly {
-    readonly type?: 'Exact' | 'RegularExpression';
-    readonly name: string;
-    readonly value: string;
-  }[];
-  readonly method?: string;
-}
+export type HTTPRouteMatch = typeof HTTPRouteMatchSchema.infer;
 
 /** A header modification applied by an `HTTPRoute` filter. */
-export interface HTTPHeaderFilter {
-  readonly set?: readonly { readonly name: string; readonly value: string }[];
-  readonly add?: readonly { readonly name: string; readonly value: string }[];
-  readonly remove?: readonly string[];
-}
+export const HTTPHeaderFilterSchema = type({
+  'set?': type(headerValueShape).array(),
+  'add?': type(headerValueShape).array(),
+  'remove?': 'string[]',
+});
+
+/** A header modification applied by an `HTTPRoute` filter. */
+export type HTTPHeaderFilter = typeof HTTPHeaderFilterSchema.infer;
 
 /**
  * One `HTTPRoute.spec.rules[].filters[]` entry.
@@ -185,126 +334,147 @@ export interface HTTPHeaderFilter {
  * `extensionRef` is how an implementation attaches its own middleware — Traefik
  * uses it to reference a `traefik.io/v1alpha1` `Middleware`.
  */
-export interface HTTPRouteFilter {
-  readonly type:
-    | 'RequestHeaderModifier'
-    | 'ResponseHeaderModifier'
-    | 'RequestMirror'
-    | 'RequestRedirect'
-    | 'URLRewrite'
-    | 'ExtensionRef';
-  readonly requestHeaderModifier?: HTTPHeaderFilter;
-  readonly responseHeaderModifier?: HTTPHeaderFilter;
-  readonly requestRedirect?: {
-    readonly scheme?: 'http' | 'https';
-    readonly hostname?: string;
-    readonly port?: number;
-    readonly statusCode?: 301 | 302;
-    readonly path?: {
-      readonly type: 'ReplaceFullPath' | 'ReplacePrefixMatch';
-      readonly replaceFullPath?: string;
-      readonly replacePrefixMatch?: string;
-    };
-  };
-  readonly urlRewrite?: {
-    readonly hostname?: string;
-    readonly path?: {
-      readonly type: 'ReplaceFullPath' | 'ReplacePrefixMatch';
-      readonly replaceFullPath?: string;
-      readonly replacePrefixMatch?: string;
-    };
-  };
-  readonly requestMirror?: {
-    readonly backendRef: BackendRef;
-  };
-  readonly extensionRef?: {
-    readonly group: string;
-    readonly kind: string;
-    readonly name: string;
-  };
-}
+export const HTTPRouteFilterSchema = type({
+  type: '"RequestHeaderModifier" | "ResponseHeaderModifier" | "RequestMirror" | "RequestRedirect" | "URLRewrite" | "ExtensionRef"',
+  'requestHeaderModifier?': HTTPHeaderFilterSchema,
+  'responseHeaderModifier?': HTTPHeaderFilterSchema,
+  'requestRedirect?': {
+    'scheme?': '"http" | "https"',
+    'hostname?': 'string',
+    'port?': 'number.integer',
+    'statusCode?': '301 | 302',
+    'path?': httpPathModifierShape,
+  },
+  'urlRewrite?': {
+    'hostname?': 'string',
+    'path?': httpPathModifierShape,
+  },
+  'requestMirror?': {
+    backendRef: BackendRefSchema,
+    /** Mirror only a share of the requests. `percent` and `fraction` are exclusive. */
+    'percent?': 'number.integer',
+    'fraction?': {
+      numerator: 'number.integer',
+      'denominator?': 'number.integer',
+    },
+  },
+  'extensionRef?': {
+    group: 'string',
+    kind: 'string',
+    name: 'string',
+  },
+});
+
+/** One `HTTPRoute.spec.rules[].filters[]` entry. */
+export type HTTPRouteFilter = typeof HTTPRouteFilterSchema.infer;
+
+/** A `backendRefs[]` entry, which may carry its own per-backend filters. */
+const routeBackendRefSchema = BackendRefSchema.and({
+  'filters?': HTTPRouteFilterSchema.array(),
+});
 
 /** One `HTTPRoute.spec.rules[]` entry. */
-export interface HTTPRouteRule {
-  readonly name?: string;
-  readonly matches?: readonly HTTPRouteMatch[];
-  readonly filters?: readonly HTTPRouteFilter[];
-  readonly backendRefs?: readonly (BackendRef & {
-    readonly filters?: readonly HTTPRouteFilter[];
-  })[];
-  readonly timeouts?: {
-    readonly request?: string;
-    readonly backendRequest?: string;
-  };
-  readonly retry?: {
-    readonly codes?: readonly number[];
-    readonly attempts?: number;
-    readonly backoff?: string;
-  };
-  readonly sessionPersistence?: {
-    readonly sessionName?: string;
-    readonly absoluteTimeout?: string;
-    readonly idleTimeout?: string;
-    readonly type?: 'Cookie' | 'Header';
-  };
-}
+export const HTTPRouteRuleSchema = type({
+  'name?': 'string',
+  'matches?': HTTPRouteMatchSchema.array(),
+  'filters?': HTTPRouteFilterSchema.array(),
+  'backendRefs?': routeBackendRefSchema.array(),
+  'timeouts?': {
+    'request?': 'string',
+    'backendRequest?': 'string',
+  },
+  'retry?': {
+    'codes?': 'number.integer[]',
+    'attempts?': 'number.integer',
+    'backoff?': 'string',
+  },
+  'sessionPersistence?': sessionPersistenceShape,
+});
+
+/** One `HTTPRoute.spec.rules[]` entry. */
+export type HTTPRouteRule = typeof HTTPRouteRuleSchema.infer;
+
+/**
+ * `HTTPRoute.spec`.
+ *
+ * `parentRefs` is required here although the CRD allows it to be absent: a
+ * route attached to nothing serves no traffic, and TypeKro would have no
+ * resource to order it against.
+ */
+export const HTTPRouteSpecSchema = type({
+  parentRefs: ParentReferenceSchema.array(),
+  'hostnames?': 'string[]',
+  'rules?': HTTPRouteRuleSchema.array(),
+});
 
 /** `HTTPRoute.spec`. */
-export interface HTTPRouteSpec {
-  readonly parentRefs: readonly ParentReference[];
-  readonly hostnames?: readonly string[];
-  readonly rules?: readonly HTTPRouteRule[];
-}
+export type HTTPRouteSpec = typeof HTTPRouteSpecSchema.infer;
 
 /** One `GRPCRoute.spec.rules[].matches[]` entry. */
-export interface GRPCRouteMatch {
-  readonly method?: {
-    readonly type?: 'Exact' | 'RegularExpression';
-    readonly service?: string;
-    readonly method?: string;
-  };
-  readonly headers?: readonly {
-    readonly type?: 'Exact' | 'RegularExpression';
-    readonly name: string;
-    readonly value: string;
-  }[];
-}
+export const GRPCRouteMatchSchema = type({
+  'method?': {
+    'type?': '"Exact" | "RegularExpression"',
+    'service?': 'string',
+    'method?': 'string',
+  },
+  'headers?': type(headerMatchShape).array(),
+});
+
+/** One `GRPCRoute.spec.rules[].matches[]` entry. */
+export type GRPCRouteMatch = typeof GRPCRouteMatchSchema.infer;
+
+/**
+ * One `GRPCRoute.spec.rules[]` entry.
+ *
+ * The CRD accepts only the four filter types that make sense for gRPC
+ * (`RequestHeaderModifier`, `ResponseHeaderModifier`, `RequestMirror`,
+ * `ExtensionRef`) but reuses the HTTP filter shape, which is what
+ * {@link HTTPRouteFilterSchema} models.
+ */
+export const GRPCRouteRuleSchema = type({
+  'name?': 'string',
+  'matches?': GRPCRouteMatchSchema.array(),
+  'filters?': HTTPRouteFilterSchema.array(),
+  'backendRefs?': routeBackendRefSchema.array(),
+  'sessionPersistence?': sessionPersistenceShape,
+});
 
 /** One `GRPCRoute.spec.rules[]` entry. */
-export interface GRPCRouteRule {
-  readonly name?: string;
-  readonly matches?: readonly GRPCRouteMatch[];
-  readonly filters?: readonly HTTPRouteFilter[];
-  readonly backendRefs?: readonly BackendRef[];
-  readonly sessionPersistence?: {
-    readonly sessionName?: string;
-    readonly type?: 'Cookie' | 'Header';
-  };
-}
+export type GRPCRouteRule = typeof GRPCRouteRuleSchema.infer;
 
 /** `GRPCRoute.spec`. */
-export interface GRPCRouteSpec {
-  readonly parentRefs: readonly ParentReference[];
-  readonly hostnames?: readonly string[];
-  readonly rules?: readonly GRPCRouteRule[];
-}
+export const GRPCRouteSpecSchema = type({
+  parentRefs: ParentReferenceSchema.array(),
+  'hostnames?': 'string[]',
+  'rules?': GRPCRouteRuleSchema.array(),
+});
+
+/** `GRPCRoute.spec`. */
+export type GRPCRouteSpec = typeof GRPCRouteSpecSchema.infer;
+
+// ============================================================================
+// ReferenceGrant / BackendTLSPolicy
+// ============================================================================
 
 /**
  * `ReferenceGrant.spec` — the opt-in a namespace publishes so resources in
  * `from` namespaces may reference the listed `to` resources in this namespace.
  */
-export interface ReferenceGrantSpec {
-  readonly from: readonly {
-    readonly group: string;
-    readonly kind: string;
-    readonly namespace: string;
-  }[];
-  readonly to: readonly {
-    readonly group: string;
-    readonly kind: string;
-    readonly name?: string;
-  }[];
-}
+export const ReferenceGrantSpecSchema = type({
+  from: type({
+    group: 'string',
+    kind: 'string',
+    namespace: 'string',
+  }).array(),
+  to: type({
+    group: 'string',
+    kind: 'string',
+    'name?': 'string',
+  }).array(),
+});
+
+/** `ReferenceGrant.spec`. */
+export type ReferenceGrantSpec = typeof ReferenceGrantSpecSchema.infer;
 
 /**
  * `BackendTLSPolicy.spec`.
@@ -313,26 +483,25 @@ export interface ReferenceGrantSpec {
  * other controllers target `Service`, so `targetRefs[].group`/`kind` are plain
  * strings rather than one vendor's literals.
  */
-export interface BackendTLSPolicySpec {
-  readonly targetRefs: readonly {
-    readonly group: string;
-    readonly kind: string;
-    readonly name: string;
-    readonly sectionName?: string;
-  }[];
-  readonly validation: {
-    readonly hostname: string;
-    readonly wellKnownCACertificates?: 'System';
-    readonly caCertificateRefs?: readonly {
-      readonly group: string;
-      readonly kind: string;
-      readonly name: string;
-    }[];
-    readonly subjectAltNames?: readonly {
-      readonly type: 'Hostname' | 'URI';
-      readonly hostname?: string;
-      readonly uri?: string;
-    }[];
-  };
-  readonly options?: Readonly<Record<string, string>>;
-}
+export const BackendTLSPolicySpecSchema = type({
+  targetRefs: type({
+    group: 'string',
+    kind: 'string',
+    name: 'string',
+    'sectionName?': 'string',
+  }).array(),
+  validation: {
+    hostname: 'string',
+    'wellKnownCACertificates?': '"System"',
+    'caCertificateRefs?': type(caCertificateRefShape).array(),
+    'subjectAltNames?': type({
+      type: '"Hostname" | "URI"',
+      'hostname?': 'string',
+      'uri?': 'string',
+    }).array(),
+  },
+  'options?': 'Record<string, string>',
+});
+
+/** `BackendTLSPolicy.spec`. */
+export type BackendTLSPolicySpec = typeof BackendTLSPolicySpecSchema.infer;
