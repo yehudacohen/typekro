@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  isKroOwnershipLabel,
-  KRO_OWNERSHIP_LABELS,
-} from '../../src/core/kro/labels.js';
+import { isKroOwnershipLabel, KRO_OWNERSHIP_LABELS } from '../../src/core/kro/labels.js';
 import { KRO_OWNERSHIP_LABELS as KRO_OWNERSHIP_LABELS_FROM_ROOT } from '../../src/index.js';
 
 describe('KRO_OWNERSHIP_LABELS', () => {
