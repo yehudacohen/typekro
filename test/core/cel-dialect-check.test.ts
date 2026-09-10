@@ -13,6 +13,7 @@ import { TypeKroError } from '../../src/core/errors.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { simple, toResourceGraph } from '../../src/index.js';
 import {
+  CEL_DIALECT_MAX_EXPRESSION_LENGTH,
   CEL_DIALECT_RULES,
   type CelDialectFinding,
   checkCelDialectCompatibility,
@@ -24,10 +25,18 @@ function check(expression: string): CelDialectFinding[] {
   return checkCelDialectCompatibility(expression, 'endpoint');
 }
 
+/**
+ * Pad an expression out to `length` characters with a string literal, so the
+ * padded form stays valid CEL and keeps whatever denylisted form it carries.
+ */
+function padded(prefix: string, suffix: string, length: number): string {
+  return `${prefix}"${'p'.repeat(Math.max(0, length - prefix.length - suffix.length - 2))}"${suffix}`;
+}
+
 describe('curated denylist', () => {
   it('names a dialect and a documented observation for every rule', () => {
     for (const rule of CEL_DIALECT_RULES) {
-      expect(['cel-js', 'cel-go']).toContain(rule.dialect);
+      expect(['cel-js', 'cel-go', 'unchecked']).toContain(rule.dialect);
       expect(rule.summary.length).toBeGreaterThan(0);
       expect(rule.observed.length).toBeGreaterThan(0);
     }
@@ -129,6 +138,101 @@ describe('forms both dialects accept', () => {
         'config.metadata.annotations["typekro.dev/enabled"] != "true" || other.metadata.name != ""'
       )
     ).toEqual([]);
+  });
+});
+
+/**
+ * Both halves of the check — cel-js's parser and the denylist walk — are linear
+ * in the length of the expression, so an expression that has run away makes the
+ * check run away with it: a 6MB status field cost ~6.5s to analyze and, having
+ * no denylisted form in it, reported nothing for the trouble.
+ *
+ * These tests pin that an over-budget expression *skips* both halves rather
+ * than merely running them faster, without measuring wall-clock: each one feeds
+ * the same denylisted content under and over the budget, and the rule that fires
+ * under the budget must be absent over it.
+ */
+describe('analysis budget', () => {
+  /**
+   * The self-nesting shape the nested-composition inliner produces: each level
+   * substitutes a fragment that still contains the reference it replaced, so the
+   * expression doubles per level.
+   */
+  function runaway(levels: number): string {
+    let expression = 'service1.status.phase != null ? service1.status.phase : "Pending"';
+    for (let level = 0; level < levels; level += 1) {
+      expression = `(${expression}) != null ? (${expression}) : "Pending"`;
+    }
+    return expression;
+  }
+
+  it('reports the size itself, once, for an expression past the budget', () => {
+    const expression = runaway(12);
+    expect(expression.length).toBeGreaterThan(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+
+    const findings = check(expression);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rule).toBe('expression-too-large');
+    expect(findings[0]?.dialect).toBe('unchecked');
+    expect(findings[0]?.field).toBe('endpoint');
+    expect(findings[0]?.message).toContain(String(expression.length));
+  });
+
+  it('leaves cel-js unasked once the expression is over budget', () => {
+    // Identical malformed text either side of the budget. Under it cel-js is
+    // consulted and rejects it; over it the absence of that rejection is the
+    // evidence that the parser was never invoked.
+    const malformed = '!!!(((';
+    const under = malformed.repeat(4);
+    const over = malformed.repeat(
+      Math.ceil(CEL_DIALECT_MAX_EXPRESSION_LENGTH / malformed.length) + 1
+    );
+    expect(under.length).toBeLessThanOrEqual(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+    expect(over.length).toBeGreaterThan(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+
+    expect(check(under).map((found) => found.rule)).toEqual(['cel-js-parse']);
+    expect(check(over).map((found) => found.rule)).toEqual(['expression-too-large']);
+  });
+
+  it('leaves the denylist rules unrun once the expression is over budget', () => {
+    const prefix = 'has(webService.status.loadBalancer.ingress[0].ip) ? ';
+    const suffix = ' : ""';
+    const under = padded(prefix, suffix, CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+    const over = padded(prefix, suffix, CEL_DIALECT_MAX_EXPRESSION_LENGTH + 1_000);
+    expect(under.length).toBeLessThanOrEqual(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+    expect(over.length).toBeGreaterThan(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
+
+    expect(check(under).map((found) => found.rule)).toEqual(['has-index-argument']);
+    expect(check(over).map((found) => found.rule)).toEqual(['expression-too-large']);
+  });
+
+  it('carries a bounded excerpt rather than the whole expression', () => {
+    const expression = runaway(14);
+    expect(expression.length).toBeGreaterThan(1_000_000);
+
+    const findings = check(expression);
+
+    expect(findings[0]?.expression.length).toBeLessThan(1_000);
+    expect(findings[0]?.expression.endsWith('…')).toBe(true);
+  });
+
+  it('reports an oversize leaf once, not once per nested occurrence', () => {
+    const findings = collectStatusCelDialectFindings({
+      servicePhase: `\${${runaway(12)}}`,
+      ready: '${deployment.status.readyReplicas > 0}',
+    });
+
+    expect(findings.map((found) => `${found.field}:${found.rule}`)).toEqual([
+      'servicePhase:expression-too-large',
+    ]);
+  });
+
+  it('formats an unchecked finding as not checked rather than rejected', () => {
+    const report = formatCelDialectFindings(check(runaway(12)));
+
+    expect(report).toContain('status.endpoint: not checked [expression-too-large]');
+    expect(report).not.toContain('rejected by');
   });
 });
 

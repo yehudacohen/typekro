@@ -34,8 +34,13 @@ import {
   maskCelStringLiterals,
 } from '../references/cel-lexical-scanner.js';
 
-/** The CEL engine that rejects — or diverges on — an expression. */
-export type CelDialect = 'cel-js' | 'cel-go';
+/**
+ * The CEL engine that rejects — or diverges on — an expression.
+ *
+ * `'unchecked'` is not an engine: it marks a finding where no dialect verdict
+ * was reached at all, because the expression was past the analysis budget.
+ */
+export type CelDialect = 'cel-js' | 'cel-go' | 'unchecked';
 
 /** Identifier for a curated dual-dialect rule. */
 export type CelDialectRuleId =
@@ -43,7 +48,30 @@ export type CelDialectRuleId =
   | 'has-index-argument'
   | 'in-on-list-entry'
   | 'guard-after-use-in-logical-chain'
-  | 'unguarded-index-in-logical-chain';
+  | 'unguarded-index-in-logical-chain'
+  | 'expression-too-large';
+
+/**
+ * Largest expression this module will analyze, in characters.
+ *
+ * Both halves of the check cost roughly a microsecond per character — cel-js's
+ * parser dominates — so the cost is linear in the length of the expression and
+ * the only way it can run away is for the expression itself to run away.
+ *
+ * The budget is set from what TypeKro actually emits. Across the unit suite the
+ * median status expression is under 100 characters, the 99th percentile is
+ * ~1.6k, and the largest authored one is ~3.3k. 16 KiB leaves roughly five
+ * times the headroom over the largest real expression while capping the check
+ * at ~16ms for any single leaf.
+ *
+ * Anything past this is not an authored status field. The known source is a
+ * nested composition whose inlined status re-expands into itself, doubling per
+ * level until the depth limit stops it — which yields a multi-megabyte
+ * expression that no engine can use: cel-js needs seconds to parse it on every
+ * direct-mode reconcile, and a ResourceGraphDefinition carrying it is past the
+ * Kubernetes object size limit, so the API server refuses it outright.
+ */
+export const CEL_DIALECT_MAX_EXPRESSION_LENGTH = 16_384;
 
 /** A single dual-dialect incompatibility found in an emitted expression. */
 export interface CelDialectFinding {
@@ -108,6 +136,13 @@ export const CEL_DIALECT_RULES: readonly {
     summary: 'an index expression inside && / || with no has() guard before it',
     observed:
       'the indexed list is optional in practice; cel-go absorbs the resulting error when the other operand is false, cel-js propagates it and takes the whole status field down',
+  },
+  {
+    id: 'expression-too-large',
+    dialect: 'unchecked',
+    summary: 'the expression is past the analysis budget, so neither half of the check ran',
+    observed:
+      'a nested composition whose inlined status re-expands into itself doubles the expression per level, reaching megabytes; parsing one costs seconds per call and the ResourceGraphDefinition carrying it is past the Kubernetes object size limit',
   },
 ] as const;
 
@@ -469,6 +504,26 @@ export function checkCelDialectCompatibility(
   const trimmed = expression.trim();
   if (trimmed.length === 0) return findings;
 
+  // Budget gate, before either half. Both halves are linear in the length of
+  // the expression, so an expression that has run away makes the check run away
+  // with it — a 6MB one costs ~6.5s and, having no denylisted form in it,
+  // reports nothing for the trouble. Refuse to spend serialization time on it
+  // and report the size itself, which is the real defect.
+  if (trimmed.length > CEL_DIALECT_MAX_EXPRESSION_LENGTH) {
+    findings.push(
+      finding(
+        'expression-too-large',
+        field,
+        // Carry a bounded prefix rather than megabytes of text into the report.
+        `${trimmed.slice(0, 200)}…`,
+        undefined,
+        `the expression is ${trimmed.length} characters, past the ${CEL_DIALECT_MAX_EXPRESSION_LENGTH} character dual-dialect analysis budget, so neither half of the check was run. An expression this size cannot be served by either engine: cel-js spends seconds parsing it on every direct-mode reconcile, and a ResourceGraphDefinition carrying it is past the Kubernetes object size limit`,
+        'Shrink the status field. An expression this large is a runaway expansion rather than authored status — most often a nested composition whose inlined status re-expands into itself; give the inner composition an explicit status field and reference that instead'
+      )
+    );
+    return findings;
+  }
+
   // Half one: cel-js's own parser. A syntax error here means direct mode can
   // never evaluate this field, whatever KRO makes of it.
   let parsed: { isSuccess: boolean } | undefined;
@@ -546,7 +601,9 @@ export function formatCelDialectFindings(findings: readonly CelDialectFinding[])
   return findings
     .map(
       (found) =>
-        `  status.${found.field}: rejected by ${found.dialect} [${found.rule}]\n` +
+        `  status.${found.field}: ${
+          found.dialect === 'unchecked' ? 'not checked' : `rejected by ${found.dialect}`
+        } [${found.rule}]\n` +
         `    ${found.message}\n` +
         (found.fragment ? `    at: ${found.fragment}\n` : '') +
         `    expression: ${found.expression}\n` +
