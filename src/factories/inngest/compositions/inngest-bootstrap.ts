@@ -112,5 +112,16 @@ export const inngestBootstrap = kubernetesComposition(
       // Static — reflects deploy-time version, not runtime.
       version: resolvedVersion,
     };
+  },
+  {
+    // KNOWN structural spec-dependence (issue #190): the Helm values mapper
+    // deep-merges `spec.customValues` at build time, and a map-typed spec field
+    // has no build-time keys — the emitted RGD carries one `__typekroSchemaKey`
+    // placeholder and the instance's real overrides are dropped. The fix is the
+    // graph-aware runtime values merge the ClickHouse operator bootstrap uses,
+    // but routing an OPTIONAL field through it changes the emitted shape between
+    // present and absent, which the structured-fallback prover (#188/#195)
+    // rejects as unprovable `??` semantics. Warn until that is settled.
+    allowStructuralSpecDependence: true,
   }
 );

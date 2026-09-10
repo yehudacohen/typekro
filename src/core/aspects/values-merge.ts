@@ -36,6 +36,47 @@ export function mergeValuesExpression(base: unknown, overlay: unknown): ValuesMe
   return { __typekroValuesMerge: true, base, overlays: [overlay] };
 }
 
+/**
+ * True when a chart-values argument cannot be enumerated at build time: a
+ * whole-object schema/resource reference, a CEL expression, a mixed template,
+ * or an existing runtime merge node.
+ */
+function isOpaqueChartValues(value: unknown): boolean {
+  return (
+    isValuesMergeExpression(value) ||
+    isKubernetesRef(value) ||
+    isResourceReference(value) ||
+    isCelExpression(value) ||
+    isMixedTemplate(value)
+  );
+}
+
+/**
+ * Layer a factory's static chart defaults UNDER caller-supplied values.
+ *
+ * Replaces the `{ ...defaults, ...values }` spread that silently mangles an
+ * opaque values argument: spreading a schema reference asks the proxy for keys
+ * that only exist per instance, so the reference is lost and the emitted chart
+ * values carry a placeholder key instead (issue #190). Plain objects keep the
+ * exact build-time shallow-merge semantics the spread had.
+ */
+export function withChartValueDefaults(
+  defaults: Record<string, unknown>,
+  values: unknown
+): unknown {
+  if (isValuesMergeExpression(values)) {
+    return {
+      __typekroValuesMerge: true,
+      base: isPlainMergeObject(values.base) ? { ...defaults, ...values.base } : values.base,
+      overlays: values.overlays,
+    } satisfies ValuesMergeExpression;
+  }
+  if (isOpaqueChartValues(values)) {
+    return mergeValuesExpression(defaults, values);
+  }
+  return { ...defaults, ...(isPlainMergeObject(values) ? values : {}) };
+}
+
 function isPlainMergeObject(value: unknown): value is Record<string, unknown> {
   if (
     !value ||

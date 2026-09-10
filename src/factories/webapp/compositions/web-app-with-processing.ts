@@ -429,6 +429,17 @@ export function makeWebAppWithProcessing(
           inngest: inngestBootstrapApp.status.ready,
         },
       };
+    },
+    {
+      // KNOWN structural spec-dependence (issue #190): `spec.app.env` is a
+      // map-typed field spread into the container's env dict at build time, so
+      // in KRO mode the RGD carries one `__typekroSchemaKey` placeholder var
+      // instead of the instance's variables. KRO has no construct for expanding
+      // a runtime map into a container env list, so the fix is an API change —
+      // drop `app.env` in favour of `app.envFrom` (which already handles a
+      // whole-object reference correctly), the same call PR #186 made for
+      // Traefik's `entrypoints.*.expose`. Warn until that lands.
+      allowStructuralSpecDependence: true,
     }
   );
 }

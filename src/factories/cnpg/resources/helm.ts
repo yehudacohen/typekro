@@ -5,6 +5,7 @@
  * Used by the cnpgBootstrap composition to install the operator.
  */
 
+import { withChartValueDefaults } from '../../../core/aspects/values-merge.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
@@ -88,10 +89,12 @@ export function cnpgHelmRelease(
       kind: 'HelmRepository',
     },
     driftDetection: { mode: 'enabled' },
-    values: {
-      crds: { create: true },
-      ...(config.values || {}),
-    },
+    // Layer the chart default UNDER the caller's values. Spreading here would
+    // enumerate a whole-object schema reference at build time and lose it.
+    values: withChartValueDefaults({ crds: { create: true } }, config.values) as Record<
+      string,
+      unknown
+    >,
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('CNPG')
