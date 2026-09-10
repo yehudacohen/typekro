@@ -30,8 +30,54 @@ export interface ClickHouseOperatorHelmValues {
       limits?: { cpu?: string; memory?: string };
     };
   };
+  configs?: {
+    files?: {
+      'config.yaml'?: {
+        label?: { exclude?: string[] };
+        annotation?: { exclude?: string[] };
+      };
+    };
+  };
   [key: string]: unknown;
 }
+
+/**
+ * CHI labels the operator must NOT copy onto the resources it generates.
+ *
+ * WHY THIS DEFAULT EXISTS — a live, reproducible deadlock. The Altinity
+ * operator propagates a ClickHouseInstallation's labels to every object it
+ * creates for it (ConfigMaps, Services, the StatefulSet, the PVCs). In KRO
+ * mode the CHI is a KRO graph child, so KRO stamps it with its ApplySet
+ * membership labels — and the operator then copies those onto its OWN
+ * children, which makes them look like members of the same ApplySet. KRO's
+ * pruning reaps every member that is not in its declared graph, so the
+ * operator's generated ConfigMaps were deleted moments after they were
+ * created. The Pod then never started:
+ *
+ *   MountVolume.SetUp failed for volume "chi-<name>-common-configd":
+ *   configmap "chi-<name>-common-configd" not found
+ *
+ * and the operator sat in `Poll(): WAIT` forever waiting for a host that could
+ * not come up — the CHI stuck `InProgress` with no error anywhere. Direct mode
+ * is unaffected (TypeKro's own labels carry no pruning semantics), so this only
+ * appears under `factory('kro')`, which is precisely why the KRO-mode e2e
+ * exists.
+ *
+ * The operator's own configuration is the right place to stop it: `label.exclude`
+ * filters the labels it propagates. Only OWNERSHIP labels are excluded — the
+ * `kro.run/instance-*` labels stay, so an operator can still see which instance
+ * a generated object belongs to.
+ *
+ * @see https://kubernetes.io/docs/tasks/manage-kubernetes-objects/declarative-config/#how-to-migrate-from-imperative-command-management-to-declarative-object-configuration
+ */
+export const OPERATOR_PROPAGATION_EXCLUDED_LABELS: readonly string[] = [
+  // The ApplySet membership pair. `part-of` is what pruning keys on.
+  'applyset.kubernetes.io/part-of',
+  'applyset.kubernetes.io/id',
+  // KRO's own ownership markers, for the same reason.
+  'kro.run/owned',
+  'kro.run/node-id',
+];
 
 /**
  * Mapper result: plain values, or a graph-aware runtime merge when
@@ -82,6 +128,18 @@ export function mapClickHouseOperatorConfigToHelmValues(
   if (config.resources !== undefined) {
     values.operator = { resources: config.resources };
   }
+
+  // Stop the operator copying ApplySet/KRO ownership labels from the CHI onto
+  // the objects it generates — see OPERATOR_PROPAGATION_EXCLUDED_LABELS for the
+  // deadlock this prevents. A default rather than an opt-in: a KRO-mode CHI is
+  // the normal case, and there is no configuration in which propagating
+  // another controller's pruning label is what the user wanted. `customValues`
+  // merges last, so an operator who needs a different exclude list still wins.
+  values.configs = {
+    files: {
+      'config.yaml': { label: { exclude: [...OPERATOR_PROPAGATION_EXCLUDED_LABELS] } },
+    },
+  };
 
   return mergeCustomValuesLast(values, config.customValues);
 }

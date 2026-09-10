@@ -137,11 +137,47 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
     );
     // KRO status CEL can never reference schema.spec.*.
     expect(JSON.stringify(status)).not.toContain('schema.spec');
-    // BARE constants (app.appPort/apiPort, version) have no resource anchor
-    // and stay CLIENT-HYDRATED — absent from KRO status; the ports remain
-    // KRO-visible inside the URL fields above.
-    expect(JSON.stringify(status)).not.toContain('appPort');
-    expect(JSON.stringify(status)).not.toContain('apiPort');
+
+    const projected = root.spec.schema.status as {
+      version: string;
+      app: { appPort: string; apiPort: string };
+      storage: { mode: string; persistentQueue: string };
+    };
+    // `version` is the chart pin on the OWNED HelmRelease — a resource
+    // projection whose path repeats `spec`. The RGD validator used to read that
+    // second segment as a resource id ("Referenced resource 'chart' does not
+    // exist") and the composition echoed the value through the contract
+    // ConfigMap instead; the fix is in the core scanner, so this is the direct
+    // anchor again.
+    expect(projected.version).toBe('${clickstackHelmRelease.spec.chart.spec.version}');
+
+    // The remaining CONSTRUCTION-TIME fields (the ports, the storage block)
+    // have no owned resource that already carries them, so they are projected
+    // from the contract ConfigMap this composition owns — reaching the live CR
+    // instead of being literals KRO drops. ConfigMap values are strings, so the
+    // ports come back through `int(...)`.
+    expect(projected.app.appPort).toBe('${int(clickstackContract.data.appPort)}');
+    expect(projected.app.apiPort).toBe('${int(clickstackContract.data.apiPort)}');
+    expect(projected.storage.mode).toBe('${clickstackContract.data.storageMode}');
+    expect(projected.storage.persistentQueue).toBe(
+      '${clickstackContract.data.storagePersistentQueue == "true"}'
+    );
+
+    // EVERY declared status leaf is a resource projection — no literal leaf
+    // survives to promise a field the instance CR will not carry.
+    const leaves: string[] = [];
+    const walk = (value: unknown): void => {
+      if (typeof value === 'object' && value !== null) {
+        for (const nested of Object.values(value)) walk(nested);
+      } else {
+        leaves.push(String(value));
+      }
+    };
+    walk(status);
+    expect(leaves.length).toBeGreaterThan(0);
+    for (const leaf of leaves) {
+      expect(leaf).toMatch(/\$\{/);
+    }
 
     // The typed contract itself is declared on the status schema (client-hydrated fields included).
     const valid = ClickStackBootstrapStatusSchema({

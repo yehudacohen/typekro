@@ -27,7 +27,17 @@ import type {
   ClickHouseInstallationSpec,
   ClickHouseInstallationStatus,
 } from '../types.js';
-import { assertPositiveIntegerCount } from '../utils/validation.js';
+import {
+  clickHouseS3ConfigurationFiles,
+  clickHouseS3ConfigurationSettings,
+  clickHouseS3ContainerEnv,
+  clickHouseS3ServiceAccountName,
+  resolveClickHouseStorage,
+} from '../utils/s3-storage.js';
+import {
+  assertClickHouseClusterName,
+  assertPositiveIntegerCount,
+} from '../utils/validation.js';
 import { compileZonePinnedLayout } from '../utils/zone-layout.js';
 
 /**
@@ -53,10 +63,7 @@ export const CHI_STATUS = {
  * single status string plus host progress counters.
  */
 export function chiReadinessEvaluator(liveResource: unknown): ResourceStatus {
-  const resource = liveResource as
-    | { status?: ClickHouseInstallationStatus }
-    | null
-    | undefined;
+  const resource = liveResource as { status?: ClickHouseInstallationStatus } | null | undefined;
   const status = resource?.status;
 
   if (!status || status.status === undefined) {
@@ -222,17 +229,43 @@ function compileInstallationSpec(
   assertPositiveIntegerCount('clickHouseInstallation', 'shards', shards);
   assertPositiveIntegerCount('clickHouseInstallation', 'replicas', replicas);
   const clusterName = config.clusterName ?? DEFAULT_CHI_CLUSTER_NAME;
-  const image =
-    config.image ?? `${DEFAULT_CLICKHOUSE_IMAGE_REPOSITORY}:${config.version}`;
+  // Concrete names only — a schema reference passes through untouched and is
+  // constrained by the generated KRO schema instead (see
+  // `ClickHouseClusterNameSchema`). The value is a fragment of every object
+  // name the operator generates AND the `ON CLUSTER` target of the backup.
+  assertClickHouseClusterName('clickHouseInstallation', 'clusterName', clusterName);
+  const image = config.image ?? `${DEFAULT_CLICKHOUSE_IMAGE_REPOSITORY}:${config.version}`;
   const zones = config.zones ?? [];
+
+  // Storage resolution happens BEFORE the pod spec: in S3 mode it contributes
+  // container env (Secret-backed keys) and a ServiceAccount (IRSA), and it is
+  // where PVC/S3 option mixing is rejected.
+  const storage = resolveClickHouseStorage(
+    'clickHouseInstallation',
+    config.storage,
+    config.version
+  );
+  if (storage.mode === 's3' && storage.diskType === 's3_plain_rewritable' && replicas > 1) {
+    throw new Error(
+      `clickHouseInstallation: storage.diskType 's3_plain_rewritable' does not support table ` +
+        `replication (ClickHouse documents mutations and replication as unsupported for the ` +
+        `plain_rewritable metadata type), so it requires a SINGLE replica (got ${replicas}). ` +
+        `Use diskType: 's3' with a backup schedule for a replicated cluster.`
+    );
+  }
+  const s3Env = storage.mode === 's3' ? clickHouseS3ContainerEnv(storage) : [];
+  const s3ServiceAccountName =
+    storage.mode === 's3' ? clickHouseS3ServiceAccountName(storage, config.name) : undefined;
 
   // Shared ClickHouse server pod spec (per-zone templates add affinity).
   const podSpec: Record<string, unknown> = {
+    ...(s3ServiceAccountName !== undefined && { serviceAccountName: s3ServiceAccountName }),
     containers: [
       {
         name: 'clickhouse',
         image,
         ...(config.podResources && { resources: config.podResources }),
+        ...(s3Env.length > 0 && { env: s3Env }),
       },
     ],
   };
@@ -311,12 +344,19 @@ function compileInstallationSpec(
       // The operator's `zookeeper` section serves clickhouse-keeper too.
       ...(config.keeper && {
         zookeeper: {
-          nodes: [
-            { host: config.keeper.host, port: config.keeper.port ?? 2181 },
-          ],
+          nodes: [{ host: config.keeper.host, port: config.keeper.port ?? 2181 }],
         },
       }),
       ...(config.users && { users: compileUsers(config.users) }),
+      // S3 mode: the rendered storage_configuration lands in
+      // `configuration.files` (`config.d/storage.xml`) and the policy becomes
+      // the MergeTree DEFAULT via `configuration.settings`, so tables created
+      // by tooling outside TypeKro (HyperDX/OTel goose migrations, SigNoz's
+      // migrator) go to object storage with no per-table DDL.
+      ...(storage.mode === 's3' && {
+        settings: clickHouseS3ConfigurationSettings(storage),
+        files: clickHouseS3ConfigurationFiles(storage),
+      }),
     },
     templates: {
       podTemplates,

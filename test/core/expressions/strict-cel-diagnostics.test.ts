@@ -399,4 +399,85 @@ describe('Strict CEL diagnostics', () => {
       );
     });
   });
+
+  /**
+   * Only the FIRST segment of a resource-projection path names a resource.
+   *
+   * The scanner used to key on a word boundary, which also matches straight after a `.` — so any
+   * path whose INTERIOR repeated a Kubernetes section name was scanned a second time from that
+   * interior segment and rejected. `helmRelease.spec.chart.spec.version` — the chart pin every
+   * Flux-backed factory wants to project its installed version from — failed with "Referenced
+   * resource 'chart' does not exist", and factories worked around it by echoing the value through
+   * an owned ConfigMap instead.
+   *
+   * These cases need TWO resources in the graph: with exactly one, the serializer's
+   * single-resource fallback binds any name and the finding never reaches validation.
+   */
+  describe('resource-projection paths with nested spec/metadata/status segments', () => {
+    const resources: Record<string, KubernetesResource> = {
+      helmRelease: {
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        kind: 'HelmRelease',
+        id: 'helmRelease',
+        metadata: { name: 'app' },
+      },
+      contract: {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        id: 'contract',
+        metadata: { name: 'app-contract' },
+      },
+    };
+
+    it.each([
+      ['a nested spec segment', 'helmRelease.spec.chart.spec.version'],
+      ['a nested metadata segment', 'helmRelease.status.conditions.metadata.name'],
+      ['a nested status segment', 'helmRelease.spec.values.status.enabled'],
+      ['both, past the root', 'helmRelease.spec.chart.spec.metadata.status.version'],
+    ])('accepts a path with %s on a known resource', (_label, expression) => {
+      const result = validateStatusCelExpressions(
+        { version: Cel.expr<string>(expression) },
+        resources
+      );
+
+      expect(result.isValid).toBe(true);
+      expect(result.errors).toEqual([]);
+      // Not merely downgraded to a warning: the interior segment is a field name, so it must
+      // produce no unknown-resource finding of any severity.
+      expect(result.warnings.filter((warning) => warning.code === 'unknown-resource')).toEqual([]);
+    });
+
+    it('still rejects a path whose ROOT is not a resource in the graph', () => {
+      const result = validateStatusCelExpressions(
+        { version: Cel.expr<string>('nosuchresource.spec.chart.spec.version') },
+        resources
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({
+          code: 'unknown-resource',
+          referencedResource: 'nosuchresource',
+          error: "Referenced resource 'nosuchresource' does not exist",
+        })
+      );
+      // Exactly one finding — the root. `chart` is a field name on that path, not a second
+      // unknown resource.
+      expect(result.errors.map((error) => error.referencedResource)).toEqual(['nosuchresource']);
+    });
+
+    it('still rejects an unknown root that appears AFTER a valid reference', () => {
+      const result = validateStatusCelExpressions(
+        {
+          ready: Cel.expr<boolean>(
+            'helmRelease.spec.chart.spec.version != "" && nosuchresource.spec.replicas > 0'
+          ),
+        },
+        resources
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.map((error) => error.referencedResource)).toEqual(['nosuchresource']);
+    });
+  });
 });

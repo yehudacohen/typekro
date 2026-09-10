@@ -195,6 +195,144 @@ export type ClickStackMongoBuildOptions =
   | { mode: 'internal'; storage?: ClickStackMongoStorageOptions }
   | { mode: 'external' };
 
+/**
+ * Per-signal retention for the OTel tables the gateway collector creates.
+ *
+ * Values are duration strings — `'30d'`, `'720h'`, `'90m'` — compiled into
+ * `ALTER TABLE ... MODIFY TTL <timestamp column> + INTERVAL <n> <unit> DELETE`.
+ * Omit a signal to leave its table's TTL alone.
+ *
+ * ⚠️ NOT COMPATIBLE WITH `diskType: 's3_plain_rewritable'`, and the
+ * combination is rejected at construction. That metadata type is immutable:
+ * ClickHouse refuses every `ALTER TABLE` on it except settings and comments
+ * (code 344, `SUPPORT_IS_DISABLED` — LIVE-VERIFIED against 25.7), so the
+ * retention CronJob could never apply a TTL there. Use `diskType: 's3'` for
+ * TypeKro-managed TTL, or keep the TTL the collector's own migrations create.
+ */
+export interface ClickStackRetentionOptions {
+  /** `otel_logs` (and `hyperdx_sessions`, which is a log-kind table). */
+  logs?: string;
+  /** `otel_traces`. */
+  traces?: string;
+  /** `otel_metrics_gauge`, `otel_metrics_sum`, `otel_metrics_histogram`. */
+  metrics?: string;
+}
+
+/**
+ * OTel gateway collector persistent sending queue.
+ *
+ * WHY: the gateway buffers in memory by default, so a ClickHouse restart —
+ * exactly what an S3-backed node rebuild causes — drops whatever is in flight.
+ * A `file_storage`-backed queue survives it, PROVIDED the directory backing it
+ * outlives the collector Pod. Enabling this therefore renders a standalone
+ * PersistentVolumeClaim owned by the composition and mounts it by
+ * `claimName` — never an `emptyDir` or a generic ephemeral volume, both of
+ * which Kubernetes deletes with the Pod.
+ *
+ * ⚠️ EXACTLY ONE GATEWAY COLLECTOR REPLICA. The queue is a bbolt database and
+ * the `file_storage` extension holds an exclusive file lock on it, so a second
+ * collector opening the same directory blocks on that lock
+ * (opentelemetry-collector-contrib issue #5894). A build-time
+ * `values['otel-collector'].replicaCount` above 1 is REJECTED at construction,
+ * and the rendered values pin `replicaCount: 1`. There is deliberately no
+ * shared-volume escape hatch: `ReadWriteMany` would hand every replica the
+ * same locked database. Per-replica queues would need the chart's
+ * `mode: statefulset` with `volumeClaimTemplates`, which this composition does
+ * not model today.
+ *
+ * ⚠️ THE OVERLAY IS ONE YAML DOCUMENT. This is emitted through the chart's
+ * supported `global.otelCollector.customConfig` merge seam, which the ingest
+ * pipelines use too, and a YAML list in that overlay REPLACES the supervisor's
+ * own list rather than appending to it. That means `extensions` below must
+ * enumerate every extension the collector needs, and `exporterNames` must
+ * match exporters the OpAMP supervisor actually defines. Both are exposed as
+ * options precisely because the correct values depend on the ClickStack
+ * version you deploy — check the rendered collector config before relying on
+ * this in production.
+ *
+ * LIVE FINDING (fixed): the overlay used to be assembled by CONCATENATING the
+ * ingest-pipeline YAML and this queue's YAML, and both open a top-level
+ * `service:` key, so the supervisor rejected the whole file
+ * (`mapping key "service" already defined`) and the agent ran with NEITHER.
+ * Contributions are structured fragments now, deep-merged and serialised once
+ * — see `utils/collector-config.ts`.
+ */
+export interface ClickStackPersistentQueueOptions {
+  /** Enable the file-storage-backed sending queue (default: false). */
+  enabled: boolean;
+  /** Queue directory inside the collector pod. */
+  directory?: string;
+  /**
+   * Size of the queue's PersistentVolumeClaim (default: `'10Gi'`).
+   *
+   * There is deliberately NO ephemeral fallback: enabling the queue always
+   * renders a standalone PVC owned by the composition, because a queue that
+   * does not outlive the collector Pod is not a persistent queue. An
+   * `emptyDir` and a *generic ephemeral volume* are both deleted together with
+   * their owning Pod
+   * (https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/), so
+   * either would make this option a no-op under exactly the restart it exists
+   * to survive.
+   */
+  size?: string;
+  /** StorageClass for the queue PVC (cluster default when omitted). */
+  storageClassName?: string;
+  /**
+   * Exporters whose `sending_queue` is switched to file storage. Must be
+   * non-empty when the queue is enabled; defaults to the single ClickHouse
+   * exporter the ClickStack collector defines.
+   *
+   * ⚠️ NOT VALIDATED AT BUILD TIME, BY DESIGN — a name TypeKro cannot check.
+   * The exporter set lives in the remote configuration the OpAMP supervisor
+   * hands the agent, not in anything this factory renders, so a name the agent
+   * does not define cannot be rejected here. It fails SILENTLY at runtime: the
+   * supervisor merges the overlay, the `exporters` map simply grows an exporter
+   * no pipeline references, and the real exporter keeps its in-memory queue.
+   * The integration suite therefore asserts these names against the agent's own
+   * EFFECTIVE configuration instead of trusting the default.
+   */
+  exporterNames?: readonly string[];
+  /**
+   * The complete `service.extensions` list to emit. It REPLACES the
+   * supervisor's list, so it must name every extension the collector needs.
+   */
+  extensions?: readonly string[];
+}
+
+/**
+ * BUILD-TIME description of the EXTERNAL ClickHouse's storage, plus the
+ * ClickStack-side knobs that depend on it.
+ *
+ * WHY build-time: `retention` renders a DDL CronJob and `persistentQueue`
+ * renders chart values plus volumes — both decide WHICH resources exist and
+ * what static text they carry, the same class as the Mongo mode.
+ *
+ * NO PER-TABLE DDL IS NEEDED for the storage policy itself: the `clickhouse`
+ * factory sets `merge_tree/storage_policy` as the server DEFAULT, so the
+ * gateway collector's goose migrations create `otel_logs` / `otel_traces` /
+ * `otel_metrics_*` / `hyperdx_sessions` on the S3 policy without any
+ * `SETTINGS storage_policy` clause (see the SCHEMA caveat in
+ * `compositions/clickstack-bootstrap.ts`). These options exist for the two
+ * things the server default cannot express — TTL and the collector queue — and
+ * to surface the mode on the status contract.
+ */
+export interface ClickStackStorageOptions {
+  /** Storage mode of the external ClickHouse (default: 'pvc'). */
+  mode?: 'pvc' | 's3';
+  /** Object-storage disk type, echoed onto the status contract. */
+  diskType?: 's3' | 's3_plain_rewritable';
+  /** The external ClickHouse's default MergeTree policy (default: 's3_main'). */
+  policyName?: string;
+  /** Per-signal TTL, rendered as an idempotent DDL CronJob. */
+  retention?: ClickStackRetentionOptions;
+  /** Cron schedule for the retention DDL CronJob (default: '17 * * * *'). */
+  retentionSchedule?: string;
+  /** Image running `clickhouse-client` for the retention DDL. */
+  retentionImage?: string;
+  /** OTel gateway collector persistent sending queue. */
+  persistentQueue?: ClickStackPersistentQueueOptions;
+}
+
 /** Shared build-time options for both bootstrap variants. */
 interface ClickStackBuildOptionsBase {
   /**
@@ -214,6 +352,12 @@ interface ClickStackBuildOptionsBase {
   name?: string;
   /** KRO kind override. */
   kind?: string;
+  /**
+   * The external ClickHouse's storage story and the ClickStack-side knobs that
+   * depend on it (TTL retention, collector persistent queue, status contract).
+   * Omit for the PVC default — existing behaviour is unchanged.
+   */
+  storage?: ClickStackStorageOptions;
 }
 
 /** Build-time options for inline credentials with internal Mongo. */
@@ -418,18 +562,29 @@ export type ClickStackBootstrapRuntimeConfig = (
  * `fullnameOverride` is set) and the gateway Service is
  * `<name>-otel-collector` (subchart naming off `.Release.Name`).
  *
- * KRO STATUS vs CLIENT-HYDRATED SPLIT: fields anchored on the owned
- * HelmRelease resource serialize as KRO status CEL and appear on the live
- * KRO CR's status (GitOps/KRO consumers can read them): `ready`, `phase`,
+ * EVERY DECLARED FIELD IS OBSERVABLE THROUGH KRO. Fields anchored on the owned
+ * HelmRelease serialize as KRO status CEL directly: `ready`, `phase`,
  * `ui.url`, `gateway.otlpHttpEndpoint`, `gateway.otlpGrpcEndpoint`,
  * `app.host` — natural JS template literals over
  * `clickstackHelmRelease.metadata.name`/`.namespace` (bimodal on typekro
  * >= 0.24.0: status CEL in `factory('kro')`, concrete strings via direct-mode
  * re-execution), never `schema.spec.*` (KRO status CEL cannot reference the
- * instance spec). The BARE build-time constants `app.appPort` (3000) and
- * `app.apiPort` (8000), plus the spec-derived `version`, have no resource
- * anchor and are hydrated CLIENT-SIDE by TypeKro (absent from the KRO CR
- * status); the ports remain KRO-visible inside the URL fields.
+ * instance spec).
+ *
+ * `version` is anchored on that same HelmRelease — its chart pin,
+ * `clickstackHelmRelease.spec.chart.spec.version` — so the reported version is
+ * the one Flux is reconciling rather than an echo of the request.
+ *
+ * The remaining fields — `app.appPort`, `app.apiPort`, and the whole `storage`
+ * block — are CONSTRUCTION-TIME values with no owned resource that already
+ * carries them. Emitted as literals they were dropped by KRO, so the declared
+ * schema promised fields the live CR never carried. The composition instead
+ * writes them into a ConfigMap it OWNS (`<release>-contract`) and projects
+ * them back from that resource, so `kubectl get clickstackbootstraps -o yaml`
+ * shows the whole contract. The ConfigMap's values are strings, so the ports
+ * come back through CEL `int(...)` and `persistentQueue` through an
+ * `== "true"` comparison.
+ *
  * Ports are the chart defaults (`hyperdx.ports`, `otel-collector.ports`);
  * port overrides via build-time raw values are NOT reflected here.
  */
@@ -438,7 +593,7 @@ export const ClickStackBootstrapStatusSchema = type({
   ready: 'boolean',
   /** Coarse phase from the owned HelmRelease Ready condition. */
   phase: '"Ready" | "Installing" | "Failed"',
-  /** Configured chart version. */
+  /** Chart version pinned on the owned HelmRelease. */
   'version?': 'string',
   /** HyperDX UI. */
   ui: {
@@ -460,6 +615,29 @@ export const ClickStackBootstrapStatusSchema = type({
     appPort: 'number.integer',
     /** API port. */
     apiPort: 'number.integer',
+  },
+  /**
+   * Storage contract of the external ClickHouse this stack writes to, next to
+   * `gateway.otlpHttpEndpoint` so a consumer reads durability and ingest from
+   * one place. Construction-time values, PROJECTED from the owned
+   * `<release>-contract` ConfigMap so they appear on the live KRO CR status
+   * (same treatment as `app.appPort`/`apiPort` and `version`).
+   */
+  storage: {
+    /** 'pvc' or 's3'. */
+    mode: '"pvc" | "s3"',
+    /** Object-storage disk type of the external ClickHouse. */
+    'diskType?': '"s3" | "s3_plain_rewritable"',
+    /** Default MergeTree storage policy the OTel tables are created on. */
+    'policyName?': 'string',
+    /** Configured per-signal TTL, when a retention CronJob is rendered. */
+    'retention?': {
+      'logs?': 'string',
+      'traces?': 'string',
+      'metrics?': 'string',
+    },
+    /** Whether the gateway collector uses a file-storage sending queue. */
+    'persistentQueue?': 'boolean',
   },
 });
 
@@ -582,50 +760,79 @@ export const ClickStackHelmRepositoryConfigSchema = type({
 /** Configuration for the ClickStack HelmRepository wrapper. */
 export type ClickStackHelmRepositoryConfig = typeof ClickStackHelmRepositoryConfigSchema.infer;
 
-/** Configuration for the ClickStack HelmRelease wrapper. */
-export interface ClickStackHelmReleaseConfig {
-  name: string;
-  namespace?: string;
-  version?: string;
-  repositoryName?: string;
-  repositoryNamespace?: string;
+/**
+ * ArkType schema for ClickStackHelmReleaseConfig.
+ *
+ * `values` and `valuesFrom` are validated as `object` / `object[]` and carry
+ * their precise TypeScript types through `.as<>()`. Neither is a shape ArkType
+ * can describe: a values tree is an OPEN chart-values document that may also
+ * be a runtime {@link ValuesMergeExpression}, and `valuesFrom` entries may be
+ * graph-aware {@link TypeKroValue}s. Restating either as a schema shape would
+ * make it a second source of truth for the chart's own values contract; the
+ * cast keeps the config INFERRED whole from this schema instead of needing a
+ * hand-written widening layer on top of `.infer`.
+ */
+export const ClickStackHelmReleaseConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
   /** Official clickstack chart values (graph-aware trees / runtime merges allowed). */
-  values?: ClickStackMappedHelmValues;
+  'values?': type('object').as<ClickStackMappedHelmValues>(),
   /** Secret/ConfigMap values overlays resolved by Flux before inline values. */
-  valuesFrom?: TypeKroValue<HelmReleaseValuesFromSource>[];
-  id?: string;
-}
+  'valuesFrom?': type('object[]').as<TypeKroValue<HelmReleaseValuesFromSource>[]>(),
+  'id?': 'string',
+});
+
+/** Configuration for the ClickStack HelmRelease wrapper. */
+export type ClickStackHelmReleaseConfig = typeof ClickStackHelmReleaseConfigSchema.infer;
+
+/**
+ * ArkType schema for OtelCollectorHelmReleaseConfig.
+ *
+ * See {@link ClickStackHelmReleaseConfigSchema} for why `values` is an
+ * `object` carrying its precise type through `.as<>()`.
+ */
+export const OtelCollectorHelmReleaseConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'version?': 'string',
+  'repositoryName?': 'string',
+  'repositoryNamespace?': 'string',
+  /** Stock opentelemetry-collector chart values (graph-aware trees / runtime merges allowed). */
+  'values?': type('object').as<OtelCollectorMappedHelmValues>(),
+  'id?': 'string',
+});
 
 /** Configuration for a stock opentelemetry-collector HelmRelease wrapper. */
-export interface OtelCollectorHelmReleaseConfig {
-  name: string;
-  namespace?: string;
-  version?: string;
-  repositoryName?: string;
-  repositoryNamespace?: string;
-  /** Stock opentelemetry-collector chart values (graph-aware trees / runtime merges allowed). */
-  values?: OtelCollectorMappedHelmValues;
-  id?: string;
-}
+export type OtelCollectorHelmReleaseConfig = typeof OtelCollectorHelmReleaseConfigSchema.infer;
 
 // ============================================================================
 // Internal Mongo resources
 // ============================================================================
 
-/** Configuration for the internal-mode MongoDB StatefulSet/Service pair. */
-export interface ClickStackMongoConfig {
+/**
+ * ArkType schema for ClickStackMongoConfig.
+ *
+ * Configuration for the internal-mode MongoDB StatefulSet/Service pair.
+ */
+export const ClickStackMongoConfigSchema = type({
   /** ClickStack instance name; resources are named `<name>-mongodb`. */
-  name: string;
+  name: 'string',
   /** Target namespace. */
-  namespace: string;
+  namespace: 'string',
   /** PVC size (default: '5Gi'). Build-time concrete value. */
-  storageSize?: string;
+  'storageSize?': 'string',
   /** Optional StorageClass for the PVC. Build-time concrete value. */
-  storageClassName?: string;
+  'storageClassName?': 'string',
   /** Mongo image (default: 'mongo:7'). */
-  image?: string;
+  'image?': 'string',
   /** Resource id for the StatefulSet. */
-  statefulSetId?: string;
+  'statefulSetId?': 'string',
   /** Resource id for the Service. */
-  serviceId?: string;
-}
+  'serviceId?': 'string',
+});
+
+/** Configuration for the internal-mode MongoDB StatefulSet/Service pair. */
+export type ClickStackMongoConfig = typeof ClickStackMongoConfigSchema.infer;
