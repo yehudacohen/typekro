@@ -463,6 +463,175 @@ function defaultValue(
 /** Alias for {@link defaultValue}. */
 const coalesce: typeof defaultValue = defaultValue;
 
+/** A CEL list reference: a proxy/expression, or a literal CEL path. */
+export type CelListRef = RefOrValue<unknown> | string;
+
+/**
+ * Resolve a list argument to the CEL path text that names it.
+ *
+ * A plain string is taken as an already-written CEL path (`myService.status.x`),
+ * which is what a composition uses when it names a graph resource by id.
+ */
+function celListPath(list: CelListRef, helperName: string): string {
+  if (isKubernetesRef(list)) return getInnerCelPath(list);
+  if (isCelExpression(list)) return list.expression;
+  if (typeof list === 'string' && list.trim().length > 0) return list.trim();
+  throw new TypeKroError(
+    `${helperName}() requires a KubernetesRef, a CelExpression, or a non-empty CEL path string.`,
+    'CEL_INVALID_INPUT'
+  );
+}
+
+/**
+ * Chain a `has()` guard for every hop of a CEL path below its root identifier.
+ *
+ * `a.status.loadBalancer.ingress` becomes
+ * `has(a.status) && has(a.status.loadBalancer) && has(a.status.loadBalancer.ingress)`.
+ * Returns `undefined` when the path has no hop to guard (a bare identifier) or
+ * is not a plain dotted path, in which case the caller guards the whole thing.
+ */
+function chainedHasGuard(path: string): string | undefined {
+  if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(path)) return undefined;
+  const segments = path.split('.');
+  return segments
+    .slice(1)
+    .map((_, index) => `has(${segments.slice(0, index + 2).join('.')})`)
+    .join(' && ');
+}
+
+/**
+ * Project the first entry of an optional nested list that actually carries a
+ * field, in the one CEL form both engines accept.
+ *
+ * ## Why this helper exists
+ *
+ * An optional nested list — `service.status.loadBalancer.ingress`,
+ * `helmRelease.status.history` — is absent until a controller fills it in, and
+ * the two CEL engines TypeKro emits for disagree about how to guard it:
+ *
+ * - **`has()` on an index expression** (`has(list[0].field)`) is rejected by
+ *   cel-js: "has() does not support atomic expressions".
+ * - **`"field" in list[0]`** is rejected by cel-go under KRO's type env, which
+ *   types a list entry as a message rather than a map.
+ * - **A `has()` guard on the *right* of `&&`** (`size(list) > 0 && has(list)`)
+ *   is absorbed by cel-go but propagates in cel-js, which evaluates operands
+ *   left to right.
+ *
+ * The form both engines accept is `list.filter(entry, has(entry.field))` inside
+ * a **lazy ternary**, which is exactly what this helper emits:
+ *
+ * ```
+ * has(a.status) && has(a.status.list)
+ *   ? (size(<matching>) > 0 ? <matching>[0].<field> : <fallback>)
+ *   : <fallback>
+ * ```
+ *
+ * @param list The list to read: a resource-reference proxy, a CEL expression,
+ *   or a literal CEL path such as `'myService.status.loadBalancer.ingress'`.
+ * @param field The field an entry must carry to be selected.
+ * @param fallback Value used when the list is absent, empty, or has no entry
+ *   carrying `field`. Defaults to the empty string.
+ *
+ * @example
+ * ```typescript
+ * // First ingress entry that reports a hostname, or '' while none does.
+ * hostname: Cel.firstWhereHas<string>(service.status.loadBalancer.ingress, 'hostname')
+ *
+ * // Naming a graph resource by id, as bootstrap compositions do.
+ * version: Cel.firstWhereHas<string>('release.status.history', 'chartVersion')
+ * ```
+ */
+function firstWhereHas<T = string>(
+  list: CelListRef,
+  field: string,
+  fallback: RefOrValue<CelValue> = ''
+): CelExpression<T> & T {
+  if (!/^[A-Za-z_$][\w$]*$/.test(field)) {
+    throw new TypeKroError(
+      `Cel.firstWhereHas() field must be a simple CEL identifier, received '${field}'.`,
+      'CEL_INVALID_INPUT'
+    );
+  }
+  const path = celListPath(list, 'Cel.firstWhereHas');
+  const matching = `${path}.filter(entry, has(entry.${field}))`;
+  const guard = chainedHasGuard(path) ?? `has(${path})`;
+  const fallbackCel = celValueForTernary(fallback);
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression: `${guard} ? (size(${matching}) > 0 ? ${matching}[0].${field} : ${fallbackCel}) : ${fallbackCel}`,
+  } as CelExpression<T> & T;
+}
+
+/**
+ * First entry of an optional nested list of scalars, with the same
+ * dual-dialect-safe guard as {@link firstWhereHas}.
+ *
+ * Use this when list entries are plain values (`status.endpoints.secure` is a
+ * list of URLs) and there is therefore no field to filter on. Every hop of the
+ * path is guarded, so an absent intermediate object yields the fallback instead
+ * of the cel-js "Identifier not found" error that a single `has()` on the full
+ * path produces.
+ *
+ * @example
+ * ```typescript
+ * endpoint: Cel.firstOf<string>('objectStore.status.endpoints.secure')
+ * ```
+ */
+function firstOf<T = string>(
+  list: CelListRef,
+  fallback: RefOrValue<CelValue> = ''
+): CelExpression<T> & T {
+  const path = celListPath(list, 'Cel.firstOf');
+  const guard = chainedHasGuard(path) ?? `has(${path})`;
+  const fallbackCel = celValueForTernary(fallback);
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression: `${guard} ? (size(${path}) > 0 ? ${path}[0] : ${fallbackCel}) : ${fallbackCel}`,
+  } as CelExpression<T> & T;
+}
+
+/** A Service whose `status.loadBalancer.ingress` can be projected. */
+export type LoadBalancerServiceRef = string | { status: { loadBalancer: { ingress: unknown } } };
+
+/**
+ * Project a Service's load balancer address in the one CEL form both engines
+ * accept.
+ *
+ * A `LoadBalancer` Service reports its address as `status.loadBalancer.ingress`,
+ * a list that does not exist until the cloud provider assigns one, and whose
+ * entries carry `ip` **or** `hostname` depending on the provider. This is
+ * {@link firstWhereHas} bound to that shape, so factories stop hand-rolling the
+ * guard.
+ *
+ * Yields the fallback (default `''`) while the Service has no address, and for
+ * the field the provider does not report.
+ *
+ * @param service The Service resource, or its graph resource id.
+ * @param field `'ip'` for L4 load balancers, `'hostname'` for name-based ones.
+ * @param fallback Value while no matching entry exists. Defaults to `''`.
+ *
+ * @example
+ * ```typescript
+ * loadBalancer: {
+ *   ip: Cel.loadBalancerAddress(gatewayService, 'ip'),
+ *   hostname: Cel.loadBalancerAddress(gatewayService, 'hostname'),
+ * }
+ * ```
+ */
+function loadBalancerAddress(
+  service: LoadBalancerServiceRef,
+  field: 'ip' | 'hostname' = 'ip',
+  fallback: RefOrValue<CelValue> = ''
+): CelExpression<string> & string {
+  const list =
+    typeof service === 'string'
+      ? `${service}.status.loadBalancer.ingress`
+      : (service.status.loadBalancer.ingress as RefOrValue<unknown>);
+  return firstWhereHas<string>(list, field, fallback);
+}
+
 /**
  * Creates a mixed string template that combines literal strings with CEL expressions
  *
@@ -647,6 +816,15 @@ export const Cel = {
   concat,
   has,
   not,
+  /**
+   * First entry of an optional nested list that carries `field`, in the one
+   * guard form cel-js and cel-go both accept.
+   */
+  firstWhereHas,
+  /** First entry of an optional nested list of scalars, dual-dialect safe. */
+  firstOf,
+  /** A Service's load balancer `ip`/`hostname`, dual-dialect safe. */
+  loadBalancerAddress,
   /** Tagged template literal for CEL expressions. Alias: standalone `cel` export. */
   tag: cel,
 
