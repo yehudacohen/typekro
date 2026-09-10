@@ -1513,24 +1513,58 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         phase('KRO-generated HelmRelease spec.values verified in-cluster');
 
         // 4. POD GROUND TRUTH. Status is the composition's claim; this is the
-        // cluster's. All pods Running, all containers ready, restarts inside
-        // the guide's KRO-mode budget (a simultaneous deploy restarts HyperDX
-        // while Mongo comes up).
-        const pods = await coreApi.listNamespacedPod({ namespace: kroStackNs });
-        // LONG-RUNNING workloads only. The composition also owns a CronJob
-        // (the ClickStack Team credential convergence), whose completed Job
-        // Pod sits in `Succeeded` by design — asserting `Running` over it
-        // would be asserting the wrong contract, so it gets its own check
-        // below.
+        // cluster's — but judged against THE WORKLOADS THE COMPOSITION OWNS,
+        // not against whatever pods happen to be sitting in the namespace.
+        // The Team credential convergence is a minute-level CronJob with
+        // `failedJobsHistoryLimit: 3` and `backoffLimit: 6`, so runs that fired
+        // before Mongo and HyperDX were serving, and the per-run retry attempts
+        // underneath them, are RETAINED BY DESIGN. Holding every pod in the
+        // namespace to `Running`, or every Job pod to `Succeeded`, fails on
+        // that retained history rather than on anything the composition did.
+        const batchApiForPods = createBunCompatibleBatchV1Api(kubeConfig);
+        const appsApiForPods = createAppsV1ApiClient(kubeConfig);
+        const [pods, deployments, statefulSets, replicaSets, jobs, cronJobs] = await Promise.all([
+          coreApi.listNamespacedPod({ namespace: kroStackNs }),
+          appsApiForPods.listNamespacedDeployment({ namespace: kroStackNs }),
+          appsApiForPods.listNamespacedStatefulSet({ namespace: kroStackNs }),
+          appsApiForPods.listNamespacedReplicaSet({ namespace: kroStackNs }),
+          batchApiForPods.listNamespacedJob({ namespace: kroStackNs }),
+          batchApiForPods.listNamespacedCronJob({ namespace: kroStackNs }),
+        ]);
+        const createdAt = (resource: { metadata?: { creationTimestamp?: Date } }): number =>
+          new Date(resource.metadata?.creationTimestamp ?? 0).getTime();
+
+        // LONG-RUNNING workloads: the HyperDX app and the gateway collector
+        // (chart-rendered Deployments, whose pods hang off a ReplicaSet) and
+        // Mongo (a StatefulSet the composition renders itself). Selected by
+        // ownerReference UID rather than by owner KIND, so a Job pod can never
+        // drift into this set and a long-running pod can never drop out of it.
+        const deploymentUids = new Set(
+          deployments.items.flatMap((deployment) => deployment.metadata?.uid ?? [])
+        );
+        const longRunningUids = new Set([
+          ...replicaSets.items
+            .filter((replicaSet) =>
+              (replicaSet.metadata?.ownerReferences ?? []).some((owner) =>
+                deploymentUids.has(owner.uid)
+              )
+            )
+            .flatMap((replicaSet) => replicaSet.metadata?.uid ?? []),
+          ...statefulSets.items.flatMap((statefulSet) => statefulSet.metadata?.uid ?? []),
+        ]);
+        // HyperDX app, the gateway collector, and Mongo — asserted on the
+        // workloads themselves so the pod filter below cannot pass vacuously
+        // by matching nothing.
+        expect(deployments.items.length + statefulSets.items.length).toBeGreaterThanOrEqual(3);
         const workloads = pods.items.filter(
           (pod) =>
             !pod.metadata?.deletionTimestamp &&
-            pod.metadata?.ownerReferences?.some(
-              (owner) => owner.kind === 'ReplicaSet' || owner.kind === 'StatefulSet'
-            )
+            (pod.metadata?.ownerReferences ?? []).some((owner) => longRunningUids.has(owner.uid))
         );
-        // HyperDX app, the gateway collector, and Mongo.
         expect(workloads.length).toBeGreaterThanOrEqual(3);
+        // All Running, all containers ready, restarts inside the guide's
+        // KRO-mode budget (a simultaneous deploy restarts HyperDX while Mongo
+        // comes up).
         for (const pod of workloads) {
           expect(pod.status?.phase).toBe('Running');
           const containers = pod.status?.containerStatuses ?? [];
@@ -1543,14 +1577,56 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
           expect(restarts).toBeLessThanOrEqual(10);
         }
 
-        // The credential-convergence Job the readiness contract gates on ran
-        // to completion — the other half of the pod ground truth.
-        const bootstrapPods = pods.items.filter((pod) =>
-          pod.metadata?.ownerReferences?.some((owner) => owner.kind === 'Job')
-        );
-        expect(bootstrapPods.length).toBeGreaterThan(0);
-        for (const pod of bootstrapPods) {
-          expect(pod.status?.phase).toBe('Succeeded');
+        // JOB PODS, judged per RUN. A Job's pods are its ATTEMPTS, so only the
+        // newest attempt speaks for that run — an earlier attempt failing is
+        // exactly what `backoffLimit` is for. A CronJob's Jobs are its RUNS, so
+        // only the newest run to reach a terminal phase speaks for the CronJob
+        // — an earlier run failing is the history `failedJobsHistoryLimit`
+        // deliberately keeps. What the readiness contract claims, and what this
+        // asserts, is that the convergence completed and that its latest
+        // completed run SUCCEEDED; a Failed latest run fails the test.
+        const latestAttemptByJob = new Map<string, (typeof pods.items)[number]>();
+        for (const pod of pods.items) {
+          const jobUid = (pod.metadata?.ownerReferences ?? []).find(
+            (owner) => owner.kind === 'Job'
+          )?.uid;
+          if (jobUid === undefined) continue;
+          const current = latestAttemptByJob.get(jobUid);
+          if (current === undefined || createdAt(pod) >= createdAt(current)) {
+            latestAttemptByJob.set(jobUid, pod);
+          }
+        }
+        // Group each run under the CronJob that scheduled it; a standalone Job
+        // is its own group.
+        const runsByOwner = new Map<string, { createdAt: number; phase: string | undefined }[]>();
+        for (const job of jobs.items) {
+          const jobUid = job.metadata?.uid;
+          if (jobUid === undefined) continue;
+          const attempt = latestAttemptByJob.get(jobUid);
+          if (attempt === undefined) continue;
+          const ownerUid =
+            (job.metadata?.ownerReferences ?? []).find((owner) => owner.kind === 'CronJob')?.uid ??
+            jobUid;
+          const runs = runsByOwner.get(ownerUid) ?? [];
+          runs.push({ createdAt: createdAt(job), phase: attempt.status?.phase });
+          runsByOwner.set(ownerUid, runs);
+        }
+        // Non-vacuous: the credential-convergence CronJob the readiness
+        // contract gates on is present and has runs to judge. It is the only
+        // Job-shaped workload here — an immutable `s3_plain_rewritable` disk
+        // renders no retention CronJob — but every group found is judged, so a
+        // second one could not slip through unasserted.
+        const teamBootstrapUid = cronJobs.items.find(
+          (cron) => cron.metadata?.name === `${kroInstanceName}-team-bootstrap`
+        )?.metadata?.uid;
+        expect(teamBootstrapUid).toBeDefined();
+        expect(runsByOwner.has(teamBootstrapUid as string)).toBe(true);
+        for (const runs of runsByOwner.values()) {
+          const completed = runs
+            .filter((run) => run.phase === 'Succeeded' || run.phase === 'Failed')
+            .sort((a, b) => b.createdAt - a.createdAt);
+          expect(completed.length).toBeGreaterThan(0);
+          expect(completed[0]?.phase).toBe('Succeeded');
         }
 
         // The contract ConfigMap the status is projected from is a real graph
