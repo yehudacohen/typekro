@@ -623,13 +623,11 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
       // back through `int(...)` and the boolean through an `== "true"`
       // comparison — both live-verified to resolve in kro mode (KRO status
       // CEL) and in direct mode (the cel-js reference resolver).
+      // `version` is deliberately NOT here: the chart pin the status reports
+      // is read straight off the owned HelmRelease
+      // (`spec.chart.spec.version`), so echoing it through this ConfigMap
+      // would be a second copy of the same fact.
       data: {
-        // The RESOLVED chart version. Unlike a status field, a resource field
-        // may reference `schema.spec.*`, so `resolvedVersion` (which in kro
-        // mode is `Cel.default(schema.spec.version, …)`) is substituted by KRO
-        // when it creates this ConfigMap — and the status then reads the
-        // concrete value back from a resource.
-        version: resolvedVersion,
         appPort: String(CLICKSTACK_APP_PORT),
         apiPort: String(CLICKSTACK_API_PORT),
         storageMode: build.clickhouseStorage.mode,
@@ -694,19 +692,12 @@ function bootstrapBody(spec: ClickStackBootstrapRuntimeConfig, build: ResolvedBu
         teamBootstrapReady,
         ' ? "Ready" : "Installing")'
       ),
-      // Read back from the owned contract ConfigMap rather than echoed from
-      // `resolvedVersion`. In kro mode `resolvedVersion` is
-      // `Cel.default(schema.spec.version, …)` — a schema-only expression KRO
-      // drops from the instance status, so the declared `version` field never
-      // appeared on the live CR at all.
-      //
-      // The HelmRelease's own chart pin
-      // (`clickstackHelmRelease.spec.chart.spec.version`) would be the more
-      // direct anchor, but TypeKro's RGD validator mis-reads the second `spec`
-      // segment of that path as a resource id ("Referenced resource 'chart'
-      // does not exist"), so the same value is projected from the contract
-      // ConfigMap instead — where KRO has already substituted it.
-      version: Cel.expr<string>(`${CLICKSTACK_CONTRACT_RESOURCE_ID}.data.version`),
+      // The HelmRelease's own chart pin — the version Flux is reconciling,
+      // read off the release rather than echoed from `resolvedVersion`. In kro
+      // mode `resolvedVersion` is `Cel.default(schema.spec.version, …)`, a
+      // schema-only expression KRO drops from the instance status, so the
+      // declared `version` field never appeared on the live CR at all.
+      version: _clickstackHelmRelease.spec.chart.spec.version,
       ui: {
         url: `http://${_clickstackHelmRelease.metadata.name}.${_clickstackHelmRelease.metadata.namespace}.svc.cluster.local:${CLICKSTACK_APP_PORT}`,
       },

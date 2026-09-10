@@ -138,16 +138,24 @@ describe('clickstackBootstrap (internal-Mongo default)', () => {
     // KRO status CEL can never reference schema.spec.*.
     expect(JSON.stringify(status)).not.toContain('schema.spec');
 
-    // The CONSTRUCTION-TIME fields (`version`, the ports, the storage block)
-    // are projected from the contract ConfigMap this composition owns, so they
-    // reach the live CR too instead of being literals KRO drops. ConfigMap
-    // values are strings, so the ports come back through `int(...)`.
     const projected = root.spec.schema.status as {
       version: string;
       app: { appPort: string; apiPort: string };
       storage: { mode: string; persistentQueue: string };
     };
-    expect(projected.version).toBe('${clickstackContract.data.version}');
+    // `version` is the chart pin on the OWNED HelmRelease — a resource
+    // projection whose path repeats `spec`. The RGD validator used to read that
+    // second segment as a resource id ("Referenced resource 'chart' does not
+    // exist") and the composition echoed the value through the contract
+    // ConfigMap instead; the fix is in the core scanner, so this is the direct
+    // anchor again.
+    expect(projected.version).toBe('${clickstackHelmRelease.spec.chart.spec.version}');
+
+    // The remaining CONSTRUCTION-TIME fields (the ports, the storage block)
+    // have no owned resource that already carries them, so they are projected
+    // from the contract ConfigMap this composition owns — reaching the live CR
+    // instead of being literals KRO drops. ConfigMap values are strings, so the
+    // ports come back through `int(...)`.
     expect(projected.app.appPort).toBe('${int(clickstackContract.data.appPort)}');
     expect(projected.app.apiPort).toBe('${int(clickstackContract.data.apiPort)}');
     expect(projected.storage.mode).toBe('${clickstackContract.data.storageMode}');

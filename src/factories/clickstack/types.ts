@@ -571,14 +571,19 @@ export type ClickStackBootstrapRuntimeConfig = (
  * re-execution), never `schema.spec.*` (KRO status CEL cannot reference the
  * instance spec).
  *
- * The remaining fields — `version`, `app.appPort`, `app.apiPort`, and the whole
- * `storage` block — are CONSTRUCTION-TIME values. Emitted as literals they were
- * dropped by KRO, so the declared schema promised fields the live CR never
- * carried. The composition instead writes them into a ConfigMap it OWNS
- * (`<release>-contract`) and projects them back from that resource, so
- * `kubectl get clickstackbootstraps -o yaml` shows the whole contract. The
- * ConfigMap's values are strings, so the ports come back through CEL `int(...)`
- * and `persistentQueue` through an `== "true"` comparison.
+ * `version` is anchored on that same HelmRelease — its chart pin,
+ * `clickstackHelmRelease.spec.chart.spec.version` — so the reported version is
+ * the one Flux is reconciling rather than an echo of the request.
+ *
+ * The remaining fields — `app.appPort`, `app.apiPort`, and the whole `storage`
+ * block — are CONSTRUCTION-TIME values with no owned resource that already
+ * carries them. Emitted as literals they were dropped by KRO, so the declared
+ * schema promised fields the live CR never carried. The composition instead
+ * writes them into a ConfigMap it OWNS (`<release>-contract`) and projects
+ * them back from that resource, so `kubectl get clickstackbootstraps -o yaml`
+ * shows the whole contract. The ConfigMap's values are strings, so the ports
+ * come back through CEL `int(...)` and `persistentQueue` through an
+ * `== "true"` comparison.
  *
  * Ports are the chart defaults (`hyperdx.ports`, `otel-collector.ports`);
  * port overrides via build-time raw values are NOT reflected here.
@@ -588,7 +593,7 @@ export const ClickStackBootstrapStatusSchema = type({
   ready: 'boolean',
   /** Coarse phase from the owned HelmRelease Ready condition. */
   phase: '"Ready" | "Installing" | "Failed"',
-  /** Configured chart version. */
+  /** Chart version pinned on the owned HelmRelease. */
   'version?': 'string',
   /** HyperDX UI. */
   ui: {
