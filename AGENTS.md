@@ -248,6 +248,46 @@ const myApp = kubernetesComposition(
 - Do NOT use `Cel.expr()` or `Cel.template()` — JS expressions are auto-converted
 - Do NOT use `createDeployment()` — use `simple.Deployment()` instead
 - Do NOT forget the `id` parameter on resources — it's required for references
+- Do NOT let a `spec` value decide the graph's STRUCTURE (see below)
+
+### Build-time structure vs runtime values (CRITICAL)
+
+The RGD is fixed at build time. A `spec` value is a runtime reference KRO
+substitutes per instance, so it may decide what a field **contains** but never
+which resources, list entries or object keys **exist**. Put one in a structural
+position and the composition still runs — an `if` takes the truthy branch
+because the proxy is an object, `.map()` runs once against a sentinel,
+`Object.keys()` yields one fabricated key — and the RGD silently encodes that
+build-time guess for every instance. KRO-mode serialization rejects the cases
+TypeKro can detect (issue #190); the rest are on you.
+
+```typescript
+// ❌ structure decided by a runtime value
+const enabled = spec.enabled;            // alias hides it from the analyzer
+if (enabled) { simple.Deployment({ ... }) }
+switch (spec.mode) { case 's3': ... }    // no case matches a proxy
+data: { ...spec.settings }               // Record<string,V> has no build-time keys
+data: { [spec.key]: 'v' }                // key comes out as a raw marker string
+replicas: spec.items.length              // the proxy always answers 1
+
+// ✅ the structure TypeKro compiles for you
+if (spec.enabled) { simple.Deployment({ ... }) }   // → includeWhen
+if (spec.mode === 's3') { ... }                    // → includeWhen with a comparison
+spec.items.map((item) => simple.ConfigMap({ ... })) // → forEach
+
+// ✅ or decide the structure at BUILD time and pass the value as a plain field
+export const makeThing = (opts: { withCache: boolean }) =>
+  kubernetesComposition(definition, (spec) => {
+    if (opts.withCache) { simple.Deployment({ ... }) }   // build-time argument
+    return { ready: true };
+  });
+```
+
+Escape hatch for migrating an existing composition:
+`kubernetesComposition(definition, fn, { allowStructuralSpecDependence: true })`
+warns instead of failing — the RGD is emitted unchanged, so the option
+documents the defect rather than fixing it. `TYPEKRO_STRUCTURAL_SPEC=strict`
+audits a whole repo, ignoring every escape hatch.
 
 ## CREATING RESOURCE GRAPHS WITH toResourceGraph() (ADVANCED)
 
