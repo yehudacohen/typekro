@@ -281,61 +281,140 @@ const S3_ONLY_STORAGE_KEYS = [
 
 // ============================================================================
 // Resolved shapes
+//
+// SCHEMA-FIRST, exactly like the user-facing shapes in `../types.ts`: the
+// RESULT of the resolution is an ArkType schema and its TypeScript type is
+// INFERRED from it (`typeof X.infer`), so there is one description of a
+// resolved storage and it is one a runtime check can actually enforce.
+//
+// WHY THE RESULT SHAPE NEEDS A SCHEMA AT ALL. `resolveClickHouseStorage()` is
+// not the only way a resolved value reaches the renderers: the module exports
+// `renderStorageConfigurationXml()`, `clickHouseS3ContainerEnv()` and
+// `clickHouseS3BackupCronJob()`, each of which takes a resolved storage as a
+// plain argument. A hand-written interface describes that argument to the
+// COMPILER only; downstream code that field-selects `bucket`, `diskType`,
+// `auth.kind` or `backup.endpointUrl` out of it needs a description that
+// exists at RUN time too — otherwise the structure is claimed (by a cast or a
+// type predicate) rather than established.
 // ============================================================================
 
-/** Credentials as resolved for rendering (never carries key material). */
-export type ResolvedClickHouseS3Auth =
-  | { readonly kind: 'irsa'; readonly roleArn: string; readonly serviceAccountName?: string }
-  | {
-      readonly kind: 'secretRef';
-      readonly secretName: string;
-      readonly accessKeyIdKey: string;
-      readonly secretAccessKeyKey: string;
-    };
+/**
+ * What `storage` has to be, quoted into the ArkType error on a bad value.
+ *
+ * It is attached to the `mode` DISCRIMINANT of
+ * {@link ResolvedClickHouseS3StorageSchema} (via ArkType's `.describe()`), so a
+ * value that never came out of the S3 branch of the resolver — a PVC
+ * resolution, an unrelated object — is reported against `storage.mode` with
+ * this sentence, while every other field keeps its own precise, path-named
+ * error.
+ */
+export const RESOLVED_S3_STORAGE_REQUIREMENT =
+  "a resolved S3 storage (mode: 's3'), as returned by resolveClickHouseStorage()";
+
+/**
+ * Credentials as resolved for rendering (never carries key material).
+ *
+ * A real ArkType union rather than a `kind` field plus optional siblings: the
+ * two transports have DISJOINT payloads, and the union is what makes
+ * `{ kind: 'irsa', secretName: … }` a validation error instead of a value the
+ * renderer silently reads the wrong half of.
+ */
+export const ResolvedClickHouseS3AuthSchema = type({
+  /** Transport discriminant; selects `use_environment_credentials`. */
+  kind: '"irsa"',
+  /** IAM role ARN annotated onto the ServiceAccount. */
+  roleArn: 'string > 0',
+  /** ServiceAccount name; defaulted by the composition when absent. */
+  'serviceAccountName?': 'string > 0',
+}).or({
+  /** Transport discriminant; selects `from_env` credential elements. */
+  kind: '"secretRef"',
+  /** Secret holding the access keys, in the CHI namespace. */
+  secretName: 'string > 0',
+  /** Secret key holding the access key id (defaulted by the resolver). */
+  accessKeyIdKey: 'string > 0',
+  /** Secret key holding the secret access key (defaulted by the resolver). */
+  secretAccessKeyKey: 'string > 0',
+});
+
+/** Credentials as resolved for rendering (see {@link ResolvedClickHouseS3AuthSchema}). */
+export type ResolvedClickHouseS3Auth = typeof ResolvedClickHouseS3AuthSchema.infer;
 
 /** Backup schedule with every default applied. */
-export interface ResolvedClickHouseS3Backup {
-  readonly schedule: string;
-  readonly bucket: string;
-  readonly prefix: string;
-  readonly database: string;
+export const ResolvedClickHouseS3BackupSchema = type({
+  /** Cron schedule of the generated CronJob. */
+  schedule: 'string > 0',
+  /** Backup bucket (the disk's bucket unless overridden). */
+  bucket: 'string > 0',
+  /** Normalized, non-empty backup key prefix. */
+  prefix: 'string > 0',
+  /** Database to back up — a bare SQL identifier, checked by the resolver. */
+  database: 'string > 0',
   /** Backup object-key base URL (`.../<prefix>/`), used by `BACKUP TO S3`. */
-  readonly endpointUrl: string;
-  /** Days of backups to keep; `undefined` means keep everything. */
-  readonly retentionDays?: number;
-  readonly auth?: {
-    readonly secretName: string;
-    readonly usernameKey: string;
-    readonly passwordKey: string;
-  };
-}
+  endpointUrl: 'string > 0',
+  /** Days of backups to keep; absent means keep everything. */
+  'retentionDays?': 'number.integer > 0',
+  /** ClickHouse credentials the CronJob connects with. */
+  'auth?': {
+    /** Secret holding the ClickHouse user and password. */
+    secretName: 'string > 0',
+    /** Secret key holding the user name. */
+    usernameKey: 'string > 0',
+    /** Secret key holding the password. */
+    passwordKey: 'string > 0',
+  },
+});
+
+/** Backup schedule with every default applied (see {@link ResolvedClickHouseS3BackupSchema}). */
+export type ResolvedClickHouseS3Backup = typeof ResolvedClickHouseS3BackupSchema.infer;
 
 /** Fully defaulted, validated S3 storage configuration. */
-export interface ResolvedClickHouseS3Storage {
-  readonly mode: 's3';
-  readonly bucket: string;
+export const ResolvedClickHouseS3StorageSchema = type({
+  /** Mode discriminant — see {@link RESOLVED_S3_STORAGE_REQUIREMENT}. */
+  mode: type('"s3"').describe(RESOLVED_S3_STORAGE_REQUIREMENT),
+  /** Bucket backing the MergeTree disk. */
+  bucket: 'string > 0',
   /** Normalized key prefix without leading/trailing slashes ('' when absent). */
-  readonly prefix: string;
-  readonly region?: string;
-  /** Custom S3-compatible base endpoint (MinIO); undefined for real AWS. */
-  readonly endpoint?: string;
-  readonly diskType: 's3' | 's3_plain_rewritable';
-  readonly policyName: string;
-  readonly cacheMaxSizeBytes: number;
-  readonly cachePath: string;
-  readonly auth: ResolvedClickHouseS3Auth;
+  prefix: 'string',
+  /** AWS region; absent when a custom `endpoint` supplies the target. */
+  'region?': 'string > 0',
+  /** Custom S3-compatible base endpoint (MinIO); absent for real AWS. */
+  'endpoint?': 'string > 0',
+  /** Disk type — the durability choice (see the module docs). */
+  diskType: '"s3" | "s3_plain_rewritable"',
+  /** MergeTree storage policy name; rendered in XML ELEMENT-NAME position. */
+  policyName: 'string > 0',
+  /** Local read-through cache cap, already converted to bytes. */
+  cacheMaxSizeBytes: 'number.integer > 0',
+  /** Local cache directory, under the operator's data volume mount. */
+  cachePath: 'string > 0',
+  /** Credential transport for the disk. */
+  auth: ResolvedClickHouseS3AuthSchema,
   /** Disk endpoint URL, always with a trailing slash. */
-  readonly endpointUrl: string;
-  readonly backup?: ResolvedClickHouseS3Backup;
-}
+  endpointUrl: 'string > 0',
+  /** Scheduled backups, when the caller asked for them. */
+  'backup?': ResolvedClickHouseS3BackupSchema,
+});
+
+/** Fully defaulted, validated S3 storage (see {@link ResolvedClickHouseS3StorageSchema}). */
+export type ResolvedClickHouseS3Storage = typeof ResolvedClickHouseS3StorageSchema.infer;
 
 /** Fully defaulted, validated PVC storage configuration (today's behaviour). */
-export interface ResolvedClickHousePvcStorage {
-  readonly mode: 'pvc';
-}
+export const ResolvedClickHousePvcStorageSchema = type({
+  /** Mode discriminant. */
+  mode: '"pvc"',
+});
+
+/** Fully defaulted PVC storage (see {@link ResolvedClickHousePvcStorageSchema}). */
+export type ResolvedClickHousePvcStorage = typeof ResolvedClickHousePvcStorageSchema.infer;
 
 /** Discriminated resolution of the `storage` input. */
-export type ResolvedClickHouseStorage = ResolvedClickHousePvcStorage | ResolvedClickHouseS3Storage;
+export const ResolvedClickHouseStorageSchema = ResolvedClickHousePvcStorageSchema.or(
+  ResolvedClickHouseS3StorageSchema
+);
+
+/** Discriminated resolution of the `storage` input. */
+export type ResolvedClickHouseStorage = typeof ResolvedClickHouseStorageSchema.infer;
 
 // ============================================================================
 // Small validated parsers
@@ -547,10 +626,21 @@ export function assertAwsRegion(context: string, field: string, value: unknown):
 // Storage resolution
 // ============================================================================
 
-/** True when the storage input selects the object-storage mode. */
+/**
+ * True when the storage input selects the object-storage mode.
+ *
+ * The predicate claims exactly what the check ESTABLISHES and no more: `mode`
+ * is `'s3'`, so the S3-only options are the ones that MAY be present — hence
+ * `Loosen<…>`, which leaves every one of them optional. Claiming the full
+ * `ClickHouseS3StorageOptions` here would assert `bucket: string`,
+ * `cache: { size: string }` and a valid `auth` on the strength of one
+ * discriminant, and the compiler would then stop asking
+ * {@link resolveClickHouseStorage} to check them — which is precisely the job
+ * that function exists to do.
+ */
 export function isS3Storage(
   storage: ClickHouseStorageInput
-): storage is ClickHouseStorageInput & ClickHouseS3StorageOptions {
+): storage is ClickHouseStorageInput & Loosen<ClickHouseS3StorageOptions> {
   return (storage as { mode?: string }).mode === 's3';
 }
 
@@ -1033,7 +1123,7 @@ export function resolveClickHouseStorage(
   const policyName = storage.policyName ?? DEFAULT_S3_POLICY_NAME;
   assertClickHouseIdentifier(context, 'storage.policyName', policyName);
 
-  return {
+  const resolved = {
     mode: 's3',
     bucket: storage.bucket,
     prefix,
@@ -1062,6 +1152,24 @@ export function resolveClickHouseStorage(
       ),
     }),
   };
+
+  // THE RESOLUTION IS CHECKED AGAINST ITS OWN SCHEMA, at the boundary where it
+  // stops being this function's local object and becomes a value the XML
+  // renderer, the pod-template patch and the backup CronJob all field-select
+  // from. The field-by-field guards above produce specific, actionable
+  // messages and stay; this is the total one that cannot go stale — a key
+  // added to the schema and forgotten here, or a value that reached the object
+  // through a path with no guard of its own, fails HERE rather than several
+  // calls deeper in a rendered manifest.
+  const validated = ResolvedClickHouseS3StorageSchema(resolved);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `${context}: internal error — the resolved S3 storage does not satisfy ` +
+        `ResolvedClickHouseS3StorageSchema: ${validated.summary}. This is a bug in ` +
+        `resolveClickHouseStorage(), not in the supplied 'storage'.`
+    );
+  }
+  return validated;
 }
 
 // ============================================================================

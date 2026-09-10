@@ -60,11 +60,21 @@ import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import type { ResolvedClickHouseS3Storage } from '../utils/s3-storage.js';
 import { assertClickHouseClusterName } from '../utils/validation.js';
 import {
+  ResolvedClickHouseS3StorageSchema,
   S3_ACCESS_KEY_ID_ENV,
   S3_SECRET_ACCESS_KEY_ENV,
   clickHouseS3ContainerEnv,
   clickHouseS3ServiceAccountName,
 } from '../utils/s3-storage.js';
+
+/**
+ * What `storage` has to be, quoted into the ArkType error on a bad value.
+ *
+ * Re-exported from `utils/s3-storage.ts`, where it is attached to the `mode`
+ * discriminant of the resolved-storage schema; kept on this module's surface
+ * because that is where callers of the backup factory look for it.
+ */
+export { RESOLVED_S3_STORAGE_REQUIREMENT } from '../utils/s3-storage.js';
 
 /** Image used for the prune step (the ClickHouse image has no AWS CLI). */
 export const DEFAULT_S3_PRUNE_IMAGE = 'amazon/aws-cli:2.22.35';
@@ -87,29 +97,20 @@ export type ComposableClickHouseS3BackupCronJobConfig = Composable<
   storage: ResolvedClickHouseS3Storage;
 };
 
-/** What `storage` has to be, quoted into the ArkType error on a bad value. */
-export const RESOLVED_S3_STORAGE_REQUIREMENT =
-  "a resolved S3 storage (mode: 's3'), as returned by resolveClickHouseStorage()";
-
 /**
  * The `storage` input: an already-RESOLVED S3 storage.
  *
- * `ResolvedClickHouseS3Storage` is a RESULT shape, not user input — it is what
- * `resolveClickHouseStorage()` returns after defaulting and validating the
- * user-facing `ClickHouseInstallationStorageSchema`, and every invariant
- * it carries has already been enforced there. So this schema does not restate
- * that shape field by field (which would be a second source of truth for the
- * resolution, exactly the drift the schema-first rule exists to prevent): it
- * checks the discriminant that says the value came out of the S3 branch of the
- * resolver, and carries the resolved type through `.narrow()`'s predicate so
- * {@link ClickHouseS3BackupCronJobConfig} is still inferred WHOLE from this
- * schema — no hand-written widening layer on top of `.infer`.
+ * It IS {@link ResolvedClickHouseS3StorageSchema} — the one description of a
+ * resolved S3 storage, which `resolveClickHouseStorage()` also asserts its own
+ * output against. There is deliberately no second, looser shape here: this
+ * factory field-selects `storage.backup.*`, `storage.bucket`, `storage.region`
+ * and `storage.auth` to build the CronJob, so the structure it reads has to be
+ * one that runtime validation ESTABLISHES rather than one a predicate claims.
+ *
+ * Re-exported under the old name so `ClickHouseS3BackupCronJobConfigSchema`
+ * reads as a schema of its own fields.
  */
-export const ClickHouseS3BackupStorageSchema = type('object').narrow(
-  (storage, ctx): storage is ResolvedClickHouseS3Storage =>
-    (storage as ResolvedClickHouseS3Storage).mode === 's3' ||
-    ctx.mustBe(RESOLVED_S3_STORAGE_REQUIREMENT)
-);
+export const ClickHouseS3BackupStorageSchema = ResolvedClickHouseS3StorageSchema;
 
 /**
  * ArkType schema for ClickHouseS3BackupCronJobConfig.

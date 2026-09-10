@@ -27,6 +27,7 @@ import {
   parseClickHouseVersion,
   parseS3EndpointUrl,
   renderStorageConfigurationXml,
+  ResolvedClickHouseS3StorageSchema,
   resolveClickHouseStorage,
   S3_ACCESS_KEY_ID_ENV,
   S3_PLAIN_REWRITABLE_VERSION_PATTERN,
@@ -1003,6 +1004,95 @@ describe('clickHouseS3BackupCronJob', () => {
       });
       expect(result).toBeInstanceOf(type.errors);
       expect(String(result)).toContain(RESOLVED_S3_STORAGE_REQUIREMENT);
+    });
+
+    /**
+     * `storage` is validated STRUCTURALLY, not by a discriminant check that
+     * claims the rest of the shape. These cases are the difference: each one
+     * carries `mode: 's3'`, so a discriminant-only schema would have accepted
+     * every one of them and let the missing/wrong value reach the rendered
+     * CronJob — where `bucket` and `diskType` end up inside a `BACKUP … TO
+     * S3('<url>')` statement and the pod's credential wiring.
+     */
+    describe('rejects a malformed resolved storage, naming the field', () => {
+      const malformed: readonly (readonly [string, object, string])[] = [
+        [
+          'a missing bucket',
+          (() => {
+            const { bucket: _bucket, ...rest } = resolvedWithBackup({ schedule: '0 2 * * *' });
+            return rest;
+          })(),
+          'storage.bucket',
+        ],
+        [
+          'a diskType the compiler never sees',
+          { ...resolvedWithBackup({ schedule: '0 2 * * *' }), diskType: 'gp3' },
+          'storage.diskType',
+        ],
+        [
+          'a PVC-mode object',
+          { mode: 'pvc' },
+          'storage.mode',
+        ],
+        [
+          'missing credentials',
+          (() => {
+            const { auth: _auth, ...rest } = resolvedWithBackup({ schedule: '0 2 * * *' });
+            return rest;
+          })(),
+          'storage.auth',
+        ],
+        [
+          'a backup with no endpoint URL',
+          (() => {
+            const resolved = resolvedWithBackup({ schedule: '0 2 * * *' });
+            if (resolved.backup === undefined) throw new Error('expected a resolved backup');
+            const { endpointUrl: _url, ...backup } = resolved.backup;
+            return { ...resolved, backup };
+          })(),
+          'storage.backup.endpointUrl',
+        ],
+      ];
+
+      for (const [label, storage, path] of malformed) {
+        it(`rejects ${label}`, () => {
+          const result = ClickHouseS3BackupCronJobConfigSchema({ ...validConfig(), storage });
+          expect(result).toBeInstanceOf(type.errors);
+          expect(String(result)).toContain(path);
+        });
+      }
+    });
+
+    /**
+     * The other half of the contract: the schema is not merely strict, it is
+     * strict about the shape the resolver actually PRODUCES. Every fixture in
+     * this file is run through `resolveClickHouseStorage` and then through the
+     * schema, so a defaulting change that stops satisfying the schema — or a
+     * schema key the resolver never fills — fails here rather than in a
+     * rendered manifest.
+     */
+    it("accepts the resolver's own output for every fixture", () => {
+      const resolutions = [
+        resolveClickHouseStorage('test', { size: '100Gi', ...IRSA_S3 }),
+        resolveClickHouseStorage('test', { size: '100Gi', ...SECRET_S3 }),
+        resolvedWithBackup({ schedule: '0 2 * * *' }),
+        resolvedWithBackup({ schedule: '0 2 * * *', retention: { days: 14 } }),
+        resolvedWithBackup({ schedule: '0 2 * * *', retention: { days: 3 } }, SECRET_S3),
+        resolvedWithBackup({
+          schedule: '0 3 * * *',
+          bucket: 'example-backups',
+          prefix: 'nightly',
+          database: 'otel',
+          auth: { secretRef: { name: 'ch-credentials' } },
+        }),
+      ];
+
+      for (const storage of resolutions) {
+        expect(ResolvedClickHouseS3StorageSchema(storage)).not.toBeInstanceOf(type.errors);
+        expect(
+          ClickHouseS3BackupCronJobConfigSchema({ ...validConfig(), storage })
+        ).not.toBeInstanceOf(type.errors);
+      }
     });
   });
 });
