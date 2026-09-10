@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the entrypoint Service — the chart's own Service is disabled through values —
   so its address can be projected without reading an unmanaged resource before
   anything has been applied. The status contract reports `ready`/`failed`/`phase`
-  from the release's Ready condition and `loadBalancer.hostname`/`ip` from that
-  owned Service, and both `install.crds` and `upgrade.crds` default to
+  from the release's Ready condition, `loadBalancer.hostname`/`ip` from that
+  owned Service, and `version` from the chart version Flux actually installed
+  (the release's `status.history[]`, so a pinned-but-unavailable version is
+  never reported as live). Both `install.crds` and `upgrade.crds` default to
   `CreateReplace` so a chart bump moves the `traefik.io/v1alpha1` CRDs with the
   proxy. Routing, TLS and upstream behavior are typed: `IngressRoute`,
   `IngressRouteTCP`, `TraefikService`, `ServersTransport`, `TLSOption`,
@@ -39,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routes, per-ancestor conditions scoped to a controller name for policies).
   Traefik consumes it with `traefik.io/gateway-controller`, so a Traefik edge
   and an Envoy AI Gateway can claim their own `GatewayClass` in one cluster.
+  Every spec type in both factories is inferred from an ArkType schema verified
+  field-by-field against the CRDs as the API server stores them, and every
+  factory function accepts `Composable<T>`.
+
+### Fixed
+
+- `Composable<T>` mangled `readonly` array fields. Its passthrough list tested
+  the mutable `unknown[]`, which a `readonly T[]` does not satisfy, so those
+  fields fell into the object branch and were rebuilt element-wise as
+  `Composable<T>[]` — a shape no factory could assign back to the original
+  field. It now tests `readonly unknown[]`, which covers both forms.
 
 ### Changed
 

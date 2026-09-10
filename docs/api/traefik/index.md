@@ -139,6 +139,34 @@ const edge = traefik.makeTraefikBootstrap({
 });
 ```
 
+#### Why raw values are build-time
+
+Most Helm integrations also accept `values` on the *runtime* spec, serialized
+for KRO as `json.unmarshal(json.marshal(schema.spec.values))` and merged last so
+a user can override a default. This factory deliberately does not, because
+KRO's `map.merge()` is **shallow**:
+
+- Merging raw values last would let any KRO instance set `api.dashboard: true`,
+  `api.insecure: true`, or hand the entrypoint Service back to the chart —
+  precisely the things this factory exists to make unreachable.
+- Merging the pins last to prevent that would replace whole top-level sections,
+  silently discarding a caller's sibling keys under `api`, `ingressRoute`,
+  `securityContext`, `podSecurityContext`, `service` and `global`.
+
+A values contract with non-negotiable pins has to resolve precedence where the
+merge can be deep and auditable, which is construction time. `makeTraefikBootstrap({ values })`
+merges *beneath* the mapped values and the pins, and keeps unpinned siblings:
+`api: { dashboard: true, basePath: '/dashboard' }` yields `dashboard: false`
+with `basePath` intact.
+
+Chart values are typed in two layers. `TraefikManagedHelmValues` is a **closed**
+description — no index signatures at any depth — of the paths this factory maps,
+pins or reads back, so a pin that stopped matching the chart is a compile error.
+`TraefikRawHelmValues` (`Record<string, unknown>`) is the one named raw
+boundary, and it is what `values` accepts: an override often has to reach a
+sibling of a mapped path, such as `metrics.prometheus` beside the mapped
+`metrics.otlp`, which a closed type would reject.
+
 ### CRD lifecycle
 
 Chart 41.5.0 ships the `traefik.io/v1alpha1` CRDs in its own `crds/` directory,
@@ -157,6 +185,7 @@ interface TraefikBootstrapStatus {
   phase: 'Ready' | 'Installing' | 'Failed';
   loadBalancer: { hostname: string; ip: string };
   serviceName: string;
+  version: string;
 }
 ```
 
@@ -168,6 +197,12 @@ balancer may report several. Both fields stay `''` for a `ClusterIP` or
 `NodePort` Service and while a cloud controller is still provisioning.
 `serviceName` is read back from the same Service — the values mapper pins
 `fullnameOverride` to `spec.name`, so the name is deterministic.
+
+`version` is the chart version **Flux installed**, read off the `HelmRelease`'s
+`status.history[]` rather than echoed from `spec.chartVersion`. It is therefore
+a runtime observation, not a deploy-time literal: a pinned-but-unavailable
+version is never reported as though it were live. It stays `''` until Flux has
+recorded its first release.
 
 Every field is a projection of a resource the composition **owns**. That rules
 out literals: KRO leaves literal status fields unset, so declaring one would
