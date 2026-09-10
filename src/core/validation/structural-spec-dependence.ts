@@ -40,7 +40,10 @@
  *      - `collection-length-collapsed`: a `$item` element sentinel surviving in
  *        a resource that carries no `forEach` dimension — a `.map()` / `for-of`
  *        over a spec collection that was flattened to a single element instead
- *        of being compiled to KRO's `forEach`.
+ *        of being compiled to KRO's `forEach`. A backstop: the serializer
+ *        normally rewrites `$item` either into a `forEach` loop variable or
+ *        into a whole-array reference (`ports: ${schema.spec.ports}`), both of
+ *        which are correct, so this catches only what those miss.
  *
  * 2. {@link detectStructuralSpecPredicates} — parses the composition source and
  *    reports branch predicates that are spec-derived in a form the control-flow
@@ -97,11 +100,16 @@ const RUNTIME_MAP_SENTINEL = '__typekroSchemaKey';
 const SCHEMA_REF_MARKER_PREFIX = '__KUBERNETES_REF___schema___';
 
 /**
- * Element sentinel appended by the schema proxy when a spec collection is
- * iterated. Survives into the RGD only when the iteration was NOT compiled
- * into a KRO `forEach` dimension.
+ * A schema reference ending in the proxy's `$item` element sentinel, which it
+ * appends when a spec collection is iterated. Anchored to a schema path rather
+ * than matching a bare `$item`, so a shell script or template in a ConfigMap
+ * that happens to contain `$item` is not mistaken for one.
+ *
+ * Survives into the RGD only when the iteration was NOT compiled into a KRO
+ * `forEach` dimension.
  */
-const COLLECTION_ITEM_SENTINEL = '$item';
+const COLLECTION_ITEM_REFERENCE =
+  /(?:schema\.spec|__KUBERNETES_REF___schema___spec)[A-Za-z0-9_.$[\]?]*\.\$item/;
 
 /** How a runtime spec value ended up deciding build-time structure. */
 export type StructuralSpecDependenceKind =
@@ -237,10 +245,13 @@ export function scanRgdResourcesForStructuralSpecArtifacts(
       });
     }
 
+    // A `forEach` dimension IS the legitimate way to let a spec collection
+    // decide how many resources exist, and its own source expression lives
+    // outside the template. When one is present, a surviving `$item` in the
+    // template is the loop variable doing its job, not a collapsed collection.
     const hasForEach = Array.isArray(entry.forEach) && entry.forEach.length > 0;
-    // A resource's `forEach` sources are legitimate structural uses of a spec
-    // collection — that is exactly what KRO's forEach is for — so they are
-    // excluded from the sentinel scan below.
+    // Template paths already reported via their key, so the string walk that
+    // follows does not report the same leaf twice.
     const seenAtPath = new Set<string>();
 
     walkTemplate(entry.template, '', {
@@ -285,7 +296,7 @@ export function scanRgdResourcesForStructuralSpecArtifacts(
           });
           return;
         }
-        if (!hasForEach && value.includes(COLLECTION_ITEM_SENTINEL)) {
+        if (!hasForEach && COLLECTION_ITEM_REFERENCE.test(value)) {
           const specPaths = schemaPathsIn(value);
           findings.push({
             kind: 'collection-length-collapsed',
