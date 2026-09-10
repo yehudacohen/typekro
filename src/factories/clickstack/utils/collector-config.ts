@@ -9,9 +9,11 @@
  *
  * ⚠️ WHY THIS MODULE EXISTS — LIVE FINDING. The overlay used to be assembled by
  * CONCATENATING two hand-written YAML strings: the ingest pipelines
- * ({@link CLICKSTACK_INGEST_PIPELINES}) and the persistent queue's own wiring.
- * Both open a top-level `service:` key, so the concatenated document declared
- * `service` twice and the supervisor rejected the WHOLE FILE on every poll:
+ * (`CLICKSTACK_INGEST_PIPELINES_CONFIG` in `helm-values-mapper.ts`) and the
+ * persistent queue's own wiring (`renderPersistentQueueConfig` in
+ * `storage.ts`). Both open a top-level `service:` key, so the concatenated
+ * document declared `service` twice and the supervisor rejected the WHOLE FILE
+ * on every poll:
  *
  *   Could not merge local config file: /etc/otelcol-contrib/custom/custom.config.yaml
  *   yaml: unmarshal errors: line 18: mapping key "service" already defined at line 1
