@@ -176,6 +176,19 @@ consumes the observed resource is scheduled behind that read.
 If the resource never appears, the deployment fails with an error naming the reference,
 its `dependsOn` targets, and how long it waited. It is never silently skipped.
 
+Only a failure that waiting could fix is retried: a 404 for the object itself, a 429, a
+5xx, or a transport failure. A read that is rejected — RBAC (401/403), a malformed
+reference (400/405/422), or an `apiVersion`/`kind` the cluster does not serve — fails the
+deployment on the first attempt, with the classification and the API server's own message,
+rather than polling to the end of the budget and reporting a timeout:
+
+```
+Required external resource Service/my-app-gateway (reference 'gatewayService') could not
+be read: permission denied (HTTP 403). Waiting cannot fix this, so the deployment failed
+immediately instead of polling its dependsOn targets [gatewayRelease]: services
+"my-app-gateway" is forbidden: User "deployer" cannot get resource "services"
+```
+
 An observed resource with no `dependsOn` on an in-graph resource is still read before
 anything is applied, which is the right behaviour for a resource another composition or
 another team already owns.
