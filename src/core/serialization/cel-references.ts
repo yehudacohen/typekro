@@ -15,6 +15,8 @@ import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identif
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
+import { ConversionError } from '../errors.js';
+import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
@@ -214,7 +216,12 @@ function generateCelExpression(
       ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
       : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
     if (innerExpr !== undefined) {
-      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true);
+      // Seed the entry we just looked up so a self-referential mapping stops
+      // at its concrete resource reference instead of expanding again.
+      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true, {
+        id: ref.resourceId,
+        field: fieldName,
+      });
     }
   }
 
@@ -427,17 +434,60 @@ export function isStaticExpression(
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum number of substitution passes when resolving nested composition
- * references in {@link resolveNestedCompositionRefs}. The fixed-point loop
- * normally converges in one or two passes (one per level of nesting), so
- * 16 is a comfortable cap that handles pathologically deep compositions
- * without giving runaway substitution loops a chance to wedge serialization.
+ * Maximum nesting depth when resolving nested composition references in
+ * {@link resolveNestedCompositionRefs}. One level is consumed per
+ * `(resourceId, field)` entry expanded on the current recursion path, so a
+ * three-level composition uses three levels. Cycles are caught by the
+ * in-progress set rather than by this limit, which therefore only fires for
+ * genuinely deep — acyclic — composition chains.
  *
  * Hitting this limit indicates a real bug in the resolution table — most
- * likely a cycle introduced by a faulty alias entry — not a legitimate
- * composition shape.
+ * likely an unexpectedly deep chain introduced by a faulty alias entry — not
+ * a legitimate composition shape, so under strict CEL diagnostics it fails
+ * the serialization instead of emitting a partially-resolved expression.
  */
 const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
+
+/**
+ * Pattern matching a `<id>.status.<fieldPath>` nested-composition token.
+ *
+ * The fieldPath capture is greedy on dots so paths like `components.app` are
+ * captured whole — that's the form `nestedStatusCel` keys use after recursive
+ * extraction. Always instantiate a fresh `RegExp` from this source: the
+ * substitution walker is re-entrant (its replacer recurses into another
+ * `String.replace`), so a shared `/g` regex would have its `lastIndex`
+ * clobbered mid-scan.
+ */
+const NESTED_STATUS_TOKEN_SOURCE = String.raw`\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)`;
+
+/** Identity of one nested-composition mapping being expanded. */
+interface NestedRefEntry {
+  readonly id: string;
+  readonly field: string;
+}
+
+/**
+ * Mutable bookkeeping for a single top-level nested-reference resolution.
+ *
+ * Scoped to one {@link resolveNestedCompositionRefs} call so memoized text
+ * never leaks across serialization contexts with different tables.
+ */
+interface NestedRefResolutionState {
+  readonly nestedStatusCel: Record<string, string>;
+  readonly resourceIds: ReadonlySet<string> | undefined;
+  /** `(id, field)` entries on the current expansion path — a hit is a cycle. */
+  readonly inProgress: Set<string>;
+  /** Fully-resolved replacement text, keyed by ambient lambda vars + entry. */
+  readonly memo: Map<string, string>;
+  /** Incremented whenever an expansion was truncated by the in-progress set. */
+  cycleHits: number;
+  /** Set when {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} stopped an expansion. */
+  depthExceeded: boolean;
+}
+
+function nestedRefEntryKey(id: string, field: string): string {
+  return `${id} ${field}`;
+}
 
 /**
  * Look up a nested composition's analyzed expression by `(resourceId, fieldName)`.
@@ -446,7 +496,7 @@ const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
  * every code path that needs to find an inner expression from a
  * `nestedStatusCel` table — both the structured-ref paths
  * (`generateCelExpression`, `serializeStatusMappingsToCel`) and the
- * string-resolver path (`substituteNestedRefsOnce`,
+ * string-resolver path (`substituteNestedRefsInText`,
  * `resolveNestedRefMarkers`).
  *
  * Returns `undefined` when no match is found, leaving the caller to
@@ -571,48 +621,73 @@ export function lookupNestedExpression(
  * {@link containsNoNonSchemaRefs} (or just call
  * {@link isStaticExpression} which composes both steps).
  *
- * Iterates to a fixed point up to {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT}
- * — substituted expressions may themselves contain nested references that
- * become resolvable once the outer reference is inlined (the three-level
- * nesting case: L1 → L2 → L3).
+ * **Resolution is recursive, never re-scanning.** Each `<id>.status.<field>`
+ * token found in the ORIGINAL text is substituted exactly once; the inner
+ * expression it was replaced with is then walked on its own, so substituted
+ * output is never handed back to the scanner. The result is therefore linear
+ * in the total size of the reachable mapping instead of doubling on every
+ * pass (see #200 — repeated whole-string passes produced a 6 MB expression
+ * from a two-level fixture).
+ *
+ * **Cycles are terminal, not fatal.** A token whose mapping is already being
+ * expanded further up the current path — directly self-referential, or via a
+ * cycle — keeps its concrete `<id>.status.<field>` reference. For a flattened
+ * child id that is also a real graph resource (the common case: an inner
+ * composition's `phase` mapping reads `<flattenedId>.status.phase`), that
+ * concrete reference IS the correct answer.
+ *
+ * **Known resource ids are substituted only inside an expanded nested
+ * boundary.** `resolveKnownNestedResourceRefs` governs the ORIGINAL text
+ * only. Inside an inner expression that has already been proven to come from
+ * a nested composition, exact mappings for concrete resource ids are
+ * authoritative, so substitution there is always allowed (strict lookup —
+ * no field-name fallback).
+ *
+ * Nesting deeper than {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels stops
+ * expanding and is reported by {@link reportNestedRefDepthExceeded}.
  *
  * **Lambda variables are skipped.** When the resolved `<id>` is a CEL
  * macro lambda variable like the `c` in `.exists(c, c.status == "Ready")`,
  * the substitution does NOT fire — the variable refers to the macro's
- * iteration element, not a nested composition.
+ * iteration element, not a nested composition. Lambda variables bound in an
+ * enclosing text stay in scope for the inner expressions substituted into it.
+ *
+ * `seedEntry` marks a `(id, field)` mapping as already being expanded by the
+ * caller. Entry points that look an entry up themselves and then resolve its
+ * text ({@link generateCelExpression}, {@link resolveNestedRefMarkers},
+ * `serializeStatusMappingsToCel`) pass it so a self-referential mapping is
+ * recognized as terminal there too — the resolver behaves identically no
+ * matter which entry point reached it.
  */
 function resolveNestedCompositionRefs(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   resourceIds?: ReadonlySet<string>,
-  resolveKnownNestedResourceRefs = true
+  resolveKnownNestedResourceRefs = true,
+  seedEntry?: NestedRefEntry
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return expr;
   }
 
-  let current = expr;
-  let allowKnownResourceSubstitution = resolveKnownNestedResourceRefs;
-  for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
-    const next = substituteNestedRefsOnce(
-      current,
-      nestedStatusCel,
-      resourceIds,
-      allowKnownResourceSubstitution
-    );
-    if (next === current) return current;
-    current = next;
-    // Once a virtual nested-composition reference has been expanded, its
-    // analyzed expression may intentionally use a flattened child id that is
-    // also a concrete graph resource. Exact nested mappings are authoritative
-    // only inside that already-proven nested boundary.
-    allowKnownResourceSubstitution = true;
+  const state: NestedRefResolutionState = {
+    nestedStatusCel,
+    resourceIds,
+    inProgress: new Set(seedEntry ? [nestedRefEntryKey(seedEntry.id, seedEntry.field)] : []),
+    memo: new Map(),
+    cycleHits: 0,
+    depthExceeded: false,
+  };
+  const resolved = substituteNestedRefsInText(
+    expr,
+    state,
+    resolveKnownNestedResourceRefs,
+    EMPTY_LAMBDA_VARS
+  );
+  if (state.depthExceeded) {
+    reportNestedRefDepthExceeded(expr);
   }
-  logger.warn('Nested composition resolution depth limit exceeded', {
-    depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
-    expressionPreview: expr.slice(0, 200),
-  });
-  return current;
+  return resolved;
 }
 
 export function inlineNestedStatusRefs(
@@ -623,32 +698,121 @@ export function inlineNestedStatusRefs(
   return resolveNestedCompositionRefs(expr, nestedStatusCel, resourceIds);
 }
 
+/** Ambient lambda-variable scope for a top-level resolution. */
+const EMPTY_LAMBDA_VARS: ReadonlySet<string> = new Set<string>();
+
 /**
- * One pass of nested-reference substitution. See
+ * Substitute every nested-composition token in `text` exactly once. See
  * {@link resolveNestedCompositionRefs} for the full contract.
+ *
+ * `ambientLambdaVars` carries the macro-bound identifiers of the enclosing
+ * text down into substituted inner expressions, so a lambda variable stays
+ * shielded no matter how deep the expression it appears in was inlined from.
  */
-function substituteNestedRefsOnce(
-  expr: string,
-  nestedStatusCel: Record<string, string>,
-  resourceIds?: ReadonlySet<string>,
-  resolveKnownNestedResourceRefs = false
+function substituteNestedRefsInText(
+  text: string,
+  state: NestedRefResolutionState,
+  allowKnownResourceSubstitution: boolean,
+  ambientLambdaVars: ReadonlySet<string>
 ): string {
-  const lambdaVars = collectLambdaVars(expr);
-  // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
-  // dots so paths like `components.app` are captured whole — that's the
-  // form `nestedStatusCel` keys use after recursive extraction.
-  const pattern = /\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)/g;
-  return expr.replace(pattern, (match, id: string, field: string) => {
+  const lambdaVars = new Set(ambientLambdaVars);
+  for (const name of collectLambdaVars(text)) lambdaVars.add(name);
+
+  const pattern = new RegExp(NESTED_STATUS_TOKEN_SOURCE, 'g');
+  return text.replace(pattern, (match, id: string, field: string) => {
     if (id === 'schema') return match;
     if (lambdaVars.has(id)) return match;
-    if (resourceIds?.has(id) && !resolveKnownNestedResourceRefs) return match;
-    if (resourceIds?.has(id)) {
-      const strictInnerExpr = lookupNestedExpression(id, field, nestedStatusCel, false);
-      return strictInnerExpr === undefined ? match : `(${strictInnerExpr})`;
-    }
-    const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
-    if (innerExpr !== undefined) return `(${innerExpr})`;
-    return match;
+
+    const isKnownResource = state.resourceIds?.has(id) === true;
+    if (isKnownResource && !allowKnownResourceSubstitution) return match;
+
+    // A concrete graph resource only ever matches an exact nested mapping —
+    // the field-name fallback would let an unrelated composition's field
+    // hijack a real resource reference.
+    const innerExpr = isKnownResource
+      ? lookupNestedExpression(id, field, state.nestedStatusCel, false)
+      : lookupNestedExpression(id, field, state.nestedStatusCel);
+    if (innerExpr === undefined) return match;
+
+    const resolvedInner = expandNestedEntry(id, field, innerExpr, state, lambdaVars);
+    // Parenthesize to preserve operator precedence in compound expressions.
+    return resolvedInner === undefined ? match : `(${resolvedInner})`;
+  });
+}
+
+/**
+ * Resolve one `(id, field)` mapping to its fully-substituted text.
+ *
+ * Returns `undefined` when the mapping must NOT be expanded — because it is
+ * already being expanded on the current path (a cycle, so the concrete
+ * reference is the answer) or because the depth guard tripped. Callers keep
+ * the original `<id>.status.<field>` token in that case.
+ */
+function expandNestedEntry(
+  id: string,
+  field: string,
+  innerExpr: string,
+  state: NestedRefResolutionState,
+  ambientLambdaVars: ReadonlySet<string>
+): string | undefined {
+  const entryKey = nestedRefEntryKey(id, field);
+  if (state.inProgress.has(entryKey)) {
+    state.cycleHits++;
+    return undefined;
+  }
+
+  const memoKey = `${[...ambientLambdaVars].sort().join(',')}\n${entryKey}`;
+  const memoized = state.memo.get(memoKey);
+  if (memoized !== undefined) return memoized;
+
+  if (state.inProgress.size >= NESTED_REF_RESOLUTION_DEPTH_LIMIT) {
+    state.depthExceeded = true;
+    return undefined;
+  }
+
+  const cycleHitsBefore = state.cycleHits;
+  state.inProgress.add(entryKey);
+  let resolved: string;
+  try {
+    resolved = substituteNestedRefsInText(innerExpr, state, true, ambientLambdaVars);
+  } finally {
+    state.inProgress.delete(entryKey);
+  }
+
+  // Only cache expansions that did not depend on the in-progress path: a
+  // cycle-truncated result is specific to the path that produced it, so
+  // reusing it elsewhere would under-resolve the expression.
+  if (state.cycleHits === cycleHitsBefore) {
+    state.memo.set(memoKey, resolved);
+  }
+  return resolved;
+}
+
+/**
+ * Report an expansion stopped by {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT}.
+ *
+ * Under strict CEL diagnostics this fails serialization: the emitted
+ * expression still carries unresolved virtual ids that KRO would reject on
+ * the cluster. By default it stays a warning, matching the lenient posture
+ * the rest of the CEL emission layer takes for unprovable expressions.
+ */
+function reportNestedRefDepthExceeded(expr: string): never | void {
+  if (isStrictCelDiagnosticsEnabled()) {
+    throw new ConversionError(
+      `Nested composition resolution exceeded ${NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels of nesting (strict CEL diagnostics)`,
+      expr,
+      'unknown',
+      undefined,
+      undefined,
+      [
+        'Check the nested composition status mappings for an unexpectedly deep chain or a faulty alias entry',
+        'Disable strict CEL diagnostics for this factory (strictCelDiagnostics: false) to emit the partially-resolved expression instead',
+      ]
+    );
+  }
+  logger.warn('Nested composition resolution depth limit exceeded', {
+    depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
+    expressionPreview: expr.slice(0, 200),
   });
 }
 
@@ -679,14 +843,19 @@ function resolveNestedRefMarkers(
     if (id === '__schema__') return match;
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
+    // Seed the entry being expanded so the shared resolver treats a
+    // self-referential mapping as terminal here exactly as it does on the
+    // structured-ref path.
+    const seedEntry = { id, field: fieldPath };
     if (resourceIds?.has(id)) {
       const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
       if (strictInnerExpr !== undefined)
-        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
+        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context, seedEntry);
       return match;
     }
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
-    if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel, context);
+    if (innerExpr !== undefined)
+      return innerExprToYamlSegment(innerExpr, nestedStatusCel, context, seedEntry);
     return match;
   });
 }
@@ -722,7 +891,8 @@ const WRAPPED_BARE_LITERAL_PATTERN = /^\$\{\s*(-?\d+(?:\.\d+)?|true|false|null)\
 function innerExprToYamlSegment(
   innerExpr: string,
   nestedStatusCel: Record<string, string>,
-  context?: SerializationContext
+  context?: SerializationContext,
+  seedEntry?: NestedRefEntry
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
@@ -730,7 +900,8 @@ function innerExprToYamlSegment(
     innerExpr,
     nestedStatusCel,
     context?.resourceIds,
-    true
+    true,
+    seedEntry
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
@@ -776,14 +947,16 @@ export function finalizeCelForKro(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext,
-  resolveKnownNestedResourceRefs = true
+  resolveKnownNestedResourceRefs = true,
+  seedEntry?: NestedRefEntry
 ): string {
   const resolved = normalizeCelArrayIndexPaths(
     resolveNestedCompositionRefs(
       expr,
       nestedStatusCel,
       context?.resourceIds,
-      resolveKnownNestedResourceRefs
+      resolveKnownNestedResourceRefs,
+      seedEntry
     )
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1847,14 +2020,16 @@ export function serializeStatusMappingsToCel(
     rewriteSchemaRefs = true,
     resolveKnownNestedResourceRefs = [...nestedCompositionIds].some((id) =>
       new RegExp(`(^|[^\\w$])${escapeRegExpLiteral(id)}\\s*\\.`).test(expr)
-    )
+    ),
+    seedEntry?: NestedRefEntry
   ): string {
     const resolved = normalizeCelArrayIndexPaths(
       resolveNestedCompositionRefs(
         normalizeLocalResourceExpr(expr),
         normalizedNestedStatusCel,
         resourceIds,
-        resolveKnownNestedResourceRefs
+        resolveKnownNestedResourceRefs,
+        seedEntry
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1886,7 +2061,12 @@ export function serializeStatusMappingsToCel(
           normalizedNestedStatusCel
         );
         if (innerExpr !== undefined) {
-          return statusFieldFromExpression(innerExpr, true, true);
+          // Seed the entry we just looked up: its mapping may reference its
+          // own flattened resource id, which is terminal, not re-expandable.
+          return statusFieldFromExpression(innerExpr, true, true, {
+            id: ref.resourceId,
+            field: fieldName,
+          });
         }
       }
 
