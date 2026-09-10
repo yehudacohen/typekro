@@ -320,16 +320,33 @@ webAppReady: Cel.expr<boolean>(resources.webapp.status.readyReplicas, ' == ', re
 - Do NOT use JavaScript operators: `resources.a.ready || false` — use CEL expressions
 - Do NOT access non-existent status on yamlFile resources (they return DeploymentClosure, not Enhanced)
 
-### Every KRO status leaf must project (#188)
-KRO fills an instance's `status` only from expressions it can resolve against the graph's own
-resources. A leaf that is a bare literal — `true`, `5432`, `'http'`, `['web', 'websecure']` — is
-left unset, so the declared status schema promises a field the custom resource never carries.
-TypeKro hydrates those leaves client-side in `getStatus()`, which means **the author sees the value
-and nobody else does**: `kubectl get`, another controller, and an `externalRef` from a second
-composition all see `undefined`.
+### Every KRO status leaf must project from a resource (#188)
+**Every status leaf must reference at least one RESOURCE in the graph.** That is KRO's own rule —
+`instance status field must refer to a resource` (KRO `builder.go`; quoted in
+`src/core/deployment/kro-instance-safety.ts`, which already REJECTS this exact shape when hoisting a
+Namespace weakens a status field) — and its status CEL environment has no `schema` identifier at
+all. See also `src/core/proxy/create-resource.ts`: "`schema.spec.*` is not valid in KRO status CEL".
+A leaf that references no resource is left unset, so the declared status schema
+promises a field the custom resource never carries. TypeKro hydrates those leaves client-side in
+`getStatus()`, which means **the author sees the value and nobody else does**: `kubectl get`,
+another controller, and an `externalRef` from a second composition all see `undefined`.
 
-- A leaf is valid if it references a resource id (`<id>.status.*`, `<id>.metadata.*`, `<id>.spec.*`)
-  or `schema.spec.*`.
+Two shapes reference no resource, and KRO drops both:
+
+- **Literals** — `true`, `5432`, `'http'`, `['web', 'websecure']`.
+- **Bare `schema.spec.*` echoes** — `version: spec.version`, `namespace: spec.namespace`,
+  `` url: `http://${spec.host}` ``. These look resolvable, because the CR really does hold the value
+  in its own spec, but a status leaf is a *projection* and there is no resource here to project
+  from. `status.version = spec.version` is the most common instance of this bug: sixteen bundled
+  compositions still ship it.
+
+Which gives:
+
+- A leaf is valid if it references a resource id: `<id>.status.*`, `<id>.metadata.*`, `<id>.spec.*`.
+- `schema.spec.*` is fine **inside** an expression that also references a resource —
+  `` url: `http://${service.metadata.name}.${spec.namespace}.svc` ``. The resource supplies the
+  dependency KRO requires, and the spec value resolves from there. The test is "does this leaf touch
+  a resource", not "does it mention `schema`".
 - A reference-free CEL expression is **not** an escape: `Cel.expr<string>\`'running'\`` is dropped
   exactly like a bare string.
 - Watch for silent degradation. `conditions?.some(c => ...) || false` cannot be expressed in CEL, so
