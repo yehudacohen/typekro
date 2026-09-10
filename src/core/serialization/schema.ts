@@ -16,6 +16,7 @@ import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { TypeKroError } from '../errors.js';
+import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy } from '../references/index.js';
 import type {
@@ -24,6 +25,10 @@ import type {
   TernaryConditional,
 } from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
+import {
+  collectStatusCelDialectFindings,
+  formatCelDialectFindings,
+} from '../validation/cel-dialect.js';
 import {
   createStatusResourceIdentityContext,
   getNestedCompositionIds,
@@ -1682,6 +1687,47 @@ function collectOmitFields(specFields: Record<string, unknown>, specType: Type):
   }
 }
 
+/**
+ * Fail (strict) or warn (default) when an emitted status expression is only
+ * accepted by one of the two CEL engines TypeKro targets.
+ *
+ * Strictness follows the shared CEL diagnostics convention: the
+ * `strictCelDiagnostics` factory option first, then `TYPEKRO_STRICT_CEL`.
+ * Lenient mode logs the same detail so the divergence is visible before the
+ * ResourceGraphDefinition reaches a cluster.
+ */
+function assertStatusCelDialectCompatibility(
+  name: string,
+  statusCelExpressions: Readonly<Record<string, unknown>>,
+  strictCelDiagnostics: boolean | undefined
+): void {
+  const findings = collectStatusCelDialectFindings(statusCelExpressions);
+  if (findings.length === 0) return;
+
+  const details = formatCelDialectFindings(findings);
+  if (isStrictCelDiagnosticsEnabled({ strictCelDiagnostics })) {
+    throw new TypeKroError(
+      `Status CEL in ResourceGraphDefinition '${name}' is not accepted by both CEL dialects.\n${details}`,
+      'CEL_DIALECT_INCOMPATIBLE',
+      { findings }
+    );
+  }
+
+  logger.warn(
+    'Status CEL is not accepted by both CEL dialects — direct mode and Kro mode will disagree',
+    {
+      resourceGraphDefinition: name,
+      findings: findings.map((found) => ({
+        field: found.field,
+        rule: found.rule,
+        dialect: found.dialect,
+        expression: found.expression,
+      })),
+      hint: 'Enable strict CEL diagnostics (factory option strictCelDiagnostics or TYPEKRO_STRICT_CEL=1) to fail fast at serialization time',
+    }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1707,7 +1753,8 @@ export function arktypeToKroSchema(
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  strictCelDiagnostics?: boolean
 ): KroSimpleSchemaWithMetadata {
   const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json)
     .nullable.values()
@@ -1931,6 +1978,11 @@ export function arktypeToKroSchema(
         )
       : {};
 
+  // Dual-dialect gate: every status expression about to be emitted is run
+  // through cel-js and the curated cel-go divergence denylist, so a form only
+  // one engine accepts fails here rather than on a live cluster.
+  assertStatusCelDialectCompatibility(name, statusCelExpressions, strictCelDiagnostics);
+
   // Extract just the version part for the schema (Kro expects v1alpha1, not kro.run/v1alpha1)
   const schemaApiVersion = schemaDefinition.apiVersion.includes('/')
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
@@ -2020,7 +2072,8 @@ export function generateKroSchemaFromArktype<
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  strictCelDiagnostics?: boolean
 ): KroSimpleSchemaWithMetadata {
   return arktypeToKroSchema(
     name,
@@ -2028,7 +2081,8 @@ export function generateKroSchemaFromArktype<
     resources,
     statusMappings,
     nestedStatusCel,
-    schemaFieldValidations
+    schemaFieldValidations,
+    strictCelDiagnostics
   );
 }
 

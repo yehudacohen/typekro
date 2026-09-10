@@ -129,7 +129,10 @@ export class KroDeploymentStrategy<
       this.factoryName,
       this.schemaDefinition,
       this.resources || {},
-      this.statusMappings || {}
+      this.statusMappings || {},
+      undefined,
+      undefined,
+      this.factoryOptions.strictCelDiagnostics
     );
 
     // Create RGD manifest
