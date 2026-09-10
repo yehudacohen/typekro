@@ -146,6 +146,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clickhouseOperatorBootstrap` now stops the Altinity operator from copying
+  another controller's ownership labels onto the objects it generates. The
+  operator propagates a ClickHouseInstallation's labels to every ConfigMap,
+  Service, StatefulSet and PVC it creates for it; in KRO mode the CHI is a
+  graph child carrying KRO's ApplySet membership labels, so those labels landed
+  on the operator's own children and KRO's pruning deleted them as members it
+  no longer declared. The Pod could then never mount `chi-<name>-common-configd`
+  and the CHI sat `InProgress` indefinitely with no error reported anywhere.
+  The bootstrap now defaults the operator's `label.exclude` to the ApplySet and
+  KRO ownership labels, which `customValues` can still override.
+- `makeClickHouseCluster` accepts `name`/`kind` overrides for the generated
+  ResourceGraphDefinition. The runtime spec schema is a product of the topology
+  — declared users, a required keeper, and the `s3_plain_rewritable` version
+  floor all appear only where they apply — and KRO refuses to update a
+  generated CRD with a breaking schema change, so two different topologies
+  deployed to one cluster previously made whichever was applied second fail
+  with "breaking changes detected".
+- The shared Flux HelmRelease readiness evaluator no longer reports ready while
+  Flux is still installing. It previously accepted readiness evidence that did
+  not describe the current release, so `waitForReady: true` on a Helm-backed
+  bootstrap could return before the chart's workloads — and, for an operator
+  chart, its CRDs — existed, and a consumer proceeding on `ready` failed. Ready
+  now additionally requires every generation-bearing observation Flux publishes
+  (the top-level `observedGeneration` and the `Ready`/`Released` conditions'
+  own) to be exactly `metadata.generation` rather than merely not behind,
+  `Reconciling` not to be `True` (Flux holds it for the whole install/upgrade,
+  so a `Ready=True` beside it belongs to the previous release), `Stalled` not to
+  be `True`, the revision Flux last attempted to be the revision actually
+  released (the failed-upgrade-then-rollback shape), and a present `Released`
+  condition to be `True`. The portable strategy revision is bumped so a graph
+  serialized by an older TypeKro cannot rehydrate the looser evaluator.
+- ClickHouse and ClickStack status contracts are now fully observable through
+  KRO. Fields that came from the construction-time topology — the ClickHouse
+  cluster's `clickhouse.port`/`database`/`user` and its whole `storage`
+  durability block, and ClickStack's `version`, `app.appPort`/`apiPort` and
+  `storage` block — were emitted as literals, which KRO drops from the instance
+  status, so the declared schema promised fields the live custom resource never
+  carried. Each composition now writes those values into a ConfigMap it owns
+  (`<name>-contract`) and projects the status back from that resource, so
+  `kubectl get clickhouseclusters -o yaml` shows the whole contract, durability
+  included, in both factory modes.
+- `makeClickHouseCluster` now carries the `s3_plain_rewritable` ClickHouse
+  version floor into the generated KRO schema as a `pattern=` marker on
+  `spec.version`, so an instance selecting a server that cannot run that
+  metadata type is rejected by the API server. The construction-time check
+  could not see a per-instance version in KRO mode and previously skipped
+  silently; a concrete version it cannot parse (a moving tag, a digest pin) is
+  now refused rather than assumed.
+- A custom ClickHouse `storage.endpoint` is now parsed and validated part by
+  part — scheme, userinfo, host shape, port range, query, fragment and path —
+  instead of only passing a character allow-list, which accepted
+  `http://key:secret@minio:9000` and wrote those credentials into the server's
+  `config.d/storage.xml`. S3 bucket names are checked against the complete
+  published general-purpose-bucket rule set, including the reserved `xn--`,
+  `sthree-` and `amzn-s3-demo-` prefixes and the `-s3alias`, `--ol-s3`,
+  `.mrap` and `--x-s3` suffixes; a dotted bucket name is refused on the AWS
+  virtual-hosted endpoint the factory composes, where the wildcard certificate
+  cannot cover the extra label.
+- `ClickHouseInstallationConfigSchema` now models the S3 storage branch field by
+  field, with the credential-transport and region-or-endpoint invariants encoded
+  in the schema, and `ClickHouseInstallationConfig` is inferred from it. The
+  schema previously described only the two fields common to both storage modes
+  while the exported type was widened with the whole S3 configuration, leaving
+  every S3 field unvalidated.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their

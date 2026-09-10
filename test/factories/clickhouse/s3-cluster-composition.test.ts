@@ -308,3 +308,38 @@ describe('the s3_plain_rewritable version floor travels into the generated schem
     expect(spec).toBeDefined();
   });
 });
+
+describe('RGD identity is overridable, because the spec schema is topology-shaped', () => {
+  it('defaults to clickhouse-cluster/ClickHouseCluster', () => {
+    const yaml = makeClickHouseCluster({ storage: IRSA_S3 }).toYaml();
+    expect(yaml).toContain('name: clickhouse-cluster');
+    expect(yaml).toContain('kind: ClickHouseCluster');
+  });
+
+  it('accepts a name/kind override so two topologies can coexist in one cluster', () => {
+    // WHY THIS MATTERS. The runtime spec schema is a PRODUCT of the topology —
+    // `users.<name>` entries, a required `keeper`, and the
+    // s3_plain_rewritable `version` pattern all appear only for the topologies
+    // that need them. KRO refuses to update a generated CRD with a breaking
+    // schema change, so two different topologies sharing one RGD name make
+    // whichever is applied second fail outright ("breaking changes detected:
+    // Property users was removed" — observed live). The override is how a
+    // cluster runs both.
+    const yaml = makeClickHouseCluster({
+      name: 'clickhouse-s3-cluster',
+      kind: 'ClickHouseS3Cluster',
+      users: [{ name: 'probe' }],
+      storage: PLAIN_REWRITABLE_S3,
+    }).toYaml();
+
+    expect(yaml).toContain('name: clickhouse-s3-cluster');
+    expect(yaml).toContain('kind: ClickHouseS3Cluster');
+    expect(yaml).not.toContain('kind: ClickHouseCluster\n');
+
+    // The two identities really are independent graphs, not the same one
+    // renamed: the overridden schema still carries the topology's own shape.
+    const versionLine = yaml.split('\n').find((line) => line.trim().startsWith('version: string'));
+    expect(versionLine).toContain('pattern=');
+    expect(yaml).toContain('probe');
+  });
+});

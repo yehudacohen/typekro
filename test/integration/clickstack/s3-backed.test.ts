@@ -27,6 +27,7 @@ import {
   createBunCompatibleBatchV1Api,
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
+import { DEFAULT_CLICKSTACK_VERSION } from '../../../src/factories/clickstack/resources/helm.js';
 import { DEFAULT_QUEUE_EXPORTER_NAMES } from '../../../src/factories/clickstack/utils/storage.js';
 import { type BackgroundSampler, startBackgroundSampler } from '../../utils/background-sampler.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
@@ -40,6 +41,7 @@ import {
   isClusterAvailable,
   requireTestStorageClass,
   runTestPodAndReadLogs,
+  runWithExpectedTestNamespace,
   type TestNamespaceLease,
 } from '../shared-kubeconfig.js';
 
@@ -75,44 +77,6 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
   let gatewayEndpoint: string | undefined;
   const apiKey = crypto.randomUUID();
   const namespaceLeases: TestNamespaceLease[] = [];
-
-  /**
-   * Poll the operator HelmRelease's own `Ready` condition.
-   *
-   * The direct factory's returned snapshot can predate Flux's install (see the
-   * call site), and every later step depends on a live operator, so the gate is
-   * the resource's own condition.
-   */
-  async function waitForOperatorReady(timeoutMs = 600_000): Promise<void> {
-    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-    const deadline = Date.now() + timeoutMs;
-    let lastMessage = 'no status yet';
-    while (Date.now() < deadline) {
-      try {
-        const raw = (await customApi.getNamespacedCustomObject({
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2',
-          namespace: operatorNs,
-          plural: 'helmreleases',
-          name: 'clickhouse-operator',
-        })) as { body?: unknown };
-        const release = (raw as { body?: unknown }).body ?? raw;
-        const conditions =
-          (
-            release as {
-              status?: { conditions?: { type: string; status: string; message?: string }[] };
-            }
-          ).status?.conditions ?? [];
-        const ready = conditions.find((condition) => condition.type === 'Ready');
-        if (ready?.status === 'True') return;
-        lastMessage = ready?.message ?? lastMessage;
-      } catch {
-        // The HelmRelease may not exist yet.
-      }
-      await Bun.sleep(5_000);
-    }
-    throw new Error(`Operator HelmRelease never became Ready: ${lastMessage}`);
-  }
 
   async function query(sql: string, label: string): Promise<string> {
     return (
@@ -308,14 +272,16 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
       });
       operatorDeployed = true;
 
-      // LIVE OBSERVATION: `deploy()` returned in ~20s with `status.ready: false`
-      // while the operator HelmRelease only reached `Ready=True` about 90s later
-      // (the Flux HelmRepository this bootstrap creates has to fetch an artifact
-      // first). This suite is about S3 storage, not the bootstrap's readiness
-      // plumbing, so it polls the live HelmRelease rather than trusting the
-      // returned snapshot — see the PR's open questions for the underlying gap.
-      expect(instance).toBeDefined();
-      await waitForOperatorReady();
+      // `waitForReady: true` is the whole gate. Before the #191 fix the shared
+      // Helm readiness evaluator accepted a state that was not yet
+      // `Ready=True` with the current generation observed, so `deploy()`
+      // returned before Flux had finished installing and this suite had to
+      // poll the live HelmRelease itself. The evaluator now also requires
+      // `Reconciling` to be clear and the attempted revision to be the
+      // released one, so the returned snapshot IS evidence.
+      expect(instance.status.ready).toBe(true);
+      expect(instance.status.phase).toBe('Ready');
+      expect(instance.status.failed).toBe(false);
     },
     900_000
   );
@@ -1300,6 +1266,356 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
         // returns, pass or fail, nothing of it is still talking to the cluster.
         await sampler?.stop();
       }
+    },
+    2_400_000
+  );
+
+  // ── KRO mode: the same S3-backed bootstrap through the RGD path ───────────
+  //
+  // The guide requires live DIRECT AND KRO execution for a dependency-managing
+  // integration, and every case above is direct-only. This block runs the SAME
+  // `makeClickstackBootstrap({ storage: { mode: 's3' } })` against the SAME
+  // S3-backed ClickHouse through `factory('kro')`, and proves the complete
+  // lifecycle: the RGD is accepted and Active, the instance reconciles, EVERY
+  // declared status field is observed on the live CR, the KRO-GENERATED
+  // in-cluster HelmRelease's final `spec.values` is what the chart actually
+  // received, the pods are genuinely healthy, and `deleteInstance()` takes the
+  // whole graph with it through KRO's finalizer.
+  //
+  // It runs LAST on purpose: it depends on the ClickHouse the direct cases
+  // built, and the direct cases must not wait on it.
+  orderedCase(
+    'deploys the same S3-backed stack through factory("kro") and cleans up after itself',
+    async () => {
+      expect(clickhouseHost).toBeDefined();
+      const { makeClickstackBootstrap } = await import(
+        '../../../src/factories/clickstack/index.js'
+      );
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const coreApi = createCoreV1ApiClient(kubeConfig);
+
+      // The bootstrap OWNS its Namespace, so the harness proves absence first
+      // and captures the resulting UID lease even on a partial failure — a
+      // name-only helper would be unsafe here because teardown deletes it.
+      const kroStackNs = `clickstack-s3-kro-${crypto.randomUUID().slice(0, 8)}`;
+      const bootstrap = makeClickstackBootstrap({
+        name: 'clickstack-s3-kro',
+        kind: 'ClickStackS3Kro',
+        mongo: { mode: 'internal' as const, storage: { storageClassName: storageClass } },
+        storage: {
+          mode: 's3',
+          // Same immutable metadata type as the CHI these values point at, so
+          // no retention CronJob is rendered (the factory rejects that pair).
+          diskType: 's3_plain_rewritable',
+          persistentQueue: { enabled: true },
+        },
+      });
+      const kroFactory = bootstrap.factory('kro', {
+        namespace: kroStackNs,
+        waitForReady: true,
+        timeout: 1_200_000,
+        kubeConfig,
+      });
+      const kroInstanceName = 'clickstack-kro';
+      const kroApiKey = crypto.randomUUID();
+      let deploymentAttempted = false;
+      // REST plural of the generated CRD, DISCOVERED rather than guessed —
+      // Kubernetes pluralization of a kind containing a digit is not something
+      // a test should encode by hand.
+      let kroPlural = '';
+
+      const discoverGeneratedPlural = async (): Promise<string> => {
+        const raw = (await customApi.listClusterCustomObject({
+          group: 'apiextensions.k8s.io',
+          version: 'v1',
+          plural: 'customresourcedefinitions',
+        })) as { body?: unknown };
+        const list = (raw.body ?? raw) as {
+          items?: { spec?: { group?: string; names?: { kind?: string; plural?: string } } }[];
+        };
+        const generated = (list.items ?? []).find(
+          (crd) => crd.spec?.group === 'kro.run' && crd.spec?.names?.kind === 'ClickStackS3Kro'
+        );
+        const plural = generated?.spec?.names?.plural;
+        if (plural === undefined) {
+          throw new Error('No generated CRD found for kind ClickStackS3Kro in group kro.run');
+        }
+        return plural;
+      };
+
+      try {
+        const instance = await runWithExpectedTestNamespace(
+          kroStackNs,
+          kubeConfig,
+          (lease) => namespaceLeases.push(lease),
+          async () => {
+            deploymentAttempted = true;
+            return kroFactory.deploy({
+              name: kroInstanceName,
+              namespace: kroStackNs,
+              clickhouse: {
+                host: clickhouseHost as string,
+                username: chiUser,
+                password: chiUserPassword,
+              },
+              apiKey: kroApiKey,
+            });
+          }
+        );
+
+        expect(instance.status.ready).toBe(true);
+        phase('KRO instance reported ready');
+
+        // 1. THE RGD REACHED Active=True on the live cluster.
+        const rgdRaw = (await customApi.getClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name: 'clickstack-s3-kro',
+        })) as { body?: unknown };
+        const rgd = (rgdRaw.body ?? rgdRaw) as {
+          status?: { state?: string; conditions?: { type: string; status: string }[] };
+        };
+        expect(rgd.status?.state).toBe('Active');
+        expect(
+          (rgd.status?.conditions ?? []).find((condition) => condition.type === 'GraphAccepted')
+            ?.status
+        ).toBe('True');
+        kroPlural = await discoverGeneratedPlural();
+
+        // 2. STATUS HYDRATION ON THE LIVE CR. KRO projects status a reconcile
+        // after readiness, so poll briefly for the last field to arrive.
+        const readKroInstance = async (): Promise<{ status?: Record<string, unknown> }> => {
+          const raw = (await customApi.getNamespacedCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            namespace: kroStackNs,
+            plural: kroPlural,
+            name: kroInstanceName,
+          })) as { body?: unknown };
+          return (raw.body ?? raw) as never;
+        };
+
+        let liveCr = await readKroInstance();
+        const statusDeadline = Date.now() + 180_000;
+        while (
+          (liveCr.status?.storage as { mode?: string } | undefined)?.mode === undefined &&
+          Date.now() < statusDeadline
+        ) {
+          await Bun.sleep(5_000);
+          liveCr = await readKroInstance();
+        }
+
+        const status = liveCr.status as unknown as {
+          ready: boolean;
+          phase: string;
+          version: string;
+          ui: { url: string };
+          gateway: { otlpHttpEndpoint: string; otlpGrpcEndpoint: string };
+          app: { host: string; appPort: number; apiPort: number };
+          storage: { mode: string; diskType: string; persistentQueue: boolean };
+        };
+
+        // EVERY field of ClickStackBootstrapStatusSchema, on the LIVE CR — not
+        // readiness plus the endpoints. `version`, the ports and the storage
+        // block are the ones that used to be literals KRO dropped.
+        expect(status.ready).toBe(true);
+        expect(status.phase).toBe('Ready');
+        expect(status.version).toBe(DEFAULT_CLICKSTACK_VERSION);
+        expect(status.ui.url).toBe(
+          `http://${kroInstanceName}.${kroStackNs}.svc.cluster.local:3000`
+        );
+        expect(status.gateway.otlpHttpEndpoint).toBe(
+          `http://${kroInstanceName}-otel-collector.${kroStackNs}.svc.cluster.local:4318`
+        );
+        expect(status.gateway.otlpGrpcEndpoint).toBe(
+          `http://${kroInstanceName}-otel-collector.${kroStackNs}.svc.cluster.local:4317`
+        );
+        expect(status.app.host).toBe(`${kroInstanceName}.${kroStackNs}.svc.cluster.local`);
+        expect(status.app.appPort).toBe(3000);
+        expect(status.app.apiPort).toBe(8000);
+        expect(status.storage.mode).toBe('s3');
+        expect(status.storage.diskType).toBe('s3_plain_rewritable');
+        expect(status.storage.persistentQueue).toBe(true);
+        phase('KRO CR status carries the whole declared contract');
+
+        // 3. THE KRO-GENERATED IN-CLUSTER HELMRELEASE. Local RGD YAML proves
+        // serialization; only the live object proves KRO's expression
+        // evaluation and the Flux handoff produced the chart config expected.
+        const releaseRaw = (await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: kroStackNs,
+          plural: 'helmreleases',
+          name: kroInstanceName,
+        })) as { body?: unknown };
+        const release = (releaseRaw.body ?? releaseRaw) as {
+          spec?: {
+            chart?: { spec?: { chart?: string; version?: string } };
+            values?: Record<string, unknown>;
+          };
+          status?: { conditions?: { type: string; status: string }[] };
+        };
+        expect(release.spec?.chart?.spec?.chart).toBe('clickstack');
+        expect(release.spec?.chart?.spec?.version).toBe(DEFAULT_CLICKSTACK_VERSION);
+
+        const values = release.spec?.values as {
+          fullnameOverride?: string;
+          clickhouse?: { enabled?: boolean };
+          mongodb?: { enabled?: boolean };
+          hyperdx?: {
+            config?: Record<string, string>;
+            secrets?: Record<string, string>;
+          };
+          global?: { otelCollector?: { customConfig?: string } };
+          'otel-collector'?: {
+            extraVolumes?: { name?: string; persistentVolumeClaim?: { claimName?: string } }[];
+            extraVolumeMounts?: { mountPath?: string }[];
+          };
+        };
+        // The naming anchor the whole status contract depends on: the mapper
+        // pins it so the HyperDX Service is `<name>` and the gateway Service is
+        // `<name>-otel-collector`.
+        expect(values.fullnameOverride).toBe(kroInstanceName);
+        // The chart's bundled ClickHouse and Mongo are OFF: this stack writes
+        // to the external, S3-backed CHI the direct cases built, and runs the
+        // composition's own Mongo StatefulSet.
+        expect(values.clickhouse?.enabled).toBe(false);
+        expect(values.mongodb?.enabled).toBe(false);
+        // The DEPENDENCY CONTRACT, as the chart actually received it: KRO
+        // evaluated the mixed template into a concrete DSN for the external
+        // ClickHouse, not a marker or a half-resolved expression.
+        expect(values.hyperdx?.config?.CLICKHOUSE_ENDPOINT).toBe(
+          `tcp://${clickhouseHost}:9000?dial_timeout=10s`
+        );
+        expect(values.hyperdx?.config?.CLICKHOUSE_SERVER_ENDPOINT).toBe(`${clickhouseHost}:9000`);
+        expect(values.hyperdx?.config?.CLICKHOUSE_USER).toBe(chiUser);
+        expect(values.hyperdx?.config?.MONGO_URI).toBe(
+          `mongodb://${kroInstanceName}-mongodb.${kroStackNs}.svc.cluster.local:27017/hyperdx`
+        );
+        // No TypeKro marker and no unevaluated KRO expression survived into
+        // the values the chart rendered. `${env:...}` in the collector overlay
+        // is OTel's own runtime expansion and is expected, so the check is on
+        // the markers rather than on every `${`.
+        const serializedValues = JSON.stringify(values);
+        expect(serializedValues).not.toContain('__KUBERNETES_REF');
+        expect(serializedValues).not.toContain('__typekroSchemaKey');
+        expect(serializedValues).not.toContain('schema.spec.');
+        expect(serializedValues).not.toContain('[object Object]');
+        // The persistent queue wiring survived the whole-map merge, alongside
+        // the chart's own custom-config mount.
+        const queueVolume = (values['otel-collector']?.extraVolumes ?? []).find(
+          (volume) => volume.persistentVolumeClaim?.claimName === `${kroInstanceName}-otel-queue`
+        );
+        expect(queueVolume).toBeDefined();
+        expect(
+          (values['otel-collector']?.extraVolumeMounts ?? []).map((mount) => mount.mountPath)
+        ).toContain('/var/lib/otelcol/file_storage');
+        expect(values.global?.otelCollector?.customConfig).toBeDefined();
+        phase('KRO-generated HelmRelease spec.values verified in-cluster');
+
+        // 4. POD GROUND TRUTH. Status is the composition's claim; this is the
+        // cluster's. All pods Running, all containers ready, restarts inside
+        // the guide's KRO-mode budget (a simultaneous deploy restarts HyperDX
+        // while Mongo comes up).
+        const pods = await coreApi.listNamespacedPod({ namespace: kroStackNs });
+        const workloads = pods.items.filter((pod) => !pod.metadata?.deletionTimestamp);
+        expect(workloads.length).toBeGreaterThanOrEqual(3);
+        for (const pod of workloads) {
+          expect(pod.status?.phase).toBe('Running');
+          const containers = pod.status?.containerStatuses ?? [];
+          expect(containers.length).toBeGreaterThan(0);
+          expect(containers.every((container) => container.ready)).toBe(true);
+          const restarts = containers.reduce(
+            (total, container) => total + container.restartCount,
+            0
+          );
+          expect(restarts).toBeLessThanOrEqual(10);
+        }
+
+        // The contract ConfigMap the status is projected from is a real graph
+        // child carrying the resolved values.
+        const contract = await coreApi.readNamespacedConfigMap({
+          namespace: kroStackNs,
+          name: `${kroInstanceName}-contract`,
+        });
+        expect(contract.data?.version).toBe(DEFAULT_CLICKSTACK_VERSION);
+        expect(contract.data?.appPort).toBe('3000');
+        expect(contract.data?.storageDiskType).toBe('s3_plain_rewritable');
+        expect(contract.data?.storagePersistentQueue).toBe('true');
+      } finally {
+        if (deploymentAttempted) {
+          // 5. `deleteInstance()` + KRO finalizer, through the shared helper —
+          // never a manual deletion of children, the RGD, or a finalizer
+          // patch. The suite's own namespace leases are released in afterAll,
+          // AFTER factory teardown.
+          await deleteTestFactoryInstanceAndRecoverNamespaces(
+            kroFactory as never,
+            kroInstanceName,
+            [],
+            kubeConfig,
+            300_000
+          );
+        }
+      }
+
+      // 6. FINALIZER CLEANUP VERIFIED. Graph deletion runs behind KRO's
+      // finalizer, so each of these lags `deleteInstance` returning; poll to a
+      // bounded deadline rather than asserting instant absence.
+      const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
+        const deadline = Date.now() + 300_000;
+        while (Date.now() < deadline) {
+          try {
+            await read();
+            await Bun.sleep(5_000);
+          } catch {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      expect(
+        await pollGone(() =>
+          customApi.getNamespacedCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            namespace: kroStackNs,
+            plural: kroPlural,
+            name: kroInstanceName,
+          })
+        )
+      ).toBe(true);
+      expect(
+        await pollGone(() =>
+          customApi.getClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: 'clickstack-s3-kro',
+          })
+        )
+      ).toBe(true);
+      expect(
+        await pollGone(() =>
+          customApi.getNamespacedCustomObject({
+            group: 'helm.toolkit.fluxcd.io',
+            version: 'v2',
+            namespace: kroStackNs,
+            plural: 'helmreleases',
+            name: kroInstanceName,
+          })
+        )
+      ).toBe(true);
+      expect(
+        await pollGone(() =>
+          coreApi.readNamespacedConfigMap({
+            namespace: kroStackNs,
+            name: `${kroInstanceName}-contract`,
+          })
+        )
+      ).toBe(true);
+      phase('KRO instance, RGD, HelmRelease and contract ConfigMap all gone');
     },
     2_400_000
   );

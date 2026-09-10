@@ -85,44 +85,6 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
   const namespaceLeases: TestNamespaceLease[] = [];
 
   /**
-   * Poll the operator HelmRelease's own `Ready` condition.
-   *
-   * The direct factory's returned snapshot can predate Flux's install (see the
-   * call site), and every later step depends on a live operator, so the gate is
-   * the resource's own condition.
-   */
-  async function waitForOperatorReady(timeoutMs = 600_000): Promise<void> {
-    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-    const deadline = Date.now() + timeoutMs;
-    let lastMessage = 'no status yet';
-    while (Date.now() < deadline) {
-      try {
-        const raw = (await customApi.getNamespacedCustomObject({
-          group: 'helm.toolkit.fluxcd.io',
-          version: 'v2',
-          namespace: operatorNs,
-          plural: 'helmreleases',
-          name: 'clickhouse-operator',
-        })) as { body?: unknown };
-        const release = (raw as { body?: unknown }).body ?? raw;
-        const conditions =
-          (
-            release as {
-              status?: { conditions?: { type: string; status: string; message?: string }[] };
-            }
-          ).status?.conditions ?? [];
-        const ready = conditions.find((condition) => condition.type === 'Ready');
-        if (ready?.status === 'True') return;
-        lastMessage = ready?.message ?? lastMessage;
-      } catch {
-        // The HelmRelease may not exist yet.
-      }
-      await Bun.sleep(5_000);
-    }
-    throw new Error(`Operator HelmRelease never became Ready: ${lastMessage}`);
-  }
-
-  /**
    * Backup destination base URL, built the same way the factory builds it:
    * path-style `<endpoint>/<bucket>/<prefix>/`.
    */
@@ -130,8 +92,12 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     return `${minio.endpoint.replace(/\/+$/, '')}/${minio.bucket}/backups/`;
   }
 
-  /** Run a query against the CHI from a throwaway clickhouse-client Pod. */
-  async function query(sql: string, name: string): Promise<string> {
+  /**
+   * Run a query against an arbitrary ClickHouse host from a throwaway
+   * clickhouse-client Pod. Takes the host explicitly because the KRO-mode
+   * block below drives a SECOND installation in the same namespace.
+   */
+  async function queryHost(host: string, sql: string, name: string): Promise<string> {
     return (
       await runTestPodAndReadLogs(
         {
@@ -141,7 +107,7 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
           command: [
             'clickhouse-client',
             '--host',
-            `clickhouse-${chiName}.${chiNs}.svc.cluster.local`,
+            host,
             '--port',
             '9000',
             '--user',
@@ -156,6 +122,11 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
         kubeConfig
       )
     ).trim();
+  }
+
+  /** Run a query against the direct-mode CHI. */
+  async function query(sql: string, name: string): Promise<string> {
+    return queryHost(`clickhouse-${chiName}.${chiNs}.svc.cluster.local`, sql, name);
   }
 
   beforeAll(async () => {
@@ -259,14 +230,57 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
     });
     operatorDeployed = true;
 
-    // LIVE OBSERVATION: `deploy()` returned in ~20s with `status.ready: false`
-    // while the operator HelmRelease only reached `Ready=True` about 90s later
-    // (the Flux HelmRepository this bootstrap creates has to fetch an artifact
-    // first). This suite is about S3 storage, not the bootstrap's readiness
-    // plumbing, so it polls the live HelmRelease rather than trusting the
-    // returned snapshot — see the PR's open questions for the underlying gap.
-    expect(instance).toBeDefined();
-    await waitForOperatorReady();
+    // `waitForReady: true` is now the whole gate. Before the #191 fix the
+    // shared Helm readiness evaluator accepted a state that was not yet
+    // `Ready=True` with the current generation observed, so `deploy()` returned
+    // roughly 90s before Flux had finished installing and this suite had to
+    // poll the live HelmRelease itself. The evaluator now additionally requires
+    // `Reconciling` to be clear, the current generation to be observed exactly,
+    // and the attempted revision to be the released one — so the returned
+    // snapshot IS evidence, and the assertions below are the proof.
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.phase).toBe('Ready');
+    expect(instance.status.failed).toBe(false);
+    expect(instance.status.version).toBe('0.27.1');
+
+    // Ground truth for the readiness contract: at the moment `deploy()`
+    // returned, the HelmRelease really was installed AND the CRDs the operator
+    // owns really did exist. That second half is what a consumer proceeding on
+    // `ready` depends on, and what the old behaviour got wrong.
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const releaseRaw = (await customApi.getNamespacedCustomObject({
+      group: 'helm.toolkit.fluxcd.io',
+      version: 'v2',
+      namespace: operatorNs,
+      plural: 'helmreleases',
+      name: 'clickhouse-operator',
+    })) as { body?: unknown };
+    const release = (releaseRaw.body ?? releaseRaw) as {
+      metadata?: { generation?: number };
+      status?: {
+        observedGeneration?: number;
+        lastAttemptedRevision?: string;
+        history?: { chartVersion?: string }[];
+        conditions?: { type: string; status: string }[];
+      };
+    };
+    const conditions = release.status?.conditions ?? [];
+    expect(conditions.find((condition) => condition.type === 'Ready')?.status).toBe('True');
+    expect(conditions.find((condition) => condition.type === 'Released')?.status).toBe('True');
+    expect(conditions.find((condition) => condition.type === 'Reconciling')?.status).not.toBe(
+      'True'
+    );
+    expect(release.metadata?.generation).toBeGreaterThan(0);
+    expect(release.status?.observedGeneration).toBe(release.metadata?.generation as number);
+    expect(release.status?.lastAttemptedRevision).toBe('0.27.1');
+    expect(release.status?.history?.[0]?.chartVersion).toBe('0.27.1');
+
+    await customApi.getClusterCustomObject({
+      group: 'apiextensions.k8s.io',
+      version: 'v1',
+      plural: 'customresourcedefinitions',
+      name: 'clickhouseinstallations.clickhouse.altinity.com',
+    });
   }, 900_000);
 
   it('reconciles an s3_plain_rewritable cluster against MinIO with Secret-backed keys', async () => {
@@ -433,4 +447,441 @@ describeOrSkip('ClickHouse S3-backed storage (MinIO)', () => {
 
     expect(rows).toBe('1');
   }, 900_000);
+
+  // ── KRO mode: the same S3 composition through the RGD path ───────────────
+  //
+  // The guide requires live DIRECT AND KRO execution for a dependency-managing
+  // integration, and the tests above are direct-only. This block runs the SAME
+  // `makeClickHouseCluster({ storage: { mode: 's3' } })` composition through
+  // `factory('kro')` and proves the complete lifecycle: the RGD is accepted and
+  // Active, the instance reconciles, EVERY declared status field is observed on
+  // the live CR (the point of projecting the build-time contract from an owned
+  // resource), the KRO-GENERATED in-cluster CHI carries the rendered storage
+  // configuration, the pods are genuinely healthy, and `deleteInstance()` takes
+  // the whole graph — instance, RGD, CHI child and contract ConfigMap — with it
+  // through KRO's finalizer.
+  describe('KRO mode', () => {
+    // Its OWN RGD identity, not the default `clickhouse-cluster`. The spec
+    // schema is a product of the topology (this one declares a user and carries
+    // the s3_plain_rewritable version floor), and KRO refuses a breaking CRD
+    // update — so sharing an RGD name with the default topology the sibling
+    // bootstrap suite deploys would make whichever ran second fail with
+    // "breaking changes detected: Property users was removed".
+    const rgdName = 'clickhouse-s3-cluster';
+    const rgdKind = 'ClickHouseS3Cluster';
+    const kroInstanceName = 'ch-s3-kro';
+    /**
+     * REST plural of the generated CRD, DISCOVERED rather than guessed —
+     * KRO/Kubernetes pluralization of a kind containing a digit is not
+     * something a test should encode by hand.
+     */
+    let rgdPlural = '';
+
+    async function discoverGeneratedPlural(): Promise<string> {
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const raw = (await customApi.listClusterCustomObject({
+        group: 'apiextensions.k8s.io',
+        version: 'v1',
+        plural: 'customresourcedefinitions',
+      })) as { body?: unknown };
+      const list = (raw.body ?? raw) as {
+        items?: { spec?: { group?: string; names?: { kind?: string; plural?: string } } }[];
+      };
+      const generated = (list.items ?? []).find(
+        (crd) => crd.spec?.group === 'kro.run' && crd.spec?.names?.kind === rgdKind
+      );
+      const plural = generated?.spec?.names?.plural;
+      if (plural === undefined) {
+        throw new Error(`No generated CRD found for kind ${rgdKind} in group kro.run`);
+      }
+      return plural;
+    }
+
+    /** Read the live KRO instance CR. */
+    async function readKroInstance(): Promise<{ status?: Record<string, unknown> }> {
+      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const raw = (await customApi.getNamespacedCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        namespace: chiNs,
+        plural: rgdPlural,
+        name: kroInstanceName,
+      })) as { body?: unknown };
+      return (raw.body ?? raw) as never;
+    }
+
+    it('reconciles the S3 composition through KRO, hydrates the whole status contract, and cleans up', async () => {
+      const { makeClickHouseCluster } = await import('../../../src/factories/clickhouse/index.js');
+      const kroApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+
+      // Same build-time storage topology as the direct-mode test, on its own
+      // bucket prefix so the two runs cannot share object keys.
+      const clickhouse = makeClickHouseCluster({
+        name: rgdName,
+        kind: rgdKind,
+        users: [{ name: chiUser }],
+        storage: {
+          mode: 's3',
+          diskType: 's3_plain_rewritable',
+          bucket: minio.bucket,
+          prefix: 'chi-kro',
+          endpoint: minio.endpoint,
+          cache: { size: '512Mi' },
+          auth: { secretRef: { name: minio.secretName } },
+          backup: { schedule: '0 4 * * *', prefix: 'backups-kro' },
+        },
+      });
+      const kroFactory = clickhouse.factory('kro', {
+        namespace: chiNs,
+        waitForReady: true,
+        timeout: 900_000,
+        kubeConfig,
+      });
+
+      let deploymentAttempted = false;
+      try {
+        deploymentAttempted = true;
+        const instance = await kroFactory.deploy({
+          name: kroInstanceName,
+          namespace: chiNs,
+          // Satisfies the s3_plain_rewritable floor the generated schema now
+          // carries as a `pattern=` marker — see the rejection test below.
+          version: '25.7',
+          storage: { size: '2Gi', storageClassName: storageClass },
+          podResources: {
+            requests: { cpu: '200m', memory: '1Gi' },
+            limits: { memory: '2Gi' },
+          },
+          users: { [chiUser]: { passwordSha256Hex: chiUserPasswordSha256 } },
+        });
+
+        expect(instance.status.ready).toBe(true);
+
+        // 1. THE RGD REACHED Active=True on the live cluster.
+        const rgdRaw = (await kroApi.getClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name: rgdName,
+        })) as { body?: unknown };
+        const rgd = (rgdRaw.body ?? rgdRaw) as {
+          status?: { state?: string; conditions?: { type: string; status: string }[] };
+        };
+        expect(rgd.status?.state).toBe('Active');
+        expect(
+          (rgd.status?.conditions ?? []).find((condition) => condition.type === 'GraphAccepted')
+            ?.status
+        ).toBe('True');
+        rgdPlural = await discoverGeneratedPlural();
+
+        // 2. STATUS HYDRATION ON THE LIVE CR. KRO projects status a reconcile
+        // after readiness, so poll briefly for the first field.
+        let liveCr = await readKroInstance();
+        const statusDeadline = Date.now() + 180_000;
+        while (
+          (liveCr.status?.storage as { bucket?: string } | undefined)?.bucket === undefined &&
+          Date.now() < statusDeadline
+        ) {
+          await Bun.sleep(5_000);
+          liveCr = await readKroInstance();
+        }
+
+        // Read the KRO-generated CHI first: the two host counters are
+        // projections of ITS status, and the operator's own behaviour decides
+        // whether the optional one is populated at all.
+        const chiRaw = (await kroApi.getNamespacedCustomObject({
+          group: 'clickhouse.altinity.com',
+          version: 'v1',
+          namespace: chiNs,
+          plural: 'clickhouseinstallations',
+          name: kroInstanceName,
+        })) as { body?: unknown };
+        const chi = (chiRaw.body ?? chiRaw) as {
+          status?: { status?: string; hosts?: number; hostsCompleted?: number };
+          spec?: {
+            configuration?: {
+              files?: Record<string, string>;
+              settings?: Record<string, string>;
+            };
+          };
+        };
+
+        const status = liveCr.status as unknown as {
+          ready: boolean;
+          phase: string;
+          clickhouse: {
+            host: string;
+            port: number;
+            nativeUrl: string;
+            httpUrl: string;
+            clusterName: string;
+            database: string;
+            user: string;
+          };
+          storage: {
+            mode: string;
+            diskType: string;
+            policyName: string;
+            bucket: string;
+            selfDescribingBucket: boolean;
+            backupSchedule: string;
+          };
+          installation: {
+            name: string;
+            namespace: string;
+            endpoint: string;
+            hostsCount?: number;
+            hostsCompletedCount?: number;
+          };
+        };
+
+        // EVERY field of ClickHouseClusterStatusSchema, on the LIVE CR — not
+        // just readiness and three of them. `keeper` is the only optional
+        // branch and this topology has no keeper, so it is legitimately absent.
+        expect(status.ready).toBe(true);
+        expect(status.phase).toBe('Ready');
+        expect(status.clickhouse.host).toBe(
+          `clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local`
+        );
+        expect(status.clickhouse.port).toBe(9000);
+        expect(status.clickhouse.nativeUrl).toBe(
+          `clickhouse://clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local:9000`
+        );
+        expect(status.clickhouse.httpUrl).toBe(
+          `http://clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local:8123`
+        );
+        expect(status.clickhouse.clusterName).toBe('cluster');
+        expect(status.clickhouse.database).toBe('default');
+        expect(status.clickhouse.user).toBe(chiUser);
+        expect(status.storage.mode).toBe('s3');
+        expect(status.storage.diskType).toBe('s3_plain_rewritable');
+        expect(status.storage.policyName).toBe('s3_main');
+        expect(status.storage.bucket).toBe(minio.bucket);
+        expect(status.storage.selfDescribingBucket).toBe(true);
+        expect(status.storage.backupSchedule).toBe('0 4 * * *');
+        expect(status.installation.name).toBe(kroInstanceName);
+        expect(status.installation.namespace).toBe(chiNs);
+        expect(status.installation.endpoint).toContain(kroInstanceName);
+        expect(status.installation.hostsCount).toBe(1);
+        // LIVE FINDING (operator release-0.27.1): the CHI's `hostsCompleted`
+        // is not populated once the reconcile has finished, so this DECLARED
+        // OPTIONAL field is legitimately absent on a settled cluster. Asserted
+        // as agreeing with its source rather than pinned to a number, which
+        // would be asserting the operator's mid-reconcile behaviour.
+        expect(status.installation.hostsCompletedCount).toBe(
+          chi.status?.hostsCompleted as number
+        );
+        expect(status.installation.hostsCount).toBe(chi.status?.hosts as number);
+        // `keeper` is the only other optional branch, and this topology has no
+        // keeper — so it is legitimately absent rather than unhydrated.
+        expect((liveCr.status as { keeper?: unknown }).keeper).toBeUndefined();
+
+        // THE VERSION FLOOR, ENFORCED BY THE GENERATED SCHEMA. The build-time
+        // gate cannot see a per-instance `spec.version`, so the
+        // `s3_plain_rewritable` floor travels into the RGD as a `pattern=`
+        // marker. This applies a CR through the API server DIRECTLY —
+        // bypassing TypeKro's own ArkType validation — so the rejection can
+        // only come from the generated CRD's schema, which is the claim. It
+        // runs inside this test because a second composition would need a
+        // second RGD of the same name, which KRO refuses as a breaking CRD
+        // update (and rightly so).
+        let versionRejection = '';
+        try {
+          await kroApi.createNamespacedCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            namespace: chiNs,
+            plural: rgdPlural,
+            body: {
+              apiVersion: 'kro.run/v1alpha1',
+              kind: rgdKind,
+              metadata: { name: 'ch-s3-too-old', namespace: chiNs },
+              spec: {
+                name: 'ch-s3-too-old',
+                namespace: chiNs,
+                // 24.4 introduced the disk but not the metadata_type form this
+                // factory emits; 24.5 is the floor.
+                version: '24.4',
+                storage: { size: '1Gi', storageClassName: storageClass },
+                users: { [chiUser]: { passwordSha256Hex: chiUserPasswordSha256 } },
+              },
+            },
+          });
+        } catch (error: unknown) {
+          versionRejection = error instanceof Error ? error.message : String(error);
+        }
+        expect(versionRejection).not.toBe('');
+        expect(versionRejection).toMatch(/version/);
+
+        // A version that SATISFIES the floor is accepted by the same schema,
+        // so the rejection above is the pattern and not an unrelated error.
+        // (Created and immediately removed: this test's subject is admission,
+        // not a second reconcile.)
+        await kroApi.createNamespacedCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          namespace: chiNs,
+          plural: rgdPlural,
+          body: {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: rgdKind,
+            metadata: { name: 'ch-s3-new-enough', namespace: chiNs },
+            spec: {
+              name: 'ch-s3-new-enough',
+              namespace: chiNs,
+              version: '24.5',
+              storage: { size: '1Gi', storageClassName: storageClass },
+              users: { [chiUser]: { passwordSha256Hex: chiUserPasswordSha256 } },
+            },
+          },
+        });
+        await deleteTestResourceAndWait(
+          {
+            apiVersion: 'kro.run/v1alpha1',
+            kind: rgdKind,
+            metadata: { namespace: chiNs, name: 'ch-s3-new-enough' },
+          },
+          kubeConfig,
+          180_000
+        );
+
+        // 3. THE KRO-GENERATED CHILDREN, READ BACK FROM THE CLUSTER. Local RGD
+        // YAML proves serialization; only the in-cluster resource proves KRO's
+        // expression evaluation produced the configuration the server reads.
+        expect(chi.status?.status).toBe('Completed');
+        const storageXml = chi.spec?.configuration?.files?.['config.d/storage.xml'] ?? '';
+        expect(storageXml).toContain('<type>s3_plain_rewritable</type>');
+        expect(storageXml).toContain(
+          `${minio.endpoint.replace(/\/+$/, '')}/${minio.bucket}/chi-kro/`
+        );
+        // No key material in the rendered configuration: the Secret is read
+        // through `from_env`, and no `__KUBERNETES_REF__` marker survived.
+        expect(storageXml).toContain('from_env="CLICKHOUSE_S3_ACCESS_KEY_ID"');
+        expect(storageXml).not.toContain('__KUBERNETES_REF');
+        expect(chi.spec?.configuration?.settings?.['merge_tree/storage_policy']).toBe('s3_main');
+
+        // The contract ConfigMap the status is projected from is a real graph
+        // child with the resolved values in it.
+        const contract = await createCoreV1ApiClient(kubeConfig).readNamespacedConfigMap({
+          namespace: chiNs,
+          name: `${kroInstanceName}-contract`,
+        });
+        expect(contract.data?.storageDiskType).toBe('s3_plain_rewritable');
+        expect(contract.data?.storageSelfDescribingBucket).toBe('true');
+        expect(contract.data?.nativePort).toBe('9000');
+
+        // The backup CronJob KRO generated carries the coordinated-vs-single
+        // host decision for this 1x1 topology.
+        const kroCron = await createBunCompatibleBatchV1Api(kubeConfig).readNamespacedCronJob({
+          namespace: chiNs,
+          name: `${kroInstanceName}-s3-backup`,
+        });
+        expect(kroCron.spec?.schedule).toBe('0 4 * * *');
+        const kroScript =
+          (kroCron.spec?.jobTemplate.spec?.template.spec?.containers ?? [])[0]?.command?.[2] ?? '';
+        expect(kroScript).toContain('BACKUP DATABASE $CLICKHOUSE_DATABASE TO S3(');
+        expect(kroScript).not.toContain('ON CLUSTER');
+
+        // 4. POD GROUND TRUTH. Status is the composition's claim; this is the
+        // cluster's.
+        const coreApi = createCoreV1ApiClient(kubeConfig);
+        const pods = await coreApi.listNamespacedPod({
+          namespace: chiNs,
+          labelSelector: `clickhouse.altinity.com/chi=${kroInstanceName}`,
+        });
+        expect(pods.items.length).toBe(1);
+        for (const pod of pods.items) {
+          expect(pod.status?.phase).toBe('Running');
+          const containers = pod.status?.containerStatuses ?? [];
+          expect(containers.length).toBeGreaterThan(0);
+          expect(containers.every((container) => container.ready)).toBe(true);
+          // The guide's KRO-mode budget: simultaneous deploy causes transient
+          // restarts while dependencies come up.
+          const restarts = containers.reduce(
+            (total, container) => total + container.restartCount,
+            0
+          );
+          expect(restarts).toBeLessThanOrEqual(10);
+        }
+
+        // 5. The S3 policy is the server default in KRO mode too, so a plain
+        // CREATE TABLE lands on object storage — the same claim the direct
+        // suite proves, through the RGD path.
+        await queryHost(
+          `clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local`,
+          'CREATE TABLE IF NOT EXISTS kroprobe (ts DateTime, msg String) ENGINE = MergeTree ORDER BY ts',
+          'krocreate'
+        );
+        const kroPolicy = await queryHost(
+          `clickhouse-${kroInstanceName}.${chiNs}.svc.cluster.local`,
+          "SELECT storage_policy FROM system.tables WHERE database = 'default' AND name = 'kroprobe'",
+          'kropolicy'
+        );
+        expect(kroPolicy).toBe('s3_main');
+      } finally {
+        if (deploymentAttempted) {
+          // 6. `deleteInstance()` + KRO finalizer, through the shared helper —
+          // never a manual deletion of children, the RGD, or a finalizer patch.
+          await deleteTestFactoryInstanceAndRecoverNamespaces(
+            kroFactory as never,
+            kroInstanceName,
+            [],
+            kubeConfig,
+            180_000
+          );
+        }
+      }
+
+      // 7. FINALIZER CLEANUP VERIFIED. KRO processes graph deletion behind its
+      // finalizer, so each of these lags `deleteInstance` returning by a beat;
+      // poll to a bounded deadline rather than asserting instant absence.
+      const teardownApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+      const pollGone = async (read: () => Promise<unknown>): Promise<boolean> => {
+        const deadline = Date.now() + 180_000;
+        while (Date.now() < deadline) {
+          try {
+            await read();
+            await Bun.sleep(5_000);
+          } catch {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // The instance CR itself — proof KRO released its finalizer.
+      expect(await pollGone(() => readKroInstance())).toBe(true);
+      // The RGD (this is the only instance, so it goes with it).
+      expect(
+        await pollGone(() =>
+          teardownApi.getClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: rgdName,
+          })
+        )
+      ).toBe(true);
+      // The graph children KRO owned.
+      expect(
+        await pollGone(() =>
+          teardownApi.getNamespacedCustomObject({
+            group: 'clickhouse.altinity.com',
+            version: 'v1',
+            namespace: chiNs,
+            plural: 'clickhouseinstallations',
+            name: kroInstanceName,
+          })
+        )
+      ).toBe(true);
+      expect(
+        await pollGone(() =>
+          createCoreV1ApiClient(kubeConfig).readNamespacedConfigMap({
+            namespace: chiNs,
+            name: `${kroInstanceName}-contract`,
+          })
+        )
+      ).toBe(true);
+    }, 1_800_000);
+  });
 });

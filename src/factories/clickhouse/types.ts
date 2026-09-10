@@ -718,6 +718,24 @@ export interface ClickHouseClusterUserTopology {
  */
 export interface ClickHouseClusterTopology {
   /**
+   * ResourceGraphDefinition name override (default: `'clickhouse-cluster'`).
+   *
+   * WHY THIS EXISTS. The runtime spec SCHEMA is a product of the topology —
+   * `keeper` is required only when the topology enables it, one `users.<name>`
+   * entry is required per declared user, and `version` carries the
+   * `s3_plain_rewritable` floor only for that disk type. KRO refuses to update
+   * a generated CRD with a breaking schema change ("breaking changes detected:
+   * Property users was removed"), so two DIFFERENT topologies deployed to one
+   * cluster in kro mode must not share one RGD identity. Override both `name`
+   * and `kind` for the second topology.
+   */
+  readonly name?: string;
+  /**
+   * KRO kind override (default: `'ClickHouseCluster'`). Pair it with
+   * {@link ClickHouseClusterTopology.name} — see there for why.
+   */
+  readonly kind?: string;
+  /**
    * Availability zones to pin replicas to (round-robin when
    * replicas > zones.length). WHY build-time AND why at all: EBS volumes are
    * zonal, and the operator's own `podDistribution` supports only the

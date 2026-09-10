@@ -11,6 +11,7 @@ import { isValuesMergeExpression } from '../../../src/core/aspects/values-merge.
 import {
   type ClickHouseOperatorHelmValues,
   mapClickHouseOperatorConfigToHelmValues,
+  OPERATOR_PROPAGATION_EXCLUDED_LABELS,
 } from '../../../src/factories/clickhouse/utils/helm-values-mapper.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/shared/brands.js';
 
@@ -97,9 +98,43 @@ describe('ClickHouse Operator Helm Values Mapper', () => {
     return result as ClickHouseOperatorHelmValues;
   }
 
-  it('should return empty values for minimal config (chart defaults win)', () => {
+  it('emits only the label-propagation guard for minimal config (chart defaults win)', () => {
     const values = plainValues(mapClickHouseOperatorConfigToHelmValues({}));
-    expect(values).toEqual({});
+    // The ONE unconditional value: the operator must not copy another
+    // controller's ApplySet/ownership labels onto the objects it generates.
+    // In kro mode the CHI carries KRO's ApplySet membership labels, the
+    // operator propagated them to its own ConfigMaps, and KRO's pruning then
+    // deleted those ConfigMaps — the Pod could never mount `common-configd`
+    // and the CHI sat `InProgress` forever (live-reproduced). Everything else
+    // is still left to chart defaults.
+    expect(values).toEqual({
+      configs: {
+        files: {
+          'config.yaml': {
+            label: { exclude: [...OPERATOR_PROPAGATION_EXCLUDED_LABELS] },
+          },
+        },
+      },
+    });
+    expect(OPERATOR_PROPAGATION_EXCLUDED_LABELS).toContain('applyset.kubernetes.io/part-of');
+    expect(OPERATOR_PROPAGATION_EXCLUDED_LABELS).toContain('kro.run/owned');
+  });
+
+  it('lets customValues override the label exclude list', () => {
+    const values = plainValues(
+      mapClickHouseOperatorConfigToHelmValues({
+        metrics: undefined,
+        crdHook: undefined,
+        resources: undefined,
+        customValues: {
+          configs: { files: { 'config.yaml': { label: { exclude: ['only.mine/label'] } } } },
+        },
+      })
+    ) as {
+      configs?: { files?: { 'config.yaml'?: { label?: { exclude?: string[] } } } };
+    };
+    // Arrays REPLACE rather than concatenate, so an explicit list wins whole.
+    expect(values.configs?.files?.['config.yaml']?.label?.exclude).toEqual(['only.mine/label']);
   });
 
   it('should map metrics and crdHook toggles', () => {
