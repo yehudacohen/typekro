@@ -28,6 +28,7 @@ import {
   createBunCompatibleCustomObjectsApi,
 } from '../../../src/core/kubernetes/index.js';
 import { DEFAULT_QUEUE_EXPORTER_NAMES } from '../../../src/factories/clickstack/utils/storage.js';
+import { type BackgroundSampler, startBackgroundSampler } from '../../utils/background-sampler.js';
 import { deployMinio, type MinioFixture } from '../minio-fixture.js';
 import {
   createAppsV1ApiClient,
@@ -987,289 +988,318 @@ describeOrSkip('ClickStack on S3-backed ClickHouse (MinIO)', () => {
   orderedCase(
     'completes a REAL rollout on Recreate instead of deadlocking on the queue',
     async () => {
-      // WHY THIS IS NOT THE PREVIOUS TEST: deleting the collector Pod is not a
-      // rollout. The Deployment controller replaces a deleted Pod only after it
-      // is gone, so that path never puts two collectors on the claim and would
-      // pass just as happily under RollingUpdate. The overlap only appears when
-      // the POD TEMPLATE changes: RollingUpdate's default maxSurge rounds up to
-      // one extra Pod, so it creates the replacement while the old collector
-      // still holds the ReadWriteOnce claim and the bbolt lock — a Multi-Attach
-      // deadlock on another node, and a silent two-writer window on the same one
-      // (readiness comes from the supervisor's health_check, not from the queue
-      // extension). This test changes the template for real, requires the rollout
-      // to finish, and requires it never to have two live collectors at once —
-      // the last of which is exactly what a RollingUpdate surge would produce.
-      // PROGRESS MARKERS, deliberately. This case has the suite's longest wall
-      // clock, and when it stalled the runner printed nothing at all for it — a
-      // pass/fail line only appears once a case ends, so a silent hang is
-      // indistinguishable from a slow one. Every phase announces itself.
-      const step = (message: string) =>
-        console.log(`[rollout ${new Date().toISOString()}] ${message}`);
-      step('start');
+      // ⚠️ THE SAMPLER'S CLEANUP IS THE OUTERMOST THING IN THIS CASE, and it has
+      // to be. It used to be an inline `let sampling = true` loop cleared at the
+      // BOTTOM of the body, so a failed patch, a failed API call or a failed
+      // `expect` — every interesting way this case can fail — skipped the stop and
+      // left it polling the cluster forever. `bun test` cannot interrupt a busy
+      // async loop, so the run then HUNG after the failure and buried the real
+      // error under a timeout: the leak did not merely leak, it destroyed this
+      // case's ability to report why it failed. The handle is declared out here and
+      // stopped in a `finally` around the whole body, so no exit path can miss it.
+      // See `test/utils/background-sampler.ts`, whose cleanup contract is
+      // unit-tested without a cluster.
+      let sampler: BackgroundSampler<number> | undefined;
+      try {
+        // WHY THIS IS NOT THE PREVIOUS TEST: deleting the collector Pod is not a
+        // rollout. The Deployment controller replaces a deleted Pod only after it
+        // is gone, so that path never puts two collectors on the claim and would
+        // pass just as happily under RollingUpdate. The overlap only appears when
+        // the POD TEMPLATE changes: RollingUpdate's default maxSurge rounds up to
+        // one extra Pod, so it creates the replacement while the old collector
+        // still holds the ReadWriteOnce claim and the bbolt lock — a Multi-Attach
+        // deadlock on another node, and a silent two-writer window on the same one
+        // (readiness comes from the supervisor's health_check, not from the queue
+        // extension). This test changes the template for real, requires the rollout
+        // to finish, and requires it never to have two live collectors at once —
+        // the last of which is exactly what a RollingUpdate surge would produce.
+        // PROGRESS MARKERS, deliberately. This case has the suite's longest wall
+        // clock, and when it stalled the runner printed nothing at all for it — a
+        // pass/fail line only appears once a case ends, so a silent hang is
+        // indistinguishable from a slow one. Every phase announces itself.
+        const step = (message: string) =>
+          console.log(`[rollout ${new Date().toISOString()}] ${message}`);
+        step('start');
 
-      const coreApi = createCoreV1ApiClient(kubeConfig);
-      const appsApi = createAppsV1ApiClient(kubeConfig);
-      const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
-      const claimName = `${stackName}-otel-queue`;
-      const queueDirectory = '/var/lib/otelcol/file_storage';
+        const coreApi = createCoreV1ApiClient(kubeConfig);
+        const appsApi = createAppsV1ApiClient(kubeConfig);
+        const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+        const claimName = `${stackName}-otel-queue`;
+        const queueDirectory = '/var/lib/otelcol/file_storage';
 
-      /** Collector Pods that are not already on their way out. */
-      async function liveCollectorPods(): Promise<string[]> {
-        const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
-        return pods.items
-          .filter(
-            (pod) =>
-              pod.metadata?.name?.includes('otel-collector') &&
-              pod.metadata.deletionTimestamp === undefined
-          )
-          .map((pod) => pod.metadata?.name ?? '');
-      }
+        /** Collector Pods that are not already on their way out. */
+        async function liveCollectorPods(): Promise<string[]> {
+          const pods = await coreApi.listNamespacedPod({ namespace: stackNs });
+          return pods.items
+            .filter(
+              (pod) =>
+                pod.metadata?.name?.includes('otel-collector') &&
+                pod.metadata.deletionTimestamp === undefined
+            )
+            .map((pod) => pod.metadata?.name ?? '');
+        }
 
-      /** Mount the queue claim from a throwaway Pod and run a script on it. */
-      async function onQueueVolume(label: string, script: string): Promise<string> {
-        return (
-          await runTestPodAndReadLogs(
+        /** Mount the queue claim from a throwaway Pod and run a script on it. */
+        async function onQueueVolume(label: string, script: string): Promise<string> {
+          return (
+            await runTestPodAndReadLogs(
+              {
+                namespace: stackNs,
+                name: `rollout-${label}-${crypto.randomUUID().slice(0, 6)}`,
+                image: 'busybox:1.37',
+                command: ['sh', '-c', script],
+                volumes: [{ name: 'queue', persistentVolumeClaim: { claimName } }],
+                volumeMounts: [{ name: 'queue', mountPath: queueDirectory }],
+                timeoutMs: 240_000,
+              },
+              kubeConfig
+            )
+          ).trim();
+        }
+
+        step('reading the collector Deployment');
+        const deployments = await appsApi.listNamespacedDeployment({ namespace: stackNs });
+        const collectorDeployment = deployments.items.find((deployment) =>
+          deployment.metadata?.name?.includes('otel-collector')
+        );
+        expect(collectorDeployment).toBeDefined();
+        const deploymentName = collectorDeployment?.metadata?.name as string;
+
+        // (a) The rendered `rollout.strategy` reached the live object.
+        expect(collectorDeployment?.spec?.strategy?.type).toBe('Recreate');
+        // …and carries no rollingUpdate block, which the API server would reject
+        // next to Recreate. The chart's own template guard is what removes it.
+        expect(collectorDeployment?.spec?.strategy?.rollingUpdate).toBeUndefined();
+        expect(collectorDeployment?.spec?.replicas).toBe(1);
+
+        const sentinel = `${queueDirectory}/typekro-rollout-sentinel`;
+        const sentinelValue = crypto.randomUUID();
+        step('writing the queue sentinel through the claim');
+        await onQueueVolume(
+          'write',
+          `set -eu; printf '%s' '${sentinelValue}' > ${sentinel}; ls -l ${queueDirectory}`
+        );
+
+        step('reading the claim and the live collector Pods');
+        const claimBefore = await coreApi.readNamespacedPersistentVolumeClaim({
+          namespace: stackNs,
+          name: claimName,
+        });
+        const volumeBefore = claimBefore.spec?.volumeName ?? '';
+        expect(volumeBefore).not.toBe('');
+
+        const podsBefore = await liveCollectorPods();
+        expect(podsBefore.length).toBe(1);
+        const oldPodName = podsBefore[0] as string;
+        const generationBefore = collectorDeployment?.metadata?.generation ?? 0;
+
+        // (b) A GENUINE template change, made the way a user would make one: a new
+        // pod annotation through the HelmRelease's values, which Flux rolls into
+        // the Deployment's pod template. `add` on an existing object replaces it,
+        // and the chart's own checksum annotation is deep-merged back in by Helm.
+        // ⚠️ SAMPLE ACROSS THE TRANSITION, NOT AFTER IT. The two-writer assertion
+        // is this case's headline claim, and counting live Pods only inside the
+        // rollout-status loop can miss the window entirely. LIVE-OBSERVED: Flux's
+        // upgrade AND the whole Recreate rollout finished inside the 5s gap
+        // between two template polls, so the status loop's very first read
+        // already reported the rollout complete ("completed in 0s") and every
+        // Pod count it took was 1 because there was nothing left to see. A count
+        // of 1 taken after the fact is not evidence of anything. Sampling
+        // therefore starts BEFORE the patch and runs continuously at 500ms until
+        // the rollout is done, and the case asserts it took enough samples for
+        // the claim to mean something.
+        //
+        // HERE, and not at the top of the body: the window that has to be
+        // covered is the transition, and samples taken while the earlier probe
+        // Pods run would inflate the count until the "enough samples" guard
+        // below stopped meaning anything. Cleanup does not depend on that
+        // choice — the `finally` above covers every failure from this line
+        // onwards, and a failure before it cannot leak a sampler that does not
+        // exist yet.
+        sampler = startBackgroundSampler({
+          // A transient list failure is recorded as a miss by the sampler, not
+          // raised: it must not decide the rollout assertion, and a rejection
+          // in a promise nothing is awaiting yet would take the process down.
+          sample: async () => (await liveCollectorPods()).length,
+          intervalMs: 500,
+        });
+
+        const probeValue = crypto.randomUUID();
+        step(`patching the HelmRelease with rollout probe ${probeValue}`);
+        await customApi.patchNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          namespace: stackNs,
+          plural: 'helmreleases',
+          name: stackName,
+          body: [
             {
-              namespace: stackNs,
-              name: `rollout-${label}-${crypto.randomUUID().slice(0, 6)}`,
-              image: 'busybox:1.37',
-              command: ['sh', '-c', script],
-              volumes: [{ name: 'queue', persistentVolumeClaim: { claimName } }],
-              volumeMounts: [{ name: 'queue', mountPath: queueDirectory }],
-              timeoutMs: 240_000,
+              op: 'add',
+              path: '/spec/values/otel-collector/podAnnotations',
+              value: { 'typekro.dev/rollout-probe': probeValue },
             },
-            kubeConfig
-          )
-        ).trim();
-      }
+          ],
+        });
 
-      step('reading the collector Deployment');
-      const deployments = await appsApi.listNamespacedDeployment({ namespace: stackNs });
-      const collectorDeployment = deployments.items.find((deployment) =>
-        deployment.metadata?.name?.includes('otel-collector')
-      );
-      expect(collectorDeployment).toBeDefined();
-      const deploymentName = collectorDeployment?.metadata?.name as string;
+        const startedAt = Date.now();
+        step('waiting for Flux to roll the annotation into the pod template');
 
-      // (a) The rendered `rollout.strategy` reached the live object.
-      expect(collectorDeployment?.spec?.strategy?.type).toBe('Recreate');
-      // …and carries no rollingUpdate block, which the API server would reject
-      // next to Recreate. The chart's own template guard is what removes it.
-      expect(collectorDeployment?.spec?.strategy?.rollingUpdate).toBeUndefined();
-      expect(collectorDeployment?.spec?.replicas).toBe(1);
-
-      const sentinel = `${queueDirectory}/typekro-rollout-sentinel`;
-      const sentinelValue = crypto.randomUUID();
-      step('writing the queue sentinel through the claim');
-      await onQueueVolume(
-        'write',
-        `set -eu; printf '%s' '${sentinelValue}' > ${sentinel}; ls -l ${queueDirectory}`
-      );
-
-      step('reading the claim and the live collector Pods');
-      const claimBefore = await coreApi.readNamespacedPersistentVolumeClaim({
-        namespace: stackNs,
-        name: claimName,
-      });
-      const volumeBefore = claimBefore.spec?.volumeName ?? '';
-      expect(volumeBefore).not.toBe('');
-
-      const podsBefore = await liveCollectorPods();
-      expect(podsBefore.length).toBe(1);
-      const oldPodName = podsBefore[0] as string;
-      const generationBefore = collectorDeployment?.metadata?.generation ?? 0;
-
-      // (b) A GENUINE template change, made the way a user would make one: a new
-      // pod annotation through the HelmRelease's values, which Flux rolls into
-      // the Deployment's pod template. `add` on an existing object replaces it,
-      // and the chart's own checksum annotation is deep-merged back in by Helm.
-      // ⚠️ SAMPLE ACROSS THE TRANSITION, NOT AFTER IT. The two-writer assertion
-      // is this case's headline claim, and counting live Pods only inside the
-      // rollout-status loop can miss the window entirely. LIVE-OBSERVED: Flux's
-      // upgrade AND the whole Recreate rollout finished inside the 5s gap
-      // between two template polls, so the status loop's very first read
-      // already reported the rollout complete ("completed in 0s") and every
-      // Pod count it took was 1 because there was nothing left to see. A count
-      // of 1 taken after the fact is not evidence of anything. Sampling
-      // therefore starts BEFORE the patch and runs continuously at 500ms until
-      // the rollout is done, and the case asserts it took enough samples for
-      // the claim to mean something.
-      let maxLivePods = 0;
-      let liveSamples = 0;
-      let sampling = true;
-      const sampler = (async () => {
-        while (sampling) {
-          try {
-            maxLivePods = Math.max(maxLivePods, (await liveCollectorPods()).length);
-            liveSamples += 1;
-          } catch {
-            // A transient list failure must not decide the rollout assertion.
+        // Flux has to run the upgrade before the Deployment's template changes.
+        //
+        // ⚠️ BUDGETED, NOT GENEROUS. This case used to allow 900s here and another
+        // 900s below, plus three probe Pods at 240s each — a worst case that
+        // EXCEEDED the case's own declared timeout, so the runner could not even
+        // report a clean per-case timeout for it, and did it all in silence. The
+        // budgets below sum to well under that timeout on purpose. Flux's default
+        // reconcile interval for this release is minutes, not tens of minutes; if
+        // 600s is not enough, the upgrade is stuck and waiting longer only hides
+        // it.
+        const templateDeadline = Date.now() + 600_000;
+        let templateUpdated = false;
+        let lastTemplateReport = 0;
+        while (Date.now() < templateDeadline) {
+          if (Date.now() - lastTemplateReport > 60_000) {
+            lastTemplateReport = Date.now();
+            step(
+              `still waiting for the pod template (${Math.round((Date.now() - startedAt) / 1000)}s)`
+            );
           }
-          if (sampling) await Bun.sleep(500);
+          const deployment = await appsApi.readNamespacedDeployment({
+            namespace: stackNs,
+            name: deploymentName,
+          });
+          if (
+            deployment.spec?.template?.metadata?.annotations?.['typekro.dev/rollout-probe'] ===
+            probeValue
+          ) {
+            templateUpdated = true;
+            expect(deployment.metadata?.generation ?? 0).toBeGreaterThan(generationBefore);
+            // The upgrade must not have quietly reverted the strategy.
+            expect(deployment.spec?.strategy?.type).toBe('Recreate');
+            break;
+          }
+          await Bun.sleep(5_000);
         }
-      })();
+        expect(templateUpdated).toBe(true);
+        const templateAt = Date.now();
+        step(
+          `pod template carries the probe after ${Math.round((templateAt - startedAt) / 1000)}s`
+        );
+        step('waiting for the rollout to complete');
 
-      const probeValue = crypto.randomUUID();
-      step(`patching the HelmRelease with rollout probe ${probeValue}`);
-      await customApi.patchNamespacedCustomObject({
-        group: 'helm.toolkit.fluxcd.io',
-        version: 'v2',
-        namespace: stackNs,
-        plural: 'helmreleases',
-        name: stackName,
-        body: [
-          {
-            op: 'add',
-            path: '/spec/values/otel-collector/podAnnotations',
-            value: { 'typekro.dev/rollout-probe': probeValue },
-          },
-        ],
-      });
-
-      const startedAt = Date.now();
-      step('waiting for Flux to roll the annotation into the pod template');
-
-      // Flux has to run the upgrade before the Deployment's template changes.
-      //
-      // ⚠️ BUDGETED, NOT GENEROUS. This case used to allow 900s here and another
-      // 900s below, plus three probe Pods at 240s each — a worst case that
-      // EXCEEDED the case's own declared timeout, so the runner could not even
-      // report a clean per-case timeout for it, and did it all in silence. The
-      // budgets below sum to well under that timeout on purpose. Flux's default
-      // reconcile interval for this release is minutes, not tens of minutes; if
-      // 600s is not enough, the upgrade is stuck and waiting longer only hides
-      // it.
-      const templateDeadline = Date.now() + 600_000;
-      let templateUpdated = false;
-      let lastTemplateReport = 0;
-      while (Date.now() < templateDeadline) {
-        if (Date.now() - lastTemplateReport > 60_000) {
-          lastTemplateReport = Date.now();
-          step(
-            `still waiting for the pod template (${Math.round((Date.now() - startedAt) / 1000)}s)`
-          );
+        // (c) The rollout itself must FINISH — this is the assertion RollingUpdate
+        // would fail. Equivalent to `kubectl rollout status`: the controller has
+        // observed the new generation, every replica is updated, and none is
+        // unavailable. Along the way, count live collector Pods: Recreate must
+        // never have two of them contending for the claim.
+        // 300s: Recreate on ONE replica is a delete followed by a create, and the
+        // image is already on the node. A rollout that has not finished in five
+        // minutes is the deadlock this case exists to detect, and reporting that
+        // promptly is the point.
+        const rolloutDeadline = Date.now() + 300_000;
+        let rolledOut = false;
+        let lastState = 'no status yet';
+        let lastRolloutReport = 0;
+        while (Date.now() < rolloutDeadline) {
+          if (Date.now() - lastRolloutReport > 60_000) {
+            lastRolloutReport = Date.now();
+            step(
+              `still rolling out (${Math.round((Date.now() - templateAt) / 1000)}s): ${lastState}`
+            );
+          }
+          const deployment = await appsApi.readNamespacedDeployment({
+            namespace: stackNs,
+            name: deploymentName,
+          });
+          const status = deployment.status ?? {};
+          const desired = deployment.spec?.replicas ?? 1;
+          lastState = JSON.stringify({
+            observedGeneration: status.observedGeneration,
+            updated: status.updatedReplicas,
+            ready: status.readyReplicas,
+            available: status.availableReplicas,
+            unavailable: status.unavailableReplicas,
+          });
+          if (
+            (status.observedGeneration ?? 0) >= (deployment.metadata?.generation ?? 0) &&
+            status.updatedReplicas === desired &&
+            status.readyReplicas === desired &&
+            status.availableReplicas === desired &&
+            (status.unavailableReplicas ?? 0) === 0
+          ) {
+            rolledOut = true;
+            break;
+          }
+          await Bun.sleep(5_000);
         }
-        const deployment = await appsApi.readNamespacedDeployment({
+        const finishedAt = Date.now();
+        // Stop and AWAIT the loop before reading its samples, so the numbers
+        // reported and asserted below are final rather than a racing snapshot.
+        // The `finally` calls this again; `stop()` is idempotent.
+        await sampler.stop();
+        const liveSamples = sampler.samples.length;
+        const maxLivePods = sampler.samples.reduce((most, count) => Math.max(most, count), 0);
+        step(`rollout loop finished (rolledOut=${rolledOut})`);
+        console.log(
+          `[rollout] helm upgrade reached the template in ${Math.round(
+            (templateAt - startedAt) / 1000
+          )}s; rollout completed in ${Math.round(
+            (finishedAt - templateAt) / 1000
+          )}s; max concurrent live collector Pods: ${maxLivePods} over ${liveSamples} samples ` +
+            `spanning ${Math.round((finishedAt - startedAt) / 1000)}s` +
+            // Reported, never fatal — but a run where most samples failed is a
+            // run whose two-writer claim rests on very little, and that should
+            // be visible in the log rather than inferred from the count.
+            `; ${sampler.errors.length} sample(s) failed`
+        );
+        expect(rolledOut, `rollout never completed; last status ${lastState}`).toBe(true);
+
+        // Recreate's whole contract: the old collector is gone before the new one
+        // exists, so the single-writer queue never has two claimants.
+        //
+        // The SAMPLE COUNT is asserted first, and deliberately. `maxLivePods <= 1`
+        // is vacuous if nothing was watching while the Pods changed over, so the
+        // claim is only worth making next to evidence that the window was
+        // covered. The lower bound on `maxLivePods` is the same guard from the
+        // other side: zero would mean the sampler never saw a collector at all.
+        expect(
+          liveSamples,
+          `only ${liveSamples} live-Pod samples were taken across the rollout — too few to ` +
+            `substantiate the never-two-collectors claim`
+        ).toBeGreaterThanOrEqual(4);
+        expect(maxLivePods).toBeGreaterThanOrEqual(1);
+        expect(maxLivePods).toBeLessThanOrEqual(1);
+
+        // A genuinely NEW Pod ran, carrying the annotation that caused the roll.
+        const podsAfter = await liveCollectorPods();
+        expect(podsAfter.length).toBe(1);
+        const newPodName = podsAfter[0] as string;
+        expect(newPodName).not.toBe(oldPodName);
+        const newPod = await coreApi.readNamespacedPod({ namespace: stackNs, name: newPodName });
+        expect(newPod.metadata?.annotations?.['typekro.dev/rollout-probe']).toBe(probeValue);
+
+        // It mounts the SAME claim, still bound to the same PersistentVolume…
+        const mountedClaims = (newPod.spec?.volumes ?? [])
+          .map((volume) => volume.persistentVolumeClaim?.claimName)
+          .filter((name): name is string => name !== undefined);
+        expect(mountedClaims).toContain(claimName);
+        const claimAfter = await coreApi.readNamespacedPersistentVolumeClaim({
           namespace: stackNs,
-          name: deploymentName,
+          name: claimName,
         });
-        if (
-          deployment.spec?.template?.metadata?.annotations?.['typekro.dev/rollout-probe'] ===
-          probeValue
-        ) {
-          templateUpdated = true;
-          expect(deployment.metadata?.generation ?? 0).toBeGreaterThan(generationBefore);
-          // The upgrade must not have quietly reverted the strategy.
-          expect(deployment.spec?.strategy?.type).toBe('Recreate');
-          break;
-        }
-        await Bun.sleep(5_000);
+        expect(claimAfter.status?.phase).toBe('Bound');
+        expect(claimAfter.spec?.volumeName).toBe(volumeBefore);
+
+        // …and the queue directory came through the rollout intact, which is what
+        // makes the brief outage Recreate costs an acceptable trade.
+        step('reading the sentinel back through the claim');
+        expect(await onQueueVolume('read', `set -eu; cat ${sentinel}`)).toBe(sentinelValue);
+        step('done');
+      } finally {
+        // Idempotent, and it AWAITS the loop's exit — so by the time this case
+        // returns, pass or fail, nothing of it is still talking to the cluster.
+        await sampler?.stop();
       }
-      expect(templateUpdated).toBe(true);
-      const templateAt = Date.now();
-      step(`pod template carries the probe after ${Math.round((templateAt - startedAt) / 1000)}s`);
-      step('waiting for the rollout to complete');
-
-      // (c) The rollout itself must FINISH — this is the assertion RollingUpdate
-      // would fail. Equivalent to `kubectl rollout status`: the controller has
-      // observed the new generation, every replica is updated, and none is
-      // unavailable. Along the way, count live collector Pods: Recreate must
-      // never have two of them contending for the claim.
-      // 300s: Recreate on ONE replica is a delete followed by a create, and the
-      // image is already on the node. A rollout that has not finished in five
-      // minutes is the deadlock this case exists to detect, and reporting that
-      // promptly is the point.
-      const rolloutDeadline = Date.now() + 300_000;
-      let rolledOut = false;
-      let lastState = 'no status yet';
-      let lastRolloutReport = 0;
-      while (Date.now() < rolloutDeadline) {
-        if (Date.now() - lastRolloutReport > 60_000) {
-          lastRolloutReport = Date.now();
-          step(
-            `still rolling out (${Math.round((Date.now() - templateAt) / 1000)}s): ${lastState}`
-          );
-        }
-        const deployment = await appsApi.readNamespacedDeployment({
-          namespace: stackNs,
-          name: deploymentName,
-        });
-        const status = deployment.status ?? {};
-        const desired = deployment.spec?.replicas ?? 1;
-        lastState = JSON.stringify({
-          observedGeneration: status.observedGeneration,
-          updated: status.updatedReplicas,
-          ready: status.readyReplicas,
-          available: status.availableReplicas,
-          unavailable: status.unavailableReplicas,
-        });
-        if (
-          (status.observedGeneration ?? 0) >= (deployment.metadata?.generation ?? 0) &&
-          status.updatedReplicas === desired &&
-          status.readyReplicas === desired &&
-          status.availableReplicas === desired &&
-          (status.unavailableReplicas ?? 0) === 0
-        ) {
-          rolledOut = true;
-          break;
-        }
-        await Bun.sleep(5_000);
-      }
-      const finishedAt = Date.now();
-      sampling = false;
-      await sampler;
-      step(`rollout loop finished (rolledOut=${rolledOut})`);
-      console.log(
-        `[rollout] helm upgrade reached the template in ${Math.round(
-          (templateAt - startedAt) / 1000
-        )}s; rollout completed in ${Math.round(
-          (finishedAt - templateAt) / 1000
-        )}s; max concurrent live collector Pods: ${maxLivePods} over ${liveSamples} samples ` +
-          `spanning ${Math.round((finishedAt - startedAt) / 1000)}s`
-      );
-      expect(rolledOut, `rollout never completed; last status ${lastState}`).toBe(true);
-
-      // Recreate's whole contract: the old collector is gone before the new one
-      // exists, so the single-writer queue never has two claimants.
-      //
-      // The SAMPLE COUNT is asserted first, and deliberately. `maxLivePods <= 1`
-      // is vacuous if nothing was watching while the Pods changed over, so the
-      // claim is only worth making next to evidence that the window was
-      // covered. The lower bound on `maxLivePods` is the same guard from the
-      // other side: zero would mean the sampler never saw a collector at all.
-      expect(
-        liveSamples,
-        `only ${liveSamples} live-Pod samples were taken across the rollout — too few to ` +
-          `substantiate the never-two-collectors claim`
-      ).toBeGreaterThanOrEqual(4);
-      expect(maxLivePods).toBeGreaterThanOrEqual(1);
-      expect(maxLivePods).toBeLessThanOrEqual(1);
-
-      // A genuinely NEW Pod ran, carrying the annotation that caused the roll.
-      const podsAfter = await liveCollectorPods();
-      expect(podsAfter.length).toBe(1);
-      const newPodName = podsAfter[0] as string;
-      expect(newPodName).not.toBe(oldPodName);
-      const newPod = await coreApi.readNamespacedPod({ namespace: stackNs, name: newPodName });
-      expect(newPod.metadata?.annotations?.['typekro.dev/rollout-probe']).toBe(probeValue);
-
-      // It mounts the SAME claim, still bound to the same PersistentVolume…
-      const mountedClaims = (newPod.spec?.volumes ?? [])
-        .map((volume) => volume.persistentVolumeClaim?.claimName)
-        .filter((name): name is string => name !== undefined);
-      expect(mountedClaims).toContain(claimName);
-      const claimAfter = await coreApi.readNamespacedPersistentVolumeClaim({
-        namespace: stackNs,
-        name: claimName,
-      });
-      expect(claimAfter.status?.phase).toBe('Bound');
-      expect(claimAfter.spec?.volumeName).toBe(volumeBefore);
-
-      // …and the queue directory came through the rollout intact, which is what
-      // makes the brief outage Recreate costs an acceptable trade.
-      step('reading the sentinel back through the claim');
-      expect(await onQueueVolume('read', `set -eu; cat ${sentinel}`)).toBe(sentinelValue);
-      step('done');
     },
     2_400_000
   );
