@@ -30,7 +30,13 @@ import {
   orderKroArtifactBundleOperations,
   sensitiveValue,
 } from '../../../src/experimental-planning.js';
-import { createResource, externalRef, kubernetesComposition, simple } from '../../../src/index.js';
+import {
+  createResource,
+  externalRef,
+  kubernetesComposition,
+  observedResource,
+  simple,
+} from '../../../src/index.js';
 import { isKubernetesRef } from '../../../src/utils/type-guards.js';
 
 const compilerFixture = kubernetesComposition(
@@ -59,7 +65,69 @@ const compilerFixture = kubernetesComposition(
   }
 );
 
+// A composition that observes a resource one of its own resources creates: the shape issue #187
+// reports. The observed Service cannot be read until `chartOwner` has been applied.
+const observedAfterOwnerFixture = kubernetesComposition(
+  {
+    name: 'observed-after-owner',
+    apiVersion: 'testing.typekro.dev/v1alpha1',
+    kind: 'ObservedAfterOwner',
+    revision: '1',
+    spec: type({ name: 'string', namespace: 'string' }),
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    const owner = simple.ConfigMap({
+      id: 'chartOwner',
+      name: spec.name,
+      namespace: spec.namespace,
+      data: { chart: 'demo' },
+    });
+    const observed = observedResource<Record<string, never>, { endpoint: string }>({
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name: 'chart-service', namespace: spec.namespace },
+      id: 'chartService',
+    }).dependsOn(owner);
+    const consumer = simple.ConfigMap({
+      id: 'observedConsumer',
+      name: 'observed-consumer',
+      namespace: spec.namespace,
+      data: { endpoint: observed.status.endpoint },
+    });
+    return { ready: consumer.metadata.name === 'observed-consumer' };
+  }
+);
+
 describe('semantic artifact compilers', () => {
+  it('records observed-resource dependencies as read ordering and pushes consumers behind them', () => {
+    const spec = { name: 'chart-owner', namespace: 'apps' };
+    const graph = directArtifactPlanToResourceGraph(
+      compileDirectArtifactPlan(observedAfterOwnerFixture.plan!(spec, { strict: true })),
+      {
+        instanceName: 'demo',
+        spec,
+        resolveReadinessStrategy: resolvePortableReadinessStrategy,
+      }
+    );
+
+    const graphIdOf = (logicalId: string) =>
+      graph.resources.find((resource) => getResourceId(resource.manifest) === logicalId)?.id;
+    const ownerGraphId = graphIdOf('chartOwner');
+    const consumerGraphId = graphIdOf('observedConsumer');
+    expect(ownerGraphId).toBeDefined();
+    expect(consumerGraphId).toBeDefined();
+
+    // The observed resource is still read rather than applied — it gets no dependency-graph node.
+    expect(graph.dependencyGraph.getNodes().size).toBe(2);
+    expect(graph.externalReferences?.map((reference) => reference.id)).toEqual(['chartService']);
+    expect(graph.externalReferences?.[0]?.dependsOn).toEqual([ownerGraphId!]);
+
+    // Consuming the observed resource means consuming whatever creates it, so the consumer is
+    // scheduled behind the owner and therefore behind the deferred read.
+    expect(graph.dependencyGraph.getDependencies(consumerGraphId!)).toContain(ownerGraphId!);
+  });
+
   it('expands canonical iteration dimensions and pairs dependencies by coordinate', () => {
     const composition = kubernetesComposition(
       {
