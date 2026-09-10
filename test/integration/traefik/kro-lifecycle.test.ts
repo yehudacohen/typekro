@@ -240,8 +240,13 @@ describeOrSkip('Traefik bootstrap — KRO mode lifecycle', () => {
       name: instanceName,
     });
 
-    // A chart-created Service would carry `managed-by: Helm`.
-    expect(owned.metadata?.labels?.['app.kubernetes.io/managed-by']).toBe('typekro');
+    // A chart-created Service would carry `managed-by: Helm`. In KRO mode the
+    // label says `kro`, not `typekro`: the RGD template declares `typekro`
+    // (see the serialization tests) but the KRO controller stamps its own
+    // `app.kubernetes.io/managed-by` on the graph children it applies. Either
+    // graph engine is the point — what matters is that Helm did not create it.
+    const managedBy = owned.metadata?.labels?.['app.kubernetes.io/managed-by'];
+    expect(['typekro', 'kro']).toContain(managedBy);
     expect(owned.spec?.selector).toEqual({
       'app.kubernetes.io/name': 'traefik',
       'app.kubernetes.io/instance': instanceName,
