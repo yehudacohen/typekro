@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A composition can now observe a resource its own release creates. An
+  `observedResource` that declares `dependsOn` on resources in the same graph is
+  read after those resources have been applied and are ready, retrying until the
+  observed resource appears or the bounded read budget runs out, instead of in a
+  single pass before anything is applied. A reference that never appears fails the
+  deployment with an error naming the reference, its `dependsOn` targets and the
+  elapsed wait; it is never silently skipped. References with no in-graph
+  dependencies keep the existing up-front read, and KRO mode is unchanged.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their

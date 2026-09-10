@@ -643,6 +643,7 @@ Then verify each item:
 - [ ] K8s API catch blocks check `statusCode ?? code ?? body?.code` (not just `statusCode`)
 - [ ] KRO graph does not own the namespace containing its own instance
 - [ ] Nested config fields named `id` are preserved when they are chart/CRD config, not TypeKro metadata
+- [ ] Observing a resource created by your own release requires `dependsOn(release)` on the `observedResource` — without it the live read runs before the release is applied
 
 **Tests:**
 - [ ] Every readiness state has a unit test
