@@ -35,6 +35,12 @@
  */
 
 import { type } from 'arktype';
+import {
+  DEPLOYMENT_POD_NAME_RESERVED,
+  deriveNameLengthLimit,
+  DNS_LABEL_MAX_LENGTH,
+  HELM_RELEASE_NAME_MAX_LENGTH,
+} from '../../core/kubernetes/naming.js';
 import type { TypeKroChartValues } from '../../core/types/common.js';
 import type {
   Affinity,
@@ -47,7 +53,69 @@ import { gatewayApiClusterResourceMetadataShape } from '../gateway-api/types.js'
 import type { HelmReleaseCrdsPolicy } from '../helm/types.js';
 import { validateTraefikMiddlewareSpec } from './utils/middleware-validation.js';
 
-const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
+/**
+ * Every Kubernetes name this factory derives from the `name` a caller supplies.
+ *
+ * The name is not used once: it names the Flux `HelmRelease` (so Helm sees it
+ * as the release name), it is pinned as the chart's `fullnameOverride` (so it
+ * names the ServiceAccount, RBAC, Deployment, IngressClass and the chart's own
+ * Services), and it names the entrypoint `Service` this factory owns. Each of
+ * those has a limit, and several of them append a suffix first — so the bound
+ * on `name` is whichever derived name runs out of room first, which is what
+ * {@link deriveNameLengthLimit} computes.
+ *
+ * Suffixes read off chart 41.5.0's templates rather than guessed; the chart
+ * itself carries the `-udp` case as a hard `len(fullname) < 60` check in
+ * `templates/_service.tpl`.
+ */
+const TRAEFIK_GENERATED_NAMES = [
+  {
+    describedAs: "the HelmRelease's Helm release name",
+    limit: HELM_RELEASE_NAME_MAX_LENGTH,
+  },
+  {
+    describedAs: 'the entrypoint Service `<name>`',
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: "the chart's UDP Service `<name>-udp`",
+    suffix: '-udp',
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: "the chart's metrics Service `<name>-metrics`",
+    suffix: '-metrics',
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: "the chart's file-provider ConfigMap `<name>-file-provider`",
+    suffix: '-file-provider',
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+  {
+    describedAs: 'a Traefik Pod `<name>-<pod-template-hash>-<pod-suffix>`',
+    generatedChars: DEPLOYMENT_POD_NAME_RESERVED,
+    limit: DNS_LABEL_MAX_LENGTH,
+  },
+] as const;
+
+/**
+ * Longest `name` this factory accepts, derived from {@link TRAEFIK_GENERATED_NAMES}.
+ *
+ * Exported so the schema test can assert the derivation rather than a number
+ * copied out of it.
+ */
+export const TRAEFIK_NAME_LIMIT = deriveNameLengthLimit(TRAEFIK_GENERATED_NAMES);
+
+const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and(
+  // `.configure` on the length constraint alone, so a name that violates the
+  // PATTERN still reports the pattern. The constraint itself stays a plain
+  // `maxLength` in the ArkType AST, which is what KRO SimpleSchema serializes.
+  type.string
+    .atMostLength(TRAEFIK_NAME_LIMIT.maxLength)
+    .configure({ message: TRAEFIK_NAME_LIMIT.message })
+);
+/** A namespace or other DNS-1123 label: the RFC's own 63-character limit. */
 const kubernetesDnsLabel = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 63');
 /** A published port. Bounded as the Service/container port range, 1-65535. */
 const kubernetesPort = '1 <= number.integer <= 65535';

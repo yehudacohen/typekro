@@ -33,6 +33,8 @@ import {
   traefikRedirectSchemeMiddleware,
 } from '../../../src/factories/traefik/resources/middleware.js';
 import {
+  TRAEFIK_NAME_LIMIT,
+  TraefikBootstrapConfigSchema,
   type TraefikChainMiddlewareConfig,
   TraefikChainMiddlewareConfigSchema,
   type TraefikForwardAuthMiddlewareConfig,
@@ -48,6 +50,11 @@ import {
   TraefikRedirectSchemeMiddlewareConfigSchema,
   TraefikResourceMetadataSchema,
 } from '../../../src/factories/traefik/types.js';
+import {
+  DEPLOYMENT_POD_NAME_RESERVED,
+  DNS_LABEL_MAX_LENGTH,
+  HELM_RELEASE_NAME_MAX_LENGTH,
+} from '../../../src/core/kubernetes/naming.js';
 
 function rejects(result: unknown): boolean {
   return result instanceof type.errors;
@@ -332,6 +339,48 @@ describe('Middleware builder configuration schemas', () => {
       },
     });
     expect(chainSpec).toEqual({ chain: { middlewares: [{ name: 'orders-api-authz' }] } });
+  });
+});
+
+describe('Derived name-length limit', () => {
+  /**
+   * `name` is not bounded by a number somebody picked. It is bounded by the
+   * longest name the composition and its chart derive from it: a Traefik Pod,
+   * `<name>-<pod-template-hash>-<pod-suffix>`, which reserves 17 characters of
+   * the 63-character DNS label limit. That derivation lives in
+   * `deriveNameLengthLimit`; these tests assert the derivation rather than the
+   * number that falls out of it, so a chart bump that adds a longer suffix
+   * fails here instead of failing in a cluster.
+   */
+  it('derives the limit from the longest generated name, not from a literal', () => {
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBe(DNS_LABEL_MAX_LENGTH - DEPLOYMENT_POD_NAME_RESERVED);
+    expect(TRAEFIK_NAME_LIMIT.binding.generatedChars).toBe(DEPLOYMENT_POD_NAME_RESERVED);
+    expect(TRAEFIK_NAME_LIMIT.binding.limit).toBe(DNS_LABEL_MAX_LENGTH);
+    // Tighter than Helm's release-name limit, which the name also has to fit.
+    expect(TRAEFIK_NAME_LIMIT.maxLength).toBeLessThanOrEqual(HELM_RELEASE_NAME_MAX_LENGTH);
+  });
+
+  it('accepts a name exactly at the derived limit', () => {
+    const atLimit = `t${'a'.repeat(TRAEFIK_NAME_LIMIT.maxLength - 1)}`;
+    expect(atLimit).toHaveLength(TRAEFIK_NAME_LIMIT.maxLength);
+    expect(rejects(TraefikBootstrapConfigSchema({ name: atLimit }))).toBe(false);
+  });
+
+  it('rejects one character over, naming the limit and the name that produced it', () => {
+    const overLimit = `t${'a'.repeat(TRAEFIK_NAME_LIMIT.maxLength)}`;
+    const result = TraefikBootstrapConfigSchema({ name: overLimit });
+    expect(rejects(result)).toBe(true);
+    const message = String(result);
+    expect(message).toContain(String(TRAEFIK_NAME_LIMIT.maxLength));
+    expect(message).toContain('<pod-template-hash>-<pod-suffix>');
+  });
+
+  it('still reports the PATTERN when a name breaks the character rule', () => {
+    // The message is configured on the length constraint alone, so a name with
+    // an illegal character must not be told it is too long.
+    const message = String(TraefikBootstrapConfigSchema({ name: 'Traefik_Edge' }));
+    expect(message).toContain('must be matched by');
+    expect(message).not.toContain('<pod-template-hash>');
   });
 });
 
