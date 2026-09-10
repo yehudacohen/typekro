@@ -118,6 +118,12 @@
 - **TRUST** the existing `RefOrValue<T>` system - it handles all cases correctly
 - **VALIDATION** belongs in serialization, not in composition functions
 
+#### Observed Resources (`observedResource` / `externalRef`)
+- **UNDERSTAND** that an observed resource is read live, never applied — it has no node in the dependency graph
+- **ALWAYS** call `.dependsOn(release)` when observing a resource one of your own graph's resources creates (a chart-created Service, an operator-created CRD instance). The engine then reads it after that resource is applied and ready, instead of before anything is applied
+- **EXPECT** a named failure, never a silent skip, when a dependent observed resource never appears within the read budget
+- **KEEP** references with no in-graph dependencies as they are — they are read up front, which is correct for resources another composition owns
+
 #### Status Builder Patterns (From steering/testing-guidelines.md)
 - **ONLY** use supported patterns: direct resource references, CEL expressions, CEL templates
 - **NEVER** use JavaScript fallback patterns like `||` operators in status builders
