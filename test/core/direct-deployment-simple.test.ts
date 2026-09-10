@@ -666,10 +666,10 @@ describe('DirectDeploymentEngine Simple', () => {
       mockK8sApi.create.mockImplementation((resource?: Record<string, unknown>) => {
         if (resource?.kind === 'Deployment') ownerApplied = true;
         return Promise.resolve({
-          apiVersion: resource?.apiVersion,
-          kind: resource?.kind,
-          metadata: resource?.metadata,
-        } as Record<string, unknown>);
+          apiVersion: resource?.apiVersion ?? 'apps/v1',
+          kind: resource?.kind ?? 'Deployment',
+          metadata: (resource?.metadata ?? {}) as { name: string; namespace: string },
+        });
       });
       mockK8sApi.read.mockImplementation((target?: Record<string, unknown>) => {
         if (target?.kind === 'Service') {
