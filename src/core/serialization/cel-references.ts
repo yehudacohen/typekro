@@ -496,7 +496,12 @@ interface NestedStatusEntry {
  */
 interface NestedFieldResolution {
   readonly entry: NestedStatusEntry;
-  /** Dotted remainder including its leading `.`, or `''` when the key matched whole. */
+  /**
+   * The part of the requested path the key did NOT account for, verbatim and
+   * ready to append to `(inner)`: the index chain of the last matched segment
+   * followed by every remaining segment (`.ip`, `[0].name`, `["http"].port`,
+   * `.size()`), or `''` when the key matched the path whole.
+   */
   readonly postfix: string;
 }
 
@@ -680,6 +685,13 @@ export function lookupNestedExpression(
  * substitution, preserves the postfix operation: `(inner).ip`, `(inner).size()`,
  * `(inner).startsWith("x")`.
  *
+ * A path segment can also carry an INDEX chain — `items[0].name`,
+ * `ports["http"].port`, `a.b[0][1].c` — so the path is lexed by
+ * {@link splitFieldPathSegments} rather than split on `.`. Keys are matched on
+ * the bare names; the index chain of the last matched segment plus every
+ * remaining segment rides along verbatim as the postfix, giving `(inner)[0].name`
+ * and `(inner)["http"].port`.
+ *
  * Exact `__nestedStatus:<id>:<prefix>` keys are checked at every prefix length
  * BEFORE the alias ladder runs at any length, so a real key (`addr`) always
  * beats a fuzzy match on a longer path (`addr.ip`).
@@ -697,35 +709,139 @@ function resolveNestedField(
   allowFieldFallback: boolean,
   trailingSegmentIsMethodName: boolean
 ): NestedFieldResolution | undefined {
-  const segments = fieldPath.split('.');
+  const segments = splitFieldPathSegments(fieldPath);
   const longest =
     trailingSegmentIsMethodName && segments.length > 1 ? segments.length - 1 : segments.length;
   if (longest < 1) return undefined;
 
+  /**
+   * The dotted key a prefix of `count` segments names, or `undefined` when the
+   * prefix cannot name one.
+   *
+   * Only the LAST segment of a prefix may carry an index: an index sitting
+   * BETWEEN two names (`a[0].b`) is not part of the key `a.b`, and matching it
+   * there would silently drop the index from the emitted expression.
+   */
+  const keyPathFor = (count: number): string | undefined => {
+    for (let at = 0; at < count - 1; at += 1) {
+      if (segments[at]?.indexes !== '') return undefined;
+    }
+    return segments
+      .slice(0, count)
+      .map((segment) => segment.name)
+      .join('.');
+  };
+
   const resolutionFor = (count: number, entry: NestedStatusEntry): NestedFieldResolution => ({
     entry,
-    postfix: segments
-      .slice(count)
-      .map((segment) => `.${segment}`)
-      .join(''),
+    postfix:
+      (segments[count - 1]?.indexes ?? '') +
+      segments
+        .slice(count)
+        .map((segment) => `.${segment.name}${segment.indexes}`)
+        .join(''),
   });
 
   // Pass 1: exact keys only, longest prefix first.
   for (let count = longest; count >= 1; count -= 1) {
-    const key = `__nestedStatus:${id}:${segments.slice(0, count).join('.')}`;
+    const keyPath = keyPathFor(count);
+    if (keyPath === undefined) continue;
+    const key = `__nestedStatus:${id}:${keyPath}`;
     const expression = nestedStatusCel[key];
     if (expression !== undefined) return resolutionFor(count, { key, expression });
   }
 
   // Pass 2: the full alias ladder, longest prefix first.
   for (let count = longest; count >= 1; count -= 1) {
-    const entry = lookupNestedEntry(
-      id,
-      segments.slice(0, count).join('.'),
-      nestedStatusCel,
-      allowFieldFallback
-    );
+    const keyPath = keyPathFor(count);
+    if (keyPath === undefined) continue;
+    const entry = lookupNestedEntry(id, keyPath, nestedStatusCel, allowFieldFallback);
     if (entry !== undefined) return resolutionFor(count, entry);
+  }
+  return undefined;
+}
+
+/**
+ * One segment of a status field path: a bare field name plus the chain of index
+ * operations applied to it (`items[0]`, `ports["http"]`, `b[0][1]`).
+ */
+interface FieldPathSegment {
+  /** The bare field name — the only part a mapping key is ever matched against. */
+  readonly name: string;
+  /** Index operations applied to {@link name}, verbatim, or `''` for none. */
+  readonly indexes: string;
+}
+
+/**
+ * Lex a status field path into `name` + index-chain segments.
+ *
+ * `split('.')` is wrong for any path carrying an index: it yields `items[0]`,
+ * which never equals the mapping key `items`, so the longest-prefix search in
+ * {@link resolveNestedField} finds nothing and a virtual id survives into the
+ * emitted RGD. Both non-regex callers can hand over such a path — a marker
+ * field path admits `[\d+]` (`KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE`, e.g.
+ * `status.ports[0].port`) and a `KubernetesRef.fieldPath` reaches this function
+ * unmodified — so the shape has to be lexed rather than assumed away. The regex
+ * caller cannot: its capture stops at `[`, which leaves the index chain outside
+ * the match and therefore untouched in the surrounding text.
+ *
+ * Brackets are matched with a depth counter and quotes are honoured, so neither
+ * a `.` nor a `]` inside a map key is read as structure. A path this lexer
+ * cannot account for — an unbalanced bracket, an empty segment — is handed back
+ * as ONE unsplit segment, so such a path resolves exactly as it did before
+ * (whole-path key lookup, no prefix search) instead of being guessed at.
+ */
+function splitFieldPathSegments(fieldPath: string): FieldPathSegment[] {
+  const unsplit: FieldPathSegment[] = [{ name: fieldPath, indexes: '' }];
+  const segments: FieldPathSegment[] = [];
+  let index = 0;
+  for (;;) {
+    const nameStart = index;
+    while (index < fieldPath.length && fieldPath[index] !== '.' && fieldPath[index] !== '[') {
+      index += 1;
+    }
+    const name = fieldPath.slice(nameStart, index);
+    if (name === '') return unsplit;
+
+    const indexStart = index;
+    while (fieldPath[index] === '[') {
+      const close = closingIndexBracket(fieldPath, index);
+      if (close === undefined) return unsplit;
+      index = close + 1;
+    }
+    segments.push({ name, indexes: fieldPath.slice(indexStart, index) });
+
+    if (index === fieldPath.length) return segments;
+    if (fieldPath[index] !== '.') return unsplit;
+    index += 1;
+  }
+}
+
+/** Offset of the `]` closing the `[` at `open`, or `undefined` when unbalanced. */
+function closingIndexBracket(text: string, open: number): number | undefined {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let index = open; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote !== undefined) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '[') {
+      depth += 1;
+      continue;
+    }
+    if (character === ']') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
   }
   return undefined;
 }
