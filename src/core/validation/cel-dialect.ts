@@ -1885,6 +1885,8 @@ export function checkCelDialectCompatibility(
   // `a === b` reaches its parser as `a == b`.
   const nonCel = findNonCelTokens(trimmed, masked, reading.parsed, reading.unlexableAt);
   const leak = nonCel[0];
+  // Hoisted out of bucket two: half two is gated on it. See the comment there.
+  let proof: string | undefined;
   if (leak !== undefined) {
     findings.push(
       finding(
@@ -1913,8 +1915,7 @@ export function checkCelDialectCompatibility(
     // makes the rest of the expression grammatical CEL and cel-go's acceptance
     // of it a fact rather than an inference.
     const limitation = findSpecCelCelJsRejects(trimmed, masked, brackets)[0];
-    const proof =
-      limitation === undefined ? undefined : celJsParseProof(trimmed, masked, brackets);
+    proof = limitation === undefined ? undefined : celJsParseProof(trimmed, masked, brackets);
 
     if (limitation !== undefined && proof !== undefined) {
       findings.push(
@@ -1950,11 +1951,53 @@ export function checkCelDialectCompatibility(
     }
   }
 
-  // Half two: the curated cel-go/cel-js divergence denylist. Every rule here is
-  // regex- and bracket-mask-based rather than tree-based, so none of them needs
-  // a parse and all of them run on text cel-js rejected — which is the point:
-  // an expression cel-js merely cannot parse is still checked for the
-  // divergences that would bite it under KRO.
+  // Half two: the curated cel-go/cel-js divergence denylist, gated on the
+  // expression being established grammatical.
+  //
+  // Every rule here is regex- and bracket-mask-based rather than tree-based, so
+  // none of them *needs* a parse to run — and that is exactly why the gate has
+  // to be explicit. What each rule needs is not a parse tree but the structure
+  // it reads off the text: `has-index-argument` wants the argument list of a
+  // `has(` to be a real bracket pair, `heterogeneous-map-literal` wants `{`…`}`
+  // to be a map literal, and `guard-after-use-in-logical-chain` wants the
+  // top-level `&&`/`||` split to be the expression's actual operator chain. On
+  // ungrammatical text none of that is established: `a?.b && has(list[0].f)` and
+  // `foo(((( && has(list[0].f)` are not CEL at all, yet both used to report a
+  // `has-index-argument` divergence and so could fail strict mode on text cel-go
+  // rejects outright — the exact class of false positive this check exists to
+  // avoid. cel-js merely failing to parse something is *not* that case, which is
+  // the point the gate has to be careful about: cel-js is not a conformant
+  // grammar, so its refusal alone establishes nothing either way.
+  //
+  // So the gate is grammaticality, established one of two ways:
+  //
+  //  - cel-js accepted the whole expression — its lexer carried every character
+  //    and its parser took the token stream. cel-js's grammar is a subset of the
+  //    spec's, so anything it accepts is CEL.
+  //  - the rewrite proof succeeded. The proof text is grammatical CEL, and the
+  //    original differs from it only inside the rewritten spans — each of which
+  //    is itself either a single well-formed literal token or a bracketed span
+  //    cel-js has separately been shown to accept (see
+  //    {@link celJsAcceptsSwallowedSpan}). So the original is grammatical too.
+  //
+  // Under a proof the rules run over the **original** text, not the proof text.
+  // That is both sound and necessary. Sound, because a rewrite substitutes a
+  // same-production spelling for a balanced span: a `receiver` rewrite replaces
+  // a whole bracket pair (or a quoted token) with an identifier and the `string`
+  // and `float` rewrites replace one literal token with another, so no bracket
+  // pair outside a rewritten span is opened, closed or re-paired, and no
+  // top-level `&&`/`||`/`?`/`:` is added or removed — every operator a rewrite
+  // takes away was inside a bracket pair and so was never part of the top-level
+  // chain. Necessary, because the rules must be able to read *inside* the
+  // rewritten spans: `has(list[0].f).x` collapses to `__typekro_recv0.x`, and
+  // the `has()` the rule is looking for survives only in the original.
+  //
+  // On text that is neither parsed nor proven, nothing here runs — note-kind
+  // rules included. A note about a map literal in text that is not CEL describes
+  // a structure that is not there, and the expression is already reported by
+  // half one.
+  if (!(parsed || proof !== undefined)) return findings;
+
   checkHasIndexArgument(trimmed, masked, field, findings, brackets);
   checkHeterogeneousMapLiteral(trimmed, masked, field, findings, brackets);
   checkInOnListEntry(trimmed, masked, field, findings);
