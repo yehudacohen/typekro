@@ -696,6 +696,15 @@ export function lookupNestedExpression(
  * remaining segment rides along verbatim as the postfix, giving `(inner)[0].name`
  * and `(inner)["http"].port`.
  *
+ * A list index reaches this function in EITHER of two spellings — bracketed
+ * (`items[0].name`, what a proxy field path carries) or DOTTED
+ * (`items.0.name`, what `extractNestedStatusCel` builds its keys from). The
+ * lexer folds the dotted form into the bracketed one, and
+ * {@link keyPrefixCandidates} spells a numeric index back out as `.0` when it
+ * builds a key path, so the two spellings resolve identically: the emitted CEL
+ * always uses `[0]` (`.0` is not a field select and parses on neither engine)
+ * and key matching always uses `.0` (the spelling keys are stored under).
+ *
  * Exact `__nestedStatus:<id>:<prefix>` keys are checked at every prefix length
  * BEFORE the alias ladder runs at any length, so a real key (`addr`) always
  * beats a fuzzy match on a longer path (`addr.ip`).
@@ -713,56 +722,88 @@ function resolveNestedField(
   allowFieldFallback: boolean,
   trailingSegmentIsMethodName: boolean
 ): NestedFieldResolution | undefined {
-  const segments = splitFieldPathSegments(fieldPath);
-  const longest =
-    trailingSegmentIsMethodName && segments.length > 1 ? segments.length - 1 : segments.length;
-  if (longest < 1) return undefined;
-
-  /**
-   * The dotted key a prefix of `count` segments names, or `undefined` when the
-   * prefix cannot name one.
-   *
-   * Only the LAST segment of a prefix may carry an index: an index sitting
-   * BETWEEN two names (`a[0].b`) is not part of the key `a.b`, and matching it
-   * there would silently drop the index from the emitted expression.
-   */
-  const keyPathFor = (count: number): string | undefined => {
-    for (let at = 0; at < count - 1; at += 1) {
-      if (segments[at]?.indexes !== '') return undefined;
-    }
-    return segments
-      .slice(0, count)
-      .map((segment) => segment.name)
-      .join('.');
-  };
-
-  const resolutionFor = (count: number, entry: NestedStatusEntry): NestedFieldResolution => ({
-    entry,
-    postfix:
-      (segments[count - 1]?.indexes ?? '') +
-      segments
-        .slice(count)
-        .map((segment) => `.${segment.name}${segment.indexes}`)
-        .join(''),
-  });
+  const candidates = keyPrefixCandidates(
+    splitFieldPathSegments(fieldPath),
+    trailingSegmentIsMethodName
+  );
 
   // Pass 1: exact keys only, longest prefix first.
-  for (let count = longest; count >= 1; count -= 1) {
-    const keyPath = keyPathFor(count);
-    if (keyPath === undefined) continue;
-    const key = `__nestedStatus:${id}:${keyPath}`;
+  for (const candidate of candidates) {
+    const key = `__nestedStatus:${id}:${candidate.keyPath}`;
     const expression = nestedStatusCel[key];
-    if (expression !== undefined) return resolutionFor(count, { key, expression });
+    if (expression !== undefined) {
+      return { entry: { key, expression }, postfix: candidate.postfix };
+    }
   }
 
   // Pass 2: the full alias ladder, longest prefix first.
-  for (let count = longest; count >= 1; count -= 1) {
-    const keyPath = keyPathFor(count);
-    if (keyPath === undefined) continue;
-    const entry = lookupNestedEntry(id, keyPath, nestedStatusCel, allowFieldFallback);
-    if (entry !== undefined) return resolutionFor(count, entry);
+  for (const candidate of candidates) {
+    const entry = lookupNestedEntry(id, candidate.keyPath, nestedStatusCel, allowFieldFallback);
+    if (entry !== undefined) return { entry, postfix: candidate.postfix };
   }
   return undefined;
+}
+
+/**
+ * One prefix of a lexed field path that could name a mapping key, paired with
+ * the remainder {@link resolveNestedField} must re-attach as a postfix.
+ */
+interface KeyPrefixCandidate {
+  /** The key spelling of the prefix — numeric indexes rendered as `.0`. */
+  readonly keyPath: string;
+  /** The rest of the path, ready to append to `(inner)` — indexes as `[0]`. */
+  readonly postfix: string;
+}
+
+/**
+ * Every prefix of `segments` that could name a `__nestedStatus:<id>:<path>`
+ * key, longest first.
+ *
+ * A prefix may end at a name (`items`, postfix `[0].name`) or after any leading
+ * run of its NUMERIC indexes (`items.0`, postfix `.name`) — a numeric index is
+ * spellable in a key, because {@link extractNestedStatusCel} builds an array
+ * element's key as `` `${fieldPath}.${index}` ``. A NON-numeric index
+ * (`["http"]`) has no key spelling, so it ends key candidacy: neither it nor
+ * anything past it can be part of a key, and matching a longer prefix across it
+ * would silently drop the index from the emitted expression.
+ */
+function keyPrefixCandidates(
+  segments: readonly FieldPathSegment[],
+  trailingSegmentIsMethodName: boolean
+): KeyPrefixCandidate[] {
+  const nameLimit =
+    trailingSegmentIsMethodName && segments.length > 1 ? segments.length - 1 : segments.length;
+
+  /** The path past `count` segments plus `depth` of the last one's indexes. */
+  const postfixFrom = (count: number, depth: number): string =>
+    (segments[count - 1]?.indexes.slice(depth).join('') ?? '') +
+    segments
+      .slice(count)
+      .map((segment) => `.${segment.name}${segment.indexes.join('')}`)
+      .join('');
+
+  // Built shortest-first so each key path extends the previous one, then
+  // reversed — the caller wants the longest prefix tried first.
+  const candidates: KeyPrefixCandidate[] = [];
+  let keyPath = '';
+  for (let count = 1; count <= nameLimit; count += 1) {
+    const segment = segments[count - 1];
+    if (segment === undefined) break;
+    keyPath = count === 1 ? segment.name : `${keyPath}.${segment.name}`;
+    candidates.push({ keyPath, postfix: postfixFrom(count, 0) });
+
+    let depth = 0;
+    for (const index of segment.indexes) {
+      const digits = NUMERIC_INDEX_PATTERN.exec(index)?.[1];
+      if (digits === undefined) break;
+      depth += 1;
+      keyPath = `${keyPath}.${digits}`;
+      candidates.push({ keyPath, postfix: postfixFrom(count, depth) });
+    }
+    // A non-numeric index was reached: no longer prefix can name a key.
+    if (depth < segment.indexes.length) break;
+  }
+  return candidates.reverse();
 }
 
 /**
@@ -772,9 +813,15 @@ function resolveNestedField(
 interface FieldPathSegment {
   /** The bare field name — the only part a mapping key is ever matched against. */
   readonly name: string;
-  /** Index operations applied to {@link name}, verbatim, or `''` for none. */
-  readonly indexes: string;
+  /** Index operations applied to {@link name}, each verbatim (`[0]`, `["http"]`). */
+  readonly indexes: readonly string[];
 }
+
+/** A whole path segment that is nothing but digits — a DOTTED list index. */
+const DOTTED_NUMERIC_SEGMENT_PATTERN = /^\d+$/;
+
+/** An index operation that is a plain integer, capturing its digits. */
+const NUMERIC_INDEX_PATTERN = /^\[(\d+)\]$/;
 
 /**
  * Lex a status field path into `name` + index-chain segments.
@@ -789,6 +836,24 @@ interface FieldPathSegment {
  * caller cannot: its capture stops at `[`, which leaves the index chain outside
  * the match and therefore untouched in the surrounding text.
  *
+ * **An all-digit segment is an INDEX on the segment before it**, not a name:
+ * `items.0.name` ≡ `items[0].name`. Both spellings are live here — a proxy
+ * renders a numeric key as `[0]` (`schema-proxy.ts`) but
+ * `extractNestedStatusCel` builds an array element's mapping key as
+ * `` `${fieldPath}.${index}` `` — and the marker charset admits the dotted form
+ * too. Folding it into the previous segment's index chain is what makes the two
+ * spellings one thing: without it `.0` is lexed as a NAME, so the emitted
+ * postfix is `.0.name` (`(inner).0.name` is not CEL — `.0` is not a field
+ * select — and parses on neither engine), and a key stored under one spelling
+ * cannot be reached from the other. Only a WHOLE segment of digits folds:
+ * `v2`, `ip4` and `_0` are identifiers and are left alone.
+ *
+ * A LEADING numeric segment has no predecessor to index, so it stays a name: a
+ * field path is rooted at a field, an index there is not a spelling of anything
+ * valid, and leaving it verbatim resolves it exactly as before rather than
+ * inventing a meaning for it. (The regex token path cannot produce one — its
+ * capture must start with `[a-zA-Z_$]`.)
+ *
  * Brackets are matched with a depth counter and quotes are honoured, so neither
  * a `.` nor a `]` inside a map key is read as structure. A path this lexer
  * cannot account for — an unbalanced bracket, an empty segment — is handed back
@@ -796,8 +861,8 @@ interface FieldPathSegment {
  * (whole-path key lookup, no prefix search) instead of being guessed at.
  */
 function splitFieldPathSegments(fieldPath: string): FieldPathSegment[] {
-  const unsplit: FieldPathSegment[] = [{ name: fieldPath, indexes: '' }];
-  const segments: FieldPathSegment[] = [];
+  const unsplit: FieldPathSegment[] = [{ name: fieldPath, indexes: [] }];
+  const segments: Array<{ name: string; indexes: string[] }> = [];
   let index = 0;
   for (;;) {
     const nameStart = index;
@@ -807,13 +872,20 @@ function splitFieldPathSegments(fieldPath: string): FieldPathSegment[] {
     const name = fieldPath.slice(nameStart, index);
     if (name === '') return unsplit;
 
-    const indexStart = index;
+    const indexes: string[] = [];
     while (fieldPath[index] === '[') {
       const close = closingIndexBracket(fieldPath, index);
       if (close === undefined) return unsplit;
+      indexes.push(fieldPath.slice(index, close + 1));
       index = close + 1;
     }
-    segments.push({ name, indexes: fieldPath.slice(indexStart, index) });
+
+    const previous = segments[segments.length - 1];
+    if (previous !== undefined && DOTTED_NUMERIC_SEGMENT_PATTERN.test(name)) {
+      previous.indexes.push(`[${name}]`, ...indexes);
+    } else {
+      segments.push({ name, indexes });
+    }
 
     if (index === fieldPath.length) return segments;
     if (fieldPath[index] !== '.') return unsplit;

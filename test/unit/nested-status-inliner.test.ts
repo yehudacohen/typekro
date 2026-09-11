@@ -1000,6 +1000,219 @@ describe('nested-composition status inlining — indexed postfixes', () => {
   });
 });
 
+describe('nested-composition status inlining — dotted numeric index segments', () => {
+  // A list index reaches the resolver in two spellings. A proxy renders a
+  // numeric key as `[0]` (`schema-proxy.ts`), but `extractNestedStatusCel`
+  // builds an array element's mapping key as `` `${fieldPath}.${index}` `` —
+  // dotted — and the marker charset admits the dotted form too. Lexed as a bare
+  // NAME, `0` emitted the postfix `.0.name`: `(inner).0.name` is not CEL (`.0`
+  // is not a field select) and parses on neither engine, and the late
+  // `normalizeCelArrayIndexPaths` sweep cannot rescue it because the postfix
+  // follows a `)`. The two spellings also failed to name the same key.
+  const table = {
+    '__nestedStatus:svc:items': 'innerService.status.loadBalancer.ingress',
+    '__nestedStatus:svc:a': 'innerService.status.alpha',
+    '__nestedStatus:svc:v2': 'innerService.status.versionTwo',
+  };
+
+  const context: SerializationContext = {
+    celPrefix: '',
+    resourceIdStrategy: 'deterministic',
+    nestedStatusCel: table,
+  };
+
+  function nestedRef(fieldPath: string): unknown {
+    return {
+      [KUBERNETES_REF_BRAND]: true,
+      __nestedComposition: true,
+      resourceId: 'svc',
+      fieldPath,
+    };
+  }
+
+  describe('regex path', () => {
+    it('emits a dotted numeric segment as an index', () => {
+      expect(inlineNestedStatusRefs('svc.status.items.0.name', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0].name'
+      );
+    });
+
+    it('emits a run of dotted numeric segments as an index chain', () => {
+      expect(inlineNestedStatusRefs('svc.status.a.0.1.b', table)).toBe(
+        '(innerService.status.alpha)[0][1].b'
+      );
+    });
+
+    it('emits a dotted numeric segment that ends the path as an index', () => {
+      expect(inlineNestedStatusRefs('svc.status.items.0', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0]'
+      );
+    });
+
+    it('normalizes both spellings in one path', () => {
+      expect(inlineNestedStatusRefs('svc.status.items.0.ports[1].port', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0].ports[1].port'
+      );
+    });
+
+    it('leaves an identifier that merely contains digits alone', () => {
+      expect(inlineNestedStatusRefs('svc.status.v2.name', table)).toBe(
+        '(innerService.status.versionTwo).name'
+      );
+      expect(inlineNestedStatusRefs('svc.status.items.ip4', table)).toBe(
+        '(innerService.status.loadBalancer.ingress).ip4'
+      );
+      expect(inlineNestedStatusRefs('svc.status.items._0', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)._0'
+      );
+    });
+
+    it('keeps a trailing method name off the key while indexing the path', () => {
+      expect(inlineNestedStatusRefs('svc.status.items.0.size()', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0].size()'
+      );
+    });
+  });
+
+  describe('marker path', () => {
+    // `KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE` admits a dotted digit run
+    // (`[a-zA-Z0-9$-]+` after a `.`), so this spelling really does arrive here.
+    it('emits a dotted numeric segment as an index', () => {
+      expect(
+        normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.items.0.name__', context)
+      ).toBe('${(innerService.status.loadBalancer.ingress)[0].name}');
+    });
+
+    it('emits a run of dotted numeric segments as an index chain', () => {
+      expect(normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.a.0.1.b__', context)).toBe(
+        '${(innerService.status.alpha)[0][1].b}'
+      );
+    });
+
+    it('emits a dotted numeric segment that ends the path as an index', () => {
+      expect(normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.items.0__', context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0]}'
+      );
+    });
+
+    it('normalizes both spellings in one field path', () => {
+      expect(
+        normalizeRefMarkersToCelPaths(
+          '__KUBERNETES_REF_svc_status.items[0].ports.1.port__',
+          context
+        )
+      ).toBe('${(innerService.status.loadBalancer.ingress)[0].ports[1].port}');
+    });
+
+    it('leaves an identifier that merely contains digits alone', () => {
+      expect(normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.v2.name__', context)).toBe(
+        '${(innerService.status.versionTwo).name}'
+      );
+    });
+  });
+
+  describe('structured-ref path', () => {
+    it('emits a dotted numeric segment as an index', () => {
+      expect(processResourceReferences(nestedRef('status.items.0.name'), context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0].name}'
+      );
+    });
+
+    it('emits a run of dotted numeric segments as an index chain', () => {
+      expect(processResourceReferences(nestedRef('status.a.0.1.b'), context)).toBe(
+        '${(innerService.status.alpha)[0][1].b}'
+      );
+    });
+
+    it('emits a dotted numeric segment that ends the path as an index', () => {
+      expect(processResourceReferences(nestedRef('status.items.0'), context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0]}'
+      );
+    });
+
+    it('normalizes both spellings in one field path', () => {
+      expect(
+        serializeStatusMappingsToCel({ url: nestedRef('status.items[0].ports.1.port') }, table)
+      ).toEqual({ url: '${(innerService.status.loadBalancer.ingress)[0].ports[1].port}' });
+    });
+  });
+
+  describe('key spelling', () => {
+    // Keys are stored under the DOTTED spelling, so that is the spelling a key
+    // path is built in — reached from either spelling of the same path.
+    const keyed = { '__nestedStatus:svc:components.0.ready': 'innerService.status.ready' };
+    const keyedContext: SerializationContext = {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
+      nestedStatusCel: keyed,
+    };
+
+    it('matches a dotted numeric key from the dotted path spelling', () => {
+      expect(inlineNestedStatusRefs('svc.status.components.0.ready', keyed)).toBe(
+        '(innerService.status.ready)'
+      );
+    });
+
+    it('matches a dotted numeric key from the bracketed path spelling', () => {
+      expect(
+        normalizeRefMarkersToCelPaths(
+          '__KUBERNETES_REF_svc_status.components[0].ready__',
+          keyedContext
+        )
+      ).toBe('${innerService.status.ready}');
+    });
+
+    it('prefers the longest key over a shorter one plus an index postfix', () => {
+      const both = {
+        '__nestedStatus:svc:items.0': 'innerService.status.firstIngress',
+        '__nestedStatus:svc:items': 'SHOULD_NOT_APPEAR',
+      };
+      const bothContext: SerializationContext = {
+        celPrefix: '',
+        resourceIdStrategy: 'deterministic',
+        nestedStatusCel: both,
+      };
+
+      // Both spellings of the same path reach the longer key. Asserted on the
+      // marker path: the regex token capture stops at `[`, so on THAT path the
+      // bracketed index is never inside the match to be matched against a key.
+      expect(inlineNestedStatusRefs('svc.status.items.0.name', both)).toBe(
+        '(innerService.status.firstIngress).name'
+      );
+      expect(
+        normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.items[0].name__', bothContext)
+      ).toBe('${(innerService.status.firstIngress).name}');
+    });
+
+    it('does not let a key match across a non-numeric index', () => {
+      // `ports["http"].port` has no key spelling past the map key, so only the
+      // bare-name key `ports` may match — matching `ports.port` would drop it.
+      const mapKeyed = {
+        '__nestedStatus:svc:ports.port': 'SHOULD_NOT_APPEAR',
+        '__nestedStatus:svc:ports': 'innerService.status.portMap',
+      };
+
+      expect(inlineNestedStatusRefs('svc.status.ports["http"].port', mapKeyed)).toBe(
+        '(innerService.status.portMap)["http"].port'
+      );
+    });
+
+    it('leaves a leading numeric segment as a name', () => {
+      // An index has to apply to something; a field path is rooted at a field,
+      // so a leading digit run is not an index spelling and stays verbatim.
+      const leading = { '__nestedStatus:svc:0.name': 'innerService.status.zeroName' };
+
+      expect(
+        normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.0.name__', {
+          celPrefix: '',
+          resourceIdStrategy: 'deterministic',
+          nestedStatusCel: leading,
+        })
+      ).toBe('${innerService.status.zeroName}');
+    });
+  });
+});
+
 describe('nested-composition status inlining — canonical mapping identity', () => {
   it('detects a cycle that turns a corner through an alias spelling', () => {
     // `webAppStack2` is not a key; it reaches `__nestedStatus:webAppStack1:ready`
