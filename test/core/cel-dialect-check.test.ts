@@ -121,6 +121,48 @@ describe('checkCelDialectCompatibility', () => {
     expect(findings[0]?.message).toContain('cel-go absorbs the error');
   });
 
+  /**
+   * A guard already written to the left can make a later one redundant, but
+   * only if it actually says the later guard's path is present. Reaching a path
+   * and establishing it are different relations, and they point opposite ways
+   * along the same prefix chain.
+   */
+  describe('an earlier guard only excuses a late one if it establishes it', () => {
+    it('flags a late guard that a shallower earlier guard does not establish', () => {
+      // has(a.status) says the status object is there. It says nothing about
+      // a.status.list, so cel-js still fails on a.status.list[0] before it ever
+      // reaches the late has() — which is exactly the divergence this rule is
+      // for. Treating the shallower guard as cover hid it.
+      const findings = check('has(a.status) && a.status.list[0].f != "" && has(a.status.list)');
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.rule).toBe('guard-after-use-in-logical-chain');
+      expect(findings[0]?.dialect).toBe('cel-js');
+    });
+
+    it('passes a late guard the same earlier guard already established', () => {
+      // Redundant, but harmless: the access is guarded before it happens.
+      expect(
+        check('has(a.status.list) && a.status.list[0].f != "" && has(a.status.list)')
+      ).toEqual([]);
+    });
+
+    it('passes a late guard a deeper earlier guard established', () => {
+      // has(a.status.list.deeper) evaluates its receiver before testing the last
+      // field, so for it to have returned true rather than errored, a.status.list
+      // was present. The later has(a.status.list) adds nothing and breaks nothing.
+      expect(
+        check('has(a.status.list.deeper) && a.status.list[0].f != "" && has(a.status.list)')
+      ).toEqual([]);
+    });
+
+    it('leaves an unguarded access with no late guard alone', () => {
+      // No has() to the right of the access, so this rule has nothing to say —
+      // indexing a list is valid on both engines.
+      expect(check('has(a.status) && a.status.list[0].f != ""')).toEqual([]);
+    });
+  });
+
   it('reports text that is not CEL at all against both dialects, as a note', () => {
     // JavaScript that leaked through the expression converter. A real defect,
     // but the same defect on cel-js and cel-go, so not a divergence.
