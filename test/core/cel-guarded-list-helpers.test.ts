@@ -459,3 +459,149 @@ describe('the default fallback is offered exactly where the projected type admit
     expect(expression).toContain('size(gateway.status.phases.filter(entry, has(entry.phase))) > 0');
   });
 });
+
+/**
+ * A projection of an object- or list-typed field takes a structured fallback.
+ *
+ * Two things have to hold for that to be more than a rendering trick. The
+ * literal has to be well-formed CEL, with nested refs rendered by the same
+ * rules a scalar fallback uses — and the two branches of the emitted ternary
+ * have to carry types cel-go's checker can unify, which a nominal field read
+ * next to a bare map literal does not. `dyn()` on both branches is what makes
+ * them unify; it is runtime identity and both direct-mode evaluators implement
+ * it, so it costs nothing where the field was already `dyn`.
+ */
+describe('structured fallbacks', () => {
+  type Listener = {
+    name: string;
+    hosts: string[];
+    meta: { zone: string; region: string };
+    labels: Record<string, string>;
+  };
+  const listeners = Cel.unsafeListPath<Listener>('gateway.status.listeners');
+
+  /** The `else` branch of the outer ternary, which is the fallback as emitted. */
+  function fallbackOf(value: unknown): string {
+    const { expression } = value as unknown as CelExpression;
+    return expression.slice(expression.lastIndexOf(' : ') + 3);
+  }
+
+  it('renders an object fallback as a CEL map literal, identically in both branches', () => {
+    const projection = Cel.firstWhereHas(listeners, 'meta', {
+      zone: 'us-east-1a',
+      region: 'us-east-1',
+    });
+    const { expression } = projection as unknown as CelExpression;
+
+    expect(expression).toContain('dyn({"zone": "us-east-1a", "region": "us-east-1"})');
+    // Twice: the inner ternary's else and the outer one's. A ternary whose
+    // branches differ is what cel-go rejects at RGD admission.
+    expect(expression.split('dyn({"zone": "us-east-1a", "region": "us-east-1"})')).toHaveLength(3);
+  });
+
+  it('renders a ref nested in an object fallback by the same rules as a bare one', () => {
+    const fallback = fallbackOf(
+      Cel.firstWhereHas(listeners, 'meta', {
+        zone: ref<string>('config', 'data.zone') as unknown as string,
+        region: 'us-east-1',
+      })
+    );
+
+    expect(fallback).toBe('dyn({"zone": config.data.zone, "region": "us-east-1"})');
+  });
+
+  it('renders a list fallback as a CEL list literal', () => {
+    expect(fallbackOf(Cel.firstWhereHas(listeners, 'hosts', ['a.example.test']))).toBe(
+      'dyn(["a.example.test"])'
+    );
+  });
+
+  it('supports the empty object and the empty list', () => {
+    expect(fallbackOf(Cel.firstWhereHas(listeners, 'labels', {}))).toBe('dyn({})');
+    expect(fallbackOf(Cel.firstWhereHas(listeners, 'hosts', []))).toBe('dyn([])');
+  });
+
+  it('widens the projected branch too, so the two branches unify', () => {
+    const { expression } = Cel.firstWhereHas(listeners, 'hosts', []) as unknown as CelExpression;
+
+    expect(expression).toContain(
+      'dyn(gateway.status.listeners.filter(entry, has(entry.hosts))[0].hosts)'
+    );
+    // `firstOf` projects the entry rather than a field, and widens the same way.
+    const entries = Cel.unsafeListPath<{ zone: string; region: string }>('gateway.status.zones');
+    const { expression: entryCel } = Cel.firstOf(entries, {
+      zone: 'a',
+      region: 'b',
+    }) as unknown as CelExpression;
+
+    expect(entryCel).toContain('dyn(gateway.status.zones[0])');
+  });
+
+  it('leaves a scalar fallback unwidened, where the branches already unify', () => {
+    const { expression } = Cel.firstWhereHas(listeners, 'name', 'pending') as unknown as
+      CelExpression;
+
+    expect(expression).not.toContain('dyn(');
+  });
+
+  it('leaves a structured ref or CEL-expression fallback unwidened', () => {
+    // A ref carries the same nominal type as the branch it sits opposite, so
+    // there is nothing to reconcile — the widening is for literals only.
+    const metaRef = ref<{ zone: string; region: string }>('other', 'status.meta');
+    const { expression } = Cel.firstWhereHas(listeners, 'meta', metaRef) as unknown as CelExpression;
+
+    expect(expression).not.toContain('dyn(');
+    expect(fallbackOf(Cel.firstWhereHas(listeners, 'meta', metaRef))).toBe('other.status.meta');
+  });
+
+  it('evaluates a structured fallback in direct mode, where dyn is identity', async () => {
+    const expression = Cel.firstOf(
+      Cel.unsafeListPath<{ zone: string; region: string }>('gateway.status.zones'),
+      { zone: 'unknown', region: 'unknown' }
+    ) as unknown as CelExpression;
+
+    const evaluate = async (status: unknown) =>
+      new CelEvaluator().evaluate(expression, {
+        resources: new Map([
+          [
+            'gateway',
+            { apiVersion: 'v1', kind: 'Service', metadata: { name: 'gw' }, spec: {}, status },
+          ],
+        ]),
+      } as never);
+
+    expect(await evaluate({})).toEqual({ zone: 'unknown', region: 'unknown' });
+    expect(await evaluate({ zones: [] })).toEqual({ zone: 'unknown', region: 'unknown' });
+    expect(await evaluate({ zones: [{ zone: 'a', region: 'b' }] })).toEqual({
+      zone: 'a',
+      region: 'b',
+    });
+  });
+
+  it('rejects null and undefined, at compile time and at runtime', () => {
+    // Compile-time only: these throw if evaluated, which is the runtime half
+    // below, so the thunk is deliberately never called.
+    const rejected = () => [
+      // @ts-expect-error — null is not the projected type; a `null` branch is
+      // not interchangeable with a typed one in cel-go, and the engines differ
+      // on it.
+      Cel.firstWhereHas(listeners, 'meta', null),
+      // @ts-expect-error — an explicit undefined is the same argument as
+      // omitting it, and a structured field has no '' default to fall back to.
+      Cel.firstWhereHas(listeners, 'meta', undefined),
+      // @ts-expect-error — and omitting it outright.
+      Cel.firstWhereHas(listeners, 'meta'),
+    ];
+
+    void rejected;
+
+    // The runtime guard is for callers with no types, where the '' that a null
+    // used to render as would be a branch cel-go rejects outright.
+    expect(() => Cel.firstWhereHas(listeners, 'meta', null as never)).toThrow(
+      /Cel\.firstWhereHas\(\) fallback cannot be null/
+    );
+    expect(() =>
+      Cel.firstOf(Cel.unsafeListPath<{ zone: string }>('gateway.status.zones'), null as never)
+    ).toThrow(/Cel\.firstOf\(\) fallback cannot be null/);
+  });
+});

@@ -343,6 +343,32 @@ function celValueForTernary(value: RefOrValue<unknown>): string {
 }
 
 /**
+ * True when a value is a structured *literal* — a plain object or array written
+ * out at the call site — rather than a ref or a CEL expression.
+ *
+ * The distinction decides whether the two branches of an emitted ternary need
+ * widening. KRO gives a schema or resource reference a **nominal** object type
+ * taken from the resource's schema, while a CEL object literal is inferred as a
+ * `map` and a list literal as a `list`. Both materialize to the same Kubernetes
+ * JSON, but cel-go's checker rejects a ternary whose branches carry static types
+ * that do not unify, so a nominal branch next to a literal branch fails at RGD
+ * admission while cel-js evaluates it happily. A ref or CEL-expression fallback
+ * carries the same nominal type as the other branch and needs nothing.
+ *
+ * `dyn()` is the fix: it unifies with everything in the checker, is identity at
+ * runtime, and is implemented by both direct-mode evaluators — so wrapping is
+ * free where it is unnecessary and load-bearing where it is not.
+ */
+function isStructuredLiteral(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !isKubernetesRef(value) &&
+    !isCelExpression(value)
+  );
+}
+
+/**
  * Creates a conditional CEL expression with smart value conversion.
  *
  * Unlike `Cel.conditional` (which concatenates raw strings), `Cel.cond`
@@ -435,16 +461,10 @@ function defaultValue(
     : has(value).expression;
   const celValue = celValueForTernary(value);
   const fallbackCel = celValueForTernary(fallback);
-  // KRO gives schema object references a nominal object type while CEL object
-  // literals are inferred as maps. Although both values materialize to the same
-  // Kubernetes JSON object, CEL rejects a ternary that mixes those static types.
   // Widen both structured branches to dyn so KRO can validate the expression
-  // without changing the runtime value or direct-mode `??` behavior.
-  const hasStructuredLiteralFallback =
-    fallback !== null &&
-    typeof fallback === 'object' &&
-    !isKubernetesRef(fallback) &&
-    !isCelExpression(fallback);
+  // without changing the runtime value or direct-mode `??` behavior. See
+  // {@link isStructuredLiteral} for why the mixed static types are a problem.
+  const hasStructuredLiteralFallback = isStructuredLiteral(fallback);
   const selectedValue = hasStructuredLiteralFallback ? `dyn(${celValue})` : celValue;
   const selectedFallback = hasStructuredLiteralFallback ? `dyn(${fallbackCel})` : fallbackCel;
   // KRO's CEL checker rejects `typedScalar != null` even though the runtime
@@ -544,9 +564,16 @@ export type CelEntryProjection<TElement> = CelExpression<NonNullable<TElement>> 
  *   is a compile error rather than a silent `''` that KRO will reject.
  *
  * `RefOrValue` is kept, so a `KubernetesRef` or a CEL expression of the right
- * type is still accepted in place of a literal — including a structured one: an
- * object- or list-typed projection takes an object or array fallback, rendered
- * as the CEL literal of that shape. See {@link firstWhereHas}.
+ * type is still accepted in place of a literal.
+ *
+ * **Structured projections are included in all of this.** A projection of an
+ * object- or list-typed field takes an object or array fallback, `{}` and `[]`
+ * included, and it is rendered as the CEL map or list literal of that shape —
+ * see {@link projectionFallback}. Nothing special is needed at the type level to
+ * say so, and that is the point: `''` is not assignable to an object type, so
+ * such a projection requires its fallback, and neither `null` nor `undefined` is
+ * assignable to `RefOrValue<T>` for a `NonNullable` `T`, so neither can be
+ * passed. The runtime rejects `null` as well, for callers with no types.
  */
 export type CelFallbackArgs<T> = '' extends T
   ? [fallback?: RefOrValue<T>]
@@ -638,6 +665,54 @@ function defaultedFallback(fallback: readonly unknown[]): RefOrValue<unknown> {
   return given === undefined ? '' : (given as RefOrValue<unknown>);
 }
 
+/** A projection's fallback, rendered, plus how to render the branches around it. */
+interface ProjectionFallback {
+  /** The fallback as CEL, for the `else` branch of both ternaries. */
+  readonly cel: string;
+  /** Wrap one ternary branch so cel-go's checker can unify the two. */
+  readonly branch: (expression: string) => string;
+}
+
+/**
+ * Render a projection helper's fallback and decide how to write the branches.
+ *
+ * **Structured fallbacks are supported.** A projection of an object- or
+ * list-typed field takes an object or array literal, which
+ * {@link celValueForTernary} renders as a CEL map or list literal with nested
+ * refs and CEL expressions rendered by the same `RefOrValue` rules as a scalar
+ * fallback; `{}` and `[]` render as the empty literals. Because the other branch
+ * of the ternary reads a field whose CEL type comes from the referenced
+ * resource's schema, a structured literal fallback makes both branches `dyn` —
+ * see {@link isStructuredLiteral} for why, and why `dyn()` costs nothing when
+ * the field happens to be `dyn` already.
+ *
+ * **`null` is not a fallback.** A projection is typed `NonNullable`, so the type
+ * level rejects `null` and an explicit `undefined` for every projected type that
+ * does not admit them — which is every structured one. This guards the same
+ * thing for callers with no types: without it a `null` fallback on an
+ * object-typed field rendered as `""`, a branch cel-go rejects outright and
+ * cel-js quietly returns, which is exactly the class of bug the fallback typing
+ * exists to prevent. `null` is not usable even where cel-go admits it against a
+ * message type, because the engines disagree on it.
+ */
+function projectionFallback(helperName: string, fallback: readonly unknown[]): ProjectionFallback {
+  const [given] = fallback;
+  if (given === null) {
+    throw new TypeKroError(
+      `${helperName}() fallback cannot be null. The projection is typed as the field it ` +
+        'projects and cel-go rejects a ternary whose branches disagree, so pass a value of ' +
+        'that type instead: an object or array literal for a structured field, or a ' +
+        'KubernetesRef or CEL expression of the projected type.',
+      'CEL_INVALID_INPUT'
+    );
+  }
+
+  const value = defaultedFallback(fallback);
+  const cel = celValueForTernary(value);
+  const widen = isStructuredLiteral(value);
+  return { cel, branch: widen ? (expression) => `dyn(${expression})` : (expression) => expression };
+}
+
 /**
  * Project the first entry of an optional nested list that actually carries a
  * field, in the one CEL form both engines accept.
@@ -680,7 +755,10 @@ function defaultedFallback(fallback: readonly unknown[]): RefOrValue<unknown> {
  *   carrying `field`. Has the type of the projected field — both because the
  *   projection is typed as that field, and because cel-go rejects a ternary
  *   whose branches disagree. Defaults to the empty string only where that field
- *   type admits a string; elsewhere it is required. See {@link CelFallbackArgs}.
+ *   type admits `''`; elsewhere it is required, structured fields included — an
+ *   object- or list-typed field takes an object or array literal, a
+ *   `KubernetesRef`, or a CEL expression of that type. See
+ *   {@link CelFallbackArgs} and {@link projectionFallback}.
  *
  * @example
  * ```typescript
@@ -708,11 +786,13 @@ function firstWhereHas<TElement extends object, TField extends Extract<keyof TEl
   const path = celListPath(list, 'Cel.firstWhereHas');
   const matching = `${path}.filter(entry, has(entry.${field}))`;
   const guard = chainedHasGuard(path) ?? `has(${path})`;
-  const fallbackCel = celValueForTernary(defaultedFallback(fallback));
+  const { cel, branch } = projectionFallback('Cel.firstWhereHas', fallback);
+  const projected = branch(`${matching}[0].${field}`);
+  const otherwise = branch(cel);
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
-    expression: `${guard} ? (size(${matching}) > 0 ? ${matching}[0].${field} : ${fallbackCel}) : ${fallbackCel}`,
+    expression: `${guard} ? (size(${matching}) > 0 ? ${projected} : ${otherwise}) : ${otherwise}`,
   } as CelFieldProjection<TElement, TField>;
 }
 
@@ -731,8 +811,9 @@ function firstWhereHas<TElement extends object, TField extends Extract<keyof TEl
  *
  * @param list The list to read, selected from a resource or schema proxy.
  * @param fallback Value used when the list is absent or empty. Has the element
- *   type, and is optional only where that type admits a string — see
- *   {@link CelFallbackArgs}.
+ *   type, and is optional only where that type admits `''` — so a list of
+ *   objects requires an object fallback. See {@link CelFallbackArgs} and
+ *   {@link projectionFallback}.
  *
  * @example
  * ```typescript
@@ -745,11 +826,13 @@ function firstOf<TElement>(
 ): CelEntryProjection<TElement> {
   const path = celListPath(list, 'Cel.firstOf');
   const guard = chainedHasGuard(path) ?? `has(${path})`;
-  const fallbackCel = celValueForTernary(defaultedFallback(fallback));
+  const { cel, branch } = projectionFallback('Cel.firstOf', fallback);
+  const projected = branch(`${path}[0]`);
+  const otherwise = branch(cel);
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
-    expression: `${guard} ? (size(${path}) > 0 ? ${path}[0] : ${fallbackCel}) : ${fallbackCel}`,
+    expression: `${guard} ? (size(${path}) > 0 ? ${projected} : ${otherwise}) : ${otherwise}`,
   } as CelEntryProjection<TElement>;
 }
 
