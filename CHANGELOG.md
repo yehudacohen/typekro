@@ -57,6 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a CEL macro's lambda variable shields only the references inside that macro's
   body, so `list.map(svc, svc.status.x) && svc.status.phase` expands its second
   `svc` rather than treating both as the iteration element.
+- A list index in a nested-composition status path now emits as an index in
+  either of the two spellings it arrives in. A status proxy renders a numeric
+  key as `items[0]`, but a nested mapping key for an array element is built
+  dotted (`items.0`) — and a reference marker's field path admits that form
+  too. The dotted form was read as a plain field name, so the inliner emitted
+  `(inner).0.name`, which is not valid CEL and is rejected by both evaluation
+  engines; and a mapping key stored under one spelling could not be reached
+  from the other, leaving a virtual id in the emitted RGD. A whole segment of
+  digits is now read as an index on the segment before it, so both spellings
+  resolve to the same mapping and emit `(inner)[0].name`. Identifiers that
+  merely contain digits (`v2`, `ip4`, `_0`) are unaffected.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
