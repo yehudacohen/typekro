@@ -15,6 +15,7 @@ import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identif
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
+import { maskClosedCelStringLiterals } from '../references/cel-lexical-scanner.js';
 import { ConversionError } from '../errors.js';
 import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -718,26 +719,65 @@ function substituteNestedRefsInText(
   const lambdaVars = new Set(ambientLambdaVars);
   for (const name of collectLambdaVars(text)) lambdaVars.add(name);
 
+  // Scan a copy with every closed CEL string literal blanked out, so a
+  // `<id>.status.<field>`-shaped run of characters that is really quoted DATA
+  // — a log message, a URL, an error string — is never rewritten. The mask
+  // preserves length and offsets exactly, so each replacement splices back
+  // into the ORIGINAL text at the offsets the match reported.
+  const scanned = maskClosedCelStringLiterals(text);
   const pattern = new RegExp(NESTED_STATUS_TOKEN_SOURCE, 'g');
-  return text.replace(pattern, (match, id: string, field: string) => {
-    if (id === 'schema') return match;
-    if (lambdaVars.has(id)) return match;
+  let result = '';
+  let copiedUpTo = 0;
+  let match = pattern.exec(scanned);
+  while (match !== null) {
+    const token = match[0];
+    const tokenEnd = match.index + token.length;
+    const replacement = substituteNestedRefToken(
+      token,
+      match[1] ?? '',
+      match[2] ?? '',
+      state,
+      allowKnownResourceSubstitution,
+      lambdaVars
+    );
+    if (replacement !== token) {
+      result += text.slice(copiedUpTo, match.index) + replacement;
+      copiedUpTo = tokenEnd;
+    }
+    match = pattern.exec(scanned);
+  }
+  return copiedUpTo === 0 ? text : result + text.slice(copiedUpTo);
+}
 
-    const isKnownResource = state.resourceIds?.has(id) === true;
-    if (isKnownResource && !allowKnownResourceSubstitution) return match;
+/**
+ * Resolve one `<id>.status.<fieldPath>` token to its replacement text, or back
+ * to `token` itself when it must be left alone.
+ */
+function substituteNestedRefToken(
+  token: string,
+  id: string,
+  field: string,
+  state: NestedRefResolutionState,
+  allowKnownResourceSubstitution: boolean,
+  lambdaVars: ReadonlySet<string>
+): string {
+  if (id === 'schema') return token;
+  if (lambdaVars.has(id)) return token;
 
-    // A concrete graph resource only ever matches an exact nested mapping —
-    // the field-name fallback would let an unrelated composition's field
-    // hijack a real resource reference.
-    const innerExpr = isKnownResource
-      ? lookupNestedExpression(id, field, state.nestedStatusCel, false)
-      : lookupNestedExpression(id, field, state.nestedStatusCel);
-    if (innerExpr === undefined) return match;
+  const isKnownResource = state.resourceIds?.has(id) === true;
+  if (isKnownResource && !allowKnownResourceSubstitution) return token;
 
-    const resolvedInner = expandNestedEntry(id, field, innerExpr, state, lambdaVars);
-    // Parenthesize to preserve operator precedence in compound expressions.
-    return resolvedInner === undefined ? match : `(${resolvedInner})`;
-  });
+  // A concrete graph resource only ever matches an exact nested mapping —
+  // the field-name fallback would let an unrelated composition's field
+  // hijack a real resource reference.
+  const innerExpr = isKnownResource
+    ? lookupNestedExpression(id, field, state.nestedStatusCel, false)
+    : lookupNestedExpression(id, field, state.nestedStatusCel);
+  if (innerExpr === undefined) return token;
+
+  const resolvedInner = expandNestedEntry(id, field, innerExpr, state, lambdaVars);
+  // Parenthesize to preserve operator precedence in compound expressions.
+  return resolvedInner === undefined ? token : `(${resolvedInner})`;
 }
 
 /**

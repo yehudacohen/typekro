@@ -24,6 +24,79 @@ export function maskCelStringLiterals(expression: string): string {
   return characters.join('');
 }
 
+/** Half-open `[start, end)` range of one closed CEL string literal, quotes included. */
+export interface CelStringLiteralSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Locate every CLOSED CEL string literal in `expression`.
+ *
+ * A quote that is never terminated is NOT reported as a literal: callers run
+ * over text that is not always well-formed CEL — marker-laden strings derived
+ * from template literals may carry a bare apostrophe (`it's ready`) — and
+ * swallowing the rest of such a string would silently suppress substitutions
+ * in real expression text. Offsets index UTF-16 code units so a caller can
+ * splice by them.
+ */
+export function celStringLiteralSpans(expression: string): CelStringLiteralSpan[] {
+  const spans: CelStringLiteralSpan[] = [];
+  let index = 0;
+  while (index < expression.length) {
+    const quote = expression[index];
+    if (quote !== '"' && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    let scan = index + 1;
+    let escaped = false;
+    let closeIndex: number | undefined;
+    while (scan < expression.length) {
+      const character = expression[scan];
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        closeIndex = scan;
+        break;
+      }
+      scan += 1;
+    }
+    if (closeIndex === undefined) {
+      // Unterminated — treat the quote as ordinary text and keep scanning, so
+      // a later well-formed literal in the same string is still found.
+      index += 1;
+      continue;
+    }
+    spans.push({ start: index, end: closeIndex + 1 });
+    index = closeIndex + 1;
+  }
+  return spans;
+}
+
+/**
+ * Blank out every CLOSED CEL string literal, quotes included, so a scanner can
+ * pattern-match expression syntax without seeing quoted data.
+ *
+ * Unlike {@link maskCelStringLiterals} this preserves offsets and length
+ * EXACTLY (it masks per UTF-16 code unit, and leaves an unterminated quote
+ * alone), so a caller may match over the masked copy and splice replacements
+ * into the original text at the reported offsets.
+ */
+export function maskClosedCelStringLiterals(expression: string): string {
+  const spans = celStringLiteralSpans(expression);
+  if (spans.length === 0) return expression;
+  const characters = expression.split('');
+  for (const span of spans) {
+    for (let index = span.start; index < span.end; index += 1) {
+      characters[index] = ' ';
+    }
+  }
+  return characters.join('');
+}
+
 export interface CelLambdaScope {
   readonly variable: string;
   readonly bodyStart: number;
