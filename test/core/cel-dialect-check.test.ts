@@ -609,6 +609,88 @@ describe('valid CEL that cel-js cannot parse', () => {
     });
   });
 
+  /**
+   * A splice has no token boundary of its own. `text.slice(0, start) +
+   * replacement + text.slice(end)` can therefore *fuse* the replacement with a
+   * neighbouring character, and the rewrite then lexes a different token stream
+   * from the original **outside** the span it was licensed to change — which
+   * makes it a proof about a different expression.
+   *
+   * Two things keep that from happening, and both are pinned here: a
+   * replacement that would abut an IDENT or digit character is padded with a
+   * space, and every round is then verified against the spec tokenizer —
+   * identical tokens outside the rewritten spans, and exactly one token inside
+   * each of them. A round that fails is thrown away, so the expression falls to
+   * `cel-js-parse-failure` rather than being called a divergence.
+   */
+  describe('a rewrite that fused a token is not a proof', () => {
+    const fusing: Record<string, string> = {
+      'an identifier immediately before a string receiver': 'x"y".size()',
+      'two adjacent receiver spans': '"a""b".size()',
+      'an exponent float immediately before an identifier': '1e3e5',
+      'a raw prefix on a triple-quoted literal': 'r"""a""".size()',
+    };
+
+    for (const [name, expression] of Object.entries(fusing)) {
+      it(`refuses to prove a divergence for ${name}`, () => {
+        expect(parse(expression).isSuccess).toBe(false);
+        expect(celDialectLexicalGap(expression)).toBe(-1);
+        expect(celDialectParseProof(expression)).toBeUndefined();
+
+        const findings = check(expression);
+        expect(findings.map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
+        expect(hasCelDialectDivergence(findings)).toBe(false);
+      });
+    }
+
+    it('shows what the fused rewrite would have claimed', () => {
+      // The premise, asserted rather than assumed. `x"y".size()` is an
+      // identifier next to a string literal — two tokens no CEL production
+      // joins, so cel-go rejects it as readily as cel-js does. Splicing the
+      // placeholder straight in merges them into one identifier, and *that*
+      // text cel-js parses: the proof would have "established" a divergence
+      // against an expression that has none.
+      expect(parse('x__typekro_recv0.size()').isSuccess).toBe(true);
+      expect(parse('__typekro_recv0__typekro_recv1.size()').isSuccess).toBe(true);
+      expect(check('x"y".size()').map((found) => found.kind)).toEqual(['note']);
+    });
+
+    it('still proves the forms whose neighbours are not fusable', () => {
+      // One per replacement kind, each with a real neighbour on at least one
+      // side: the token boundary is kept, so these keep proving exactly the
+      // text they proved before.
+      expect(celDialectParseProof('"x".size() > 0')).toBe('__typekro_recv0.size() > 0');
+      expect(celDialectParseProof('[1,2].size() > 0')).toBe('__typekro_recv0.size() > 0');
+      expect(celDialectParseProof('(a && b).c')).toBe('__typekro_recv0.c');
+      expect(celDialectParseProof('size(a).b')).toBe('__typekro_recv0.b');
+      expect(celDialectParseProof('x(1e3).b')).toBe('__typekro_recv0.b');
+      expect(celDialectParseProof('1.string() == "x"')).toBe('__typekro_recv0.string() == "x"');
+      expect(celDialectParseProof('[1,2][0].f != ""')).toBe('__typekro_recv0.f != ""');
+      expect(celDialectParseProof('1e3 > a.b')).toBe('0.0 > a.b');
+      expect(celDialectParseProof('a && 1e3 > 2')).toBe('a && 0.0 > 2');
+      expect(celDialectParseProof('foo(r"a")')).toBe('foo("xx")');
+      expect(celDialectParseProof('"""a""".size()')).toBe('__typekro_recv0.size()');
+    });
+
+    it('keeps every proof parseable as a whole', () => {
+      // The property the boundary check exists to preserve: whatever a proof
+      // replaced, what comes back is text cel-js reads end to end.
+      for (const expression of [
+        '"x".size() > 0',
+        '(a && b).c',
+        'size(a).b',
+        '1e3 > a.b',
+        'r"x".size() > 0',
+        '("x".size()).b > 0',
+      ]) {
+        const proven = celDialectParseProof(expression);
+        expect(proven).toBeDefined();
+        expect(parse(proven as string).isSuccess).toBe(true);
+        expect(celDialectLexicalGap(proven as string)).toBe(-1);
+      }
+    });
+  });
+
   it('leaves a map literal receiver alone, because cel-js does parse it', () => {
     // The one member of the literal-primary family cel-js already handles: its
     // `mapExpression` rule carries a `MANY2` of postfix selects and indexes.
