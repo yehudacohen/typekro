@@ -19,7 +19,7 @@ import { getComponentLogger } from '../../src/core/logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import {
   celStringLiteralSpans,
-  maskClosedCelStringLiterals,
+  maskClosedCelLiteralsAndComments,
 } from '../../src/core/references/cel-lexical-scanner.js';
 import {
   finalizeCelForKro,
@@ -653,7 +653,57 @@ describe('nested-composition status inlining — CEL string literal forms', () =
   it('reports the prefix letters as part of the literal span', () => {
     expect(celStringLiteralSpans('rb"x"')).toEqual([{ start: 0, end: 5 }]);
     expect(celStringLiteralSpans('ab"x"')).toEqual([{ start: 2, end: 5 }]);
-    expect(maskClosedCelStringLiterals('rb"x" + ab"x"')).toBe('      + ab   ');
+    expect(maskClosedCelLiteralsAndComments('rb"x" + ab"x"')).toBe('      + ab   ');
+  });
+});
+
+describe('nested-composition status inlining — CEL comments', () => {
+  // `COMMENT ::= '//' ~NEWLINE*` (cel-spec doc/langdef.md, lexis). A token
+  // inside one is commented-out text, not a reference.
+  const table = { '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase' };
+  const inline = (text: string) => inlineNestedStatusRefs(text, table);
+
+  it('leaves a token inside a line comment alone', () => {
+    expect(inline('// svc.status.phase')).toBe('// svc.status.phase');
+  });
+
+  it('substitutes the token on the line after the comment', () => {
+    expect(inline('// svc.status.phase\nsvc.status.phase')).toBe(
+      '// svc.status.phase\n(innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('keeps a comment from swallowing the rest of a single-line expression', () => {
+    expect(inline('svc.status.phase // svc.status.phase')).toBe(
+      '(innerDeployment.status.currentPhase) // svc.status.phase'
+    );
+  });
+
+  it('reads a `//` inside a string literal as string, not as a comment', () => {
+    expect(inline('"a // b" + svc.status.phase')).toBe(
+      '"a // b" + (innerDeployment.status.currentPhase)'
+    );
+    expect(inline('"a // svc.status.phase"')).toBe('"a // svc.status.phase"');
+  });
+
+  it('reads a `//` inside a triple-quoted literal as string, not as a comment', () => {
+    expect(inline('"""a // svc.status.phase"""')).toBe('"""a // svc.status.phase"""');
+  });
+
+  it('reads a quote inside a comment as comment, not as a string opener', () => {
+    // A strings-only mask lets the apostrophe in `it's` open a literal and flip
+    // the masking of everything after it.
+    expect(inline("// it's\nsvc.status.phase")).toBe(
+      "// it's\n(innerDeployment.status.currentPhase)"
+    );
+    expect(inline('// it\'s "x\nsvc.status.phase')).toBe(
+      '// it\'s "x\n(innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('masks a comment without disturbing offsets or line structure', () => {
+    expect(maskClosedCelLiteralsAndComments('a // c\nb')).toBe('a     \nb');
+    expect(maskClosedCelLiteralsAndComments('"s" // c')).toBe('        ');
   });
 });
 
