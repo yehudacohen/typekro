@@ -376,6 +376,17 @@ expressions included. So `"x".size()`, `[1,2].size()`, `(a + b).size()` and
 specification's exponent `FLOAT_LIT` (`1e3`) and of the `r`/`R`/`b`/`B` and
 triple-quoted `STRING_LIT` / `BYTES_LIT` forms.
 
+A cel-js *success* needs reading with the same care, for a different reason.
+`parse()` tokenizes and then inspects only the parser's errors; the lexer's are
+discarded unread, and a lexer skips a character it has no token for rather than
+failing. So `a === b`, `a.b $` and `a.b ☃` all "parse" — with the offending
+character thrown away first. Everywhere this check reads a verdict into a cel-js
+parse, it therefore also requires that the specification's lexical grammar covers
+the text end to end, so that "cel-js parsed it" means "cel-js read all of it".
+(cel-js exports no lexer and no token vocabulary — its package entry point
+offers only `parse`, `evaluate` and its error classes — so the coverage scan is
+written from the specification's own "Lexical Elements" instead.)
+
 Because of that, a `parse()` failure is never read as "cel-go would reject this
 too". It is sorted into one of three buckets:
 
@@ -384,6 +395,24 @@ too". It is sorted into one of three buckets:
   serves the field and direct mode never will, which is a genuine divergence, so
   it may fail strict mode. Each form is pinned by a test that also asserts
   cel-js really fails on it, so the rule loses a form the day cel-js gains it.
+
+  Finding a known shortfall *somewhere* in a rejected expression is not enough
+  to get here, because the parse may have failed for an unrelated reason:
+  `"x".size() +` has a string-literal receiver in it and is also simply
+  unfinished. So the bucket is earned rather than assumed. Each identified form
+  is rewritten into a different spelling of the same production that cel-js does
+  have — `"x".size()` into `__typekro_recv0.size()`, `1e3` into `0.0` — the rest
+  of the text is left byte for byte as it was, and cel-js is asked again. Only a
+  rewrite cel-js accepts *whole* proves the shortfall was the only obstruction;
+  anything else falls to `cel-js-parse-failure`. Two conditions make that a
+  proof rather than a coincidence: the lexical coverage above must hold on the
+  rewrite and on the original, and a rewrite that replaces a bracketed span with
+  a placeholder — `(a && b).c`, `size(a).b` — may do so only once cel-js has been
+  shown to accept that span too, since otherwise the proof would simply be
+  hiding the part of the expression that was wrong. The validation module
+  exports `celDialectParseProof()` so the proof can be reproduced rather than
+  taken on trust, and `celDialectLexicalGap()` alongside it for the coverage
+  half.
 - **`not-valid-cel`** — the text contains something the specification's *own*
   grammar has no token or production for: a `=` outside `==` / `!=` / `<=` /
   `>=` (CEL has no assignment, so `===`, `!==` and `=>` are JavaScript), a `$`
@@ -401,9 +430,23 @@ too". It is sorted into one of three buckets:
   limitation worth reporting upstream.
 
 The denylist rules are regex- and bracket-mask-based rather than tree-based, so
-none of them needs a parse tree and all of them run on text cel-js rejected —
-which is the point, since an expression only KRO can serve is exactly the one
-whose divergences matter most.
+none of them needs a parse tree — but each one does need the structure it reads
+off the text to be real: `has-index-argument` needs the argument list of a
+`has(` to be a genuine bracket pair, `heterogeneous-map-literal` needs `{`…`}`
+to be a map literal, and the chain rules need the top-level `&&` / `||` split to
+be the expression's actual operator chain. On text that is not CEL at all, none
+of that holds, and a finding there could fail strict mode on an expression
+neither engine accepts.
+
+So the denylist runs only on an expression established grammatical, in one of
+two ways: cel-js accepted the whole of it, or the rewrite proof above succeeded.
+The proof is what keeps the rules running on text cel-js rejected — which is the
+point, since a form cel-js cannot parse is exactly the one whose divergences
+matter most to Kro mode. Under a proof the rules read the *original* text, since
+that is where a fragment inside a rewritten span still exists. On text that is
+neither parsed nor proven, nothing in the denylist runs at all, notes included;
+the expression is already reported by the parse half, so the leaf is never
+silent.
 
 Both halves of the check cost about a microsecond per character, so the check
 has an analysis budget: **16 KiB per expression**, several times the largest
