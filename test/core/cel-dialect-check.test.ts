@@ -19,6 +19,7 @@ import {
   CEL_DIALECT_MAX_EXPRESSION_LENGTH,
   CEL_DIALECT_RULES,
   type CelDialectFinding,
+  celDialectParseProof,
   checkCelDialectCompatibility,
   collectStatusCelDialectFindings,
   formatCelDialectFindings,
@@ -386,8 +387,17 @@ describe('valid CEL that cel-js cannot parse', () => {
       // cel-js has gained the form and the rule should lose it.
       expect(parse(expression).isSuccess).toBe(false);
 
-      // Half two: the check identifies it positively rather than inferring
-      // cel-go's behaviour from cel-js's refusal.
+      // Half two: the identified form is the *only* thing cel-js refuses. Taking
+      // it out — and nothing else — leaves text cel-js parses, which is what
+      // rules out "the parse failed for some unrelated reason and there happened
+      // to be a known shortfall in the text as well".
+      const proof = celDialectParseProof(expression);
+      expect(proof).toBeDefined();
+      expect(proof).not.toBe(expression);
+      expect(parse(proof as string).isSuccess).toBe(true);
+
+      // Half three: the check identifies it positively rather than inferring
+      // cel-go's behaviour from cel-js's refusal, and cites the rewrite it used.
       const findings = check(expression);
       expect(findings.map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
       expect(findings[0]?.kind).toBe('divergence');
@@ -396,8 +406,110 @@ describe('valid CEL that cel-js cannot parse', () => {
       // The message must not claim the expression is invalid.
       expect(findings[0]?.message).toContain('the CEL grammar permits it');
       expect(findings[0]?.message).not.toContain('KRO will refuse');
+      expect(findings[0]?.message).toContain(proof as string);
     });
   }
+
+  /**
+   * A shortfall present *somewhere* in a rejected expression is not a
+   * divergence. Each of these carries a real, correctly identified cel-js
+   * shortfall and is also ungrammatical on its own account — unfinished
+   * operators, an unbalanced paren — so cel-go refuses it exactly as cel-js
+   * does. Rewriting the shortfall away leaves text cel-js still cannot parse,
+   * and that is the evidence that sends them to the parse-failure bucket.
+   */
+  describe('a shortfall that is not the whole reason cel-js refused', () => {
+    const invalidElsewhere: Record<string, string> = {
+      'a string receiver in an unfinished sum': '"x".size() +',
+      'a parenthesized receiver before a dangling comparison': '(a).b ==',
+      'a string receiver with an unbalanced closing paren': '"x".size()) ',
+      'a list receiver in an unfinished ternary': '[1,2].size() ? a : ',
+      'a global-call receiver with a dangling operator': 'size(a).b &&',
+      'an exponent float in an unfinished sum': 'a.b == 1e3 +',
+    };
+
+    for (const [name, expression] of Object.entries(invalidElsewhere)) {
+      it(`calls ${name} a parse failure, never a divergence`, () => {
+        expect(parse(expression).isSuccess).toBe(false);
+
+        // The shortfall really is found — this is not passing by failing to
+        // detect anything — but rewriting it away does not rescue the parse.
+        expect(celDialectParseProof(expression)).toBeUndefined();
+
+        const findings = check(expression);
+        expect(findings.map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
+        expect(findings[0]?.kind).toBe('note');
+        expect(hasCelDialectDivergence(findings)).toBe(false);
+        expect(findings[0]?.message).toContain('still leaves the expression unparseable');
+        expect(findings[0]?.message).not.toContain('cel-go');
+      });
+    }
+
+    it('does not call an unpaired-ternary leak a divergence either', () => {
+      // The reviewer's `[1,2].size() ? a`. A top-level `?` with no `:` cannot
+      // close `Expr = ConditionalOr ["?" ConditionalOr ":" Expr]` on any engine,
+      // so the spec-grammar scan reaches its verdict first and this lands in the
+      // not-valid-cel bucket rather than the parse-failure one. Either way it is
+      // a note, and the point the reviewer was making holds: the list-literal
+      // receiver in it must not carry a divergence.
+      const findings = check('[1,2].size() ? a');
+
+      expect(findings.map((found) => found.rule)).toEqual(['not-valid-cel']);
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+    });
+
+    it('is false for hasCelDialectDivergence on every invalid-elsewhere case', () => {
+      for (const expression of [...Object.values(invalidElsewhere), '[1,2].size() ? a']) {
+        expect(hasCelDialectDivergence(check(expression))).toBe(false);
+      }
+    });
+  });
+
+  describe('nested and repeated shortfalls', () => {
+    it('rewrites a shortfall nested inside another and still proves the divergence', () => {
+      // `("x".size()).b` is two shortfalls at once: a string-literal receiver
+      // inside a parenthesized receiver. The outer span wins the round, and the
+      // inner one goes with it.
+      const expression = '("x".size()).b';
+      expect(parse(expression).isSuccess).toBe(false);
+
+      const proof = celDialectParseProof(expression);
+      expect(proof).toBe('__typekro_recv0.b');
+      expect(parse(proof as string).isSuccess).toBe(true);
+      expect(check(expression).map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
+    });
+
+    it('needs a second round when one rewrite uncovers the next', () => {
+      // `r"x".size()` is a raw-string prefix *and*, once that is gone, a plain
+      // string literal used as a receiver. One round each.
+      const expression = 'r"x".size()';
+      expect(parse(expression).isSuccess).toBe(false);
+
+      expect(celDialectParseProof(expression)).toBe('__typekro_recv0.size()');
+      expect(check(expression).map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
+    });
+
+    it('reports one divergence for two independent shortfalls, rewriting both', () => {
+      // Deliberately one finding rather than one per fragment: the finding names
+      // a status leaf and an expression, and the author's next move is the same
+      // whichever fragment is quoted first. The proof covers both.
+      const expression = '"x".size() + [1,2].size()';
+      expect(parse(expression).isSuccess).toBe(false);
+
+      const proof = celDialectParseProof(expression);
+      expect(proof).toBe('__typekro_recv0.size() + __typekro_recv1.size()');
+      expect(parse(proof as string).isSuccess).toBe(true);
+
+      const findings = check(expression);
+      expect(findings.map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
+      expect(findings[0]?.fragment).toContain('"x"');
+    });
+
+    it('yields no proof for an expression cel-js already parses', () => {
+      expect(celDialectParseProof('a.b.c')).toBeUndefined();
+      expect(celDialectParseProof('')).toBeUndefined();
+    });
+  });
 
   it('leaves a map literal receiver alone, because cel-js does parse it', () => {
     // The one member of the literal-primary family cel-js already handles: its
