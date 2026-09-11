@@ -163,6 +163,133 @@ describe('checkCelDialectCompatibility', () => {
     });
   });
 
+  /**
+   * A logical chain is not a flat operand list. `&&` binds tighter than `||`,
+   * and the two operators are decided by opposite values — `&&` by `false`,
+   * `||` by `true` — so which `has()` form guards, and which one is the
+   * divergent late guard, follows the operator.
+   *
+   * Every case below is stated as what the two engines do on data where the
+   * guarded path is absent, since that is the only data that can separate them.
+   */
+  describe('operator precedence and guard polarity', () => {
+    describe('precedence: a guard reaches only its own || disjunct', () => {
+      it('reports a late guard an earlier disjunct appears to cover but does not', () => {
+        // `has(l) || (l[0].f != "" && has(l))`. With `l` absent the left
+        // disjunct is false and decides nothing, so the right one runs: cel-js
+        // errors on `l[0]`, cel-go absorbs that error under the deciding
+        // `false` from the late `has(l)` and yields `false || false` = false.
+        // Reading the chain flat would let the leading `has(l)` excuse the late
+        // guard, and the divergence would go unreported.
+        const findings = check(
+          'has(a.status.list) || a.status.list[0].f != "" && has(a.status.list)'
+        );
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.rule).toBe('guard-after-use-in-logical-chain');
+        expect(findings[0]?.fragment).toBe('a.status.list[0].f != ""');
+      });
+
+      it('passes the same chain when the earlier disjunct really does establish the path', () => {
+        // `!has(l) || (l[0].f != "" && has(l))`. Now the left disjunct is
+        // *true* when `l` is absent, so the chain short-circuits and the access
+        // is never reached — on either engine. What a disjunct establishes also
+        // carries into the `&&` chain nested inside the next one.
+        expect(
+          check('!has(a.status.list) || a.status.list[0].f != "" && has(a.status.list)')
+        ).toEqual([]);
+      });
+    });
+
+    describe('|| polarity: has() does not guard, !has() does', () => {
+      it('does not report a trailing has() in an || chain', () => {
+        // `l[0].f != "" || has(l)`. With `l` absent cel-js errors on the left,
+        // and cel-go's absorbed error meets `false` — which decides nothing —
+        // so cel-go errors too. Both engines error: a defect, but not a
+        // divergence, and this rule may only fail strict mode on a divergence.
+        expect(check('a.status.list[0].f != "" || has(a.status.list)')).toEqual([]);
+      });
+
+      it('passes !has() written before the access, which is the || guard form', () => {
+        expect(check('!has(a.status.list) || a.status.list[0].f != ""')).toEqual([]);
+      });
+
+      it('leaves has() written before the access in an || chain alone', () => {
+        // Not a guard — with `l` absent both engines error — but not a
+        // divergence either, so there is nothing for this rule to report.
+        expect(check('has(a.status.list) || a.status.list[0].f != ""')).toEqual([]);
+      });
+    });
+
+    describe('&& polarity: a negated guard establishes nothing', () => {
+      it('reports a late guard that a negated earlier guard appears to cover', () => {
+        // `!has(l) && l[0].f != "" && has(l)`. With `l` absent the first
+        // operand is *true*, so the chain carries on into the access: cel-js
+        // errors, cel-go absorbs it under the deciding `false` from `has(l)`.
+        // Ignoring the `!` would treat the first operand as establishing `l`.
+        const findings = check(
+          '!has(a.status.list) && a.status.list[0].f != "" && has(a.status.list)'
+        );
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.rule).toBe('guard-after-use-in-logical-chain');
+      });
+
+      it('passes the same chain with the guard unnegated', () => {
+        expect(
+          check('has(a.status.list) && a.status.list[0].f != "" && has(a.status.list)')
+        ).toEqual([]);
+      });
+    });
+
+    describe('the late-guard mirror in an || chain', () => {
+      it('reports a trailing !has() written after the access it guards', () => {
+        // `l[0].f != "" || !has(l)`. With `l` absent cel-js errors; cel-go
+        // absorbs the error under the deciding `true` and yields true.
+        const findings = check('a.status.list[0].f != "" || !has(a.status.list)');
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.rule).toBe('guard-after-use-in-logical-chain');
+        expect(findings[0]?.message).toContain('!has(a.status.list) guards this operand');
+        expect(findings[0]?.suggestion).toContain('Move !has(a.status.list) to the left');
+      });
+
+      it('leaves the same trailing !has() in an && chain alone', () => {
+        // `l[0].f != "" && !has(l)`: cel-go's absorbed error meets `true`,
+        // which decides nothing, so cel-go errors where cel-js errors.
+        expect(check('a.status.list[0].f != "" && !has(a.status.list)')).toEqual([]);
+      });
+    });
+
+    describe('group negation, and where the lexical reading stops', () => {
+      it('reads !(has(p)) the same as !has(p), in both directions', () => {
+        expect(check('a.status.list[0].f != "" || !(has(a.status.list))')).toHaveLength(1);
+        expect(
+          check('!(has(a.status.list)) || a.status.list[0].f != "" && has(a.status.list)')
+        ).toEqual([]);
+      });
+
+      it('does not read a negated compound as a guard, and so still reports', () => {
+        // `!(has(l) && x.y)` is true whenever `l` is absent, so the access is
+        // reached and the chain does diverge. The checker gets there by
+        // refusing to read the compound as a guard at all rather than by
+        // reasoning about it — the conservative reading, and the right answer.
+        expect(
+          check('!(has(a.status.list) && x.y) && a.status.list[0].f != "" && has(a.status.list)')
+        ).toHaveLength(1);
+      });
+
+      it('carries an established path into a parenthesized group', () => {
+        expect(
+          check('has(a.status.list) && (a.status.list[0].f != "" && has(a.status.list))')
+        ).toEqual([]);
+        expect(
+          check('has(a.other) && (a.status.list[0].f != "" && has(a.status.list))')
+        ).toHaveLength(1);
+      });
+    });
+  });
+
   it('reports text that is not CEL at all against both dialects, as a note', () => {
     // JavaScript that leaked through the expression converter. A real defect,
     // but the same defect on cel-js and cel-go, so not a divergence.

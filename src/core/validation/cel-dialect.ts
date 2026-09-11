@@ -155,9 +155,9 @@ export const CEL_DIALECT_RULES: readonly {
     id: 'guard-after-use-in-logical-chain',
     kind: 'divergence',
     dialect: 'cel-js',
-    summary: 'a has() guard placed to the right of the access it guards',
+    summary: 'a has() guard placed to the right of the access it guards, in the operator\'s guarding polarity',
     observed:
-      'cel-go absorbs an error in one operand of && / || when the other operand decides the result, regardless of order; cel-js evaluates left to right and propagates the error before the guard is ever reached. The divergence needs no type: the guard itself says the author expects the path to be absent sometimes',
+      'cel-go absorbs an error in one operand of && / || when the other operand decides the result, regardless of order; cel-js evaluates left to right and propagates the error before the guard is ever reached. The divergence needs no type: the guard itself says the author expects the path to be absent sometimes. Which form is the guard follows the operator: `&&` is decided by `false`, so `has(p)` guards there, while `||` is decided by `true`, so `!has(p)` is the guarding form and the late-guard mirror',
   },
   {
     id: 'in-on-list-entry',
@@ -315,22 +315,74 @@ function blankLazyRegions(masked: string): string {
   return blanked;
 }
 
-/** Every `has(<dotted path>)` guard in a span, as its guarded path. */
-function guardedPaths(masked: string, span: Span): string[] {
-  const slice = masked.slice(span.start, span.end);
-  const paths: string[] = [];
-  const pattern = /\bhas\s*\(/g;
-  let match: RegExpExecArray | null = pattern.exec(slice);
-  while (match !== null) {
-    const open = slice.indexOf('(', match.index);
-    const close = matchingParen(slice, open);
-    if (close > open) {
-      const argument = slice.slice(open + 1, close).trim();
-      if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(argument)) paths.push(argument);
+/**
+ * Which operator joins the operands of a chain.
+ *
+ * The two differ in their *absorbing* value — the one that lets cel-go decide
+ * the chain without the other operand — and that is the whole reason polarity
+ * matters. `&&` is absorbed by `false`, `||` by `true`.
+ */
+type ChainMode = 'and' | 'or';
+
+const GUARD_OPERAND = /^has\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\)\s*$/;
+
+/**
+ * Read one operand as a possibly-negated `has()` guard.
+ *
+ * Deliberately whole-operand: the operand has to reduce, after stripping
+ * whitespace, `!` operators and balanced enclosing parentheses, to exactly
+ * `has(<dotted path>)`. That is what makes the *polarity* readable. A `has()`
+ * buried in a larger boolean operand — `has(p) == true`, `x || has(p)` inside a
+ * conjunct — has no single polarity with respect to the enclosing chain, so it
+ * is not read as a guard in either direction: it neither establishes a path nor
+ * is reported as a late guard.
+ *
+ * Group negation is handled to the extent the masked-span machinery allows:
+ * `!has(p)`, `!(has(p))` and `!!has(p)` all parse, because stripping is purely
+ * lexical and each step keeps the operand a single `has()`. `!(has(p) && q)`
+ * does not, and is treated as "not a guard" rather than guessed at — negating a
+ * compound is not a statement about `p` on its own.
+ */
+function chainGuard(blanked: string, span: Span): { path: string; negated: boolean } | undefined {
+  let text = blanked.slice(span.start, span.end).trim();
+  let negated = false;
+  for (;;) {
+    if (text.startsWith('!')) {
+      negated = !negated;
+      text = text.slice(1).trim();
+      continue;
     }
-    match = pattern.exec(slice);
+    if (text.startsWith('(') && matchingParen(text, 0) === text.length - 1) {
+      text = text.slice(1, -1).trim();
+      continue;
+    }
+    break;
   }
-  return paths;
+  const path = GUARD_OPERAND.exec(text)?.[1];
+  return path === undefined ? undefined : { path, negated };
+}
+
+/**
+ * The path an operand guards for the operands to its right, if any.
+ *
+ * A guard only guards when its truth value is the chain's absorbing value
+ * exactly where the path is missing: `has(p)` is `false` when `p` is absent, so
+ * it guards in an `&&` chain; `!has(p)` is `true` when `p` is absent, so it
+ * guards in an `||` chain. A guard of the wrong polarity — `!has(p)` in `&&`,
+ * `has(p)` in `||` — establishes nothing, because the chain carries on into the
+ * access precisely when the path is absent.
+ *
+ * The same predicate decides the divergent *late* guard, and for the same
+ * reason: a late guard diverges only when cel-go's absorption of the earlier
+ * error is what decides the chain. In `p.f == 1 && has(p)` cel-go yields
+ * `false` where cel-js errors — a divergence — while in `p.f == 1 && !has(p)`
+ * cel-go's absorbed error meets a `true` and stays an error, which is what
+ * cel-js does too.
+ */
+function guardsEstablishedBy(blanked: string, span: Span, mode: ChainMode): string[] {
+  const guard = chainGuard(blanked, span);
+  if (guard === undefined) return [];
+  return guard.negated === (mode === 'or') ? [guard.path] : [];
 }
 
 /** True when `guard` covers `path` — the same path, or an ancestor of it. */
@@ -499,6 +551,33 @@ function checkInOnListEntry(
  * `false`. On an out-of-range index with no deciding operand, both error. There
  * is no data that separates the engines, so indexing a required list is simply
  * valid on both and reporting it failed strict mode on correct CEL.
+ *
+ * ## The chain model
+ *
+ * `&&` binds tighter than `||`, so a span is read as a disjunction of
+ * conjunctions: split on `||` first, and split each disjunct on `&&`.
+ * Flattening the two into one operand list would let a guard in one `||`
+ * disjunct reach an access in another, which it never does — `A || B && C` is
+ * `A || (B && C)`, and nothing in `A` runs before `B`.
+ *
+ * Within one chain, guards carry left to right with the polarity
+ * {@link guardsEstablishedBy} describes, and what an operand has established
+ * carries *into* that operand's own nested chains and parenthesized groups: in
+ * `has(p) && (p.f > 0 || x)` the group is only reached once `has(p)` held.
+ *
+ * ## Stated limits
+ *
+ * - Only a whole-operand `has()` is read as a guard, so a `has()` folded into a
+ *   larger boolean operand neither establishes a path nor is reported as a late
+ *   guard.
+ * - Negation is lexical: `!has(p)`, `!(has(p))` and `!!has(p)` are understood;
+ *   `!(has(p) && q)` is not read as a guard at all.
+ * - Guards inside a collection-macro body or a lazy ternary group are blanked
+ *   before this runs (see {@link blankLazyRegions}) and so never carry out of
+ *   the region that binds them.
+ *
+ * Every limit is in the direction of reporting less, so what escapes the model
+ * is a missed finding rather than a strict-mode failure on valid CEL.
  */
 function checkLogicalChain(
   expression: string,
@@ -506,55 +585,78 @@ function checkLogicalChain(
   blanked: string,
   field: string,
   span: Span,
+  established: readonly string[],
   findings: CelDialectFinding[]
 ): void {
   // Ternary branches are lazy in both engines, so each `?`/`:` part is its own
   // chain rather than an operand of the surrounding one.
   for (const part of splitTopLevel(masked, span, ['?', ':'])) {
-    const operands = splitTopLevel(masked, part, ['&&', '||']);
-    if (operands.length > 1) {
-      const guardsBefore: string[][] = [];
-      const guardsAfter: string[][] = [];
-      const allGuards = operands.map((operand) => guardedPaths(blanked, operand));
-      for (let index = 0; index < operands.length; index += 1) {
-        guardsBefore.push(allGuards.slice(0, index).flat());
-        guardsAfter.push(allGuards.slice(index + 1).flat());
-      }
+    checkChain(expression, masked, blanked, field, part, established, findings);
+  }
+}
 
-      for (let index = 0; index < operands.length; index += 1) {
-        const operand = operands[index] as Span;
-        const before = guardsBefore[index] as string[];
-        const after = guardsAfter[index] as string[];
-        const derefs = dereferencedPaths(blanked, operand);
+/** One `||` or `&&` chain — or a single operand — with what already holds at it. */
+function checkChain(
+  expression: string,
+  masked: string,
+  blanked: string,
+  field: string,
+  span: Span,
+  established: readonly string[],
+  findings: CelDialectFinding[]
+): void {
+  // Precedence: `||` is the loosest operator, so it splits first and each
+  // disjunct is then read as its own `&&` chain.
+  const disjuncts = splitTopLevel(masked, span, ['||']);
+  const conjuncts = disjuncts.length > 1 ? [] : splitTopLevel(masked, span, ['&&']);
+  const mode: ChainMode | undefined =
+    disjuncts.length > 1 ? 'or' : conjuncts.length > 1 ? 'and' : undefined;
 
-        // A guard to the right of an access it covers is only harmless if an
-        // operand to the left already established the same path. "Established"
-        // is not "covered": a shallower earlier guard reaches the late guard's
-        // path without saying it is present, so it cannot stand in for it.
-        const lateGuard = after.find(
-          (guard) =>
-            derefs.some((path) => guardCovers(guard, path)) &&
-            !before.some((earlier) => guardEstablishes(earlier, guard))
-        );
-        if (lateGuard !== undefined) {
-          findings.push(
-            finding(
-              'guard-after-use-in-logical-chain',
-              field,
-              expression,
-              expression.slice(operand.start, operand.end).trim(),
-              `has(${lateGuard}) guards this operand but is written after it. cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard`,
-              `Move has(${lateGuard}) to the left of the access, or use a lazy ternary: has(${lateGuard}) ? (...) : <fallback>`
-            )
-          );
-        }
-      }
+  if (mode === undefined) {
+    // Not a chain, but a parenthesized group inside it may hold one — and that
+    // group inherits whatever this position already established.
+    for (const group of parenGroups(masked, span)) {
+      checkLogicalChain(expression, masked, blanked, field, group, established, findings);
+    }
+    return;
+  }
+
+  const operands = mode === 'or' ? disjuncts : conjuncts;
+  const guards = operands.map((operand) => guardsEstablishedBy(blanked, operand, mode));
+  let known: string[] = [...established];
+
+  for (let index = 0; index < operands.length; index += 1) {
+    const operand = operands[index] as Span;
+    const after = guards.slice(index + 1).flat();
+    const derefs = dereferencedPaths(blanked, operand);
+
+    // A guard to the right of an access it covers is only harmless if something
+    // to the left already established the same path. "Established" is not
+    // "covered": a shallower earlier guard reaches the late guard's path without
+    // saying it is present, so it cannot stand in for it.
+    const lateGuard = after.find(
+      (guard) =>
+        derefs.some((path) => guardCovers(guard, path)) &&
+        !known.some((earlier) => guardEstablishes(earlier, guard))
+    );
+    if (lateGuard !== undefined) {
+      const guardText = mode === 'or' ? `!has(${lateGuard})` : `has(${lateGuard})`;
+      findings.push(
+        finding(
+          'guard-after-use-in-logical-chain',
+          field,
+          expression,
+          expression.slice(operand.start, operand.end).trim(),
+          `${guardText} guards this operand but is written after it. cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard`,
+          `Move ${guardText} to the left of the access, or use a lazy ternary: has(${lateGuard}) ? (...) : <fallback>`
+        )
+      );
     }
 
-    // Recurse into parenthesized groups so a nested chain gets the same checks.
-    for (const group of parenGroups(masked, part)) {
-      checkLogicalChain(expression, masked, blanked, field, group, findings);
-    }
+    // Descend with what holds at this position: the `&&` chain nested inside an
+    // `||` disjunct, and any parenthesized group.
+    checkChain(expression, masked, blanked, field, operand, known, findings);
+    known = [...known, ...(guards[index] as string[])];
   }
 }
 
@@ -623,7 +725,15 @@ export function checkCelDialectCompatibility(
   checkHasIndexArgument(trimmed, masked, field, findings);
   checkInOnListEntry(trimmed, masked, field, findings);
   const blanked = blankLazyRegions(masked);
-  checkLogicalChain(trimmed, masked, blanked, field, { start: 0, end: masked.length }, findings);
+  checkLogicalChain(
+    trimmed,
+    masked,
+    blanked,
+    field,
+    { start: 0, end: masked.length },
+    [],
+    findings
+  );
   return findings;
 }
 
