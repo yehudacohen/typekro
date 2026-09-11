@@ -159,19 +159,28 @@ emit the one form both engines accept.
 First entry of a list that carries a given field.
 
 ```typescript
-function firstWhereHas<T = string>(
-  list: RefOrValue<unknown> | string,
-  field: string,
+function firstWhereHas<
+  TElement extends object,
+  TField extends Extract<keyof TElement, string>,
+>(
+  list: CelListSelector<TElement>,
+  field: TField,
   fallback?: RefOrValue<string | number | boolean | null | undefined>
-): CelExpression<T> & T
+): CelExpression<NonNullable<TElement[TField]>> & NonNullable<TElement[TField]>
 ```
+
+`list` is a list-typed field **selected off a resource or schema proxy**, not a
+path written as a string. Selecting it gives the helper the element type, so
+`field` is checked against the element's own keys and the projection is typed
+from the field it projects:
 
 ```typescript
 // The first ingress entry that reports a hostname, or '' while none does.
-hostname: Cel.firstWhereHas<string>(service.status.loadBalancer.ingress, 'hostname')
+hostname: Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostname')
 
-// Naming a graph resource by id, as bootstrap compositions do.
-version: Cel.firstWhereHas<string>('release.status.history', 'chartVersion')
+// A typo is a compile error, not a status field that is permanently ''.
+hostname: Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostnmae')
+//                                                                ^ not a key of the entry type
 ```
 
 Emits:
@@ -187,7 +196,8 @@ where `<matching>` is `<list>.filter(entry, has(entry.<field>))`.
 ### `Cel.loadBalancerAddress()`
 
 `Cel.firstWhereHas` bound to a Service's load balancer address, whose entries
-carry `ip` **or** `hostname` depending on the provider.
+carry `ip` **or** `hostname` depending on the provider. Takes the Service
+itself, selected from the graph:
 
 ```typescript
 loadBalancer: {
@@ -201,8 +211,32 @@ loadBalancer: {
 The same guard for a list of scalars, where there is no field to filter on.
 
 ```typescript
-endpoint: Cel.firstOf<string>('objectStore.status.endpoints.secure')
+endpoint: Cel.firstOf(objectStore.status.endpoints.secure)
 ```
+
+### `Cel.unsafeListPath()`
+
+Names a list by its CEL path, for the case where no proxy is in scope — a
+bootstrap composition projecting status off a resource that a Helm chart
+creates, say, where only the graph resource id is available.
+
+```typescript
+function unsafeListPath<TElement = unknown>(path: string): UnsafeCelListPath<TElement>
+```
+
+```typescript
+version: Cel.firstWhereHas(
+  Cel.unsafeListPath<{ chartVersion: string }>('release.status.history'),
+  'chartVersion'
+)
+```
+
+**Unsafe** in one specific sense: nothing checks the path. Not that the named
+resource is in the graph, not that the path reaches a list, and not that the
+entries are what `TElement` says. Get any of that wrong and the mistake surfaces
+on a cluster rather than at compile time. The element type is still declared and
+still checked, so `field` keeps its `keyof` check — but prefer selecting the
+field off a proxy wherever one exists.
 
 ### Why not write the guard by hand
 
@@ -211,11 +245,17 @@ endpoint: Cel.firstOf<string>('objectStore.status.endpoints.secure')
 | `has(list[0].field)` | cel-js | "has() does not support atomic expressions" |
 | `"field" in list[0]` | cel-go (KRO) | KRO's type env types a list entry as a message, not a map |
 | `size(list) > 0 && has(list)` | cel-js | cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard |
-| `size(list) > 0 && list[0].field != ""` | cel-js | same — the second operand errors before the first can decide the result |
 
-`Cel.firstWhereHas` avoids all four: it guards every hop of the path with
+`Cel.firstWhereHas` avoids all three: it guards every hop of the path with
 `has()` **before** any access, selects entries with `filter`, and keeps the
 index inside a lazy ternary, which both engines evaluate lazily.
+
+Note that `size(list) > 0 && list[0].field != ""` is **not** on that list.
+Indexing a required list inside a logical chain is valid on both engines: with
+an empty list cel-js short-circuits on the `false` and never indexes while
+cel-go absorbs the index error under the deciding `false`, so both yield
+`false`. The helpers are for lists that may be *absent*, not for lists that may
+be empty.
 
 ## Dual-Dialect Validation
 
@@ -238,13 +278,32 @@ factory.toYaml(); // throws on a dialect-divergent status expression
 TYPEKRO_STRICT_CEL=1   # same, as a global default
 ```
 
-There is no in-process cel-go for a TypeScript serializer to consult, so the
-denylist is deliberately curated rather than a full type checker. It currently
-covers: an unparseable expression, `has()` on an index expression, `in` on a
-typed list entry, a `has()` guard written after the access it guards, and an
-unguarded list index inside `&&` / `||`. Collection-macro bodies and nested
-ternaries are lazy in both engines and are excluded, as is a map lookup such as
-`metadata.annotations["key"]`.
+### What fails, and what is only reported
+
+A rule may fail strict mode only when the two engines genuinely **diverge**:
+there is data for which one returns a value and the other does not, established
+without appeal to a CEL type the serializer cannot see. Two rules clear that
+bar, and they are the only two that can fail a build:
+
+| Rule | Dialect | The divergence it encodes |
+|------|---------|---------------------------|
+| `has-index-argument` | cel-js | cel-js throws "has() does not support atomic expressions" whenever the operand of `has()` is an index — `has(list[0].f)` and `has(map["k"].f)` alike — while cel-go's `has()` accepts any select expression |
+| `guard-after-use-in-logical-chain` | cel-js | cel-go absorbs an error in one `&&` / `\|\|` operand when the other decides the result, in either order; cel-js evaluates left to right and propagates it before the guard is reached |
+
+Everything else is reported as a **note**, which is logged in both strictness
+settings and never fails serialization:
+
+| Rule | Dialect | Why it cannot fail |
+|------|---------|--------------------|
+| `in-on-list-entry` | cel-go | A real rejection *if* cel-go's type env types the entry as a message rather than a map — but that is a fact about the resource's schema, which the serializer does not have |
+| `not-valid-cel` | both | The emitted text is not CEL at all, usually JavaScript that leaked through the expression converter (`?.`, `?[`, a `[…]` list literal). A defect, but the same defect on both engines |
+| `expression-too-large` | unchecked | Past the analysis budget, so no verdict was reached |
+
+Syntax does not establish a CEL type: the same text is a list index against one
+schema and a map lookup against another. So no rule decides list-vs-map from
+bracket shape, and a rule that would need a type to be a divergence is a note
+instead — strict mode never rejects valid CEL. Collection-macro bodies and
+nested ternaries are lazy in both engines and are excluded from the chain rules.
 
 Both halves of the check cost about a microsecond per character, so the check
 has an analysis budget: **16 KiB per expression**, several times the largest

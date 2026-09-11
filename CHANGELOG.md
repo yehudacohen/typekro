@@ -14,14 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HelmRelease's `status.history` — in the one guard form cel-js and cel-go both
   accept. They chain a `has()` guard for every hop of the path, select entries
   with `filter`, and keep the index inside a lazy ternary, so an absent
-  intermediate object yields the fallback instead of an evaluation error.
+  intermediate object yields the fallback instead of an evaluation error. The
+  list is a field selected off a resource or schema proxy, so `field` is checked
+  against the element type and the projection is typed from the field it
+  projects. `Cel.unsafeListPath()` names a list by its CEL path for the case
+  where no proxy is in scope, such as a bootstrap composition naming a graph
+  resource by id.
 - Every emitted status CEL expression is now checked against both CEL dialects
   at serialization time: cel-js's own parser, plus a curated denylist of
-  confirmed cel-go divergences (`has()` on an index expression, `in` on a typed
-  list entry, a `has()` guard written after the access it guards, and an
-  unguarded list index inside `&&` / `||`). A finding names the status leaf, the
-  expression and the dialect that rejects it. It warns by default and fails
-  serialization under `strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`.
+  confirmed cel-go divergences. Each rule declares whether it is a proven
+  `divergence` — `has()` on an index expression, and a `has()` guard written
+  after the access it guards — or a `note`, which is reported but never fails.
+  Notes cover a form neither engine accepts (JavaScript that leaked through the
+  expression converter), a form whose divergence would depend on a CEL type the
+  serializer cannot see (`in` on something that may be a message list entry),
+  and an expression past the analysis budget. A finding names the status leaf,
+  the expression and the dialect. Divergences warn by default and fail
+  serialization under `strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`; notes
+  never fail, so strict mode cannot reject valid CEL.
 - `getStatusLeafDiagnostics()` reads the per-field diagnostics recorded during
   direct-mode status resolution.
 

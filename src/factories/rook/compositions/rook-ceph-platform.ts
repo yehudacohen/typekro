@@ -525,8 +525,10 @@ function createOwnedRepositoryNamespace(
  * `has()` on the full path errors under cel-js when `endpoints` itself is absent.
  */
 function objectStoreEndpoint() {
-  const insecure = Cel.firstOf<string>('objectStore.status.endpoints.insecure');
-  return Cel.firstOf<string>('objectStore.status.endpoints.secure', insecure);
+  const insecure = Cel.firstOf(
+    Cel.unsafeListPath<string>('objectStore.status.endpoints.insecure')
+  );
+  return Cel.firstOf(Cel.unsafeListPath<string>('objectStore.status.endpoints.secure'), insecure);
 }
 
 /**

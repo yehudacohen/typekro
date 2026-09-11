@@ -1,7 +1,7 @@
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { setIncludeWhen } from '../../../core/metadata/resource-metadata.js';
-import { Cel } from '../../../core/references/cel.js';
+import { Cel, type CelListSelector } from '../../../core/references/cel.js';
 import type { CallableComposition } from '../../../core/types/deployment.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { certificate } from '../../cert-manager/resources/certificates.js';
@@ -428,9 +428,12 @@ export function makeOpenSearchCluster<
         availableNodes: cluster.status.availableNodes,
         health: cluster.status.health,
         // `snapshotRepositories` is an optional nested list; the helper emits
-        // the guarded filter form that cel-js and cel-go both accept.
-        snapshotRepository: Cel.firstWhereHas<string>(
-          'cluster.spec.general.snapshotRepositories',
+        // the guarded filter form that cel-js and cel-go both accept. The list
+        // is selected off the resource proxy rather than named by path. The
+        // CRD types its entries as an open value tree, so the element shape this
+        // projection relies on is stated here and 'name' is checked against it.
+        snapshotRepository: Cel.firstWhereHas(
+          cluster.spec.general.snapshotRepositories as CelListSelector<{ name: string }>,
           'name'
         ),
       };

@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { TypeKroError } from '../../src/core/errors.js';
-import { Cel } from '../../src/core/references/cel.js';
+import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { Cel, type LoadBalancerServiceRef } from '../../src/core/references/cel.js';
 import { simple, toResourceGraph } from '../../src/index.js';
 import {
   CEL_DIALECT_MAX_EXCERPT_LENGTH,
@@ -25,6 +26,21 @@ import {
 
 function check(expression: string): CelDialectFinding[] {
   return checkCelDialectCompatibility(expression, 'endpoint');
+}
+
+/** The `webService` Service, as the graph would hand it to a status builder. */
+function webService(): LoadBalancerServiceRef {
+  return {
+    status: {
+      loadBalancer: {
+        ingress: {
+          [KUBERNETES_REF_BRAND]: true,
+          resourceId: 'webService',
+          fieldPath: 'status.loadBalancer.ingress',
+        } as unknown as readonly { ip?: string; hostname?: string }[],
+      },
+    },
+  };
 }
 
 /**
@@ -164,7 +180,7 @@ describe('forms that are not a divergence', () => {
 describe('forms both dialects accept', () => {
   it('passes the blessed filter-inside-a-lazy-ternary form', () => {
     const blessed = (
-      Cel.loadBalancerAddress('webService', 'ip') as unknown as { expression: string }
+      Cel.loadBalancerAddress(webService(), 'ip') as unknown as { expression: string }
     ).expression;
 
     expect(blessed).toContain('filter(entry, has(entry.ip))');
@@ -384,7 +400,7 @@ describe('serialization-time gate', () => {
 
   it('accepts the helper-emitted form even in strict mode', () => {
     const factory = buildGraph(
-      Cel.loadBalancerAddress('webService', 'ip') as ReturnType<typeof Cel.expr<string>>
+      Cel.loadBalancerAddress(webService(), 'ip') as ReturnType<typeof Cel.expr<string>>
     ).factory('kro', { strictCelDiagnostics: true });
 
     expect(factory.toYaml()).toContain('filter(entry, has(entry.ip))');

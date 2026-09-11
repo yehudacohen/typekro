@@ -515,7 +515,13 @@ export function makeEnvoyAIGateway(
  * runs when an address exists.
  */
 function gatewayEndpointExpression(resourceId: string): ReturnType<typeof Cel.expr<string>> {
-  const address = Cel.firstWhereHas<string>(`${resourceId}.status.addresses`, 'value').expression;
+  // The Gateway is reconciled by its controller rather than declared here, so
+  // only its graph resource id is in scope and the address list has to be named
+  // by path. The entry type is still declared, so 'value' is still checked.
+  const address = Cel.firstWhereHas(
+    Cel.unsafeListPath<{ value: string }>(`${resourceId}.status.addresses`),
+    'value'
+  ).expression;
   return Cel.expr<string>(
     `(${address}) != "" ? "http://" + string(${address}) + ":" + ` +
       `string(${resourceId}.spec.listeners[0].port) + "/v1" : ""`
