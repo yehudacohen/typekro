@@ -707,6 +707,88 @@ describe('nested-composition status inlining — CEL comments', () => {
   });
 });
 
+describe('nested-composition status inlining — lambda variable scope', () => {
+  // Inner expressions name leaf fields, so the only nesting on show is scope.
+  const table = {
+    '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase',
+    '__nestedStatus:svc:x': 'innerDeployment.status.x',
+    '__nestedStatus:outer:w': 'svc.status.phase',
+  };
+  const inline = (text: string) => inlineNestedStatusRefs(text, table);
+
+  it('shields the macro-bound occurrence and substitutes the one outside it', () => {
+    // The first `svc` is the iteration element; the second is a real nested
+    // composition id. Shielding the name everywhere left it unexpanded, putting
+    // a virtual id into the emitted RGD.
+    expect(inline('list.map(svc, svc.status.x) && svc.status.phase')).toBe(
+      'list.map(svc, svc.status.x) && (innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('shields each variable of a nested macro only inside its own body', () => {
+    expect(
+      inline('a.map(x, b.filter(y, x.status.phase + y.status.phase)) + x.status.phase')
+    ).toBe(
+      'a.map(x, b.filter(y, x.status.phase + y.status.phase)) + (innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('does not let a macro in quoted data or a comment bind anything', () => {
+    expect(inline('"list.map(svc," + svc.status.phase')).toBe(
+      '"list.map(svc," + (innerDeployment.status.currentPhase)'
+    );
+    expect(inline('// list.map(svc,\nsvc.status.phase')).toBe(
+      '// list.map(svc,\n(innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('shields an inlined inner expression inserted INSIDE the macro body', () => {
+    // `outer.status.w` is `svc.status.phase`; inserted inside `map(svc, …)` the
+    // `svc` it names is the iteration element, so it stays put.
+    expect(inline('list.map(svc, outer.status.w)')).toBe('list.map(svc, (svc.status.phase))');
+  });
+
+  it('does not shield an inlined inner expression inserted OUTSIDE the body', () => {
+    // Same inner text, inserted where the macro's variable is not in scope.
+    expect(inline('list.map(svc, 1) + outer.status.w')).toBe(
+      'list.map(svc, 1) + ((innerDeployment.status.currentPhase))'
+    );
+  });
+
+  it('never shares a memo hit between two different scopes', () => {
+    const { text, stats } = inlineNestedStatusRefsWithStats(
+      'list.map(svc, outer.status.w) + outer.status.w',
+      table
+    );
+
+    expect(text).toBe(
+      'list.map(svc, (svc.status.phase)) + ((innerDeployment.status.currentPhase))'
+    );
+    // The two insertions sit in different scopes, so the entry is expanded
+    // twice rather than the first result being reused for the second.
+    expect(stats.memoHits).toBe(0);
+  });
+
+  it('still serves a memo hit for two insertions in the SAME scope', () => {
+    const { text, stats } = inlineNestedStatusRefsWithStats(
+      'list.map(svc, outer.status.w) + list.map(svc, outer.status.w)',
+      table
+    );
+
+    expect(text).toBe(
+      'list.map(svc, (svc.status.phase)) + list.map(svc, (svc.status.phase))'
+    );
+    expect(stats.memoHits).toBe(1);
+  });
+
+  it("keeps Kro's implicit `each` element variable shielded everywhere", () => {
+    // `each` has no binder in the expression — Kro supplies it to a whole
+    // `forEach` readyWhen body — so it has no lexical scope to be inside of.
+    expect(inline('each.status.phase')).toBe('each.status.phase');
+    expect(inline('list.map(svc, each.status.phase)')).toBe('list.map(svc, each.status.phase)');
+  });
+});
+
 describe('nested-composition status inlining — postfix operations', () => {
   // Every inner expression names a leaf field that is not itself a mapping key,
   // so the only nesting on show is the postfix handling under test.
