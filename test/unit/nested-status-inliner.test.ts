@@ -18,6 +18,10 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { getComponentLogger } from '../../src/core/logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import {
+  celStringLiteralSpans,
+  maskClosedCelStringLiterals,
+} from '../../src/core/references/cel-lexical-scanner.js';
+import {
   finalizeCelForKro,
   inlineNestedStatusRefs,
   inlineNestedStatusRefsWithStats,
@@ -562,6 +566,94 @@ describe('nested-composition status inlining — CEL string literals', () => {
         { celPrefix: '', resourceIdStrategy: 'deterministic', nestedStatusCel: markerTable }
       )
     ).toBe('redis://${innerService.status.hostName}:${string(6379)}');
+  });
+});
+
+describe('nested-composition status inlining — CEL string literal forms', () => {
+  // `STRING_LIT ::= [rR]? ( '"' … | "'" … | '"""' … | "'''" … )` and
+  // `BYTES_LIT ::= [bB] STRING_LIT` (cel-spec doc/langdef.md, lexis). Every form
+  // hides expression-shaped text from the inliner; the round-1 implementation
+  // knew only the two single-quoted ones.
+  const table = { '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase' };
+  const inline = (text: string) => inlineNestedStatusRefs(text, table);
+
+  it('masks a token inside a triple-quoted double-quoted literal', () => {
+    // The embedded single `"` is what the round-1 scanner tripped over: it read
+    // `"""` as an empty string plus an opener, closed that opener on the
+    // embedded quote, and left the rest of the literal live.
+    expect(inline('""" a " svc.status.phase """')).toBe('""" a " svc.status.phase """');
+  });
+
+  it('masks a token inside a triple-quoted single-quoted literal', () => {
+    expect(inline("''' a ' svc.status.phase '''")).toBe("''' a ' svc.status.phase '''");
+  });
+
+  it('masks a token on the line after a newline inside a triple-quoted literal', () => {
+    expect(inline('"""x\nsvc.status.phase\ny"""')).toBe('"""x\nsvc.status.phase\ny"""');
+  });
+
+  it('substitutes a token after the triple-quoted literal closes', () => {
+    expect(inline('""" a " b """ + svc.status.phase')).toBe(
+      '""" a " b """ + (innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('masks a token inside a bytes literal, prefix letter in either case', () => {
+    expect(inline('b"svc.status.phase"')).toBe('b"svc.status.phase"');
+    expect(inline("B'svc.status.phase'")).toBe("B'svc.status.phase'");
+  });
+
+  it('masks a token inside a raw literal, prefix letter in either case', () => {
+    expect(inline('r"svc.status.phase"')).toBe('r"svc.status.phase"');
+    expect(inline("R'svc.status.phase'")).toBe("R'svc.status.phase'");
+  });
+
+  it('masks a token inside a combined raw-bytes literal, prefix in either order', () => {
+    expect(inline('rb"svc.status.phase"')).toBe('rb"svc.status.phase"');
+    expect(inline("BR'svc.status.phase'")).toBe("BR'svc.status.phase'");
+  });
+
+  it('masks a token inside a prefixed triple-quoted literal', () => {
+    expect(inline('rb"""a\nsvc.status.phase"""')).toBe('rb"""a\nsvc.status.phase"""');
+  });
+
+  it('keeps a non-raw literal open across an escaped quote', () => {
+    expect(inline('"a \\" svc.status.phase" == svc.status.phase')).toBe(
+      '"a \\" svc.status.phase" == (innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('closes a RAW literal on the quote a backslash precedes', () => {
+    // cel-go lexes the raw forms as `RAW '"' ~["\n\r]* '"'` — no `ESC_SEQ`
+    // alternative — so `r"a\"` is a complete token and what follows is live
+    // expression text, not literal data.
+    expect(inline('r"a\\" == svc.status.phase')).toBe(
+      'r"a\\" == (innerDeployment.status.currentPhase)'
+    );
+  });
+
+  it('treats a prefix letter that only ENDS an identifier as an identifier', () => {
+    // `b` here is an operand, not a prefix: the literal starts at the quote.
+    expect(inline('b + "svc.status.phase"')).toBe('b + "svc.status.phase"');
+    expect(inline('ab"svc.status.phase"')).toBe('ab"svc.status.phase"');
+  });
+
+  it('does not let a single-quoted literal span a newline', () => {
+    // `'a` cannot close on its line, so it is ordinary text and the token on the
+    // next line is live CEL.
+    expect(inline("'a\nsvc.status.phase")).toBe("'a\n(innerDeployment.status.currentPhase)");
+  });
+
+  it('treats an unterminated triple-quote the way the spec lexer does', () => {
+    // No `"""` closes it, so the longest literal the lexis can form there is the
+    // empty `""` — and the text after it stays live expression text.
+    expect(inline('"""svc.status.phase')).toBe('"""(innerDeployment.status.currentPhase)');
+  });
+
+  it('reports the prefix letters as part of the literal span', () => {
+    expect(celStringLiteralSpans('rb"x"')).toEqual([{ start: 0, end: 5 }]);
+    expect(celStringLiteralSpans('ab"x"')).toEqual([{ start: 2, end: 5 }]);
+    expect(maskClosedCelStringLiterals('rb"x" + ab"x"')).toBe('      + ab   ');
   });
 });
 

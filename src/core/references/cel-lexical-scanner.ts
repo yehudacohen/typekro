@@ -30,8 +30,76 @@ export interface CelStringLiteralSpan {
   readonly end: number;
 }
 
+/** CEL `IDENT ::= [_a-zA-Z][_a-zA-Z0-9]*` — first character, then the rest. */
+const CEL_IDENT_START = /[A-Za-z_]/;
+const IDENT_CHARACTER = /[A-Za-z0-9_]/;
+
+/** The four `STRING_LIT` delimiters, longest first so `"""` beats `"`. */
+const CEL_STRING_DELIMITERS = ['"""', "'''", '"', "'"] as const;
+
 /**
- * Locate every CLOSED CEL string literal in `expression`.
+ * End of the `STRING_LIT`/`BYTES_LIT` token starting at `at`, or `at` for none.
+ *
+ * The langdef lexis (cel-spec `doc/langdef.md`) is
+ * `STRING_LIT ::= [rR]? ( '"' ~('"'|NEWLINE)* '"' | "'" ~("'"|NEWLINE)* "'"`
+ * `| '"""' ~'"""'* '"""' | "'''" ~"'''"* "'''" )` and
+ * `BYTES_LIT ::= [bB] STRING_LIT`. cel-go accepts the two prefix letters in
+ * either order and in either case, so at most one of each is taken. A prefix
+ * letter with no quote behind it is not a string at all and is handed back for
+ * `IDENT` to consume, which is what makes `b + "x"` an identifier, an operator
+ * and a string rather than a bytes literal.
+ *
+ * Escapes are lexed in the NON-raw forms only: cel-go's lexer spells the raw
+ * forms `RAW '"' ~["\n\r]* '"'`, with no `ESC_SEQ` alternative, so the `"` in
+ * `r"a\"` CLOSES the literal. A single-delimiter form cannot span a newline; a
+ * triple-quoted one can, and closes at the first matching triple. An
+ * unterminated literal is not a token — the caller then steps over the opening
+ * quote as ordinary text, which is the behaviour marker-laden template text
+ * depends on.
+ */
+function celStringLiteralEnd(text: string, at: number): number {
+  let index = at;
+  let raw = false;
+  let bytes = false;
+  for (let take = 0; take < 2; take += 1) {
+    const character = text[index];
+    if (!raw && (character === 'r' || character === 'R')) {
+      raw = true;
+      index += 1;
+    } else if (!bytes && (character === 'b' || character === 'B')) {
+      bytes = true;
+      index += 1;
+    } else break;
+  }
+
+  const delimiter = CEL_STRING_DELIMITERS.find((candidate) => text.startsWith(candidate, index));
+  if (delimiter === undefined) return at;
+
+  for (let scan = index + delimiter.length; scan < text.length; scan += 1) {
+    const character = text[scan] as string;
+    if (!raw && character === '\\') {
+      if (scan + 1 >= text.length) return at;
+      scan += 1;
+      continue;
+    }
+    if (delimiter.length === 1 && (character === '\n' || character === '\r')) return at;
+    if (text.startsWith(delimiter, scan)) return scan + delimiter.length;
+  }
+  return at;
+}
+
+/**
+ * Locate every CLOSED CEL string literal in `expression`, in source order.
+ *
+ * The whole `STRING_LIT`/`BYTES_LIT` family is recognised — `r`/`R`/`b`/`B`
+ * prefixes in either order, the two triple-quoted forms, escapes in the non-raw
+ * forms — and the span INCLUDES the prefix letters, because they are part of
+ * the token.
+ *
+ * The walk is source-ordered and consumes an `IDENT` whole, which is what keeps
+ * a prefix letter that merely ENDS an identifier from opening a literal:
+ * `ab"x"` is the identifier `ab` followed by a string, never a bytes literal.
+ * Restarting the scan at every character cannot make that distinction.
  *
  * A quote that is never terminated is NOT reported as a literal: callers run
  * over text that is not always well-formed CEL — marker-laden strings derived
@@ -44,34 +112,20 @@ export function celStringLiteralSpans(expression: string): CelStringLiteralSpan[
   const spans: CelStringLiteralSpan[] = [];
   let index = 0;
   while (index < expression.length) {
-    const quote = expression[index];
-    if (quote !== '"' && quote !== "'") {
-      index += 1;
+    const literalEnd = celStringLiteralEnd(expression, index);
+    if (literalEnd > index) {
+      spans.push({ start: index, end: literalEnd });
+      index = literalEnd;
       continue;
     }
-    let scan = index + 1;
-    let escaped = false;
-    let closeIndex: number | undefined;
-    while (scan < expression.length) {
-      const character = expression[scan];
-      if (escaped) {
-        escaped = false;
-      } else if (character === '\\') {
-        escaped = true;
-      } else if (character === quote) {
-        closeIndex = scan;
-        break;
+    if (CEL_IDENT_START.test(expression[index] as string)) {
+      index += 1;
+      while (index < expression.length && IDENT_CHARACTER.test(expression[index] as string)) {
+        index += 1;
       }
-      scan += 1;
-    }
-    if (closeIndex === undefined) {
-      // Unterminated — treat the quote as ordinary text and keep scanning, so
-      // a later well-formed literal in the same string is still found.
-      index += 1;
       continue;
     }
-    spans.push({ start: index, end: closeIndex + 1 });
-    index = closeIndex + 1;
+    index += 1;
   }
   return spans;
 }
