@@ -15,7 +15,11 @@ import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identif
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
-import { maskClosedCelLiteralsAndComments } from '../references/cel-lexical-scanner.js';
+import {
+  type CelLambdaScope,
+  collectCelLambdaScopes,
+  maskClosedCelLiteralsAndComments,
+} from '../references/cel-lexical-scanner.js';
 import { ConversionError } from '../errors.js';
 import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -904,11 +908,15 @@ function applyKroSegmentPostfix(segment: string, postfix: string): string | unde
  * Nesting deeper than {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels stops
  * expanding and is reported by {@link reportNestedRefDepthExceeded}.
  *
- * **Lambda variables are skipped.** When the resolved `<id>` is a CEL
- * macro lambda variable like the `c` in `.exists(c, c.status == "Ready")`,
- * the substitution does NOT fire — the variable refers to the macro's
- * iteration element, not a nested composition. Lambda variables bound in an
- * enclosing text stay in scope for the inner expressions substituted into it.
+ * **Lambda variables are skipped, within their scope.** When the resolved
+ * `<id>` is a CEL macro lambda variable like the `c` in
+ * `.exists(c, c.status == "Ready")`, the substitution does NOT fire — the
+ * variable refers to the macro's iteration element, not a nested composition.
+ * The shield is LEXICAL: it covers references inside the macro's body and
+ * nothing else, so the second `svc` in
+ * `list.map(svc, svc.status.x) && svc.status.phase` is still a nested id.
+ * A variable whose scope encloses the point an inner expression was inlined at
+ * stays in scope throughout that inner expression.
  *
  * `seedKey` marks a mapping as already being expanded by the caller, given as
  * the entry's CANONICAL `nestedStatusCel` key. Entry points that look an entry
@@ -1020,12 +1028,53 @@ export function inlineNestedStatusRefsWithStats(
 const EMPTY_LAMBDA_VARS: ReadonlySet<string> = new Set<string>();
 
 /**
+ * Kro's implicit element variable for a `forEach` collection's `readyWhen`
+ * body. Unlike a CEL macro variable it has no binder in the expression text —
+ * Kro supplies it to the whole body (`yaml.ts` emits `each` as the base id for
+ * a `forEach` resource) — so it has no lexical scope to be inside of and is
+ * shielded everywhere. `cel-validator.ts` reserves it the same way.
+ */
+const KRO_FOR_EACH_ELEMENT_VAR = 'each';
+
+/**
+ * The macro-bound identifiers that shield a reference AT `offset`.
+ *
+ * A lambda variable is bound by ONE macro and means something only inside that
+ * macro's body: in `list.map(svc, svc.status.x) && svc.status.phase` the first
+ * `svc` is the iteration element and the second is a real nested-composition
+ * id. Shielding every occurrence in the text — which is what collecting the
+ * names alone does — leaves that second reference unexpanded and a virtual id
+ * in the emitted RGD. `ambientLambdaVars` are the scopes that enclosed the
+ * point where THIS text was inlined, and enclose all of it.
+ *
+ * The macro list is `all`/`exists`/`exists_one`/`map`/`filter`, each binding
+ * exactly one variable as its first argument — the standard CEL macro set, and
+ * the whole of what cel-js 0.8.2 implements for direct mode. cel-go's
+ * two-variable comprehensions are an opt-in extension neither engine has here,
+ * so there is no second variable to bind.
+ */
+function lambdaVarsAt(
+  offset: number,
+  ambientLambdaVars: ReadonlySet<string>,
+  scopes: readonly CelLambdaScope[]
+): ReadonlySet<string> {
+  const enclosing = scopes.filter(
+    (scope) => offset >= scope.bodyStart && offset < scope.bodyEnd
+  );
+  if (enclosing.length === 0) return ambientLambdaVars;
+  const vars = new Set(ambientLambdaVars);
+  for (const scope of enclosing) vars.add(scope.variable);
+  return vars;
+}
+
+/**
  * Substitute every nested-composition token in `text` exactly once. See
  * {@link resolveNestedCompositionRefs} for the full contract.
  *
- * `ambientLambdaVars` carries the macro-bound identifiers of the enclosing
- * text down into substituted inner expressions, so a lambda variable stays
- * shielded no matter how deep the expression it appears in was inlined from.
+ * `ambientLambdaVars` carries the macro-bound identifiers that were in scope AT
+ * THE POINT this text was inlined, so a lambda variable stays shielded no
+ * matter how deep the expression it appears in was inlined from. Scopes opened
+ * by this text itself are per-match, not per-text: see {@link lambdaVarsAt}.
  */
 function substituteNestedRefsInText(
   text: string,
@@ -1034,8 +1083,6 @@ function substituteNestedRefsInText(
   ambientLambdaVars: ReadonlySet<string>
 ): string {
   state.textPasses += 1;
-  const lambdaVars = new Set(ambientLambdaVars);
-  for (const name of collectLambdaVars(text)) lambdaVars.add(name);
 
   // Scan a copy with every closed CEL string literal AND every `//` line
   // comment blanked out, so a `<id>.status.<field>`-shaped run of characters
@@ -1046,6 +1093,9 @@ function substituteNestedRefsInText(
   // exactly (newlines included), so each replacement splices back into the
   // ORIGINAL text at the offsets the match reported.
   const scanned = maskClosedCelLiteralsAndComments(text);
+  // Scopes are read off the MASKED copy — a `.map(` inside quoted data or a
+  // comment binds nothing — and their offsets therefore index `text` too.
+  const lambdaScopes = collectCelLambdaScopes(scanned);
   const pattern = new RegExp(NESTED_STATUS_TOKEN_SOURCE, 'g');
   let result = '';
   let copiedUpTo = 0;
@@ -1061,7 +1111,7 @@ function substituteNestedRefsInText(
       scanned[tokenEnd] === '(',
       state,
       allowKnownResourceSubstitution,
-      lambdaVars
+      lambdaVarsAt(match.index, ambientLambdaVars, lambdaScopes)
     );
     if (replacement !== token) {
       result += text.slice(copiedUpTo, match.index) + replacement;
@@ -1083,9 +1133,11 @@ function substituteNestedRefToken(
   trailingSegmentIsMethodName: boolean,
   state: NestedRefResolutionState,
   allowKnownResourceSubstitution: boolean,
+  /** Macro-bound identifiers in scope at THIS token — see {@link lambdaVarsAt}. */
   lambdaVars: ReadonlySet<string>
 ): string {
   if (id === 'schema') return token;
+  if (id === KRO_FOR_EACH_ELEMENT_VAR) return token;
   if (lambdaVars.has(id)) return token;
 
   const isKnownResource = state.resourceIds?.has(id) === true;
