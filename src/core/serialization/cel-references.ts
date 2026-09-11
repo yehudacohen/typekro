@@ -59,6 +59,112 @@ function endsWithIndexableTarget(emitted: string): boolean {
 }
 
 /**
+ * Find the `}` that closes the KRO `${ … }` region whose body starts at
+ * `start`.
+ *
+ * Brace-balanced and string-literal aware. A CEL region may contain a `{` of
+ * its own (a map literal), and may contain a `}` that does not end anything —
+ * inside a STRING_LIT, as in `${"}" + a.0}`. Scanning for the first `}` would
+ * cut the region short there and hand the rest of the expression to the
+ * literal-text path. Returns the index of the closing brace, or `-1` when the
+ * region is never closed (in which case the caller copies the remainder
+ * through unchanged rather than guessing where it ended).
+ */
+function celTemplateRegionEnd(expr: string, start: number): number {
+  let depth = 1;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = start; i < expr.length; i++) {
+    const char = expr[i];
+    if (!char) continue;
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Apply the dotted-numeric-run rule to ONE CEL region — a `${ … }` body, or a
+ * whole bare CEL expression. See {@link normalizeCelArrayIndexPaths} for the
+ * rule itself and for why the quote loop below is deliberately not the shared
+ * comment-aware scanner.
+ */
+function rewriteCelIndexPathsInRegion(expr: string): string {
+  let result = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < expr.length; i++) {
+    const char = expr[i];
+    if (!char) continue;
+
+    if (quote) {
+      result += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      result += char;
+      continue;
+    }
+
+    if (char === '.') {
+      const digitStart = i + 1;
+      let digitEnd = digitStart;
+      while (digitEnd < expr.length && /\d/.test(expr[digitEnd] ?? '')) {
+        digitEnd++;
+      }
+
+      const next = expr[digitEnd] ?? '';
+      if (
+        digitEnd > digitStart &&
+        endsWithIndexableTarget(result) &&
+        (next === '' || CEL_INDEX_RUN_TERMINATOR.test(next))
+      ) {
+        result += `[${expr.slice(digitStart, digitEnd)}]`;
+        i = digitEnd - 1;
+        continue;
+      }
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
+/**
  * Rewrite every dotted numeric path segment as a CEL index: `items.0` → `items[0]`.
  *
  * CEL has no `.0` field select — a `SELECT` takes an `IDENT`, and an `IDENT` may
@@ -110,54 +216,56 @@ function endsWithIndexableTarget(emitted: string): boolean {
  * so stops reporting literals at the first `//`. Recognising only the two
  * single-delimiter quote forms is what keeps the scan safe on text that is not
  * wholly CEL.
+ *
+ * **Where the rewrite applies.** The inputs above are KRO MIXED TEMPLATES: a
+ * `${ … }` CEL region embedded in LITERAL text that KRO emits verbatim. Only
+ * the CEL regions are rewritten; literal text is copied through untouched. A
+ * `.<digits>` run after an identifier is a perfectly ordinary thing for literal
+ * text to contain — the `v1.2` of a URL path, an `image:tag.1`, a `file.txt.1`,
+ * a version string like `alpha.3` — and none of those is a CEL index. Applying
+ * the rule to the whole string corrupted them into `v1[2]` and the like,
+ * changing text KRO would have emitted as written.
+ *
+ * A region's end is found by brace balancing that is STRING-LITERAL AWARE
+ * ({@link celTemplateRegionEnd}), because a CEL region may legitimately contain
+ * a `}` — inside a map literal, or inside a STRING_LIT as in `${"}" + a.0}`.
+ * Each region is rewritten independently, from an empty left context, so a run
+ * never chains across the literal text between two regions.
+ *
+ * Text with no `${` at all is not a template but a BARE CEL expression — the
+ * form `getInnerCelPath` and `markerToCelPath` build, and the form the marker
+ * and nested-status resolvers hand over — and is rewritten whole, as before.
+ * That is also why an unconverted `__KUBERNETES_REF_…__` marker needs nothing
+ * special here: its dotted digits are normalised when the marker itself is
+ * converted, by {@link markerToCelPath}, which calls this function on the bare
+ * `<resourceId>.<fieldPath>` path.
  */
 export function normalizeCelArrayIndexPaths(expr: string): string {
+  // No `${` — a bare CEL expression, rewritten whole.
+  if (!expr.includes('${')) return rewriteCelIndexPathsInRegion(expr);
+
   let result = '';
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
+  let index = 0;
 
-  for (let i = 0; i < expr.length; i++) {
-    const char = expr[i];
-    if (!char) continue;
-
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
+  while (index < expr.length) {
+    const open = expr.indexOf('${', index);
+    if (open === -1) {
+      result += expr.slice(index);
+      break;
     }
 
-    if (char === '"' || char === "'") {
-      quote = char;
-      result += char;
-      continue;
+    // Literal text before the region: emitted verbatim, never rewritten.
+    result += expr.slice(index, open);
+
+    const close = celTemplateRegionEnd(expr, open + 2);
+    if (close === -1) {
+      // Unterminated region — copy the remainder through untouched.
+      result += expr.slice(open);
+      break;
     }
 
-    if (char === '.') {
-      const digitStart = i + 1;
-      let digitEnd = digitStart;
-      while (digitEnd < expr.length && /\d/.test(expr[digitEnd] ?? '')) {
-        digitEnd++;
-      }
-
-      const next = expr[digitEnd] ?? '';
-      if (
-        digitEnd > digitStart &&
-        endsWithIndexableTarget(result) &&
-        (next === '' || CEL_INDEX_RUN_TERMINATOR.test(next))
-      ) {
-        result += `[${expr.slice(digitStart, digitEnd)}]`;
-        i = digitEnd - 1;
-        continue;
-      }
-    }
-
-    result += char;
+    result += `\${${rewriteCelIndexPathsInRegion(expr.slice(open + 2, close))}}`;
+    index = close + 1;
   }
 
   return result;
