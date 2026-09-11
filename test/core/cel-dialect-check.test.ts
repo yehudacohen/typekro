@@ -811,7 +811,15 @@ describe('a parse that discarded tokens is not a proof', () => {
       'a.b == 12u',
       'a.b == 0.5',
       'a.b == "a\\"b"',
-      'a.b == r"a\\"b"',
+      'a.b == b"a\\"b"',
+      // Raw, so the `\` is content rather than an escape. `r"a\"b"` is *not* on
+      // this list: under the raw rule it is the complete literal `r"a\"`, the
+      // identifier `b` and then an unterminated quote, which is a gap and is
+      // what cel-go reads there too. See "a raw string literal takes no
+      // escapes" below.
+      'a.b == r"a\\b"',
+      'a.b == r"a\\"',
+      'a.b == r"""a\\"""',
       "a.b == 'x' // trailing comment",
       'a.b == bar"x"',
       'a.b <= 1 && a.c >= 2 || !a.d != 3',
@@ -1279,6 +1287,97 @@ describe('comments are text, not code', () => {
   it('quotes the expression as it was written, comment included', () => {
     const [found] = check('a.b == {"k": 1, "j": "x"} // a comment');
     expect(found?.expression).toBe('a.b == {"k": 1, "j": "x"} // a comment');
+  });
+});
+
+/**
+ * A raw string literal takes no escapes. The langdef lexis spells the raw
+ * alternatives without `ESC_SEQ` in them — `RAW '"' ~["\n\r]* '"'` and
+ * `RAW '"""' .*? '"""'`, plus the `'`-delimited pair of each — so a `\` inside
+ * one is ordinary content and the literal closes at the very next delimiter.
+ *
+ * Reading the `\"` of `r"a\"` as an escape instead runs the literal past its
+ * own closing quote to whatever quote comes next, or off the end of the text
+ * where it is no token at all. Either way the tokenizer loses the boundary, and
+ * with it every character after it: `r"a\" == x.status.y` stopped being CEL,
+ * and the comparison it was written as was never scanned.
+ */
+describe('a raw string literal takes no escapes', () => {
+  it('closes r"a\\" at its own quote, in every raw spelling', () => {
+    // One complete literal, whose value is `a\`. Under the escape reading the
+    // `"` at offset 4 was consumed and nothing closed the literal, so offset 1
+    // — the opening quote — was reported as the character CEL cannot carry.
+    for (const raw of ['r"a\\"', 'R"a\\"', "r'a\\'", 'rb"a\\"', 'br"a\\"', 'rB"a\\"']) {
+      expect(celDialectLexicalGap(raw)).toBe(-1);
+    }
+  });
+
+  it('masks only the literal, and scans what follows it', () => {
+    expect(celDialectLexicalGap('r"a\\" == x.status.y')).toBe(-1);
+    expect(celDialectLexicalGap('x.status.y == r"a\\"')).toBe(-1);
+    expect(check('r"a\\" == x.status.y').map((found) => found.rule)).toEqual([
+      'cel-js-parse-failure',
+    ]);
+
+    // The tail really is scanned rather than swallowed: the stray third `=` of
+    // `===` is found at its own offset, past the end of the literal.
+    expect(celDialectLexicalGap('r"a\\" == x.status.y === z')).toBe(22);
+    expect(celDialectLexicalGap('rb"a\\" == a === b')).toBe(14);
+    expect(check('r"a\\" == a === b').map((found) => found.rule)).toEqual(['not-valid-cel']);
+  });
+
+  it('still masks what is inside the raw literal', () => {
+    // Two `===`, one inside the literal and one after it. Only the one outside
+    // is a converter leak; the one at offset 4 is raw-string content.
+    expect(celDialectLexicalGap('r"x === y\\" == a === b')).toBe(19);
+    expect(check('a.b == r"x === y\\"').map((found) => found.rule)).toEqual([
+      'cel-js-parse-failure',
+    ]);
+  });
+
+  it('closes a raw triple-quoted literal only at the triple', () => {
+    // `RAW '"""' .*? '"""'`, so the `\` before the closing run is content and
+    // the run still closes it.
+    expect(celDialectLexicalGap('r"""a\\"""')).toBe(-1);
+    expect(celDialectLexicalGap("r'''a\\'''")).toBe(-1);
+    expect(celDialectLexicalGap('r"""a\\""" == x.y')).toBe(-1);
+  });
+
+  it('is still not a token when a raw literal is unterminated', () => {
+    // Suppressing escapes is not the same as accepting anything: the raw
+    // single-delimiter form is `~["\n\r]*`, so a missing closer or an embedded
+    // newline leaves the opening quote as the character nothing can carry.
+    expect(celDialectLexicalGap('r"a\\')).toBe(1);
+    expect(celDialectLexicalGap('r"a\nb"')).toBe(1);
+    // `rr` is an identifier, not two prefixes — only one `r` is taken.
+    expect(celDialectLexicalGap('rr"a\\"')).toBe(2);
+  });
+
+  it('leaves the escaping forms escaping', () => {
+    // Non-raw, so the `\"` is an escape and nothing closes the literal.
+    expect(celDialectLexicalGap('"a\\" == y')).toBe(0);
+    expect(celDialectLexicalGap("'a\\' == y")).toBe(0);
+    expect(celDialectLexicalGap('"""a\\"""')).toBe(0);
+    // The same text with one more quote: the escape ate the first of four, and
+    // the last three close it.
+    expect(celDialectLexicalGap('"""a\\""""')).toBe(-1);
+    expect(celDialectLexicalGap('"a\\"" == y')).toBe(-1);
+    expect(check('"a\\"" == y')).toEqual([]);
+
+    // `BYTES_LIT ::= [bB] STRING_LIT` keeps whichever form follows, so `b`
+    // alone does not suppress escapes — only `rb` and `br` do.
+    expect(celDialectLexicalGap('b"a\\"')).toBe(1);
+    expect(celDialectLexicalGap('b"a\\""')).toBe(-1);
+    expect(celDialectParseProof('b"a\\"" == y')).toBe('"xxxx" == y');
+  });
+
+  it('still proves the raw-prefix divergence when the literal has no escape', () => {
+    // The positive this fix had to leave alone: `r"a"` is a raw prefix cel-js
+    // has no token for, used as the receiver of a member access.
+    expect(check('r"a".size() != ""').map((found) => found.rule)).toEqual([
+      'cel-js-rejects-spec-cel',
+    ]);
+    expect(celDialectParseProof('r"a".size() != ""')).toBe('__typekro_recv0.size() != ""');
   });
 });
 

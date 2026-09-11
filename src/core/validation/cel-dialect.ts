@@ -776,6 +776,15 @@ function checkHasIndexArgument(
  * cel-js's grammar has no raw (`r"..."`), bytes (`b"..."`) or triple-quoted
  * string form, and nothing in the tree emits one, so a value opening with `r` or
  * `b` simply fails to match here and is left unclassified — the safe direction.
+ *
+ * That is why this pattern deliberately does **not** follow
+ * {@link celStringLiteralEnd} in suppressing escapes inside a raw literal: the
+ * two answer different questions. `celStringLiteralEnd` asks where a *spec*
+ * token ends, so it has to get the raw rule right; this asks whether cel-js
+ * would read the value as one of *its* string literals, and cel-js has no raw
+ * form to read. Widening this to admit `r"..."` would be a claim about cel-js's
+ * typing of a value cel-js cannot even lex, so a raw literal stays `undefined`
+ * and takes its map entry out of the comparison, which is where it belongs.
  */
 const WHOLE_STRING_LITERAL = /^(?:"(?:[^"\n\\]|\\[\s\S])*"|'(?:[^'\n\\]|\\[\s\S])*')$/;
 
@@ -1070,7 +1079,23 @@ function checkChain(
  * (the EBNF) and its "Lexical Elements" subsection (the token definitions).
  * ------------------------------------------------------------------------- */
 
-/** `[start, end)` of every string literal token in `expression`. */
+/**
+ * `[start, end)` of every **plain-quoted** string literal body in `expression`.
+ *
+ * Plain-quoted on purpose, and not the same walk as {@link celStringLiteralEnd}.
+ * This feeds {@link findSpecCelCelJsRejects}, which looks *backwards* from a
+ * span's start for an `r`/`b` prefix, so the span has to stop at the quote the
+ * way cel-js's own `StringLiteral` token does rather than swallow the prefix.
+ * The `\`-escape rule here is cel-js's, which has no raw form to exempt.
+ *
+ * The consequence is that a raw literal whose body ends in `\` — `r"a\"`, one
+ * whole token to the spec tokenizer — is mis-read or missed here. That costs a
+ * rewrite, never a false proof: a span this walk gets wrong yields a rewrite
+ * whose result {@link rewriteKeepsTokenBoundaries} re-tokenizes with
+ * {@link celSpecTokens}, and a splice that does not land on exactly one token
+ * there throws the whole round away. Identification may under-report; only the
+ * boundary proof may license a divergence.
+ */
 function stringLiteralSpans(expression: string): Span[] {
   const spans: Span[] = [];
   let quote: '"' | "'" | undefined;
@@ -1424,11 +1449,25 @@ const CEL_PUNCTUATION_SINGLES = '()[]{}.,?:!<>+-*/%';
  * it is not a string at all and is handed back for `IDENT` to consume, which is
  * what makes `bar"x"` lex as an identifier and a string rather than as nothing.
  *
- * A `\` always consumes the character after it, raw literals included: the
- * spec's raw form suppresses escape *interpretation*, not escape *lexing*, so
- * `r"a\"b"` is one token in cel-go too. An unterminated literal, or a newline
- * inside a single-delimiter one, is not a token — the opening quote is then the
- * character nothing can carry, which is the honest place to point at.
+ * A `\` consumes the character after it in every form **except** a raw one.
+ * The langdef lexis and cel-go's lexer spell the raw alternatives with no
+ * `ESC_SEQ` in them at all — `RAW '"' ~["\n\r]* '"'`, `RAW '"""' .*? '"""'`,
+ * and the `'`-delimited pair of each — so a raw literal has no escapes to lex
+ * and closes at the first delimiter after its opening one. `r"a\"` is therefore
+ * one complete literal whose value is `a\`, and `r"a\" == x.status.y` is that
+ * literal followed by `== x.status.y`. Reading the `\"` there as an escape runs
+ * the literal on to the wrong closing quote — or off the end of the text, where
+ * it is no token at all — and takes everything after it down with it, which
+ * turns a perfectly ordinary comparison into an unlexable expression.
+ *
+ * The `b` prefix does **not** suppress escapes: `BYTES_LIT ::= [bB] STRING_LIT`
+ * keeps whichever `STRING_LIT` form follows it, so `b"a\""` escapes and only
+ * `r`, `rb` and `br` set the flag.
+ *
+ * An unterminated literal, or a newline inside a single-delimiter one — raw
+ * included, since `~["\n\r]` excludes it there too — is not a token; the
+ * opening quote is then the character nothing can carry, which is the honest
+ * place to point at. The triple-quoted forms admit newlines in both variants.
  */
 function celStringLiteralEnd(text: string, at: number): number {
   let index = at;
@@ -1450,7 +1489,7 @@ function celStringLiteralEnd(text: string, at: number): number {
 
   for (let scan = index + delimiter.length; scan < text.length; scan += 1) {
     const character = text[scan] as string;
-    if (character === '\\') {
+    if (!raw && character === '\\') {
       if (scan + 1 >= text.length) return at;
       scan += 1;
       continue;
