@@ -15,6 +15,13 @@ import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identif
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
+import {
+  type CelLambdaScope,
+  collectCelLambdaScopes,
+  maskClosedCelLiteralsAndComments,
+} from '../references/cel-lexical-scanner.js';
+import { ConversionError } from '../errors.js';
+import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
@@ -26,7 +33,117 @@ function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function normalizeCelArrayIndexPaths(expr: string): string {
+/** CEL `IDENT ::= [_a-zA-Z][_a-zA-Z0-9]*`, widened by `$` as the marker charset spells it. */
+const CEL_INDEX_TARGET_START = /[A-Za-z_$]/;
+const CEL_INDEX_TARGET_CHARACTER = /[A-Za-z0-9_$]/;
+
+/**
+ * What may follow a `.<digits>` run without making it part of a longer token.
+ *
+ * Read against the CEL lexis punctuation set. The class holds every CEL
+ * punctuation character that can legally follow a complete index, plus
+ * whitespace and end-of-text:
+ *
+ * - `[` — an index may be taken of an index. `a.0[1]` and `a.0["k"]` are the
+ *   dotted spelling of `a[0][1]` and `a[0]["k"]`; leaving `[` out meant those
+ *   were not converted and stayed invalid CEL.
+ * - `%` — the modulo operator, alongside the `+ - * /` already here. `a.0 % 2`
+ *   only converted because of the whitespace; `a.0%2` did not.
+ * - `.` `]` `)` `}` — a following select, a closing index, call or aggregate.
+ * - `? :` `,` `< > = ! & |` — the conditional, argument lists, and the
+ *   relational, equality and logical operators.
+ *
+ * `(` is deliberately NOT here: `a.0(` is not CEL under any reading, because a
+ * call target is an `IDENT` and an index is not callable — converting it would
+ * invent a program rather than respell one. `;` `@` `#` are not CEL punctuation
+ * at all, so text containing them is not an expression this sweep should touch.
+ */
+const CEL_INDEX_RUN_TERMINATOR = /[.[\])}%\s?:,+\-*/<>=!&|]/;
+
+/**
+ * Does the text emitted so far end with something an index can be taken of?
+ *
+ * That is a whole CEL identifier — `[A-Za-z_$][A-Za-z0-9_$]*` — or a `]` that
+ * closed an earlier index. Requiring a whole IDENTIFIER rather than merely an
+ * identifier CHARACTER is what separates `v2.0` (the identifier `v2`, indexed)
+ * from `1.0` (a NUMBER literal whose fraction must not be touched): both end in
+ * a digit, but only the former's digit run is anchored by an identifier start.
+ */
+function endsWithIndexableTarget(emitted: string): boolean {
+  let index = emitted.length - 1;
+  if (index < 0) return false;
+  if (emitted[index] === ']') return true;
+  while (index >= 0 && CEL_INDEX_TARGET_CHARACTER.test(emitted[index] as string)) index -= 1;
+  const start = emitted[index + 1];
+  return start !== undefined && CEL_INDEX_TARGET_START.test(start);
+}
+
+/**
+ * Find the `}` that closes the KRO `${ … }` region whose body starts at
+ * `start`.
+ *
+ * Brace-balanced and string-literal aware. A CEL region may contain a `{` of
+ * its own (a map literal), and may contain a `}` that does not end anything —
+ * inside a STRING_LIT, as in `${"}" + a.0}`. Scanning for the first `}` would
+ * cut the region short there and hand the rest of the expression to the
+ * literal-text path. Returns the index of the closing brace, or `-1` when the
+ * region is never closed (in which case the caller copies the remainder
+ * through unchanged rather than guessing where it ended).
+ */
+function celTemplateRegionEnd(expr: string, start: number): number {
+  let depth = 1;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = start; i < expr.length; i++) {
+    const char = expr[i];
+    if (!char) continue;
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Does this text carry a `__KUBERNETES_REF_…__` marker?
+ *
+ * Built from the shared marker grammar — `KUBERNETES_REF_MARKER_SOURCE` in
+ * `shared/brands.ts`, the single source of truth for marker syntax — rather
+ * than from a hand-written `__KUBERNETES_REF_` prefix, so that a change to the
+ * resource-id or field-path charset reaches this test too. Deliberately NOT
+ * global: `test` on a `/g` regex carries `lastIndex` between calls.
+ */
+const CARRIES_KUBERNETES_REF_MARKER = new RegExp(KUBERNETES_REF_MARKER_SOURCE);
+
+/**
+ * Apply the dotted-numeric-run rule to ONE CEL region — a `${ … }` body, or a
+ * whole bare CEL expression. See {@link normalizeCelArrayIndexPaths} for the
+ * rule itself and for why the quote loop below is deliberately not the shared
+ * comment-aware scanner.
+ */
+function rewriteCelIndexPathsInRegion(expr: string): string {
   let result = '';
   let quote: '"' | "'" | null = null;
   let escaped = false;
@@ -60,12 +177,11 @@ export function normalizeCelArrayIndexPaths(expr: string): string {
         digitEnd++;
       }
 
-      const previous = expr[i - 1] ?? '';
       const next = expr[digitEnd] ?? '';
       if (
         digitEnd > digitStart &&
-        /[A-Za-z_$\]]/.test(previous) &&
-        (next === '' || /[.\])}\s?:,+\-*/<>=!&|]/.test(next))
+        endsWithIndexableTarget(result) &&
+        (next === '' || CEL_INDEX_RUN_TERMINATOR.test(next))
       ) {
         result += `[${expr.slice(digitStart, digitEnd)}]`;
         i = digitEnd - 1;
@@ -74,6 +190,132 @@ export function normalizeCelArrayIndexPaths(expr: string): string {
     }
 
     result += char;
+  }
+
+  return result;
+}
+
+/**
+ * Rewrite every dotted numeric path segment as a CEL index: `items.0` → `items[0]`.
+ *
+ * CEL has no `.0` field select — a `SELECT` takes an `IDENT`, and an `IDENT` may
+ * not begin with a digit — so a dotted numeric segment is a parse error on both
+ * evaluation engines and `[0]` is the only spelling of that access. Paths reach
+ * this module in the dotted form from several producers (`extractNestedStatusCel`
+ * builds an array element's key as `` `${fieldPath}.${index}` ``, and the marker
+ * field-path charset admits that form too), so this is the sweep that makes them
+ * valid.
+ *
+ * **The rule.** A `.` followed by one or more digits becomes `[<digits>]` when
+ * both contexts allow it:
+ *
+ * 1. *Left* — the text EMITTED SO FAR ends with a CEL identifier or with a `]`
+ *    ({@link endsWithIndexableTarget}). Reading the left context off the OUTPUT
+ *    rather than the input is what lets a run of numeric segments chain: in
+ *    `a.0.1.b` the first run emits `a[0]`, so the second run sees the `]` this
+ *    function has just written and the whole path comes out as `a[0][1].b`. Read
+ *    off the INPUT the second run would see the digit `0`, stop, and leave the
+ *    equally invalid `a[0].1.b` behind. This is the same semantics
+ *    {@link splitFieldPathSegments} applies to a field path — a whole-digit
+ *    segment is an index on the segment before it — now agreed on by both.
+ *
+ *    NUMBER literals are left alone by that same test: in `1.0` and `2.5e3` the
+ *    digits before the `.` are not anchored by an identifier start, so the
+ *    fraction survives, and a leading `.5` has no left context at all. Where the
+ *    digits ARE the tail of an identifier, the index reading is the only one CEL
+ *    has, because `a1.5` is not a float literal — a NUMBER may not begin with an
+ *    identifier character — which is why `v2.0` becomes `v2[0]` while `v2.name`,
+ *    having no digit run to convert, is untouched.
+ *
+ *    `)` is deliberately NOT a left context: a postfix that lands after a
+ *    parenthesised nested-status expansion is normalised at its source, by
+ *    {@link splitFieldPathSegments}, where the segment structure is still known.
+ *
+ * 2. *Right* — the run ends the text, or is followed by a character that can
+ *    neither continue a number nor start an identifier
+ *    ({@link CEL_INDEX_RUN_TERMINATOR}). This is what keeps the `5` of `2.5e3`
+ *    out independently of the left-context test.
+ *
+ * Quoted data is skipped by the local quote loop below, which is deliberately
+ * NOT the shared {@link maskClosedCelLiteralsAndComments} scanner even though
+ * that one lexes the `STRING_LIT`/`BYTES_LIT` family far more completely. This
+ * function runs over KRO MIXED-TEMPLATE text, not over CEL alone: its inputs
+ * include values like `` `http://${string(service.spec.ports.0.port)}` ``, and
+ * the `//` of a URL scheme is a `COMMENT` to a CEL lexer — masking it would
+ * blank the template that follows and silently drop this rewrite. The same
+ * reason rules out `celStringLiteralSpans`, whose walk is comment-aware too and
+ * so stops reporting literals at the first `//`. Recognising only the two
+ * single-delimiter quote forms is what keeps the scan safe on text that is not
+ * wholly CEL.
+ *
+ * **Where the rewrite applies.** The inputs above are KRO MIXED TEMPLATES: a
+ * `${ … }` CEL region embedded in LITERAL text that KRO emits verbatim. Only
+ * the CEL regions are rewritten; literal text is copied through untouched. A
+ * `.<digits>` run after an identifier is a perfectly ordinary thing for literal
+ * text to contain — the `v1.2` of a URL path, an `image:tag.1`, a `file.txt.1`,
+ * a version string like `alpha.3` — and none of those is a CEL index. Applying
+ * the rule to the whole string corrupted them into `v1[2]` and the like,
+ * changing text KRO would have emitted as written.
+ *
+ * A region's end is found by brace balancing that is STRING-LITERAL AWARE
+ * ({@link celTemplateRegionEnd}), because a CEL region may legitimately contain
+ * a `}` — inside a map literal, or inside a STRING_LIT as in `${"}" + a.0}`.
+ * Each region is rewritten independently, from an empty left context, so a run
+ * never chains across the literal text between two regions.
+ *
+ * Text with no `${` is rewritten whole only when it is GENUINELY BARE CEL, and
+ * that takes a second condition: no `__KUBERNETES_REF_…__` marker either. Bare
+ * CEL is the form `getInnerCelPath` and `markerToCelPath` build, and the form
+ * the marker and nested-status resolvers hand over.
+ *
+ * MARKER-LADEN TEXT is the other thing that arrives without a `${`: a string
+ * derived from a template literal whose interpolations coerced to markers, as
+ * in `http://__KUBERNETES_REF___schema___spec.name__:8080/api/v1.2`. That is
+ * literal text with references embedded in it, not an expression — its `v1.2`
+ * is a URL path segment — yet the whole-string branch rewrote it to `v1[2]`,
+ * the very corruption the region split above exists to prevent, arriving by the
+ * other door. So text carrying a marker is copied through untouched
+ * ({@link CARRIES_KUBERNETES_REF_MARKER}), and nothing is lost by that: a
+ * marker's OWN dotted digits are normalised when the marker itself is converted,
+ * by {@link markerToCelPath}, which calls this function on the bare
+ * `<resourceId>.<fieldPath>` path — which, carrying no marker, still takes the
+ * whole-string branch.
+ *
+ * A text may hold BOTH markers and `${ … }` regions. The region split already
+ * gets that right — regions are rewritten, the literal text between them,
+ * markers included, is copied — so the marker test guards only the whole-string
+ * branch.
+ */
+export function normalizeCelArrayIndexPaths(expr: string): string {
+  if (!expr.includes('${')) {
+    // Literal template text that merely embeds references — not an expression.
+    if (CARRIES_KUBERNETES_REF_MARKER.test(expr)) return expr;
+    // No `${` and no marker — a bare CEL expression, rewritten whole.
+    return rewriteCelIndexPathsInRegion(expr);
+  }
+
+  let result = '';
+  let index = 0;
+
+  while (index < expr.length) {
+    const open = expr.indexOf('${', index);
+    if (open === -1) {
+      result += expr.slice(index);
+      break;
+    }
+
+    // Literal text before the region: emitted verbatim, never rewritten.
+    result += expr.slice(index, open);
+
+    const close = celTemplateRegionEnd(expr, open + 2);
+    if (close === -1) {
+      // Unterminated region — copy the remainder through untouched.
+      result += expr.slice(open);
+      break;
+    }
+
+    result += `\${${rewriteCelIndexPathsInRegion(expr.slice(open + 2, close))}}`;
+    index = close + 1;
   }
 
   return result;
@@ -210,11 +452,27 @@ function generateCelExpression(
   const isNestedComp = (ref as { __nestedComposition?: boolean }).__nestedComposition === true;
   if (isNestedComp && context?.nestedStatusCel) {
     const fieldName = ref.fieldPath.replace(/^status\./, '');
-    const innerExpr = context.resourceIds?.has(ref.resourceId)
-      ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
-      : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
-    if (innerExpr !== undefined) {
-      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true);
+    // A ref path can reach past the mapping key (`status.addr.ip` against an
+    // `addr` entry); the remainder is re-attached to the finalized expression.
+    const resolution = resolveNestedField(
+      ref.resourceId,
+      fieldName,
+      context.nestedStatusCel,
+      context.resourceIds?.has(ref.resourceId) !== true,
+      false
+    );
+    if (resolution !== undefined) {
+      // Seed the entry we just looked up so a self-referential mapping stops
+      // at its concrete resource reference instead of expanding again.
+      const finalized = finalizeCelForKro(
+        resolution.entry.expression,
+        context.nestedStatusCel,
+        context,
+        true,
+        resolution.entry.key
+      );
+      const withPostfix = applyKroSegmentPostfix(finalized, resolution.postfix);
+      if (withPostfix !== undefined) return withPostfix;
     }
   }
 
@@ -427,17 +685,92 @@ export function isStaticExpression(
 // ---------------------------------------------------------------------------
 
 /**
- * Maximum number of substitution passes when resolving nested composition
- * references in {@link resolveNestedCompositionRefs}. The fixed-point loop
- * normally converges in one or two passes (one per level of nesting), so
- * 16 is a comfortable cap that handles pathologically deep compositions
- * without giving runaway substitution loops a chance to wedge serialization.
+ * Maximum nesting depth when resolving nested composition references in
+ * {@link resolveNestedCompositionRefs}. One level is consumed per
+ * `(resourceId, field)` entry expanded on the current recursion path, so a
+ * three-level composition uses three levels. Cycles are caught by the
+ * in-progress set rather than by this limit, which therefore only fires for
+ * genuinely deep — acyclic — composition chains.
  *
  * Hitting this limit indicates a real bug in the resolution table — most
- * likely a cycle introduced by a faulty alias entry — not a legitimate
- * composition shape.
+ * likely an unexpectedly deep chain introduced by a faulty alias entry — not
+ * a legitimate composition shape, so under strict CEL diagnostics it fails
+ * the serialization instead of emitting a partially-resolved expression.
  */
 const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
+
+/**
+ * Pattern matching a `<id>.status.<fieldPath>` nested-composition token.
+ *
+ * The fieldPath capture is greedy on dots so paths like `components.app` are
+ * captured whole — that's the form `nestedStatusCel` keys use after recursive
+ * extraction. Always instantiate a fresh `RegExp` from this source: the
+ * substitution walker is re-entrant (its replacer recurses into another
+ * `String.replace`), so a shared `/g` regex would have its `lastIndex`
+ * clobbered mid-scan.
+ */
+const NESTED_STATUS_TOKEN_SOURCE = String.raw`\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)`;
+
+/**
+ * One `nestedStatusCel` mapping, carrying the key it is actually stored under.
+ *
+ * {@link lookupNestedEntry} reaches an entry through several alias strategies,
+ * so the `(id, field)` a token was written with is NOT an identity — different
+ * spellings routinely resolve to the same entry. `key` is that identity: the
+ * literal `__nestedStatus:<baseId>:<field>` key of the matched mapping. It also
+ * says how much of a dotted field path the entry accounts for, so
+ * {@link resolveNestedField} can hand back the rest as a postfix.
+ */
+interface NestedStatusEntry {
+  /** The `__nestedStatus:<baseId>:<field>` key that matched. */
+  readonly key: string;
+  /** The analyzed inner expression stored under {@link key}. */
+  readonly expression: string;
+}
+
+/**
+ * A mapping entry reached by {@link resolveNestedField}, plus the part of the
+ * requested field path that reached PAST the entry and must be re-attached to
+ * the substitution as a postfix (`.ip`, `.size()`, `.startsWith("x")`).
+ */
+interface NestedFieldResolution {
+  readonly entry: NestedStatusEntry;
+  /**
+   * The part of the requested path the key did NOT account for, verbatim and
+   * ready to append to `(inner)`: the index chain of the last matched segment
+   * followed by every remaining segment (`.ip`, `[0].name`, `["http"].port`,
+   * `.size()`), or `''` when the key matched the path whole.
+   */
+  readonly postfix: string;
+}
+
+/**
+ * Mutable bookkeeping for a single top-level nested-reference resolution.
+ *
+ * Scoped to one {@link resolveNestedCompositionRefs} call so memoized text
+ * never leaks across serialization contexts with different tables.
+ */
+interface NestedRefResolutionState {
+  readonly nestedStatusCel: Record<string, string>;
+  readonly resourceIds: ReadonlySet<string> | undefined;
+  /**
+   * Canonical mapping keys on the current expansion path — a hit is a cycle.
+   * Keyed by {@link NestedStatusEntry.key}, never by the token's own spelling:
+   * the lookup resolves aliases, so two spellings can name the same entry and a
+   * cycle that turns a corner through an alias must still be seen as one.
+   */
+  readonly inProgress: Set<string>;
+  /** Fully-resolved replacement text, keyed by ambient lambda vars + canonical key. */
+  readonly memo: Map<string, string>;
+  /** Incremented whenever an expansion was truncated by the in-progress set. */
+  cycleHits: number;
+  /** Set when {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} stopped an expansion. */
+  depthExceeded: boolean;
+  /** {@link substituteNestedRefsInText} passes run so far — instrumentation only. */
+  textPasses: number;
+  /** Expansions served from {@link memo} — instrumentation only. */
+  memoHits: number;
+}
 
 /**
  * Look up a nested composition's analyzed expression by `(resourceId, fieldName)`.
@@ -446,7 +779,7 @@ const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
  * every code path that needs to find an inner expression from a
  * `nestedStatusCel` table — both the structured-ref paths
  * (`generateCelExpression`, `serializeStatusMappingsToCel`) and the
- * string-resolver path (`substituteNestedRefsOnce`,
+ * string-resolver path (`substituteNestedRefsInText`,
  * `resolveNestedRefMarkers`).
  *
  * Returns `undefined` when no match is found, leaving the caller to
@@ -473,17 +806,26 @@ const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
  * Ambiguous matches (multiple candidates from the prefix or field-name
  * strategies) emit a warning log and return `undefined` so the caller
  * can fall through to its own error handling.
+ *
+ * Returns the matched entry together with the key it is stored under, which
+ * strategies 2-4 can reach through an alias. See {@link NestedStatusEntry}.
  */
-export function lookupNestedExpression(
+function lookupNestedEntry(
   resourceId: string,
   fieldName: string,
   nestedStatusCel: Record<string, string>,
   allowFieldFallback: boolean = true
-): string | undefined {
+): NestedStatusEntry | undefined {
+  const entryFor = (key: string | undefined): NestedStatusEntry | undefined => {
+    if (key === undefined) return undefined;
+    const expression = nestedStatusCel[key];
+    return expression === undefined ? undefined : { key, expression };
+  };
+
   // Strategy 1: exact match.
   const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
   if (Object.hasOwn(nestedStatusCel, exactKey)) {
-    return nestedStatusCel[exactKey];
+    return entryFor(exactKey);
   }
 
   // Gather all entries for the requested field name once — strategies
@@ -503,8 +845,7 @@ export function lookupNestedExpression(
   const refBase = resourceId.replace(/\d+$/, '');
   const baseNameMatches = fieldMatches.filter((m) => m.baseId.replace(/\d+$/, '') === refBase);
   if (baseNameMatches.length === 1) {
-    const match = baseNameMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(baseNameMatches[0]?.key);
   }
 
   // Strategy 3: unambiguous camelCase / case-insensitive prefix.
@@ -529,8 +870,7 @@ export function lookupNestedExpression(
     );
   });
   if (prefixMatches.length === 1) {
-    const match = prefixMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(prefixMatches[0]?.key);
   }
   if (prefixMatches.length > 1) {
     logger.warn('Ambiguous nested composition prefix match', {
@@ -544,14 +884,293 @@ export function lookupNestedExpression(
   // Strategy 4: field-name uniqueness.
   if (!allowFieldFallback) return undefined;
   if (fieldMatches.length === 1) {
-    const match = fieldMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(fieldMatches[0]?.key);
   }
   // Field-only fallback is intentionally best-effort and fully silent on
   // ambiguity. Prefix/base-name ambiguity still logs above, but this final
   // branch should never emit low-signal warnings for common status fields
   // like `ready` that appear across many unrelated nested compositions.
   return undefined;
+}
+
+/**
+ * Look up a nested composition's analyzed expression by `(resourceId, fieldName)`.
+ *
+ * Thin projection of {@link lookupNestedEntry} for callers that only need the
+ * expression text. Anything resolving a DOTTED path wants
+ * {@link resolveNestedField} instead.
+ */
+export function lookupNestedExpression(
+  resourceId: string,
+  fieldName: string,
+  nestedStatusCel: Record<string, string>,
+  allowFieldFallback: boolean = true
+): string | undefined {
+  return lookupNestedEntry(resourceId, fieldName, nestedStatusCel, allowFieldFallback)?.expression;
+}
+
+/**
+ * Resolve the longest dotted prefix of `fieldPath` that names a mapping entry
+ * for `id`, returning the unmatched remainder as a postfix.
+ *
+ * `nestedStatusCel` keys are field PATHS — `ready`, but also `components.app`
+ * — so the token capture is greedy on dots and routinely reaches past the key
+ * it should match: `svc.status.addr.ip` when the key is `addr`,
+ * `svc.status.items.size()` when the key is `items`,
+ * `svc.status.phase.startsWith("x")` when the key is `phase`. Looking the whole
+ * captured path up either finds nothing (leaving a virtual id in the emitted
+ * RGD) or lets the field-name fallback match an unrelated entry. Resolving the
+ * longest prefix instead, and re-attaching the remainder to the parenthesized
+ * substitution, preserves the postfix operation: `(inner).ip`, `(inner).size()`,
+ * `(inner).startsWith("x")`.
+ *
+ * A path segment can also carry an INDEX chain — `items[0].name`,
+ * `ports["http"].port`, `a.b[0][1].c` — so the path is lexed by
+ * {@link splitFieldPathSegments} rather than split on `.`. Keys are matched on
+ * the bare names; the index chain of the last matched segment plus every
+ * remaining segment rides along verbatim as the postfix, giving `(inner)[0].name`
+ * and `(inner)["http"].port`.
+ *
+ * A list index reaches this function in EITHER of two spellings — bracketed
+ * (`items[0].name`, what a proxy field path carries) or DOTTED
+ * (`items.0.name`, what `extractNestedStatusCel` builds its keys from). The
+ * lexer folds the dotted form into the bracketed one, and
+ * {@link keyPrefixCandidates} spells a numeric index back out as `.0` when it
+ * builds a key path, so the two spellings resolve identically: the emitted CEL
+ * always uses `[0]` (`.0` is not a field select and parses on neither engine)
+ * and key matching always uses `.0` (the spelling keys are stored under).
+ *
+ * Exact `__nestedStatus:<id>:<prefix>` keys are checked at every prefix length
+ * BEFORE the alias ladder runs at any length, so a real key (`addr`) always
+ * beats a fuzzy match on a longer path (`addr.ip`).
+ *
+ * `trailingSegmentIsMethodName` reports that the captured path is immediately
+ * followed by `(` in the source text, which makes its last segment a method
+ * name rather than a field — never a candidate key. It is ignored for a
+ * single-segment path, which has no shorter prefix to fall back to and so keeps
+ * its existing behaviour.
+ */
+function resolveNestedField(
+  id: string,
+  fieldPath: string,
+  nestedStatusCel: Record<string, string>,
+  allowFieldFallback: boolean,
+  trailingSegmentIsMethodName: boolean
+): NestedFieldResolution | undefined {
+  const candidates = keyPrefixCandidates(
+    splitFieldPathSegments(fieldPath),
+    trailingSegmentIsMethodName
+  );
+
+  // Pass 1: exact keys only, longest prefix first.
+  for (const candidate of candidates) {
+    const key = `__nestedStatus:${id}:${candidate.keyPath}`;
+    const expression = nestedStatusCel[key];
+    if (expression !== undefined) {
+      return { entry: { key, expression }, postfix: candidate.postfix };
+    }
+  }
+
+  // Pass 2: the full alias ladder, longest prefix first.
+  for (const candidate of candidates) {
+    const entry = lookupNestedEntry(id, candidate.keyPath, nestedStatusCel, allowFieldFallback);
+    if (entry !== undefined) return { entry, postfix: candidate.postfix };
+  }
+  return undefined;
+}
+
+/**
+ * One prefix of a lexed field path that could name a mapping key, paired with
+ * the remainder {@link resolveNestedField} must re-attach as a postfix.
+ */
+interface KeyPrefixCandidate {
+  /** The key spelling of the prefix — numeric indexes rendered as `.0`. */
+  readonly keyPath: string;
+  /** The rest of the path, ready to append to `(inner)` — indexes as `[0]`. */
+  readonly postfix: string;
+}
+
+/**
+ * Every prefix of `segments` that could name a `__nestedStatus:<id>:<path>`
+ * key, longest first.
+ *
+ * A prefix may end at a name (`items`, postfix `[0].name`) or after any leading
+ * run of its NUMERIC indexes (`items.0`, postfix `.name`) — a numeric index is
+ * spellable in a key, because {@link extractNestedStatusCel} builds an array
+ * element's key as `` `${fieldPath}.${index}` ``. A NON-numeric index
+ * (`["http"]`) has no key spelling, so it ends key candidacy: neither it nor
+ * anything past it can be part of a key, and matching a longer prefix across it
+ * would silently drop the index from the emitted expression.
+ */
+function keyPrefixCandidates(
+  segments: readonly FieldPathSegment[],
+  trailingSegmentIsMethodName: boolean
+): KeyPrefixCandidate[] {
+  const nameLimit =
+    trailingSegmentIsMethodName && segments.length > 1 ? segments.length - 1 : segments.length;
+
+  /** The path past `count` segments plus `depth` of the last one's indexes. */
+  const postfixFrom = (count: number, depth: number): string =>
+    (segments[count - 1]?.indexes.slice(depth).join('') ?? '') +
+    segments
+      .slice(count)
+      .map((segment) => `.${segment.name}${segment.indexes.join('')}`)
+      .join('');
+
+  // Built shortest-first so each key path extends the previous one, then
+  // reversed — the caller wants the longest prefix tried first.
+  const candidates: KeyPrefixCandidate[] = [];
+  let keyPath = '';
+  for (let count = 1; count <= nameLimit; count += 1) {
+    const segment = segments[count - 1];
+    if (segment === undefined) break;
+    keyPath = count === 1 ? segment.name : `${keyPath}.${segment.name}`;
+    candidates.push({ keyPath, postfix: postfixFrom(count, 0) });
+
+    let depth = 0;
+    for (const index of segment.indexes) {
+      const digits = NUMERIC_INDEX_PATTERN.exec(index)?.[1];
+      if (digits === undefined) break;
+      depth += 1;
+      keyPath = `${keyPath}.${digits}`;
+      candidates.push({ keyPath, postfix: postfixFrom(count, depth) });
+    }
+    // A non-numeric index was reached: no longer prefix can name a key.
+    if (depth < segment.indexes.length) break;
+  }
+  return candidates.reverse();
+}
+
+/**
+ * One segment of a status field path: a bare field name plus the chain of index
+ * operations applied to it (`items[0]`, `ports["http"]`, `b[0][1]`).
+ */
+interface FieldPathSegment {
+  /** The bare field name — the only part a mapping key is ever matched against. */
+  readonly name: string;
+  /** Index operations applied to {@link name}, each verbatim (`[0]`, `["http"]`). */
+  readonly indexes: readonly string[];
+}
+
+/** A whole path segment that is nothing but digits — a DOTTED list index. */
+const DOTTED_NUMERIC_SEGMENT_PATTERN = /^\d+$/;
+
+/** An index operation that is a plain integer, capturing its digits. */
+const NUMERIC_INDEX_PATTERN = /^\[(\d+)\]$/;
+
+/**
+ * Lex a status field path into `name` + index-chain segments.
+ *
+ * `split('.')` is wrong for any path carrying an index: it yields `items[0]`,
+ * which never equals the mapping key `items`, so the longest-prefix search in
+ * {@link resolveNestedField} finds nothing and a virtual id survives into the
+ * emitted RGD. Both non-regex callers can hand over such a path — a marker
+ * field path admits `[\d+]` (`KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE`, e.g.
+ * `status.ports[0].port`) and a `KubernetesRef.fieldPath` reaches this function
+ * unmodified — so the shape has to be lexed rather than assumed away. The regex
+ * caller cannot: its capture stops at `[`, which leaves the index chain outside
+ * the match and therefore untouched in the surrounding text.
+ *
+ * **An all-digit segment is an INDEX on the segment before it**, not a name:
+ * `items.0.name` ≡ `items[0].name`. Both spellings are live here — a proxy
+ * renders a numeric key as `[0]` (`schema-proxy.ts`) but
+ * `extractNestedStatusCel` builds an array element's mapping key as
+ * `` `${fieldPath}.${index}` `` — and the marker charset admits the dotted form
+ * too. Folding it into the previous segment's index chain is what makes the two
+ * spellings one thing: without it `.0` is lexed as a NAME, so the emitted
+ * postfix is `.0.name` (`(inner).0.name` is not CEL — `.0` is not a field
+ * select — and parses on neither engine), and a key stored under one spelling
+ * cannot be reached from the other. Only a WHOLE segment of digits folds:
+ * `v2`, `ip4` and `_0` are identifiers and are left alone.
+ *
+ * A LEADING numeric segment has no predecessor to index, so it stays a name: a
+ * field path is rooted at a field, an index there is not a spelling of anything
+ * valid, and leaving it verbatim resolves it exactly as before rather than
+ * inventing a meaning for it. (The regex token path cannot produce one — its
+ * capture must start with `[a-zA-Z_$]`.)
+ *
+ * Brackets are matched with a depth counter and quotes are honoured, so neither
+ * a `.` nor a `]` inside a map key is read as structure. A path this lexer
+ * cannot account for — an unbalanced bracket, an empty segment — is handed back
+ * as ONE unsplit segment, so such a path resolves exactly as it did before
+ * (whole-path key lookup, no prefix search) instead of being guessed at.
+ */
+function splitFieldPathSegments(fieldPath: string): FieldPathSegment[] {
+  const unsplit: FieldPathSegment[] = [{ name: fieldPath, indexes: [] }];
+  const segments: Array<{ name: string; indexes: string[] }> = [];
+  let index = 0;
+  for (;;) {
+    const nameStart = index;
+    while (index < fieldPath.length && fieldPath[index] !== '.' && fieldPath[index] !== '[') {
+      index += 1;
+    }
+    const name = fieldPath.slice(nameStart, index);
+    if (name === '') return unsplit;
+
+    const indexes: string[] = [];
+    while (fieldPath[index] === '[') {
+      const close = closingIndexBracket(fieldPath, index);
+      if (close === undefined) return unsplit;
+      indexes.push(fieldPath.slice(index, close + 1));
+      index = close + 1;
+    }
+
+    const previous = segments[segments.length - 1];
+    if (previous !== undefined && DOTTED_NUMERIC_SEGMENT_PATTERN.test(name)) {
+      previous.indexes.push(`[${name}]`, ...indexes);
+    } else {
+      segments.push({ name, indexes });
+    }
+
+    if (index === fieldPath.length) return segments;
+    if (fieldPath[index] !== '.') return unsplit;
+    index += 1;
+  }
+}
+
+/** Offset of the `]` closing the `[` at `open`, or `undefined` when unbalanced. */
+function closingIndexBracket(text: string, open: number): number | undefined {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let index = open; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote !== undefined) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '[') {
+      depth += 1;
+      continue;
+    }
+    if (character === ']') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Re-attach a {@link NestedFieldResolution} postfix to an already-finalized KRO
+ * segment.
+ *
+ * Only a segment that is exactly one `${—}` expression can carry a postfix. A
+ * mixed template (literal text interleaved with several `${—}` segments) has no
+ * single expression to qualify, so the caller keeps the original reference and
+ * lets downstream validation flag it, exactly as for an unresolvable one.
+ */
+function applyKroSegmentPostfix(segment: string, postfix: string): string | undefined {
+  if (postfix === '') return segment;
+  const body = /^\$\{([\s\S]*)\}$/.exec(segment)?.[1];
+  if (body === undefined || body === '' || body.includes('${')) return undefined;
+  return `\${(${body})${postfix}}`;
 }
 
 /**
@@ -571,48 +1190,104 @@ export function lookupNestedExpression(
  * {@link containsNoNonSchemaRefs} (or just call
  * {@link isStaticExpression} which composes both steps).
  *
- * Iterates to a fixed point up to {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT}
- * — substituted expressions may themselves contain nested references that
- * become resolvable once the outer reference is inlined (the three-level
- * nesting case: L1 → L2 → L3).
+ * **Resolution is recursive, never re-scanning.** Each `<id>.status.<field>`
+ * token found in the ORIGINAL text is substituted exactly once; the inner
+ * expression it was replaced with is then walked on its own, so substituted
+ * output is never handed back to the scanner. The result is therefore linear
+ * in the total size of the reachable mapping instead of doubling on every
+ * pass (see #200 — repeated whole-string passes produced a 6 MB expression
+ * from a two-level fixture).
  *
- * **Lambda variables are skipped.** When the resolved `<id>` is a CEL
- * macro lambda variable like the `c` in `.exists(c, c.status == "Ready")`,
- * the substitution does NOT fire — the variable refers to the macro's
- * iteration element, not a nested composition.
+ * **Cycles are terminal, not fatal.** A token whose mapping is already being
+ * expanded further up the current path — directly self-referential, or via a
+ * cycle — keeps its concrete `<id>.status.<field>` reference. For a flattened
+ * child id that is also a real graph resource (the common case: an inner
+ * composition's `phase` mapping reads `<flattenedId>.status.phase`), that
+ * concrete reference IS the correct answer.
+ *
+ * **Known resource ids are substituted only inside an expanded nested
+ * boundary.** `resolveKnownNestedResourceRefs` governs the ORIGINAL text
+ * only. Inside an inner expression that has already been proven to come from
+ * a nested composition, exact mappings for concrete resource ids are
+ * authoritative, so substitution there is always allowed (strict lookup —
+ * no field-name fallback).
+ *
+ * Nesting deeper than {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels stops
+ * expanding and is reported by {@link reportNestedRefDepthExceeded}.
+ *
+ * **Lambda variables are skipped, within their scope.** When the resolved
+ * `<id>` is a CEL macro lambda variable like the `c` in
+ * `.exists(c, c.status == "Ready")`, the substitution does NOT fire — the
+ * variable refers to the macro's iteration element, not a nested composition.
+ * The shield is LEXICAL: it covers references inside the macro's body and
+ * nothing else, so the second `svc` in
+ * `list.map(svc, svc.status.x) && svc.status.phase` is still a nested id.
+ * A variable whose scope encloses the point an inner expression was inlined at
+ * stays in scope throughout that inner expression.
+ *
+ * `seedKey` marks a mapping as already being expanded by the caller, given as
+ * the entry's CANONICAL `nestedStatusCel` key. Entry points that look an entry
+ * up themselves and then resolve its text ({@link generateCelExpression},
+ * {@link resolveNestedRefMarkers}, `serializeStatusMappingsToCel`) pass it so a
+ * self-referential mapping is recognized as terminal there too — the resolver
+ * behaves identically no matter which entry point reached it.
  */
 function resolveNestedCompositionRefs(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   resourceIds?: ReadonlySet<string>,
-  resolveKnownNestedResourceRefs = true
+  resolveKnownNestedResourceRefs = true,
+  seedKey?: string
 ): string {
+  return runNestedRefResolution(
+    expr,
+    nestedStatusCel,
+    resourceIds,
+    resolveKnownNestedResourceRefs,
+    seedKey
+  ).text;
+}
+
+/** One resolution pass plus the bookkeeping it accumulated. */
+function runNestedRefResolution(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds: ReadonlySet<string> | undefined,
+  resolveKnownNestedResourceRefs: boolean,
+  seedKey: string | undefined
+): { readonly text: string; readonly stats: NestedRefResolutionStats } {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
-    return expr;
+    return { text: expr, stats: { cycleHits: 0, depthExceeded: false, textPasses: 0, memoHits: 0 } };
   }
 
-  let current = expr;
-  let allowKnownResourceSubstitution = resolveKnownNestedResourceRefs;
-  for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
-    const next = substituteNestedRefsOnce(
-      current,
-      nestedStatusCel,
-      resourceIds,
-      allowKnownResourceSubstitution
-    );
-    if (next === current) return current;
-    current = next;
-    // Once a virtual nested-composition reference has been expanded, its
-    // analyzed expression may intentionally use a flattened child id that is
-    // also a concrete graph resource. Exact nested mappings are authoritative
-    // only inside that already-proven nested boundary.
-    allowKnownResourceSubstitution = true;
+  const state: NestedRefResolutionState = {
+    nestedStatusCel,
+    resourceIds,
+    inProgress: new Set(seedKey === undefined ? [] : [seedKey]),
+    memo: new Map(),
+    cycleHits: 0,
+    depthExceeded: false,
+    textPasses: 0,
+    memoHits: 0,
+  };
+  const text = substituteNestedRefsInText(
+    expr,
+    state,
+    resolveKnownNestedResourceRefs,
+    EMPTY_LAMBDA_VARS
+  );
+  if (state.depthExceeded) {
+    reportNestedRefDepthExceeded(expr);
   }
-  logger.warn('Nested composition resolution depth limit exceeded', {
-    depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
-    expressionPreview: expr.slice(0, 200),
-  });
-  return current;
+  return {
+    text,
+    stats: {
+      cycleHits: state.cycleHits,
+      depthExceeded: state.depthExceeded,
+      textPasses: state.textPasses,
+      memoHits: state.memoHits,
+    },
+  };
 }
 
 export function inlineNestedStatusRefs(
@@ -624,31 +1299,255 @@ export function inlineNestedStatusRefs(
 }
 
 /**
- * One pass of nested-reference substitution. See
- * {@link resolveNestedCompositionRefs} for the full contract.
+ * Internal bookkeeping of one {@link resolveNestedCompositionRefs} pass.
+ *
+ * @internal Implementation detail, surfaced only so tests can assert that a
+ * cycle was cut by the in-progress set (`cycleHits`) rather than by the depth
+ * guard (`depthExceeded`), and that an entry reached under two different alias
+ * spellings is expanded once and then served from the memo. `cel-references.ts`
+ * is not re-exported wholesale from `src/index.ts`, so this is not public API.
  */
-function substituteNestedRefsOnce(
+export interface NestedRefResolutionStats {
+  /** Expansions cut short because the entry was already on the current path. */
+  readonly cycleHits: number;
+  /** Whether {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} stopped an expansion. */
+  readonly depthExceeded: boolean;
+  /** Texts walked: 1 for the input, plus one per entry actually expanded. */
+  readonly textPasses: number;
+  /** Expansions answered from the memo instead of being walked again. */
+  readonly memoHits: number;
+}
+
+/**
+ * {@link inlineNestedStatusRefs} plus the resolver's internal counters.
+ *
+ * @internal Test-only. See {@link NestedRefResolutionStats}.
+ */
+export function inlineNestedStatusRefsWithStats(
   expr: string,
-  nestedStatusCel: Record<string, string>,
-  resourceIds?: ReadonlySet<string>,
-  resolveKnownNestedResourceRefs = false
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: ReadonlySet<string>
+): { readonly text: string; readonly stats: NestedRefResolutionStats } {
+  return runNestedRefResolution(expr, nestedStatusCel, resourceIds, true, undefined);
+}
+
+/** Ambient lambda-variable scope for a top-level resolution. */
+const EMPTY_LAMBDA_VARS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Kro's implicit element variable for a `forEach` collection's `readyWhen`
+ * body. Unlike a CEL macro variable it has no binder in the expression text —
+ * Kro supplies it to the whole body (`yaml.ts` emits `each` as the base id for
+ * a `forEach` resource) — so it has no lexical scope to be inside of and is
+ * shielded everywhere. `cel-validator.ts` reserves it the same way.
+ */
+const KRO_FOR_EACH_ELEMENT_VAR = 'each';
+
+/**
+ * The macro-bound identifiers that shield a reference AT `offset`.
+ *
+ * A lambda variable is bound by ONE macro and means something only inside that
+ * macro's body: in `list.map(svc, svc.status.x) && svc.status.phase` the first
+ * `svc` is the iteration element and the second is a real nested-composition
+ * id. Shielding every occurrence in the text — which is what collecting the
+ * names alone does — leaves that second reference unexpanded and a virtual id
+ * in the emitted RGD. `ambientLambdaVars` are the scopes that enclosed the
+ * point where THIS text was inlined, and enclose all of it.
+ *
+ * The macro list is `all`/`exists`/`exists_one`/`map`/`filter`, each binding
+ * exactly one variable as its first argument — the standard CEL macro set, and
+ * the whole of what cel-js 0.8.2 implements for direct mode. cel-go's
+ * two-variable comprehensions are an opt-in extension neither engine has here,
+ * so there is no second variable to bind.
+ */
+function lambdaVarsAt(
+  offset: number,
+  ambientLambdaVars: ReadonlySet<string>,
+  scopes: readonly CelLambdaScope[]
+): ReadonlySet<string> {
+  const enclosing = scopes.filter(
+    (scope) => offset >= scope.bodyStart && offset < scope.bodyEnd
+  );
+  if (enclosing.length === 0) return ambientLambdaVars;
+  const vars = new Set(ambientLambdaVars);
+  for (const scope of enclosing) vars.add(scope.variable);
+  return vars;
+}
+
+/**
+ * Substitute every nested-composition token in `text` exactly once. See
+ * {@link resolveNestedCompositionRefs} for the full contract.
+ *
+ * `ambientLambdaVars` carries the macro-bound identifiers that were in scope AT
+ * THE POINT this text was inlined, so a lambda variable stays shielded no
+ * matter how deep the expression it appears in was inlined from. Scopes opened
+ * by this text itself are per-match, not per-text: see {@link lambdaVarsAt}.
+ */
+function substituteNestedRefsInText(
+  text: string,
+  state: NestedRefResolutionState,
+  allowKnownResourceSubstitution: boolean,
+  ambientLambdaVars: ReadonlySet<string>
 ): string {
-  const lambdaVars = collectLambdaVars(expr);
-  // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
-  // dots so paths like `components.app` are captured whole — that's the
-  // form `nestedStatusCel` keys use after recursive extraction.
-  const pattern = /\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)/g;
-  return expr.replace(pattern, (match, id: string, field: string) => {
-    if (id === 'schema') return match;
-    if (lambdaVars.has(id)) return match;
-    if (resourceIds?.has(id) && !resolveKnownNestedResourceRefs) return match;
-    if (resourceIds?.has(id)) {
-      const strictInnerExpr = lookupNestedExpression(id, field, nestedStatusCel, false);
-      return strictInnerExpr === undefined ? match : `(${strictInnerExpr})`;
+  state.textPasses += 1;
+
+  // Scan a copy with every closed CEL string literal AND every `//` line
+  // comment blanked out, so a `<id>.status.<field>`-shaped run of characters
+  // that is really quoted DATA — a log message, a URL, an error string — or
+  // commented-out expression text is never rewritten. Both are masked in one
+  // source-ordered pass, so a `//` inside a string stays string and a quote
+  // inside a comment stays comment. The mask preserves length and offsets
+  // exactly (newlines included), so each replacement splices back into the
+  // ORIGINAL text at the offsets the match reported.
+  const scanned = maskClosedCelLiteralsAndComments(text);
+  // Scopes are read off the MASKED copy — a `.map(` inside quoted data or a
+  // comment binds nothing — and their offsets therefore index `text` too.
+  const lambdaScopes = collectCelLambdaScopes(scanned);
+  const pattern = new RegExp(NESTED_STATUS_TOKEN_SOURCE, 'g');
+  let result = '';
+  let copiedUpTo = 0;
+  let match = pattern.exec(scanned);
+  while (match !== null) {
+    const token = match[0];
+    const tokenEnd = match.index + token.length;
+    const replacement = substituteNestedRefToken(
+      token,
+      match[1] ?? '',
+      match[2] ?? '',
+      // A captured path butted straight against `(` ends in a method name.
+      scanned[tokenEnd] === '(',
+      state,
+      allowKnownResourceSubstitution,
+      lambdaVarsAt(match.index, ambientLambdaVars, lambdaScopes)
+    );
+    if (replacement !== token) {
+      result += text.slice(copiedUpTo, match.index) + replacement;
+      copiedUpTo = tokenEnd;
     }
-    const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
-    if (innerExpr !== undefined) return `(${innerExpr})`;
-    return match;
+    match = pattern.exec(scanned);
+  }
+  return copiedUpTo === 0 ? text : result + text.slice(copiedUpTo);
+}
+
+/**
+ * Resolve one `<id>.status.<fieldPath>` token to its replacement text, or back
+ * to `token` itself when it must be left alone.
+ */
+function substituteNestedRefToken(
+  token: string,
+  id: string,
+  fieldPath: string,
+  trailingSegmentIsMethodName: boolean,
+  state: NestedRefResolutionState,
+  allowKnownResourceSubstitution: boolean,
+  /** Macro-bound identifiers in scope at THIS token — see {@link lambdaVarsAt}. */
+  lambdaVars: ReadonlySet<string>
+): string {
+  if (id === 'schema') return token;
+  if (id === KRO_FOR_EACH_ELEMENT_VAR) return token;
+  if (lambdaVars.has(id)) return token;
+
+  const isKnownResource = state.resourceIds?.has(id) === true;
+  if (isKnownResource && !allowKnownResourceSubstitution) return token;
+
+  // A concrete graph resource only ever matches an exact nested mapping —
+  // the field-name fallback would let an unrelated composition's field
+  // hijack a real resource reference.
+  const resolution = resolveNestedField(
+    id,
+    fieldPath,
+    state.nestedStatusCel,
+    !isKnownResource,
+    trailingSegmentIsMethodName
+  );
+  if (resolution === undefined) return token;
+
+  const resolvedInner = expandNestedEntry(resolution.entry, state, lambdaVars);
+  if (resolvedInner === undefined) return token;
+  // Parenthesize to preserve operator precedence in compound expressions, then
+  // re-attach whatever the token reached past the mapping key so a postfix
+  // field access or method call survives the substitution.
+  return `(${resolvedInner})${resolution.postfix}`;
+}
+
+/**
+ * Resolve one `(id, field)` mapping to its fully-substituted text.
+ *
+ * Returns `undefined` when the mapping must NOT be expanded — because it is
+ * already being expanded on the current path (a cycle, so the concrete
+ * reference is the answer) or because the depth guard tripped. Callers keep
+ * the original `<id>.status.<field>` token in that case.
+ */
+function expandNestedEntry(
+  entry: NestedStatusEntry,
+  state: NestedRefResolutionState,
+  ambientLambdaVars: ReadonlySet<string>
+): string | undefined {
+  // Both sets key off the entry's CANONICAL mapping key. Keying off the token's
+  // own `(id, field)` would let a cycle that turns a corner through an alias
+  // spelling expand the same mapping a second time instead of terminating here,
+  // and would miss the memo for every spelling but the first.
+  const entryKey = entry.key;
+  if (state.inProgress.has(entryKey)) {
+    state.cycleHits++;
+    return undefined;
+  }
+
+  const memoKey = `${[...ambientLambdaVars].sort().join(',')}\n${entryKey}`;
+  const memoized = state.memo.get(memoKey);
+  if (memoized !== undefined) {
+    state.memoHits++;
+    return memoized;
+  }
+
+  if (state.inProgress.size >= NESTED_REF_RESOLUTION_DEPTH_LIMIT) {
+    state.depthExceeded = true;
+    return undefined;
+  }
+
+  const cycleHitsBefore = state.cycleHits;
+  state.inProgress.add(entryKey);
+  let resolved: string;
+  try {
+    resolved = substituteNestedRefsInText(entry.expression, state, true, ambientLambdaVars);
+  } finally {
+    state.inProgress.delete(entryKey);
+  }
+
+  // Only cache expansions that did not depend on the in-progress path: a
+  // cycle-truncated result is specific to the path that produced it, so
+  // reusing it elsewhere would under-resolve the expression.
+  if (state.cycleHits === cycleHitsBefore) {
+    state.memo.set(memoKey, resolved);
+  }
+  return resolved;
+}
+
+/**
+ * Report an expansion stopped by {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT}.
+ *
+ * Under strict CEL diagnostics this fails serialization: the emitted
+ * expression still carries unresolved virtual ids that KRO would reject on
+ * the cluster. By default it stays a warning, matching the lenient posture
+ * the rest of the CEL emission layer takes for unprovable expressions.
+ */
+function reportNestedRefDepthExceeded(expr: string): void {
+  if (isStrictCelDiagnosticsEnabled()) {
+    throw new ConversionError(
+      `Nested composition resolution exceeded ${NESTED_REF_RESOLUTION_DEPTH_LIMIT} levels of nesting (strict CEL diagnostics)`,
+      expr,
+      'unknown',
+      undefined,
+      undefined,
+      [
+        'Check the nested composition status mappings for an unexpectedly deep chain or a faulty alias entry',
+        'Disable strict CEL diagnostics for this factory (strictCelDiagnostics: false) to emit the partially-resolved expression instead',
+      ]
+    );
+  }
+  logger.warn('Nested composition resolution depth limit exceeded', {
+    depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
+    expressionPreview: expr.slice(0, 200),
   });
 }
 
@@ -679,15 +1578,27 @@ function resolveNestedRefMarkers(
     if (id === '__schema__') return match;
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
-    if (resourceIds?.has(id)) {
-      const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined)
-        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context);
-      return match;
-    }
-    const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
-    if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel, context);
-    return match;
+    // A marker field path is a dot-separated identifier sequence, so it can
+    // reach past the mapping key (`status.addr.ip` against an `addr` entry) but
+    // never carries a method call — `(` is outside the marker charset.
+    const resolution = resolveNestedField(
+      id,
+      fieldPath,
+      nestedStatusCel,
+      resourceIds?.has(id) !== true,
+      false
+    );
+    if (resolution === undefined) return match;
+    // Seed the entry being expanded so the shared resolver treats a
+    // self-referential mapping as terminal here exactly as it does on the
+    // structured-ref path.
+    const segment = innerExprToYamlSegment(
+      resolution.entry.expression,
+      nestedStatusCel,
+      context,
+      resolution.entry.key
+    );
+    return applyKroSegmentPostfix(segment, resolution.postfix) ?? match;
   });
 }
 
@@ -722,7 +1633,8 @@ const WRAPPED_BARE_LITERAL_PATTERN = /^\$\{\s*(-?\d+(?:\.\d+)?|true|false|null)\
 function innerExprToYamlSegment(
   innerExpr: string,
   nestedStatusCel: Record<string, string>,
-  context?: SerializationContext
+  context?: SerializationContext,
+  seedKey?: string
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
@@ -730,7 +1642,8 @@ function innerExprToYamlSegment(
     innerExpr,
     nestedStatusCel,
     context?.resourceIds,
-    true
+    true,
+    seedKey
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
@@ -776,14 +1689,16 @@ export function finalizeCelForKro(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext,
-  resolveKnownNestedResourceRefs = true
+  resolveKnownNestedResourceRefs = true,
+  seedKey?: string
 ): string {
   const resolved = normalizeCelArrayIndexPaths(
     resolveNestedCompositionRefs(
       expr,
       nestedStatusCel,
       context?.resourceIds,
-      resolveKnownNestedResourceRefs
+      resolveKnownNestedResourceRefs,
+      seedKey
     )
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1847,14 +2762,16 @@ export function serializeStatusMappingsToCel(
     rewriteSchemaRefs = true,
     resolveKnownNestedResourceRefs = [...nestedCompositionIds].some((id) =>
       new RegExp(`(^|[^\\w$])${escapeRegExpLiteral(id)}\\s*\\.`).test(expr)
-    )
+    ),
+    seedKey?: string
   ): string {
     const resolved = normalizeCelArrayIndexPaths(
       resolveNestedCompositionRefs(
         normalizeLocalResourceExpr(expr),
         normalizedNestedStatusCel,
         resourceIds,
-        resolveKnownNestedResourceRefs
+        resolveKnownNestedResourceRefs,
+        seedKey
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -1880,13 +2797,26 @@ export function serializeStatusMappingsToCel(
       // it for KRO status emission.
       if (ref.__nestedComposition && normalizedNestedStatusCel) {
         const fieldName = ref.fieldPath.replace(/^status\./, '');
-        const innerExpr = lookupNestedExpression(
+        // A ref path can reach past the mapping key (`status.addr.ip` against
+        // an `addr` entry); the remainder rides along as a postfix.
+        const resolution = resolveNestedField(
           ref.resourceId,
           fieldName,
-          normalizedNestedStatusCel
+          normalizedNestedStatusCel,
+          true,
+          false
         );
-        if (innerExpr !== undefined) {
-          return statusFieldFromExpression(innerExpr, true, true);
+        if (resolution !== undefined) {
+          // Seed the entry we just looked up: its mapping may reference its
+          // own flattened resource id, which is terminal, not re-expandable.
+          const statusField = statusFieldFromExpression(
+            resolution.entry.expression,
+            true,
+            true,
+            resolution.entry.key
+          );
+          const withPostfix = applyKroSegmentPostfix(statusField, resolution.postfix);
+          if (withPostfix !== undefined) return withPostfix;
         }
       }
 

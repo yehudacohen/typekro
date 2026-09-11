@@ -32,6 +32,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nested-composition status inlining is now linear in the size of the
+  nested-status mapping. The inliner previously made up to 16 whole-string
+  substitution passes, each re-scanning text the previous pass had
+  substituted; once a mapping referenced its own flattened child id — the
+  normal shape when that id is also a concrete graph resource — the emitted
+  expression doubled on every pass, so a two-level composition could emit a
+  6 MB status expression that exceeds the Kubernetes object size limit. Each
+  `<id>.status.<field>` mapping is now resolved recursively with an
+  in-progress set, substituted output is never re-scanned, and a mapping
+  already being expanded on the current path keeps its concrete resource
+  reference. Emitted YAML is unchanged for compositions that were not hitting
+  the runaway path. The 16-level depth guard remains a safety net for
+  genuinely deep, acyclic nesting and is now an error under strict CEL
+  diagnostics (`strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`).
+- The nested-composition status inliner now reads the CEL text it rewrites by
+  the language's own lexis, so a reference is expanded only where it really is
+  one. A status field path carrying an index (`items[0].name`,
+  `ports["http"].port`) matches its mapping key again instead of leaving a
+  virtual id in the emitted RGD; the whole `STRING_LIT`/`BYTES_LIT` family is
+  recognised — raw and bytes prefixes, both triple-quoted forms — so a token
+  inside quoted data is left alone; `//` line comments are masked alongside
+  string literals, so commented-out expression text is no longer expanded; and
+  a CEL macro's lambda variable shields only the references inside that macro's
+  body, so `list.map(svc, svc.status.x) && svc.status.phase` expands its second
+  `svc` rather than treating both as the iteration element.
+- A list index in a nested-composition status path now emits as an index in
+  either of the two spellings it arrives in. A status proxy renders a numeric
+  key as `items[0]`, but a nested mapping key for an array element is built
+  dotted (`items.0`) — and a reference marker's field path admits that form
+  too. The dotted form was read as a plain field name, so the inliner emitted
+  `(inner).0.name`, which is not valid CEL and is rejected by both evaluation
+  engines; and a mapping key stored under one spelling could not be reached
+  from the other, leaving a virtual id in the emitted RGD. A whole segment of
+  digits is now read as an index on the segment before it, so both spellings
+  resolve to the same mapping and emit `(inner)[0].name`. Identifiers that
+  merely contain digits (`v2`, `ip4`, `_0`) are unaffected.
+- Every dotted numeric segment in a serialized reference path now becomes an
+  index, not just the first one. The late rewrite that turns `items.0` into
+  `items[0]` took its decision from the character before the run in its INPUT,
+  so in a path into a nested list — `matrix.0.1.value` — the second run saw the
+  digit the first run had just consumed and stopped, emitting
+  `matrix[0].1.value`: still not valid CEL, and still rejected by both
+  evaluation engines. The decision now reads the text already emitted, so runs
+  chain, and it requires a whole identifier rather than a single identifier
+  character, so `v2.0` indexes the identifier `v2` while the fractions of `1.0`
+  and `2.5e3` stay untouched. Serialized output is unchanged for every path
+  that was already valid.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
