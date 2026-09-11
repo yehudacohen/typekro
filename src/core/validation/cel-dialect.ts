@@ -1310,13 +1310,216 @@ const CEL_DIALECT_MAX_REWRITE_ROUNDS = 8;
 /** Receiver placeholders are bound nowhere; only their grammar matters. */
 const CEL_JS_RECEIVER_PLACEHOLDER = '__typekro_recv';
 
-/** Whether cel-js's parser accepts the text, treating a throw as a rejection. */
-function celJsParses(expression: string): boolean {
-  try {
-    return parse(expression).isSuccess === true;
-  } catch {
-    return false;
+/* ---------------------------------------------------------------------------
+ * Lexical coverage: "cel-js parsed it" has to mean "cel-js read all of it".
+ *
+ * cel-js's `parse()` (dist/lib.js) calls `CELLexer.tokenize(expression)` and
+ * then looks only at `parserInstance.errors` — `lexResult.errors` is discarded
+ * unread. A chevrotain lexer skips a character it has no token for and carries
+ * on, so every character cel-js has no token for is dropped silently before the
+ * parser ever sees the text: `a === b` reaches the parser as `a == b` and
+ * "parses", and so do `x.size() $` and `x.size() ☃`. Taking `isSuccess` as
+ * proof that cel-js accepted the *text* is therefore wrong in exactly the
+ * direction that matters here — a divergence proof is a claim about the whole
+ * expression, and a parse that dropped part of it proves nothing about the part
+ * it dropped.
+ *
+ * **Which route this takes, and why.** The first choice would be to ask cel-js
+ * itself: `dist/tokens.js` exports both `CELLexer` and the `allTokens`
+ * vocabulary, and `CELLexer.tokenize()` returns the `errors` that `parse()`
+ * throws away. It is not reachable. cel-js 0.8.2's package.json declares
+ * `"exports": { ".": "./dist/index.js" }` and nothing else, so
+ * `cel-js/dist/tokens.js` does not resolve, and `index.js` re-exports only
+ * `parse`, `evaluate` and the three error classes — no lexer, no token
+ * vocabulary. The second choice, running chevrotain's own `Lexer` over that
+ * vocabulary, needs the same unreachable export (and `chevrotain` is cel-js's
+ * dependency, not TypeKro's). So this takes the third route: a coverage scanner
+ * written from the CEL specification's own lexical grammar (cel-spec
+ * doc/langdef.md, "Lexical Elements"), which walks the text and reports the
+ * first character no CEL token can carry.
+ *
+ * That scanner is a superset of cel-js's lexer — it knows the raw, bytes and
+ * triple-quoted `STRING_LIT` forms and the exponent `FLOAT_LIT` that cel-js has
+ * no token for — and the superset direction is the safe one for both jobs it
+ * does. As a *proof* gate it can only withhold a divergence, never invent one:
+ * anything cel-js's lexer drops is a character cel-js has no token for, and the
+ * only such characters the spec does have a token for are the four forms just
+ * named, each of which the rewriter has already replaced by the time a proof is
+ * checked. As a `not-valid-cel` input it reports only characters the **spec**
+ * has no token for, which is a fact about the language rather than about either
+ * engine, so it belongs in that bucket by the same standard as the rest of it.
+ * ------------------------------------------------------------------------- */
+
+/** `WHITESPACE ::= [\t\n\f\r ]+`. */
+const CEL_WHITESPACE = /[\t\n\f\r ]/;
+/** `DIGIT ::= [0-9]`. */
+const CEL_DIGIT = /[0-9]/;
+/** `HEXDIGIT ::= [0-9abcdefABCDEF]`. */
+const CEL_HEXDIGIT = /[0-9a-fA-F]/;
+/** The first character of `IDENT ::= [_a-zA-Z][_a-zA-Z0-9]*`. */
+const CEL_IDENT_START = /[_A-Za-z]/;
+
+/** The two-character operators in the spec's punctuation list. */
+const CEL_PUNCTUATION_PAIRS = new Set(['||', '&&', '==', '!=', '<=', '>=']);
+/** The one-character punctuation, once the pairs above are taken out. */
+const CEL_PUNCTUATION_SINGLES = '()[]{}.,?:!<>+-*/%';
+
+/**
+ * End of the `STRING_LIT`/`BYTES_LIT` token starting at `at`, or `at` for none.
+ *
+ * `STRING_LIT ::= [rR]? ( '"' … '"' | "'" … "'" | '"""' … '"""' | "'''" … "'''" )`
+ * and `BYTES_LIT ::= [bB] STRING_LIT`; cel-go accepts the two prefixes in
+ * either order, so at most one of each is taken. A prefix with no quote behind
+ * it is not a string at all and is handed back for `IDENT` to consume, which is
+ * what makes `bar"x"` lex as an identifier and a string rather than as nothing.
+ *
+ * A `\` always consumes the character after it, raw literals included: the
+ * spec's raw form suppresses escape *interpretation*, not escape *lexing*, so
+ * `r"a\"b"` is one token in cel-go too. An unterminated literal, or a newline
+ * inside a single-delimiter one, is not a token — the opening quote is then the
+ * character nothing can carry, which is the honest place to point at.
+ */
+function celStringLiteralEnd(text: string, at: number): number {
+  let index = at;
+  let raw = false;
+  let bytes = false;
+  for (let take = 0; take < 2; take += 1) {
+    const character = text[index];
+    if (!raw && (character === 'r' || character === 'R')) {
+      raw = true;
+      index += 1;
+    } else if (!bytes && (character === 'b' || character === 'B')) {
+      bytes = true;
+      index += 1;
+    } else break;
   }
+
+  const delimiter = ['"""', "'''", '"', "'"].find((candidate) => text.startsWith(candidate, index));
+  if (delimiter === undefined) return at;
+
+  for (let scan = index + delimiter.length; scan < text.length; scan += 1) {
+    const character = text[scan] as string;
+    if (character === '\\') {
+      if (scan + 1 >= text.length) return at;
+      scan += 1;
+      continue;
+    }
+    if (delimiter.length === 1 && (character === '\n' || character === '\r')) return at;
+    if (text.startsWith(delimiter, scan)) return scan + delimiter.length;
+  }
+  return at;
+}
+
+/**
+ * End of the `INT_LIT`/`UINT_LIT`/`FLOAT_LIT` token starting at `at`, or `at`.
+ *
+ * `INT_LIT ::= DIGIT+ | '0x' HEXDIGIT+`, `UINT_LIT ::= INT_LIT [uU]`,
+ * `FLOAT_LIT ::= DIGIT* '.' DIGIT+ EXPONENT? | DIGIT+ EXPONENT` and
+ * `EXPONENT ::= [eE] [+-]? DIGIT+`. The leading `-` the spec writes into each
+ * form is consumed as punctuation instead, which changes no coverage verdict.
+ * `0x` with no hex digit behind it falls through to the decimal form, because
+ * cel-go's longest-match lexer reads that as `0` and the identifier `x`.
+ */
+function celNumberLiteralEnd(text: string, at: number): number {
+  if (!CEL_DIGIT.test(text[at] ?? '')) return at;
+
+  if (text[at] === '0' && (text[at + 1] === 'x' || text[at + 1] === 'X')) {
+    let hex = at + 2;
+    while (hex < text.length && CEL_HEXDIGIT.test(text[hex] as string)) hex += 1;
+    if (hex > at + 2) return text[hex] === 'u' || text[hex] === 'U' ? hex + 1 : hex;
+  }
+
+  let end = at;
+  while (end < text.length && CEL_DIGIT.test(text[end] as string)) end += 1;
+  if (text[end] === '.' && CEL_DIGIT.test(text[end + 1] ?? '')) {
+    end += 1;
+    while (end < text.length && CEL_DIGIT.test(text[end] as string)) end += 1;
+  }
+  const exponent = /^[eE][+-]?[0-9]+/.exec(text.slice(end));
+  if (exponent !== null) return end + exponent[0].length;
+  return text[end] === 'u' || text[end] === 'U' ? end + 1 : end;
+}
+
+/** End of the one CEL token starting at `at`, or `at` when there is none. */
+function celSpecTokenEnd(text: string, at: number): number {
+  const character = text[at] as string;
+
+  if (CEL_WHITESPACE.test(character)) {
+    let end = at + 1;
+    while (end < text.length && CEL_WHITESPACE.test(text[end] as string)) end += 1;
+    return end;
+  }
+
+  // `COMMENT ::= '//' ~NEWLINE*`.
+  if (character === '/' && text[at + 1] === '/') {
+    const newline = text.slice(at).search(/[\r\n]/);
+    return newline < 0 ? text.length : at + newline;
+  }
+
+  const string = celStringLiteralEnd(text, at);
+  if (string > at) return string;
+
+  const number = celNumberLiteralEnd(text, at);
+  if (number > at) return number;
+
+  if (CEL_IDENT_START.test(character)) {
+    let end = at + 1;
+    while (end < text.length && IDENT_CHARACTER.test(text[end] as string)) end += 1;
+    return end;
+  }
+
+  if (CEL_PUNCTUATION_PAIRS.has(text.slice(at, at + 2))) return at + 2;
+  return CEL_PUNCTUATION_SINGLES.includes(character) ? at + 1 : at;
+}
+
+/**
+ * Offset of the first character of `text` no CEL token can carry, or `-1`.
+ *
+ * A `-1` means the spec's lexical grammar tiles the text end to end with no
+ * gaps: every character belongs to a token, a comment or whitespace. That is
+ * the property `parse()` does not check, and it is now required before anything
+ * is read into a cel-js verdict.
+ */
+function firstUnlexableOffset(text: string): number {
+  let index = 0;
+  while (index < text.length) {
+    const end = celSpecTokenEnd(text, index);
+    if (end <= index) return index;
+    index = end;
+  }
+  return -1;
+}
+
+/** What cel-js did with an expression: whether it read all of it, and parsed it. */
+interface CelJsReading {
+  /** cel-js's parser accepted the token stream its lexer handed it. */
+  readonly parsed: boolean;
+  /** Offset of the first character no CEL token can carry, or `-1` for none. */
+  readonly unlexableAt: number;
+}
+
+/** Run cel-js's parser and the lexical coverage scan over the same text. */
+function celJsReads(expression: string): CelJsReading {
+  let parsed = false;
+  try {
+    parsed = parse(expression).isSuccess === true;
+  } catch {
+    parsed = false;
+  }
+  return { parsed, unlexableAt: firstUnlexableOffset(expression) };
+}
+
+/**
+ * cel-js accepted the **whole** text: every character is carried by a CEL token
+ * and the parser accepted the token stream.
+ *
+ * This — never `parse().isSuccess` on its own — is what "cel-js parses it" means
+ * anywhere a verdict is drawn from it, whether that is a divergence proof or the
+ * gate that decides an expression is established grammatical.
+ */
+function celJsAcceptsWhole(expression: string): boolean {
+  const reading = celJsReads(expression);
+  return reading.parsed && reading.unlexableAt < 0;
 }
 
 /**
@@ -1391,14 +1594,38 @@ function rewriteAwayCelJsLimitations(
   return { text, applied };
 }
 
-/** The rewrite, when it parses — i.e. when it proves the divergence. */
+/**
+ * The rewrite, when cel-js accepts it whole — i.e. when it proves the divergence.
+ *
+ * "Accepts it whole" is {@link celJsAcceptsWhole} rather than `parse()`: a
+ * rewrite that only "parses" because cel-js's lexer dropped a character it has
+ * no token for proves nothing about the character it dropped, and the text the
+ * proof is about is the text including that character. The original is held to
+ * the same bar, so a proof is never built on top of an expression that is not
+ * itself lexically CEL.
+ */
 function celJsParseProof(
   trimmed: string,
   masked: string,
   brackets: BracketIndex
 ): string | undefined {
+  if (firstUnlexableOffset(trimmed) >= 0) return undefined;
   const rewritten = rewriteAwayCelJsLimitations(trimmed, masked, brackets);
-  return rewritten.applied > 0 && celJsParses(rewritten.text) ? rewritten.text : undefined;
+  return rewritten.applied > 0 && celJsAcceptsWhole(rewritten.text) ? rewritten.text : undefined;
+}
+
+/**
+ * Offset of the first character of `expression` no CEL token can carry, or `-1`
+ * when the spec's lexical grammar covers the text end to end.
+ *
+ * Exported for the same reason {@link celDialectParseProof} is: the coverage
+ * scan is half of what "cel-js parsed it" means here, so it has to be checkable
+ * from outside rather than taken on trust. `-1` is the precondition for every
+ * verdict this module draws from a cel-js parse — see
+ * {@link firstUnlexableOffset} for why `parse()` alone is not enough.
+ */
+export function celDialectLexicalGap(expression: string): number {
+  return firstUnlexableOffset(expression.trim());
 }
 
 /**
@@ -1407,10 +1634,12 @@ function celJsParseProof(
  *
  * Exported so the proof can be reproduced rather than taken on trust: the
  * returned text differs from `expression` only where a confirmed cel-js
- * shortfall was replaced by a same-production spelling cel-js has, and cel-js
- * parses it. An expression with no identified shortfall, or one where taking the
- * shortfalls away still leaves text cel-js refuses, yields `undefined` — and
- * that is exactly the case the check refuses to call a divergence.
+ * shortfall was replaced by a same-production spelling cel-js has, cel-js's
+ * lexer carries every character of it and cel-js parses it. An expression with
+ * no identified shortfall, one whose own text is not lexically CEL, or one where
+ * taking the shortfalls away still leaves text cel-js refuses, yields
+ * `undefined` — and that is exactly the case the check refuses to call a
+ * divergence.
  */
 export function celDialectParseProof(expression: string): string | undefined {
   const trimmed = expression.trim();
@@ -1442,15 +1671,37 @@ interface NonCelToken {
  * `Member "." SELECTOR`, grammatical on both engines; whether the field exists
  * is a question about a type this module cannot see.
  *
- * @param parsed Whether cel-js accepted the text. The unpaired-`?` check is
- *   gated on a failure only because a successful parse already proves every
- *   ternary is closed, so running it would be wasted work rather than unsound.
+ * @param parsed Whether cel-js's *parser* accepted the token stream. The
+ *   unpaired-`?` check is gated on a failure only because a successful parse
+ *   already proves every ternary is closed — `?` and `:` are both cel-js tokens,
+ *   so neither can be among the characters its lexer dropped — which makes
+ *   running the check wasted work rather than unsound.
+ * @param unlexableAt Offset of the first character no CEL token can carry, from
+ *   {@link firstUnlexableOffset}, or `-1`. Reported here because "the lexical
+ *   grammar has no token for this character" is a fact about the spec, not
+ *   about an engine, which is the standard the rest of this bucket is held to.
  */
-function findNonCelTokens(expression: string, masked: string, parsed: boolean): NonCelToken[] {
+function findNonCelTokens(
+  expression: string,
+  masked: string,
+  parsed: boolean,
+  unlexableAt: number
+): NonCelToken[] {
   const found: NonCelToken[] = [];
   const add = (at: number, length: number, reason: string): void => {
     found.push({ at, fragment: expression.slice(at, at + Math.max(length, 8)).trim(), reason });
   };
+
+  if (unlexableAt >= 0) {
+    const character = expression[unlexableAt] as string;
+    add(
+      unlexableAt,
+      8,
+      character === '"' || character === "'"
+        ? 'an unterminated string literal — `STRING_LIT` has to close with the delimiter it opened with, and a single-quoted form cannot span a newline'
+        : `\`${character}\` — a character the CEL lexical grammar has no token for: it is in neither \`IDENT\`, nor any literal form, nor the punctuation list`
+    );
+  }
 
   // The spec's punctuation list is `() [] {} . , ? : || && ! < <= >= > == != in
   // + - * / %`. There is no bare `=` in it and CEL has no assignment, so once
@@ -1554,13 +1805,20 @@ export function checkCelDialectCompatibility(
   // three buckets below each carry their own evidence instead, and only the one
   // backed by a positive, spec-cited identification of valid CEL is a
   // divergence.
-  const parsed = celJsParses(trimmed);
+  //
+  // "cel-js parsed it" means its lexer carried every character *and* its parser
+  // accepted the token stream. `parse()` checks only the second half — it reads
+  // `parserInstance.errors` and discards `lexResult.errors` — so a text whose
+  // unknown characters its lexer dropped "parses" while cel-js never saw all of
+  // it. `unlexableAt` is the missing half; see {@link firstUnlexableOffset}.
+  const reading = celJsReads(trimmed);
+  const parsed = reading.parsed && reading.unlexableAt < 0;
 
   // Bucket one: text no CEL grammar accepts. Built from the spec's own lexical
   // and syntactic grammar, never from cel-js's verdict, and so run whether or
   // not cel-js parsed — its lexer drops an unknown character silently, and
   // `a === b` reaches its parser as `a == b`.
-  const nonCel = findNonCelTokens(trimmed, masked, parsed);
+  const nonCel = findNonCelTokens(trimmed, masked, reading.parsed, reading.unlexableAt);
   const leak = nonCel[0];
   if (leak !== undefined) {
     findings.push(
