@@ -193,3 +193,129 @@ describe('resolveStatusLeavesIndependently', () => {
     expect(at(result.status, '__internal')).toBeDefined();
   });
 });
+
+/**
+ * The status object handed to the resolver is the composition's status
+ * *template*: built once, then read again for every reconcile and every
+ * instance. Resolving into it would spend it — the second resolution would find
+ * the first one's values where it expected refs.
+ */
+describe('status template reuse', () => {
+  /** A structural snapshot that includes the hidden properties. */
+  function snapshot(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(snapshot);
+    if (value === null || typeof value !== 'object') return value;
+    if ((value as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true) {
+      return { __cel: (value as CelExpression).expression };
+    }
+    const entries: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(value).sort() as (string | symbol)[]) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      entries[String(key)] = {
+        enumerable: descriptor?.enumerable,
+        value: snapshot(descriptor?.value),
+      };
+    }
+    return { prototype: Object.getPrototypeOf(value) === null ? 'null' : 'Object', entries };
+  }
+
+  function template(): StatusShape {
+    const loadBalancer = Object.create(null) as Record<string, unknown>;
+    loadBalancer.ip = celExpression('webService.status.loadBalancer.ingress[0].ip');
+    const status: StatusShape = {
+      // Guarded, so `ready` resolves on both runs and reports the change.
+      ready: celExpression(
+        'has(webService.status.loadBalancer) ? has(webService.status.loadBalancer.ingress) : false'
+      ),
+      addresses: [celExpression('webService.status.clusterIP')],
+      loadBalancer,
+    };
+    Object.defineProperty(status, '__nestedStatusCel', {
+      value: { '__nestedStatus:inner:ready': 'inner.status.ready' },
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    return status;
+  }
+
+  it('resolves the same template twice against different resource states', async () => {
+    const status = template();
+
+    const pending = await resolveStatusLeavesIndependently(
+      status,
+      evaluatorFor({ loadBalancer: {}, clusterIP: '10.96.0.1' })
+    );
+    const assigned = await resolveStatusLeavesIndependently(
+      status,
+      evaluatorFor({
+        loadBalancer: { ingress: [{ ip: '203.0.113.7' }] },
+        clusterIP: '10.96.0.2',
+      })
+    );
+
+    // First run: no address yet.
+    expect(at(pending.status, 'ready')).toBe(false);
+    expect(at(pending.status, 'addresses[0]')).toBe('10.96.0.1');
+    expect(at(pending.status, 'loadBalancer.ip')).toBeUndefined();
+    expect(pending.diagnostics.map((diagnostic) => diagnostic.path)).toEqual(['loadBalancer.ip']);
+
+    // Second run over the SAME template: the controller has since assigned one.
+    expect(at(assigned.status, 'ready')).toBe(true);
+    expect(at(assigned.status, 'addresses[0]')).toBe('10.96.0.2');
+    expect(at(assigned.status, 'loadBalancer.ip')).toBe('203.0.113.7');
+    expect(assigned.diagnostics).toEqual([]);
+
+    // The two results are independent objects, not one shared one.
+    expect(assigned.status).not.toBe(pending.status);
+    expect(at(pending.status, 'loadBalancer.ip')).toBeUndefined();
+  });
+
+  it('leaves the template deep-equal to its original after each run', async () => {
+    const status = template();
+    const original = snapshot(template());
+
+    expect(snapshot(status)).toEqual(original);
+
+    await resolveStatusLeavesIndependently(status, evaluatorFor({ loadBalancer: {} }));
+    expect(snapshot(status)).toEqual(original);
+
+    await resolveStatusLeavesIndependently(
+      status,
+      evaluatorFor({ loadBalancer: { ingress: [{ ip: '203.0.113.7' }] }, clusterIP: '10.96.0.1' })
+    );
+    expect(snapshot(status)).toEqual(original);
+  });
+
+  it('never hands back a container that is part of the template', async () => {
+    const status = template();
+    const result = await resolveStatusLeavesIndependently(status, evaluatorFor({}));
+
+    expect(result.status).not.toBe(status);
+    expect((result.status as StatusShape).addresses).not.toBe(status.addresses);
+    expect((result.status as StatusShape).loadBalancer).not.toBe(status.loadBalancer);
+    // ...and the template never acquires the diagnostics property.
+    expect(Object.getOwnPropertyDescriptor(status, '__statusLeafDiagnostics')).toBeUndefined();
+  });
+
+  it('carries hidden metadata and a null prototype onto the copy', async () => {
+    const status = template();
+    const result = await resolveStatusLeavesIndependently(status, evaluatorFor({}));
+
+    const nested = Object.getOwnPropertyDescriptor(result.status, '__nestedStatusCel');
+    expect(nested?.value).toEqual({ '__nestedStatus:inner:ready': 'inner.status.ready' });
+    expect(nested?.enumerable).toBe(false);
+    expect(Object.getPrototypeOf((result.status as StatusShape).loadBalancer as object)).toBeNull();
+  });
+
+  it('copies a cyclic template into a cyclic copy rather than looping', async () => {
+    const status: StatusShape = { ready: celExpression('true') };
+    status.self = status;
+
+    const result = await resolveStatusLeavesIndependently(status, evaluatorFor({}));
+
+    expect(at(result.status, 'ready')).toBe(true);
+    expect((result.status as StatusShape).self).toBe(result.status);
+    expect((result.status as StatusShape).self).not.toBe(status);
+  });
+});
