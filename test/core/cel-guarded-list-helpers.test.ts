@@ -11,6 +11,7 @@ import { describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import {
   Cel,
+  type CelFallbackArgs,
   type CelListSelector,
   type LoadBalancerServiceRef,
 } from '../../src/core/references/cel.js';
@@ -373,5 +374,88 @@ describe('fallback is constrained to the projected type', () => {
       rendered(Cel.firstWhereHas(endpoints, 'host', ref<string>('fallbackService', 'status.host')))
     ).toBe('fallbackService.status.host');
     expect(rendered(Cel.firstWhereHas(endpoints, 'host'))).toBe('""');
+  });
+});
+
+/**
+ * Whether the fallback argument may be omitted is a question about the *default
+ * value*, not about the projected type in general. The default is `''`, so the
+ * test is `'' extends T`. The narrower `string extends T` — does `T` admit any
+ * string at all — gets the literal-union case wrong: `'' | 'Ready' | 'Failed'`
+ * admits `''` perfectly well.
+ */
+describe('the default fallback is offered exactly where the projected type admits it', () => {
+  type Assert<T extends true> = T;
+  /** True when {@link CelFallbackArgs} lets the argument be left out. */
+  type FallbackOptional<T> = [] extends CelFallbackArgs<T> ? true : false;
+
+  type Phased = {
+    /** A literal union the `''` default is a member of. */
+    phase: '' | 'Ready' | 'Failed';
+    /** A literal union it is not. */
+    outcome: 'Ready' | 'Failed';
+    /** A template-literal type no empty string inhabits. */
+    width: `${number}px`;
+  };
+  const phases = Cel.unsafeListPath<Phased>('gateway.status.phases');
+
+  it('decides optionality by whether the empty string is assignable', () => {
+    // Asserted as values so the aliases are used rather than dangling, which is
+    // the same trick the `void [...]` blocks above play for the value-level
+    // compile-time assertions.
+    const optionality: [
+      // `''` is a member, so the default stands and the argument is optional.
+      Assert<FallbackOptional<'' | 'Ready' | 'Failed'>>,
+      // `string` admits `''` too, which is the case both tests agreed on.
+      Assert<FallbackOptional<string>>,
+      // `''` is not a member: required.
+      Assert<FallbackOptional<'Ready' | 'Failed'> extends false ? true : false>,
+      // Nothing string-shaped at all: required.
+      Assert<FallbackOptional<number> extends false ? true : false>,
+      Assert<FallbackOptional<boolean> extends false ? true : false>,
+      // A template-literal type that no empty string inhabits: required, which
+      // is where `string extends T` happened to give the same answer.
+      Assert<FallbackOptional<`${number}px`> extends false ? true : false>,
+    ] = [true, true, true, true, true, true];
+
+    expect(optionality).toHaveLength(6);
+  });
+
+  it('accepts the default on a literal union containing the empty string', () => {
+    // Used to be a compile error: `string extends '' | 'Ready' | 'Failed'` is
+    // false, so the author had to restate the default the helper would have
+    // used anyway.
+    const bare = Cel.firstWhereHas(phases, 'phase');
+    const explicit = Cel.firstWhereHas(phases, 'phase', 'Ready');
+
+    // @ts-expect-error — still a member check: a string outside the union is
+    // rejected exactly as a number would be.
+    const outsideUnion = Cel.firstWhereHas(phases, 'phase', 'Pending');
+
+    void [bare, explicit, outsideUnion];
+    expect(true).toBe(true);
+  });
+
+  it('still requires a fallback where the empty string is not assignable', () => {
+    // @ts-expect-error — `''` is not one of 'Ready' | 'Failed'.
+    const bareOutcome = Cel.firstWhereHas(phases, 'outcome');
+    const outcome = Cel.firstWhereHas(phases, 'outcome', 'Failed');
+
+    // @ts-expect-error — no empty string inhabits `${number}px`.
+    const bareWidth = Cel.firstWhereHas(phases, 'width');
+    const width = Cel.firstWhereHas(phases, 'width', '120px');
+
+    void [bareOutcome, outcome, bareWidth, width];
+    expect(true).toBe(true);
+  });
+
+  it('renders the default the type level just admitted', () => {
+    // The runtime half has to agree with the type level: `defaultedFallback()`
+    // supplies `''` for the omitted argument, and `''` is what the union
+    // declares, so the emitted ternary is well typed on both engines.
+    const { expression } = Cel.firstWhereHas(phases, 'phase') as unknown as CelExpression;
+
+    expect(expression.endsWith(' : ""')).toBe(true);
+    expect(expression).toContain('size(gateway.status.phases.filter(entry, has(entry.phase))) > 0');
   });
 });
