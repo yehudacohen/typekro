@@ -1,6 +1,26 @@
-/** Preserve offsets while hiding quoted CEL data from reference scanners. */
+/**
+ * Preserve offsets while hiding quoted CEL data from reference scanners.
+ *
+ * "Preserve offsets" is the whole contract, and it is a contract about UTF-16
+ * **code units**, because that is what `String.prototype.indexOf`, `slice`,
+ * `length` and every `RegExpExecArray.index` in the callers are counted in. So
+ * the walk is by code unit — `split('')` — and every blanked unit becomes one
+ * space, which makes `maskCelStringLiterals(x).length === x.length` for every
+ * input.
+ *
+ * Iterating by *code point* (`[...expression]`, `Array.from`, `for…of`, a `/u`
+ * regex replacing each match with a single space) breaks it silently: an astral
+ * character — an emoji, anything above U+FFFF — is one code point and two code
+ * units, so blanking it emits one space where the original had two units, and
+ * every offset after it drifts by one between the mask and the text it is
+ * supposed to index. A caller then slices a fragment one character short, reads
+ * a bracket index that points between two tokens, or re-lexes a literal from
+ * the wrong place — and only for expressions that happen to contain an emoji
+ * inside a string, which is exactly the bug that does not show up in a test
+ * suite written in ASCII.
+ */
 export function maskCelStringLiterals(expression: string): string {
-  const characters = [...expression];
+  const characters = expression.split('');
   let quote: '"' | "'" | undefined;
   let escaped = false;
   for (let index = 0; index < characters.length; index += 1) {
