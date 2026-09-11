@@ -16,7 +16,10 @@
 import { type } from 'arktype';
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { getComponentLogger } from '../../src/core/logging/index.js';
-import { finalizeCelForKro } from '../../src/core/serialization/cel-references.js';
+import {
+  finalizeCelForKro,
+  normalizeRefMarkersToCelPaths,
+} from '../../src/core/serialization/cel-references.js';
 import type { SerializationContext } from '../../src/core/types/serialization.js';
 import { kubernetesComposition, simple } from '../../src/index.js';
 
@@ -494,5 +497,65 @@ describe('nested-composition status inlining — resolver semantics', () => {
     expect(finalizeCelForKro('stack.status.ready', table, context, false)).toBe(
       '${((workloadDeployment.status.readyReplicas >= 1))}'
     );
+  });
+});
+
+describe('nested-composition status inlining — CEL string literals', () => {
+  // One mapping, whose inner expression names a leaf field that is NOT itself a
+  // mapping key, so every substitution below is exactly one level deep.
+  const table = { '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase' };
+
+  it('leaves a token inside a double-quoted literal alone', () => {
+    expect(finalizeCelForKro('"see svc.status.phase"', table)).toBe('${"see svc.status.phase"}');
+  });
+
+  it('leaves a token inside a single-quoted literal alone', () => {
+    expect(finalizeCelForKro("'see svc.status.phase'", table)).toBe("${'see svc.status.phase'}");
+  });
+
+  it('leaves a token inside a URL-ish literal alone', () => {
+    expect(finalizeCelForKro('"http://svc.status.phase/x"', table)).toBe(
+      '${"http://svc.status.phase/x"}'
+    );
+  });
+
+  it('substitutes the same token outside the literal in the same expression', () => {
+    expect(finalizeCelForKro('svc.status.phase + "see svc.status.phase"', table)).toBe(
+      '${(innerDeployment.status.currentPhase) + "see svc.status.phase"}'
+    );
+  });
+
+  it('keeps the literal open across an escaped quote', () => {
+    // The `\\"` does NOT close the literal, so the token after it is still
+    // quoted data; the one after the real closing quote is not.
+    expect(finalizeCelForKro('"a \\" svc.status.phase" == svc.status.phase', table)).toBe(
+      '${"a \\" svc.status.phase" == (innerDeployment.status.currentPhase)}'
+    );
+  });
+
+  it('treats an unterminated quote as ordinary text', () => {
+    // Marker-laden strings come from template literals and may carry a bare
+    // apostrophe. Here the double-quoted literal IS closed, so the apostrophe
+    // inside it is just data and the token outside still resolves.
+    expect(finalizeCelForKro('svc.status.phase == "it\'s ready"', table)).toBe(
+      '${(innerDeployment.status.currentPhase) == "it\'s ready"}'
+    );
+  });
+
+  it('still resolves __KUBERNETES_REF__ markers embedded in template text', () => {
+    // Markers are deliberately embedded in literal-looking text by template
+    // literals. They are marker conversions, not nested tokens, and the literal
+    // masking must not reach them.
+    const markerTable = {
+      '__nestedStatus:stack:host': 'innerService.status.hostName',
+      '__nestedStatus:stack:cachePort': '6379',
+    };
+
+    expect(
+      normalizeRefMarkersToCelPaths(
+        'redis://__KUBERNETES_REF_stack_status.host__:__KUBERNETES_REF_stack_status.cachePort__',
+        { celPrefix: '', resourceIdStrategy: 'deterministic', nestedStatusCel: markerTable }
+      )
+    ).toBe('redis://${innerService.status.hostName}:${string(6379)}');
   });
 });
