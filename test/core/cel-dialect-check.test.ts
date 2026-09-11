@@ -309,6 +309,79 @@ describe('checkCelDialectCompatibility', () => {
   });
 });
 
+
+/**
+ * A CEL map literal is not portable unless its values share one type.
+ *
+ * cel-js takes the map's value type from the first entry and throws
+ * `invalid_argument` on the first entry that differs, so it cannot build
+ * `{"name": "http", "port": 80}` at all; cel-go types such a literal as
+ * `map(string, dyn)` and evaluates it. That is a divergence established without
+ * any schema — the differing types are written out in the literal — and it
+ * matters here because a structured projection fallback emits exactly this
+ * shape.
+ */
+describe('heterogeneous map literals', () => {
+  it('rejects a map mixing a string and an int value, naming cel-js', () => {
+    const findings = check('has(a.b) ? a.b : dyn({"name": "http", "port": 80})');
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rule).toBe('heterogeneous-map-literal');
+    expect(findings[0]?.kind).toBe('divergence');
+    expect(findings[0]?.dialect).toBe('cel-js');
+    expect(findings[0]?.fragment).toBe('{"name": "http", "port": 80}');
+    expect(findings[0]?.message).toContain('cannot evaluate this map at all');
+  });
+
+  it('separates int from double, because cel-js does', () => {
+    expect(check('{"a": 1, "b": 2.5}').map((found) => found.rule)).toEqual([
+      'heterogeneous-map-literal',
+    ]);
+  });
+
+  it('reaches a map nested inside a list literal', () => {
+    expect(check('{"ports": [{"protocol": "TCP", "port": 8080}]}').map((f) => f.rule)).toEqual([
+      'heterogeneous-map-literal',
+    ]);
+  });
+
+  it('accepts maps whose values share a type, and the empty map', () => {
+    for (const expression of [
+      '{"name": "http", "host": "edge.example.test"}',
+      '{"a": 1, "b": 2, "c": 3}',
+      '{"a": true, "b": false}',
+      '{}',
+      '{"only": 1}',
+      // Lists have no such restriction: cel-js evaluates a mixed list happily.
+      '[1, "a", true]',
+      '[]',
+    ]) {
+      expect(check(expression)).toEqual([]);
+    }
+  });
+
+  it('does not read a separator out of a string literal', () => {
+    // `, ` and `: ` inside the quoted value are data, not structure. Splitting
+    // the unmasked text would see three entries here and two value types.
+    expect(check('{"msg": "a, b: c", "other": "x"}')).toEqual([]);
+  });
+
+  it('says nothing about a value whose type the syntax does not settle', () => {
+    // An identifier, a call or a ternary may well be the type that trips
+    // cel-js, but the checker cannot tell, and under-reporting is the only safe
+    // direction for a rule that fails strict mode.
+    for (const expression of [
+      '{"zone": config.data.zone, "count": 1}',
+      '{"a": x ? 1 : 2, "b": "s"}',
+      '{"a": size(l), "b": "s"}',
+      '{"a": 1 + 2, "b": "s"}',
+    ]) {
+      expect(check(expression).map((found) => found.rule)).not.toContain(
+        'heterogeneous-map-literal'
+      );
+    }
+  });
+});
 /**
  * A rule may only fail strict mode when the two engines actually diverge. These
  * pin the forms that were being failed before and are valid on both engines, so

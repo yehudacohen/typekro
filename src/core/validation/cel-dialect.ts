@@ -85,6 +85,7 @@ export type CelDialectRuleId =
   | 'has-index-argument'
   | 'in-on-list-entry'
   | 'guard-after-use-in-logical-chain'
+  | 'heterogeneous-map-literal'
   | 'expression-too-large';
 
 /**
@@ -158,6 +159,14 @@ export const CEL_DIALECT_RULES: readonly {
     summary: 'a has() guard placed to the right of the access it guards, in the operator\'s guarding polarity',
     observed:
       'cel-go absorbs an error in one operand of && / || when the other operand decides the result, regardless of order; cel-js evaluates left to right and propagates the error before the guard is ever reached. The divergence needs no type: the guard itself says the author expects the path to be absent sometimes. Which form is the guard follows the operator: `&&` is decided by `false`, so `has(p)` guards there, while `||` is decided by `true`, so `!has(p)` is the guarding form and the late-guard mirror',
+  },
+  {
+    id: 'heterogeneous-map-literal',
+    kind: 'divergence',
+    dialect: 'cel-js',
+    summary: 'a CEL map literal whose values are not all of one type',
+    observed:
+      'cel-js pins a map literal\'s value type to that of its first entry and throws "invalid_argument: <value>" on the first entry that differs (cel-js 0.8.2, `mapExpression` in its visitor), so `{"name": "http", "port": 80}` cannot be evaluated at all; cel-go types the literal as `map(string, dyn)` when the entry types differ and evaluates it. The divergence needs no schema: the differing types are written out in the literal itself. Lists are unaffected — cel-js evaluates `[1, "a"]` — and a single-entry or empty map is always fine',
   },
   {
     id: 'in-on-list-entry',
@@ -489,6 +498,82 @@ function checkHasIndexArgument(
   }
 }
 
+/**
+ * The CEL type a value expression visibly *is*, when the syntax settles it.
+ *
+ * Only whole literals are classified. `1 + 2` starts with a digit and is still
+ * not classified, because the point is to be certain rather than clever: an
+ * identifier, a call, a ternary or any arithmetic yields `undefined` and takes
+ * its entry out of the comparison entirely.
+ *
+ * `int` and `double` are separate classes because cel-js separates them —
+ * `{"a": 1, "b": 2.5}` is as rejected as `{"a": 1, "b": "x"}`.
+ */
+function literalTypeClass(text: string): string | undefined {
+  const value = text.trim();
+  if (value.length === 0) return undefined;
+  if (value.startsWith('"') || value.startsWith("'")) return 'string';
+  if (value === 'true' || value === 'false') return 'bool';
+  if (value === 'null') return 'null';
+  if (/^-?\d+u$/.test(value)) return 'uint';
+  if (/^-?\d+$/.test(value)) return 'int';
+  if (/^-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) return 'double';
+  if (value.startsWith('[')) return 'list';
+  if (value.startsWith('{')) return 'map';
+  return undefined;
+}
+
+/**
+ * Rule: a map literal whose entry values are not all of the same CEL type.
+ *
+ * Every `{...}` in the expression is checked, nested ones included, and the
+ * classification is purely syntactic: two entries have to carry *visibly*
+ * different literal types before anything is reported, so a map whose values
+ * are identifiers or calls is left alone even though cel-js may still refuse it
+ * at runtime. Under-reporting is the deliberate direction — the alternative is
+ * failing strict mode on a map the checker merely cannot read.
+ *
+ * Masking matters here: `masked` settles the structure, since a `,` or `:`
+ * inside a string is not a separator, while the classification reads the
+ * original text, since masking is what erases the quotes that make a value a
+ * string. Offsets are shared, so the same spans index both.
+ */
+function checkHeterogeneousMapLiteral(
+  expression: string,
+  masked: string,
+  field: string,
+  findings: CelDialectFinding[]
+): void {
+  for (let index = 0; index < masked.length; index += 1) {
+    if (masked[index] !== '{') continue;
+    const close = matchingParen(masked, index);
+    if (close < 0) continue;
+
+    const classes = new Map<string, string>();
+    for (const entry of splitTopLevel(masked, { start: index + 1, end: close }, [','])) {
+      const [, afterKey] = splitTopLevel(masked, entry, [':']);
+      if (afterKey === undefined) continue;
+      const text = expression.slice(afterKey.start, entry.end);
+      const found = literalTypeClass(text);
+      if (found !== undefined && !classes.has(found)) classes.set(found, text.trim());
+    }
+
+    if (classes.size > 1) {
+      const [first, second] = [...classes.entries()];
+      findings.push(
+        finding(
+          'heterogeneous-map-literal',
+          field,
+          expression,
+          expression.slice(index, close + 1),
+          `this map literal mixes ${first?.[0]} (${first?.[1]}) and ${second?.[0]} (${second?.[1]}) values. cel-js takes the map's value type from its first entry and throws "invalid_argument" on the first entry that differs, so it cannot evaluate this map at all; cel-go types the literal as map(string, dyn) and evaluates it. The field resolves under KRO and never in direct mode`,
+          'Give the entries one value type — `string(...)` around the odd ones out is usually enough — or reference an object of the right shape instead of writing a literal, which is what a KubernetesRef or CEL expression of that type does'
+        )
+      );
+    }
+  }
+}
+
 /** Rule: `in` whose right-hand operand may be a typed list entry. */
 function checkInOnListEntry(
   expression: string,
@@ -723,6 +808,7 @@ export function checkCelDialectCompatibility(
   // Half two: the curated cel-go/cel-js divergence denylist.
   const masked = maskCelStringLiterals(trimmed);
   checkHasIndexArgument(trimmed, masked, field, findings);
+  checkHeterogeneousMapLiteral(trimmed, masked, field, findings);
   checkInOnListEntry(trimmed, masked, field, findings);
   const blanked = blankLazyRegions(masked);
   checkLogicalChain(
