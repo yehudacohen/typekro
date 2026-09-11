@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the runaway path. The 16-level depth guard remains a safety net for
   genuinely deep, acyclic nesting and is now an error under strict CEL
   diagnostics (`strictCelDiagnostics` / `TYPEKRO_STRICT_CEL=1`).
+- The nested-composition status inliner now reads the CEL text it rewrites by
+  the language's own lexis, so a reference is expanded only where it really is
+  one. A status field path carrying an index (`items[0].name`,
+  `ports["http"].port`) matches its mapping key again instead of leaving a
+  virtual id in the emitted RGD; the whole `STRING_LIT`/`BYTES_LIT` family is
+  recognised — raw and bytes prefixes, both triple-quoted forms — so a token
+  inside quoted data is left alone; `//` line comments are masked alongside
+  string literals, so commented-out expression text is no longer expanded; and
+  a CEL macro's lambda variable shields only the references inside that macro's
+  body, so `list.map(svc, svc.status.x) && svc.status.phase` expands its second
+  `svc` rather than treating both as the iteration element.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
