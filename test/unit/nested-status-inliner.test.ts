@@ -19,6 +19,7 @@ import { getComponentLogger } from '../../src/core/logging/index.js';
 import {
   finalizeCelForKro,
   inlineNestedStatusRefs,
+  inlineNestedStatusRefsWithStats,
   normalizeRefMarkersToCelPaths,
 } from '../../src/core/serialization/cel-references.js';
 import type { SerializationContext } from '../../src/core/types/serialization.js';
@@ -638,5 +639,46 @@ describe('nested-composition status inlining — postfix operations', () => {
     expect(finalizeCelForKro('svc.status.unknown.deep', { '__nestedStatus:other:zzz': 'x' })).toBe(
       '${svc.status.unknown.deep}'
     );
+  });
+});
+
+describe('nested-composition status inlining — canonical mapping identity', () => {
+  it('detects a cycle that turns a corner through an alias spelling', () => {
+    // `webAppStack2` is not a key; it reaches `__nestedStatus:webAppStack1:ready`
+    // through the base-name strategy. Keyed by the token's own spelling the
+    // cycle is invisible and the mapping gets expanded a second time.
+    const table = { '__nestedStatus:webAppStack1:ready': 'webAppStack2.status.ready' };
+    const warnSpy = spyOnLoggerWarn();
+    try {
+      const { text, stats } = inlineNestedStatusRefsWithStats('webAppStack1.status.ready', table);
+
+      expect(stats.cycleHits).toBe(1);
+      expect(stats.depthExceeded).toBe(false);
+      expect(text).toBe('(webAppStack2.status.ready)');
+      expect(
+        warnSpy.mock.calls.filter(
+          ([message]) => message === 'Nested composition resolution depth limit exceeded'
+        )
+      ).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('serves a second alias spelling of one entry from the memo', () => {
+    const table = {
+      '__nestedStatus:webAppStack1:ready': 'leafWorkload.status.readyReplicas >= 1',
+      '__nestedStatus:consumer:ready': 'webAppStack1.status.ready && webAppStack2.status.ready',
+    };
+
+    const { text, stats } = inlineNestedStatusRefsWithStats('consumer.status.ready', table);
+
+    expect(text).toBe(
+      '((leafWorkload.status.readyReplicas >= 1) && (leafWorkload.status.readyReplicas >= 1))'
+    );
+    // One pass for the input, one for `consumer`, one for the shared entry. The
+    // second spelling resolves to the same canonical key and hits the memo.
+    expect(stats.textPasses).toBe(3);
+    expect(stats.memoHits).toBe(1);
   });
 });
