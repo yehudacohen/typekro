@@ -755,10 +755,20 @@ describe('an unexplained cel-js parse failure', () => {
  * parse tree — and an expression cel-js merely cannot parse is exactly the one
  * that most needs them, since it is served by KRO alone.
  */
-describe('denylist rules on text cel-js cannot parse', () => {
+/**
+ * The denylist rules read structure off the text — a `has(` argument list, a
+ * `{`…`}` map literal, the top-level `&&`/`||` chain — and on ungrammatical text
+ * none of that structure is established. So they run only once the expression is
+ * grammatical: cel-js accepted the whole of it, or the rewrite proof did. A
+ * cel-js parse failure on its own is not a reason to skip them, because cel-js
+ * is not a conformant grammar; the proof is what fills that gap.
+ */
+describe('denylist rules under a proof, on text cel-js cannot parse', () => {
   it('still finds a has() index argument', () => {
     const expression = 'has(a.list[0].f) && [1,2].size() > 0';
     expect(parse(expression).isSuccess).toBe(false);
+    // Both findings: the rules ran because the proof established the text.
+    expect(celDialectParseProof(expression)).toBeDefined();
     expect(check(expression).map((found) => found.rule).sort()).toEqual([
       'cel-js-rejects-spec-cel',
       'has-index-argument',
@@ -783,6 +793,98 @@ describe('denylist rules on text cel-js cannot parse', () => {
     const expression = '"k" in a.list[0] && [1,2].size() > 0';
     expect(parse(expression).isSuccess).toBe(false);
     expect(check(expression).map((found) => found.rule)).toContain('in-on-list-entry');
+  });
+
+  it('reads inside a rewritten span, which the proof text no longer has', () => {
+    // `has(a.list[0].f)` is itself the swallowed receiver here, so the proof
+    // text is `__typekro_recv0.x` and the `has()` survives only in the original.
+    // Running the rules on the original is what keeps this finding.
+    const expression = 'has(a.list[0].f).x';
+    expect(celDialectParseProof(expression)).toBe('__typekro_recv0.x');
+    expect(check(expression).map((found) => found.rule).sort()).toEqual([
+      'cel-js-rejects-spec-cel',
+      'has-index-argument',
+    ]);
+  });
+
+  it('leaves the bracket and chain structure outside a rewritten span alone', () => {
+    // The property the previous test relies on: a rewrite replaces a balanced
+    // bracket pair (or one literal token) with an identifier, so no bracket pair
+    // outside the span is re-paired and no top-level `&&`/`||` is added or
+    // removed. Every operator a rewrite takes away was inside a bracket pair.
+    const expression = 'has(a.p) && (b || c).d != "" && has(a.q)';
+    const proof = celDialectParseProof(expression);
+    expect(proof).toBe('has(a.p) && __typekro_recv0.d != "" && has(a.q)');
+    // Three top-level `&&` operands before and after, and the `||` that vanished
+    // was inside the parens, never part of the top-level chain.
+    expect((proof as string).split('&&')).toHaveLength(3);
+    expect(expression.split('&&')).toHaveLength(3);
+  });
+});
+
+/**
+ * Half two may not run on text that is neither parsed nor proven. The mask and
+ * bracket structure the rules read is not established there, so a `divergence`
+ * finding would fail strict mode on text cel-go rejects outright — the exact
+ * false positive this check exists to avoid.
+ */
+describe('denylist rules do not run on unparsed, unproven text', () => {
+  const ungrammatical: Record<string, string> = {
+    'JavaScript optional chaining': 'a?.b && has(list[0].f)',
+    'an unbalanced call': 'foo(((( && has(list[0].f)',
+    'a dangling operator': 'has(list[0].f) &&',
+    'adjacent primaries': 'a b has(list[0].f)',
+    'a swallowed ungrammatical span': '(a &&).b && has(list[0].f)',
+    'a stray character': 'has(list[0].f) && a.b $',
+  };
+
+  for (const [name, expression] of Object.entries(ungrammatical)) {
+    it(`reports no divergence for ${name}`, () => {
+      // The fragment really is in there, and really is what the rule matches.
+      expect(expression).toContain('has(list[0].f)');
+      expect(celDialectParseProof(expression)).toBeUndefined();
+
+      const findings = check(expression);
+      expect(findings.map((found) => found.rule)).not.toContain('has-index-argument');
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+      // Half one still reports the expression, so the leaf is never silent.
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((found) => found.kind === 'note')).toBe(true);
+    });
+  }
+
+  it('finds the same fragment as a divergence once the text is grammatical', () => {
+    // The control: the rule itself has not changed, only when it is allowed to
+    // speak. cel-js parses this one outright.
+    const expression = 'a.b != "" && has(list[0].f)';
+    expect(parse(expression).isSuccess).toBe(true);
+    expect(celDialectLexicalGap(expression)).toBe(-1);
+
+    const findings = check(expression);
+    expect(findings.map((found) => found.rule)).toContain('has-index-argument');
+    expect(hasCelDialectDivergence(findings)).toBe(true);
+  });
+
+  it('finds both a proven divergence and a denylisted form in one expression', () => {
+    // The rules ran under the proof, so the expression carries both findings.
+    const expression = '[1,2].size() > 0 && has(list[0].f)';
+    expect(parse(expression).isSuccess).toBe(false);
+    expect(celDialectParseProof(expression)).toBeDefined();
+
+    const findings = check(expression);
+    expect(findings.map((found) => found.rule).sort()).toEqual([
+      'cel-js-rejects-spec-cel',
+      'has-index-argument',
+    ]);
+    expect(hasCelDialectDivergence(findings)).toBe(true);
+  });
+
+  it('skips the note-kind rules on unproven text too', () => {
+    // A note about `in` on a list entry describes a structure the text does not
+    // have. Half one already reports the leaf, so nothing is lost by silence.
+    const expression = '"k" in a.list[0] && foo((((';
+    expect(celDialectParseProof(expression)).toBeUndefined();
+    expect(check(expression).map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
   });
 });
 
