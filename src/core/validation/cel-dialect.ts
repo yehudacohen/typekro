@@ -1523,6 +1523,62 @@ function celJsAcceptsWhole(expression: string): boolean {
 }
 
 /**
+ * How deep the swallowed-span check will recurse before giving up.
+ *
+ * A bracketed receiver span nested inside another bracketed receiver span costs
+ * one level — `(("x".size()).b).c` is two — and each level asks cel-js about a
+ * strictly shorter piece of text, so the recursion terminates on its own. The
+ * cap bounds the *cost* rather than the termination: without it an adversarial
+ * chain of nested receivers would re-parse a prefix of the expression once per
+ * level, which is the quadratic shape this module has already had to fix once.
+ * Real emitted status CEL reaches one level; giving up past eight only means no
+ * divergence is proven, which is the safe direction.
+ */
+const CEL_DIALECT_MAX_SPAN_DEPTH = 8;
+
+/**
+ * Whether cel-js accepts the span a `receiver` rewrite is about to swallow.
+ *
+ * The rewrite replaces a whole bracketed span with one identifier, so the text
+ * cel-js is asked about no longer contains it. Without this check the proof
+ * inherits exactly the defect it was built to rule out: `(a &&).b`, `size(a +).b`
+ * and `[1, ,2].size()` each rewrite to something cel-js parses — `__typekro_recv0.b`
+ * — while the part that vanished is ungrammatical on any engine, so cel-go
+ * refuses the original as readily as cel-js does and the "divergence" is a false
+ * positive against strict mode.
+ *
+ * The span is held to the same bar as the whole expression, recursively: cel-js
+ * accepts it outright, or a proof of its own establishes it. The recursion is
+ * needed because a span can carry its own shortfall — `("x".size()).b` swallows
+ * `("x".size())`, which cel-js cannot parse for a reason that *is* a divergence.
+ *
+ * Spans that carry no bracket — a string-literal receiver, an `r`/`b` prefix, a
+ * triple-quoted literal, an exponent float, a number/bool/null receiver — are a
+ * single literal token with no subexpression inside it to be ungrammatical, and
+ * the lexical coverage scan over the original has already established that each
+ * is a well-formed token. Everything a bracket could hide is checked: the
+ * parenthesized group, the global call's argument list, and the list literal.
+ */
+function celJsAcceptsSwallowedSpan(text: string, rewrite: SpecCelRewrite, depth: number): boolean {
+  if (rewrite.as !== 'receiver') return true;
+  const span = text.slice(rewrite.start, rewrite.end);
+  const spanMasked = maskCelStringLiterals(span);
+  if (!/[([{]/.test(spanMasked)) return true;
+  if (depth >= CEL_DIALECT_MAX_SPAN_DEPTH) return false;
+  if (celJsAcceptsWhole(span)) return true;
+
+  // Every receiver rewrite requires a postfix operator after its span, so `span`
+  // is strictly shorter than `text` and the recursion cannot revisit it.
+  const rewritten = rewriteAwayCelJsLimitations(
+    span,
+    spanMasked,
+    buildBracketIndex(spanMasked),
+    depth + 1
+  );
+  return rewritten.applied > 0 && celJsAcceptsWhole(rewritten.text);
+}
+
+/**
  * Rewrite every identified cel-js shortfall out of an expression, leaving the
  * rest of it byte for byte as it was.
  *
@@ -1540,11 +1596,19 @@ function celJsAcceptsWhole(expression: string): boolean {
  * because a rewrite can change where the string literals are. Overlapping
  * shortfalls — a string receiver inside a parenthesized receiver — resolve
  * outermost-first, and whatever is left over is picked up by the next round.
+ *
+ * A `receiver` rewrite over a bracketed span *swallows* that span: `(a && b).c`
+ * becomes `__typekro_recv0.c`, and whatever was between the brackets is gone
+ * from the text cel-js is asked about. That makes the same mistake the whole
+ * proof exists to avoid, one level down — the parse says nothing about the part
+ * it never saw — so a bracketed span is swallowed only once cel-js has been
+ * shown to accept the span itself; see {@link celJsAcceptsSwallowedSpan}.
  */
 function rewriteAwayCelJsLimitations(
   expression: string,
   masked: string,
-  brackets: BracketIndex
+  brackets: BracketIndex,
+  depth = 0
 ): { readonly text: string; readonly applied: number } {
   let text = expression;
   let current = masked;
@@ -1556,6 +1620,7 @@ function rewriteAwayCelJsLimitations(
     const candidates = findSpecCelCelJsRejects(text, current, currentBrackets)
       .map((limitation) => limitation.rewrite)
       .filter((rewrite): rewrite is SpecCelRewrite => rewrite !== undefined && rewrite.end > rewrite.start)
+      .filter((rewrite) => celJsAcceptsSwallowedSpan(text, rewrite, depth))
       // Outermost first at a shared start, so a containing span wins and the
       // contained one is skipped rather than splitting the container in two.
       .sort((left, right) => left.start - right.start || right.end - left.end);
