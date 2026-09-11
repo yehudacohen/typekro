@@ -74,6 +74,45 @@ describe('curated denylist', () => {
       expect(['cel-js', 'cel-go']).toContain(rule.dialect);
     }
   });
+
+  /**
+   * Parsing is not evaluating. cel-go's type checker runs after the parse with
+   * KRO's type environment and function set, and it rejects grammatical CEL —
+   * `1.string()` parses and the checker still refuses it, `string` being a
+   * global conversion function rather than a member. Nothing in this module
+   * models that checker, so nothing in it may promise what KRO does.
+   */
+  it('never promises that KRO resolves or serves the field', () => {
+    const overclaims = [
+      /resolves under KRO/i,
+      /the field resolves/i,
+      /KRO (?:will |does )?serves?\b/i,
+      /works in Kro mode/i,
+      /KRO will (?:serve|evaluate)/i,
+    ];
+    for (const rule of CEL_DIALECT_RULES) {
+      for (const pattern of overclaims) {
+        expect(rule.observed).not.toMatch(pattern);
+      }
+    }
+  });
+
+  it('says so in the message of every divergence a rule can raise', () => {
+    // Each divergence-kind rule, exercised through a real expression, must bound
+    // itself to direct mode and leave KRO's verdict to cel-go's type checker.
+    const raises: Record<string, string> = {
+      'has-index-argument': 'has(a.list[0].f) && a.b != ""',
+      'heterogeneous-map-literal': '{"name": "http", "port": 80}',
+      'cel-js-rejects-spec-cel': '"x".size() > 0',
+    };
+    for (const [rule, expression] of Object.entries(raises)) {
+      const found = check(expression).find((candidate) => candidate.rule === rule);
+      expect(found?.kind).toBe('divergence');
+      expect(found?.message).toContain('never evaluate this field');
+      expect(found?.message).toContain('does not model');
+      expect(found?.message).not.toMatch(/resolves under KRO|the field resolves/i);
+    }
+  });
 });
 
 describe('checkCelDialectCompatibility', () => {
