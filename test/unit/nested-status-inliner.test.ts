@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { getComponentLogger } from '../../src/core/logging/index.js';
 import {
   finalizeCelForKro,
+  inlineNestedStatusRefs,
   normalizeRefMarkersToCelPaths,
 } from '../../src/core/serialization/cel-references.js';
 import type { SerializationContext } from '../../src/core/types/serialization.js';
@@ -557,5 +558,85 @@ describe('nested-composition status inlining — CEL string literals', () => {
         { celPrefix: '', resourceIdStrategy: 'deterministic', nestedStatusCel: markerTable }
       )
     ).toBe('redis://${innerService.status.hostName}:${string(6379)}');
+  });
+});
+
+describe('nested-composition status inlining — postfix operations', () => {
+  // Every inner expression names a leaf field that is not itself a mapping key,
+  // so the only nesting on show is the postfix handling under test.
+  const table = {
+    '__nestedStatus:svc:items': 'innerService.status.loadBalancer.ingress',
+    '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase',
+    '__nestedStatus:svc:addr': 'innerService.status.loadBalancer.ingress[0]',
+  };
+
+  it('preserves a method call on a nested field (KRO)', () => {
+    expect(finalizeCelForKro('svc.status.items.size()', table)).toBe(
+      '${(innerService.status.loadBalancer.ingress).size()}'
+    );
+  });
+
+  it('preserves a method call with arguments on a nested field (KRO)', () => {
+    expect(finalizeCelForKro('svc.status.phase.startsWith("Run")', table)).toBe(
+      '${(innerDeployment.status.currentPhase).startsWith("Run")}'
+    );
+  });
+
+  it('preserves a field access past the mapping key (KRO)', () => {
+    expect(finalizeCelForKro('svc.status.addr.ip', table)).toBe(
+      '${(innerService.status.loadBalancer.ingress[0]).ip}'
+    );
+  });
+
+  it('preserves all three shapes in direct serialization', () => {
+    expect(inlineNestedStatusRefs('svc.status.items.size()', table)).toBe(
+      '(innerService.status.loadBalancer.ingress).size()'
+    );
+    expect(inlineNestedStatusRefs('svc.status.phase.startsWith("Run")', table)).toBe(
+      '(innerDeployment.status.currentPhase).startsWith("Run")'
+    );
+    expect(inlineNestedStatusRefs('svc.status.addr.ip', table)).toBe(
+      '(innerService.status.loadBalancer.ingress[0]).ip'
+    );
+  });
+
+  it('preserves a field access past the mapping key on the marker path', () => {
+    expect(
+      normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.addr.ip__', {
+        celPrefix: '',
+        resourceIdStrategy: 'deterministic',
+        nestedStatusCel: table,
+      })
+    ).toBe('${(innerService.status.loadBalancer.ingress[0]).ip}');
+  });
+
+  it('matches a mapping key that itself contains dots whole', () => {
+    const dotted = {
+      '__nestedStatus:stack:components.app': 'appDeployment.status.readyReplicas >= 1',
+      '__nestedStatus:stack:components': 'SHOULD_NOT_APPEAR',
+    };
+
+    const result = finalizeCelForKro('stack.status.components.app', dotted);
+
+    expect(result).toBe('${(appDeployment.status.readyReplicas >= 1)}');
+    expect(result).not.toContain('SHOULD_NOT_APPEAR');
+  });
+
+  it('does not resolve a method name that collides with a sibling key', () => {
+    const sibling = {
+      '__nestedStatus:svc:phase': 'innerDeployment.status.currentPhase',
+      '__nestedStatus:svc:startsWith': 'SHOULD_NOT_APPEAR',
+    };
+
+    const result = finalizeCelForKro('svc.status.phase.startsWith("Run")', sibling);
+
+    expect(result).toBe('${(innerDeployment.status.currentPhase).startsWith("Run")}');
+    expect(result).not.toContain('SHOULD_NOT_APPEAR');
+  });
+
+  it('leaves the token untouched when no dotted prefix matches', () => {
+    expect(finalizeCelForKro('svc.status.unknown.deep', { '__nestedStatus:other:zzz': 'x' })).toBe(
+      '${svc.status.unknown.deep}'
+    );
   });
 });

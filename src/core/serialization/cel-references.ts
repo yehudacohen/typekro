@@ -213,16 +213,27 @@ function generateCelExpression(
   const isNestedComp = (ref as { __nestedComposition?: boolean }).__nestedComposition === true;
   if (isNestedComp && context?.nestedStatusCel) {
     const fieldName = ref.fieldPath.replace(/^status\./, '');
-    const innerExpr = context.resourceIds?.has(ref.resourceId)
-      ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
-      : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
-    if (innerExpr !== undefined) {
+    // A ref path can reach past the mapping key (`status.addr.ip` against an
+    // `addr` entry); the remainder is re-attached to the finalized expression.
+    const resolution = resolveNestedField(
+      ref.resourceId,
+      fieldName,
+      context.nestedStatusCel,
+      context.resourceIds?.has(ref.resourceId) !== true,
+      false
+    );
+    if (resolution !== undefined) {
       // Seed the entry we just looked up so a self-referential mapping stops
       // at its concrete resource reference instead of expanding again.
-      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context, true, {
-        id: ref.resourceId,
-        field: fieldName,
-      });
+      const finalized = finalizeCelForKro(
+        resolution.entry.expression,
+        context.nestedStatusCel,
+        context,
+        true,
+        { id: ref.resourceId, field: resolution.field }
+      );
+      const withPostfix = applyKroSegmentPostfix(finalized, resolution.postfix);
+      if (withPostfix !== undefined) return withPostfix;
     }
   }
 
@@ -461,6 +472,32 @@ const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
  */
 const NESTED_STATUS_TOKEN_SOURCE = String.raw`\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)`;
 
+/**
+ * One `nestedStatusCel` mapping, carrying the key it is actually stored under.
+ *
+ * The key is what says how much of a dotted field path the entry accounts for,
+ * so {@link resolveNestedField} can hand back the rest as a postfix.
+ */
+interface NestedStatusEntry {
+  /** The `__nestedStatus:<baseId>:<field>` key that matched. */
+  readonly key: string;
+  /** The analyzed inner expression stored under {@link key}. */
+  readonly expression: string;
+}
+
+/**
+ * A mapping entry reached by {@link resolveNestedField}, plus the part of the
+ * requested field path that reached PAST the entry and must be re-attached to
+ * the substitution as a postfix (`.ip`, `.size()`, `.startsWith("x")`).
+ */
+interface NestedFieldResolution {
+  readonly entry: NestedStatusEntry;
+  /** The dotted prefix of the requested path that {@link entry} accounts for. */
+  readonly field: string;
+  /** Dotted remainder including its leading `.`, or `''` when the key matched whole. */
+  readonly postfix: string;
+}
+
 /** Identity of one nested-composition mapping being expanded. */
 interface NestedRefEntry {
   readonly id: string;
@@ -524,17 +561,26 @@ function nestedRefEntryKey(id: string, field: string): string {
  * Ambiguous matches (multiple candidates from the prefix or field-name
  * strategies) emit a warning log and return `undefined` so the caller
  * can fall through to its own error handling.
+ *
+ * Returns the matched entry together with the key it is stored under, which
+ * strategies 2-4 can reach through an alias. See {@link NestedStatusEntry}.
  */
-export function lookupNestedExpression(
+function lookupNestedEntry(
   resourceId: string,
   fieldName: string,
   nestedStatusCel: Record<string, string>,
   allowFieldFallback: boolean = true
-): string | undefined {
+): NestedStatusEntry | undefined {
+  const entryFor = (key: string | undefined): NestedStatusEntry | undefined => {
+    if (key === undefined) return undefined;
+    const expression = nestedStatusCel[key];
+    return expression === undefined ? undefined : { key, expression };
+  };
+
   // Strategy 1: exact match.
   const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
   if (Object.hasOwn(nestedStatusCel, exactKey)) {
-    return nestedStatusCel[exactKey];
+    return entryFor(exactKey);
   }
 
   // Gather all entries for the requested field name once — strategies
@@ -554,8 +600,7 @@ export function lookupNestedExpression(
   const refBase = resourceId.replace(/\d+$/, '');
   const baseNameMatches = fieldMatches.filter((m) => m.baseId.replace(/\d+$/, '') === refBase);
   if (baseNameMatches.length === 1) {
-    const match = baseNameMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(baseNameMatches[0]?.key);
   }
 
   // Strategy 3: unambiguous camelCase / case-insensitive prefix.
@@ -580,8 +625,7 @@ export function lookupNestedExpression(
     );
   });
   if (prefixMatches.length === 1) {
-    const match = prefixMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(prefixMatches[0]?.key);
   }
   if (prefixMatches.length > 1) {
     logger.warn('Ambiguous nested composition prefix match', {
@@ -595,14 +639,111 @@ export function lookupNestedExpression(
   // Strategy 4: field-name uniqueness.
   if (!allowFieldFallback) return undefined;
   if (fieldMatches.length === 1) {
-    const match = fieldMatches[0];
-    return match ? nestedStatusCel[match.key] : undefined;
+    return entryFor(fieldMatches[0]?.key);
   }
   // Field-only fallback is intentionally best-effort and fully silent on
   // ambiguity. Prefix/base-name ambiguity still logs above, but this final
   // branch should never emit low-signal warnings for common status fields
   // like `ready` that appear across many unrelated nested compositions.
   return undefined;
+}
+
+/**
+ * Look up a nested composition's analyzed expression by `(resourceId, fieldName)`.
+ *
+ * Thin projection of {@link lookupNestedEntry} for callers that only need the
+ * expression text. Anything resolving a DOTTED path wants
+ * {@link resolveNestedField} instead.
+ */
+export function lookupNestedExpression(
+  resourceId: string,
+  fieldName: string,
+  nestedStatusCel: Record<string, string>,
+  allowFieldFallback: boolean = true
+): string | undefined {
+  return lookupNestedEntry(resourceId, fieldName, nestedStatusCel, allowFieldFallback)?.expression;
+}
+
+/**
+ * Resolve the longest dotted prefix of `fieldPath` that names a mapping entry
+ * for `id`, returning the unmatched remainder as a postfix.
+ *
+ * `nestedStatusCel` keys are field PATHS — `ready`, but also `components.app`
+ * — so the token capture is greedy on dots and routinely reaches past the key
+ * it should match: `svc.status.addr.ip` when the key is `addr`,
+ * `svc.status.items.size()` when the key is `items`,
+ * `svc.status.phase.startsWith("x")` when the key is `phase`. Looking the whole
+ * captured path up either finds nothing (leaving a virtual id in the emitted
+ * RGD) or lets the field-name fallback match an unrelated entry. Resolving the
+ * longest prefix instead, and re-attaching the remainder to the parenthesized
+ * substitution, preserves the postfix operation: `(inner).ip`, `(inner).size()`,
+ * `(inner).startsWith("x")`.
+ *
+ * Exact `__nestedStatus:<id>:<prefix>` keys are checked at every prefix length
+ * BEFORE the alias ladder runs at any length, so a real key (`addr`) always
+ * beats a fuzzy match on a longer path (`addr.ip`).
+ *
+ * `trailingSegmentIsMethodName` reports that the captured path is immediately
+ * followed by `(` in the source text, which makes its last segment a method
+ * name rather than a field — never a candidate key. It is ignored for a
+ * single-segment path, which has no shorter prefix to fall back to and so keeps
+ * its existing behaviour.
+ */
+function resolveNestedField(
+  id: string,
+  fieldPath: string,
+  nestedStatusCel: Record<string, string>,
+  allowFieldFallback: boolean,
+  trailingSegmentIsMethodName: boolean
+): NestedFieldResolution | undefined {
+  const segments = fieldPath.split('.');
+  const longest =
+    trailingSegmentIsMethodName && segments.length > 1 ? segments.length - 1 : segments.length;
+  if (longest < 1) return undefined;
+
+  const resolutionFor = (count: number, entry: NestedStatusEntry): NestedFieldResolution => ({
+    entry,
+    field: segments.slice(0, count).join('.'),
+    postfix: segments
+      .slice(count)
+      .map((segment) => `.${segment}`)
+      .join(''),
+  });
+
+  // Pass 1: exact keys only, longest prefix first.
+  for (let count = longest; count >= 1; count -= 1) {
+    const key = `__nestedStatus:${id}:${segments.slice(0, count).join('.')}`;
+    const expression = nestedStatusCel[key];
+    if (expression !== undefined) return resolutionFor(count, { key, expression });
+  }
+
+  // Pass 2: the full alias ladder, longest prefix first.
+  for (let count = longest; count >= 1; count -= 1) {
+    const entry = lookupNestedEntry(
+      id,
+      segments.slice(0, count).join('.'),
+      nestedStatusCel,
+      allowFieldFallback
+    );
+    if (entry !== undefined) return resolutionFor(count, entry);
+  }
+  return undefined;
+}
+
+/**
+ * Re-attach a {@link NestedFieldResolution} postfix to an already-finalized KRO
+ * segment.
+ *
+ * Only a segment that is exactly one `${—}` expression can carry a postfix. A
+ * mixed template (literal text interleaved with several `${—}` segments) has no
+ * single expression to qualify, so the caller keeps the original reference and
+ * lets downstream validation flag it, exactly as for an unresolvable one.
+ */
+function applyKroSegmentPostfix(segment: string, postfix: string): string | undefined {
+  if (postfix === '') return segment;
+  const body = /^\$\{([\s\S]*)\}$/.exec(segment)?.[1];
+  if (body === undefined || body === '' || body.includes('${')) return undefined;
+  return `\${(${body})${postfix}}`;
 }
 
 /**
@@ -736,6 +877,8 @@ function substituteNestedRefsInText(
       token,
       match[1] ?? '',
       match[2] ?? '',
+      // A captured path butted straight against `(` ends in a method name.
+      scanned[tokenEnd] === '(',
       state,
       allowKnownResourceSubstitution,
       lambdaVars
@@ -756,7 +899,8 @@ function substituteNestedRefsInText(
 function substituteNestedRefToken(
   token: string,
   id: string,
-  field: string,
+  fieldPath: string,
+  trailingSegmentIsMethodName: boolean,
   state: NestedRefResolutionState,
   allowKnownResourceSubstitution: boolean,
   lambdaVars: ReadonlySet<string>
@@ -770,14 +914,27 @@ function substituteNestedRefToken(
   // A concrete graph resource only ever matches an exact nested mapping —
   // the field-name fallback would let an unrelated composition's field
   // hijack a real resource reference.
-  const innerExpr = isKnownResource
-    ? lookupNestedExpression(id, field, state.nestedStatusCel, false)
-    : lookupNestedExpression(id, field, state.nestedStatusCel);
-  if (innerExpr === undefined) return token;
+  const resolution = resolveNestedField(
+    id,
+    fieldPath,
+    state.nestedStatusCel,
+    !isKnownResource,
+    trailingSegmentIsMethodName
+  );
+  if (resolution === undefined) return token;
 
-  const resolvedInner = expandNestedEntry(id, field, innerExpr, state, lambdaVars);
-  // Parenthesize to preserve operator precedence in compound expressions.
-  return resolvedInner === undefined ? token : `(${resolvedInner})`;
+  const resolvedInner = expandNestedEntry(
+    id,
+    resolution.field,
+    resolution.entry.expression,
+    state,
+    lambdaVars
+  );
+  if (resolvedInner === undefined) return token;
+  // Parenthesize to preserve operator precedence in compound expressions, then
+  // re-attach whatever the token reached past the mapping key so a postfix
+  // field access or method call survives the substitution.
+  return `(${resolvedInner})${resolution.postfix}`;
 }
 
 /**
@@ -883,20 +1040,25 @@ function resolveNestedRefMarkers(
     if (id === '__schema__') return match;
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
+    // A marker field path is a dot-separated identifier sequence, so it can
+    // reach past the mapping key (`status.addr.ip` against an `addr` entry) but
+    // never carries a method call — `(` is outside the marker charset.
+    const resolution = resolveNestedField(
+      id,
+      fieldPath,
+      nestedStatusCel,
+      resourceIds?.has(id) !== true,
+      false
+    );
+    if (resolution === undefined) return match;
     // Seed the entry being expanded so the shared resolver treats a
     // self-referential mapping as terminal here exactly as it does on the
     // structured-ref path.
-    const seedEntry = { id, field: fieldPath };
-    if (resourceIds?.has(id)) {
-      const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
-      if (strictInnerExpr !== undefined)
-        return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel, context, seedEntry);
-      return match;
-    }
-    const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
-    if (innerExpr !== undefined)
-      return innerExprToYamlSegment(innerExpr, nestedStatusCel, context, seedEntry);
-    return match;
+    const segment = innerExprToYamlSegment(resolution.entry.expression, nestedStatusCel, context, {
+      id,
+      field: resolution.field,
+    });
+    return applyKroSegmentPostfix(segment, resolution.postfix) ?? match;
   });
 }
 
@@ -2095,18 +2257,24 @@ export function serializeStatusMappingsToCel(
       // it for KRO status emission.
       if (ref.__nestedComposition && normalizedNestedStatusCel) {
         const fieldName = ref.fieldPath.replace(/^status\./, '');
-        const innerExpr = lookupNestedExpression(
+        // A ref path can reach past the mapping key (`status.addr.ip` against
+        // an `addr` entry); the remainder rides along as a postfix.
+        const resolution = resolveNestedField(
           ref.resourceId,
           fieldName,
-          normalizedNestedStatusCel
+          normalizedNestedStatusCel,
+          true,
+          false
         );
-        if (innerExpr !== undefined) {
+        if (resolution !== undefined) {
           // Seed the entry we just looked up: its mapping may reference its
           // own flattened resource id, which is terminal, not re-expandable.
-          return statusFieldFromExpression(innerExpr, true, true, {
+          const statusField = statusFieldFromExpression(resolution.entry.expression, true, true, {
             id: ref.resourceId,
-            field: fieldName,
+            field: resolution.field,
           });
+          const withPostfix = applyKroSegmentPostfix(statusField, resolution.postfix);
+          if (withPostfix !== undefined) return withPostfix;
         }
       }
 
