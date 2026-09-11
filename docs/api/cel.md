@@ -329,13 +329,15 @@ TYPEKRO_STRICT_CEL=1   # same, as a global default
 
 A rule may fail strict mode only when the two engines genuinely **diverge**:
 there is data for which one returns a value and the other does not, established
-without appeal to a CEL type the serializer cannot see. Two rules clear that
-bar, and they are the only two that can fail a build:
+without appeal to a CEL type the serializer cannot see. Four rules clear that
+bar, and they are the only four that can fail a build:
 
 | Rule | Dialect | The divergence it encodes |
 |------|---------|---------------------------|
 | `has-index-argument` | cel-js | cel-js throws "has() does not support atomic expressions" whenever the operand of `has()` is an index — `has(list[0].f)` and `has(map["k"].f)` alike — while cel-go's `has()` accepts any select expression |
 | `guard-after-use-in-logical-chain` | cel-js | cel-go absorbs an error in one `&&` / `\|\|` operand when the other decides the result, in either order; cel-js evaluates left to right and propagates it before the guard is reached |
+| `heterogeneous-map-literal` | cel-js | cel-js pins a map literal's value type to its first entry and throws on the first entry that differs, so `{"name": "http", "port": 80}` cannot be built at all; cel-go types it `map(string, dyn)` and evaluates it |
+| `cel-js-rejects-spec-cel` | cel-js | A form the CEL grammar permits that cel-js provably cannot parse — see below |
 
 Everything else is reported as a **note**, which is logged in both strictness
 settings and never fails serialization:
@@ -343,7 +345,8 @@ settings and never fails serialization:
 | Rule | Dialect | Why it cannot fail |
 |------|---------|--------------------|
 | `in-on-list-entry` | cel-go | A real rejection *if* cel-go's type env types the entry as a message rather than a map — but that is a fact about the resource's schema, which the serializer does not have |
-| `not-valid-cel` | both | The emitted text is not CEL at all, usually JavaScript that leaked through the expression converter (`?.`, `?[`, a `[…]` list literal). A defect, but the same defect on both engines |
+| `not-valid-cel` | both | The text contains something no CEL grammar accepts — see below. A defect, but the same defect on both engines |
+| `cel-js-parse-failure` | cel-js | cel-js cannot parse it, and nothing establishes *why*. That bounds the claim to direct mode: cel-js is not a conformant CEL parser, so its refusal says nothing about cel-go |
 | `expression-too-large` | unchecked | Past the analysis budget, so no verdict was reached |
 
 Syntax does not establish a CEL type: the same text is a list index against one
@@ -351,6 +354,56 @@ schema and a map lookup against another. So no rule decides list-vs-map from
 bracket shape, and a rule that would need a type to be a divergence is a note
 instead — strict mode never rejects valid CEL. Collection-macro bodies and
 nested ternaries are lazy in both engines and are excluded from the chain rules.
+
+### A cel-js parse failure is not a verdict on cel-go
+
+cel-js is the only CEL parser a TypeScript serializer can call, and it parses a
+*proper subset* of CEL. Its `atomicExpression` rule carries a postfix `.` or `[`
+only after an identifier — plus one index after a list literal, and any postfix
+after a map literal — while the specification's grammar
+([cel-spec `doc/langdef.md`](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md),
+"Syntax") reads:
+
+```ebnf
+Member  = Primary | Member "." SELECTOR ["(" [ExprList] ")"] | Member "[" Expr "]" ;
+Primary = ["."] IDENT ["(" [ExprList] ")"] | "(" Expr ")" | "[" [ExprList] [","] "]"
+        | "{" [MapInits] [","] "}" | LITERAL ;
+```
+
+A postfix therefore applies to *any* Member, literals and parenthesized
+expressions included. So `"x".size()`, `[1,2].size()`, `(a + b).size()` and
+`size(a).b` are all valid CEL that cel-js rejects, and its lexer is short of the
+specification's exponent `FLOAT_LIT` (`1e3`) and of the `r`/`R`/`b`/`B` and
+triple-quoted `STRING_LIT` / `BYTES_LIT` forms.
+
+Because of that, a `parse()` failure is never read as "cel-go would reject this
+too". It is sorted into one of three buckets:
+
+- **`cel-js-rejects-spec-cel`** — a positive, specification-cited check
+  identifies the text as valid CEL that this cel-js version cannot parse. KRO
+  serves the field and direct mode never will, which is a genuine divergence, so
+  it may fail strict mode. Each form is pinned by a test that also asserts
+  cel-js really fails on it, so the rule loses a form the day cel-js gains it.
+- **`not-valid-cel`** — the text contains something the specification's *own*
+  grammar has no token or production for: a `=` outside `==` / `!=` / `<=` /
+  `>=` (CEL has no assignment, so `===`, `!==` and `=>` are JavaScript), a `$`
+  (absent from both `IDENT` and the punctuation set, so `${…}` is an
+  un-substituted placeholder), or a `?` with no `:` to close
+  `Expr = ConditionalOr ["?" ConditionalOr ":" Expr]` (which is what `?.` and
+  `?[` reduce to). Both engines reject these, so it is a note. A trailing
+  `.length` is deliberately *not* in this set — it is a plain
+  `Member "." SELECTOR`, and whether the field exists is a type question. This
+  scan runs whether or not cel-js parsed, because cel-js's lexer silently drops
+  a character it has no token for and hands `a === b` to its parser as `a == b`.
+- **`cel-js-parse-failure`** — everything else cel-js could not parse. The
+  message says only that direct mode cannot evaluate the field, and that the
+  specification may still permit the expression; if it does, that is a cel-js
+  limitation worth reporting upstream.
+
+The denylist rules are regex- and bracket-mask-based rather than tree-based, so
+none of them needs a parse tree and all of them run on text cel-js rejected —
+which is the point, since an expression only KRO can serve is exactly the one
+whose divergences matter most.
 
 Both halves of the check cost about a microsecond per character, so the check
 has an analysis budget: **16 KiB per expression**, several times the largest

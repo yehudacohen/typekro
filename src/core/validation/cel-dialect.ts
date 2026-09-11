@@ -13,6 +13,22 @@
  * expression that only one engine accepts fails at serialization time with the
  * expression, the status leaf it came from, and the dialect that rejects it.
  *
+ * ## cel-js's parser is not the CEL grammar
+ *
+ * cel-js 0.8.2 parses a proper subset of CEL, so a `parse()` failure is a fact
+ * about **direct mode only**. Its `atomicExpression` rule takes a postfix
+ * `.`/`[` after an identifier (and after a map literal, and one index after a
+ * list literal) and nowhere else, while the spec's `Member` production takes a
+ * postfix on any `Member` and `Primary` includes both `LITERAL` and
+ * `"(" Expr ")"` — so `"x".size()`, `[1,2].size()`, `(a).b` and `size(a).b` are
+ * all valid CEL that cel-js rejects, and its lexer has neither the exponent
+ * `FLOAT_LIT` form nor the `r`/`b`/triple-quoted `STRING_LIT` forms. Inferring
+ * "cel-go would reject this too" from a cel-js parse failure is therefore
+ * unsound, and the parse half does not do it: it sorts a failure into
+ * `not-valid-cel` (a form the *spec's* grammar has no token or production for),
+ * `cel-js-rejects-spec-cel` (a positively identified cel-js shortfall — a real
+ * divergence) or `cel-js-parse-failure` (no verdict beyond direct mode).
+ *
  * ## Why a denylist rather than a real cel-go
  *
  * cel-go is a Go library; there is no in-process cel-go for a TypeScript
@@ -82,6 +98,8 @@ export type CelDialectFindingKind = 'divergence' | 'note';
 /** Identifier for a curated dual-dialect rule. */
 export type CelDialectRuleId =
   | 'not-valid-cel'
+  | 'cel-js-rejects-spec-cel'
+  | 'cel-js-parse-failure'
   | 'has-index-argument'
   | 'in-on-list-entry'
   | 'guard-after-use-in-logical-chain'
@@ -109,6 +127,21 @@ export type CelDialectRuleId =
  * Kubernetes object size limit, so the API server refuses it outright.
  */
 export const CEL_DIALECT_MAX_EXPRESSION_LENGTH = 16_384;
+
+/**
+ * How many levels of bracket nesting the span walks will descend.
+ *
+ * Both the lazy-region blanking and the logical-chain walk recurse once per
+ * nested group, and they now run on text cel-js could not parse — where a
+ * runaway `((((…` is exactly the shape that shows up. Nesting is bounded by the
+ * expression length, so 16 KiB of open parens is 8k levels of recursion and a
+ * blown stack; the parse gate used to hide that by returning first.
+ *
+ * 64 is far past anything an emitted status expression reaches — the deepest in
+ * the unit suite is single digits — and stopping the descent only means a
+ * finding deeper than that is not reported, which is the safe direction.
+ */
+const CEL_DIALECT_MAX_NESTING_DEPTH = 64;
 
 /** A single dual-dialect incompatibility found in an emitted expression. */
 export interface CelDialectFinding {
@@ -177,12 +210,28 @@ export const CEL_DIALECT_RULES: readonly {
       "KRO's cel-go type env types a *message* list entry as a message rather than a map and reports \"no matching overload for '@in'\", where cel-js accepts it. Whether the entry here is a message or a map is a fact about the referenced resource's schema, which this check cannot see, so the form is reported for information rather than failed",
   },
   {
+    id: 'cel-js-rejects-spec-cel',
+    kind: 'divergence',
+    dialect: 'cel-js',
+    summary: 'a form the CEL grammar permits and cel-js is known not to parse',
+    observed:
+      "cel-js 0.8.2 is not a conformant CEL parser. Its `atomicExpression` rule (dist/parser.js) allows a postfix `.`/`[` only after an Identifier — plus one index after a list literal, and any postfix after a map literal — while the spec's `Member = Primary | Member \".\" SELECTOR [\"(\" [ExprList] \")\"] | Member \"[\" Expr \"]\"` allows a postfix on *any* Member, and `Primary` includes `LITERAL` and `\"(\" Expr \")\"` (cel-spec doc/langdef.md, \"Syntax\"). Its lexer is short of the spec's `FLOAT_LIT` (no EXPONENT form) and `STRING_LIT`/`BYTES_LIT` (no `r`/`R`/`b`/`B` prefix, no triple-quoted form). Each form below is confirmed to fail `parse()` and is grammatical CEL, so cel-go parses it: the field resolves under KRO and direct mode can never evaluate it. That is a divergence, not a defect in the expression",
+  },
+  {
     id: 'not-valid-cel',
     kind: 'note',
     dialect: 'both',
-    summary: 'the expression is not valid CEL at all',
+    summary: 'the text contains something no CEL grammar accepts',
     observed:
-      "cel-js's own parser rejects it, and so would cel-go — the emitted text is JavaScript that leaked through the expression converter (`?.`, `?[`, a JS list literal). A real defect, and one direct mode can never evaluate, but the same defect on both engines rather than a divergence between them",
+      "matched against the spec's own lexical and syntactic grammar rather than against an engine: `=` outside `==`/`!=`/`<=`/`>=` is not a CEL token at all (the punctuation list in cel-spec doc/langdef.md is `() [] {} . , ? : || && ! < <= >= > == != in + - * / %`), `$` is in neither the punctuation list nor `IDENT`, and a `?` with no matching `:` cannot close `Expr = ConditionalOr [\"?\" ConditionalOr \":\" Expr]`. These are the converter-leakage forms — `===`, `!==`, `=>`, `${`, `?.`, `?[`. Neither engine can evaluate them, so this is a defect rather than a divergence. Note cel-js's *lexer* silently drops a character it has no token for, so `a === b` reaches its parser as `a == b` and \"parses\" — this check therefore runs whether or not cel-js parsed",
+  },
+  {
+    id: 'cel-js-parse-failure',
+    kind: 'note',
+    dialect: 'cel-js',
+    summary: 'cel-js cannot parse the expression and no positive verdict was reached',
+    observed:
+      "cel-js's parser rejected the text and neither the non-CEL token scan nor the confirmed cel-js-limitation checks explain why. A cel-js parse failure on its own says only that *direct mode* cannot evaluate the field: cel-js is not a conformant CEL grammar, so it establishes nothing about cel-go or KRO. Reported so the field is visible, never failed",
   },
   {
     id: 'expression-too-large',
@@ -302,7 +351,8 @@ function blankLazyRegions(masked: string): string {
   for (const scope of collectCelLambdaScopes(masked)) {
     blanked = blankRange(blanked, scope.bodyStart, scope.bodyEnd);
   }
-  const blankTernaryGroups = (span: Span): void => {
+  const blankTernaryGroups = (span: Span, depth: number): void => {
+    if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
     let index = span.start;
     while (index < span.end) {
       if (blanked[index] === '(') {
@@ -312,7 +362,7 @@ function blankLazyRegions(masked: string): string {
         if (splitTopLevel(blanked, interior, ['?']).length > 1) {
           blanked = blankRange(blanked, interior.start, interior.end);
         } else {
-          blankTernaryGroups(interior);
+          blankTernaryGroups(interior, depth + 1);
         }
         index = close + 1;
         continue;
@@ -320,7 +370,7 @@ function blankLazyRegions(masked: string): string {
       index += 1;
     }
   };
-  blankTernaryGroups({ start: 0, end: blanked.length });
+  blankTernaryGroups({ start: 0, end: blanked.length }, 0);
   return blanked;
 }
 
@@ -711,12 +761,14 @@ function checkLogicalChain(
   field: string,
   span: Span,
   established: readonly string[],
-  findings: CelDialectFinding[]
+  findings: CelDialectFinding[],
+  depth: number
 ): void {
+  if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
   // Ternary branches are lazy in both engines, so each `?`/`:` part is its own
   // chain rather than an operand of the surrounding one.
   for (const part of splitTopLevel(masked, span, ['?', ':'])) {
-    checkChain(expression, masked, blanked, field, part, established, findings);
+    checkChain(expression, masked, blanked, field, part, established, findings, depth);
   }
 }
 
@@ -728,8 +780,10 @@ function checkChain(
   field: string,
   span: Span,
   established: readonly string[],
-  findings: CelDialectFinding[]
+  findings: CelDialectFinding[],
+  depth: number
 ): void {
+  if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
   // Precedence: `||` is the loosest operator, so it splits first and each
   // disjunct is then read as its own `&&` chain.
   const disjuncts = splitTopLevel(masked, span, ['||']);
@@ -741,7 +795,7 @@ function checkChain(
     // Not a chain, but a parenthesized group inside it may hold one — and that
     // group inherits whatever this position already established.
     for (const group of parenGroups(masked, span)) {
-      checkLogicalChain(expression, masked, blanked, field, group, established, findings);
+      checkLogicalChain(expression, masked, blanked, field, group, established, findings, depth + 1);
     }
     return;
   }
@@ -780,9 +834,284 @@ function checkChain(
 
     // Descend with what holds at this position: the `&&` chain nested inside an
     // `||` disjunct, and any parenthesized group.
-    checkChain(expression, masked, blanked, field, operand, known, findings);
+    checkChain(expression, masked, blanked, field, operand, known, findings, depth + 1);
     known = [...known, ...(guards[index] as string[])];
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * The parse half.
+ *
+ * cel-js's `parse()` is the only CEL parser this module can call, and it is
+ * **not** a conformant implementation of the CEL grammar. So a `parse()` failure
+ * is never read as a verdict about cel-go: it is sorted into one of three
+ * buckets, each of which stands on evidence of its own.
+ *
+ * The spec quoted throughout is cel-spec `doc/langdef.md`, section "Syntax"
+ * (the EBNF) and its "Lexical Elements" subsection (the token definitions).
+ * ------------------------------------------------------------------------- */
+
+/** `[start, end)` of every string literal token in `expression`. */
+function stringLiteralSpans(expression: string): Span[] {
+  const spans: Span[] = [];
+  let quote: '"' | "'" | undefined;
+  let start = 0;
+  let escaped = false;
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index] as string;
+    if (quote === undefined) {
+      if (character === '"' || character === "'") {
+        quote = character;
+        start = index;
+      }
+      continue;
+    }
+    if (escaped) escaped = false;
+    else if (character === '\\') escaped = true;
+    else if (character === quote) {
+      spans.push({ start, end: index + 1 });
+      quote = undefined;
+    }
+  }
+  return spans;
+}
+
+/** Index of the next non-whitespace character at or after `from`, or -1. */
+function nextNonSpace(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (!/\s/.test(text[index] as string)) return index;
+  }
+  return -1;
+}
+
+/** Index of the previous non-whitespace character before `from`, or -1. */
+function previousNonSpace(text: string, from: number): number {
+  for (let index = from - 1; index >= 0; index -= 1) {
+    if (!/\s/.test(text[index] as string)) return index;
+  }
+  return -1;
+}
+
+const IDENT_CHARACTER = /[A-Za-z0-9_]/;
+
+/** True when a `.` or `[` sits at `index`, i.e. a postfix member operator follows. */
+function postfixFollows(masked: string, after: number): string | undefined {
+  const index = nextNonSpace(masked, after);
+  if (index < 0) return undefined;
+  const character = masked[index] as string;
+  return character === '.' || character === '[' ? character : undefined;
+}
+
+/** One confirmed cel-js shortfall against the spec grammar. */
+interface SpecCelLimitation {
+  readonly at: number;
+  readonly fragment: string;
+  readonly reason: string;
+}
+
+/**
+ * Forms the CEL grammar permits that cel-js 0.8.2 provably cannot parse.
+ *
+ * Every entry here was confirmed two ways before it was written down: the form
+ * is derivable from the spec's own productions (quoted per entry), and
+ * `parse()` was actually called on it and failed. The unit suite re-asserts the
+ * `parse()` half, so the day cel-js catches up the test fails rather than the
+ * rule quietly over-reporting.
+ *
+ * Detection is deliberately conservative in one direction only: an unrecognized
+ * shape yields nothing, because a false positive here fails strict mode on
+ * valid CEL while a false negative merely leaves a `cel-js-parse-failure` note.
+ */
+function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLimitation[] {
+  const found: SpecCelLimitation[] = [];
+  const add = (at: number, end: number, reason: string): void => {
+    found.push({ at, fragment: expression.slice(at, Math.min(end, at + 80)).trim(), reason });
+  };
+
+  // Spec: `Primary = ... | LITERAL`, and `Member = Member "." SELECTOR [...]`
+  // | `Member "[" Expr "]"`, so a postfix applies to a literal primary. cel-js
+  // consumes a StringLiteral as a bare `atomicExpression` alternative with no
+  // postfix at all: `"x".size()`, `"a" .size()` and `"a"["b"]` all fail.
+  for (const span of stringLiteralSpans(expression)) {
+    const postfix = postfixFollows(masked, span.end);
+    if (postfix !== undefined) {
+      add(span.start, span.end + 24, 'a string literal used as the receiver of a member access');
+    }
+    // Spec: `STRING_LIT ::= [rR]? (...)` and `BYTES_LIT ::= [bB] STRING_LIT`.
+    // cel-js has no raw-string and no bytes token, so the prefix lexes as a
+    // one-character identifier and the parse fails.
+    const before = previousNonSpace(expression, span.start);
+    if (
+      before === span.start - 1 &&
+      /[rRbB]/.test(expression[before] as string) &&
+      !IDENT_CHARACTER.test(expression[before - 1] ?? '')
+    ) {
+      add(before, span.end, 'a raw-string or bytes literal prefix, which cel-js has no token for');
+    }
+  }
+  // Spec `STRING_LIT` also admits the triple-quoted forms; cel-js has neither.
+  for (const quote of ['"""', "'''"]) {
+    const at = expression.indexOf(quote);
+    if (at >= 0) add(at, at + 24, 'a triple-quoted string literal, which cel-js has no token for');
+  }
+
+  // Spec: `Primary = "(" Expr ")"`, again a Member and so a legal receiver.
+  // cel-js's `parenthesisExpression` takes no postfix: `(a).b` and `(a+b)[0]`
+  // fail. A `(` that opens a *call* is a different production and is fine, so
+  // only a grouping paren — one not preceded by an identifier character —
+  // counts here.
+  for (let index = 0; index < masked.length; index += 1) {
+    if (masked[index] !== '(') continue;
+    const before = previousNonSpace(masked, index);
+    const identifierCall = before >= 0 && IDENT_CHARACTER.test(masked[before] as string);
+    const close = matchingParen(masked, index);
+    if (close < 0 || postfixFollows(masked, close + 1) === undefined) continue;
+    if (!identifierCall) {
+      add(index, close + 24, 'a parenthesized expression used as the receiver of a member access');
+      continue;
+    }
+    // A global function call — `size(a)`, `has(a.b)`, `int(a)` — is cel-js's
+    // `macrosExpression`, which also takes no postfix, so `size(a).b` fails.
+    // A *member* call (`a.map(x, x).size()`) is part of `identifierExpression`
+    // and cel-js handles it, so a callee written after a `.` is left alone.
+    let start = before;
+    while (start >= 0 && IDENT_CHARACTER.test(masked[start] as string)) start -= 1;
+    if (previousNonSpace(masked, start + 1) < 0 || (masked[start] as string) !== '.') {
+      add(start + 1, close + 24, 'a global function call used as the receiver of a member access');
+    }
+  }
+
+  // Spec: `Primary = "[" [ExprList] [","] "]"`, and a postfix applies to it.
+  // cel-js's `listExpression` allows exactly one trailing index and no `.` at
+  // all, so `[a,b].size()` and `[1,2][0].f` fail while `[1,2][0]` parses.
+  for (let index = 0; index < masked.length; index += 1) {
+    if (masked[index] !== '[') continue;
+    const before = previousNonSpace(masked, index);
+    // An index expression, not a list literal, when something precedes it that
+    // a postfix can attach to.
+    if (before >= 0 && /[A-Za-z0-9_)\]}]/.test(masked[before] as string)) continue;
+    const close = matchingParen(masked, index);
+    if (close < 0) continue;
+    if (postfixFollows(masked, close + 1) === '.') {
+      add(index, close + 24, 'a list literal used as the receiver of a member access');
+      continue;
+    }
+    // The one permitted index, then anything further is past what cel-js takes.
+    if (postfixFollows(masked, close + 1) !== '[') continue;
+    const second = matchingParen(masked, nextNonSpace(masked, close + 1));
+    if (second > 0 && postfixFollows(masked, second + 1) !== undefined) {
+      add(index, second + 24, 'a list literal with more than the one postfix cel-js allows');
+    }
+  }
+
+  // Spec: `Primary = ... | LITERAL` covers the number, bool and null literals
+  // too, so `1.string()`, `1.0.x`, `2u.x`, `true.x` and `null.x` are all
+  // grammatical. cel-js consumes each as a bare token with no postfix.
+  const literalReceiver =
+    /(?<![A-Za-z0-9_.])(?:0[xX][0-9a-fA-F]+[uU]?|\d+(?:\.\d+)?[uU]?|true|false|null)\s*\.\s*[A-Za-z_]/g;
+  for (const match of masked.matchAll(literalReceiver)) {
+    add(
+      match.index,
+      match.index + match[0].length,
+      'a number, bool or null literal used as the receiver of a member access'
+    );
+  }
+
+  // Spec: `FLOAT_LIT ::= -? DIGIT* . DIGIT+ EXPONENT? | -? DIGIT+ EXPONENT`.
+  // cel-js's `Float` token is `-?\d+\.\d+` with no exponent form, so `1e3`,
+  // `1.5e-3` and `0.5e3` are all rejected.
+  for (const match of masked.matchAll(/(?<![A-Za-z0-9_.])\d+(?:\.\d+)?[eE][+-]?\d+/g)) {
+    add(
+      match.index,
+      match.index + match[0].length,
+      'a float literal written with an exponent, which cel-js has no token for'
+    );
+  }
+
+  return found.sort((left, right) => left.at - right.at);
+}
+
+/** One form no CEL grammar accepts, whichever engine reads it. */
+interface NonCelToken {
+  readonly at: number;
+  readonly fragment: string;
+  readonly reason: string;
+}
+
+/**
+ * Text that is not CEL under the spec's own grammar, on any engine.
+ *
+ * The list is built from the spec rather than from an engine, and only from
+ * *absences*: a character or sequence the lexical grammar has no token for, or
+ * a production that cannot be completed. Nothing here is inferred from cel-js
+ * having failed — indeed this runs whether cel-js parsed or not, because its
+ * lexer silently drops a character it has no token for and hands `a === b` to
+ * its parser as `a == b`.
+ *
+ * A trailing `.length` is deliberately *not* in this set. It is a plain
+ * `Member "." SELECTOR`, grammatical on both engines; whether the field exists
+ * is a question about a type this module cannot see.
+ *
+ * @param parsed Whether cel-js accepted the text. The unpaired-`?` check is
+ *   gated on a failure only because a successful parse already proves every
+ *   ternary is closed, so running it would be wasted work rather than unsound.
+ */
+function findNonCelTokens(expression: string, masked: string, parsed: boolean): NonCelToken[] {
+  const found: NonCelToken[] = [];
+  const add = (at: number, length: number, reason: string): void => {
+    found.push({ at, fragment: expression.slice(at, at + Math.max(length, 8)).trim(), reason });
+  };
+
+  // The spec's punctuation list is `() [] {} . , ? : || && ! < <= >= > == != in
+  // + - * / %`. There is no bare `=` in it and CEL has no assignment, so once
+  // the four comparison operators that contain one are taken out, a remaining
+  // `=` is a character no CEL token can carry: `===`, `!==`, `=>`, `a = b`.
+  const withoutComparisons = masked.replace(/[=!<>]=/g, '  ');
+  const stray = withoutComparisons.indexOf('=');
+  if (stray >= 0) {
+    add(
+      Math.max(0, stray - 2),
+      6,
+      '`=` outside `==`, `!=`, `<=` or `>=` — CEL has no assignment operator and no `=` token, so `===`, `!==` and `=>` are all JavaScript'
+    );
+  }
+
+  // `IDENT` is `[_a-zA-Z][_a-zA-Z0-9]*` and `$` is in neither it nor the
+  // punctuation list, so a `${` is an un-substituted template placeholder.
+  const template = masked.indexOf('${');
+  if (template >= 0) {
+    add(template, 8, '`${` — a template placeholder that was never substituted; `$` is not a CEL character');
+  }
+
+  // `Expr = ConditionalOr ["?" ConditionalOr ":" Expr]` is the only production
+  // that consumes a `?`, and it always consumes a `:` with it. A top-level `?`
+  // with no top-level `:` to close it cannot be parsed by any CEL grammar —
+  // which is what `a?.b`, `a?[0]` and `a.?b` each reduce to, the `?` of
+  // JavaScript optional chaining having no ternary behind it.
+  if (!parsed) {
+    let depth = 0;
+    let questions = 0;
+    let colons = 0;
+    let firstQuestion = -1;
+    for (let index = 0; index < masked.length; index += 1) {
+      const character = masked[index] as string;
+      if (character === '(' || character === '[' || character === '{') depth += 1;
+      else if (character === ')' || character === ']' || character === '}') depth -= 1;
+      else if (depth === 0 && character === '?') {
+        questions += 1;
+        if (firstQuestion < 0) firstQuestion = index;
+      } else if (depth === 0 && character === ':') colons += 1;
+    }
+    if (questions > colons && firstQuestion >= 0) {
+      add(
+        firstQuestion,
+        8,
+        '`?` with no `:` to close the conditional — CEL spells optional access `a.b` behind a `has()` guard or a full `? :`, never as JavaScript optional chaining'
+      );
+    }
+  }
+
+  return found.sort((left, right) => left.at - right.at);
 }
 
 /**
@@ -819,34 +1148,78 @@ export function checkCelDialectCompatibility(
     return findings;
   }
 
-  // Half one: cel-js's own parser, used as a stand-in for the CEL grammar
-  // itself. A syntax error here is not a cel-js quirk — the forms that reach it
-  // in practice (`?.`, `?[`, a JavaScript list literal) are JavaScript that
-  // leaked through the expression converter, and cel-go rejects them too. So it
-  // is reported as a `note` naming both engines rather than as a divergence.
-  let parsed: { isSuccess: boolean } | undefined;
+  const masked = maskCelStringLiterals(trimmed);
+
+  // Half one: what cel-js's parser can and cannot be made to say.
+  //
+  // It can say that *direct mode* cannot evaluate the field, and nothing more.
+  // cel-js 0.8.2 is not a conformant CEL grammar — it rejects `"x".size()`,
+  // `[1,2].size()`, `(a).b` and `1e3`, all of which the spec permits — so a
+  // parse failure on its own is no evidence at all about cel-go or KRO. The
+  // three buckets below each carry their own evidence instead, and only the one
+  // backed by a positive, spec-cited identification of valid CEL is a
+  // divergence.
+  let parsed: boolean;
   try {
-    parsed = parse(trimmed);
+    parsed = parse(trimmed).isSuccess === true;
   } catch {
-    parsed = { isSuccess: false };
+    parsed = false;
   }
-  if (!parsed.isSuccess) {
+
+  // Bucket one: text no CEL grammar accepts. Built from the spec's own lexical
+  // and syntactic grammar, never from cel-js's verdict, and so run whether or
+  // not cel-js parsed — its lexer drops an unknown character silently, and
+  // `a === b` reaches its parser as `a == b`.
+  const nonCel = findNonCelTokens(trimmed, masked, parsed);
+  const leak = nonCel[0];
+  if (leak !== undefined) {
     findings.push(
       finding(
         'not-valid-cel',
         field,
         trimmed,
-        undefined,
-        'this is not valid CEL: cel-js cannot parse it, and cel-go would not either. Direct mode can never evaluate this status field, and KRO will refuse the ResourceGraphDefinition',
-        'Usually JavaScript that survived conversion — `?.`, `?[`, `.length`, or a `[...]` list literal. Write the CEL form instead: has() guards, `size()`, and a lazy ternary'
+        leak.fragment,
+        `this is not CEL under the language grammar, whichever engine reads it: ${leak.reason}. Both engines reject it, so direct mode can never evaluate this status field and KRO will refuse the ResourceGraphDefinition`,
+        'Usually JavaScript that survived conversion. Write the CEL form instead: a has() guard rather than `?.`, an index rather than `?[`, `==` rather than `===`, and a resolved reference rather than an un-substituted template placeholder'
       )
     );
-    // The pattern rules below assume a parseable expression.
-    return findings;
+  } else if (!parsed) {
+    // Bucket two: a cel-js parse failure that a positive check identifies as
+    // grammatical CEL. This is the real divergence — KRO serves the field and
+    // direct mode never will — so it may fail strict mode.
+    const limitation = findSpecCelCelJsRejects(trimmed, masked)[0];
+    if (limitation !== undefined) {
+      findings.push(
+        finding(
+          'cel-js-rejects-spec-cel',
+          field,
+          trimmed,
+          limitation.fragment,
+          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). cel-go parses this form, so the field resolves under KRO and direct mode can never evaluate it`,
+          'Rewrite the receiver as an identifier chain — bind the literal or parenthesized value to a resource field, or use the global form of the call (`size(x)` rather than `x.size()`) — until cel-js supports the spec form'
+        )
+      );
+    } else {
+      // Bucket three: cel-js cannot parse it and nothing above explains why.
+      // The only sound claim is about direct mode.
+      findings.push(
+        finding(
+          'cel-js-parse-failure',
+          field,
+          trimmed,
+          undefined,
+          'cel-js cannot parse this expression, so direct mode cannot evaluate this field; the CEL specification may still permit it and the controller may still serve it. Verify against the spec grammar; if it is valid CEL, this is a cel-js limitation worth reporting upstream',
+          'Check the expression against cel-spec doc/langdef.md. If the grammar permits it, the field works in Kro mode and only direct mode is affected — otherwise fix the emitted CEL'
+        )
+      );
+    }
   }
 
-  // Half two: the curated cel-go/cel-js divergence denylist.
-  const masked = maskCelStringLiterals(trimmed);
+  // Half two: the curated cel-go/cel-js divergence denylist. Every rule here is
+  // regex- and bracket-mask-based rather than tree-based, so none of them needs
+  // a parse and all of them run on text cel-js rejected — which is the point:
+  // an expression cel-js merely cannot parse is still checked for the
+  // divergences that would bite it under KRO.
   checkHasIndexArgument(trimmed, masked, field, findings);
   checkHeterogeneousMapLiteral(trimmed, masked, field, findings);
   checkInOnListEntry(trimmed, masked, field, findings);
@@ -858,7 +1231,8 @@ export function checkCelDialectCompatibility(
     field,
     { start: 0, end: masked.length },
     [],
-    findings
+    findings,
+    0
   );
   return findings;
 }
@@ -926,6 +1300,10 @@ function excerpt(text: string): string {
 function verdict(found: CelDialectFinding): string {
   if (found.dialect === 'unchecked') return 'not checked';
   if (found.dialect === 'both') return 'rejected by both dialects';
+  // A cel-js parse failure is a certainty about cel-js and says nothing at all
+  // about the other engine, so it reads as neither "rejected" (which would
+  // imply a verdict was reached on the form) nor "may be rejected".
+  if (found.rule === 'cel-js-parse-failure') return 'not parseable by cel-js, cel-go unknown';
   return `${found.kind === 'divergence' ? 'rejected by' : 'may be rejected by'} ${found.dialect}`;
 }
 
