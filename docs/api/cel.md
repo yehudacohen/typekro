@@ -165,7 +165,7 @@ function firstWhereHas<
 >(
   list: CelListSelector<TElement>,
   field: TField,
-  fallback?: RefOrValue<string | number | boolean | null | undefined>
+  ...fallback: CelFallbackArgs<NonNullable<TElement[TField]>>
 ): CelExpression<NonNullable<TElement[TField]>> & NonNullable<TElement[TField]>
 ```
 
@@ -193,6 +193,50 @@ has(a.status) && has(a.status.list)
 
 where `<matching>` is `<list>.filter(entry, has(entry.<field>))`.
 
+#### The fallback has the projected type
+
+`fallback` is typed as the field being projected, not as "any scalar". Two
+reasons, and the second is the one that bites:
+
+- The projection is **typed** as the field it projects, so a fallback of another
+  type makes that type a lie.
+- The fallback is emitted as the `else` branch of a CEL ternary, and **cel-go
+  rejects a ternary whose branches have different types** when KRO admits the
+  ResourceGraphDefinition. cel-js evaluates it happily, so the mismatch survives
+  every direct-mode test and surfaces only on a cluster.
+
+```typescript
+// A string field may be left to the '' default, or given an explicit string.
+host: Cel.firstWhereHas(gateway.status.endpoints, 'host')
+host: Cel.firstWhereHas(gateway.status.endpoints, 'host', 'pending')
+
+// A fallback of the wrong type is a compile error.
+host: Cel.firstWhereHas(gateway.status.endpoints, 'host', 8080)
+//                                                        ^ not assignable to RefOrValue<string>
+```
+
+The `''` default is only available where the projected type admits a string.
+For any other field type the fallback is **required**, so a numeric field
+without one is a compile error rather than a silent `''` that KRO will reject:
+
+```typescript
+// Error: Expected 3 arguments, but got 2 — a number field has no '' default.
+port: Cel.firstWhereHas(gateway.status.endpoints, 'port')
+
+port: Cel.firstWhereHas(gateway.status.endpoints, 'port', 8080)  // OK
+```
+
+A `KubernetesRef` or CEL expression of the matching type is accepted in place of
+a literal, so projections compose — this is how a composition prefers one
+endpoint over another:
+
+```typescript
+endpoint: Cel.firstOf(
+  objectStore.status.endpoints.secure,
+  Cel.firstOf(objectStore.status.endpoints.insecure)
+)
+```
+
 ### `Cel.loadBalancerAddress()`
 
 `Cel.firstWhereHas` bound to a Service's load balancer address, whose entries
@@ -208,10 +252,13 @@ loadBalancer: {
 
 ### `Cel.firstOf()`
 
-The same guard for a list of scalars, where there is no field to filter on.
+The same guard for a list of scalars, where there is no field to filter on. The
+fallback follows the same rule: it has the element type, and is optional only
+where that type admits a string.
 
 ```typescript
 endpoint: Cel.firstOf(objectStore.status.endpoints.secure)
+replicas: Cel.firstOf(cluster.status.replicaCounts, 0)  // number list: fallback required
 ```
 
 ### `Cel.unsafeListPath()`

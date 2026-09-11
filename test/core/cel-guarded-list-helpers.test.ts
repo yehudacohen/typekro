@@ -221,3 +221,157 @@ describe('selectable list arguments', () => {
     expect(selected).toBe(named);
   });
 });
+
+/**
+ * The fallback is the `else` branch of the emitted ternary, so it has to carry
+ * the type being projected twice over: the projection is *typed* as the field it
+ * projects, and cel-go rejects a ternary whose branches disagree at the point
+ * KRO admits the ResourceGraphDefinition — while cel-js evaluates it happily, so
+ * a mismatch survives every direct-mode test and surfaces only on a cluster.
+ *
+ * These are compile-time assertions in the convention the repo already uses: if
+ * this file typechecks the tests pass, and a `@ts-expect-error` that stops being
+ * an error is reported by tsc as an unused directive.
+ */
+describe('fallback is constrained to the projected type', () => {
+  /** Index of `token` in `text` outside any parenthesized group, or -1. */
+  function topLevelIndex(text: string, token: string): number {
+    let depth = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (char === '(') depth += 1;
+      else if (char === ')') depth -= 1;
+      else if (depth === 0 && text.startsWith(token, index)) return index;
+    }
+    return -1;
+  }
+
+  /**
+   * The two fallback branches of an emitted projection, as text.
+   *
+   * The shape is `<guard> ? (<size check> ? <projection> : <fallback>) : <fallback>`.
+   * A fallback that is itself a projection contains its own ternary, so the
+   * split has to be paren-aware rather than a `lastIndexOf`.
+   */
+  function fallbackBranches(expression: string): [string, string] {
+    const colon = topLevelIndex(expression, ' : ');
+    const question = topLevelIndex(expression, ' ? ');
+    expect(question).toBeGreaterThan(0);
+    expect(colon).toBeGreaterThan(question);
+
+    const outer = expression.slice(colon + 3);
+    const body = expression.slice(question + 3, colon).replace(/^\(|\)$/g, '');
+    const inner = body.slice(topLevelIndex(body, ' : ') + 3);
+    return [inner, outer];
+  }
+
+  type Endpoint = { host: string; port: number; ready?: boolean };
+  const endpoints = Cel.unsafeListPath<Endpoint>('gateway.status.endpoints');
+  const ports = Cel.unsafeListPath<number>('gateway.status.ports');
+
+  it('accepts a fallback of the projected type and rejects every other shape', () => {
+    // A string field may be left to the '' default.
+    const host = Cel.firstWhereHas(endpoints, 'host');
+    // ...or given an explicit string.
+    const explicitHost = Cel.firstWhereHas(endpoints, 'host', 'pending');
+
+    // @ts-expect-error — a numeric fallback on a string field emits a ternary
+    // whose branches disagree, which cel-go rejects at RGD admission.
+    const mistypedHost = Cel.firstWhereHas(endpoints, 'host', 8080);
+
+    // @ts-expect-error — a numeric field has no '' default to fall back to, so
+    // the fallback is required rather than silently ''.
+    const barePort = Cel.firstWhereHas(endpoints, 'port');
+
+    // A numeric field with a numeric fallback is the supported form.
+    const port = Cel.firstWhereHas(endpoints, 'port', 8080);
+
+    // @ts-expect-error — and a string fallback on a numeric field is rejected
+    // in the same way as the reverse.
+    const mistypedPort = Cel.firstWhereHas(endpoints, 'port', 'none');
+
+    // A boolean field likewise has no string default.
+    // @ts-expect-error — boolean field, no fallback.
+    const bareReady = Cel.firstWhereHas(endpoints, 'ready');
+    const ready = Cel.firstWhereHas(endpoints, 'ready', false);
+
+    // The same rules apply to the scalar-list helper.
+    const secure = Cel.firstOf(Cel.unsafeListPath<string>('store.status.endpoints.secure'));
+    // @ts-expect-error — a list of numbers has no '' default.
+    const barePort0 = Cel.firstOf(ports);
+    const port0 = Cel.firstOf(ports, 0);
+
+    void [
+      host,
+      explicitHost,
+      mistypedHost,
+      barePort,
+      port,
+      mistypedPort,
+      bareReady,
+      ready,
+      secure,
+      barePort0,
+      port0,
+    ];
+    expect(true).toBe(true);
+  });
+
+  it('accepts a KubernetesRef or CEL expression of the matching type as the fallback', () => {
+    const hostRef = ref<string>('fallbackService', 'status.host');
+    const portRef = ref<number>('fallbackService', 'status.port');
+
+    const host = Cel.firstWhereHas(endpoints, 'host', hostRef);
+    const port = Cel.firstWhereHas(endpoints, 'port', portRef);
+    // A projection is itself a CelExpression of the projected type, so it
+    // composes as the fallback of another projection — which is how the Rook
+    // composition prefers a secure endpoint over an insecure one.
+    const chained = Cel.firstOf(
+      Cel.unsafeListPath<string>('store.status.endpoints.secure'),
+      Cel.firstOf(Cel.unsafeListPath<string>('store.status.endpoints.insecure'))
+    );
+
+    // @ts-expect-error — a ref of the wrong type is rejected like a literal of
+    // the wrong type.
+    const mistyped = Cel.firstWhereHas(endpoints, 'host', portRef);
+
+    void [host, port, chained, mistyped];
+    expect(true).toBe(true);
+  });
+
+  it('renders every accepted fallback shape, and renders it identically in both branches', () => {
+    const cases = [
+      Cel.firstWhereHas(endpoints, 'host', 'pending'),
+      Cel.firstWhereHas(endpoints, 'port', 8080),
+      Cel.firstWhereHas(endpoints, 'ready', false),
+      Cel.firstWhereHas(endpoints, 'host', ref<string>('fallbackService', 'status.host')),
+      Cel.firstOf(ports, 0),
+      Cel.firstOf(
+        Cel.unsafeListPath<string>('store.status.endpoints.secure'),
+        Cel.firstOf(Cel.unsafeListPath<string>('store.status.endpoints.insecure'))
+      ),
+    ] as unknown as CelExpression[];
+
+    for (const { expression } of cases) {
+      const [inner, outer] = fallbackBranches(expression);
+
+      // Both branches have to render the fallback identically: a ternary whose
+      // branches differ is what cel-go rejects at RGD admission.
+      expect(outer.length).toBeGreaterThan(0);
+      expect(inner).toBe(outer);
+    }
+  });
+
+  it('renders each fallback type as the CEL literal of that type', () => {
+    const rendered = (value: unknown) => fallbackBranches((value as CelExpression).expression)[1];
+
+    expect(rendered(Cel.firstWhereHas(endpoints, 'host', 'pending'))).toBe('"pending"');
+    expect(rendered(Cel.firstWhereHas(endpoints, 'port', 8080))).toBe('8080');
+    expect(rendered(Cel.firstWhereHas(endpoints, 'ready', false))).toBe('false');
+    expect(rendered(Cel.firstOf(ports, 0))).toBe('0');
+    expect(
+      rendered(Cel.firstWhereHas(endpoints, 'host', ref<string>('fallbackService', 'status.host')))
+    ).toBe('fallbackService.status.host');
+    expect(rendered(Cel.firstWhereHas(endpoints, 'host'))).toBe('""');
+  });
+});

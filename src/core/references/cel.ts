@@ -516,6 +516,34 @@ export type CelEntryProjection<TElement> = CelExpression<NonNullable<TElement>> 
   NonNullable<TElement>;
 
 /**
+ * The trailing `fallback` parameter of a projection helper, constrained to the
+ * type being projected.
+ *
+ * Two things are being said at once, which is why this is a parameter *list*
+ * rather than a parameter type:
+ *
+ * - **The fallback has the projected type.** A projection is typed as the field
+ *   it projects, so a fallback of any other type makes that type a lie. Worse,
+ *   the helpers emit the fallback as the `else` branch of a CEL ternary, and a
+ *   ternary whose branches have different types is rejected outright by cel-go
+ *   when KRO admits the ResourceGraphDefinition — while cel-js evaluates it
+ *   happily, so the mismatch survives every direct-mode test and surfaces only
+ *   on a cluster.
+ * - **The default `''` is only available where the projected type admits any
+ *   string.** `string extends T` is exactly that question: true for `string`
+ *   (and for wider unions containing it), false for `number`, for `boolean` and
+ *   for a string-literal union that `''` is not a member of. Where it is false
+ *   the argument is required, so a numeric field with no fallback is a compile
+ *   error rather than a silent `''` that KRO will reject.
+ *
+ * `RefOrValue` is kept, so a `KubernetesRef` or a CEL expression of the right
+ * type is still accepted in place of a literal.
+ */
+export type CelFallbackArgs<T> = string extends T
+  ? [fallback?: RefOrValue<T>]
+  : [fallback: RefOrValue<T>];
+
+/**
  * Name a list by its CEL path, when there is no proxy to select it from.
  *
  * **Unsafe** in one specific sense: nothing checks the path. Not that the named
@@ -588,6 +616,20 @@ function chainedHasGuard(path: string): string | undefined {
 }
 
 /**
+ * The fallback a projection helper was given, or the `''` default.
+ *
+ * The parameter is a rest tuple because {@link CelFallbackArgs} decides at the
+ * type level whether the argument may be omitted; at runtime that reduces to
+ * "the argument if one was passed". An explicitly passed `undefined` is treated
+ * as omitted, so it cannot reach `celValueForTernary` and be rendered as `""`
+ * on a field whose type is not a string.
+ */
+function defaultedFallback(fallback: readonly unknown[]): RefOrValue<unknown> {
+  const [given] = fallback;
+  return given === undefined ? '' : (given as RefOrValue<unknown>);
+}
+
+/**
  * Project the first entry of an optional nested list that actually carries a
  * field, in the one CEL form both engines accept.
  *
@@ -626,7 +668,10 @@ function chainedHasGuard(path: string): string | undefined {
  * @param field The field an entry must carry to be selected. Must be a key of
  *   the list's element type.
  * @param fallback Value used when the list is absent, empty, or has no entry
- *   carrying `field`. Defaults to the empty string.
+ *   carrying `field`. Has the type of the projected field — both because the
+ *   projection is typed as that field, and because cel-go rejects a ternary
+ *   whose branches disagree. Defaults to the empty string only where that field
+ *   type admits a string; elsewhere it is required. See {@link CelFallbackArgs}.
  *
  * @example
  * ```typescript
@@ -643,7 +688,7 @@ function chainedHasGuard(path: string): string | undefined {
 function firstWhereHas<TElement extends object, TField extends Extract<keyof TElement, string>>(
   list: CelListSelector<TElement>,
   field: TField,
-  fallback: RefOrValue<CelValue> = ''
+  ...fallback: CelFallbackArgs<NonNullable<TElement[TField]>>
 ): CelFieldProjection<TElement, TField> {
   if (!/^[A-Za-z_$][\w$]*$/.test(field)) {
     throw new TypeKroError(
@@ -654,7 +699,7 @@ function firstWhereHas<TElement extends object, TField extends Extract<keyof TEl
   const path = celListPath(list, 'Cel.firstWhereHas');
   const matching = `${path}.filter(entry, has(entry.${field}))`;
   const guard = chainedHasGuard(path) ?? `has(${path})`;
-  const fallbackCel = celValueForTernary(fallback);
+  const fallbackCel = celValueForTernary(defaultedFallback(fallback));
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
@@ -675,6 +720,11 @@ function firstWhereHas<TElement extends object, TField extends Extract<keyof TEl
  * As with {@link firstWhereHas}, the list is selected from a resource or schema
  * proxy; a hand-written path has to go through {@link unsafeListPath}.
  *
+ * @param list The list to read, selected from a resource or schema proxy.
+ * @param fallback Value used when the list is absent or empty. Has the element
+ *   type, and is optional only where that type admits a string — see
+ *   {@link CelFallbackArgs}.
+ *
  * @example
  * ```typescript
  * endpoint: Cel.firstOf(Cel.unsafeListPath<string>('objectStore.status.endpoints.secure'))
@@ -682,11 +732,11 @@ function firstWhereHas<TElement extends object, TField extends Extract<keyof TEl
  */
 function firstOf<TElement>(
   list: CelListSelector<TElement>,
-  fallback: RefOrValue<CelValue> = ''
+  ...fallback: CelFallbackArgs<NonNullable<TElement>>
 ): CelEntryProjection<TElement> {
   const path = celListPath(list, 'Cel.firstOf');
   const guard = chainedHasGuard(path) ?? `has(${path})`;
-  const fallbackCel = celValueForTernary(fallback);
+  const fallbackCel = celValueForTernary(defaultedFallback(fallback));
 
   return {
     [CEL_EXPRESSION_BRAND]: true,
@@ -743,7 +793,7 @@ export interface LoadBalancerServiceRef {
 function loadBalancerAddress(
   service: LoadBalancerServiceRef,
   field: 'ip' | 'hostname' = 'ip',
-  fallback: RefOrValue<CelValue> = ''
+  fallback: RefOrValue<string> = ''
 ): CelExpression<string> & string {
   return firstWhereHas<LoadBalancerIngressEntry, 'ip' | 'hostname'>(
     service.status.loadBalancer.ingress as CelListSelector<LoadBalancerIngressEntry>,
