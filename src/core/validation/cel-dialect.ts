@@ -91,11 +91,7 @@
  */
 
 import { parse } from 'cel-js';
-import {
-  collectCelLambdaScopes,
-  isCelLambdaLocalAt,
-  maskCelStringLiterals,
-} from '../references/cel-lexical-scanner.js';
+import { collectCelLambdaScopes, isCelLambdaLocalAt } from '../references/cel-lexical-scanner.js';
 
 /**
  * The CEL engine that rejects — or diverges on — an expression.
@@ -655,6 +651,39 @@ function dereferencedPaths(masked: string, span: Span, brackets: BracketIndex): 
   return [...slice.matchAll(DOTTED_PATH)].map((found) => found[0]);
 }
 
+/**
+ * One expression in the three alignments every scan in this module needs.
+ *
+ * The three are the same text at the same offsets: identical `length`,
+ * character for character except where one of them blanks something out to a
+ * space. So a span read off any of them indexes the same characters in all
+ * three, which is what lets a rule settle *structure* on `masked`, read a
+ * literal's *content* off `source`, and quote the expression the author
+ * actually wrote. Nothing here may be built by a code-point walk — one space
+ * per code point shrinks an astral character by a UTF-16 unit and every offset
+ * after it drifts; see {@link maskCelCommentsAndStrings}.
+ *
+ * - `reported` — the expression exactly as emitted, comments and all. Quoted in
+ *   findings and read by nothing else: a report should show what was written.
+ * - `source` — comments blanked to spaces, string literals intact. What a rule
+ *   reads when it needs the content of a literal, and what every fragment is
+ *   sliced from, so no identified form can be made of comment text.
+ * - `masked` — `source` with the string literals blanked too. What every
+ *   structural scan reads: brackets, the operator chain, `has(`, the receiver
+ *   detectors. A `[`, `&&` or `:` inside a literal or a comment is text.
+ */
+interface CelDialectText {
+  readonly reported: string;
+  readonly source: string;
+  readonly masked: string;
+}
+
+/** Mask one expression into the three alignments the rules read. */
+function celDialectText(reported: string): CelDialectText {
+  const { source, masked } = maskCelCommentsAndStrings(reported);
+  return { reported, source, masked };
+}
+
 function finding(
   rule: CelDialectRuleId,
   field: string,
@@ -691,24 +720,24 @@ function finding(
  * message says so rather than promising the field resolves under KRO.
  */
 function checkHasIndexArgument(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   field: string,
   findings: CelDialectFinding[],
   brackets: BracketIndex
 ): void {
+  const masked = text.masked;
   const pattern = /\bhas\s*\(/g;
   let match: RegExpExecArray | null = pattern.exec(masked);
   while (match !== null) {
     const open = match.index + match[0].length - 1;
     const close = matchingParen(brackets, open);
     if (close > open && masked.slice(open + 1, close).includes('[')) {
-      const fragment = expression.slice(match.index, close + 1);
+      const fragment = text.source.slice(match.index, close + 1);
       findings.push(
         finding(
           'has-index-argument',
           field,
-          expression,
+          text.reported,
           fragment,
           'cel-js rejects has() whose operand is an index expression ("has() does not support atomic expressions") while cel-go\'s has() macro accepts any select expression, index included. Direct mode can therefore never evaluate this field. Whether KRO evaluates it depends on cel-go\'s type checker and function environment, which this check does not model',
           'Select entries with `list.filter(entry, has(entry.field))` inside a lazy ternary — Cel.firstWhereHas() emits exactly that'
@@ -803,12 +832,12 @@ function literalTypeClass(
  * can read the original while matching brackets out of the masked index.
  */
 function checkHeterogeneousMapLiteral(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   field: string,
   findings: CelDialectFinding[],
   brackets: BracketIndex
 ): void {
+  const masked = text.masked;
   for (let index = 0; index < masked.length; index += 1) {
     if (masked[index] !== '{') continue;
     const close = matchingParen(brackets, index);
@@ -819,9 +848,9 @@ function checkHeterogeneousMapLiteral(
       const [, afterKey] = splitTopLevel(masked, entry, [':'], brackets);
       if (afterKey === undefined) continue;
       const span: Span = { start: afterKey.start, end: entry.end };
-      const found = literalTypeClass(expression, span, brackets);
+      const found = literalTypeClass(text.source, span, brackets);
       if (found !== undefined && !classes.has(found)) {
-        classes.set(found, expression.slice(span.start, span.end).trim());
+        classes.set(found, text.source.slice(span.start, span.end).trim());
       }
     }
 
@@ -831,8 +860,8 @@ function checkHeterogeneousMapLiteral(
         finding(
           'heterogeneous-map-literal',
           field,
-          expression,
-          expression.slice(index, close + 1),
+          text.reported,
+          text.source.slice(index, close + 1),
           `this map literal mixes ${first?.[0]} (${first?.[1]}) and ${second?.[0]} (${second?.[1]}) values. cel-js takes the map's value type from its first entry and throws "invalid_argument" on the first entry that differs, so it cannot evaluate this map at all; cel-go types the literal as map(string, dyn) and evaluates it. Direct mode can therefore never evaluate this field. Whether KRO evaluates it depends on the rest of cel-go's type checking under KRO's environment, which this check does not model`,
           'Give the entries one value type — `string(...)` around the odd ones out is usually enough — or reference an object of the right shape instead of writing a literal, which is what a KubernetesRef or CEL expression of that type does'
         )
@@ -843,12 +872,12 @@ function checkHeterogeneousMapLiteral(
 
 /** Rule: `in` whose right-hand operand may be a typed list entry. */
 function checkInOnListEntry(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   field: string,
   findings: CelDialectFinding[]
 ): void {
-  const lambdaScopes = collectCelLambdaScopes(expression);
+  const masked = text.masked;
+  const lambdaScopes = collectCelLambdaScopes(text.source);
   const pattern = /\bin\b/g;
   let match: RegExpExecArray | null = pattern.exec(masked);
   while (match !== null) {
@@ -880,8 +909,8 @@ function checkInOnListEntry(
         finding(
           'in-on-list-entry',
           field,
-          expression,
-          expression.slice(match.index, cursor),
+          text.reported,
+          text.source.slice(match.index, cursor),
           `\`in\` is applied to '${operand}', which may be a single list entry. If KRO's cel-go type env types that entry as a message rather than a map it rejects \`in\` on it ("no matching overload for '@in'") where cel-js accepts it. Whether it does is a fact about the resource's schema, which this check cannot see — so this is reported, not failed`,
           'If the entry is a message, test the field with has() instead: `list.filter(entry, has(entry.field))`'
         )
@@ -932,8 +961,7 @@ function checkInOnListEntry(
  * is a missed finding rather than a strict-mode failure on valid CEL.
  */
 function checkLogicalChain(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   blanked: string,
   field: string,
   span: Span,
@@ -945,15 +973,14 @@ function checkLogicalChain(
   if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
   // Ternary branches are lazy in both engines, so each `?`/`:` part is its own
   // chain rather than an operand of the surrounding one.
-  for (const part of splitTopLevel(masked, span, ['?', ':'], brackets)) {
-    checkChain(expression, masked, blanked, field, part, established, findings, depth, brackets);
+  for (const part of splitTopLevel(text.masked, span, ['?', ':'], brackets)) {
+    checkChain(text, blanked, field, part, established, findings, depth, brackets);
   }
 }
 
 /** One `||` or `&&` chain — or a single operand — with what already holds at it. */
 function checkChain(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   blanked: string,
   field: string,
   span: Span,
@@ -963,6 +990,7 @@ function checkChain(
   brackets: BracketIndex
 ): void {
   if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
+  const masked = text.masked;
   // Precedence: `||` is the loosest operator, so it splits first and each
   // disjunct is then read as its own `&&` chain.
   const disjuncts = splitTopLevel(masked, span, ['||'], brackets);
@@ -974,17 +1002,7 @@ function checkChain(
     // Not a chain, but a parenthesized group inside it may hold one — and that
     // group inherits whatever this position already established.
     for (const group of parenGroups(masked, span, brackets)) {
-      checkLogicalChain(
-        expression,
-        masked,
-        blanked,
-        field,
-        group,
-        established,
-        findings,
-        depth + 1,
-        brackets
-      );
+      checkLogicalChain(text, blanked, field, group, established, findings, depth + 1, brackets);
     }
     return;
   }
@@ -1013,8 +1031,8 @@ function checkChain(
         finding(
           'guard-after-use-in-logical-chain',
           field,
-          expression,
-          expression.slice(operand.start, operand.end).trim(),
+          text.reported,
+          text.source.slice(operand.start, operand.end).trim(),
           `${guardText} guards this operand but is written after it. cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard`,
           `Move ${guardText} to the left of the access, or use a lazy ternary: has(${lateGuard}) ? (...) : <fallback>`
         )
@@ -1023,7 +1041,7 @@ function checkChain(
 
     // Descend with what holds at this position: the `&&` chain nested inside an
     // `||` disjunct, and any parenthesized group.
-    checkChain(expression, masked, blanked, field, operand, known, findings, depth + 1, brackets);
+    checkChain(text, blanked, field, operand, known, findings, depth + 1, brackets);
     known = [...known, ...(guards[index] as string[])];
   }
 }
@@ -1148,10 +1166,13 @@ interface SpecCelLimitation {
  * valid CEL while a false negative merely leaves a `cel-js-parse-failure` note.
  */
 function findSpecCelCelJsRejects(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   brackets: BracketIndex
 ): SpecCelLimitation[] {
+  // Comments are already blanked out of both, so nothing below can identify a
+  // "shortfall" written in a comment, and no rewrite can splice into one.
+  const expression = text.source;
+  const masked = text.masked;
   const found: SpecCelLimitation[] = [];
   // `end` bounds the quoted *excerpt* and is deliberately generous — it runs past
   // the fragment so the reader sees what it was the receiver of. `rewrite` is the
@@ -1508,6 +1529,77 @@ function firstUnlexableOffset(text: string): number {
   return -1;
 }
 
+/**
+ * Blank the string literals and the comments out of an expression, in one pass
+ * driven by the same tokenizer {@link firstUnlexableOffset} walks with.
+ *
+ * Masking and lexical coverage have to agree about where a token starts and
+ * ends, and the way to get that is to ask the same function rather than to
+ * write the rule twice. Two orderings are what a string-only mask gets wrong,
+ * and both fall out of walking tokens in source order: a `//` *inside* a string
+ * literal is part of the literal and opens no comment (`"a // b"` is a string),
+ * and a quote *inside* a comment is part of the comment and opens no literal
+ * (`// it's "quoted"` is a comment — under a string-only mask its apostrophe
+ * flips the masking of everything after it).
+ *
+ * `COMMENT ::= '//' ~NEWLINE*` (cel-spec doc/langdef.md, "Syntax") stops before
+ * its newline, so the newline is never blanked and a multi-line expression
+ * keeps its line structure.
+ *
+ * Two results, because the rules need two different things:
+ *
+ * - `masked` blanks comments *and* string literals. Every structural scan reads
+ *   it, so a bracket, `&&`, `?`, `:` or `has(` that is really text inside a
+ *   literal or a comment is not mistaken for structure.
+ * - `source` blanks only the comments. A rule that needs the *content* of a
+ *   literal — {@link literalTypeClass}, {@link stringLiteralSpans} — reads it,
+ *   and so does every fragment a finding quotes, so no identified form can be
+ *   made of comment text.
+ *
+ * A character no CEL token can carry stops neither: it is copied through and
+ * the walk steps over it one **code unit** at a time, which keeps this a mask
+ * rather than a second lexical gate — text that is not CEL at all (`a === b`,
+ * `${x}`) still has to reach {@link findNonCelTokens} with its `=` and `$`
+ * visible. Every write is by code unit and every blank is one space per unit,
+ * so both results are exactly as long as the input and an offset means the same
+ * thing in all three texts.
+ */
+function maskCelCommentsAndStrings(text: string): {
+  readonly source: string;
+  readonly masked: string;
+} {
+  // `split('')` is by UTF-16 code unit. `[...text]` is by code point, which
+  // would blank an astral character to a *single* space and shrink the mask by
+  // one unit against the original — see {@link CelDialectText}.
+  const source = text.split('');
+  const masked = text.split('');
+
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] === '/' && text[index + 1] === '/') {
+      const end = celSpecTokenEnd(text, index);
+      for (let at = index; at < end; at += 1) {
+        source[at] = ' ';
+        masked[at] = ' ';
+      }
+      index = end;
+      continue;
+    }
+
+    const stringEnd = celStringLiteralEnd(text, index);
+    if (stringEnd > index) {
+      for (let at = index; at < stringEnd; at += 1) masked[at] = ' ';
+      index = stringEnd;
+      continue;
+    }
+
+    const end = celSpecTokenEnd(text, index);
+    index = end > index ? end : index + 1;
+  }
+
+  return { source: source.join(''), masked: masked.join('') };
+}
+
 /** What cel-js did with an expression: whether it read all of it, and parsed it. */
 interface CelJsReading {
   /** cel-js's parser accepted the token stream its lexer handed it. */
@@ -1577,22 +1669,20 @@ const CEL_DIALECT_MAX_SPAN_DEPTH = 8;
  * is a well-formed token. Everything a bracket could hide is checked: the
  * parenthesized group, the global call's argument list, and the list literal.
  */
-function celJsAcceptsSwallowedSpan(text: string, rewrite: SpecCelRewrite, depth: number): boolean {
+function celJsAcceptsSwallowedSpan(
+  text: CelDialectText,
+  rewrite: SpecCelRewrite,
+  depth: number
+): boolean {
   if (rewrite.as !== 'receiver') return true;
-  const span = text.slice(rewrite.start, rewrite.end);
-  const spanMasked = maskCelStringLiterals(span);
-  if (!/[([{]/.test(spanMasked)) return true;
+  const span = celDialectText(text.source.slice(rewrite.start, rewrite.end));
+  if (!/[([{]/.test(span.masked)) return true;
   if (depth >= CEL_DIALECT_MAX_SPAN_DEPTH) return false;
-  if (celJsAcceptsWhole(span)) return true;
+  if (celJsAcceptsWhole(span.reported)) return true;
 
   // Every receiver rewrite requires a postfix operator after its span, so `span`
   // is strictly shorter than `text` and the recursion cannot revisit it.
-  const rewritten = rewriteAwayCelJsLimitations(
-    span,
-    spanMasked,
-    buildBracketIndex(spanMasked),
-    depth + 1
-  );
+  const rewritten = rewriteAwayCelJsLimitations(span, buildBracketIndex(span.masked), depth + 1);
   return rewritten.applied > 0 && celJsAcceptsWhole(rewritten.text);
 }
 
@@ -1623,22 +1713,23 @@ function celJsAcceptsSwallowedSpan(text: string, rewrite: SpecCelRewrite, depth:
  * shown to accept the span itself; see {@link celJsAcceptsSwallowedSpan}.
  */
 function rewriteAwayCelJsLimitations(
-  expression: string,
-  masked: string,
+  expression: CelDialectText,
   brackets: BracketIndex,
   depth = 0
 ): { readonly text: string; readonly applied: number } {
-  let text = expression;
-  let current = masked;
+  // The rewrite runs on `source` — comments already blanked — so no splice can
+  // land inside a comment and no comment can survive into the proof text.
+  let current = expression;
+  let text = current.source;
   let currentBrackets = brackets;
   let placeholders = 0;
   let applied = 0;
 
   for (let round = 0; round < CEL_DIALECT_MAX_REWRITE_ROUNDS; round += 1) {
-    const candidates = findSpecCelCelJsRejects(text, current, currentBrackets)
+    const candidates = findSpecCelCelJsRejects(current, currentBrackets)
       .map((limitation) => limitation.rewrite)
       .filter((rewrite): rewrite is SpecCelRewrite => rewrite !== undefined && rewrite.end > rewrite.start)
-      .filter((rewrite) => celJsAcceptsSwallowedSpan(text, rewrite, depth))
+      .filter((rewrite) => celJsAcceptsSwallowedSpan(current, rewrite, depth))
       // Outermost first at a shared start, so a containing span wins and the
       // contained one is skipped rather than splitting the container in two.
       .sort((left, right) => left.start - right.start || right.end - left.end);
@@ -1670,8 +1761,8 @@ function rewriteAwayCelJsLimitations(
       text = text.slice(0, rewrite.start) + (replacements[index] as string) + text.slice(rewrite.end);
       applied += 1;
     }
-    current = maskCelStringLiterals(text);
-    currentBrackets = buildBracketIndex(current);
+    current = celDialectText(text);
+    currentBrackets = buildBracketIndex(current.masked);
   }
 
   return { text, applied };
@@ -1687,13 +1778,9 @@ function rewriteAwayCelJsLimitations(
  * the same bar, so a proof is never built on top of an expression that is not
  * itself lexically CEL.
  */
-function celJsParseProof(
-  trimmed: string,
-  masked: string,
-  brackets: BracketIndex
-): string | undefined {
-  if (firstUnlexableOffset(trimmed) >= 0) return undefined;
-  const rewritten = rewriteAwayCelJsLimitations(trimmed, masked, brackets);
+function celJsParseProof(text: CelDialectText, brackets: BracketIndex): string | undefined {
+  if (firstUnlexableOffset(text.reported) >= 0) return undefined;
+  const rewritten = rewriteAwayCelJsLimitations(text, brackets);
   return rewritten.applied > 0 && celJsAcceptsWhole(rewritten.text) ? rewritten.text : undefined;
 }
 
@@ -1727,10 +1814,10 @@ export function celDialectLexicalGap(expression: string): number {
 export function celDialectParseProof(expression: string): string | undefined {
   const trimmed = expression.trim();
   if (trimmed.length === 0 || trimmed.length > CEL_DIALECT_MAX_EXPRESSION_LENGTH) return undefined;
-  const masked = maskCelStringLiterals(trimmed);
-  const brackets = buildBracketIndex(masked);
-  if (findSpecCelCelJsRejects(trimmed, masked, brackets).length === 0) return undefined;
-  return celJsParseProof(trimmed, masked, brackets);
+  const text = celDialectText(trimmed);
+  const brackets = buildBracketIndex(text.masked);
+  if (findSpecCelCelJsRejects(text, brackets).length === 0) return undefined;
+  return celJsParseProof(text, brackets);
 }
 
 /** One form no CEL grammar accepts, whichever engine reads it. */
@@ -1765,11 +1852,14 @@ interface NonCelToken {
  *   about an engine, which is the standard the rest of this bucket is held to.
  */
 function findNonCelTokens(
-  expression: string,
-  masked: string,
+  text: CelDialectText,
   parsed: boolean,
   unlexableAt: number
 ): NonCelToken[] {
+  // Comments are blanked out of both, so a `$` or an `=` written in one is not
+  // a leak: `// a === b` is a comment on any conformant CEL lexer.
+  const expression = text.source;
+  const masked = text.masked;
   const found: NonCelToken[] = [];
   const add = (at: number, length: number, reason: string): void => {
     found.push({ at, fragment: expression.slice(at, at + Math.max(length, 8)).trim(), reason });
@@ -1872,12 +1962,15 @@ export function checkCelDialectCompatibility(
     return findings;
   }
 
-  const masked = maskCelStringLiterals(trimmed);
+  // One lexical pass, three aligned texts: what was written, the same with
+  // comments blanked, and that with the string literals blanked too. Every scan
+  // below reads the one it is entitled to; see {@link CelDialectText}.
+  const text = celDialectText(trimmed);
   // Every bracket pair, resolved once. Both halves of the check walk the same
   // text repeatedly — the receiver detectors touch every opener in it — and
   // rescanning forward from each one is what used to make a deeply nested
   // expression quadratic.
-  const brackets = buildBracketIndex(masked);
+  const brackets = buildBracketIndex(text.masked);
 
   // Half one: what cel-js's parser can and cannot be made to say.
   //
@@ -1901,7 +1994,7 @@ export function checkCelDialectCompatibility(
   // and syntactic grammar, never from cel-js's verdict, and so run whether or
   // not cel-js parsed — its lexer drops an unknown character silently, and
   // `a === b` reaches its parser as `a == b`.
-  const nonCel = findNonCelTokens(trimmed, masked, reading.parsed, reading.unlexableAt);
+  const nonCel = findNonCelTokens(text, reading.parsed, reading.unlexableAt);
   const leak = nonCel[0];
   // Hoisted out of bucket two: half two is gated on it. See the comment there.
   let proof: string | undefined;
@@ -1949,8 +2042,8 @@ export function checkCelDialectCompatibility(
     // rewrite parses is the shortfall the *only* obstruction, which is what
     // makes the rest of the expression grammatical CEL and cel-go's acceptance
     // of it a fact rather than an inference.
-    const limitation = findSpecCelCelJsRejects(trimmed, masked, brackets)[0];
-    proof = limitation === undefined ? undefined : celJsParseProof(trimmed, masked, brackets);
+    const limitation = findSpecCelCelJsRejects(text, brackets)[0];
+    proof = limitation === undefined ? undefined : celJsParseProof(text, brackets);
 
     if (limitation !== undefined && proof !== undefined) {
       findings.push(
@@ -1959,7 +2052,10 @@ export function checkCelDialectCompatibility(
           field,
           trimmed,
           limitation.fragment,
-          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). Replacing only that form with a spelling cel-js does have — \`${excerpt(proof)}\` — makes cel-js parse the whole expression, so nothing else in it is ungrammatical and the refusal is cel-js's shortfall alone. Direct mode can therefore never evaluate this field. Whether KRO evaluates it is a further question this check does not model: cel-go parses the form, but its type checker then runs with KRO's type environment and function set and may still reject it`,
+          // The proof keeps the original's offsets, so a blanked comment leaves a
+          // run of spaces in it. The quoted form is trimmed: that changes no
+          // token, and keeps it something a reader can paste into `parse()`.
+          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). Replacing only that form with a spelling cel-js does have — \`${excerpt(proof.trim())}\` — makes cel-js parse the whole expression, so nothing else in it is ungrammatical and the refusal is cel-js's shortfall alone. Direct mode can therefore never evaluate this field. Whether KRO evaluates it is a further question this check does not model: cel-go parses the form, but its type checker then runs with KRO's type environment and function set and may still reject it`,
           'Rewrite the receiver as an identifier chain — bind the literal or parenthesized value to a resource field, or use the global form of the call (`size(x)` rather than `x.size()`) — until cel-js supports the spec form'
         )
       );
@@ -2033,16 +2129,15 @@ export function checkCelDialectCompatibility(
   // half one.
   if (!(parsed || proof !== undefined)) return findings;
 
-  checkHasIndexArgument(trimmed, masked, field, findings, brackets);
-  checkHeterogeneousMapLiteral(trimmed, masked, field, findings, brackets);
-  checkInOnListEntry(trimmed, masked, field, findings);
-  const blanked = blankLazyRegions(masked, brackets);
+  checkHasIndexArgument(text, field, findings, brackets);
+  checkHeterogeneousMapLiteral(text, field, findings, brackets);
+  checkInOnListEntry(text, field, findings);
+  const blanked = blankLazyRegions(text.masked, brackets);
   checkLogicalChain(
-    trimmed,
-    masked,
+    text,
     blanked,
     field,
-    { start: 0, end: masked.length },
+    { start: 0, end: text.masked.length },
     [],
     findings,
     0,
