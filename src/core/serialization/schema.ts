@@ -16,6 +16,7 @@ import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { getCompositionAnalysisMetadata } from '../composition/analysis-metadata.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { TypeKroError } from '../errors.js';
+import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy } from '../references/index.js';
 import type {
@@ -24,6 +25,12 @@ import type {
   TernaryConditional,
 } from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
+import {
+  type CelDialectFinding,
+  collectStatusCelDialectFindings,
+  formatCelDialectFindings,
+  hasCelDialectDivergence,
+} from '../validation/cel-dialect.js';
 import {
   createStatusResourceIdentityContext,
   getNestedCompositionIds,
@@ -1682,6 +1689,68 @@ function collectOmitFields(specFields: Record<string, unknown>, specType: Type):
   }
 }
 
+/**
+ * Fail (strict) or warn (default) when an emitted status expression is accepted
+ * by only one of the two CEL engines TypeKro targets.
+ *
+ * Only a finding the checker classifies as a `divergence` can fail: a form where
+ * the two engines demonstrably disagree, established without appeal to a CEL
+ * type the checker has no way to see. `note` findings — a form neither engine
+ * accepts, a form whose divergence depends on an unknowable type, an expression
+ * past the analysis budget — are always logged and never fail, in either
+ * strictness setting, so strict mode cannot reject valid CEL.
+ *
+ * Strictness otherwise follows the shared CEL diagnostics convention: the
+ * `strictCelDiagnostics` factory option first, then `TYPEKRO_STRICT_CEL`.
+ */
+function assertStatusCelDialectCompatibility(
+  name: string,
+  statusCelExpressions: Readonly<Record<string, unknown>>,
+  strictCelDiagnostics: boolean | undefined
+): void {
+  const findings = collectStatusCelDialectFindings(statusCelExpressions);
+  if (findings.length === 0) return;
+
+  const divergences = findings.filter((found) => found.kind === 'divergence');
+  if (hasCelDialectDivergence(findings) && isStrictCelDiagnosticsEnabled({ strictCelDiagnostics })) {
+    throw new TypeKroError(
+      `Status CEL in ResourceGraphDefinition '${name}' did not pass the dual-dialect check.\n${formatCelDialectFindings(divergences)}`,
+      'CEL_DIALECT_INCOMPATIBLE',
+      { findings }
+    );
+  }
+
+  const notes = findings.filter((found) => found.kind === 'note');
+  if (divergences.length > 0) {
+    logger.warn(
+      'Status CEL did not pass the dual-dialect check — direct mode and Kro mode disagree',
+      {
+        resourceGraphDefinition: name,
+        findings: divergences.map(describeCelDialectFinding),
+        hint: 'Enable strict CEL diagnostics (factory option strictCelDiagnostics or TYPEKRO_STRICT_CEL=1) to fail fast at serialization time',
+      }
+    );
+  }
+  if (notes.length > 0) {
+    logger.warn('Status CEL raised dual-dialect notes — reported, but not a proven divergence', {
+      resourceGraphDefinition: name,
+      findings: notes.map(describeCelDialectFinding),
+      hint: 'Notes never fail strict mode: either both engines reject the form, or the divergence depends on a CEL type the serializer cannot see',
+    });
+  }
+}
+
+/** The machine-readable shape of a finding on the log channel. */
+function describeCelDialectFinding(found: CelDialectFinding): Record<string, unknown> {
+  return {
+    field: found.field,
+    rule: found.rule,
+    kind: found.kind,
+    dialect: found.dialect,
+    expression: found.expression,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1707,7 +1776,8 @@ export function arktypeToKroSchema(
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  strictCelDiagnostics?: boolean
 ): KroSimpleSchemaWithMetadata {
   const nullableField = collectSchemaFieldPaths(schemaDefinition.spec.json)
     .nullable.values()
@@ -1931,6 +2001,11 @@ export function arktypeToKroSchema(
         )
       : {};
 
+  // Dual-dialect gate: every status expression about to be emitted is run
+  // through cel-js and the curated cel-go divergence denylist, so a form only
+  // one engine accepts fails here rather than on a live cluster.
+  assertStatusCelDialectCompatibility(name, statusCelExpressions, strictCelDiagnostics);
+
   // Extract just the version part for the schema (Kro expects v1alpha1, not kro.run/v1alpha1)
   const schemaApiVersion = schemaDefinition.apiVersion.includes('/')
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
@@ -2020,7 +2095,8 @@ export function generateKroSchemaFromArktype<
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  schemaFieldValidations?: Readonly<Record<string, string>>
+  schemaFieldValidations?: Readonly<Record<string, string>>,
+  strictCelDiagnostics?: boolean
 ): KroSimpleSchemaWithMetadata {
   return arktypeToKroSchema(
     name,
@@ -2028,7 +2104,8 @@ export function generateKroSchemaFromArktype<
     resources,
     statusMappings,
     nestedStatusCel,
-    schemaFieldValidations
+    schemaFieldValidations,
+    strictCelDiagnostics
   );
 }
 

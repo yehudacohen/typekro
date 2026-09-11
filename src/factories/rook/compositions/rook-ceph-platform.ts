@@ -518,10 +518,17 @@ function createOwnedRepositoryNamespace(
   );
 }
 
+/**
+ * Prefer the secure endpoint, falling back to the insecure one and then to no
+ * endpoint at all. `status.endpoints` does not exist until the RGW is up, so
+ * both reads go through `Cel.firstOf`, which guards every hop lazily — a single
+ * `has()` on the full path errors under cel-js when `endpoints` itself is absent.
+ */
 function objectStoreEndpoint() {
-  return Cel.expr<string>(
-    'has(objectStore.status.endpoints.secure) && size(objectStore.status.endpoints.secure) > 0 ? objectStore.status.endpoints.secure[0] : (has(objectStore.status.endpoints.insecure) && size(objectStore.status.endpoints.insecure) > 0 ? objectStore.status.endpoints.insecure[0] : "")'
+  const insecure = Cel.firstOf(
+    Cel.unsafeListPath<string>('objectStore.status.endpoints.insecure')
   );
+  return Cel.firstOf(Cel.unsafeListPath<string>('objectStore.status.endpoints.secure'), insecure);
 }
 
 /**

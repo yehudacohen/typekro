@@ -254,9 +254,14 @@ export { createWebService } from './factories/simple/compositions/web-service.js
 // 3. DEPLOYMENT — Engines, readiness, and deployers
 // =============================================================================
 
-export type { DeploymentOptions, DeploymentResourceGraph } from './core/deployment/index.js';
+export type {
+  DeploymentOptions,
+  DeploymentResourceGraph,
+  StatusLeafDiagnostic,
+} from './core/deployment/index.js';
 export {
   DirectDeploymentEngine,
+  getStatusLeafDiagnostics,
   ResourceDeletionIncompleteError,
   ResourceDeploymentError,
   ResourceReadinessChecker,

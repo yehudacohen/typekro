@@ -27,4 +27,13 @@ export {
 } from './rollback-manager.js';
 export * from './shared-utilities.js';
 export { StatusHydrator } from './status-hydrator.js';
+export type {
+  StatusLeafDiagnostic,
+  StatusLeafResolutionResult,
+  StatusLeafResolver,
+} from './status-leaf-resolution.js';
+export {
+  getStatusLeafDiagnostics,
+  resolveStatusLeavesIndependently,
+} from './status-leaf-resolution.js';
 export * from './strategies/index.js';

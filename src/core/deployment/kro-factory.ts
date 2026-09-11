@@ -4546,7 +4546,8 @@ export class KroResourceFactoryImpl<
       statusMappings,
       nestedCel,
       (this.factoryOptions.compositionOptions as SerializationOptions | undefined)
-        ?.schemaFieldValidations
+        ?.schemaFieldValidations,
+      this.factoryOptions.strictCelDiagnostics
     );
     kroSchema.spec[KRO_ARTIFACT_BINDINGS_SPEC_FIELD] = 'map[string]map[string]string';
 

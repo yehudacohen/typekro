@@ -21,6 +21,10 @@ import type {
   StatusBuilder,
 } from '../../types/serialization.js';
 import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../shared-utilities.js';
+import {
+  attachStatusLeafDiagnostics,
+  resolveStatusLeavesIndependently,
+} from '../status-leaf-resolution.js';
 
 /**
  * Base deployment strategy interface
@@ -627,18 +631,51 @@ export abstract class BaseDeploymentStrategy<
             : {}),
         };
 
-        // Resolve all CEL expressions in the status
-        status = (await resolver.resolveReferences(status, resolutionContext)) as TStatus;
+        // Resolve every status leaf on its own. A leaf that cannot be resolved
+        // — typically a CEL expression reaching into an optional nested field
+        // the controller has not populated yet — must not blank its siblings,
+        // so each one gets its own error boundary and its own diagnostic.
+        const leafResolution = await resolveStatusLeavesIndependently(status, async (leaf) => {
+          const resolved = (await resolver.resolveReferences(
+            { value: leaf },
+            resolutionContext
+          )) as {
+            value: unknown;
+          };
+          return resolved.value;
+        });
+        status = leafResolution.status;
+
+        for (const diagnostic of leafResolution.diagnostics) {
+          this.logger.warn('Status field could not be resolved in direct mode', {
+            instanceName,
+            field: diagnostic.path,
+            expression: diagnostic.expression,
+            error: diagnostic.error.message,
+          });
+        }
 
         this.logger.debug('Status CEL expressions resolved in direct mode', {
           instanceName,
           statusFields: Object.keys(status),
+          unresolvedFields: leafResolution.diagnostics.map((diagnostic) => diagnostic.path),
         });
       } catch (error: unknown) {
+        // Reaching here means resolution setup itself failed (no resolver, no
+        // resource mapping), not a single bad leaf. Record it against the whole
+        // status object so callers still get a machine-readable reason.
+        const setupError = ensureError(error);
         this.logger.warn('Failed to resolve CEL expressions in status, using unresolved status', {
           instanceName,
-          error: ensureError(error).message,
+          error: setupError.message,
         });
+        attachStatusLeafDiagnostics(status, [
+          {
+            path: '',
+            message: `Status resolution could not run: ${setupError.message}`,
+            error: setupError,
+          },
+        ]);
       }
     }
 
