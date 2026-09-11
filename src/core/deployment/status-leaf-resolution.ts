@@ -19,6 +19,22 @@
  * non-enumerable property, following the same convention the serializer uses
  * for `__nestedStatusCel`: observable by tooling, invisible to JSON/YAML
  * emission and to `Object.keys()`.
+ *
+ * ## The input is a template, not a workspace
+ *
+ * The status object handed in is the composition's *status template*: the object
+ * holding the `KubernetesRef`s and CEL expressions the composition declared. One
+ * template is built per composition and then read again on every reconcile and
+ * for every instance. Resolving into it in place would overwrite those refs with
+ * the values of one reconcile, so the next resolution would find concrete values
+ * where it expected expressions — and report an unchanging snapshot of whatever
+ * the first instance happened to see.
+ *
+ * So resolution never writes into the input. Every container is copied and the
+ * resolved values go into the copy. The copy is made descriptor by descriptor
+ * over `Reflect.ownKeys`, so non-enumerable metadata (`__nestedStatusCel`,
+ * `__statusLeafDiagnostics`), symbol keys, and prototype-less objects — all of
+ * which the serializer depends on — come through exactly as they were.
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
@@ -47,7 +63,10 @@ export interface StatusLeafDiagnostic {
 
 /** Result of resolving a status object leaf by leaf. */
 export interface StatusLeafResolutionResult<T> {
-  /** The status object, resolved in place, with failing leaves left `undefined`. */
+  /**
+   * A **copy** of the status template carrying the resolved values, with failing
+   * leaves left `undefined`. The template passed in is never written to.
+   */
   readonly status: T;
   /** One entry per leaf that failed to resolve. Empty when everything resolved. */
   readonly diagnostics: readonly StatusLeafDiagnostic[];
@@ -98,11 +117,58 @@ function indexPath(parentPath: string, index: number): string {
 }
 
 /**
- * Resolve every leaf of a status object independently.
+ * Copy one container, shallowly, keeping everything about it except identity.
  *
- * Containers are mutated in place so that non-enumerable metadata attached to
- * the status object (for example `__nestedStatusCel`) survives resolution.
- * Keys prefixed with `__` are TypeKro-internal and are never resolved.
+ * Descriptors are copied rather than values so the copy keeps what a plain
+ * spread would drop and the serializer would then miss:
+ *
+ * - **Non-enumerable metadata.** `__nestedStatusCel` is attached with
+ *   `Object.defineProperty(..., { enumerable: false })` on the Kro path, and the
+ *   deployment strategy reads it back off the status object after resolution.
+ * - **Symbol keys**, including the brands TypeKro marks values with.
+ * - **The prototype**, so an `Object.create(null)` status map stays
+ *   prototype-less — the serializer builds those deliberately, to keep a status
+ *   field named `constructor` or `toString` from colliding with `Object`.
+ *
+ * The copy is shallow: nested containers are copied by the walker as it reaches
+ * them, and leaves are never copied at all — a `KubernetesRef` or CEL expression
+ * is opaque, handed to the resolver as-is and replaced in the copy by whatever
+ * the resolver returns.
+ */
+function copyContainer<T extends Record<string, unknown> | unknown[]>(value: T): T {
+  const copy: Record<string | symbol, unknown> | unknown[] = Array.isArray(value)
+    ? []
+    : (Object.create(Object.getPrototypeOf(value)) as Record<string | symbol, unknown>);
+
+  for (const key of Reflect.ownKeys(value)) {
+    // An array's own `length` is maintained by the index writes below; defining
+    // it from the source descriptor would fight them.
+    if (Array.isArray(value) && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined) Object.defineProperty(copy, key, descriptor);
+  }
+  if (Array.isArray(value) && Array.isArray(copy)) copy.length = value.length;
+
+  return copy as T;
+}
+
+/** True when a string key is TypeKro-internal metadata rather than a status field. */
+function isInternalKey(key: string): boolean {
+  return key.startsWith('__');
+}
+
+/**
+ * Resolve every leaf of a status object independently, into a fresh structure.
+ *
+ * The status template passed in is **not** modified: every container is copied
+ * and the resolved values are written into the copy, so the same template can be
+ * resolved again — for the next reconcile, or for another instance — and see the
+ * refs and CEL expressions it was built with. Non-enumerable metadata (for
+ * example `__nestedStatusCel`), symbol keys and prototype-less objects are
+ * carried across by {@link copyContainer}.
+ *
+ * Keys prefixed with `__` are TypeKro-internal: they are copied across but never
+ * resolved and never reported.
  *
  * @param status The computed status object, whose leaves are CEL expressions,
  *   `KubernetesRef`s, reference-marker strings, or plain values.
@@ -114,7 +180,11 @@ export async function resolveStatusLeavesIndependently<T>(
   resolveLeaf: StatusLeafResolver
 ): Promise<StatusLeafResolutionResult<T>> {
   const diagnostics: StatusLeafDiagnostic[] = [];
-  const visited = new WeakSet<object>();
+  // Original container -> its copy. Doubles as the cycle guard: a container
+  // reached a second time yields the copy already made for it, so a cyclic
+  // template produces a cyclic *copy* rather than looping or leaking a
+  // reference back into the input.
+  const copies = new WeakMap<object, unknown>();
 
   async function resolveAt(value: unknown, path: string): Promise<unknown> {
     if (isStatusLeaf(value)) {
@@ -134,26 +204,42 @@ export async function resolveStatusLeavesIndependently<T>(
       }
     }
 
+    // Anything that is not a walkable container is opaque: shared by reference
+    // with the template, exactly as it was before, and never written to.
     if (!isWalkableContainer(value)) return value;
 
-    // Guard against cycles: a self-referential status object must not loop.
-    if (visited.has(value)) return value;
-    visited.add(value);
+    if (copies.has(value)) return copies.get(value);
 
-    if (Array.isArray(value)) {
+    const copy = copyContainer(value);
+    copies.set(value, copy);
+
+    if (Array.isArray(value) && Array.isArray(copy)) {
       for (let index = 0; index < value.length; index += 1) {
-        value[index] = await resolveAt(value[index], indexPath(path, index));
+        copy[index] = await resolveAt(value[index], indexPath(path, index));
       }
-      return value;
+      return copy;
     }
 
     for (const key of Object.keys(value)) {
       // TypeKro-internal metadata (for example __nestedStatusCel) is not a
-      // status field and must not be resolved or reported.
-      if (key.startsWith('__')) continue;
-      value[key] = await resolveAt(value[key], childPath(path, key));
+      // status field: copyContainer has already carried it across untouched,
+      // and it must not be resolved or reported.
+      if (isInternalKey(key)) continue;
+      const resolvedChild = await resolveAt(
+        (value as Record<string, unknown>)[key],
+        childPath(path, key)
+      );
+      // defineProperty rather than assignment: the template may declare a status
+      // field as a getter or as read-only, and the resolved copy has to hold a
+      // plain value either way.
+      Object.defineProperty(copy, key, {
+        value: resolvedChild,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
-    return value;
+    return copy;
   }
 
   const resolved = (await resolveAt(status, '')) as T;
