@@ -25,6 +25,7 @@ import {
   finalizeCelForKro,
   inlineNestedStatusRefs,
   inlineNestedStatusRefsWithStats,
+  normalizeCelArrayIndexPaths,
   normalizeRefMarkersToCelPaths,
   processResourceReferences,
   serializeStatusMappingsToCel,
@@ -1210,6 +1211,66 @@ describe('nested-composition status inlining — dotted numeric index segments',
         })
       ).toBe('${innerService.status.zeroName}');
     });
+  });
+});
+
+describe('normalizeCelArrayIndexPaths — dotted numeric runs', () => {
+  // The late sweep decides whether a `.<digits>` run is an index from the text
+  // it has already EMITTED, so a run of them chains. Reading the left context
+  // off the INPUT instead stopped after the first run — the second run's left
+  // neighbour was the digit the first run had just consumed — and produced
+  // `a[0].1.b`, which is no more valid CEL than what it started from.
+
+  it('chains consecutive numeric runs into an index chain', () => {
+    expect(normalizeCelArrayIndexPaths('a.0.1.b')).toBe('a[0][1].b');
+  });
+
+  it('indexes numeric runs separated by a name', () => {
+    expect(normalizeCelArrayIndexPaths('a.0.b.1')).toBe('a[0].b[1]');
+  });
+
+  it('indexes a numeric run that follows an existing bracket index', () => {
+    expect(normalizeCelArrayIndexPaths('list[0].1')).toBe('list[0][1]');
+  });
+
+  it('indexes a numeric run after an identifier whose tail is digits', () => {
+    // `v2.0` can only be an index: a NUMBER may not begin with an identifier
+    // character, so `v2.0` is not a float literal the way `1.0` is.
+    expect(normalizeCelArrayIndexPaths('v2.0')).toBe('v2[0]');
+  });
+
+  it('leaves an identifier that merely contains digits alone', () => {
+    expect(normalizeCelArrayIndexPaths('v2.name')).toBe('v2.name');
+  });
+
+  it('keeps a chained index in front of a method call', () => {
+    expect(normalizeCelArrayIndexPaths('a.0.1.size()')).toBe('a[0][1].size()');
+  });
+
+  it('leaves a float literal alone', () => {
+    expect(normalizeCelArrayIndexPaths('x == 1.0')).toBe('x == 1.0');
+  });
+
+  it('leaves an exponent literal alone', () => {
+    expect(normalizeCelArrayIndexPaths('y > 2.5e3')).toBe('y > 2.5e3');
+  });
+
+  it('leaves a leading fraction alone', () => {
+    expect(normalizeCelArrayIndexPaths('.5 + a.0')).toBe('.5 + a[0]');
+  });
+
+  it('leaves a numeric run inside a string literal alone', () => {
+    expect(normalizeCelArrayIndexPaths('"a.0.1"')).toBe('"a.0.1"');
+    expect(normalizeCelArrayIndexPaths("'a.0.1' + b.0.1")).toBe("'a.0.1' + b[0][1]");
+  });
+
+  it('normalizes a template embedded in URL text', () => {
+    // The `//` of a scheme is a CEL `COMMENT`, so this sweep cannot take its
+    // lexing from the comment-aware scanner: masking the comment would blank
+    // the template that follows and drop the rewrite.
+    expect(normalizeCelArrayIndexPaths('http://${string(service.spec.ports.0.port)}')).toBe(
+      'http://${string(service.spec.ports[0].port)}'
+    );
   });
 });
 
