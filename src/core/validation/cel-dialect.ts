@@ -499,27 +499,63 @@ function checkHasIndexArgument(
 }
 
 /**
+ * A value that is exactly one whole CEL string literal and nothing else.
+ *
+ * This is cel-js's own `StringLiteral` token pattern anchored to the entire
+ * value: either quote style, `\`-escapes, no newline inside. It is deliberately
+ * *not* derived from the masked text. `maskCelStringLiterals` overwrites the
+ * open quote, the interior and the close quote alike with spaces, and ordinary
+ * inter-token whitespace is spaces already, so a masked string is
+ * indistinguishable from a run of blanks and the closing quote's offset is not
+ * recoverable from the mask — `"a" "b"` and `"a b"` mask identically. Re-lexing
+ * the one token off the original text is what actually settles where the
+ * literal ends.
+ *
+ * cel-js's grammar has no raw (`r"..."`), bytes (`b"..."`) or triple-quoted
+ * string form, and nothing in the tree emits one, so a value opening with `r` or
+ * `b` simply fails to match here and is left unclassified — the safe direction.
+ */
+const WHOLE_STRING_LITERAL = /^(?:"(?:[^"\n\\]|\\[\s\S])*"|'(?:[^'\n\\]|\\[\s\S])*')$/;
+
+/**
  * The CEL type a value expression visibly *is*, when the syntax settles it.
  *
- * Only whole literals are classified. `1 + 2` starts with a digit and is still
- * not classified, because the point is to be certain rather than clever: an
- * identifier, a call, a ternary or any arithmetic yields `undefined` and takes
- * its entry out of the comparison entirely.
+ * Only *whole* literals are classified, and that is a statement about the entire
+ * value rather than about its first character. A value that merely *opens* with
+ * a literal is a different type as often as not: `"x".size()` and `[1,2].size()`
+ * are ints, `"s".startsWith("t")` is a bool, and `"x" + y` is a string only by
+ * luck. So a string value has to match {@link WHOLE_STRING_LITERAL} end to end,
+ * and a list or map value is whole only when `matchingParen` of its opening
+ * bracket lands on the value's last character. Numbers, bools and `null` are
+ * anchored patterns already and stay as they are. `1 + 2` starts with a digit
+ * and is still not classified, because the point is to be certain rather than
+ * clever: an identifier, a call, a ternary or any arithmetic yields `undefined`
+ * and takes its entry out of the comparison entirely.
+ *
+ * `masked` is what a bracket is matched against, so a `]` or `}` sitting inside
+ * a string cannot pose as the closer; the classification itself reads
+ * `expression`, since masking is what erases the quotes that make a value a
+ * string. `span` indexes both.
  *
  * `int` and `double` are separate classes because cel-js separates them —
  * `{"a": 1, "b": 2.5}` is as rejected as `{"a": 1, "b": "x"}`.
  */
-function literalTypeClass(text: string): string | undefined {
-  const value = text.trim();
-  if (value.length === 0) return undefined;
-  if (value.startsWith('"') || value.startsWith("'")) return 'string';
+function literalTypeClass(expression: string, masked: string, span: Span): string | undefined {
+  let start = span.start;
+  let end = span.end;
+  while (start < end && /\s/.test(expression[start] as string)) start += 1;
+  while (end > start && /\s/.test(expression[end - 1] as string)) end -= 1;
+  if (start === end) return undefined;
+
+  const value = expression.slice(start, end);
   if (value === 'true' || value === 'false') return 'bool';
   if (value === 'null') return 'null';
   if (/^-?\d+u$/.test(value)) return 'uint';
   if (/^-?\d+$/.test(value)) return 'int';
   if (/^-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) return 'double';
-  if (value.startsWith('[')) return 'list';
-  if (value.startsWith('{')) return 'map';
+  if (WHOLE_STRING_LITERAL.test(value)) return 'string';
+  if (value.startsWith('[') && matchingParen(masked, start) === end - 1) return 'list';
+  if (value.startsWith('{') && matchingParen(masked, start) === end - 1) return 'map';
   return undefined;
 }
 
@@ -536,7 +572,9 @@ function literalTypeClass(text: string): string | undefined {
  * Masking matters here: `masked` settles the structure, since a `,` or `:`
  * inside a string is not a separator, while the classification reads the
  * original text, since masking is what erases the quotes that make a value a
- * string. Offsets are shared, so the same spans index both.
+ * string. Offsets are shared, so the same spans index both, and
+ * {@link literalTypeClass} is handed the span rather than the sliced text so it
+ * can consult either one.
  */
 function checkHeterogeneousMapLiteral(
   expression: string,
@@ -553,9 +591,11 @@ function checkHeterogeneousMapLiteral(
     for (const entry of splitTopLevel(masked, { start: index + 1, end: close }, [','])) {
       const [, afterKey] = splitTopLevel(masked, entry, [':']);
       if (afterKey === undefined) continue;
-      const text = expression.slice(afterKey.start, entry.end);
-      const found = literalTypeClass(text);
-      if (found !== undefined && !classes.has(found)) classes.set(found, text.trim());
+      const span: Span = { start: afterKey.start, end: entry.end };
+      const found = literalTypeClass(expression, masked, span);
+      if (found !== undefined && !classes.has(found)) {
+        classes.set(found, expression.slice(span.start, span.end).trim());
+      }
     }
 
     if (classes.size > 1) {

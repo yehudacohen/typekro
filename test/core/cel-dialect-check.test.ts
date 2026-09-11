@@ -381,6 +381,66 @@ describe('heterogeneous map literals', () => {
       );
     }
   });
+
+  it('classifies only a whole literal, never a value that merely opens with one', () => {
+    // The type of a value is not the type of the token it starts with.
+    // `"x".size()` and `[1, 2].size()` are ints, `"s".startsWith("t")` is a
+    // bool, and `"x" + y` is a string only by luck — cel-js builds every one of
+    // these maps, so classifying any of them by its first character would fail
+    // strict mode on valid CEL.
+    for (const expression of [
+      '{"a": "x".size(), "b": 3}',
+      '{"a": [1, 2].size(), "b": 3}',
+      '{"a": "s".startsWith("t"), "b": true}',
+      '{"a": "x" + y, "b": 3}',
+      '{"a": {"k": 1}.size(), "b": 3}',
+    ]) {
+      const findings = check(expression);
+      expect(findings.map((found) => found.rule)).not.toContain('heterogeneous-map-literal');
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+    }
+  });
+
+  it('leaves a concatenation unclassified rather than calling it a string', () => {
+    // `"x" + "y"` is in fact a string, but it is not a *literal*, and the rule
+    // buys its certainty by refusing to reason past a whole token. Only the
+    // `"z"` entry is classified, so there is nothing to compare it against.
+    expect(check('{"a": "x" + "y", "b": "z"}')).toEqual([]);
+  });
+
+  it('still flags a map whose string value carries separator characters', () => {
+    // Structure comes from the mask, so the `,`, `:` and `}` inside the quotes
+    // are data; the class comes from the whole literal, which is a string. Both
+    // halves have to hold for this to be reported as the mixed map it is.
+    expect(check('{"a": "x, y: }", "b": 1}').map((found) => found.rule)).toEqual([
+      'heterogeneous-map-literal',
+    ]);
+    expect(check('{"a": ["}"], "b": 1}').map((found) => found.rule)).toEqual([
+      'heterogeneous-map-literal',
+    ]);
+  });
+
+  it('says nothing about a nested map whose value is a call', () => {
+    for (const expression of [
+      '{"a": {"x": size(l)}, "b": {"y": 2}}',
+      '{"a": {"x": size(l)}.size(), "b": 3}',
+    ]) {
+      expect(check(expression)).toEqual([]);
+    }
+  });
+
+  it('keeps flagging the genuinely mixed literals', () => {
+    for (const expression of [
+      '{"a": "x", "b": 1}',
+      '{"a": [1], "b": {"c": 1}}',
+      '{"a": 1, "b": 2.5}',
+      '{"protocol": "TCP", "port": 8080}',
+      // A whole literal stays whole across surrounding whitespace.
+      '{"a":  "x"  , "b": 1}',
+    ]) {
+      expect(check(expression).map((found) => found.rule)).toEqual(['heterogeneous-map-literal']);
+    }
+  });
 });
 /**
  * A rule may only fail strict mode when the two engines actually diverge. These
