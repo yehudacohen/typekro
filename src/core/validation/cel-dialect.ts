@@ -1530,6 +1530,31 @@ function firstUnlexableOffset(text: string): number {
 }
 
 /**
+ * Every significant CEL token in `text`, or `undefined` when a character is one
+ * no CEL token can carry.
+ *
+ * "Significant" drops whitespace and comments, which is what the token stream a
+ * parser sees consists of. This is the same walk {@link firstUnlexableOffset}
+ * makes, keeping the spans instead of discarding them, so a token boundary here
+ * is a token boundary there by construction. Its one caller is
+ * {@link rewriteKeepsTokenBoundaries}, which needs to compare two token streams
+ * rather than merely establish that both are lexable.
+ */
+function celSpecTokens(text: string): Span[] | undefined {
+  const tokens: Span[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const end = celSpecTokenEnd(text, index);
+    if (end <= index) return undefined;
+    const first = text[index] as string;
+    const comment = first === '/' && text[index + 1] === '/';
+    if (!comment && !CEL_WHITESPACE.test(first)) tokens.push({ start: index, end });
+    index = end;
+  }
+  return tokens;
+}
+
+/**
  * Blank the string literals and the comments out of an expression, in one pass
  * driven by the same tokenizer {@link firstUnlexableOffset} walks with.
  *
@@ -1754,18 +1779,162 @@ function rewriteAwayCelJsLimitations(
         : `0.${'0'.repeat(filler)}`;
     });
 
+    // A splice has no boundary of its own: it sits between two characters the
+    // tokenizer has already paired with their own tokens, and a replacement
+    // that abuts an `IDENT` or digit character *joins* it. `x"y".size()` is the
+    // worked example — splicing the placeholder in for the string literal
+    // yields `x__typekro_recv0.size()`, one identifier where the original had
+    // an identifier next to a string literal. One space keeps the boundary and
+    // changes no CEL production, whitespace being allowed between any two
+    // tokens. A neighbour that is itself being replaced is consulted at its
+    // replacement, since that is what will be adjacent.
+    const padding = chosen.map((rewrite, index) => {
+      const replacement = replacements[index] as string;
+      const previousSpan = chosen[index - 1];
+      const nextSpan = chosen[index + 1];
+      const before =
+        previousSpan !== undefined && previousSpan.end === rewrite.start
+          ? (replacements[index - 1] as string).slice(-1)
+          : (text[rewrite.start - 1] ?? '');
+      const after =
+        nextSpan !== undefined && nextSpan.start === rewrite.end
+          ? (replacements[index + 1] as string).slice(0, 1)
+          : (text[rewrite.end] ?? '');
+      return {
+        left: IDENT_CHARACTER.test(before) ? ' ' : '',
+        // A closing `"` ends its token whatever follows it, so a string filler
+        // cannot fuse to the right. A number filler can: `0.000` followed by
+        // `e5`, or by another digit, is one `FLOAT_LIT`.
+        right: !replacement.endsWith('"') && IDENT_CHARACTER.test(after) ? ' ' : '',
+      };
+    });
+
+    // Where each span lands in the rewritten text, accumulated left to right.
+    let shift = 0;
+    const rewritten = chosen.map((rewrite, index) => {
+      const replacement = replacements[index] as string;
+      const { left, right } = padding[index] as { readonly left: string; readonly right: string };
+      const start = rewrite.start + shift + left.length;
+      shift += left.length + replacement.length + right.length - (rewrite.end - rewrite.start);
+      return {
+        before: { start: rewrite.start, end: rewrite.end },
+        after: { start, end: start + replacement.length },
+      };
+    });
+
     // Applied right to left: a `receiver` rewrite changes the width of the text,
     // and splicing from the end keeps every earlier span indexing what it named.
+    const original = text;
     for (let index = chosen.length - 1; index >= 0; index -= 1) {
       const rewrite = chosen[index] as SpecCelRewrite;
-      text = text.slice(0, rewrite.start) + (replacements[index] as string) + text.slice(rewrite.end);
-      applied += 1;
+      const { left, right } = padding[index] as { readonly left: string; readonly right: string };
+      text =
+        text.slice(0, rewrite.start) +
+        left +
+        (replacements[index] as string) +
+        right +
+        text.slice(rewrite.end);
     }
+
+    // Padding is a guess about where two tokens could fuse; this is the proof
+    // that none did. A round that moved a token boundary anywhere outside its
+    // own spans is refused outright rather than carried forward, so the caller
+    // sees `applied: 0` and the expression falls to `cel-js-parse-failure`.
+    if (!rewriteKeepsTokenBoundaries(original, text, rewritten)) {
+      return { text: expression.source, applied: 0 };
+    }
+    applied += chosen.length;
+
     current = celDialectText(text);
     currentBrackets = buildBracketIndex(current.masked);
   }
 
   return { text, applied };
+}
+
+/** Where one rewrite's span sat before the splice, and where it sits after it. */
+interface RewrittenSpan {
+  readonly before: Span;
+  readonly after: Span;
+}
+
+/**
+ * Whether a rewrite round left the token stream alone outside its own spans.
+ *
+ * The proof a `cel-js-rejects-spec-cel` divergence stands on is "cel-js parses
+ * this text, which differs from the original only where a confirmed shortfall
+ * was replaced by a same-production spelling of it". String concatenation does
+ * not respect that claim on its own: a replacement that abuts an `IDENT` or
+ * digit character merges with it, and the rewrite then lexes a *different token
+ * stream* from the original outside the spans it was licensed to change.
+ * `x"y".size()` is an identifier next to a string literal, which no CEL
+ * production joins; splicing the literal out gives `x__typekro_recv0.size()`,
+ * a single identifier with a member call on it that cel-js parses happily. Left
+ * unchecked, that reported a divergence against text cel-go rejects outright —
+ * a false positive against strict mode, which is the one direction this module
+ * may not fail in.
+ *
+ * So the boundary is verified rather than assumed. Both texts are tokenized
+ * with the spec tokenizer {@link firstUnlexableOffset} walks with, and the round
+ * holds only when all three hold:
+ *
+ * - no token straddles the edge of a rewritten span, on either side. A token
+ *   that touches a span lies wholly inside it, and no token reaches across two.
+ * - the tokens *outside* the spans are the same sequence, character for
+ *   character, in the same order.
+ * - each rewritten span is **exactly one token** in the result — the single
+ *   `IDENT` placeholder, `STRING_LIT` or `FLOAT_LIT` the substitution promised.
+ *
+ * Failing any of them means the splice said something about the text the
+ * rewrite rule did not license, so the round is thrown away and no divergence
+ * is proven. That is the safe direction: the expression is reported as
+ * `cel-js-parse-failure` instead, which claims nothing beyond direct mode.
+ */
+function rewriteKeepsTokenBoundaries(
+  before: string,
+  after: string,
+  spans: readonly RewrittenSpan[]
+): boolean {
+  const beforeTokens = celSpecTokens(before);
+  const afterTokens = celSpecTokens(after);
+  if (beforeTokens === undefined || afterTokens === undefined) return false;
+
+  const outside = (
+    tokens: readonly Span[],
+    side: (span: RewrittenSpan) => Span
+  ): Span[] | undefined => {
+    const kept: Span[] = [];
+    for (const token of tokens) {
+      const touched = spans.filter((span) => {
+        const at = side(span);
+        return token.start < at.end && at.start < token.end;
+      });
+      if (touched.length === 0) {
+        kept.push(token);
+        continue;
+      }
+      // A token reaching across two spans, or past the edge of the one it
+      // touches, is a token the splice created or destroyed.
+      if (touched.length > 1) return undefined;
+      const at = side(touched[0] as RewrittenSpan);
+      if (token.start < at.start || token.end > at.end) return undefined;
+    }
+    return kept;
+  };
+
+  const keptBefore = outside(beforeTokens, (span) => span.before);
+  const keptAfter = outside(afterTokens, (span) => span.after);
+  if (keptBefore === undefined || keptAfter === undefined) return false;
+  if (keptBefore.length !== keptAfter.length) return false;
+  for (let index = 0; index < keptBefore.length; index += 1) {
+    const left = keptBefore[index] as Span;
+    const right = keptAfter[index] as Span;
+    if (before.slice(left.start, left.end) !== after.slice(right.start, right.end)) return false;
+  }
+
+  return spans.every((span) =>
+    afterTokens.some((token) => token.start === span.after.start && token.end === span.after.end)
+  );
 }
 
 /**
