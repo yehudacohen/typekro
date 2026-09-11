@@ -22,9 +22,33 @@
  * It is meant to grow: each rule below records what was observed and on which
  * engine, so a new entry can be justified the same way.
  *
- * Strictness follows the same convention as the other CEL diagnostics
- * (`strictCelDiagnostics` factory option, `TYPEKRO_STRICT_CEL=1`): findings
- * abort serialization in strict mode and are logged as warnings otherwise.
+ * ## What may fail strict mode
+ *
+ * A rule may fail strict mode only when the two engines genuinely **diverge** on
+ * the form: there is data for which one engine yields a value and the other does
+ * not. That bar rules out two tempting kinds of rule, and both are deliberately
+ * excluded rather than merely unwritten.
+ *
+ * - **Anything that needs a CEL *type* to be a divergence.** Syntax does not
+ *   establish a type. `x[0]` is a list index against one schema and a map lookup
+ *   against another; `"k" in e` is fine when `e` is a map and rejected when
+ *   cel-go's type env has typed `e` as a message. The real types live in the
+ *   referenced resources' Kubernetes schemas, and nothing at this call site has
+ *   them: the check receives the serialized status map — expression text naming
+ *   graph resources by id — and TypeKro's `Enhanced<>` types are erased before
+ *   serialization runs. A rule that guesses a type from bracket shape fails
+ *   strict mode on valid CEL, so such rules are reported as notes instead.
+ * - **Forms both engines treat the same.** Indexing a required list inside a
+ *   logical chain is the worked example: `size(l) > 0 && l[0].f != ""` returns
+ *   `false` on an empty `l` in both engines (cel-js short-circuits, cel-go
+ *   absorbs the error under a deciding `false`), and an out-of-range index
+ *   errors on both. Nothing diverges, so nothing is reported.
+ *
+ * Findings that do not clear the bar are still worth surfacing, so each rule
+ * declares a {@link CelDialectFindingKind}: `divergence` findings abort
+ * serialization in strict mode, `note` findings never do and are logged in both
+ * modes. Strictness otherwise follows the shared CEL diagnostics convention
+ * (`strictCelDiagnostics` factory option, `TYPEKRO_STRICT_CEL=1`).
  */
 
 import { parse } from 'cel-js';
@@ -37,18 +61,30 @@ import {
 /**
  * The CEL engine that rejects — or diverges on — an expression.
  *
- * `'unchecked'` is not an engine: it marks a finding where no dialect verdict
- * was reached at all, because the expression was past the analysis budget.
+ * `'both'` marks a form neither engine accepts, which is a defect but not a
+ * divergence. `'unchecked'` is not an engine at all: it marks a finding where no
+ * verdict was reached, because the expression was past the analysis budget.
  */
-export type CelDialect = 'cel-js' | 'cel-go' | 'unchecked';
+export type CelDialect = 'cel-js' | 'cel-go' | 'both' | 'unchecked';
+
+/**
+ * Whether a finding may fail strict mode.
+ *
+ * - `divergence` — the two engines demonstrably disagree on this form, with no
+ *   appeal to a type the checker cannot see. Fails strict mode.
+ * - `note` — worth reporting, but not a proven divergence: either both engines
+ *   reject the form (a defect, but the same defect on each), or the divergence
+ *   is conditional on a type the checker has no way to establish, or no verdict
+ *   was reached at all. Never fails strict mode, in either strictness setting.
+ */
+export type CelDialectFindingKind = 'divergence' | 'note';
 
 /** Identifier for a curated dual-dialect rule. */
 export type CelDialectRuleId =
-  | 'cel-js-parse'
+  | 'not-valid-cel'
   | 'has-index-argument'
   | 'in-on-list-entry'
   | 'guard-after-use-in-logical-chain'
-  | 'unguarded-index-in-logical-chain'
   | 'expression-too-large';
 
 /**
@@ -77,6 +113,8 @@ export const CEL_DIALECT_MAX_EXPRESSION_LENGTH = 16_384;
 export interface CelDialectFinding {
   /** Which curated rule matched. */
   readonly rule: CelDialectRuleId;
+  /** Whether this finding may fail strict mode. */
+  readonly kind: CelDialectFindingKind;
   /** The engine that rejects or diverges on this expression. */
   readonly dialect: CelDialect;
   /** The status leaf path the expression was emitted for. */
@@ -94,57 +132,63 @@ export interface CelDialectFinding {
 /**
  * The curated denylist.
  *
- * Every entry names the engine that rejects the form and the observation
- * behind it. Keep this table and {@link checkCelDialectCompatibility} in step.
+ * Every entry names the engine that rejects the form, whether the entry counts
+ * as a divergence, and the observation behind it. Keep this table and
+ * {@link checkCelDialectCompatibility} in step.
  */
 export const CEL_DIALECT_RULES: readonly {
   readonly id: CelDialectRuleId;
+  readonly kind: CelDialectFindingKind;
   readonly dialect: CelDialect;
   readonly summary: string;
   readonly observed: string;
 }[] = [
   {
-    id: 'cel-js-parse',
-    dialect: 'cel-js',
-    summary: 'the expression does not parse as CEL',
-    observed: "cel-js's own parser rejects it, so direct mode can never evaluate this field",
-  },
-  {
     id: 'has-index-argument',
+    kind: 'divergence',
     dialect: 'cel-js',
     summary: 'has() applied to an index expression',
     observed:
-      'cel-js raises "has() does not support atomic expressions" for has(list[0].field); cel-go accepts it',
-  },
-  {
-    id: 'in-on-list-entry',
-    dialect: 'cel-go',
-    summary: '`in` applied to a typed list entry',
-    observed:
-      "KRO's cel-go type env types a list entry as a message, not a map, and reports \"no matching overload for '@in'\"; cel-js accepts it",
+      'cel-js raises "has() does not support atomic expressions" whenever the operand of has() is an index — `has(list[0].field)` and `has(map["k"].field)` alike, so this is about the shape of the macro argument and not about the type of what is indexed. cel-go\'s has() macro accepts any select expression, index included',
   },
   {
     id: 'guard-after-use-in-logical-chain',
+    kind: 'divergence',
     dialect: 'cel-js',
     summary: 'a has() guard placed to the right of the access it guards',
     observed:
-      'cel-go absorbs an error in one operand of && / || when the other operand decides the result, regardless of order; cel-js evaluates left to right and propagates the error before the guard is ever reached',
+      'cel-go absorbs an error in one operand of && / || when the other operand decides the result, regardless of order; cel-js evaluates left to right and propagates the error before the guard is ever reached. The divergence needs no type: the guard itself says the author expects the path to be absent sometimes',
   },
   {
-    id: 'unguarded-index-in-logical-chain',
-    dialect: 'cel-js',
-    summary: 'an index expression inside && / || with no has() guard before it',
+    id: 'in-on-list-entry',
+    kind: 'note',
+    dialect: 'cel-go',
+    summary: '`in` applied to something that may be a typed list entry',
     observed:
-      'the indexed list is optional in practice; cel-go absorbs the resulting error when the other operand is false, cel-js propagates it and takes the whole status field down',
+      "KRO's cel-go type env types a *message* list entry as a message rather than a map and reports \"no matching overload for '@in'\", where cel-js accepts it. Whether the entry here is a message or a map is a fact about the referenced resource's schema, which this check cannot see, so the form is reported for information rather than failed",
+  },
+  {
+    id: 'not-valid-cel',
+    kind: 'note',
+    dialect: 'both',
+    summary: 'the expression is not valid CEL at all',
+    observed:
+      "cel-js's own parser rejects it, and so would cel-go — the emitted text is JavaScript that leaked through the expression converter (`?.`, `?[`, a JS list literal). A real defect, and one direct mode can never evaluate, but the same defect on both engines rather than a divergence between them",
   },
   {
     id: 'expression-too-large',
+    kind: 'note',
     dialect: 'unchecked',
     summary: 'the expression is past the analysis budget, so neither half of the check ran',
     observed:
-      'a nested composition whose inlined status re-expands into itself doubles the expression per level, reaching megabytes; parsing one costs seconds per call and the ResourceGraphDefinition carrying it is past the Kubernetes object size limit',
+      'a nested composition whose inlined status re-expands into itself doubles the expression per level, reaching megabytes; parsing one costs seconds per call and the ResourceGraphDefinition carrying it is past the Kubernetes object size limit. No dialect verdict was reached, so there is no divergence to report',
   },
 ] as const;
+
+/** True when any finding in the set may fail strict mode. */
+export function hasCelDialectDivergence(findings: readonly CelDialectFinding[]): boolean {
+  return findings.some((found) => found.kind === 'divergence');
+}
 
 /** A `[start, end)` slice of an expression. */
 interface Span {
@@ -226,12 +270,6 @@ function parenGroups(masked: string, span: Span): Span[] {
 }
 
 const DOTTED_PATH = /[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+/g;
-/**
- * A *list* index: `list[0]`. Deliberately numeric-only — `map["key"]` is a map
- * lookup, which both engines reject identically on a missing key and so is not
- * a dialect divergence.
- */
-const INDEXED_BASE = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\[\s*\d+\s*\]/g;
 
 function blankRange(text: string, start: number, end: number): string {
   return text.slice(0, start) + ' '.repeat(Math.max(0, end - start)) + text.slice(end);
@@ -327,10 +365,11 @@ function finding(
   message: string,
   suggestion: string
 ): CelDialectFinding {
-  const dialect = CEL_DIALECT_RULES.find((entry) => entry.id === rule)?.dialect ?? 'cel-js';
+  const entry = CEL_DIALECT_RULES.find((candidate) => candidate.id === rule);
   return {
     rule,
-    dialect,
+    kind: entry?.kind ?? 'note',
+    dialect: entry?.dialect ?? 'cel-js',
     field,
     expression,
     ...(fragment === undefined ? {} : { fragment }),
@@ -339,7 +378,15 @@ function finding(
   };
 }
 
-/** Rule: `has()` whose argument is an index expression. */
+/**
+ * Rule: `has()` whose argument is an index expression.
+ *
+ * Any index counts, numeric or string-keyed. That is not an inference about what
+ * is being indexed: cel-js rejects the *shape* of the macro argument, throwing
+ * "has() does not support atomic expressions" for `has(list[0].f)` and
+ * `has(map["k"].f)` alike, while cel-go's has() accepts any select expression.
+ * The divergence is established without knowing a single type.
+ */
 function checkHasIndexArgument(
   expression: string,
   masked: string,
@@ -359,7 +406,7 @@ function checkHasIndexArgument(
           field,
           expression,
           fragment,
-          'cel-js rejects has() on an index expression ("has() does not support atomic expressions"), so this field can never resolve in direct mode',
+          'cel-js rejects has() whose operand is an index expression ("has() does not support atomic expressions") while cel-go accepts it, so this field resolves under KRO and never in direct mode',
           'Select entries with `list.filter(entry, has(entry.field))` inside a lazy ternary — Cel.firstWhereHas() emits exactly that'
         )
       );
@@ -368,7 +415,7 @@ function checkHasIndexArgument(
   }
 }
 
-/** Rule: `in` whose right-hand operand is a typed list entry. */
+/** Rule: `in` whose right-hand operand may be a typed list entry. */
 function checkInOnListEntry(
   expression: string,
   masked: string,
@@ -394,18 +441,23 @@ function checkInOnListEntry(
     }
     const operand = masked.slice(operandStart, cursor);
     const root = /^[A-Za-z_$][\w$]*/.exec(operand)?.[0];
-    const isListEntry =
+    // Two shapes that *may* denote a single entry of a list: an index
+    // expression, and a variable bound by a collection macro. Neither says what
+    // the entry's CEL type is — `in` is correct on a map entry and rejected on a
+    // message one, and that distinction lives in the resource's schema, which is
+    // not reachable here. Hence a note rather than a strict-mode failure.
+    const mayBeListEntry =
       operand.includes('[') ||
       (root !== undefined && isCelLambdaLocalAt(root, operandStart, lambdaScopes));
-    if (operand.length > 0 && isListEntry) {
+    if (operand.length > 0 && mayBeListEntry) {
       findings.push(
         finding(
           'in-on-list-entry',
           field,
           expression,
           expression.slice(match.index, cursor),
-          "KRO's cel-go type env types a list entry as a message rather than a map and rejects `in` on it (\"no matching overload for '@in'\"), so the ResourceGraphDefinition is refused",
-          'Test the field with has() instead: `list.filter(entry, has(entry.field))`'
+          `\`in\` is applied to '${operand}', which may be a single list entry. If KRO's cel-go type env types that entry as a message rather than a map it rejects \`in\` on it ("no matching overload for '@in'") where cel-js accepts it. Whether it does is a fact about the resource's schema, which this check cannot see — so this is reported, not failed`,
+          'If the entry is a message, test the field with has() instead: `list.filter(entry, has(entry.field))`'
         )
       );
     }
@@ -414,9 +466,17 @@ function checkInOnListEntry(
 }
 
 /**
- * Rules that only make sense across the operands of one `&&` / `||` chain:
- * a guard that sits to the right of the access it guards, and an index
- * expression with no guard before it at all.
+ * The one rule that only makes sense across the operands of an `&&` / `||`
+ * chain: a `has()` guard that sits to the right of the access it guards.
+ *
+ * A companion rule used to live here — `unguarded-index-in-logical-chain`,
+ * flagging `list[0].f` inside a chain with no guard before it — and it has been
+ * removed because it was not a divergence. On `size(l) > 0 && l[0].f != ""` with
+ * an empty `l`, cel-js short-circuits on the `false` and never indexes, while
+ * cel-go absorbs the index error under the deciding `false`: both return
+ * `false`. On an out-of-range index with no deciding operand, both error. There
+ * is no data that separates the engines, so indexing a required list is simply
+ * valid on both and reporting it failed strict mode on correct CEL.
  */
 function checkLogicalChain(
   expression: string,
@@ -444,7 +504,6 @@ function checkLogicalChain(
         const before = guardsBefore[index] as string[];
         const after = guardsAfter[index] as string[];
         const derefs = dereferencedPaths(blanked, operand);
-        const text = () => expression.slice(operand.start, operand.end).trim();
 
         const lateGuard = after.find(
           (guard) =>
@@ -457,26 +516,9 @@ function checkLogicalChain(
               'guard-after-use-in-logical-chain',
               field,
               expression,
-              text(),
+              expression.slice(operand.start, operand.end).trim(),
               `has(${lateGuard}) guards this operand but is written after it. cel-go absorbs the error either way; cel-js evaluates left to right and fails before reaching the guard`,
               `Move has(${lateGuard}) to the left of the access, or use a lazy ternary: has(${lateGuard}) ? (...) : <fallback>`
-            )
-          );
-          continue;
-        }
-
-        const indexedBase = [...blanked.slice(operand.start, operand.end).matchAll(INDEXED_BASE)]
-          .map((found) => found[1] as string)
-          .find((base) => !before.some((guard) => guardCovers(guard, base)));
-        if (indexedBase !== undefined) {
-          findings.push(
-            finding(
-              'unguarded-index-in-logical-chain',
-              field,
-              expression,
-              text(),
-              `'${indexedBase}' is indexed inside a logical chain with no has() guard before it. cel-go absorbs the error when the other operand decides the result; cel-js propagates it`,
-              'Guard the list first, or select the entry with Cel.firstWhereHas(), which keeps the index inside a lazy ternary'
             )
           );
         }
@@ -524,8 +566,11 @@ export function checkCelDialectCompatibility(
     return findings;
   }
 
-  // Half one: cel-js's own parser. A syntax error here means direct mode can
-  // never evaluate this field, whatever KRO makes of it.
+  // Half one: cel-js's own parser, used as a stand-in for the CEL grammar
+  // itself. A syntax error here is not a cel-js quirk — the forms that reach it
+  // in practice (`?.`, `?[`, a JavaScript list literal) are JavaScript that
+  // leaked through the expression converter, and cel-go rejects them too. So it
+  // is reported as a `note` naming both engines rather than as a divergence.
   let parsed: { isSuccess: boolean } | undefined;
   try {
     parsed = parse(trimmed);
@@ -535,12 +580,12 @@ export function checkCelDialectCompatibility(
   if (!parsed.isSuccess) {
     findings.push(
       finding(
-        'cel-js-parse',
+        'not-valid-cel',
         field,
         trimmed,
         undefined,
-        'cel-js cannot parse this expression, so direct mode can never evaluate this status field',
-        'Check the expression against the CEL grammar; direct mode and Kro mode must both accept it'
+        'this is not valid CEL: cel-js cannot parse it, and cel-go would not either. Direct mode can never evaluate this status field, and KRO will refuse the ResourceGraphDefinition',
+        'Usually JavaScript that survived conversion — `?.`, `?[`, `.length`, or a `[...]` list literal. Write the CEL form instead: has() guards, `size()`, and a lazy ternary'
       )
     );
     // The pattern rules below assume a parseable expression.
@@ -596,17 +641,41 @@ export function collectStatusCelDialectFindings(
   return findings;
 }
 
+/**
+ * Longest expression or fragment a report will quote, in characters.
+ *
+ * The analysis budget already keeps `checkCelDialectCompatibility` from
+ * returning an oversized `expression`, but the formatter is exported and takes
+ * findings from wherever the caller got them — so it bounds what it quotes on
+ * its own rather than trusting its input. A report is read by a human; past a
+ * couple of lines per finding the excerpt stops helping and starts being the
+ * thing that fills the log.
+ */
+export const CEL_DIALECT_MAX_EXCERPT_LENGTH = 400;
+
+/** Quote at most {@link CEL_DIALECT_MAX_EXCERPT_LENGTH} characters of a snippet. */
+function excerpt(text: string): string {
+  return text.length <= CEL_DIALECT_MAX_EXCERPT_LENGTH
+    ? text
+    : `${text.slice(0, CEL_DIALECT_MAX_EXCERPT_LENGTH)}… (${text.length} characters)`;
+}
+
+/** How a finding's verdict reads at the head of its report entry. */
+function verdict(found: CelDialectFinding): string {
+  if (found.dialect === 'unchecked') return 'not checked';
+  if (found.dialect === 'both') return 'rejected by both dialects';
+  return `${found.kind === 'divergence' ? 'rejected by' : 'may be rejected by'} ${found.dialect}`;
+}
+
 /** Render findings as a multi-line report naming the leaf, dialect and expression. */
 export function formatCelDialectFindings(findings: readonly CelDialectFinding[]): string {
   return findings
     .map(
       (found) =>
-        `  status.${found.field}: ${
-          found.dialect === 'unchecked' ? 'not checked' : `rejected by ${found.dialect}`
-        } [${found.rule}]\n` +
+        `  status.${found.field}: ${verdict(found)} [${found.rule}, ${found.kind}]\n` +
         `    ${found.message}\n` +
-        (found.fragment ? `    at: ${found.fragment}\n` : '') +
-        `    expression: ${found.expression}\n` +
+        (found.fragment ? `    at: ${excerpt(found.fragment)}\n` : '') +
+        `    expression: ${excerpt(found.expression)}\n` +
         `    fix: ${found.suggestion}`
     )
     .join('\n');
