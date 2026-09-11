@@ -37,8 +37,28 @@ function escapeRegExpLiteral(value: string): string {
 const CEL_INDEX_TARGET_START = /[A-Za-z_$]/;
 const CEL_INDEX_TARGET_CHARACTER = /[A-Za-z0-9_$]/;
 
-/** What may follow a `.<digits>` run without making it part of a longer token. */
-const CEL_INDEX_RUN_TERMINATOR = /[.\])}\s?:,+\-*/<>=!&|]/;
+/**
+ * What may follow a `.<digits>` run without making it part of a longer token.
+ *
+ * Read against the CEL lexis punctuation set. The class holds every CEL
+ * punctuation character that can legally follow a complete index, plus
+ * whitespace and end-of-text:
+ *
+ * - `[` — an index may be taken of an index. `a.0[1]` and `a.0["k"]` are the
+ *   dotted spelling of `a[0][1]` and `a[0]["k"]`; leaving `[` out meant those
+ *   were not converted and stayed invalid CEL.
+ * - `%` — the modulo operator, alongside the `+ - * /` already here. `a.0 % 2`
+ *   only converted because of the whitespace; `a.0%2` did not.
+ * - `.` `]` `)` `}` — a following select, a closing index, call or aggregate.
+ * - `? :` `,` `< > = ! & |` — the conditional, argument lists, and the
+ *   relational, equality and logical operators.
+ *
+ * `(` is deliberately NOT here: `a.0(` is not CEL under any reading, because a
+ * call target is an `IDENT` and an index is not callable — converting it would
+ * invent a program rather than respell one. `;` `@` `#` are not CEL punctuation
+ * at all, so text containing them is not an expression this sweep should touch.
+ */
+const CEL_INDEX_RUN_TERMINATOR = /[.[\])}%\s?:,+\-*/<>=!&|]/;
 
 /**
  * Does the text emitted so far end with something an index can be taken of?

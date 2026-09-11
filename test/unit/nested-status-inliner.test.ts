@@ -1274,6 +1274,43 @@ describe('normalizeCelArrayIndexPaths — dotted numeric runs', () => {
   });
 });
 
+describe('normalizeCelArrayIndexPaths — what may follow an index run', () => {
+  // The right-context class is read against the CEL lexis punctuation set: it
+  // holds what can legally follow a complete index. `[` was missing, so the
+  // dotted spelling of a chained index was left unconverted and invalid.
+
+  it('indexes a dotted run followed by a bracket index', () => {
+    expect(normalizeCelArrayIndexPaths('a.0[1]')).toBe('a[0][1]');
+  });
+
+  it('indexes a dotted run followed by a string key', () => {
+    expect(normalizeCelArrayIndexPaths('a.0["k"].b')).toBe('a[0]["k"].b');
+  });
+
+  it('indexes a dotted run between two bracket indexes', () => {
+    expect(normalizeCelArrayIndexPaths('list[0].1[2]')).toBe('list[0][1][2]');
+  });
+
+  it('indexes a dotted run followed by modulo, with or without spaces', () => {
+    // `a.0 % 2` only ever converted because of the whitespace.
+    expect(normalizeCelArrayIndexPaths('a.0 % 2')).toBe('a[0] % 2');
+    expect(normalizeCelArrayIndexPaths('a.0%2')).toBe('a[0]%2');
+  });
+
+  it('leaves a dotted run followed by a call alone', () => {
+    // `a.0(` is not CEL under any reading — a call target is an IDENT, and an
+    // index is not callable — so there is nothing to respell.
+    expect(normalizeCelArrayIndexPaths('a.0(')).toBe('a.0(');
+    expect(normalizeCelArrayIndexPaths('a.0()')).toBe('a.0()');
+  });
+
+  it('leaves a dotted run followed by non-CEL punctuation alone', () => {
+    for (const text of ['a.0;', 'a.0@', 'a.0#']) {
+      expect(normalizeCelArrayIndexPaths(text)).toBe(text);
+    }
+  });
+});
+
 describe('normalizeCelArrayIndexPaths — CEL regions vs literal template text', () => {
   // The sweep also runs over KRO MIXED TEMPLATES, where a `${ … }` CEL region
   // sits in literal text KRO emits verbatim. Applied to the whole string, the
