@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { parse } from 'cel-js';
 import { TypeKroError } from '../../src/core/errors.js';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { Cel, type LoadBalancerServiceRef } from '../../src/core/references/cel.js';
@@ -291,13 +292,22 @@ describe('checkCelDialectCompatibility', () => {
   });
 
   it('reports text that is not CEL at all against both dialects, as a note', () => {
-    // JavaScript that leaked through the expression converter. A real defect,
-    // but the same defect on cel-js and cel-go, so not a divergence.
+    // JavaScript that leaked through the expression converter. Each of these is
+    // invalid under the *spec's* own grammar — an unpaired `?` cannot close
+    // `Expr = ConditionalOr ["?" ConditionalOr ":" Expr]`, and `=` outside
+    // `==`/`!=`/`<=`/`>=` is not a CEL token at all — so the verdict is reached
+    // without asking cel-js anything. A real defect, but the same defect on
+    // cel-js and cel-go, so not a divergence.
     for (const expression of [
       'webService.status.loadBalancer.ingress?[0]?.ip',
       'appService.status.loadBalancer?.ingress?[0]?.ip',
       'configmapPlatformConfig.data.?region',
-      '[a.status.x.length > 0 ? "a" : ""].filter(s, s != "")',
+      'a?.b',
+      'a ?[0]',
+      'a === b',
+      'a !== b',
+      '(x) => x',
+      '${a}',
     ]) {
       const findings = check(expression);
 
@@ -305,7 +315,176 @@ describe('checkCelDialectCompatibility', () => {
       expect(findings[0]?.rule).toBe('not-valid-cel');
       expect(findings[0]?.kind).toBe('note');
       expect(findings[0]?.dialect).toBe('both');
+      expect(hasCelDialectDivergence(findings)).toBe(false);
     }
+  });
+
+  it('reaches the non-CEL verdict even where cel-js parses the text', () => {
+    // cel-js's lexer drops a character it has no token for rather than failing,
+    // so `a === b` arrives at its parser as `a == b` and "parses". The token
+    // scan is built from the spec rather than from cel-js's verdict, which is
+    // exactly why it is not gated on a parse failure.
+    expect(parse('a === b').isSuccess).toBe(true);
+    expect(check('a === b').map((found) => found.rule)).toEqual(['not-valid-cel']);
+  });
+
+  it('leaves a trailing .length to the type checker rather than calling it non-CEL', () => {
+    // `.length` is a plain `Member "." SELECTOR`, grammatical on both engines.
+    // Whether the field exists is a question about a type this module cannot
+    // see, so it is not in the non-CEL token set.
+    expect(parse('a.b.length').isSuccess).toBe(true);
+    expect(check('a.b.length')).toEqual([]);
+  });
+});
+
+/**
+ * A cel-js parse failure is a fact about direct mode and nothing else.
+ *
+ * cel-js 0.8.2 is not a conformant CEL parser: its `atomicExpression` rule
+ * takes a postfix `.`/`[` only after an identifier — plus one index after a
+ * list literal and any postfix after a map literal — while the spec's
+ * `Member = Primary | Member "." SELECTOR ["(" [ExprList] ")"] | Member "[" Expr "]"`
+ * takes a postfix on any Member and `Primary` includes `LITERAL` and
+ * `"(" Expr ")"` (cel-spec doc/langdef.md, "Syntax"). Its lexer is likewise
+ * short of the spec's `FLOAT_LIT` exponent form and of the `r`/`R`/`b`/`B` and
+ * triple-quoted `STRING_LIT`/`BYTES_LIT` forms.
+ *
+ * So each case below asserts *both* halves: that cel-js really cannot parse it
+ * — which pins this cel-js version's behaviour and fails the day cel-js catches
+ * up — and that the check calls it a divergence rather than a defect.
+ */
+describe('valid CEL that cel-js cannot parse', () => {
+  const specValid: Record<string, string> = {
+    'a string literal receiver': '"x".size()',
+    'a string literal receiver with arguments': '"abc".startsWith("a")',
+    'a string literal receiver with whitespace before the dot': '"a" .size()',
+    'a string literal indexed': '"abc"[0]',
+    'a list literal receiver': '[1,2].size()',
+    'a list literal receiver of a macro': '[a,b].exists(e, e > 1)',
+    'a list literal past its one permitted index': '[1,2][0].f',
+    'a parenthesized receiver': '(a + b).size()',
+    'a parenthesized receiver of a select': '(a).b',
+    'a parenthesized receiver indexed': '(a + b)[0]',
+    'a global call receiver': 'size(a).b',
+    'a has() call receiver': 'has(a.b).c',
+    'an int literal receiver': '1.string()',
+    'a double literal receiver': '1.0.string()',
+    'a uint literal receiver': '2u.string()',
+    'a bool literal receiver': 'true.x',
+    'a null literal receiver': 'null.x',
+    'an exponent float literal': 'a.b == 1e3',
+    'a negative exponent float literal': 'a.b == 1.5e-3',
+    'a raw string literal': 'a.b == r"x"',
+    'a bytes literal': 'a.b == b"x"',
+    'a triple-quoted string literal': 'a.b == """x"""',
+    'a list literal of a ternary, then a macro': '[a.b > 0 ? "a" : ""].filter(s, s != "")',
+  };
+
+  for (const [name, expression] of Object.entries(specValid)) {
+    it(`calls ${name} a cel-js divergence, not invalid CEL`, () => {
+      // Half one: cel-js really does reject it. When this starts failing,
+      // cel-js has gained the form and the rule should lose it.
+      expect(parse(expression).isSuccess).toBe(false);
+
+      // Half two: the check identifies it positively rather than inferring
+      // cel-go's behaviour from cel-js's refusal.
+      const findings = check(expression);
+      expect(findings.map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
+      expect(findings[0]?.kind).toBe('divergence');
+      expect(findings[0]?.dialect).toBe('cel-js');
+      expect(hasCelDialectDivergence(findings)).toBe(true);
+      // The message must not claim the expression is invalid.
+      expect(findings[0]?.message).toContain('the CEL grammar permits it');
+      expect(findings[0]?.message).not.toContain('KRO will refuse');
+    });
+  }
+
+  it('leaves a map literal receiver alone, because cel-js does parse it', () => {
+    // The one member of the literal-primary family cel-js already handles: its
+    // `mapExpression` rule carries a `MANY2` of postfix selects and indexes.
+    // Nothing diverges, so nothing is reported.
+    for (const expression of ['{"k":1}.size()', '{"k":1}.k', '{"k":1}["k"]']) {
+      expect(parse(expression).isSuccess).toBe(true);
+      expect(check(expression)).toEqual([]);
+    }
+  });
+
+  it('leaves the one index cel-js allows after a list literal alone', () => {
+    expect(parse('[1,2][0]').isSuccess).toBe(true);
+    expect(check('[1,2][0]')).toEqual([]);
+  });
+
+  it('leaves a member call on an identifier chain alone', () => {
+    // `a.map(x, x).size()` is `identifierExpression`, which cel-js does carry a
+    // postfix on — so the global-call rule must not reach it.
+    for (const expression of ['a.map(x,x).size()', 'a.filter(x, x.y)[0]', 'a.b.c.d']) {
+      expect(parse(expression).isSuccess).toBe(true);
+      expect(check(expression)).toEqual([]);
+    }
+  });
+});
+
+/** Everything else cel-js cannot parse, reported without a cel-go claim. */
+describe('an unexplained cel-js parse failure', () => {
+  for (const expression of ['!!!(((', 'a b c', 'a + + * b', '((((']) {
+    it(`reports ${JSON.stringify(expression)} against cel-js only`, () => {
+      expect(parse(expression).isSuccess).toBe(false);
+
+      const findings = check(expression);
+      expect(findings.map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
+      expect(findings[0]?.kind).toBe('note');
+      expect(findings[0]?.dialect).toBe('cel-js');
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+
+      // The whole point of the bucket: no claim about the other engine.
+      const message = findings[0]?.message ?? '';
+      expect(message).not.toContain('cel-go');
+      expect(message).not.toContain('KRO will refuse');
+      expect(message).toContain('direct mode cannot evaluate this field');
+      expect(message).toContain('may still permit it');
+    });
+  }
+
+  it('reads as a cel-js-only verdict in the formatted report', () => {
+    expect(formatCelDialectFindings(check('a b c'))).toContain(
+      'not parseable by cel-js, cel-go unknown'
+    );
+  });
+});
+
+/**
+ * The denylist rules are regex- and bracket-mask-based, so none of them needs a
+ * parse tree — and an expression cel-js merely cannot parse is exactly the one
+ * that most needs them, since it is served by KRO alone.
+ */
+describe('denylist rules on text cel-js cannot parse', () => {
+  it('still finds a has() index argument', () => {
+    const expression = 'has(a.list[0].f) && [1,2].size() > 0';
+    expect(parse(expression).isSuccess).toBe(false);
+    expect(check(expression).map((found) => found.rule).sort()).toEqual([
+      'cel-js-rejects-spec-cel',
+      'has-index-argument',
+    ]);
+  });
+
+  it('still finds a heterogeneous map literal', () => {
+    const expression = '{"name": "http", "port": 80}.size() > (a).b';
+    expect(parse(expression).isSuccess).toBe(false);
+    expect(check(expression).map((found) => found.rule)).toContain('heterogeneous-map-literal');
+  });
+
+  it('still finds a late has() guard', () => {
+    const expression = '[1,2].size() > 0 && a.p.f != "" && has(a.p)';
+    expect(parse(expression).isSuccess).toBe(false);
+    expect(check(expression).map((found) => found.rule)).toContain(
+      'guard-after-use-in-logical-chain'
+    );
+  });
+
+  it('still finds `in` on a possible list entry', () => {
+    const expression = '"k" in a.list[0] && [1,2].size() > 0';
+    expect(parse(expression).isSuccess).toBe(false);
+    expect(check(expression).map((found) => found.rule)).toContain('in-on-list-entry');
   });
 });
 
@@ -385,8 +564,8 @@ describe('heterogeneous map literals', () => {
   it('classifies only a whole literal, never a value that merely opens with one', () => {
     // The type of a value is not the type of the token it starts with.
     // `"x".size()` and `[1, 2].size()` are ints, `"s".startsWith("t")` is a
-    // bool, and `"x" + y` is a string only by luck — cel-js builds every one of
-    // these maps, so classifying any of them by its first character would fail
+    // bool, and `"x" + y` is a string only by luck — every one of these maps is
+    // homogeneous, so classifying any value by its first character would fail
     // strict mode on valid CEL.
     for (const expression of [
       '{"a": "x".size(), "b": 3}',
@@ -395,9 +574,25 @@ describe('heterogeneous map literals', () => {
       '{"a": "x" + y, "b": 3}',
       '{"a": {"k": 1}.size(), "b": 3}',
     ]) {
-      const findings = check(expression);
-      expect(findings.map((found) => found.rule)).not.toContain('heterogeneous-map-literal');
-      expect(hasCelDialectDivergence(findings)).toBe(false);
+      expect(check(expression).map((found) => found.rule)).not.toContain(
+        'heterogeneous-map-literal'
+      );
+    }
+
+    // The two cel-js does parse carry no finding at all. The other three are
+    // the literal-primary receiver that cel-js cannot parse and the spec
+    // permits, so they are a `cel-js-rejects-spec-cel` divergence — a verdict
+    // about the *receiver*, never about the map's value types.
+    for (const expression of ['{"a": "x" + y, "b": 3}', '{"a": {"k": 1}.size(), "b": 3}']) {
+      expect(parse(expression).isSuccess).toBe(true);
+      expect(check(expression)).toEqual([]);
+    }
+    for (const expression of [
+      '{"a": "x".size(), "b": 3}',
+      '{"a": [1, 2].size(), "b": 3}',
+      '{"a": "s".startsWith("t"), "b": true}',
+    ]) {
+      expect(check(expression).map((found) => found.rule)).toEqual(['cel-js-rejects-spec-cel']);
     }
   });
 
@@ -570,7 +765,7 @@ describe('analysis budget', () => {
     expect(under.length).toBeLessThanOrEqual(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
     expect(over.length).toBeGreaterThan(CEL_DIALECT_MAX_EXPRESSION_LENGTH);
 
-    expect(check(under).map((found) => found.rule)).toEqual(['not-valid-cel']);
+    expect(check(under).map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
     expect(check(over).map((found) => found.rule)).toEqual(['expression-too-large']);
   });
 
