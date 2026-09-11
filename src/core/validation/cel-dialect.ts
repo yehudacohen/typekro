@@ -338,6 +338,28 @@ function guardCovers(guard: string, path: string): boolean {
   return path === guard || path.startsWith(`${guard}.`);
 }
 
+/**
+ * True when a guard already written to the left makes a later one redundant.
+ *
+ * The direction matters and is the opposite of {@link guardCovers}. Covering a
+ * path is about *reaching* it: `has(a.status)` covers the dereference
+ * `a.status.list[0]` because it guards an ancestor of it. Establishing a guard
+ * is about *presence*: only a guard at least as specific as the later one says
+ * the later one's path exists.
+ *
+ * So `has(a.status)` does not establish `has(a.status.list)` — the status object
+ * being present says nothing about the list — while `has(a.status.list.deeper)`
+ * does, because CEL evaluates the receiver of a `has()` before testing the last
+ * field: for `has(a.status.list.deeper)` to have returned true rather than
+ * errored, `a.status.list` had to be present.
+ *
+ * @param earlier A guard written to the left of the operand in question.
+ * @param later The guard written to its right.
+ */
+function guardEstablishes(earlier: string, later: string): boolean {
+  return guardCovers(later, earlier);
+}
+
 /** Dotted paths dereferenced in a span, excluding those that are `has()` arguments. */
 function dereferencedPaths(masked: string, span: Span): string[] {
   let slice = masked.slice(span.start, span.end);
@@ -505,10 +527,14 @@ function checkLogicalChain(
         const after = guardsAfter[index] as string[];
         const derefs = dereferencedPaths(blanked, operand);
 
+        // A guard to the right of an access it covers is only harmless if an
+        // operand to the left already established the same path. "Established"
+        // is not "covered": a shallower earlier guard reaches the late guard's
+        // path without saying it is present, so it cannot stand in for it.
         const lateGuard = after.find(
           (guard) =>
             derefs.some((path) => guardCovers(guard, path)) &&
-            !before.some((earlier) => guardCovers(earlier, guard))
+            !before.some((earlier) => guardEstablishes(earlier, guard))
         );
         if (lateGuard !== undefined) {
           findings.push(
