@@ -20,10 +20,12 @@ import {
   CEL_DIALECT_RULES,
   type CelDialectFinding,
   celDialectParseProof,
+  celDialectWorkStats,
   checkCelDialectCompatibility,
   collectStatusCelDialectFindings,
   formatCelDialectFindings,
   hasCelDialectDivergence,
+  resetCelDialectWorkStats,
 } from '../../src/core/validation/cel-dialect.js';
 
 function check(expression: string): CelDialectFinding[] {
@@ -1106,6 +1108,53 @@ describe('analysis cost at the budget', () => {
       expect(elapsed).toBeLessThan(2_000);
     });
   }
+
+  /**
+   * Wall-clock is the wrong instrument for the property that matters, because a
+   * slow CI box and a quadratic regression look alike from the outside. The work
+   * counters are not: `indexedCharacters` is the text scanned to resolve bracket
+   * pairs and `lookups` the number of "where does this close?" questions asked,
+   * and both are machine-independent. Doubling the expression must roughly
+   * double them — the old walks, which rescanned forward from every opener,
+   * quadrupled instead.
+   */
+  describe('work is linear in the expression, not quadratic in its nesting', () => {
+    function work(expression: string): number {
+      resetCelDialectWorkStats();
+      checkCelDialectCompatibility(expression, 'endpoint');
+      const stats = celDialectWorkStats();
+      // At most one index for the expression itself plus one per rewrite round.
+      expect(stats.indexBuilds).toBeLessThanOrEqual(9);
+      return stats.indexedCharacters + stats.lookups;
+    }
+
+    for (const [name, build] of Object.entries(shapes)) {
+      it(`does not grow faster than the input on ${name}`, () => {
+        // Both halves of the budget, so neither trips the size gate.
+        const half = build(CEL_DIALECT_MAX_EXPRESSION_LENGTH / 4).slice(
+          0,
+          CEL_DIALECT_MAX_EXPRESSION_LENGTH / 2
+        );
+        const whole = build(CEL_DIALECT_MAX_EXPRESSION_LENGTH / 2).slice(
+          0,
+          CEL_DIALECT_MAX_EXPRESSION_LENGTH
+        );
+        expect(whole.length).toBeGreaterThan(half.length * 1.8);
+
+        const halfWork = work(half);
+        const wholeWork = work(whole);
+
+        // Linear doubles, quadratic quadruples. 2.6 leaves room for the constant
+        // factors either side of the doubling without admitting a quadratic.
+        expect(wholeWork).toBeGreaterThan(0);
+        expect(wholeWork / halfWork).toBeLessThan(2.6);
+        // And an absolute ceiling, so "linear" cannot mean linear with a large
+        // multiplier: the whole check reads the expression a small fixed number
+        // of times over.
+        expect(wholeWork).toBeLessThan(whole.length * 6);
+      });
+    }
+  });
 });
 
 describe('report excerpts', () => {

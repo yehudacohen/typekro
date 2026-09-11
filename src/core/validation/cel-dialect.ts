@@ -266,29 +266,128 @@ interface Span {
 
 const CLOSERS: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
 
-/** Index of the `)` matching the `(` at `open`, or -1. */
-function matchingParen(text: string, open: number): number {
-  const stack: string[] = [];
-  for (let index = open; index < text.length; index += 1) {
+/**
+ * Every bracket pair in one expression, resolved once in a single stack pass.
+ *
+ * The walks in this module ask "where does the bracket at `i` close?" from a
+ * dozen places and, for the receiver detectors, from *every* opener in the text.
+ * Answering each of those by scanning forward from the opener is quadratic in
+ * the nesting depth, which is exactly the shape a runaway nested composition
+ * produces: 8k levels of `(` in 16 KiB of expression cost 8k scans of 16 KiB
+ * each. One stack pass answers all of them in O(1) apiece.
+ *
+ * Only `close` is carried. A reverse `open` map and a per-character `depth` map
+ * are cheap to fill and nothing in this module reads either — the walks descend
+ * from openers, never from closers, and the depth that matters here is the
+ * recursion depth of the walk ({@link CEL_DIALECT_MAX_NESTING_DEPTH}), not the
+ * bracket depth of a character. Two more typed arrays per expression would be
+ * 6 bytes per character of garbage on the serialization path for no reader.
+ */
+interface BracketIndex {
+  /** For an opener at `i`, the index of its matching closer; -1 everywhere else. */
+  readonly close: Int32Array;
+}
+
+/** Counters behind {@link celDialectWorkStats}; see it for why they exist. */
+let workIndexBuilds = 0;
+let workIndexedCharacters = 0;
+let workLookups = 0;
+
+/**
+ * What the last run (or runs) of the check cost, in units that do not depend on
+ * the machine it ran on.
+ *
+ * Wall-clock is the wrong instrument for the property that actually matters
+ * here — that the work is linear in the length of the expression rather than
+ * quadratic in its nesting — because a slow CI box and a quadratic regression
+ * look alike. These counters do not: `indexedCharacters` is the total text
+ * scanned to build bracket indexes and `lookups` the total number of "where
+ * does this close?" questions asked, so doubling the input must roughly double
+ * both.
+ */
+export interface CelDialectWorkStats {
+  /** How many bracket indexes were built. */
+  readonly indexBuilds: number;
+  /** Total characters scanned across those builds. */
+  readonly indexedCharacters: number;
+  /** Total bracket-match questions answered out of an index. */
+  readonly lookups: number;
+}
+
+/** Read the work counters. */
+export function celDialectWorkStats(): CelDialectWorkStats {
+  return {
+    indexBuilds: workIndexBuilds,
+    indexedCharacters: workIndexedCharacters,
+    lookups: workLookups,
+  };
+}
+
+/** Zero the work counters, so one check can be measured on its own. */
+export function resetCelDialectWorkStats(): void {
+  workIndexBuilds = 0;
+  workIndexedCharacters = 0;
+  workLookups = 0;
+}
+
+/**
+ * Resolve every bracket pair in `text` in one left-to-right stack pass.
+ *
+ * A closer that does not match the opener on top of the stack is text no scan
+ * could have got past either: a walk forward from any opener still on the stack
+ * would reach this character with the same pending brackets and give up, so all
+ * of them are recorded unmatched and the stack is cleared. An opener that starts
+ * *after* the offending closer is unaffected, which is what a forward scan from
+ * it would also have found.
+ */
+function buildBracketIndex(text: string): BracketIndex {
+  workIndexBuilds += 1;
+  workIndexedCharacters += text.length;
+
+  const close = new Int32Array(text.length).fill(-1);
+  const stack: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
     const character = text[index] as string;
     if (character === '(' || character === '[' || character === '{') {
-      stack.push(character);
+      stack.push(index);
       continue;
     }
     const opener = CLOSERS[character];
-    if (opener !== undefined) {
-      if (stack.pop() !== opener) return -1;
-      if (stack.length === 0) return index;
+    if (opener === undefined) continue;
+    const top = stack.length === 0 ? -1 : (stack[stack.length - 1] as number);
+    if (top >= 0 && text[top] === opener) {
+      stack.pop();
+      close[top] = index;
+      continue;
     }
+    stack.length = 0;
   }
-  return -1;
+  return { close };
+}
+
+/** Index of the bracket matching the one at `open`, or -1. */
+function matchingParen(brackets: BracketIndex, open: number): number {
+  workLookups += 1;
+  return open >= 0 && open < brackets.close.length ? (brackets.close[open] as number) : -1;
 }
 
 /**
  * Split `[start, end)` on the given separators, ignoring anything nested inside
  * brackets. Separators are matched as whole tokens.
+ *
+ * A matched bracket group at depth zero is stepped over in one index lookup
+ * rather than character by character, which is what keeps the recursive descent
+ * in {@link checkChain} from re-reading the same nested text once per level. The
+ * depth counter stays for the unbalanced case — a group whose closer is missing
+ * or falls outside the span has no entry to jump to, and the old scan is then
+ * exactly the right behaviour.
  */
-function splitTopLevel(masked: string, span: Span, separators: readonly string[]): Span[] {
+function splitTopLevel(
+  masked: string,
+  span: Span,
+  separators: readonly string[],
+  brackets: BracketIndex
+): Span[] {
   const parts: Span[] = [];
   let depth = 0;
   let partStart = span.start;
@@ -296,6 +395,13 @@ function splitTopLevel(masked: string, span: Span, separators: readonly string[]
   while (index < span.end) {
     const character = masked[index] as string;
     if (character === '(' || character === '[' || character === '{') {
+      if (depth === 0) {
+        const close = matchingParen(brackets, index);
+        if (close >= 0 && close < span.end) {
+          index = close + 1;
+          continue;
+        }
+      }
       depth += 1;
       index += 1;
       continue;
@@ -321,12 +427,12 @@ function splitTopLevel(masked: string, span: Span, separators: readonly string[]
 }
 
 /** Top-level parenthesized groups inside a span, as interior spans. */
-function parenGroups(masked: string, span: Span): Span[] {
+function parenGroups(masked: string, span: Span, brackets: BracketIndex): Span[] {
   const groups: Span[] = [];
   let index = span.start;
   while (index < span.end) {
     if (masked[index] === '(') {
-      const close = matchingParen(masked, index);
+      const close = matchingParen(brackets, index);
       if (close < 0 || close > span.end) break;
       groups.push({ start: index + 1, end: close });
       index = close + 1;
@@ -355,8 +461,16 @@ function blankRange(text: string, start: number, end: number): string {
  *   group is analyzed on its own by the recursion in `checkLogicalChain`.
  *
  * Offsets are preserved so spans stay valid against the original expression.
+ *
+ * The bracket index is the one built for `masked`, and stays correct here
+ * because every region blanked is a bracket *interior*: a lambda body runs from
+ * after the macro's `(` to before its `)`, and a lazy ternary group is blanked
+ * between its own parens. Blanking therefore only ever removes whole matched
+ * pairs, so a bracket that survives into `blanked` still closes where the index
+ * says it does, and a bracket that does not survive is a space nothing asks
+ * about.
  */
-function blankLazyRegions(masked: string): string {
+function blankLazyRegions(masked: string, brackets: BracketIndex): string {
   let blanked = masked;
   for (const scope of collectCelLambdaScopes(masked)) {
     blanked = blankRange(blanked, scope.bodyStart, scope.bodyEnd);
@@ -366,10 +480,10 @@ function blankLazyRegions(masked: string): string {
     let index = span.start;
     while (index < span.end) {
       if (blanked[index] === '(') {
-        const close = matchingParen(blanked, index);
+        const close = matchingParen(brackets, index);
         if (close < 0 || close > span.end) return;
         const interior = { start: index + 1, end: close };
-        if (splitTopLevel(blanked, interior, ['?']).length > 1) {
+        if (splitTopLevel(blanked, interior, ['?'], brackets).length > 1) {
           blanked = blankRange(blanked, interior.start, interior.end);
         } else {
           blankTernaryGroups(interior, depth + 1);
@@ -412,22 +526,38 @@ const GUARD_OPERAND = /^has\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\
  * does not, and is treated as "not a guard" rather than guessed at — negating a
  * compound is not a statement about `p` on its own.
  */
-function chainGuard(blanked: string, span: Span): { path: string; negated: boolean } | undefined {
-  let text = blanked.slice(span.start, span.end).trim();
+function chainGuard(
+  blanked: string,
+  span: Span,
+  brackets: BracketIndex
+): { path: string; negated: boolean } | undefined {
+  // Stripping narrows a span rather than re-slicing a string, so the enclosing
+  // parens can be matched out of the shared index instead of rescanned.
+  let start = span.start;
+  let end = span.end;
   let negated = false;
-  for (;;) {
-    if (text.startsWith('!')) {
+  const trim = (): void => {
+    while (start < end && /\s/.test(blanked[start] as string)) start += 1;
+    while (end > start && /\s/.test(blanked[end - 1] as string)) end -= 1;
+  };
+
+  trim();
+  while (start < end) {
+    if (blanked[start] === '!') {
       negated = !negated;
-      text = text.slice(1).trim();
+      start += 1;
+      trim();
       continue;
     }
-    if (text.startsWith('(') && matchingParen(text, 0) === text.length - 1) {
-      text = text.slice(1, -1).trim();
+    if (blanked[start] === '(' && matchingParen(brackets, start) === end - 1) {
+      start += 1;
+      end -= 1;
+      trim();
       continue;
     }
     break;
   }
-  const path = GUARD_OPERAND.exec(text)?.[1];
+  const path = GUARD_OPERAND.exec(blanked.slice(start, end))?.[1];
   return path === undefined ? undefined : { path, negated };
 }
 
@@ -448,8 +578,13 @@ function chainGuard(blanked: string, span: Span): { path: string; negated: boole
  * cel-go's absorbed error meets a `true` and stays an error, which is what
  * cel-js does too.
  */
-function guardsEstablishedBy(blanked: string, span: Span, mode: ChainMode): string[] {
-  const guard = chainGuard(blanked, span);
+function guardsEstablishedBy(
+  blanked: string,
+  span: Span,
+  mode: ChainMode,
+  brackets: BracketIndex
+): string[] {
+  const guard = chainGuard(blanked, span, brackets);
   if (guard === undefined) return [];
   return guard.negated === (mode === 'or') ? [guard.path] : [];
 }
@@ -482,17 +617,24 @@ function guardEstablishes(earlier: string, later: string): boolean {
 }
 
 /** Dotted paths dereferenced in a span, excluding those that are `has()` arguments. */
-function dereferencedPaths(masked: string, span: Span): string[] {
+function dereferencedPaths(masked: string, span: Span, brackets: BracketIndex): string[] {
   let slice = masked.slice(span.start, span.end);
   // Blank out has() arguments: naming a path inside has() is not a dereference.
+  // The scan runs over the whole text from `span.start` rather than over the
+  // slice, so the shared bracket index answers where each `has(` closes; a
+  // `has(` whose closer falls outside the span is left alone, which is what
+  // matching inside the slice alone used to arrive at.
   const pattern = /\bhas\s*\(/g;
-  let match: RegExpExecArray | null = pattern.exec(slice);
+  pattern.lastIndex = span.start;
   const blanks: [number, number][] = [];
-  while (match !== null) {
-    const open = slice.indexOf('(', match.index);
-    const close = matchingParen(slice, open);
-    if (close > open) blanks.push([match.index, close + 1]);
-    match = pattern.exec(slice);
+  let match: RegExpExecArray | null = pattern.exec(masked);
+  while (match !== null && match.index < span.end) {
+    const open = match.index + match[0].length - 1;
+    const close = matchingParen(brackets, open);
+    if (close > open && close < span.end) {
+      blanks.push([match.index - span.start, close + 1 - span.start]);
+    }
+    match = pattern.exec(masked);
   }
   for (const [start, end] of blanks.reverse()) {
     slice = slice.slice(0, start) + ' '.repeat(end - start) + slice.slice(end);
@@ -534,13 +676,14 @@ function checkHasIndexArgument(
   expression: string,
   masked: string,
   field: string,
-  findings: CelDialectFinding[]
+  findings: CelDialectFinding[],
+  brackets: BracketIndex
 ): void {
   const pattern = /\bhas\s*\(/g;
   let match: RegExpExecArray | null = pattern.exec(masked);
   while (match !== null) {
-    const open = masked.indexOf('(', match.index);
-    const close = matchingParen(masked, open);
+    const open = match.index + match[0].length - 1;
+    const close = matchingParen(brackets, open);
     if (close > open && masked.slice(open + 1, close).includes('[')) {
       const fragment = expression.slice(match.index, close + 1);
       findings.push(
@@ -592,15 +735,20 @@ const WHOLE_STRING_LITERAL = /^(?:"(?:[^"\n\\]|\\[\s\S])*"|'(?:[^'\n\\]|\\[\s\S]
  * clever: an identifier, a call, a ternary or any arithmetic yields `undefined`
  * and takes its entry out of the comparison entirely.
  *
- * `masked` is what a bracket is matched against, so a `]` or `}` sitting inside
- * a string cannot pose as the closer; the classification itself reads
- * `expression`, since masking is what erases the quotes that make a value a
- * string. `span` indexes both.
+ * Brackets are matched out of `brackets`, which was built over the *masked*
+ * text, so a `]` or `}` sitting inside a string cannot pose as the closer; the
+ * classification itself reads `expression`, since masking is what erases the
+ * quotes that make a value a string. Masking preserves offsets, so `span` and
+ * the index address the same characters.
  *
  * `int` and `double` are separate classes because cel-js separates them —
  * `{"a": 1, "b": 2.5}` is as rejected as `{"a": 1, "b": "x"}`.
  */
-function literalTypeClass(expression: string, masked: string, span: Span): string | undefined {
+function literalTypeClass(
+  expression: string,
+  span: Span,
+  brackets: BracketIndex
+): string | undefined {
   let start = span.start;
   let end = span.end;
   while (start < end && /\s/.test(expression[start] as string)) start += 1;
@@ -614,8 +762,8 @@ function literalTypeClass(expression: string, masked: string, span: Span): strin
   if (/^-?\d+$/.test(value)) return 'int';
   if (/^-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) return 'double';
   if (WHOLE_STRING_LITERAL.test(value)) return 'string';
-  if (value.startsWith('[') && matchingParen(masked, start) === end - 1) return 'list';
-  if (value.startsWith('{') && matchingParen(masked, start) === end - 1) return 'map';
+  if (value.startsWith('[') && matchingParen(brackets, start) === end - 1) return 'list';
+  if (value.startsWith('{') && matchingParen(brackets, start) === end - 1) return 'map';
   return undefined;
 }
 
@@ -634,25 +782,26 @@ function literalTypeClass(expression: string, masked: string, span: Span): strin
  * original text, since masking is what erases the quotes that make a value a
  * string. Offsets are shared, so the same spans index both, and
  * {@link literalTypeClass} is handed the span rather than the sliced text so it
- * can consult either one.
+ * can read the original while matching brackets out of the masked index.
  */
 function checkHeterogeneousMapLiteral(
   expression: string,
   masked: string,
   field: string,
-  findings: CelDialectFinding[]
+  findings: CelDialectFinding[],
+  brackets: BracketIndex
 ): void {
   for (let index = 0; index < masked.length; index += 1) {
     if (masked[index] !== '{') continue;
-    const close = matchingParen(masked, index);
+    const close = matchingParen(brackets, index);
     if (close < 0) continue;
 
     const classes = new Map<string, string>();
-    for (const entry of splitTopLevel(masked, { start: index + 1, end: close }, [','])) {
-      const [, afterKey] = splitTopLevel(masked, entry, [':']);
+    for (const entry of splitTopLevel(masked, { start: index + 1, end: close }, [','], brackets)) {
+      const [, afterKey] = splitTopLevel(masked, entry, [':'], brackets);
       if (afterKey === undefined) continue;
       const span: Span = { start: afterKey.start, end: entry.end };
-      const found = literalTypeClass(expression, masked, span);
+      const found = literalTypeClass(expression, span, brackets);
       if (found !== undefined && !classes.has(found)) {
         classes.set(found, expression.slice(span.start, span.end).trim());
       }
@@ -772,13 +921,14 @@ function checkLogicalChain(
   span: Span,
   established: readonly string[],
   findings: CelDialectFinding[],
-  depth: number
+  depth: number,
+  brackets: BracketIndex
 ): void {
   if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
   // Ternary branches are lazy in both engines, so each `?`/`:` part is its own
   // chain rather than an operand of the surrounding one.
-  for (const part of splitTopLevel(masked, span, ['?', ':'])) {
-    checkChain(expression, masked, blanked, field, part, established, findings, depth);
+  for (const part of splitTopLevel(masked, span, ['?', ':'], brackets)) {
+    checkChain(expression, masked, blanked, field, part, established, findings, depth, brackets);
   }
 }
 
@@ -791,33 +941,44 @@ function checkChain(
   span: Span,
   established: readonly string[],
   findings: CelDialectFinding[],
-  depth: number
+  depth: number,
+  brackets: BracketIndex
 ): void {
   if (depth > CEL_DIALECT_MAX_NESTING_DEPTH) return;
   // Precedence: `||` is the loosest operator, so it splits first and each
   // disjunct is then read as its own `&&` chain.
-  const disjuncts = splitTopLevel(masked, span, ['||']);
-  const conjuncts = disjuncts.length > 1 ? [] : splitTopLevel(masked, span, ['&&']);
+  const disjuncts = splitTopLevel(masked, span, ['||'], brackets);
+  const conjuncts = disjuncts.length > 1 ? [] : splitTopLevel(masked, span, ['&&'], brackets);
   const mode: ChainMode | undefined =
     disjuncts.length > 1 ? 'or' : conjuncts.length > 1 ? 'and' : undefined;
 
   if (mode === undefined) {
     // Not a chain, but a parenthesized group inside it may hold one — and that
     // group inherits whatever this position already established.
-    for (const group of parenGroups(masked, span)) {
-      checkLogicalChain(expression, masked, blanked, field, group, established, findings, depth + 1);
+    for (const group of parenGroups(masked, span, brackets)) {
+      checkLogicalChain(
+        expression,
+        masked,
+        blanked,
+        field,
+        group,
+        established,
+        findings,
+        depth + 1,
+        brackets
+      );
     }
     return;
   }
 
   const operands = mode === 'or' ? disjuncts : conjuncts;
-  const guards = operands.map((operand) => guardsEstablishedBy(blanked, operand, mode));
+  const guards = operands.map((operand) => guardsEstablishedBy(blanked, operand, mode, brackets));
   let known: string[] = [...established];
 
   for (let index = 0; index < operands.length; index += 1) {
     const operand = operands[index] as Span;
     const after = guards.slice(index + 1).flat();
-    const derefs = dereferencedPaths(blanked, operand);
+    const derefs = dereferencedPaths(blanked, operand, brackets);
 
     // A guard to the right of an access it covers is only harmless if something
     // to the left already established the same path. "Established" is not
@@ -844,7 +1005,7 @@ function checkChain(
 
     // Descend with what holds at this position: the `&&` chain nested inside an
     // `||` disjunct, and any parenthesized group.
-    checkChain(expression, masked, blanked, field, operand, known, findings, depth + 1);
+    checkChain(expression, masked, blanked, field, operand, known, findings, depth + 1, brackets);
     known = [...known, ...(guards[index] as string[])];
   }
 }
@@ -968,7 +1129,11 @@ interface SpecCelLimitation {
  * shape yields nothing, because a false positive here fails strict mode on
  * valid CEL while a false negative merely leaves a `cel-js-parse-failure` note.
  */
-function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLimitation[] {
+function findSpecCelCelJsRejects(
+  expression: string,
+  masked: string,
+  brackets: BracketIndex
+): SpecCelLimitation[] {
   const found: SpecCelLimitation[] = [];
   // `end` bounds the quoted *excerpt* and is deliberately generous — it runs past
   // the fragment so the reader sees what it was the receiver of. `rewrite` is the
@@ -1036,7 +1201,7 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     if (masked[index] !== '(') continue;
     const before = previousNonSpace(masked, index);
     const identifierCall = before >= 0 && IDENT_CHARACTER.test(masked[before] as string);
-    const close = matchingParen(masked, index);
+    const close = matchingParen(brackets, index);
     if (close < 0 || postfixFollows(masked, close + 1) === undefined) continue;
     if (!identifierCall) {
       add(index, close + 24, 'a parenthesized expression used as the receiver of a member access', {
@@ -1071,7 +1236,7 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     // An index expression, not a list literal, when something precedes it that
     // a postfix can attach to.
     if (before >= 0 && /[A-Za-z0-9_)\]}]/.test(masked[before] as string)) continue;
-    const close = matchingParen(masked, index);
+    const close = matchingParen(brackets, index);
     if (close < 0) continue;
     if (postfixFollows(masked, close + 1) === '.') {
       add(index, close + 24, 'a list literal used as the receiver of a member access', {
@@ -1083,7 +1248,7 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     }
     // The one permitted index, then anything further is past what cel-js takes.
     if (postfixFollows(masked, close + 1) !== '[') continue;
-    const second = matchingParen(masked, nextNonSpace(masked, close + 1));
+    const second = matchingParen(brackets, nextNonSpace(masked, close + 1));
     if (second > 0 && postfixFollows(masked, second + 1) !== undefined) {
       // The list *and* its one permitted index collapse into the placeholder:
       // `[1,2][0].f` is grammatical as `__typekro_recv0.f`, where rewriting the
@@ -1175,15 +1340,17 @@ function celJsParses(expression: string): boolean {
  */
 function rewriteAwayCelJsLimitations(
   expression: string,
-  masked: string
+  masked: string,
+  brackets: BracketIndex
 ): { readonly text: string; readonly applied: number } {
   let text = expression;
   let current = masked;
+  let currentBrackets = brackets;
   let placeholders = 0;
   let applied = 0;
 
   for (let round = 0; round < CEL_DIALECT_MAX_REWRITE_ROUNDS; round += 1) {
-    const candidates = findSpecCelCelJsRejects(text, current)
+    const candidates = findSpecCelCelJsRejects(text, current, currentBrackets)
       .map((limitation) => limitation.rewrite)
       .filter((rewrite): rewrite is SpecCelRewrite => rewrite !== undefined && rewrite.end > rewrite.start)
       // Outermost first at a shared start, so a containing span wins and the
@@ -1218,14 +1385,19 @@ function rewriteAwayCelJsLimitations(
       applied += 1;
     }
     current = maskCelStringLiterals(text);
+    currentBrackets = buildBracketIndex(current);
   }
 
   return { text, applied };
 }
 
 /** The rewrite, when it parses — i.e. when it proves the divergence. */
-function celJsParseProof(trimmed: string, masked: string): string | undefined {
-  const rewritten = rewriteAwayCelJsLimitations(trimmed, masked);
+function celJsParseProof(
+  trimmed: string,
+  masked: string,
+  brackets: BracketIndex
+): string | undefined {
+  const rewritten = rewriteAwayCelJsLimitations(trimmed, masked, brackets);
   return rewritten.applied > 0 && celJsParses(rewritten.text) ? rewritten.text : undefined;
 }
 
@@ -1244,8 +1416,9 @@ export function celDialectParseProof(expression: string): string | undefined {
   const trimmed = expression.trim();
   if (trimmed.length === 0 || trimmed.length > CEL_DIALECT_MAX_EXPRESSION_LENGTH) return undefined;
   const masked = maskCelStringLiterals(trimmed);
-  if (findSpecCelCelJsRejects(trimmed, masked).length === 0) return undefined;
-  return celJsParseProof(trimmed, masked);
+  const brackets = buildBracketIndex(masked);
+  if (findSpecCelCelJsRejects(trimmed, masked, brackets).length === 0) return undefined;
+  return celJsParseProof(trimmed, masked, brackets);
 }
 
 /** One form no CEL grammar accepts, whichever engine reads it. */
@@ -1366,6 +1539,11 @@ export function checkCelDialectCompatibility(
   }
 
   const masked = maskCelStringLiterals(trimmed);
+  // Every bracket pair, resolved once. Both halves of the check walk the same
+  // text repeatedly — the receiver detectors touch every opener in it — and
+  // rescanning forward from each one is what used to make a deeply nested
+  // expression quadratic.
+  const brackets = buildBracketIndex(masked);
 
   // Half one: what cel-js's parser can and cannot be made to say.
   //
@@ -1411,8 +1589,9 @@ export function checkCelDialectCompatibility(
     // rewrite parses is the shortfall the *only* obstruction, which is what
     // makes the rest of the expression grammatical CEL and cel-go's acceptance
     // of it a fact rather than an inference.
-    const limitation = findSpecCelCelJsRejects(trimmed, masked)[0];
-    const proof = limitation === undefined ? undefined : celJsParseProof(trimmed, masked);
+    const limitation = findSpecCelCelJsRejects(trimmed, masked, brackets)[0];
+    const proof =
+      limitation === undefined ? undefined : celJsParseProof(trimmed, masked, brackets);
 
     if (limitation !== undefined && proof !== undefined) {
       findings.push(
@@ -1453,10 +1632,10 @@ export function checkCelDialectCompatibility(
   // a parse and all of them run on text cel-js rejected — which is the point:
   // an expression cel-js merely cannot parse is still checked for the
   // divergences that would bite it under KRO.
-  checkHasIndexArgument(trimmed, masked, field, findings);
-  checkHeterogeneousMapLiteral(trimmed, masked, field, findings);
+  checkHasIndexArgument(trimmed, masked, field, findings, brackets);
+  checkHeterogeneousMapLiteral(trimmed, masked, field, findings, brackets);
   checkInOnListEntry(trimmed, masked, field, findings);
-  const blanked = blankLazyRegions(masked);
+  const blanked = blankLazyRegions(masked, brackets);
   checkLogicalChain(
     trimmed,
     masked,
@@ -1465,7 +1644,8 @@ export function checkCelDialectCompatibility(
     { start: 0, end: masked.length },
     [],
     findings,
-    0
+    0,
+    brackets
   );
   return findings;
 }
