@@ -1113,6 +1113,92 @@ describe('forms that are not a divergence', () => {
   });
 });
 
+/**
+ * `COMMENT ::= '//' ~NEWLINE*` (cel-spec doc/langdef.md, "Syntax").
+ *
+ * A comment is text, not code, so nothing inside one may reach a rule: every
+ * scan in the module runs over a mask that blanks comments and string literals
+ * together, in one pass driven by the same tokenizer the lexical-coverage scan
+ * walks with. The two orderings a string-only mask gets wrong are pinned here in
+ * both directions — a `//` inside a literal is not a comment, and a quote inside
+ * a comment is not a literal.
+ */
+describe('comments are text, not code', () => {
+  it('does not read a has() written in a comment', () => {
+    // The `has(list[0].f)` here is commented out. Reading it as code reported a
+    // has-index-argument divergence against an expression that has none.
+    expect(check('has(a.b) // has(list[0].f)')).toEqual([]);
+    expect(check('size(l) > 0 && l[0].f != "" // has(l[0].f)')).toEqual([]);
+  });
+
+  it('does not read a map literal written in a comment', () => {
+    expect(check('a.b == {"k": 1} // {"k": 1, "j": "x"}')).toEqual([]);
+  });
+
+  it('still reports the map literal that is actually there', () => {
+    expect(check('a.b == {"k": 1, "j": "x"} // a comment').map((found) => found.rule)).toEqual([
+      'heterogeneous-map-literal',
+    ]);
+  });
+
+  it('does not let an operator in a comment split the operator chain', () => {
+    // The `||` is commented out, so this is one `&&` chain of two operands with
+    // the guard written after the access it covers. Reading the comment as code
+    // split the chain into two disjuncts and lost the finding.
+    expect(check('p.q.r != "" // || z\n && has(p.q)').map((found) => found.rule)).toEqual([
+      'guard-after-use-in-logical-chain',
+    ]);
+    expect(check('p.q.r != "" && has(p.q) // || z').map((found) => found.rule)).toEqual([
+      'guard-after-use-in-logical-chain',
+    ]);
+  });
+
+  it('does not report a converter leak written in a comment', () => {
+    // `===`, `${` and `?.` are all non-CEL — in code. In a comment they are
+    // characters the COMMENT production carries, on any conformant lexer.
+    expect(check('a.b // a === b')).toEqual([]);
+    expect(check('a.b // ${x}')).toEqual([]);
+    expect(check('a.b // a?.c')).toEqual([]);
+    expect(celDialectLexicalGap('a.b // a === b')).toBe(-1);
+  });
+
+  it('still reports a converter leak written as code alongside a comment', () => {
+    expect(check('a === b // a comment').map((found) => found.rule)).toEqual(['not-valid-cel']);
+  });
+
+  it('reads a // inside a string literal as string content', () => {
+    // `"a // b"` is one STRING_LIT used as the receiver of `.size()`, which is
+    // the cel-js shortfall. If the `//` opened a comment the literal would be
+    // unterminated and the expression would not be CEL at all.
+    expect(check('"a // b".size() != ""').map((found) => found.rule)).toEqual([
+      'cel-js-rejects-spec-cel',
+    ]);
+    expect(celDialectParseProof('"a // b".size() != ""')).toBe('__typekro_recv0.size() != ""');
+  });
+
+  it('reads a quote inside a comment as comment content', () => {
+    // The apostrophe in `it's` opened a string literal under a string-only mask
+    // and flipped the masking of everything after it.
+    expect(check('a.b // it\'s "quoted"')).toEqual([]);
+    expect(check('has(a.b) // don\'t read "this"')).toEqual([]);
+  });
+
+  it('keeps the newline, so a comment ends at its own line', () => {
+    // `COMMENT` stops before the newline, so the `&& has(e.f)` on the next line
+    // is code and the whole thing is one chain rather than one commented-out
+    // operand.
+    expect(check('a.b &&\n  c.d // mid-way\n  && has(e.f)')).toEqual([]);
+    expect(
+      check('e.f.g != "" &&\n  c.d // mid-way\n  && has(e.f)').map((found) => found.rule)
+    ).toEqual(['guard-after-use-in-logical-chain']);
+  });
+
+  it('quotes the expression as it was written, comment included', () => {
+    const [found] = check('a.b == {"k": 1, "j": "x"} // a comment');
+    expect(found?.expression).toBe('a.b == {"k": 1, "j": "x"} // a comment');
+  });
+});
+
 describe('forms both dialects accept', () => {
   it('passes the blessed filter-inside-a-lazy-ternary form', () => {
     const blessed = (
