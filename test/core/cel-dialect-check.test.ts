@@ -12,6 +12,7 @@ import { type } from 'arktype';
 import { parse } from 'cel-js';
 import { TypeKroError } from '../../src/core/errors.js';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { maskCelStringLiterals } from '../../src/core/references/cel-lexical-scanner.js';
 import { Cel, type LoadBalancerServiceRef } from '../../src/core/references/cel.js';
 import { simple, toResourceGraph } from '../../src/index.js';
 import {
@@ -1278,6 +1279,80 @@ describe('comments are text, not code', () => {
   it('quotes the expression as it was written, comment included', () => {
     const [found] = check('a.b == {"k": 1, "j": "x"} // a comment');
     expect(found?.expression).toBe('a.b == {"k": 1, "j": "x"} // a comment');
+  });
+});
+
+/**
+ * Every offset in the check is a UTF-16 code-unit offset: `indexOf`, `slice`,
+ * `length`, the bracket index and every `RegExpExecArray.index` are all counted
+ * that way. A mask that walks by *code point* blanks an astral character — an
+ * emoji, anything above U+FFFF — to a single space where the original had two
+ * code units, so the mask comes out shorter than the text it indexes and every
+ * span after it reads the wrong characters.
+ */
+describe('offsets survive an astral character', () => {
+  const grin = '\u{1F600}';
+
+  it('keeps the mask exactly as long as the expression', () => {
+    for (const expression of [
+      `a.b == "x${grin}y"`,
+      `a.b == "${grin}" && has(list[0].f)`,
+      `a.b == "${grin}${grin}" && has(m["k"].f)`,
+      `"${grin}".size() > 0`,
+      'a.b == "e\u0301"',
+      `"x${grin}" + "y"`,
+    ]) {
+      expect(maskCelStringLiterals(expression).length).toBe(expression.length);
+    }
+  });
+
+  it('quotes the right fragment after an emoji in a string literal', () => {
+    // One emoji drifted the fragment by one unit (` has(list[0].f`), two
+    // drifted it by two.
+    const [one] = check(`a.b == "${grin}" && has(list[0].f)`);
+    expect(one?.rule).toBe('has-index-argument');
+    expect(one?.fragment).toBe('has(list[0].f)');
+
+    const [two] = check(`a.b == "${grin}${grin}" && has(m["k"].f)`);
+    expect(two?.rule).toBe('has-index-argument');
+    expect(two?.fragment).toBe('has(m["k"].f)');
+  });
+
+  it('still finds a rule whose span sits after an emoji', () => {
+    // The drift moved the map literal's closing brace out from under
+    // `matchingParen`, and the finding was lost outright.
+    const findings = check(`a.b == "${grin}" && {"k": 1, "j": "x"}.z`);
+    expect(findings.map((found) => found.rule)).toEqual(['heterogeneous-map-literal']);
+    expect(findings[0]?.fragment).toBe('{"k": 1, "j": "x"}');
+  });
+
+  it('still proves a divergence whose receiver holds an emoji', () => {
+    // The drift left the receiver span pointing one unit short of the closing
+    // quote, so no shortfall was identified and the divergence fell to a note.
+    expect(check(`"${grin}".size() > 0`).map((found) => found.rule)).toEqual([
+      'cel-js-rejects-spec-cel',
+    ]);
+    expect(celDialectParseProof(`"${grin}".size() > 0`)).toBe('__typekro_recv0.size() > 0');
+  });
+
+  it('handles a surrogate pair immediately before a closing quote', () => {
+    expect(check(`a.b == "x${grin}" && has(list[0].f)`)[0]?.fragment).toBe('has(list[0].f)');
+    expect(maskCelStringLiterals(`"${grin}"`)).toBe('    ');
+  });
+
+  it('handles an astral character inside a comment', () => {
+    expect(check(`a.b // ${grin} a note`)).toEqual([]);
+    expect(check(`has(a.b) // ${grin} has(list[0].f)`)).toEqual([]);
+    expect(check(`a.b == {"k": 1} // ${grin} {"k": 1, "j": "x"}`)).toEqual([]);
+  });
+
+  it('leaves combining characters alone, which were never the problem', () => {
+    // `é` + U+0301 is two code points and two code units, so a code-point walk
+    // happened to get this one right; it is pinned so the fix is read as being
+    // about code units rather than about "non-ASCII".
+    const combining = 'a.b == "e\u0301" && has(list[0].f)';
+    expect(maskCelStringLiterals(combining).length).toBe(combining.length);
+    expect(check(combining)[0]?.fragment).toBe('has(list[0].f)');
   });
 });
 

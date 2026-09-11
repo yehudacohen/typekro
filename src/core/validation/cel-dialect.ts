@@ -681,6 +681,18 @@ interface CelDialectText {
 /** Mask one expression into the three alignments the rules read. */
 function celDialectText(reported: string): CelDialectText {
   const { source, masked } = maskCelCommentsAndStrings(reported);
+  // One comparison, and the single thing every offset in this module rests on.
+  // The failure it guards against is silent rather than loud: a mask that
+  // walked by code point would blank an astral character to *one* space, and
+  // every span after it would index the wrong characters — a fragment cut one
+  // unit short, a bracket index pointing between two tokens, a literal re-lexed
+  // from the wrong place — with no symptom but a wrong finding, and only on
+  // expressions that happen to carry an emoji.
+  if (source.length !== reported.length || masked.length !== reported.length) {
+    throw new Error(
+      `cel-dialect: the lexical mask changed the length of the expression (${reported.length} in, ${source.length}/${masked.length} out). Every offset in this module is a UTF-16 code-unit offset shared across all three texts`
+    );
+  }
   return { reported, source, masked };
 }
 
@@ -2369,9 +2381,16 @@ export const CEL_DIALECT_MAX_EXCERPT_LENGTH = 400;
 
 /** Quote at most {@link CEL_DIALECT_MAX_EXCERPT_LENGTH} characters of a snippet. */
 function excerpt(text: string): string {
-  return text.length <= CEL_DIALECT_MAX_EXCERPT_LENGTH
-    ? text
-    : `${text.slice(0, CEL_DIALECT_MAX_EXCERPT_LENGTH)}… (${text.length} characters)`;
+  if (text.length <= CEL_DIALECT_MAX_EXCERPT_LENGTH) return text;
+  // `slice` counts UTF-16 code units like everything else here, so the cut can
+  // land between the two halves of a surrogate pair and render the last
+  // character as a replacement glyph. Step back one unit when it does.
+  const lead = text.charCodeAt(CEL_DIALECT_MAX_EXCERPT_LENGTH - 1);
+  const cut =
+    lead >= 0xd800 && lead <= 0xdbff
+      ? CEL_DIALECT_MAX_EXCERPT_LENGTH - 1
+      : CEL_DIALECT_MAX_EXCERPT_LENGTH;
+  return `${text.slice(0, cut)}… (${text.length} characters)`;
 }
 
 /** How a finding's verdict reads at the head of its report entry. */
