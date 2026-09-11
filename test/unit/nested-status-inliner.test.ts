@@ -1274,6 +1274,78 @@ describe('normalizeCelArrayIndexPaths — dotted numeric runs', () => {
   });
 });
 
+describe('normalizeCelArrayIndexPaths — CEL regions vs literal template text', () => {
+  // The sweep also runs over KRO MIXED TEMPLATES, where a `${ … }` CEL region
+  // sits in literal text KRO emits verbatim. Applied to the whole string, the
+  // dotted-numeric rule rewrote literal text that merely LOOKS like an index —
+  // the `v1.2` of a URL path, a version suffix — into `v1[2]`.
+
+  it('leaves a dotted version in literal URL text alone', () => {
+    expect(normalizeCelArrayIndexPaths('https://host/v1.2/${a.0}')).toBe(
+      'https://host/v1.2/${a[0]}'
+    );
+  });
+
+  it('rewrites inside the region and leaves the literal path around it', () => {
+    expect(
+      normalizeCelArrayIndexPaths('http://${string(svc.spec.ports.0.port)}/api/v1.2/x')
+    ).toBe('http://${string(svc.spec.ports[0].port)}/api/v1.2/x');
+  });
+
+  it('leaves a dotted digit run in the literal text after a region alone', () => {
+    // `}` is not a left context either way; this pins that the literal tail is
+    // literal, not a continuation of the region's path.
+    expect(normalizeCelArrayIndexPaths('${a.0}.1')).toBe('${a[0]}.1');
+  });
+
+  it('leaves a literal image tag and a version string alone', () => {
+    expect(normalizeCelArrayIndexPaths('${a.0}-image:tag.1')).toBe('${a[0]}-image:tag.1');
+    expect(normalizeCelArrayIndexPaths('prefix-alpha.3-${b.0}')).toBe('prefix-alpha.3-${b[0]}');
+  });
+
+  it('does not end a region at a `}` inside a CEL string literal', () => {
+    expect(normalizeCelArrayIndexPaths('${"}" + b.0.1}')).toBe('${"}" + b[0][1]}');
+  });
+
+  it('does not end a region at the `}` of a map literal', () => {
+    expect(normalizeCelArrayIndexPaths('${{"k": a.0}.k}/v1.2')).toBe('${{"k": a[0]}.k}/v1.2');
+  });
+
+  it('rewrites each of two regions independently', () => {
+    expect(normalizeCelArrayIndexPaths('${a.0} and ${b.1.2}')).toBe('${a[0]} and ${b[1][2]}');
+  });
+
+  it('leaves a template with no digit runs unchanged', () => {
+    expect(normalizeCelArrayIndexPaths('http://${a.b}/plain')).toBe('http://${a.b}/plain');
+  });
+
+  it('copies an unterminated region through untouched', () => {
+    expect(normalizeCelArrayIndexPaths('http://v1.2/${a.0')).toBe('http://v1.2/${a.0');
+  });
+
+  it('still rewrites a bare CEL expression whole', () => {
+    // No `${` at all — not a template, so the whole string is the CEL region.
+    expect(normalizeCelArrayIndexPaths('a.0.1.b')).toBe('a[0][1].b');
+  });
+
+  it('converts a marker path exactly as before', () => {
+    // Marker text is normalised where the marker itself is converted, by
+    // `markerToCelPath` on the bare `<resourceId>.<fieldPath>` — so a marker
+    // alongside a `${ … }` region needs nothing special from this sweep.
+    expect(
+      finalizeCelForKro('http://__KUBERNETES_REF___schema___spec.workers.0.name__/x', undefined)
+    ).toBe('http://${string(schema.spec.workers[0].name)}/x');
+
+    expect(
+      finalizeCelForKro(
+        'http://__KUBERNETES_REF___schema___spec.workers.0.name__/${a.0}',
+        undefined
+      )
+    ).toBe('http://${string(schema.spec.workers[0].name)}/${a[0]}');
+  });
+});
+
+
 describe('nested-composition status inlining — canonical mapping identity', () => {
   it('detects a cycle that turns a corner through an alias spelling', () => {
     // `webAppStack2` is not a key; it reaches `__nestedStatus:webAppStack1:ready`
