@@ -33,6 +33,84 @@ function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** CEL `IDENT ::= [_a-zA-Z][_a-zA-Z0-9]*`, widened by `$` as the marker charset spells it. */
+const CEL_INDEX_TARGET_START = /[A-Za-z_$]/;
+const CEL_INDEX_TARGET_CHARACTER = /[A-Za-z0-9_$]/;
+
+/** What may follow a `.<digits>` run without making it part of a longer token. */
+const CEL_INDEX_RUN_TERMINATOR = /[.\])}\s?:,+\-*/<>=!&|]/;
+
+/**
+ * Does the text emitted so far end with something an index can be taken of?
+ *
+ * That is a whole CEL identifier — `[A-Za-z_$][A-Za-z0-9_$]*` — or a `]` that
+ * closed an earlier index. Requiring a whole IDENTIFIER rather than merely an
+ * identifier CHARACTER is what separates `v2.0` (the identifier `v2`, indexed)
+ * from `1.0` (a NUMBER literal whose fraction must not be touched): both end in
+ * a digit, but only the former's digit run is anchored by an identifier start.
+ */
+function endsWithIndexableTarget(emitted: string): boolean {
+  let index = emitted.length - 1;
+  if (index < 0) return false;
+  if (emitted[index] === ']') return true;
+  while (index >= 0 && CEL_INDEX_TARGET_CHARACTER.test(emitted[index] as string)) index -= 1;
+  const start = emitted[index + 1];
+  return start !== undefined && CEL_INDEX_TARGET_START.test(start);
+}
+
+/**
+ * Rewrite every dotted numeric path segment as a CEL index: `items.0` → `items[0]`.
+ *
+ * CEL has no `.0` field select — a `SELECT` takes an `IDENT`, and an `IDENT` may
+ * not begin with a digit — so a dotted numeric segment is a parse error on both
+ * evaluation engines and `[0]` is the only spelling of that access. Paths reach
+ * this module in the dotted form from several producers (`extractNestedStatusCel`
+ * builds an array element's key as `` `${fieldPath}.${index}` ``, and the marker
+ * field-path charset admits that form too), so this is the sweep that makes them
+ * valid.
+ *
+ * **The rule.** A `.` followed by one or more digits becomes `[<digits>]` when
+ * both contexts allow it:
+ *
+ * 1. *Left* — the text EMITTED SO FAR ends with a CEL identifier or with a `]`
+ *    ({@link endsWithIndexableTarget}). Reading the left context off the OUTPUT
+ *    rather than the input is what lets a run of numeric segments chain: in
+ *    `a.0.1.b` the first run emits `a[0]`, so the second run sees the `]` this
+ *    function has just written and the whole path comes out as `a[0][1].b`. Read
+ *    off the INPUT the second run would see the digit `0`, stop, and leave the
+ *    equally invalid `a[0].1.b` behind. This is the same semantics
+ *    {@link splitFieldPathSegments} applies to a field path — a whole-digit
+ *    segment is an index on the segment before it — now agreed on by both.
+ *
+ *    NUMBER literals are left alone by that same test: in `1.0` and `2.5e3` the
+ *    digits before the `.` are not anchored by an identifier start, so the
+ *    fraction survives, and a leading `.5` has no left context at all. Where the
+ *    digits ARE the tail of an identifier, the index reading is the only one CEL
+ *    has, because `a1.5` is not a float literal — a NUMBER may not begin with an
+ *    identifier character — which is why `v2.0` becomes `v2[0]` while `v2.name`,
+ *    having no digit run to convert, is untouched.
+ *
+ *    `)` is deliberately NOT a left context: a postfix that lands after a
+ *    parenthesised nested-status expansion is normalised at its source, by
+ *    {@link splitFieldPathSegments}, where the segment structure is still known.
+ *
+ * 2. *Right* — the run ends the text, or is followed by a character that can
+ *    neither continue a number nor start an identifier
+ *    ({@link CEL_INDEX_RUN_TERMINATOR}). This is what keeps the `5` of `2.5e3`
+ *    out independently of the left-context test.
+ *
+ * Quoted data is skipped by the local quote loop below, which is deliberately
+ * NOT the shared {@link maskClosedCelLiteralsAndComments} scanner even though
+ * that one lexes the `STRING_LIT`/`BYTES_LIT` family far more completely. This
+ * function runs over KRO MIXED-TEMPLATE text, not over CEL alone: its inputs
+ * include values like `` `http://${string(service.spec.ports.0.port)}` ``, and
+ * the `//` of a URL scheme is a `COMMENT` to a CEL lexer — masking it would
+ * blank the template that follows and silently drop this rewrite. The same
+ * reason rules out `celStringLiteralSpans`, whose walk is comment-aware too and
+ * so stops reporting literals at the first `//`. Recognising only the two
+ * single-delimiter quote forms is what keeps the scan safe on text that is not
+ * wholly CEL.
+ */
 export function normalizeCelArrayIndexPaths(expr: string): string {
   let result = '';
   let quote: '"' | "'" | null = null;
@@ -67,12 +145,11 @@ export function normalizeCelArrayIndexPaths(expr: string): string {
         digitEnd++;
       }
 
-      const previous = expr[i - 1] ?? '';
       const next = expr[digitEnd] ?? '';
       if (
         digitEnd > digitStart &&
-        /[A-Za-z_$\]]/.test(previous) &&
-        (next === '' || /[.\])}\s?:,+\-*/<>=!&|]/.test(next))
+        endsWithIndexableTarget(result) &&
+        (next === '' || CEL_INDEX_RUN_TERMINATOR.test(next))
       ) {
         result += `[${expr.slice(digitStart, digitEnd)}]`;
         i = digitEnd - 1;

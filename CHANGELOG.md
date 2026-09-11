@@ -68,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digits is now read as an index on the segment before it, so both spellings
   resolve to the same mapping and emit `(inner)[0].name`. Identifiers that
   merely contain digits (`v2`, `ip4`, `_0`) are unaffected.
+- Every dotted numeric segment in a serialized reference path now becomes an
+  index, not just the first one. The late rewrite that turns `items.0` into
+  `items[0]` took its decision from the character before the run in its INPUT,
+  so in a path into a nested list — `matrix.0.1.value` — the second run saw the
+  digit the first run had just consumed and stopped, emitting
+  `matrix[0].1.value`: still not valid CEL, and still rejected by both
+  evaluation engines. The decision now reads the text already emitted, so runs
+  chain, and it requires a whole identifier rather than a single identifier
+  character, so `v2.0` indexes the identifier `v2` while the fractions of `1.0`
+  and `2.5e3` stay untouched. Serialized output is unchanged for every path
+  that was already valid.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their
