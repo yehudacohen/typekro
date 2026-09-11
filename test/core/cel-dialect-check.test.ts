@@ -19,6 +19,7 @@ import {
   CEL_DIALECT_MAX_EXPRESSION_LENGTH,
   CEL_DIALECT_RULES,
   type CelDialectFinding,
+  celDialectLexicalGap,
   celDialectParseProof,
   celDialectWorkStats,
   checkCelDialectCompatibility,
@@ -397,6 +398,12 @@ describe('valid CEL that cel-js cannot parse', () => {
       expect(proof).toBeDefined();
       expect(proof).not.toBe(expression);
       expect(parse(proof as string).isSuccess).toBe(true);
+      // …and cel-js's lexer carried every character of the rewrite on the way to
+      // that parse, so the parse is a fact about the whole proof text rather
+      // than about whatever survived the lexer. The original is held to the same
+      // bar, so a proof is never built on top of text that is not lexically CEL.
+      expect(celDialectLexicalGap(proof as string)).toBe(-1);
+      expect(celDialectLexicalGap(expression)).toBe(-1);
 
       // Half three: the check identifies it positively rather than inferring
       // cel-go's behaviour from cel-js's refusal, and cites the rewrite it used.
@@ -534,6 +541,133 @@ describe('valid CEL that cel-js cannot parse', () => {
     for (const expression of ['a.map(x,x).size()', 'a.filter(x, x.y)[0]', 'a.b.c.d']) {
       expect(parse(expression).isSuccess).toBe(true);
       expect(check(expression)).toEqual([]);
+    }
+  });
+});
+
+/**
+ * cel-js's `parse()` reads `parserInstance.errors` and throws `lexResult.errors`
+ * away, so its lexer silently drops every character it has no token for and the
+ * parser "succeeds" on text cel-js never read in full. A divergence proof is a
+ * claim about the whole expression, so a parse that discarded part of it is not
+ * a proof — the coverage scan is what closes that hole, on the rewrite *and* on
+ * the original.
+ */
+describe('a parse that discarded tokens is not a proof', () => {
+  it('confirms cel-js really does drop what it cannot lex', () => {
+    // The premise, asserted rather than assumed: each of these reaches cel-js's
+    // parser with characters missing and is reported as a success. When this
+    // starts failing, cel-js has gained lexer-error reporting and the coverage
+    // scan can be re-derived from it.
+    for (const dropped of ['a === b', 'a.b $', 'a.b ☃', 'a.b @ ']) {
+      expect(parse(dropped).isSuccess).toBe(true);
+      expect(celDialectLexicalGap(dropped)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  const discarded: Record<string, string> = {
+    'a stray dollar sign': '"x".size() $',
+    'a JavaScript strict-equality operator': '"x".size() === a',
+    'a stray unicode character': '"x".size() ☃',
+  };
+
+  for (const [name, expression] of Object.entries(discarded)) {
+    it(`refuses to prove a divergence for ${name}`, () => {
+      // Each carries a genuine, correctly identified cel-js shortfall — the
+      // string-literal receiver — and each *did* prove under a bare `parse()`:
+      // the rewrite parses, but only because the lexer threw the offending
+      // character away first, so the parse was never about this text.
+      const rewritten = expression.replace('"x"', '__typekro_recv0');
+      expect(parse(rewritten).isSuccess).toBe(true);
+      expect(celDialectLexicalGap(rewritten)).toBeGreaterThanOrEqual(0);
+
+      expect(celDialectLexicalGap(expression)).toBeGreaterThanOrEqual(0);
+      expect(celDialectParseProof(expression)).toBeUndefined();
+
+      const findings = check(expression);
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+      // Bucket one: a character the *spec's* lexical grammar has no token for is
+      // a fact about CEL rather than about cel-js, so it is reported as one.
+      expect(findings.map((found) => found.rule)).not.toContain('cel-js-rejects-spec-cel');
+      expect(findings[0]?.rule).toBe('not-valid-cel');
+      expect(findings[0]?.kind).toBe('note');
+    });
+  }
+
+  it('reports a gap that cel-js would also have refused as not-valid-cel', () => {
+    // Where dropping the character leaves text cel-js cannot parse either, the
+    // old code already avoided the false divergence — by luck rather than by
+    // argument. The verdict is now reached from the grammar instead.
+    for (const expression of ['"x".size() @ a', '"x".size() + "oops']) {
+      expect(parse(expression).isSuccess).toBe(false);
+      expect(celDialectParseProof(expression)).toBeUndefined();
+
+      const findings = check(expression);
+      expect(findings[0]?.rule).toBe('not-valid-cel');
+      expect(hasCelDialectDivergence(findings)).toBe(false);
+    }
+  });
+
+  it('reports the character the grammar has no token for, not a later one', () => {
+    const findings = check('"x".size() ☃');
+    expect(findings[0]?.message).toContain('☃');
+    expect(findings[0]?.message).toContain('no token for');
+  });
+
+  it('lets an unterminated literal name itself rather than a stray quote', () => {
+    expect(check('a.b + "oops')[0]?.message).toContain('unterminated string literal');
+  });
+
+  it('covers every lexical form the spec has, so a valid literal is never a gap', () => {
+    // The scan is written from the spec's lexical grammar, which is a superset
+    // of cel-js's lexer: the raw, bytes and triple-quoted string forms and the
+    // exponent float are all tokens here even though cel-js has none of them.
+    // Were that not so, the four shortfalls the rewriter exists to remove would
+    // be reported as invalid CEL instead of as divergences.
+    for (const expression of [
+      'a.b == r"x"',
+      'a.b == R"x"',
+      'a.b == b"x"',
+      'a.b == br"x"',
+      'a.b == rb"x"',
+      'a.b == """x"""',
+      "a.b == '''x'''",
+      'a.b == 1e3',
+      'a.b == 1.5e-3',
+      'a.b == 0x1F',
+      'a.b == 0xFFu',
+      'a.b == 12u',
+      'a.b == 0.5',
+      'a.b == "a\\"b"',
+      'a.b == r"a\\"b"',
+      "a.b == 'x' // trailing comment",
+      'a.b == bar"x"',
+      'a.b <= 1 && a.c >= 2 || !a.d != 3',
+      '{"k": [1, 2]}["k"][0] % 3',
+    ]) {
+      expect(celDialectLexicalGap(expression)).toBe(-1);
+    }
+  });
+
+  it('calls a character with no CEL token a gap', () => {
+    for (const expression of ['a $ b', 'a ☃ b', 'a @ b', 'a # b', 'a ; b', 'a = b', 'a & b', 'a | b', 'a ~ b', 'a ^ b', 'a \\ b']) {
+      expect(celDialectLexicalGap(expression)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('keeps every real emitted status expression fully covered', () => {
+    // The scan runs on every expression the serializer emits, so a false gap
+    // would turn working CEL into a `not-valid-cel` note. These are the shapes
+    // TypeKro actually emits.
+    for (const expression of [
+      'has(webService.status.loadBalancer.ingress) ? webService.status.loadBalancer.ingress[0].ip : ""',
+      'webService.status.readyReplicas > 0 && webService.status.replicas > 0',
+      '"https://" + webService.status.loadBalancer.ingress[0].hostname + "/health"',
+      'deployment.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+      'size(deployment.status.conditions) > 0 ? deployment.status.conditions[0].message : "pending"',
+      '{"name": "http", "port": 80}',
+    ]) {
+      expect(celDialectLexicalGap(expression)).toBe(-1);
     }
   });
 });
