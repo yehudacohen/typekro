@@ -529,17 +529,26 @@ export type CelEntryProjection<TElement> = CelExpression<NonNullable<TElement>> 
  *   when KRO admits the ResourceGraphDefinition — while cel-js evaluates it
  *   happily, so the mismatch survives every direct-mode test and surfaces only
  *   on a cluster.
- * - **The default `''` is only available where the projected type admits any
- *   string.** `string extends T` is exactly that question: true for `string`
- *   (and for wider unions containing it), false for `number`, for `boolean` and
- *   for a string-literal union that `''` is not a member of. Where it is false
- *   the argument is required, so a numeric field with no fallback is a compile
- *   error rather than a silent `''` that KRO will reject.
+ * - **The default is available exactly where the projected type admits it.**
+ *   The default is not "some string", it is the empty string, so the question
+ *   is `'' extends T` — whether `''` itself is assignable to `T`. The narrower
+ *   `string extends T` asks whether `T` admits *any* string, which is a
+ *   different question and the wrong one: a literal union like
+ *   `'' | 'Ready' | 'Failed'` admits the default perfectly well, yet fails
+ *   `string extends T` and so used to force the author to restate `''` by hand.
+ *   The two tests agree everywhere else that matters — both true for `string`
+ *   and for a union containing it, both false for `number`, for `boolean`, for
+ *   a string-literal union `''` is not a member of, and for a template-literal
+ *   type such as `` `${number}px` `` that no empty string inhabits. Where the
+ *   test is false the argument is required, so a numeric field with no fallback
+ *   is a compile error rather than a silent `''` that KRO will reject.
  *
  * `RefOrValue` is kept, so a `KubernetesRef` or a CEL expression of the right
- * type is still accepted in place of a literal.
+ * type is still accepted in place of a literal — including a structured one: an
+ * object- or list-typed projection takes an object or array fallback, rendered
+ * as the CEL literal of that shape. See {@link firstWhereHas}.
  */
-export type CelFallbackArgs<T> = string extends T
+export type CelFallbackArgs<T> = '' extends T
   ? [fallback?: RefOrValue<T>]
   : [fallback: RefOrValue<T>];
 
