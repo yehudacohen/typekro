@@ -29,6 +29,16 @@
  * `cel-js-rejects-spec-cel` (a positively identified cel-js shortfall — a real
  * divergence) or `cel-js-parse-failure` (no verdict beyond direct mode).
  *
+ * Identifying a shortfall *somewhere* in a rejected expression is not by itself
+ * a divergence, because the parse may have failed for an unrelated reason: the
+ * shortfall in `"x".size() +` is real and the expression is still unfinished,
+ * and cel-go refuses it exactly as cel-js does. So the divergence bucket is
+ * earned rather than assumed — every identified shortfall is rewritten into a
+ * spelling of the same spec production that cel-js does have (`"x".size()` into
+ * `__typekro_recv0.size()`, `1e3` into `0.0`), the rest of the text is left
+ * untouched, and cel-js is asked again. Only a rewrite that parses proves the
+ * shortfall was the whole reason; anything else falls to `cel-js-parse-failure`.
+ *
  * ## Why a denylist rather than a real cel-go
  *
  * cel-go is a Go library; there is no in-process cel-go for a TypeScript
@@ -215,7 +225,7 @@ export const CEL_DIALECT_RULES: readonly {
     dialect: 'cel-js',
     summary: 'a form the CEL grammar permits and cel-js is known not to parse',
     observed:
-      "cel-js 0.8.2 is not a conformant CEL parser. Its `atomicExpression` rule (dist/parser.js) allows a postfix `.`/`[` only after an Identifier — plus one index after a list literal, and any postfix after a map literal — while the spec's `Member = Primary | Member \".\" SELECTOR [\"(\" [ExprList] \")\"] | Member \"[\" Expr \"]\"` allows a postfix on *any* Member, and `Primary` includes `LITERAL` and `\"(\" Expr \")\"` (cel-spec doc/langdef.md, \"Syntax\"). Its lexer is short of the spec's `FLOAT_LIT` (no EXPONENT form) and `STRING_LIT`/`BYTES_LIT` (no `r`/`R`/`b`/`B` prefix, no triple-quoted form). Each form below is confirmed to fail `parse()` and is grammatical CEL, so cel-go parses it: the field resolves under KRO and direct mode can never evaluate it. That is a divergence, not a defect in the expression",
+      "cel-js 0.8.2 is not a conformant CEL parser. Its `atomicExpression` rule (dist/parser.js) allows a postfix `.`/`[` only after an Identifier — plus one index after a list literal, and any postfix after a map literal — while the spec's `Member = Primary | Member \".\" SELECTOR [\"(\" [ExprList] \")\"] | Member \"[\" Expr \"]\"` allows a postfix on *any* Member, and `Primary` includes `LITERAL` and `\"(\" Expr \")\"` (cel-spec doc/langdef.md, \"Syntax\"). Its lexer is short of the spec's `FLOAT_LIT` (no EXPONENT form) and `STRING_LIT`/`BYTES_LIT` (no `r`/`R`/`b`/`B` prefix, no triple-quoted form). Each form is confirmed to fail `parse()` and is grammatical CEL. The entry fires only once the *whole* expression is shown to be grammatical: the identified forms are replaced by same-production spellings cel-js does have and `parse()` is run again, and only a rewrite that succeeds establishes that the shortfall is the sole obstruction rather than one of several problems in the text. cel-go parses the form, so the field resolves under KRO and direct mode can never evaluate it. That is a divergence, not a defect in the expression",
   },
   {
     id: 'not-valid-cel',
@@ -231,7 +241,7 @@ export const CEL_DIALECT_RULES: readonly {
     dialect: 'cel-js',
     summary: 'cel-js cannot parse the expression and no positive verdict was reached',
     observed:
-      "cel-js's parser rejected the text and neither the non-CEL token scan nor the confirmed cel-js-limitation checks explain why. A cel-js parse failure on its own says only that *direct mode* cannot evaluate the field: cel-js is not a conformant CEL grammar, so it establishes nothing about cel-go or KRO. Reported so the field is visible, never failed",
+      "cel-js's parser rejected the text and nothing above accounts for it: either no confirmed cel-js shortfall was identified, or one was and rewriting it away still left text cel-js refuses — which means the expression has a further problem of its own, and an expression that is ungrammatical elsewhere is rejected by cel-go too. A cel-js parse failure on its own says only that *direct mode* cannot evaluate the field: cel-js is not a conformant CEL grammar, so it establishes nothing about cel-go or KRO. Reported so the field is visible, never failed",
   },
   {
     id: 'expression-too-large',
@@ -902,11 +912,47 @@ function postfixFollows(masked: string, after: number): string | undefined {
   return character === '.' || character === '[' ? character : undefined;
 }
 
+/**
+ * How one identified fragment is rewritten into a form cel-js does parse.
+ *
+ * The rewrite is a **grammatical** substitution, not a semantic one: each kind
+ * replaces a fragment with a different spelling of the *same spec production*,
+ * so the rewritten text is grammatical exactly when the original was.
+ *
+ * - `receiver` — a literal, parenthesized group or global call used as the
+ *   receiver of a member access, replaced by a bare identifier placeholder
+ *   (`__typekro_recv0`, bound nowhere). The spec makes each of those a `Member`,
+ *   and `IDENT` is a `Member` too, so the substitution keeps the production and
+ *   drops only the part cel-js's `atomicExpression` cannot carry a postfix on.
+ * - `string` — an `r`/`b`-prefixed or triple-quoted `STRING_LIT`, replaced by a
+ *   plain double-quoted literal of the same width. Still a `LITERAL` Primary.
+ * - `float` — an exponent `FLOAT_LIT`, replaced by cel-js's own `-?\d+\.\d+`
+ *   float spelling of the same width. Still a `LITERAL` Primary.
+ *
+ * `string` and `float` are width-preserving by construction; `receiver` is not,
+ * which is why rewrites are applied right to left (see
+ * {@link rewriteAwayCelJsLimitations}).
+ */
+type CelJsRewriteKind = 'receiver' | 'string' | 'float';
+
+/** The exact `[start, end)` of a fragment to rewrite, and how to rewrite it. */
+interface SpecCelRewrite {
+  readonly start: number;
+  readonly end: number;
+  readonly as: CelJsRewriteKind;
+}
+
 /** One confirmed cel-js shortfall against the spec grammar. */
 interface SpecCelLimitation {
   readonly at: number;
   readonly fragment: string;
   readonly reason: string;
+  /**
+   * The rewrite that removes this shortfall, when one can be built. A shortfall
+   * with no rewrite can never take part in a divergence proof — the safe
+   * direction, since the proof is what licenses failing strict mode.
+   */
+  readonly rewrite?: SpecCelRewrite;
 }
 
 /**
@@ -924,8 +970,16 @@ interface SpecCelLimitation {
  */
 function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLimitation[] {
   const found: SpecCelLimitation[] = [];
-  const add = (at: number, end: number, reason: string): void => {
-    found.push({ at, fragment: expression.slice(at, Math.min(end, at + 80)).trim(), reason });
+  // `end` bounds the quoted *excerpt* and is deliberately generous — it runs past
+  // the fragment so the reader sees what it was the receiver of. `rewrite` is the
+  // exact span, which is a different thing and never guessed from `end`.
+  const add = (at: number, end: number, reason: string, rewrite?: SpecCelRewrite): void => {
+    found.push({
+      at,
+      fragment: expression.slice(at, Math.min(end, at + 80)).trim(),
+      reason,
+      ...(rewrite === undefined ? {} : { rewrite }),
+    });
   };
 
   // Spec: `Primary = ... | LITERAL`, and `Member = Member "." SELECTOR [...]`
@@ -935,7 +989,11 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
   for (const span of stringLiteralSpans(expression)) {
     const postfix = postfixFollows(masked, span.end);
     if (postfix !== undefined) {
-      add(span.start, span.end + 24, 'a string literal used as the receiver of a member access');
+      add(span.start, span.end + 24, 'a string literal used as the receiver of a member access', {
+        start: span.start,
+        end: span.end,
+        as: 'receiver',
+      });
     }
     // Spec: `STRING_LIT ::= [rR]? (...)` and `BYTES_LIT ::= [bB] STRING_LIT`.
     // cel-js has no raw-string and no bytes token, so the prefix lexes as a
@@ -946,13 +1004,27 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
       /[rRbB]/.test(expression[before] as string) &&
       !IDENT_CHARACTER.test(expression[before - 1] ?? '')
     ) {
-      add(before, span.end, 'a raw-string or bytes literal prefix, which cel-js has no token for');
+      add(before, span.end, 'a raw-string or bytes literal prefix, which cel-js has no token for', {
+        start: before,
+        end: span.end,
+        as: 'string',
+      });
     }
   }
   // Spec `STRING_LIT` also admits the triple-quoted forms; cel-js has neither.
   for (const quote of ['"""', "'''"]) {
     const at = expression.indexOf(quote);
-    if (at >= 0) add(at, at + 24, 'a triple-quoted string literal, which cel-js has no token for');
+    if (at < 0) continue;
+    // The closing run is what makes the literal rewritable. Without one there is
+    // no span to substitute, so the shortfall is recorded with no rewrite and
+    // can never carry a divergence on its own.
+    const closed = expression.indexOf(quote, at + quote.length);
+    add(
+      at,
+      at + 24,
+      'a triple-quoted string literal, which cel-js has no token for',
+      closed < 0 ? undefined : { start: at, end: closed + quote.length, as: 'string' }
+    );
   }
 
   // Spec: `Primary = "(" Expr ")"`, again a Member and so a legal receiver.
@@ -967,7 +1039,11 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     const close = matchingParen(masked, index);
     if (close < 0 || postfixFollows(masked, close + 1) === undefined) continue;
     if (!identifierCall) {
-      add(index, close + 24, 'a parenthesized expression used as the receiver of a member access');
+      add(index, close + 24, 'a parenthesized expression used as the receiver of a member access', {
+        start: index,
+        end: close + 1,
+        as: 'receiver',
+      });
       continue;
     }
     // A global function call — `size(a)`, `has(a.b)`, `int(a)` — is cel-js's
@@ -977,7 +1053,12 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     let start = before;
     while (start >= 0 && IDENT_CHARACTER.test(masked[start] as string)) start -= 1;
     if (previousNonSpace(masked, start + 1) < 0 || (masked[start] as string) !== '.') {
-      add(start + 1, close + 24, 'a global function call used as the receiver of a member access');
+      add(
+        start + 1,
+        close + 24,
+        'a global function call used as the receiver of a member access',
+        { start: start + 1, end: close + 1, as: 'receiver' }
+      );
     }
   }
 
@@ -993,14 +1074,25 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     const close = matchingParen(masked, index);
     if (close < 0) continue;
     if (postfixFollows(masked, close + 1) === '.') {
-      add(index, close + 24, 'a list literal used as the receiver of a member access');
+      add(index, close + 24, 'a list literal used as the receiver of a member access', {
+        start: index,
+        end: close + 1,
+        as: 'receiver',
+      });
       continue;
     }
     // The one permitted index, then anything further is past what cel-js takes.
     if (postfixFollows(masked, close + 1) !== '[') continue;
     const second = matchingParen(masked, nextNonSpace(masked, close + 1));
     if (second > 0 && postfixFollows(masked, second + 1) !== undefined) {
-      add(index, second + 24, 'a list literal with more than the one postfix cel-js allows');
+      // The list *and* its one permitted index collapse into the placeholder:
+      // `[1,2][0].f` is grammatical as `__typekro_recv0.f`, where rewriting the
+      // list alone would leave `__typekro_recv0[0].f` — still past cel-js.
+      add(index, second + 24, 'a list literal with more than the one postfix cel-js allows', {
+        start: index,
+        end: second + 1,
+        as: 'receiver',
+      });
     }
   }
 
@@ -1008,12 +1100,16 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
   // too, so `1.string()`, `1.0.x`, `2u.x`, `true.x` and `null.x` are all
   // grammatical. cel-js consumes each as a bare token with no postfix.
   const literalReceiver =
-    /(?<![A-Za-z0-9_.])(?:0[xX][0-9a-fA-F]+[uU]?|\d+(?:\.\d+)?[uU]?|true|false|null)\s*\.\s*[A-Za-z_]/g;
+    /(?<![A-Za-z0-9_.])(0[xX][0-9a-fA-F]+[uU]?|\d+(?:\.\d+)?[uU]?|true|false|null)\s*\.\s*[A-Za-z_]/g;
   for (const match of masked.matchAll(literalReceiver)) {
+    // Only the literal itself is the receiver; the `.` and the selector after it
+    // are the member access that stays.
+    const literal = match[1] as string;
     add(
       match.index,
       match.index + match[0].length,
-      'a number, bool or null literal used as the receiver of a member access'
+      'a number, bool or null literal used as the receiver of a member access',
+      { start: match.index, end: match.index + literal.length, as: 'receiver' }
     );
   }
 
@@ -1024,11 +1120,132 @@ function findSpecCelCelJsRejects(expression: string, masked: string): SpecCelLim
     add(
       match.index,
       match.index + match[0].length,
-      'a float literal written with an exponent, which cel-js has no token for'
+      'a float literal written with an exponent, which cel-js has no token for',
+      { start: match.index, end: match.index + match[0].length, as: 'float' }
     );
   }
 
   return found.sort((left, right) => left.at - right.at);
+}
+
+/**
+ * Largest number of rewrite rounds {@link rewriteAwayCelJsLimitations} will run.
+ *
+ * One round removes every shortfall that is not nested inside another, so a
+ * round is needed per level of nesting: `("x".size()).b` takes one (the outer
+ * parenthesized receiver swallows the inner string one), `r"x".size()` takes two
+ * (the raw prefix goes first, and only then is the plain literal visible as a
+ * receiver). Real emitted status CEL reaches one. The cap exists so a pathological
+ * expression cannot loop — each round either rewrites something or the loop
+ * stops, and hitting the cap simply means no divergence is proven, which is the
+ * safe direction.
+ */
+const CEL_DIALECT_MAX_REWRITE_ROUNDS = 8;
+
+/** Receiver placeholders are bound nowhere; only their grammar matters. */
+const CEL_JS_RECEIVER_PLACEHOLDER = '__typekro_recv';
+
+/** Whether cel-js's parser accepts the text, treating a throw as a rejection. */
+function celJsParses(expression: string): boolean {
+  try {
+    return parse(expression).isSuccess === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rewrite every identified cel-js shortfall out of an expression, leaving the
+ * rest of it byte for byte as it was.
+ *
+ * This is the evidence half of the `cel-js-rejects-spec-cel` bucket. A cel-js
+ * parse failure plus a shortfall *somewhere* in the text proves nothing on its
+ * own: the failure may be caused by a genuine syntax error elsewhere — `"x".size() +`
+ * has a string-literal receiver in it and is also simply unfinished, and cel-go
+ * rejects it as readily as cel-js does. Divergence needs the stronger claim that
+ * the identified shortfalls are the *only* reason cel-js refuses the text, and
+ * the way to establish that is to take them away and ask cel-js again.
+ *
+ * Each round re-runs the detector over the current text and applies the
+ * outermost non-overlapping rewrites, right to left so the spans of the
+ * not-yet-applied rewrites stay valid; the text is re-masked between rounds
+ * because a rewrite can change where the string literals are. Overlapping
+ * shortfalls — a string receiver inside a parenthesized receiver — resolve
+ * outermost-first, and whatever is left over is picked up by the next round.
+ */
+function rewriteAwayCelJsLimitations(
+  expression: string,
+  masked: string
+): { readonly text: string; readonly applied: number } {
+  let text = expression;
+  let current = masked;
+  let placeholders = 0;
+  let applied = 0;
+
+  for (let round = 0; round < CEL_DIALECT_MAX_REWRITE_ROUNDS; round += 1) {
+    const candidates = findSpecCelCelJsRejects(text, current)
+      .map((limitation) => limitation.rewrite)
+      .filter((rewrite): rewrite is SpecCelRewrite => rewrite !== undefined && rewrite.end > rewrite.start)
+      // Outermost first at a shared start, so a containing span wins and the
+      // contained one is skipped rather than splitting the container in two.
+      .sort((left, right) => left.start - right.start || right.end - left.end);
+
+    const chosen: SpecCelRewrite[] = [];
+    for (const candidate of candidates) {
+      const overlaps = chosen.some(
+        (taken) => candidate.start < taken.end && taken.start < candidate.end
+      );
+      if (!overlaps) chosen.push(candidate);
+    }
+    if (chosen.length === 0) break;
+
+    // Numbered left to right, so a reader of the proof meets `__typekro_recv0`
+    // before `__typekro_recv1`; `chosen` is already in source order.
+    const replacements = chosen.map((rewrite) => {
+      const width = rewrite.end - rewrite.start;
+      if (rewrite.as === 'receiver') return `${CEL_JS_RECEIVER_PLACEHOLDER}${placeholders++}`;
+      const filler = Math.max(1, width - 2);
+      return rewrite.as === 'string'
+        ? `"${'x'.repeat(filler)}"`
+        : `0.${'0'.repeat(filler)}`;
+    });
+
+    // Applied right to left: a `receiver` rewrite changes the width of the text,
+    // and splicing from the end keeps every earlier span indexing what it named.
+    for (let index = chosen.length - 1; index >= 0; index -= 1) {
+      const rewrite = chosen[index] as SpecCelRewrite;
+      text = text.slice(0, rewrite.start) + (replacements[index] as string) + text.slice(rewrite.end);
+      applied += 1;
+    }
+    current = maskCelStringLiterals(text);
+  }
+
+  return { text, applied };
+}
+
+/** The rewrite, when it parses — i.e. when it proves the divergence. */
+function celJsParseProof(trimmed: string, masked: string): string | undefined {
+  const rewritten = rewriteAwayCelJsLimitations(trimmed, masked);
+  return rewritten.applied > 0 && celJsParses(rewritten.text) ? rewritten.text : undefined;
+}
+
+/**
+ * The rewritten expression a `cel-js-rejects-spec-cel` divergence stands on, or
+ * `undefined` when there is none.
+ *
+ * Exported so the proof can be reproduced rather than taken on trust: the
+ * returned text differs from `expression` only where a confirmed cel-js
+ * shortfall was replaced by a same-production spelling cel-js has, and cel-js
+ * parses it. An expression with no identified shortfall, or one where taking the
+ * shortfalls away still leaves text cel-js refuses, yields `undefined` — and
+ * that is exactly the case the check refuses to call a divergence.
+ */
+export function celDialectParseProof(expression: string): string | undefined {
+  const trimmed = expression.trim();
+  if (trimmed.length === 0 || trimmed.length > CEL_DIALECT_MAX_EXPRESSION_LENGTH) return undefined;
+  const masked = maskCelStringLiterals(trimmed);
+  if (findSpecCelCelJsRejects(trimmed, masked).length === 0) return undefined;
+  return celJsParseProof(trimmed, masked);
 }
 
 /** One form no CEL grammar accepts, whichever engine reads it. */
@@ -1159,12 +1376,7 @@ export function checkCelDialectCompatibility(
   // three buckets below each carry their own evidence instead, and only the one
   // backed by a positive, spec-cited identification of valid CEL is a
   // divergence.
-  let parsed: boolean;
-  try {
-    parsed = parse(trimmed).isSuccess === true;
-  } catch {
-    parsed = false;
-  }
+  const parsed = celJsParses(trimmed);
 
   // Bucket one: text no CEL grammar accepts. Built from the spec's own lexical
   // and syntactic grammar, never from cel-js's verdict, and so run whether or
@@ -1187,28 +1399,49 @@ export function checkCelDialectCompatibility(
     // Bucket two: a cel-js parse failure that a positive check identifies as
     // grammatical CEL. This is the real divergence — KRO serves the field and
     // direct mode never will — so it may fail strict mode.
+    //
+    // Finding a known cel-js shortfall *somewhere* in the text is not enough to
+    // get here. A parse failure has exactly one cause the whole expression can
+    // be blamed on, and an expression that carries a shortfall may also simply
+    // be ungrammatical elsewhere — `"x".size() +`, `(a).b ==`, `"x".size())`.
+    // cel-go rejects those too, so calling them divergences would fail strict
+    // mode on genuinely invalid CEL. The stronger claim is the one that has to
+    // hold: rewrite the identified shortfalls into spellings cel-js does have,
+    // leaving everything else untouched, and ask cel-js again. Only if the
+    // rewrite parses is the shortfall the *only* obstruction, which is what
+    // makes the rest of the expression grammatical CEL and cel-go's acceptance
+    // of it a fact rather than an inference.
     const limitation = findSpecCelCelJsRejects(trimmed, masked)[0];
-    if (limitation !== undefined) {
+    const proof = limitation === undefined ? undefined : celJsParseProof(trimmed, masked);
+
+    if (limitation !== undefined && proof !== undefined) {
       findings.push(
         finding(
           'cel-js-rejects-spec-cel',
           field,
           trimmed,
           limitation.fragment,
-          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). cel-go parses this form, so the field resolves under KRO and direct mode can never evaluate it`,
+          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). Replacing only that form with a spelling cel-js does have — \`${excerpt(proof)}\` — makes cel-js parse the whole expression, so nothing else in it is ungrammatical and the refusal is cel-js's shortfall alone. cel-go parses this form, so the field resolves under KRO and direct mode can never evaluate it`,
           'Rewrite the receiver as an identifier chain — bind the literal or parenthesized value to a resource field, or use the global form of the call (`size(x)` rather than `x.size()`) — until cel-js supports the spec form'
         )
       );
     } else {
-      // Bucket three: cel-js cannot parse it and nothing above explains why.
-      // The only sound claim is about direct mode.
+      // Bucket three: cel-js cannot parse it and nothing above explains why —
+      // either no known shortfall was identified, or one was and taking it away
+      // still left text cel-js refuses, which means something else in the
+      // expression is at fault and no divergence is established. The only sound
+      // claim either way is about direct mode.
+      const unexplained =
+        limitation === undefined
+          ? 'Neither the non-CEL token scan nor the confirmed cel-js shortfalls account for the refusal'
+          : `A confirmed cel-js shortfall was identified in it (${limitation.reason}), but rewriting that form into one cel-js does have still leaves the expression unparseable, so the shortfall is not the whole reason and nothing here is established beyond direct mode`;
       findings.push(
         finding(
           'cel-js-parse-failure',
           field,
           trimmed,
           undefined,
-          'cel-js cannot parse this expression, so direct mode cannot evaluate this field; the CEL specification may still permit it and the controller may still serve it. Verify against the spec grammar; if it is valid CEL, this is a cel-js limitation worth reporting upstream',
+          `cel-js cannot parse this expression, so direct mode cannot evaluate this field; the CEL specification may still permit it and the controller may still serve it. ${unexplained}. Verify against the spec grammar; if it is valid CEL, this is a cel-js limitation worth reporting upstream`,
           'Check the expression against cel-spec doc/langdef.md. If the grammar permits it, the field works in Kro mode and only direct mode is affected — otherwise fix the emitted CEL'
         )
       );
