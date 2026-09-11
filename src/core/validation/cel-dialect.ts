@@ -70,6 +70,19 @@
  *   absorbs the error under a deciding `false`), and an out-of-range index
  *   errors on both. Nothing diverges, so nothing is reported.
  *
+ * What the bar does **not** license is a claim about what KRO ultimately does
+ * with the field. Every rule here reasons about the grammar and about published
+ * engine behaviour; none of them models cel-go's *type checker*, which runs
+ * after the parse with KRO's type environment and function set and rejects
+ * plenty of grammatical CEL — `1.string()` parses on any conformant grammar and
+ * the checker still refuses it, `string` being a global conversion function
+ * rather than a member, and an unknown member function goes the same way. So a
+ * finding says "direct mode can never evaluate this field" where that is proven,
+ * and leaves KRO's verdict open. A rule stays a `divergence` on the strength of
+ * the disagreement it does establish: the engines differ on the *form*, at a
+ * stage that needs no type environment, which makes the emitted CEL defective
+ * for one of the two targets TypeKro serializes for whatever the other decides.
+ *
  * Findings that do not clear the bar are still worth surfacing, so each rule
  * declares a {@link CelDialectFindingKind}: `divergence` findings abort
  * serialization in strict mode, `note` findings never do and are logged in both
@@ -225,7 +238,7 @@ export const CEL_DIALECT_RULES: readonly {
     dialect: 'cel-js',
     summary: 'a form the CEL grammar permits and cel-js is known not to parse',
     observed:
-      "cel-js 0.8.2 is not a conformant CEL parser. Its `atomicExpression` rule (dist/parser.js) allows a postfix `.`/`[` only after an Identifier — plus one index after a list literal, and any postfix after a map literal — while the spec's `Member = Primary | Member \".\" SELECTOR [\"(\" [ExprList] \")\"] | Member \"[\" Expr \"]\"` allows a postfix on *any* Member, and `Primary` includes `LITERAL` and `\"(\" Expr \")\"` (cel-spec doc/langdef.md, \"Syntax\"). Its lexer is short of the spec's `FLOAT_LIT` (no EXPONENT form) and `STRING_LIT`/`BYTES_LIT` (no `r`/`R`/`b`/`B` prefix, no triple-quoted form). Each form is confirmed to fail `parse()` and is grammatical CEL. The entry fires only once the *whole* expression is shown to be grammatical: the identified forms are replaced by same-production spellings cel-js does have and `parse()` is run again, and only a rewrite that succeeds establishes that the shortfall is the sole obstruction rather than one of several problems in the text. cel-go parses the form, so the field resolves under KRO and direct mode can never evaluate it. That is a divergence, not a defect in the expression",
+      "cel-js 0.8.2 is not a conformant CEL parser. Its `atomicExpression` rule (dist/parser.js) allows a postfix `.`/`[` only after an Identifier — plus one index after a list literal, and any postfix after a map literal — while the spec's `Member = Primary | Member \".\" SELECTOR [\"(\" [ExprList] \")\"] | Member \"[\" Expr \"]\"` allows a postfix on *any* Member, and `Primary` includes `LITERAL` and `\"(\" Expr \")\"` (cel-spec doc/langdef.md, \"Syntax\"). Its lexer is short of the spec's `FLOAT_LIT` (no EXPONENT form) and `STRING_LIT`/`BYTES_LIT` (no `r`/`R`/`b`/`B` prefix, no triple-quoted form). Each form is confirmed to fail `parse()` and is grammatical CEL. The entry fires only once the *whole* expression is shown to be grammatical: the identified forms are replaced by same-production spellings cel-js does have and cel-js is asked again, and only a rewrite cel-js accepts whole — every character lexed, the token stream parsed — establishes that the shortfall is the sole obstruction rather than one of several problems in the text. What that proves is that the grammar permits the form and cel-js's refusal is its own shortfall, so direct mode can never evaluate the field; it is a divergence in the form rather than a defect in the expression. It does not establish what KRO then does with the field: cel-go parses the form, but its type checker runs afterwards with KRO's type environment and function set, which this module does not model — `1.string()` is grammatical and cel-go's checker still rejects it, `string` being a global conversion function rather than a member",
   },
   {
     id: 'not-valid-cel',
@@ -671,6 +684,11 @@ function finding(
  * "has() does not support atomic expressions" for `has(list[0].f)` and
  * `has(map["k"].f)` alike, while cel-go's has() accepts any select expression.
  * The divergence is established without knowing a single type.
+ *
+ * What that establishes is that direct mode can never evaluate the field. It
+ * does not establish that KRO does: cel-go's macro expansion is not its type
+ * checker, and the checker runs afterwards with KRO's type environment. The
+ * message says so rather than promising the field resolves under KRO.
  */
 function checkHasIndexArgument(
   expression: string,
@@ -692,7 +710,7 @@ function checkHasIndexArgument(
           field,
           expression,
           fragment,
-          'cel-js rejects has() whose operand is an index expression ("has() does not support atomic expressions") while cel-go accepts it, so this field resolves under KRO and never in direct mode',
+          'cel-js rejects has() whose operand is an index expression ("has() does not support atomic expressions") while cel-go\'s has() macro accepts any select expression, index included. Direct mode can therefore never evaluate this field. Whether KRO evaluates it depends on cel-go\'s type checker and function environment, which this check does not model',
           'Select entries with `list.filter(entry, has(entry.field))` inside a lazy ternary — Cel.firstWhereHas() emits exactly that'
         )
       );
@@ -815,7 +833,7 @@ function checkHeterogeneousMapLiteral(
           field,
           expression,
           expression.slice(index, close + 1),
-          `this map literal mixes ${first?.[0]} (${first?.[1]}) and ${second?.[0]} (${second?.[1]}) values. cel-js takes the map's value type from its first entry and throws "invalid_argument" on the first entry that differs, so it cannot evaluate this map at all; cel-go types the literal as map(string, dyn) and evaluates it. The field resolves under KRO and never in direct mode`,
+          `this map literal mixes ${first?.[0]} (${first?.[1]}) and ${second?.[0]} (${second?.[1]}) values. cel-js takes the map's value type from its first entry and throws "invalid_argument" on the first entry that differs, so it cannot evaluate this map at all; cel-go types the literal as map(string, dyn) and evaluates it. Direct mode can therefore never evaluate this field. Whether KRO evaluates it depends on the rest of cel-go's type checking under KRO's environment, which this check does not model`,
           'Give the entries one value type — `string(...)` around the odd ones out is usually enough — or reference an object of the right shape instead of writing a literal, which is what a KubernetesRef or CEL expression of that type does'
         )
       );
@@ -1894,14 +1912,31 @@ export function checkCelDialectCompatibility(
         field,
         trimmed,
         leak.fragment,
-        `this is not CEL under the language grammar, whichever engine reads it: ${leak.reason}. Both engines reject it, so direct mode can never evaluate this status field and KRO will refuse the ResourceGraphDefinition`,
+        `this is not CEL under the language grammar, whichever engine reads it: ${leak.reason}. Both engines reject it at the parse, before any type environment is consulted, so direct mode can never evaluate this status field and cel-go cannot parse it inside the KRO controller either`,
         'Usually JavaScript that survived conversion. Write the CEL form instead: a has() guard rather than `?.`, an index rather than `?[`, `==` rather than `===`, and a resolved reference rather than an un-substituted template placeholder'
       )
     );
   } else if (!parsed) {
     // Bucket two: a cel-js parse failure that a positive check identifies as
-    // grammatical CEL. This is the real divergence — KRO serves the field and
-    // direct mode never will — so it may fail strict mode.
+    // grammatical CEL. This may fail strict mode.
+    //
+    // What it claims, exactly: the CEL grammar permits the form, cel-js's
+    // refusal is cel-js's own shortfall, and direct mode can therefore never
+    // evaluate this field. It does *not* claim the field resolves under KRO.
+    // Parsing is not evaluating: cel-go's type checker runs after the parse with
+    // KRO's type environment and function set, and it rejects plenty of
+    // grammatical CEL — `1.string()` parses, but `string` is a global conversion
+    // function rather than a member, so the checker refuses the call; an unknown
+    // member function goes the same way. Nothing here models that checker, so
+    // nothing here may speak for it.
+    //
+    // `divergence` is still the right kind under that weaker claim. The two
+    // engines disagree on the *form*, at the parse stage both of them have and
+    // which needs no type environment at all: the spec's grammar admits it,
+    // cel-go implements that grammar, and cel-js does not. Direct mode is
+    // therefore broken on an expression the language permits, whatever cel-go's
+    // checker later decides — so the emitted CEL is defective for one of the two
+    // targets TypeKro serializes for, which is what strict mode exists to catch.
     //
     // Finding a known cel-js shortfall *somewhere* in the text is not enough to
     // get here. A parse failure has exactly one cause the whole expression can
@@ -1924,7 +1959,7 @@ export function checkCelDialectCompatibility(
           field,
           trimmed,
           limitation.fragment,
-          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). Replacing only that form with a spelling cel-js does have — \`${excerpt(proof)}\` — makes cel-js parse the whole expression, so nothing else in it is ungrammatical and the refusal is cel-js's shortfall alone. cel-go parses this form, so the field resolves under KRO and direct mode can never evaluate it`,
+          `cel-js cannot parse this, but the CEL grammar permits it: ${limitation.reason} (cel-spec doc/langdef.md, "Syntax"). Replacing only that form with a spelling cel-js does have — \`${excerpt(proof)}\` — makes cel-js parse the whole expression, so nothing else in it is ungrammatical and the refusal is cel-js's shortfall alone. Direct mode can therefore never evaluate this field. Whether KRO evaluates it is a further question this check does not model: cel-go parses the form, but its type checker then runs with KRO's type environment and function set and may still reject it`,
           'Rewrite the receiver as an identifier chain — bind the literal or parenthesized value to a resource field, or use the global form of the call (`size(x)` rather than `x.size()`) — until cel-js supports the spec form'
         )
       );
@@ -1944,8 +1979,8 @@ export function checkCelDialectCompatibility(
           field,
           trimmed,
           undefined,
-          `cel-js cannot parse this expression, so direct mode cannot evaluate this field; the CEL specification may still permit it and the controller may still serve it. ${unexplained}. Verify against the spec grammar; if it is valid CEL, this is a cel-js limitation worth reporting upstream`,
-          'Check the expression against cel-spec doc/langdef.md. If the grammar permits it, the field works in Kro mode and only direct mode is affected — otherwise fix the emitted CEL'
+          `cel-js cannot parse this expression, so direct mode cannot evaluate this field; the CEL specification may still permit it, and the controller may still serve it. ${unexplained}. Verify against the spec grammar; if it is valid CEL, this is a cel-js limitation worth reporting upstream`,
+          'Check the expression against cel-spec doc/langdef.md. If the grammar permits it, only direct mode is certainly affected — whether Kro mode serves the field also depends on cel-go\'s type checker under KRO\'s environment, which this check does not model. Otherwise fix the emitted CEL'
         )
       );
     }

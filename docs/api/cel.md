@@ -339,6 +339,19 @@ bar, and they are the only four that can fail a build:
 | `heterogeneous-map-literal` | cel-js | cel-js pins a map literal's value type to its first entry and throws on the first entry that differs, so `{"name": "http", "port": 80}` cannot be built at all; cel-go types it `map(string, dyn)` and evaluates it |
 | `cel-js-rejects-spec-cel` | cel-js | A form the CEL grammar permits that cel-js provably cannot parse — see below |
 
+What these four claim is bounded: **direct mode can never evaluate the field**.
+None of them claims KRO evaluates it. Parsing is not evaluating — cel-go's type
+checker runs after the parse with KRO's type environment and function set, and
+it rejects plenty of grammatical CEL. `1.string()` parses on any conformant
+grammar and the checker still refuses it, `string` being a global conversion
+function rather than a member; an unknown member function goes the same way.
+Nothing in the serializer models that checker, so nothing in it speaks for it.
+
+They are still divergences, and still fail strict mode, on the strength of the
+disagreement they do establish: the engines differ on the *form*, at a stage
+that needs no type environment. The emitted CEL is defective for one of the two
+targets TypeKro serializes for, whatever the other decides.
+
 Everything else is reported as a **note**, which is logged in both strictness
 settings and never fails serialization:
 
@@ -391,10 +404,14 @@ Because of that, a `parse()` failure is never read as "cel-go would reject this
 too". It is sorted into one of three buckets:
 
 - **`cel-js-rejects-spec-cel`** — a positive, specification-cited check
-  identifies the text as valid CEL that this cel-js version cannot parse. KRO
-  serves the field and direct mode never will, which is a genuine divergence, so
-  it may fail strict mode. Each form is pinned by a test that also asserts
-  cel-js really fails on it, so the rule loses a form the day cel-js gains it.
+  identifies the text as valid CEL that this cel-js version cannot parse. The
+  grammar permits the form and cel-js's refusal is its own shortfall, so direct
+  mode can never evaluate the field; whether KRO evaluates it depends on
+  cel-go's type checker and function environment, which this check does not
+  model. That is a divergence in the form rather than a defect in the
+  expression, so it may fail strict mode. Each form is pinned by a test that
+  also asserts cel-js really fails on it, so the rule loses a form the day
+  cel-js gains it.
 
   Finding a known shortfall *somewhere* in a rejected expression is not enough
   to get here, because the parse may have failed for an unrelated reason:
