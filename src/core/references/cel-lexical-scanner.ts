@@ -88,33 +88,50 @@ function celStringLiteralEnd(text: string, at: number): number {
   return at;
 }
 
+/** What a masked region of an expression is: quoted data, or a line comment. */
+type CelLiteralRegionKind = 'string' | 'comment';
+
+/** One closed literal or comment, as the source-ordered walk found it. */
+interface CelLiteralRegion extends CelStringLiteralSpan {
+  readonly kind: CelLiteralRegionKind;
+}
+
 /**
- * Locate every CLOSED CEL string literal in `expression`, in source order.
+ * End of the `COMMENT ::= '//' ~NEWLINE*` starting at `at`, or `at` for none.
  *
- * The whole `STRING_LIT`/`BYTES_LIT` family is recognised — `r`/`R`/`b`/`B`
- * prefixes in either order, the two triple-quoted forms, escapes in the non-raw
- * forms — and the span INCLUDES the prefix letters, because they are part of
- * the token.
- *
- * The walk is source-ordered and consumes an `IDENT` whole, which is what keeps
- * a prefix letter that merely ENDS an identifier from opening a literal:
- * `ab"x"` is the identifier `ab` followed by a string, never a bytes literal.
- * Restarting the scan at every character cannot make that distinction.
- *
- * A quote that is never terminated is NOT reported as a literal: callers run
- * over text that is not always well-formed CEL — marker-laden strings derived
- * from template literals may carry a bare apostrophe (`it's ready`) — and
- * swallowing the rest of such a string would silently suppress substitutions
- * in real expression text. Offsets index UTF-16 code units so a caller can
- * splice by them.
+ * The comment stops BEFORE its newline, so masking one never disturbs the line
+ * structure of a multi-line expression.
  */
-export function celStringLiteralSpans(expression: string): CelStringLiteralSpan[] {
-  const spans: CelStringLiteralSpan[] = [];
+function celLineCommentEnd(text: string, at: number): number {
+  if (text[at] !== '/' || text[at + 1] !== '/') return at;
+  const newline = text.slice(at).search(/[\r\n]/);
+  return newline < 0 ? text.length : at + newline;
+}
+
+/**
+ * Locate every closed string literal AND every line comment, in ONE
+ * source-ordered walk.
+ *
+ * Two orderings are what a strings-only scan gets wrong, and both fall out of
+ * walking in source order: a `//` INSIDE a string literal is part of the
+ * literal and opens no comment (`"a // b"` is a string), and a quote INSIDE a
+ * comment is part of the comment and opens no literal (`// it's` does not open
+ * one, where a strings-only scan would flip the masking of everything after
+ * that apostrophe).
+ */
+function celLiteralRegions(expression: string): CelLiteralRegion[] {
+  const regions: CelLiteralRegion[] = [];
   let index = 0;
   while (index < expression.length) {
+    const commentEnd = celLineCommentEnd(expression, index);
+    if (commentEnd > index) {
+      regions.push({ kind: 'comment', start: index, end: commentEnd });
+      index = commentEnd;
+      continue;
+    }
     const literalEnd = celStringLiteralEnd(expression, index);
     if (literalEnd > index) {
-      spans.push({ start: index, end: literalEnd });
+      regions.push({ kind: 'string', start: index, end: literalEnd });
       index = literalEnd;
       continue;
     }
@@ -127,28 +144,59 @@ export function celStringLiteralSpans(expression: string): CelStringLiteralSpan[
     }
     index += 1;
   }
-  return spans;
+  return regions;
 }
 
-/**
- * Blank out every CLOSED CEL string literal, quotes included, so a scanner can
- * pattern-match expression syntax without seeing quoted data.
- *
- * Unlike {@link maskCelStringLiterals} this preserves offsets and length
- * EXACTLY (it masks per UTF-16 code unit, and leaves an unterminated quote
- * alone), so a caller may match over the masked copy and splice replacements
- * into the original text at the reported offsets.
- */
-export function maskClosedCelStringLiterals(expression: string): string {
-  const spans = celStringLiteralSpans(expression);
-  if (spans.length === 0) return expression;
+/** Blank `regions` out of `expression`, one space per UTF-16 code unit. */
+function blankRegions(expression: string, regions: readonly CelStringLiteralSpan[]): string {
+  if (regions.length === 0) return expression;
   const characters = expression.split('');
-  for (const span of spans) {
-    for (let index = span.start; index < span.end; index += 1) {
+  for (const region of regions) {
+    for (let index = region.start; index < region.end; index += 1) {
       characters[index] = ' ';
     }
   }
   return characters.join('');
+}
+
+/**
+ * Locate every CLOSED CEL string literal in `expression`, in source order.
+ *
+ * The whole `STRING_LIT`/`BYTES_LIT` family is recognised — `r`/`R`/`b`/`B`
+ * prefixes in either order, the two triple-quoted forms, escapes in the non-raw
+ * forms — and the span INCLUDES the prefix letters, because they are part of
+ * the token.
+ *
+ * The walk is source-ordered and consumes an `IDENT` whole, which is what keeps
+ * a prefix letter that merely ENDS an identifier from opening a literal:
+ * `ab"x"` is the identifier `ab` followed by a string, never a bytes literal.
+ * Restarting the scan at every character cannot make that distinction. A quote
+ * inside a `//` comment opens no literal — see {@link celLiteralRegions}.
+ *
+ * A quote that is never terminated is NOT reported as a literal: callers run
+ * over text that is not always well-formed CEL — marker-laden strings derived
+ * from template literals may carry a bare apostrophe (`it's ready`) — and
+ * swallowing the rest of such a string would silently suppress substitutions
+ * in real expression text. Offsets index UTF-16 code units so a caller can
+ * splice by them.
+ */
+export function celStringLiteralSpans(expression: string): CelStringLiteralSpan[] {
+  return celLiteralRegions(expression)
+    .filter((region) => region.kind === 'string')
+    .map(({ start, end }) => ({ start, end }));
+}
+
+/**
+ * Blank out every CLOSED CEL string literal AND every `//` line comment.
+ *
+ * This is what a scanner that REWRITES an expression must read: a token inside
+ * quoted data is not a reference, and neither is one inside a comment. Offsets
+ * and length are preserved exactly — one space per UTF-16 code unit, newlines
+ * left in place — so a caller may match over the masked copy and splice
+ * replacements into the original text at the reported offsets.
+ */
+export function maskClosedCelLiteralsAndComments(expression: string): string {
+  return blankRegions(expression, celLiteralRegions(expression));
 }
 
 export interface CelLambdaScope {

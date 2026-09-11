@@ -15,7 +15,7 @@ import { canonicalizeCelResourceAliases } from '../../utils/cel-resource-identif
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { isValuesMergeExpression } from '../aspects/values-merge.js';
 import { remapVariableNames } from '../composition/nested-status-cel.js';
-import { maskClosedCelStringLiterals } from '../references/cel-lexical-scanner.js';
+import { maskClosedCelLiteralsAndComments } from '../references/cel-lexical-scanner.js';
 import { ConversionError } from '../errors.js';
 import { isStrictCelDiagnosticsEnabled } from '../expressions/analysis/strict-cel.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -1037,12 +1037,15 @@ function substituteNestedRefsInText(
   const lambdaVars = new Set(ambientLambdaVars);
   for (const name of collectLambdaVars(text)) lambdaVars.add(name);
 
-  // Scan a copy with every closed CEL string literal blanked out, so a
-  // `<id>.status.<field>`-shaped run of characters that is really quoted DATA
-  // — a log message, a URL, an error string — is never rewritten. The mask
-  // preserves length and offsets exactly, so each replacement splices back
-  // into the ORIGINAL text at the offsets the match reported.
-  const scanned = maskClosedCelStringLiterals(text);
+  // Scan a copy with every closed CEL string literal AND every `//` line
+  // comment blanked out, so a `<id>.status.<field>`-shaped run of characters
+  // that is really quoted DATA — a log message, a URL, an error string — or
+  // commented-out expression text is never rewritten. Both are masked in one
+  // source-ordered pass, so a `//` inside a string stays string and a quote
+  // inside a comment stays comment. The mask preserves length and offsets
+  // exactly (newlines included), so each replacement splices back into the
+  // ORIGINAL text at the offsets the match reported.
+  const scanned = maskClosedCelLiteralsAndComments(text);
   const pattern = new RegExp(NESTED_STATUS_TOKEN_SOURCE, 'g');
   let result = '';
   let copiedUpTo = 0;
