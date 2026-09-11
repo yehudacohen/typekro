@@ -16,11 +16,14 @@
 import { type } from 'arktype';
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { getComponentLogger } from '../../src/core/logging/index.js';
+import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import {
   finalizeCelForKro,
   inlineNestedStatusRefs,
   inlineNestedStatusRefsWithStats,
   normalizeRefMarkersToCelPaths,
+  processResourceReferences,
+  serializeStatusMappingsToCel,
 } from '../../src/core/serialization/cel-references.js';
 import type { SerializationContext } from '../../src/core/types/serialization.js';
 import { kubernetesComposition, simple } from '../../src/index.js';
@@ -638,6 +641,137 @@ describe('nested-composition status inlining — postfix operations', () => {
   it('leaves the token untouched when no dotted prefix matches', () => {
     expect(finalizeCelForKro('svc.status.unknown.deep', { '__nestedStatus:other:zzz': 'x' })).toBe(
       '${svc.status.unknown.deep}'
+    );
+  });
+});
+
+describe('nested-composition status inlining — indexed postfixes', () => {
+  // Leaf-only inner expressions again: the nesting on show is the index chain.
+  const table = {
+    '__nestedStatus:svc:items': 'innerService.status.loadBalancer.ingress',
+    '__nestedStatus:svc:ports': 'innerService.status.portMap',
+    '__nestedStatus:svc:a': 'innerService.status.alpha',
+  };
+
+  const context: SerializationContext = {
+    celPrefix: '',
+    resourceIdStrategy: 'deterministic',
+    nestedStatusCel: table,
+  };
+
+  /** A nested-composition {@link KubernetesRef}, as the structured paths see one. */
+  function nestedRef(fieldPath: string): unknown {
+    return {
+      [KUBERNETES_REF_BRAND]: true,
+      __nestedComposition: true,
+      resourceId: 'svc',
+      fieldPath,
+    };
+  }
+
+  describe('regex path', () => {
+    // The token capture stops at `[`, so the index chain is never inside the
+    // match. What this pins is that the text after the match is spliced back
+    // VERBATIM rather than rebuilt from the captured segments.
+    it('keeps a list index and the field access after it', () => {
+      expect(inlineNestedStatusRefs('svc.status.items[0].name', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0].name'
+      );
+    });
+
+    it('keeps a map key index and the field access after it', () => {
+      expect(inlineNestedStatusRefs('svc.status.ports["http"].port', table)).toBe(
+        '(innerService.status.portMap)["http"].port'
+      );
+    });
+
+    it('keeps an index chain reached past the mapping key', () => {
+      expect(inlineNestedStatusRefs('svc.status.a.b[0][1].c', table)).toBe(
+        '(innerService.status.alpha).b[0][1].c'
+      );
+    });
+
+    it('keeps an index that ends the path', () => {
+      expect(inlineNestedStatusRefs('svc.status.items[0]', table)).toBe(
+        '(innerService.status.loadBalancer.ingress)[0]'
+      );
+    });
+
+    it('leaves an indexed token whose prefix names no key untouched', () => {
+      expect(inlineNestedStatusRefs('svc.status.unknown[0].name', table)).toBe(
+        'svc.status.unknown[0].name'
+      );
+    });
+  });
+
+  describe('marker path', () => {
+    // A marker field path CONTAINS its index (`status.ports[0].port` is inside
+    // `KUBERNETES_REF_MARKER_FIELD_PATH_SOURCE`), so splitting it on `.` yields
+    // `ports[0]`, which never equals the key `ports` — the whole marker used to
+    // survive into the emitted RGD carrying the virtual id `svc`.
+    it('resolves a marker whose field path carries a list index', () => {
+      expect(
+        normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.items[0].name__', context)
+      ).toBe('${(innerService.status.loadBalancer.ingress)[0].name}');
+    });
+
+    it('resolves a marker whose index ends the field path', () => {
+      expect(normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.items[0]__', context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0]}'
+      );
+    });
+
+    it('resolves a marker whose index sits past the mapping key', () => {
+      expect(normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.a.b[0]__', context)).toBe(
+        '${(innerService.status.alpha).b[0]}'
+      );
+    });
+
+    it('leaves a marker whose prefix names no key untouched', () => {
+      expect(
+        normalizeRefMarkersToCelPaths('__KUBERNETES_REF_svc_status.unknown[0].name__', context)
+      ).toBe('svc.status.unknown[0].name');
+    });
+  });
+
+  describe('structured-ref path', () => {
+    it('resolves a direct ref whose field path carries an index', () => {
+      expect(processResourceReferences(nestedRef('status.items[0].name'), context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0].name}'
+      );
+    });
+
+    it('resolves a direct ref whose index ends the field path', () => {
+      expect(processResourceReferences(nestedRef('status.items[0]'), context)).toBe(
+        '${(innerService.status.loadBalancer.ingress)[0]}'
+      );
+    });
+
+    it('resolves a status mapping ref whose field path carries an index', () => {
+      expect(serializeStatusMappingsToCel({ url: nestedRef('status.ports["http"].port') }, table))
+        .toEqual({ url: '${(innerService.status.portMap)["http"].port}' });
+    });
+  });
+
+  it('does not let a key match across an index that sits between two names', () => {
+    // `a[0].b` is NOT the key `a.b`: the index sits between the two names, so
+    // matching there would drop it. Only the bare-name key `a` may match.
+    const dotted = {
+      '__nestedStatus:svc:a.b': 'SHOULD_NOT_APPEAR',
+      '__nestedStatus:svc:a': 'innerService.status.alpha',
+    };
+
+    const result = inlineNestedStatusRefs('svc.status.a[0].b', dotted);
+
+    expect(result).toBe('(innerService.status.alpha)[0].b');
+    expect(result).not.toContain('SHOULD_NOT_APPEAR');
+  });
+
+  it('still matches a dotted key whose path carries no index', () => {
+    const dotted = { '__nestedStatus:svc:a.b': 'innerService.status.alphaBeta' };
+
+    expect(inlineNestedStatusRefs('svc.status.a.b[0]', dotted)).toBe(
+      '(innerService.status.alphaBeta)[0]'
     );
   });
 });
