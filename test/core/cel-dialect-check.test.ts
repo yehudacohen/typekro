@@ -520,6 +520,56 @@ describe('valid CEL that cel-js cannot parse', () => {
     });
   });
 
+  /**
+   * A `receiver` rewrite over a bracketed span replaces the whole span with one
+   * identifier, so whatever was inside the brackets is gone from the text cel-js
+   * is asked about. That is the same defect as a lexer-dropped character, one
+   * level down: the parse says nothing about the part it never saw. Each of
+   * these carries a correctly identified receiver shortfall whose span is
+   * ungrammatical on any engine, so cel-go refuses the original too.
+   */
+  describe('a rewrite that swallows a span it did not prove', () => {
+    const swallowed: Record<string, string> = {
+      'a parenthesized receiver with an unfinished operator': '(a &&).b',
+      'a parenthesized receiver with a dangling plus': '(a + ).b',
+      'a parenthesized receiver with an unclosed ternary': '(a ? b).c',
+      'a global-call receiver with an unfinished argument': 'size(a +).b',
+      'a list-literal receiver with an empty element': '[1, ,2].size()',
+    };
+
+    for (const [name, expression] of Object.entries(swallowed)) {
+      it(`refuses to prove a divergence for ${name}`, () => {
+        expect(parse(expression).isSuccess).toBe(false);
+        // Lexically fine — nothing here is caught by the coverage scan. The
+        // span is ungrammatical, which is a different thing.
+        expect(celDialectLexicalGap(expression)).toBe(-1);
+        expect(celDialectParseProof(expression)).toBeUndefined();
+
+        const findings = check(expression);
+        expect(findings.map((found) => found.rule)).toEqual(['cel-js-parse-failure']);
+        expect(findings[0]?.kind).toBe('note');
+        expect(hasCelDialectDivergence(findings)).toBe(false);
+      });
+    }
+
+    it('still swallows a span whose only problem is a shortfall of its own', () => {
+      // The recursion earns its keep here: `("x".size())` is not something
+      // cel-js parses, but the reason is a divergence rather than a syntax
+      // error, so the outer rewrite may swallow it after all.
+      expect(celDialectParseProof('("x".size()).b')).toBe('__typekro_recv0.b');
+      expect(celDialectParseProof('((r"x".size()).b).c')).toBe('__typekro_recv0.c');
+    });
+
+    it('leaves spans with no bracket in them unchecked', () => {
+      // A string, number, bool or null receiver is one literal token: there is
+      // no subexpression inside it for the rewrite to hide, and the coverage
+      // scan has already established the token is well formed.
+      for (const expression of ['"x".size()', '1.string()', 'true.x', 'r"x".size()']) {
+        expect(celDialectParseProof(expression)).toBeDefined();
+      }
+    });
+  });
+
   it('leaves a map literal receiver alone, because cel-js does parse it', () => {
     // The one member of the literal-primary family cel-js already handles: its
     // `mapExpression` rule carries a `MANY2` of postfix selects and indexes.
