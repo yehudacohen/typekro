@@ -4,7 +4,7 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_SOURCE } from '../constants
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { celLiteralForValueTree, getInnerCelPath } from '../serialization/cel-references.js';
-import type { CelExpression, RefOrValue } from '../types.js';
+import type { CelExpression, KubernetesRef, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
 
@@ -463,21 +463,109 @@ function defaultValue(
 /** Alias for {@link defaultValue}. */
 const coalesce: typeof defaultValue = defaultValue;
 
-/** A CEL list reference: a proxy/expression, or a literal CEL path. */
-export type CelListRef = RefOrValue<unknown> | string;
+const UNSAFE_CEL_LIST_PATH: unique symbol = Symbol.for('typekro.unsafeCelListPath');
 
 /**
- * Resolve a list argument to the CEL path text that names it.
+ * A CEL path to a list, written out by hand instead of selected.
  *
- * A plain string is taken as an already-written CEL path (`myService.status.x`),
- * which is what a composition uses when it names a graph resource by id.
+ * Produced only by {@link unsafeListPath}. It is a distinct type rather than a
+ * bare `string` so that the guarded-list helpers can accept a hand-written path
+ * where one is genuinely needed, while still rejecting an arbitrary string that
+ * was passed by mistake.
  */
-function celListPath(list: CelListRef, helperName: string): string {
+export interface UnsafeCelListPath<TElement = unknown> {
+  readonly [UNSAFE_CEL_LIST_PATH]: string;
+  /** Phantom: carries the declared element type, never present at runtime. */
+  readonly __element?: TElement;
+}
+
+/**
+ * A selectable reference to a list-typed field.
+ *
+ * The ordinary way to produce one is to read the field off a resource or schema
+ * proxy — `service.status.loadBalancer.ingress` — which gives the helpers both
+ * the CEL path and the element type. `TElement` is inferred from it, so the
+ * `field` argument can be checked against the element's own keys.
+ *
+ * A hand-written path is accepted only in the {@link UnsafeCelListPath} form, so
+ * it has to be asked for by name.
+ */
+export type CelListSelector<TElement> =
+  | readonly TElement[]
+  | undefined
+  | KubernetesRef<readonly TElement[]>
+  | KubernetesRef<readonly TElement[] | undefined>
+  | UnsafeCelListPath<TElement>;
+
+/**
+ * What projecting `TField` off an entry of a `TElement` list yields.
+ *
+ * Written out rather than left as an inferrable type parameter on purpose: a
+ * free `TResult` would be inferred from the *contextual* type at the call site —
+ * the status field's own declared type — so a loosely typed status field would
+ * silently widen the projection back to whatever it declares, which is exactly
+ * the type safety this signature exists to provide.
+ */
+export type CelFieldProjection<
+  TElement,
+  TField extends keyof TElement,
+> = CelExpression<NonNullable<TElement[TField]>> & NonNullable<TElement[TField]>;
+
+/** What projecting the first entry of a `TElement` list yields. */
+export type CelEntryProjection<TElement> = CelExpression<NonNullable<TElement>> &
+  NonNullable<TElement>;
+
+/**
+ * Name a list by its CEL path, when there is no proxy to select it from.
+ *
+ * **Unsafe** in one specific sense: nothing checks the path. Not that the named
+ * resource is in the graph, not that the path reaches a list, and not that the
+ * elements are what `TElement` says they are. Get any of that wrong and the
+ * mistake surfaces on a cluster rather than at compile time, which is exactly
+ * what selecting the field off a proxy avoids.
+ *
+ * Reach for it only where the proxy genuinely is not in scope — a bootstrap
+ * composition that names a graph resource by id because the resource is created
+ * by a Helm chart rather than declared in the composition, for instance. The
+ * element type is still declared and still checked, so `field` keeps its
+ * `keyof` check even here.
+ *
+ * @example
+ * ```typescript
+ * // The Gateway is created by its controller; only its resource id is in scope.
+ * Cel.firstWhereHas(
+ *   Cel.unsafeListPath<{ value: string }>(`${resourceId}.status.addresses`),
+ *   'value'
+ * )
+ * ```
+ */
+function unsafeListPath<TElement = unknown>(path: string): UnsafeCelListPath<TElement> {
+  const trimmed = path.trim();
+  if (trimmed.length === 0) {
+    throw new TypeKroError(
+      'Cel.unsafeListPath() requires a non-empty CEL path string.',
+      'CEL_INVALID_INPUT'
+    );
+  }
+  return { [UNSAFE_CEL_LIST_PATH]: trimmed };
+}
+
+function isUnsafeCelListPath(value: unknown): value is UnsafeCelListPath {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as UnsafeCelListPath)[UNSAFE_CEL_LIST_PATH] === 'string'
+  );
+}
+
+/** Resolve a list argument to the CEL path text that names it. */
+function celListPath(list: unknown, helperName: string): string {
+  if (isUnsafeCelListPath(list)) return list[UNSAFE_CEL_LIST_PATH];
   if (isKubernetesRef(list)) return getInnerCelPath(list);
-  if (isCelExpression(list)) return list.expression;
-  if (typeof list === 'string' && list.trim().length > 0) return list.trim();
   throw new TypeKroError(
-    `${helperName}() requires a KubernetesRef, a CelExpression, or a non-empty CEL path string.`,
+    `${helperName}() requires a list field selected from a resource or schema proxy ` +
+      '(for example `service.status.loadBalancer.ingress`). To name a list by its CEL path ' +
+      'instead, wrap it in Cel.unsafeListPath().',
     'CEL_INVALID_INPUT'
   );
 }
@@ -526,26 +614,37 @@ function chainedHasGuard(path: string): string | undefined {
  *   : <fallback>
  * ```
  *
- * @param list The list to read: a resource-reference proxy, a CEL expression,
- *   or a literal CEL path such as `'myService.status.loadBalancer.ingress'`.
- * @param field The field an entry must carry to be selected.
+ * ## Selecting the list
+ *
+ * `list` is a list-typed field read off a resource or schema proxy, which gives
+ * this helper the element type and lets `field` be checked against the element's
+ * own keys — `Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostnmae')`
+ * is a compile error rather than a status field that is permanently `''`. Where
+ * no proxy is in scope, name the path with {@link unsafeListPath}.
+ *
+ * @param list The list to read, selected from a resource or schema proxy.
+ * @param field The field an entry must carry to be selected. Must be a key of
+ *   the list's element type.
  * @param fallback Value used when the list is absent, empty, or has no entry
  *   carrying `field`. Defaults to the empty string.
  *
  * @example
  * ```typescript
  * // First ingress entry that reports a hostname, or '' while none does.
- * hostname: Cel.firstWhereHas<string>(service.status.loadBalancer.ingress, 'hostname')
+ * hostname: Cel.firstWhereHas(service.status.loadBalancer.ingress, 'hostname')
  *
  * // Naming a graph resource by id, as bootstrap compositions do.
- * version: Cel.firstWhereHas<string>('release.status.history', 'chartVersion')
+ * version: Cel.firstWhereHas(
+ *   Cel.unsafeListPath<{ chartVersion: string }>('release.status.history'),
+ *   'chartVersion'
+ * )
  * ```
  */
-function firstWhereHas<T = string>(
-  list: CelListRef,
-  field: string,
+function firstWhereHas<TElement extends object, TField extends Extract<keyof TElement, string>>(
+  list: CelListSelector<TElement>,
+  field: TField,
   fallback: RefOrValue<CelValue> = ''
-): CelExpression<T> & T {
+): CelFieldProjection<TElement, TField> {
   if (!/^[A-Za-z_$][\w$]*$/.test(field)) {
     throw new TypeKroError(
       `Cel.firstWhereHas() field must be a simple CEL identifier, received '${field}'.`,
@@ -560,7 +659,7 @@ function firstWhereHas<T = string>(
   return {
     [CEL_EXPRESSION_BRAND]: true,
     expression: `${guard} ? (size(${matching}) > 0 ? ${matching}[0].${field} : ${fallbackCel}) : ${fallbackCel}`,
-  } as CelExpression<T> & T;
+  } as CelFieldProjection<TElement, TField>;
 }
 
 /**
@@ -573,15 +672,18 @@ function firstWhereHas<T = string>(
  * of the cel-js "Identifier not found" error that a single `has()` on the full
  * path produces.
  *
+ * As with {@link firstWhereHas}, the list is selected from a resource or schema
+ * proxy; a hand-written path has to go through {@link unsafeListPath}.
+ *
  * @example
  * ```typescript
- * endpoint: Cel.firstOf<string>('objectStore.status.endpoints.secure')
+ * endpoint: Cel.firstOf(Cel.unsafeListPath<string>('objectStore.status.endpoints.secure'))
  * ```
  */
-function firstOf<T = string>(
-  list: CelListRef,
+function firstOf<TElement>(
+  list: CelListSelector<TElement>,
   fallback: RefOrValue<CelValue> = ''
-): CelExpression<T> & T {
+): CelEntryProjection<TElement> {
   const path = celListPath(list, 'Cel.firstOf');
   const guard = chainedHasGuard(path) ?? `has(${path})`;
   const fallbackCel = celValueForTernary(fallback);
@@ -589,11 +691,29 @@ function firstOf<T = string>(
   return {
     [CEL_EXPRESSION_BRAND]: true,
     expression: `${guard} ? (size(${path}) > 0 ? ${path}[0] : ${fallbackCel}) : ${fallbackCel}`,
-  } as CelExpression<T> & T;
+  } as CelEntryProjection<TElement>;
 }
 
-/** A Service whose `status.loadBalancer.ingress` can be projected. */
-export type LoadBalancerServiceRef = string | { status: { loadBalancer: { ingress: unknown } } };
+/** One entry of a Service's `status.loadBalancer.ingress`. */
+export interface LoadBalancerIngressEntry {
+  readonly ip?: string | undefined;
+  readonly hostname?: string | undefined;
+}
+
+/**
+ * A Service whose `status.loadBalancer.ingress` can be projected.
+ *
+ * The Service itself, selected from the graph — not its resource id. Where only
+ * the id is in scope, project the ingress list directly with
+ * {@link firstWhereHas} over a {@link unsafeListPath}.
+ */
+export interface LoadBalancerServiceRef {
+  readonly status: {
+    readonly loadBalancer: {
+      readonly ingress?: readonly LoadBalancerIngressEntry[] | undefined;
+    };
+  };
+}
 
 /**
  * Project a Service's load balancer address in the one CEL form both engines
@@ -608,7 +728,7 @@ export type LoadBalancerServiceRef = string | { status: { loadBalancer: { ingres
  * Yields the fallback (default `''`) while the Service has no address, and for
  * the field the provider does not report.
  *
- * @param service The Service resource, or its graph resource id.
+ * @param service The Service resource, selected from the graph.
  * @param field `'ip'` for L4 load balancers, `'hostname'` for name-based ones.
  * @param fallback Value while no matching entry exists. Defaults to `''`.
  *
@@ -625,11 +745,11 @@ function loadBalancerAddress(
   field: 'ip' | 'hostname' = 'ip',
   fallback: RefOrValue<CelValue> = ''
 ): CelExpression<string> & string {
-  const list =
-    typeof service === 'string'
-      ? `${service}.status.loadBalancer.ingress`
-      : (service.status.loadBalancer.ingress as RefOrValue<unknown>);
-  return firstWhereHas<string>(list, field, fallback);
+  return firstWhereHas<LoadBalancerIngressEntry, 'ip' | 'hostname'>(
+    service.status.loadBalancer.ingress as CelListSelector<LoadBalancerIngressEntry>,
+    field,
+    fallback
+  ) as CelExpression<string> & string;
 }
 
 /**
@@ -823,6 +943,11 @@ export const Cel = {
   firstWhereHas,
   /** First entry of an optional nested list of scalars, dual-dialect safe. */
   firstOf,
+  /**
+   * Name a list by its CEL path where no proxy is in scope. Nothing about the
+   * path is checked — prefer selecting the field off a resource or schema proxy.
+   */
+  unsafeListPath,
   /** A Service's load balancer `ip`/`hostname`, dual-dialect safe. */
   loadBalancerAddress,
   /** Tagged template literal for CEL expressions. Alias: standalone `cel` export. */

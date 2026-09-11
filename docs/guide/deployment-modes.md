@@ -146,6 +146,9 @@ so both engines return a fallback rather than erroring — `Cel.firstWhereHas()`
 and `Cel.loadBalancerAddress()` do exactly that. See
 [CEL Expressions](/api/cel#optional-nested-lists).
 
+Resolution never writes into the composition's status template, so the same
+composition resolves correctly on every reconcile and for every instance.
+
 ### Streaming Control Plane Logs
 
 Enable real-time Kubernetes event streaming during deployment:
