@@ -230,7 +230,7 @@ function generateCelExpression(
         context.nestedStatusCel,
         context,
         true,
-        { id: ref.resourceId, field: resolution.field }
+        resolution.entry.key
       );
       const withPostfix = applyKroSegmentPostfix(finalized, resolution.postfix);
       if (withPostfix !== undefined) return withPostfix;
@@ -475,8 +475,12 @@ const NESTED_STATUS_TOKEN_SOURCE = String.raw`\b([a-zA-Z_$][\w$]*)\.status\.([a-
 /**
  * One `nestedStatusCel` mapping, carrying the key it is actually stored under.
  *
- * The key is what says how much of a dotted field path the entry accounts for,
- * so {@link resolveNestedField} can hand back the rest as a postfix.
+ * {@link lookupNestedEntry} reaches an entry through several alias strategies,
+ * so the `(id, field)` a token was written with is NOT an identity — different
+ * spellings routinely resolve to the same entry. `key` is that identity: the
+ * literal `__nestedStatus:<baseId>:<field>` key of the matched mapping. It also
+ * says how much of a dotted field path the entry accounts for, so
+ * {@link resolveNestedField} can hand back the rest as a postfix.
  */
 interface NestedStatusEntry {
   /** The `__nestedStatus:<baseId>:<field>` key that matched. */
@@ -492,16 +496,8 @@ interface NestedStatusEntry {
  */
 interface NestedFieldResolution {
   readonly entry: NestedStatusEntry;
-  /** The dotted prefix of the requested path that {@link entry} accounts for. */
-  readonly field: string;
   /** Dotted remainder including its leading `.`, or `''` when the key matched whole. */
   readonly postfix: string;
-}
-
-/** Identity of one nested-composition mapping being expanded. */
-interface NestedRefEntry {
-  readonly id: string;
-  readonly field: string;
 }
 
 /**
@@ -513,18 +509,23 @@ interface NestedRefEntry {
 interface NestedRefResolutionState {
   readonly nestedStatusCel: Record<string, string>;
   readonly resourceIds: ReadonlySet<string> | undefined;
-  /** `(id, field)` entries on the current expansion path — a hit is a cycle. */
+  /**
+   * Canonical mapping keys on the current expansion path — a hit is a cycle.
+   * Keyed by {@link NestedStatusEntry.key}, never by the token's own spelling:
+   * the lookup resolves aliases, so two spellings can name the same entry and a
+   * cycle that turns a corner through an alias must still be seen as one.
+   */
   readonly inProgress: Set<string>;
-  /** Fully-resolved replacement text, keyed by ambient lambda vars + entry. */
+  /** Fully-resolved replacement text, keyed by ambient lambda vars + canonical key. */
   readonly memo: Map<string, string>;
   /** Incremented whenever an expansion was truncated by the in-progress set. */
   cycleHits: number;
   /** Set when {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} stopped an expansion. */
   depthExceeded: boolean;
-}
-
-function nestedRefEntryKey(id: string, field: string): string {
-  return `${id} ${field}`;
+  /** {@link substituteNestedRefsInText} passes run so far — instrumentation only. */
+  textPasses: number;
+  /** Expansions served from {@link memo} — instrumentation only. */
+  memoHits: number;
 }
 
 /**
@@ -703,7 +704,6 @@ function resolveNestedField(
 
   const resolutionFor = (count: number, entry: NestedStatusEntry): NestedFieldResolution => ({
     entry,
-    field: segments.slice(0, count).join('.'),
     postfix: segments
       .slice(count)
       .map((segment) => `.${segment}`)
@@ -794,33 +794,52 @@ function applyKroSegmentPostfix(segment: string, postfix: string): string | unde
  * iteration element, not a nested composition. Lambda variables bound in an
  * enclosing text stay in scope for the inner expressions substituted into it.
  *
- * `seedEntry` marks a `(id, field)` mapping as already being expanded by the
- * caller. Entry points that look an entry up themselves and then resolve its
- * text ({@link generateCelExpression}, {@link resolveNestedRefMarkers},
- * `serializeStatusMappingsToCel`) pass it so a self-referential mapping is
- * recognized as terminal there too — the resolver behaves identically no
- * matter which entry point reached it.
+ * `seedKey` marks a mapping as already being expanded by the caller, given as
+ * the entry's CANONICAL `nestedStatusCel` key. Entry points that look an entry
+ * up themselves and then resolve its text ({@link generateCelExpression},
+ * {@link resolveNestedRefMarkers}, `serializeStatusMappingsToCel`) pass it so a
+ * self-referential mapping is recognized as terminal there too — the resolver
+ * behaves identically no matter which entry point reached it.
  */
 function resolveNestedCompositionRefs(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   resourceIds?: ReadonlySet<string>,
   resolveKnownNestedResourceRefs = true,
-  seedEntry?: NestedRefEntry
+  seedKey?: string
 ): string {
+  return runNestedRefResolution(
+    expr,
+    nestedStatusCel,
+    resourceIds,
+    resolveKnownNestedResourceRefs,
+    seedKey
+  ).text;
+}
+
+/** One resolution pass plus the bookkeeping it accumulated. */
+function runNestedRefResolution(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds: ReadonlySet<string> | undefined,
+  resolveKnownNestedResourceRefs: boolean,
+  seedKey: string | undefined
+): { readonly text: string; readonly stats: NestedRefResolutionStats } {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
-    return expr;
+    return { text: expr, stats: { cycleHits: 0, depthExceeded: false, textPasses: 0, memoHits: 0 } };
   }
 
   const state: NestedRefResolutionState = {
     nestedStatusCel,
     resourceIds,
-    inProgress: new Set(seedEntry ? [nestedRefEntryKey(seedEntry.id, seedEntry.field)] : []),
+    inProgress: new Set(seedKey === undefined ? [] : [seedKey]),
     memo: new Map(),
     cycleHits: 0,
     depthExceeded: false,
+    textPasses: 0,
+    memoHits: 0,
   };
-  const resolved = substituteNestedRefsInText(
+  const text = substituteNestedRefsInText(
     expr,
     state,
     resolveKnownNestedResourceRefs,
@@ -829,7 +848,15 @@ function resolveNestedCompositionRefs(
   if (state.depthExceeded) {
     reportNestedRefDepthExceeded(expr);
   }
-  return resolved;
+  return {
+    text,
+    stats: {
+      cycleHits: state.cycleHits,
+      depthExceeded: state.depthExceeded,
+      textPasses: state.textPasses,
+      memoHits: state.memoHits,
+    },
+  };
 }
 
 export function inlineNestedStatusRefs(
@@ -838,6 +865,39 @@ export function inlineNestedStatusRefs(
   resourceIds?: ReadonlySet<string>
 ): string {
   return resolveNestedCompositionRefs(expr, nestedStatusCel, resourceIds);
+}
+
+/**
+ * Internal bookkeeping of one {@link resolveNestedCompositionRefs} pass.
+ *
+ * @internal Implementation detail, surfaced only so tests can assert that a
+ * cycle was cut by the in-progress set (`cycleHits`) rather than by the depth
+ * guard (`depthExceeded`), and that an entry reached under two different alias
+ * spellings is expanded once and then served from the memo. `cel-references.ts`
+ * is not re-exported wholesale from `src/index.ts`, so this is not public API.
+ */
+export interface NestedRefResolutionStats {
+  /** Expansions cut short because the entry was already on the current path. */
+  readonly cycleHits: number;
+  /** Whether {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT} stopped an expansion. */
+  readonly depthExceeded: boolean;
+  /** Texts walked: 1 for the input, plus one per entry actually expanded. */
+  readonly textPasses: number;
+  /** Expansions answered from the memo instead of being walked again. */
+  readonly memoHits: number;
+}
+
+/**
+ * {@link inlineNestedStatusRefs} plus the resolver's internal counters.
+ *
+ * @internal Test-only. See {@link NestedRefResolutionStats}.
+ */
+export function inlineNestedStatusRefsWithStats(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: ReadonlySet<string>
+): { readonly text: string; readonly stats: NestedRefResolutionStats } {
+  return runNestedRefResolution(expr, nestedStatusCel, resourceIds, true, undefined);
 }
 
 /** Ambient lambda-variable scope for a top-level resolution. */
@@ -857,6 +917,7 @@ function substituteNestedRefsInText(
   allowKnownResourceSubstitution: boolean,
   ambientLambdaVars: ReadonlySet<string>
 ): string {
+  state.textPasses += 1;
   const lambdaVars = new Set(ambientLambdaVars);
   for (const name of collectLambdaVars(text)) lambdaVars.add(name);
 
@@ -923,13 +984,7 @@ function substituteNestedRefToken(
   );
   if (resolution === undefined) return token;
 
-  const resolvedInner = expandNestedEntry(
-    id,
-    resolution.field,
-    resolution.entry.expression,
-    state,
-    lambdaVars
-  );
+  const resolvedInner = expandNestedEntry(resolution.entry, state, lambdaVars);
   if (resolvedInner === undefined) return token;
   // Parenthesize to preserve operator precedence in compound expressions, then
   // re-attach whatever the token reached past the mapping key so a postfix
@@ -946,13 +1001,15 @@ function substituteNestedRefToken(
  * the original `<id>.status.<field>` token in that case.
  */
 function expandNestedEntry(
-  id: string,
-  field: string,
-  innerExpr: string,
+  entry: NestedStatusEntry,
   state: NestedRefResolutionState,
   ambientLambdaVars: ReadonlySet<string>
 ): string | undefined {
-  const entryKey = nestedRefEntryKey(id, field);
+  // Both sets key off the entry's CANONICAL mapping key. Keying off the token's
+  // own `(id, field)` would let a cycle that turns a corner through an alias
+  // spelling expand the same mapping a second time instead of terminating here,
+  // and would miss the memo for every spelling but the first.
+  const entryKey = entry.key;
   if (state.inProgress.has(entryKey)) {
     state.cycleHits++;
     return undefined;
@@ -960,7 +1017,10 @@ function expandNestedEntry(
 
   const memoKey = `${[...ambientLambdaVars].sort().join(',')}\n${entryKey}`;
   const memoized = state.memo.get(memoKey);
-  if (memoized !== undefined) return memoized;
+  if (memoized !== undefined) {
+    state.memoHits++;
+    return memoized;
+  }
 
   if (state.inProgress.size >= NESTED_REF_RESOLUTION_DEPTH_LIMIT) {
     state.depthExceeded = true;
@@ -971,7 +1031,7 @@ function expandNestedEntry(
   state.inProgress.add(entryKey);
   let resolved: string;
   try {
-    resolved = substituteNestedRefsInText(innerExpr, state, true, ambientLambdaVars);
+    resolved = substituteNestedRefsInText(entry.expression, state, true, ambientLambdaVars);
   } finally {
     state.inProgress.delete(entryKey);
   }
@@ -1054,10 +1114,12 @@ function resolveNestedRefMarkers(
     // Seed the entry being expanded so the shared resolver treats a
     // self-referential mapping as terminal here exactly as it does on the
     // structured-ref path.
-    const segment = innerExprToYamlSegment(resolution.entry.expression, nestedStatusCel, context, {
-      id,
-      field: resolution.field,
-    });
+    const segment = innerExprToYamlSegment(
+      resolution.entry.expression,
+      nestedStatusCel,
+      context,
+      resolution.entry.key
+    );
     return applyKroSegmentPostfix(segment, resolution.postfix) ?? match;
   });
 }
@@ -1094,7 +1156,7 @@ function innerExprToYamlSegment(
   innerExpr: string,
   nestedStatusCel: Record<string, string>,
   context?: SerializationContext,
-  seedEntry?: NestedRefEntry
+  seedKey?: string
 ): string {
   // Recursively resolve any further nested refs the inner expression itself
   // contains (multi-level nesting).
@@ -1103,7 +1165,7 @@ function innerExprToYamlSegment(
     nestedStatusCel,
     context?.resourceIds,
     true,
-    seedEntry
+    seedKey
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
     // Marker-laden — convert to mixed-template form.
@@ -1150,7 +1212,7 @@ export function finalizeCelForKro(
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext,
   resolveKnownNestedResourceRefs = true,
-  seedEntry?: NestedRefEntry
+  seedKey?: string
 ): string {
   const resolved = normalizeCelArrayIndexPaths(
     resolveNestedCompositionRefs(
@@ -1158,7 +1220,7 @@ export function finalizeCelForKro(
       nestedStatusCel,
       context?.resourceIds,
       resolveKnownNestedResourceRefs,
-      seedEntry
+      seedKey
     )
   );
   if (resolved.includes('__KUBERNETES_REF_')) {
@@ -2223,7 +2285,7 @@ export function serializeStatusMappingsToCel(
     resolveKnownNestedResourceRefs = [...nestedCompositionIds].some((id) =>
       new RegExp(`(^|[^\\w$])${escapeRegExpLiteral(id)}\\s*\\.`).test(expr)
     ),
-    seedEntry?: NestedRefEntry
+    seedKey?: string
   ): string {
     const resolved = normalizeCelArrayIndexPaths(
       resolveNestedCompositionRefs(
@@ -2231,7 +2293,7 @@ export function serializeStatusMappingsToCel(
         normalizedNestedStatusCel,
         resourceIds,
         resolveKnownNestedResourceRefs,
-        seedEntry
+        seedKey
       )
     );
     if (resolved.includes('__KUBERNETES_REF_')) {
@@ -2269,10 +2331,12 @@ export function serializeStatusMappingsToCel(
         if (resolution !== undefined) {
           // Seed the entry we just looked up: its mapping may reference its
           // own flattened resource id, which is terminal, not re-expandable.
-          const statusField = statusFieldFromExpression(resolution.entry.expression, true, true, {
-            id: ref.resourceId,
-            field: resolution.field,
-          });
+          const statusField = statusFieldFromExpression(
+            resolution.entry.expression,
+            true,
+            true,
+            resolution.entry.key
+          );
           const withPostfix = applyKroSegmentPostfix(statusField, resolution.postfix);
           if (withPostfix !== undefined) return withPostfix;
         }
