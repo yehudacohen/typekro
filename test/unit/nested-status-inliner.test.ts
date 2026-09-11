@@ -1382,6 +1382,58 @@ describe('normalizeCelArrayIndexPaths — CEL regions vs literal template text',
   });
 });
 
+describe('normalizeCelArrayIndexPaths — marker-laden text is literal text', () => {
+  // A template literal whose interpolations coerced to `__KUBERNETES_REF_…__`
+  // markers arrives here with NO `${` — and it is not bare CEL either. It is
+  // literal text with references embedded in it, so its own dotted digits are
+  // URL paths and version suffixes, not indexes.
+
+  it('leaves a dotted version in marker-laden URL text alone', () => {
+    expect(
+      normalizeCelArrayIndexPaths(
+        'http://__KUBERNETES_REF___schema___spec.name__:8080/api/v1.2'
+      )
+    ).toBe('http://__KUBERNETES_REF___schema___spec.name__:8080/api/v1.2');
+
+    // End to end: the literal `v1.2` survives the marker conversion too.
+    expect(
+      finalizeCelForKro('http://__KUBERNETES_REF___schema___spec.name__:8080/api/v1.2', undefined)
+    ).toBe('http://${string(schema.spec.name)}:8080/api/v1.2');
+  });
+
+  it('leaves a dotted path segment after a non-schema marker alone', () => {
+    expect(
+      normalizeCelArrayIndexPaths('redis://__KUBERNETES_REF_cache_status.hostname__:6379/db.1')
+    ).toBe('redis://__KUBERNETES_REF_cache_status.hostname__:6379/db.1');
+  });
+
+  it('still indexes a dotted run inside the marker\'s OWN field path', () => {
+    // Nothing is lost by copying marker text through: the marker’s path is
+    // normalised where the marker is converted, by `markerToCelPath`, which
+    // calls this function on the bare `<resourceId>.<fieldPath>`.
+    expect(
+      finalizeCelForKro('__KUBERNETES_REF___schema___spec.workers.0.name__', undefined)
+    ).toBe('${schema.spec.workers[0].name}');
+
+    expect(
+      finalizeCelForKro('http://__KUBERNETES_REF_svc_status.addresses.0.ip__:8080/v1.2', undefined)
+    ).toBe('http://${string(svc.status.addresses[0].ip)}:8080/v1.2');
+  });
+
+  it('rewrites only the region when a text carries both markers and a region', () => {
+    expect(
+      normalizeCelArrayIndexPaths('__KUBERNETES_REF_svc_status.x__/v1.2/${a.0}')
+    ).toBe('__KUBERNETES_REF_svc_status.x__/v1.2/${a[0]}');
+  });
+
+  it('still rewrites bare CEL whole — no `${` AND no marker', () => {
+    expect(normalizeCelArrayIndexPaths('schema.spec.workers.0.name')).toBe(
+      'schema.spec.workers[0].name'
+    );
+    expect(normalizeCelArrayIndexPaths('a.0.1.b')).toBe('a[0][1].b');
+  });
+});
+
 
 describe('nested-composition status inlining — canonical mapping identity', () => {
   it('detects a cycle that turns a corner through an alias spelling', () => {

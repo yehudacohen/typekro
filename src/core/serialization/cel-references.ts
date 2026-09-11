@@ -127,6 +127,17 @@ function celTemplateRegionEnd(expr: string, start: number): number {
 }
 
 /**
+ * Does this text carry a `__KUBERNETES_REF_…__` marker?
+ *
+ * Built from the shared marker grammar — `KUBERNETES_REF_MARKER_SOURCE` in
+ * `shared/brands.ts`, the single source of truth for marker syntax — rather
+ * than from a hand-written `__KUBERNETES_REF_` prefix, so that a change to the
+ * resource-id or field-path charset reaches this test too. Deliberately NOT
+ * global: `test` on a `/g` regex carries `lastIndex` between calls.
+ */
+const CARRIES_KUBERNETES_REF_MARKER = new RegExp(KUBERNETES_REF_MARKER_SOURCE);
+
+/**
  * Apply the dotted-numeric-run rule to ONE CEL region — a `${ … }` body, or a
  * whole bare CEL expression. See {@link normalizeCelArrayIndexPaths} for the
  * rule itself and for why the quote loop below is deliberately not the shared
@@ -252,17 +263,36 @@ function rewriteCelIndexPathsInRegion(expr: string): string {
  * Each region is rewritten independently, from an empty left context, so a run
  * never chains across the literal text between two regions.
  *
- * Text with no `${` at all is not a template but a BARE CEL expression — the
- * form `getInnerCelPath` and `markerToCelPath` build, and the form the marker
- * and nested-status resolvers hand over — and is rewritten whole, as before.
- * That is also why an unconverted `__KUBERNETES_REF_…__` marker needs nothing
- * special here: its dotted digits are normalised when the marker itself is
- * converted, by {@link markerToCelPath}, which calls this function on the bare
- * `<resourceId>.<fieldPath>` path.
+ * Text with no `${` is rewritten whole only when it is GENUINELY BARE CEL, and
+ * that takes a second condition: no `__KUBERNETES_REF_…__` marker either. Bare
+ * CEL is the form `getInnerCelPath` and `markerToCelPath` build, and the form
+ * the marker and nested-status resolvers hand over.
+ *
+ * MARKER-LADEN TEXT is the other thing that arrives without a `${`: a string
+ * derived from a template literal whose interpolations coerced to markers, as
+ * in `http://__KUBERNETES_REF___schema___spec.name__:8080/api/v1.2`. That is
+ * literal text with references embedded in it, not an expression — its `v1.2`
+ * is a URL path segment — yet the whole-string branch rewrote it to `v1[2]`,
+ * the very corruption the region split above exists to prevent, arriving by the
+ * other door. So text carrying a marker is copied through untouched
+ * ({@link CARRIES_KUBERNETES_REF_MARKER}), and nothing is lost by that: a
+ * marker's OWN dotted digits are normalised when the marker itself is converted,
+ * by {@link markerToCelPath}, which calls this function on the bare
+ * `<resourceId>.<fieldPath>` path — which, carrying no marker, still takes the
+ * whole-string branch.
+ *
+ * A text may hold BOTH markers and `${ … }` regions. The region split already
+ * gets that right — regions are rewritten, the literal text between them,
+ * markers included, is copied — so the marker test guards only the whole-string
+ * branch.
  */
 export function normalizeCelArrayIndexPaths(expr: string): string {
-  // No `${` — a bare CEL expression, rewritten whole.
-  if (!expr.includes('${')) return rewriteCelIndexPathsInRegion(expr);
+  if (!expr.includes('${')) {
+    // Literal template text that merely embeds references — not an expression.
+    if (CARRIES_KUBERNETES_REF_MARKER.test(expr)) return expr;
+    // No `${` and no marker — a bare CEL expression, rewritten whole.
+    return rewriteCelIndexPathsInRegion(expr);
+  }
 
   let result = '';
   let index = 0;
