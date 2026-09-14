@@ -353,8 +353,33 @@ identifies the failure, and treat every value the submitted statement contained 
 
    — and the server frequently quotes back the text it was *given* rather than the value it
    decoded, so redacting only the decoded form leaves the credential in the message. For a
-   literal containing neither a quote nor a backslash, which is nearly all of them, the three
-   spellings are the same string and nothing changes.
+   literal containing no quote, backslash or control character, which is nearly all of them, the
+   three spellings are the same string and nothing changes.
+
+   Decoded and re-escaped forms both come from **one escape table**, so the two are guaranteed to
+   be views of the same string rather than independent guesses. It is ClickHouse's own, per
+   [the string-literal syntax][ch-string]:
+
+   | Escape | Decodes to | | Escape | Decodes to |
+   | --- | --- | --- | --- | --- |
+   | `\a` | alert (`0x07`) | | `\0` | null (`0x00`) |
+   | `\b` | backspace (`0x08`) | | `\\` | `\` |
+   | `\e` | escape (`0x1b`) | | `\'` (or `''`) | `'` |
+   | `\f` | form feed (`0x0c`) | | `\"` | `"` |
+   | `\n` | line feed (`0x0a`) | | `` \` `` | `` ` `` |
+   | `\r` | carriage return (`0x0d`) | | `\/` | `/` |
+   | `\t` | horizontal tab (`0x09`) | | `\=` | `=` |
+   | `\v` | vertical tab (`0x0b`) | | `\xHH` | the byte `HH` (two hex digits) |
+   | `\N` | nothing — reserved (`'a\Nb'` is `ab`) | | any other `\c` | `\c`, both characters |
+
+   That last row is the rule that is easy to get wrong, and the documentation is explicit:
+   *"The backslash loses its special meaning i.e. it is interpreted literally should it precede
+   characters other than the ones listed below."* So `\z` is a backslash followed by a `z` —
+   which is what lets `'Hello 100\%'` reach a `LIKE` pattern intact — while `\n` is a **newline**
+   and not the letter `n`. A decoder that dropped every backslash would extract a credential
+   containing a newline in a spelling the server never emits, leaving the real one in the message.
+
+[ch-string]: https://clickhouse.com/docs/sql-reference/syntax#string
 4. The **keyword line filter** (`password` / `secret` / `aws_secret` / `access_key` /
    `credential` / `token` → `[redacted]`) runs as a second layer, for text the statement did not
    account for.

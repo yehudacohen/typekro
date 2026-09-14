@@ -25,6 +25,7 @@ import {
   computeFingerprint,
   DEFAULT_CLICKHOUSE_PASSWORD_ENV,
   deleteClickHouseSchema,
+  escapeClickHouseString,
   extractStatementSecrets,
   MAX_RETAINED_DETAIL_CHARS,
   needsApply,
@@ -35,6 +36,7 @@ import {
   renderClickHouseCommand,
   selectExecutionPods,
   statementTargetsCluster,
+  tokenizeClickHouseSql,
 } from '../../../src/alchemy/index.js';
 import type { ClickHouseSchemaRuntimeDeps } from '../../../src/alchemy/index.js';
 import { clusterIdentity } from '../../../src/core/kubernetes/api-capability.js';
@@ -980,6 +982,117 @@ describe("ClickHouseSchema — pod selection under 'onCluster'", () => {
     expect(error).toBeInstanceOf(ClickHouseSchemaError);
     expect(error.message).toContain('clickhouse.altinity.com/chi=orders');
     expect(error.message).toContain('none were Ready');
+  });
+});
+
+describe('ClickHouseSchema — C-style escape decoding', () => {
+  /** Decode one single-quoted literal through the lexer, as redaction does. */
+  const decodeLiteral = (source: string): string => {
+    const token = tokenizeClickHouseSql(`'${source}'`)[0];
+    if (token?.kind !== 'quoted') throw new Error(`not a literal: ${source}`);
+    return token.value;
+  };
+
+  // https://clickhouse.com/docs/sql-reference/syntax#string
+  const table: ReadonlyArray<readonly [source: string, decoded: string]> = [
+    ['\\a', '\u0007'],
+    ['\\b', '\b'],
+    ['\\e', '\u001b'],
+    ['\\f', '\f'],
+    ['\\n', '\n'],
+    ['\\r', '\r'],
+    ['\\t', '\t'],
+    ['\\v', '\v'],
+    ['\\0', '\0'],
+    ['\\\\', '\\'],
+    ["\\'", "'"],
+    ['\\"', '"'],
+    ['\\`', '`'],
+    ['\\/', '/'],
+    ['\\=', '='],
+  ];
+
+  it.each(table)('decodes %j to its documented character', (source, decoded) => {
+    expect(decodeLiteral(source)).toBe(decoded);
+  });
+
+  it('decodes \\n to a NEWLINE, not to the letter n', () => {
+    // The bug this replaces turned every `\c` into `c`, so a credential containing a
+    // newline was extracted in a spelling the server never emits.
+    expect(decodeLiteral('a\\nb')).toBe('a\nb');
+    expect(decodeLiteral('a\\nb')).not.toBe('anb');
+  });
+
+  it('decodes \\xHH as an 8-bit character', () => {
+    expect(decodeLiteral('\\x41')).toBe('A');
+    expect(decodeLiteral('\\x0a')).toBe('\n');
+    expect(decodeLiteral('a\\x41b')).toBe('aAb');
+  });
+
+  it('leaves \\x literal when two hex digits do not follow', () => {
+    expect(decodeLiteral('\\xZZ')).toBe('\\xZZ');
+    expect(decodeLiteral('\\x4')).toBe('\\x4');
+  });
+
+  it('decodes \\N to nothing — it is reserved and does nothing', () => {
+    expect(decodeLiteral('a\\Nb')).toBe('ab');
+  });
+
+  it('keeps the backslash before an unlisted character, as the docs require', () => {
+    // "The backslash loses its special meaning i.e. it is interpreted literally should it
+    // precede characters other than the ones listed below." So `\%` survives into a LIKE
+    // pattern as two characters.
+    expect(decodeLiteral('Hello 100\\%')).toBe('Hello 100\\%');
+    expect(decodeLiteral('\\z')).toBe('\\z');
+  });
+
+  it('keeps a backslash that ends the statement, with nothing left to escape', () => {
+    // An unterminated literal whose last character is the backslash itself.
+    const token = tokenizeClickHouseSql("'abc\\")[0];
+    expect(token?.kind === 'quoted' ? token.value : undefined).toBe('abc\\');
+  });
+
+  it('round-trips: re-escaping a decoded value decodes back to it', () => {
+    for (const value of ['a\nb', "pa'ss", 'back\\slash', 'tab\tsep', 'plain-value', '\0\u0007']) {
+      expect(decodeLiteral(escapeClickHouseString(value))).toBe(value);
+    }
+  });
+
+  it('re-escapes with the same table the decoder reads', () => {
+    expect(escapeClickHouseString('a\nb')).toBe('a\\nb');
+    expect(escapeClickHouseString("pa'ss")).toBe("pa\\'ss");
+    expect(escapeClickHouseString('back\\slash')).toBe('back\\\\slash');
+    // Inside `'…'` these need no escape, so the source spelling is the character itself.
+    expect(escapeClickHouseString('a"b`c/d=e')).toBe('a"b`c/d=e');
+  });
+});
+
+describe('ClickHouseSchema — a credential containing a newline escape', () => {
+  // One secret, two spellings: the source `hunter2\nzx9qv-fake` and the decoded value
+  // carrying a real newline. Neither the value nor the surrounding text contains a word
+  // the keyword line filter matches, so this exercises the literal replacement alone.
+  const RAW_SOURCE = 'hunter2\\nzx9qv-fake';
+  const DECODED = 'hunter2\nzx9qv-fake';
+  const statement = `CREATE USER reporting IDENTIFIED BY '${RAW_SOURCE}'`;
+  const echoOf = (value: string) =>
+    `Code: 516. DB::Exception: Authentication failed for user reporting: ${value}`;
+
+  it('collects both the decoded value and the raw source spelling', () => {
+    const secrets = extractStatementSecrets(statement);
+    expect(secrets).toContain(DECODED);
+    expect(secrets).toContain(RAW_SOURCE);
+  });
+
+  it('redacts the secret echoed back as a REAL newline', () => {
+    const redacted = redactClickHouseOutput(echoOf(DECODED), statement);
+    expect(redacted).not.toContain(DECODED);
+    expect(redacted).toContain('Code: 516');
+  });
+
+  it('redacts the secret echoed back RAW', () => {
+    const redacted = redactClickHouseOutput(echoOf(RAW_SOURCE), statement);
+    expect(redacted).not.toContain(RAW_SOURCE);
+    expect(redacted).not.toContain(DECODED);
   });
 });
 

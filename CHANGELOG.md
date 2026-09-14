@@ -101,7 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in, longest first — the decoded value, the raw source slice between the quotes, and the
   value re-escaped both ways ClickHouse accepts (`\'` and `''`) — because a credential
   containing a quote is one secret with several spellings and the server frequently quotes
-  back the text it was given rather than the value it decoded. The keyword line filter
+  back the text it was given rather than the value it decoded. Decoding and re-escaping both
+  run off ONE table, ClickHouse's own
+  (https://clickhouse.com/docs/sql-reference/syntax#string): `\xHH`, `\N`, `\a`, `\b`, `\e`,
+  `\f`, `\n`, `\r`, `\t`, `\v`, `\0`, `\\`, `\'`, `\"`, `` \` ``, `\/`, `\=`, and for
+  anything else "the backslash loses its special meaning i.e. it is interpreted literally",
+  so `\z` stays two characters. A decoder that dropped every backslash instead would decode
+  `\n` to the letter `n`, extracting a credential containing a newline in a spelling the
+  server never emits and leaving the real one in the message. The keyword line filter
   remains as a second layer, and what survives is capped at 2 KiB so a runaway echo cannot
   be carried into Alchemy state.
 

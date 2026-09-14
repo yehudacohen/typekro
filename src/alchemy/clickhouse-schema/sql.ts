@@ -41,6 +41,108 @@ const WORD_START = /[A-Za-z_]/;
 const WORD_BODY = /[A-Za-z0-9_$]/;
 
 /**
+ * ClickHouse's C-style escape table — the SINGLE source of truth for both directions.
+ *
+ * Reading it wrong is a redaction hole, not a cosmetic bug: a decoder that turns every
+ * `\c` into `c` decodes `\n` to the letter `n`, so a credential whose value contains a
+ * newline is extracted in a spelling the server never emits, and the real decoded form
+ * survives into the retained error text. Both directions therefore come from this one
+ * table: {@link decodeEscape} reads it, {@link escapeClickHouseString} inverts it, and a
+ * raw source spelling and its decoded value round-trip.
+ *
+ * Each entry is `[<character after the backslash>, <what the server decodes it to>]`, per
+ * https://clickhouse.com/docs/sql-reference/syntax#string. Handled outside the table
+ * because neither is a single character mapping: `\xHH` (a byte, see {@link decodeEscape})
+ * and `\N` (documented as "reserved, does nothing" — `SELECT 'a\Nb'` returns `ab`, so it
+ * decodes to the empty string).
+ *
+ * @see https://clickhouse.com/docs/sql-reference/syntax#string
+ */
+const CLICKHOUSE_ESCAPES: ReadonlyArray<readonly [escape: string, decoded: string]> = [
+  ['a', ''], // alert
+  ['b', '\b'], // backspace
+  ['e', ''], // escape character
+  ['f', '\f'], // form feed
+  ['n', '\n'], // line feed
+  ['r', '\r'], // carriage return
+  ['t', '\t'], // horizontal tab
+  ['v', '\v'], // vertical tab
+  ['0', '\0'], // null character
+  ['\\', '\\'],
+  ["'", "'"], // `''` is the other spelling, resolved by the tokenizer's doubling branch
+  ['"', '"'],
+  ['`', '`'],
+  ['/', '/'],
+  ['=', '='],
+];
+
+const ESCAPE_DECODE = new Map(CLICKHOUSE_ESCAPES);
+
+/**
+ * The inverse table, restricted to the characters a single-quoted literal cannot carry
+ * verbatim: the backslash, the single quote, and the control characters the table names
+ * (every one of them is `<= 31`, which is how ClickHouse itself decides to drop the
+ * backslash). A `"`, a backtick, a `/` or an `=` needs no escape inside `'…'`, so the
+ * source spelling ClickHouse would echo for those is the character itself.
+ */
+const ESCAPE_ENCODE = new Map(
+  CLICKHOUSE_ESCAPES.filter(
+    ([, decoded]) => decoded === '\\' || decoded === "'" || decoded <= ''
+  ).map(([escape, decoded]): readonly [string, string] => [decoded, `\\${escape}`])
+);
+
+const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+
+/**
+ * Decode the one backslash escape starting at `index` (which points AT the backslash).
+ *
+ * Returns the decoded text and how many SOURCE characters it consumed, so the tokenizer
+ * can keep the raw slice and the decoded value in step.
+ *
+ * The default branch is the one the previous implementation got wrong, and the
+ * documentation is explicit about it: "The backslash loses its special meaning i.e. it is
+ * interpreted literally should it precede characters other than the ones listed below."
+ * So an unlisted `\c` decodes to BOTH characters — `\z` is a backslash and a `z`, not a
+ * `z` — which is what lets `'Hello 100\%'` reach a `LIKE` pattern intact.
+ *
+ * @see https://clickhouse.com/docs/sql-reference/syntax#string
+ */
+function decodeEscape(statement: string, index: number): { text: string; consumed: number } {
+  const next = statement[index + 1];
+  // A trailing backslash: nothing follows it to escape, so it is itself.
+  if (next === undefined) return { text: '\\', consumed: 1 };
+  if (next === 'x') {
+    // `\xHH`: an 8-bit character. Exactly two hex digits, as the server's own parser
+    // reads. Anything else is not the escape, so the backslash stays literal.
+    const hex = statement.slice(index + 2, index + 4);
+    if (HEX_PAIR.test(hex)) {
+      return { text: String.fromCharCode(Number.parseInt(hex, 16)), consumed: 4 };
+    }
+    return { text: '\\x', consumed: 2 };
+  }
+  // `\N` is reserved and does nothing: `SELECT 'a\Nb'` returns `ab`.
+  if (next === 'N') return { text: '', consumed: 2 };
+  const decoded = ESCAPE_DECODE.get(next);
+  if (decoded !== undefined) return { text: decoded, consumed: 2 };
+  return { text: `\\${next}`, consumed: 2 };
+}
+
+/**
+ * The C-style SOURCE spelling of a decoded value, inverting {@link CLICKHOUSE_ESCAPES}.
+ *
+ * `decode(escapeClickHouseString(value)) === value` for every value, which is the property
+ * redaction needs: a secret's raw and decoded spellings have to be two views of one string,
+ * or one of them survives into an error message.
+ */
+export function escapeClickHouseString(value: string): string {
+  let escaped = '';
+  for (const char of value) {
+    escaped += ESCAPE_ENCODE.get(char) ?? char;
+  }
+  return escaped;
+}
+
+/**
  * Split a statement into words, quoted values and single punctuation characters.
  *
  * Comments (`--`, `#`, `/* … *\/`) are dropped. Quoted values are returned DECODED — the
@@ -80,10 +182,12 @@ export function tokenizeClickHouseSql(statement: string): readonly ClickHouseSql
       let end = statement.length;
       while (index < statement.length) {
         const current = statement[index] as string;
-        if (current === '\\' && index + 1 < statement.length) {
-          // ClickHouse accepts C-style escapes inside quoted values.
-          value += statement[index + 1];
-          index += 2;
+        if (current === '\\') {
+          // ClickHouse accepts C-style escapes inside quoted values; the table in
+          // CLICKHOUSE_ESCAPES is what says how each one decodes.
+          const { text, consumed } = decodeEscape(statement, index);
+          value += text;
+          index += consumed;
           continue;
         }
         if (current === quote) {
@@ -220,11 +324,6 @@ const SECRET_KEYWORDS = new Set([
  */
 const MIN_SECRET_LENGTH = 3;
 
-/** `'` and `\` escaped C-style, the spelling `\'` comes from. */
-function backslashEscaped(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
-}
-
 /** `'` doubled, the spelling `''` comes from. */
 function doubleQuoteEscaped(value: string): string {
   return value.replaceAll("'", "''");
@@ -233,17 +332,27 @@ function doubleQuoteEscaped(value: string): string {
 /**
  * Every spelling of one literal that could appear in the server's output.
  *
- * A credential containing a quote or a backslash has TWO source spellings (`pa\'ss` and
- * `pa''ss`) plus the decoded value (`pa'ss`), and ClickHouse echoes back whichever one it
- * feels like — frequently the source form, since what it is complaining about is the text
- * it was given. Redacting only the decoded value therefore leaves the escaped form of the
- * secret sitting in the error. All of them are returned; for the overwhelmingly common
- * literal that contains neither character they collapse to a single string.
+ * A credential containing a quote, a backslash or a control character has TWO source
+ * spellings (`pa\'ss` and `pa''ss`) plus the decoded value (`pa'ss`), and ClickHouse echoes
+ * back whichever one it feels like — frequently the source form, since what it is
+ * complaining about is the text it was given. Redacting only the decoded value therefore
+ * leaves the escaped form of the secret sitting in the error. All of them are returned; for
+ * the overwhelmingly common literal that contains none of those characters they collapse to
+ * a single string.
+ *
+ * The re-escaped form comes from {@link escapeClickHouseString}, which inverts the very
+ * table the decoder read, so the decoded value and its C-style spelling are guaranteed to be
+ * two views of one string rather than two independently-guessed ones.
  */
 function secretForms(token: ClickHouseSqlToken | undefined): readonly string[] {
   if (token === undefined || token.kind === 'punct') return [];
   if (token.kind === 'word') return [token.value];
-  return [token.value, token.raw, backslashEscaped(token.value), doubleQuoteEscaped(token.value)];
+  return [
+    token.value,
+    token.raw,
+    escapeClickHouseString(token.value),
+    doubleQuoteEscaped(token.value),
+  ];
 }
 
 /**

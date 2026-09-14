@@ -45,6 +45,7 @@ export {
   DEFAULT_STATEMENT_TIMEOUT_MS,
   DEFAULT_WAIT_FOR_POD_TIMEOUT_MS,
   deleteClickHouseSchema,
+  escapeClickHouseString,
   extractStatementSecrets,
   KubeExecClickHouseExecutor,
   leadingKeyword,
