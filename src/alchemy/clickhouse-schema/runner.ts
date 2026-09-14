@@ -11,6 +11,7 @@ import { getComponentLogger } from '../../core/logging/index.js';
 import {
   type ClickHouseExecutor,
   type ClickHousePodSummary,
+  type ClickHouseSchemaAppliedPod,
   type ClickHouseSchemaConfig,
   ClickHouseSchemaError,
   type ClickHouseSchemaState,
@@ -168,7 +169,8 @@ function runtimeDeps(context: ClickHouseSchemaRunContext): ClickHouseSchemaRunti
  * recorded target, matches the fingerprint, and silently applies nothing there.
  *
  * The live pod SET is deliberately not compared here: it needs an API call, so
- * {@link applyClickHouseSchema} checks it separately and only under `fanout`.
+ * {@link applyClickHouseSchema} checks it separately and only under `fanout`, by NAME AND
+ * UID ({@link samePodIdentitySet}) so a same-name replacement is not invisible.
  */
 export function needsApply(
   config: ClickHouseSchemaConfig,
@@ -470,20 +472,73 @@ async function runStatement(
 export async function runStatements(
   context: ClickHouseSchemaRunContext,
   statements: readonly string[]
-): Promise<{ readonly podNames: readonly string[] }> {
+): Promise<{
+  readonly podNames: readonly string[];
+  readonly pods: readonly ClickHousePodSummary[];
+}> {
   const pods = await selectExecutionPods(context);
   for (const pod of pods) {
-    for (const [index, statement] of statements.entries()) {
-      await runStatement(context, pod.name, statement, index);
-    }
+    await runStatementsOnPod(context, pod, statements);
   }
-  return { podNames: pods.map((pod) => pod.name) };
+  return { podNames: pods.map((pod) => pod.name), pods };
 }
 
-/** Set equality over two sorted-on-write pod name lists. */
-function samePodSet(left: readonly string[], right: readonly string[]): boolean {
+/** The whole ordered list against ONE pod, in statement order. */
+async function runStatementsOnPod(
+  context: ClickHouseSchemaRunContext,
+  pod: ClickHousePodSummary,
+  statements: readonly string[]
+): Promise<void> {
+  for (const [index, statement] of statements.entries()) {
+    await runStatement(context, pod.name, statement, index);
+  }
+}
+
+/**
+ * The identity of one pod, for the set comparison: NAME AND UID.
+ *
+ * The name alone is not an identity — a StatefulSet replica that is deleted and recreated
+ * comes back as `chi-orders-0-0-0` with an empty disk and no schema — so a replacement is
+ * invisible to a set of names. `metadata.uid` is unique per pod object and never reused,
+ * which is exactly the distinction that was missing. The NUL separator keeps a name that
+ * happens to contain the delimiter from colliding with a UID.
+ */
+function podKey(pod: ClickHousePodSummary | ClickHouseSchemaAppliedPod): string {
+  return `${pod.name} ${pod.uid ?? ''}`;
+}
+
+/** What goes into state for one applied pod. */
+function appliedPod(pod: ClickHousePodSummary): ClickHouseSchemaAppliedPod {
+  return { name: pod.name, ...(pod.uid !== undefined ? { uid: pod.uid } : {}) };
+}
+
+/** Set equality over two key lists, order-insensitively. */
+function sameKeySet(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
-  return left.every((name, index) => name === right[index]);
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((key, index) => key === sortedRight[index]);
+}
+
+/**
+ * Whether the live pod set is the one the recorded state covers, by NAME AND UID.
+ *
+ * State written before UIDs were recorded has only names, and comparing a name-only record
+ * against UID-bearing live pods would re-apply on every converge forever. Such state falls
+ * back to the name comparison; the apply it eventually does rewrites state in the new
+ * shape, and the UID guarantee starts from there.
+ */
+function samePodIdentitySet(
+  live: readonly ClickHousePodSummary[],
+  previous: ClickHouseSchemaState
+): boolean {
+  if (previous.pods === undefined) {
+    return sameKeySet(
+      live.map((pod) => pod.name),
+      previous.podNames
+    );
+  }
+  return sameKeySet(live.map(podKey), previous.pods.map(podKey));
 }
 
 /**
@@ -494,11 +549,12 @@ function samePodSet(left: readonly string[], right: readonly string[]): boolean 
  * also what makes a failed converge recoverable: the fingerprint is recorded only after
  * the last statement succeeds, so a run that dies at statement 7 re-runs 0..6 next time.
  *
- * Under `fanout` the POD SET is part of what "nothing changed" means. A statement list
- * applied to two replicas is not applied to the third one that a scale-out added, and the
- * fingerprint cannot see that — so an otherwise-unchanged converge still lists pods and
- * re-applies when the set moved. That listing is one API call and no exec, so an
- * unchanged, unchanged-topology converge stays free.
+ * Under `fanout` the POD SET is part of what "nothing changed" means, and the set is
+ * compared by NAME AND UID. A statement list applied to two replicas is not applied to the
+ * third one that a scale-out added, nor to the replacement a drain put back under the same
+ * name with an empty disk, and the fingerprint cannot see either — so an otherwise-unchanged
+ * converge still lists pods and re-applies when the set moved. That listing is one API call
+ * and no exec, so an unchanged, unchanged-topology converge stays free.
  */
 export async function applyClickHouseSchema(
   context: ClickHouseSchemaRunContext,
@@ -509,11 +565,11 @@ export async function applyClickHouseSchema(
 
   if (previous && !needsApply(config, previous, context.clusterId)) {
     if (config.execution.mode !== 'fanout') return previous;
-    const liveNames = (await selectExecutionPods(context)).map((pod) => pod.name);
-    if (samePodSet(liveNames, previous.podNames)) return previous;
+    const live = await selectExecutionPods(context);
+    if (samePodIdentitySet(live, previous)) return previous;
   }
 
-  const { podNames } = await runStatements(context, config.statements);
+  const { pods } = await runStatements(context, config.statements);
 
   if (config.execution.mode === 'fanout') {
     // THE SCALE RACE. Selection saw one matching set; a replica can be added, replaced or
@@ -521,15 +577,18 @@ export async function applyClickHouseSchema(
     // necessarily the set that was applied to. What goes into state is always the set the
     // statements ACTUALLY reached — recording the live one instead would claim coverage of
     // a pod nothing ran on, and that claim is never revisited because it makes the two sets
-    // agree. Re-listing here makes the divergence explicit and observable; `needsApply`
-    // does the rest, because the recorded set no longer matches the live one and the next
-    // converge re-applies the whole list.
-    const live = (await listMatchingPods(context)).map((pod) => pod.name);
-    if (!samePodSet(live, podNames)) {
+    // agree. Re-listing here makes the divergence explicit and observable; the recorded set
+    // no longer matches the live one, so the next converge re-applies the whole list.
+    const live = await listMatchingPods(context);
+    if (!sameKeySet(live.map(podKey), pods.map(podKey))) {
       getComponentLogger('alchemy-clickhouse-schema').warn(
         'ClickHouse server pod set changed while the schema was being applied; recording the ' +
           'pods the statements actually reached, so the next converge re-applies',
-        { resourceId: context.resourceId, appliedTo: podNames, live }
+        {
+          resourceId: context.resourceId,
+          appliedTo: pods.map((pod) => pod.name),
+          live: live.map((pod) => pod.name),
+        }
       );
     }
   }
@@ -540,7 +599,8 @@ export async function applyClickHouseSchema(
     statementCount: config.statements.length,
     database: resolveDatabase(config),
     target: config.target,
-    podNames,
+    podNames: pods.map((pod) => pod.name),
+    pods: pods.map(appliedPod),
     ...(context.clusterId !== undefined ? { clusterId: context.clusterId } : {}),
   };
 }

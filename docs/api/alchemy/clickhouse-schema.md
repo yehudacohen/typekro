@@ -60,7 +60,7 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`, `clusterId`. |
+| **create** | Wait for the server pods matching `target.podSelector` to be Ready — *all* of them under `fanout`, *one* under `onCluster` — then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `pods`, `podNames`, `clusterId`. |
 | **update** | If the fingerprint, the target, the cluster identity *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
@@ -121,12 +121,30 @@ quietly skipping them. Narrow the selector.
 
 #### The recorded pod set
 
-The pod set is recorded in `podNames`, and an otherwise-unchanged converge compares the live set
-against it. A **scale-out** gets the schema; so does a **replaced pod**. That check costs one
-`list pods` call and no exec, so an unchanged schema on an unchanged topology is still free.
+The pod set is recorded in `pods` as `{ name, uid }` pairs, and an otherwise-unchanged converge
+compares the live set against it. That check costs one `list pods` call and no exec, so an
+unchanged schema on an unchanged topology is still free.
 
-`podNames` is always the set the statements **actually reached**, never the set that happened to
-be live when the run finished. A replica that appears *while* the statements are running is not
+**The UID is the identity, not the name.** A StatefulSet replica that is deleted and recreated —
+a node drain, a CHI template change, a `kubectl delete pod` — comes back as `chi-orders-0-0-0`
+again, with a fresh empty disk and no schema. A recorded set of *names* cannot tell that apart
+from the pod that was there before, so the advertised replacement detection could not see it.
+`metadata.uid` can: it identifies the pod **object**, and is never reused. Precisely:
+
+| What changed | Re-applies? | Why |
+| --- | --- | --- |
+| A pod was added (scale-out) | yes | the new replica has no schema |
+| A pod was removed | yes | the recorded set no longer matches what is live |
+| Same name, **new UID** | yes | a different pod object — a replacement, with a new disk |
+| Same name, **same UID** | no | the pod object survived, so its PersistentVolume did (and the schema with it), or the `Replicated`/`ON CLUSTER` metadata in Keeper did. A container restart is not a reason to re-run the whole ordered list. |
+
+`podNames` is kept alongside, carrying the same pods in the same order, for compatibility and for
+reading state at a glance. State written before UIDs were recorded has no `pods` field at all;
+the comparison falls back to names for it, and the first converge that applies rewrites state in
+the new shape.
+
+`pods` is always the set the statements **actually reached**, never the set that happened to be
+live when the run finished. A replica that appears *while* the statements are running is not
 claimed as covered: the run re-lists afterwards, records what it applied to, and the next
 converge re-applies because the recorded set no longer matches the live one.
 
@@ -499,7 +517,8 @@ clause for you — and raise `settings.distributed_ddl_task_timeout` accordingly
   statementCount: number;
   database: string;
   target: { namespace: string; podSelector: Record<string, string>; container?: string };
-  podNames: string[];     // sorted; every pod the last apply actually executed against
+  podNames: string[];     // sorted names, kept for compatibility; same pods as `pods`
+  pods?: { name: string; uid?: string }[];  // sorted; the identity the pod-set check compares
   clusterId?: string;     // credential-free identity of the cluster it reached
 }
 ```

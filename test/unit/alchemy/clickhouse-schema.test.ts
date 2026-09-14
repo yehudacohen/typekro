@@ -43,8 +43,9 @@ import { clusterIdentity } from '../../../src/core/kubernetes/api-capability.js'
 
 const RESOURCE_ID = 'orders-schema';
 
-const readyPod = (name: string): ClickHousePodSummary => ({
+const readyPod = (name: string, uid?: string): ClickHousePodSummary => ({
   name,
+  ...(uid === undefined ? {} : { uid }),
   ready: true,
   containers: ['clickhouse'],
   phase: 'Running',
@@ -493,6 +494,72 @@ describe("ClickHouseSchema — execution.mode 'fanout'", () => {
 
     expect(execCalls).toHaveLength(0);
     expect(listCalls).toHaveLength(1);
+    expect(again).toBe(previous);
+  });
+});
+
+describe('ClickHouseSchema — pod identity (name + UID)', () => {
+  const config = () => validConfig();
+  /** State as the previous converge would have written it: pairs, not bare names. */
+  const appliedTo = (pods: readonly ClickHousePodSummary[]) =>
+    stateFor(config(), {
+      podNames: pods.map((pod) => pod.name),
+      pods: pods.map((pod) => ({ name: pod.name, ...(pod.uid ? { uid: pod.uid } : {}) })),
+    });
+
+  it('records a { name, uid } pair per applied pod, and keeps podNames alongside', async () => {
+    const { executor } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-a'), readyPod('chi-orders-0-1-0', 'uid-b')]],
+    });
+    const state = await applyClickHouseSchema(context(executor, config()), undefined);
+
+    expect(state.pods).toEqual([
+      { name: 'chi-orders-0-0-0', uid: 'uid-a' },
+      { name: 'chi-orders-0-1-0', uid: 'uid-b' },
+    ]);
+    expect(state.podNames).toEqual(['chi-orders-0-0-0', 'chi-orders-0-1-0']);
+  });
+
+  it('RE-APPLIES to a pod with the same name and a NEW uid — it is a replacement', async () => {
+    // The case a name-only set cannot see: a drained or recreated StatefulSet replica comes
+    // back as `chi-orders-0-0-0` with an empty disk and no schema.
+    const previous = appliedTo([readyPod('chi-orders-0-0-0', 'uid-before')]);
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-after')]],
+    });
+
+    const state = await applyClickHouseSchema(context(executor, config()), previous);
+
+    expect(execCalls).toHaveLength(2);
+    expect(execCalls.every((call) => call.podName === 'chi-orders-0-0-0')).toBe(true);
+    expect(state.pods).toEqual([{ name: 'chi-orders-0-0-0', uid: 'uid-after' }]);
+  });
+
+  it('does NOT re-apply when the name AND uid are both unchanged', async () => {
+    // Same pod object: its disk (and so its schema) persisted, or the replicated metadata
+    // did. A container restart is not a reason to re-run the whole ordered list.
+    const previous = appliedTo([readyPod('chi-orders-0-0-0', 'uid-a')]);
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-a')]],
+    });
+
+    const again = await applyClickHouseSchema(context(executor, config()), previous);
+
+    expect(execCalls).toHaveLength(0);
+    expect(again).toBe(previous);
+  });
+
+  it('falls back to names for state written before UIDs were recorded', async () => {
+    // `pods` absent: comparing a name-only record against UID-bearing live pods would
+    // otherwise re-apply on every converge forever.
+    const previous = stateFor(config(), { podNames: ['chi-orders-0-0-0'] });
+    const { executor, execCalls } = fakeExecutor({
+      podPages: [[readyPod('chi-orders-0-0-0', 'uid-a')]],
+    });
+
+    const again = await applyClickHouseSchema(context(executor, config()), previous);
+
+    expect(execCalls).toHaveLength(0);
     expect(again).toBe(previous);
   });
 });

@@ -35,19 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multi-replica deployment would report success while the other servers had no schema,
   and then no-op forever on the fingerprint. `{ mode: 'fanout' }` (the default) runs the
   ordered list against every server pod matching the selector and records the pod set in
-  state, so a scale-out or a replaced pod re-applies even though the statements did not
-  change; a single-replica installation is a one-pod fanout, so the default is also
-  correct there. `fanout` is ALL OR NOTHING: the whole matching set is enumerated first
+  state as `{ name, uid }` pairs, so a scale-out, a removed replica, or a pod REPLACED
+  under the same name re-applies even though the statements did not change; a
+  single-replica installation is a one-pod fanout, so the default is also correct there.
+  The UID is the identity, not the name: a StatefulSet replica that is deleted and
+  recreated (a drain, a template change) comes back under the same name with an empty
+  disk, which a recorded set of names cannot tell apart from the pod that was there
+  before. `metadata.uid` identifies the pod OBJECT and is never reused, so a new UID
+  re-applies and an unchanged one does not — correctly, because a pod object that survived
+  kept its PersistentVolume (and the schema with it) or its replicated metadata in Keeper.
+  `podNames` is kept alongside `pods` for compatibility. `fanout` is ALL OR NOTHING: the whole matching set is enumerated first
   (pods carrying a `deletionTimestamp`, and pods in a terminal phase, are excluded — they
   can never become Ready again), every pod in it must become Ready within
   `waitForPod.timeoutMs` before a single statement is executed, and a matching pod without
   the requested container fails the converge immediately, naming it. A StatefulSet
   mid-rollout therefore makes the resource wait — and then fail — rather than fingerprint
   an apply that only reached one replica; on a large cluster where some replica is almost
-  always rolling, `onCluster` is the mode to use. `podNames` always records the set the
+  always rolling, `onCluster` is the mode to use. The recorded set is always the one the
   statements ACTUALLY reached rather than the set that was live when the run finished, so
-  a replica that appears mid-apply is never claimed as covered and the next converge
-  re-applies. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
+  a replica that appears mid-apply is never claimed as covered. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
   statement to carry an explicit `ON CLUSTER <cluster>` clause naming that cluster —
   matched with a ClickHouse-aware lexer, so quoting, case and string literals are handled.
   Nothing is inferred from a statement's shape: cluster-wideness is a property of the DDL

@@ -16,6 +16,7 @@ export {
   type ClickHouseExecutor,
   type ClickHousePodSummary,
   ClickHouseSchema,
+  type ClickHouseSchemaAppliedPod,
   type ClickHouseSchemaClient,
   ClickHouseSchemaClientSchema,
   type ClickHouseSchemaConfig,

@@ -82,9 +82,13 @@ export class KubeExecClickHouseExecutor implements ClickHouseExecutor {
       const ready = (pod.status?.conditions ?? []).some(
         (condition) => condition.type === 'Ready' && condition.status === 'True'
       );
+      // The UID identifies the pod OBJECT, which is what separates "the replica I applied
+      // to" from "its same-named replacement" after a drain or a template change.
+      const uid = pod.metadata?.uid;
       return [
         {
           name,
+          ...(uid !== undefined ? { uid } : {}),
           ready,
           containers: (pod.spec?.containers ?? []).flatMap((c) => (c.name ? [c.name] : [])),
           ...(pod.status?.phase !== undefined ? { phase: pod.status.phase } : {}),

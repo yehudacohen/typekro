@@ -293,6 +293,37 @@ export type ClickHouseSchemaProps = ClickHouseSchemaConfigInput & ClickHouseSche
 export type ClickHouseSchemaResourceProps = ClickHouseSchemaConfig & ClickHouseSchemaNonSchemaProps;
 
 /**
+ * One pod an apply executed against, identified by NAME AND UID.
+ *
+ * The name alone is not an identity. A StatefulSet replica that is deleted and recreated
+ * — a node drain, a CHI template change, a `kubectl delete pod` — comes back as
+ * `chi-orders-0-0-0` again, with a fresh empty disk and no schema, and a recorded set of
+ * names cannot tell that apart from the pod that was there before. `metadata.uid` can: it
+ * is unique per pod OBJECT and never reused.
+ *
+ * The guarantee this buys, precisely:
+ *
+ * - a pod whose UID CHANGED is a different pod object — a replacement — and the statements
+ *   re-apply to it;
+ * - a pod that keeps its UID does NOT re-apply, even after a container restart or a server
+ *   crash-loop, and that is correct: the pod object survived, so either its PersistentVolume
+ *   survived with it (and the schema with that) or the `Replicated`/`ON CLUSTER` metadata in
+ *   Keeper did. Re-running the whole ordered list on every container restart would be churn,
+ *   not safety.
+ */
+export interface ClickHouseSchemaAppliedPod {
+  readonly name: string;
+  /**
+   * `metadata.uid`.
+   *
+   * `undefined` only when the transport did not report one — an injected executor whose pod
+   * summaries omit it. An entry with no UID compares by name alone, which is exactly the
+   * pre-UID behaviour, so nothing silently gains a guarantee it cannot keep.
+   */
+  readonly uid?: string;
+}
+
+/**
  * Persisted state / resource outputs.
  *
  * `fingerprint` is what makes the resource diffable: an unchanged fingerprint against an
@@ -309,18 +340,30 @@ export interface ClickHouseSchemaState {
   /** Where the statements ran, so a target change is visible in state and forces a re-apply. */
   readonly target: ClickHouseSchemaTarget;
   /**
-   * Sorted names of EVERY pod the last apply executed against.
+   * Sorted NAMES of every pod the last apply executed against.
    *
-   * Load-bearing under `execution.mode: 'fanout'`, not informational: a converge compares
-   * the live matching pod set against this one, so a scale-out or a replaced pod re-applies
-   * the statements even though the fingerprint is unchanged. Under `onCluster` it records
-   * the single initiating pod.
-   *
-   * It is always the set the statements ACTUALLY reached, never the set that was live when
-   * the run finished — a topology that moved mid-apply therefore leaves the two differing,
-   * which is exactly what makes the next converge re-apply.
+   * Retained for compatibility and for reading state at a glance; {@link pods} is the
+   * load-bearing field and carries the same pods in the same order. A name-only set cannot
+   * see a same-name replacement, which is why the comparison moved.
    */
   readonly podNames: readonly string[];
+  /**
+   * EVERY pod the last apply executed against, as `{ name, uid }` pairs, sorted by name.
+   *
+   * Load-bearing under `execution.mode: 'fanout'`, not informational: a converge compares
+   * the live matching pod set against this one by name AND UID, so a scale-out, a removed
+   * replica, or a pod REPLACED under the same name re-applies the statements even though
+   * the fingerprint is unchanged. See {@link ClickHouseSchemaAppliedPod} for exactly what
+   * that guarantees. Under `onCluster` it records the single initiating pod.
+   *
+   * It is always the set the statements ACTUALLY reached — the reconcile loop keeps going
+   * until a re-list shows no uncovered pod, and fails rather than record a set that does
+   * not cover what is live.
+   *
+   * `undefined` in state written before UIDs were recorded; the comparison then falls back
+   * to {@link podNames}, and the first converge to run re-writes state in the new shape.
+   */
+  readonly pods?: readonly ClickHouseSchemaAppliedPod[];
   /**
    * Credential-free identity of the cluster the statements were applied to — sha256 over
    * the current context's cluster name, server URL and CA material, the same shape the
@@ -356,6 +399,15 @@ export interface ClickHouseExecResult {
 /** A candidate server pod, reduced to what pod selection needs. */
 export interface ClickHousePodSummary {
   readonly name: string;
+  /**
+   * `metadata.uid` — the identity of the pod OBJECT, unique and never reused.
+   *
+   * What makes a same-name replacement visible: a StatefulSet replica that is deleted and
+   * recreated keeps its name and comes back with an empty disk, so a set of names alone
+   * cannot tell "the pod I applied to" from "its replacement". See
+   * {@link ClickHouseSchemaAppliedPod}. `undefined` when the transport did not report one.
+   */
+  readonly uid?: string;
   readonly ready: boolean;
   readonly containers: readonly string[];
   /**
