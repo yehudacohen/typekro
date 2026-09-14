@@ -1,9 +1,33 @@
 import { describe, expect, it } from 'bun:test';
 import { cnpgHelmRepository, cnpgHelmRelease } from '../../../src/factories/cnpg/resources/helm.js';
+import { cnpgBootstrap } from '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js';
 import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+  type ValuesMergeExpression,
+} from '../../../src/core/aspects/values-merge.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import {
+  type CnpgHelmValues,
+  type CnpgMappedHelmValues,
   mapCnpgConfigToHelmValues,
   getCnpgHelmValueWarnings,
 } from '../../../src/factories/cnpg/utils/helm-values-mapper.js';
+
+/**
+ * Narrow the mapper result to plain chart values.
+ *
+ * Every case below passes CONCRETE config, so the mapper deep-merges at build
+ * time and never produces a runtime values-merge node. A reference-valued
+ * `customValues` takes the merge path instead — covered by the KRO
+ * serialization tests, which assert the emitted CEL.
+ */
+function plainValues(result: CnpgMappedHelmValues): CnpgHelmValues {
+  if (isValuesMergeExpression(result)) {
+    throw new Error('expected plain chart values, got a runtime values-merge node');
+  }
+  return result;
+}
 
 describe('CNPG Helm Resources', () => {
   describe('cnpgHelmRepository', () => {
@@ -83,6 +107,46 @@ describe('CNPG Helm Resources', () => {
       expect(release.readinessEvaluator).toBeDefined();
     });
 
+    /**
+     * The chart default must survive whatever shape the caller's values
+     * arrive in. A reference or a merge node whose base is a reference cannot
+     * be merged now, so the default becomes the BASE of a runtime merge node
+     * and KRO layers the instance's overrides on top — it is never dropped.
+     */
+    it('keeps the CRD default when the values are a whole-object reference', () => {
+      const ref = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.customValues',
+      } as unknown as Record<string, unknown>;
+
+      const release = cnpgHelmRelease({ name: 'cnpg', values: ref });
+      const values = release.spec.values as unknown;
+      expect(isValuesMergeExpression(values)).toBe(true);
+      expect((values as ValuesMergeExpression).base).toEqual({ crds: { create: true } });
+      expect((values as ValuesMergeExpression).overlays).toEqual([ref]);
+    });
+
+    it('keeps the CRD default when the values are a merge node with a reference base', () => {
+      const ref = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: '__schema__',
+        fieldPath: 'spec.customValues',
+      } as unknown as Record<string, unknown>;
+
+      const release = cnpgHelmRelease({
+        name: 'cnpg',
+        values: mergeValuesExpression(ref, { replicaCount: 2 }) as unknown as Record<
+          string,
+          unknown
+        >,
+      });
+      const values = release.spec.values as unknown;
+      expect(isValuesMergeExpression(values)).toBe(true);
+      expect((values as ValuesMergeExpression).base).toEqual({ crds: { create: true } });
+      expect((values as ValuesMergeExpression).overlays).toEqual([ref, { replicaCount: 2 }]);
+    });
+
     it('should allow overriding version and namespace', () => {
       const release = cnpgHelmRelease({
         name: 'cnpg-custom',
@@ -98,59 +162,59 @@ describe('CNPG Helm Resources', () => {
 describe('CNPG Helm Values Mapper', () => {
   describe('mapCnpgConfigToHelmValues', () => {
     it('should return empty object for minimal config', () => {
-      const values = mapCnpgConfigToHelmValues({ name: 'cnpg' });
+      const values = plainValues(mapCnpgConfigToHelmValues({ name: 'cnpg' }));
       expect(values.crds).toEqual({ create: true });
     });
 
     it('should map replicaCount', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         replicaCount: 3,
-      });
+      }));
       expect(values.replicaCount).toBe(3);
     });
 
     it('should map resources', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         resources: {
           requests: { cpu: '100m', memory: '128Mi' },
           limits: { cpu: '500m', memory: '512Mi' },
         },
-      });
+      }));
       expect(values.resources?.requests?.cpu).toBe('100m');
       expect(values.resources?.limits?.memory).toBe('512Mi');
     });
 
     it('should map monitoring', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         monitoring: { enabled: true },
-      });
+      }));
       expect(values.monitoring?.podMonitorEnabled).toBe(true);
     });
 
     it('should set installCRDs to false when specified', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         installCRDs: false,
-      });
+      }));
       expect(values.crds?.create).toBe(false);
     });
 
     it('should spread custom values last', () => {
-      const values = mapCnpgConfigToHelmValues({
+      const values = plainValues(mapCnpgConfigToHelmValues({
         name: 'cnpg',
         customValues: {
           nodeSelector: { 'kubernetes.io/os': 'linux' },
         },
-      });
+      }));
       expect(values.nodeSelector).toEqual({ 'kubernetes.io/os': 'linux' });
     });
 
     it('should remove undefined values', () => {
       // Test that the mapper doesn't include fields that weren't set
-      const values = mapCnpgConfigToHelmValues({ name: 'cnpg' });
+      const values = plainValues(mapCnpgConfigToHelmValues({ name: 'cnpg' }));
       expect('replicaCount' in values).toBe(false);
       expect('resources' in values).toBe(false);
     });
@@ -189,5 +253,26 @@ describe('CNPG Helm Values Mapper', () => {
       });
       expect(warnings).toEqual([]);
     });
+  });
+});
+
+/**
+ * End of the chain: whatever shape the defaults took inside the factory, the
+ * RGD KRO actually receives has to carry them. `customValues` is a whole-object
+ * schema reference in KRO mode, so the chart values compile to a runtime
+ * map-merge and the `crds.create` default has to appear inside it as the
+ * fallback the override is layered over.
+ */
+describe('CNPG bootstrap RGD', () => {
+  it('emits the CRD default underneath the per-instance customValues merge', () => {
+    const yaml = cnpgBootstrap.toYaml();
+    const values = yaml.slice(yaml.indexOf('values:'));
+
+    expect(values).toContain('schema.spec.customValues');
+    expect(values).toContain('"crds"');
+    expect(values).toContain('"create"');
+    // The default is the fallback, not an override: the instance's own value
+    // for `crds.create` wins when it supplies one.
+    expect(values).toMatch(/"create":\s*"create" in .+ : true/);
   });
 });

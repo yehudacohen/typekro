@@ -184,6 +184,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allowLiteralStatus: false` now on compositions you want held to projection.
   Direct mode is unaffected: it assembles status locally, with no reconciler, so
   both shapes are legitimate there.
+- KRO-mode serialization now fails when a runtime `schema.spec.*` value decided
+  build-time structure — which resources exist, how long a list is, or what an
+  object's keys are called. A ResourceGraphDefinition is fixed at build time, so
+  compositions that branched on a spec value, enumerated a map-typed spec field,
+  or read `.length` off a spec collection previously emitted a well-formed graph
+  that silently encoded the build-time guess for every instance. The diagnostic
+  names the resource, the `spec.<path>`, what the graph actually encodes, and the
+  two legitimate shapes: make it a build-time factory option, or keep the
+  structure fixed and pass the spec value as a plain field. Detection covers
+  spec-derived object keys and resource ids, build-time enumeration of map-typed
+  fields, collections collapsed to a single element outside a `forEach`,
+  predicates that reach the spec only through a local binding, `switch` on a spec
+  discriminant, and `.length` reads outside status expressions. Control flow
+  TypeKro already compiles — `if (spec.x)`, `if (spec.x === 'y')` and
+  `spec.items.map(...)` — is unaffected, as are all value positions.
+  `allowStructuralSpecDependence: true` in the composition options downgrades the
+  error to a warning naming every path, for migrating an existing composition;
+  `TYPEKRO_STRUCTURAL_SPEC=strict` re-enables it everywhere to audit a repository.
 
 ### Changed
 
@@ -310,6 +328,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself, 429, 5xx and transport failures keep polling, so a misconfigured
   reference no longer spends the whole read budget before reporting a generic
   timeout.
+- The CloudNativePG bootstrap no longer drops an instance's `customValues`. The
+  Helm values mapper enumerated the map-typed spec field at build time, so the
+  emitted RGD carried a single placeholder key instead of the instance's chart
+  overrides; it now routes a reference through the graph-aware runtime values
+  merge, as the ClickHouse operator bootstrap already did.
 - Public Discord links now use the current community invitation.
 - TypeKro's frozen and published dependency graphs now pin `js-yaml` 4.3.1
   and `angular-expressions` 1.5.2 so both runtime dependencies include their

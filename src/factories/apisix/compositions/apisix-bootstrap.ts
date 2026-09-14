@@ -324,6 +324,16 @@ function createApisixBootstrap(requireDefinitionCredentials = false) {
         ports: gatewayServicePorts,
       },
     };
+  },
+  {
+    // KNOWN structural spec-dependence (issue #190): `spec.customValues` is a
+    // map-typed field spread into the Helm values at build time, so the RGD
+    // carries one `__typekroSchemaKey` placeholder and the instance's real
+    // overrides are dropped. The fix is the graph-aware runtime values merge
+    // the ClickHouse operator bootstrap uses, but this composition mutates the
+    // mapped values afterwards (`helmValues.service = ...`), which a merge node
+    // cannot carry. Warn until the mapper is restructured.
+    allowStructuralSpecDependence: true,
   }
   );
 }

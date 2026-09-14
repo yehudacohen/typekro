@@ -7,6 +7,12 @@
  * @see https://cloudnative-pg.github.io/charts
  */
 
+import {
+  isValuesMergeExpression,
+  mergeValuesExpression,
+  type ValuesMergeExpression,
+} from '../../../core/aspects/values-merge.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import type { CnpgBootstrapConfig } from '../types.js';
 
 /** Helm values structure for the cloudnative-pg chart. */
@@ -46,12 +52,29 @@ export interface CnpgHelmValues {
 }
 
 /**
+ * Mapper result: plain values, or a graph-aware runtime merge when
+ * `customValues` arrives as a schema reference / CEL expression (KRO then
+ * merges the override map into the mapped values at reconcile time).
+ */
+export type CnpgMappedHelmValues = CnpgHelmValues | ValuesMergeExpression;
+
+/**
  * Map CnpgBootstrapConfig to Helm chart values.
  *
+ * `customValues` merges LAST so user overrides always win:
+ * - concrete object → deep-merged at build time (works in both modes);
+ * - schema reference / CEL expression → wrapped in the graph-aware runtime
+ *   values merge, which the serializer compiles to a KRO runtime map-merge.
+ *   Enumerating the reference here instead (`Object.assign(values, ref)`) asks
+ *   the schema proxy for keys that only exist per instance, so the RGD carried
+ *   one `__typekroSchemaKey` placeholder and the instance's real overrides were
+ *   dropped (issue #190).
+ *
  * @param config - Resolved CNPG bootstrap configuration with defaults applied
- * @returns Helm values object compatible with the cloudnative-pg chart
+ * @returns Helm values compatible with the cloudnative-pg chart, or a runtime
+ *   merge node when the overrides are only known per instance
  */
-export function mapCnpgConfigToHelmValues(config: CnpgBootstrapConfig): CnpgHelmValues {
+export function mapCnpgConfigToHelmValues(config: CnpgBootstrapConfig): CnpgMappedHelmValues {
   const values: CnpgHelmValues = {};
 
   if (config.replicaCount !== undefined) {
@@ -72,9 +95,17 @@ export function mapCnpgConfigToHelmValues(config: CnpgBootstrapConfig): CnpgHelm
     create: config.installCRDs !== false,
   };
 
-  // Spread custom values last for user overrides
-  if (config.customValues) {
-    Object.assign(values, config.customValues);
+  // Merge custom values last for user overrides.
+  const customValues = config.customValues;
+  if (
+    isKubernetesRef(customValues) ||
+    isCelExpression(customValues) ||
+    isValuesMergeExpression(customValues)
+  ) {
+    return mergeValuesExpression(removeUndefinedValues(values), customValues);
+  }
+  if (customValues) {
+    Object.assign(values, customValues);
   }
 
   return removeUndefinedValues(values);
