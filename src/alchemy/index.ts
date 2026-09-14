@@ -7,6 +7,47 @@
  * Uses dynamic resource registration to avoid "Resource already exists" errors.
  */
 
+// ClickHouse schema management: converge-time DDL applied through `pods/exec`.
+export {
+  applyClickHouseSchema,
+  CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+  type ClickHouseExecCommand,
+  type ClickHouseExecResult,
+  type ClickHouseExecutor,
+  type ClickHousePodSummary,
+  ClickHouseSchema,
+  type ClickHouseSchemaClient,
+  ClickHouseSchemaClientSchema,
+  type ClickHouseSchemaConfig,
+  type ClickHouseSchemaConfigInput,
+  ClickHouseSchemaConfigSchema,
+  ClickHouseSchemaError,
+  type ClickHouseSchemaProps,
+  type ClickHouseSchemaR,
+  type ClickHouseSchemaResourceProps,
+  type ClickHouseSchemaRuntimeDeps,
+  type ClickHouseSchemaState,
+  type ClickHouseSchemaTarget,
+  ClickHouseSchemaTargetSchema,
+  clickHouseSchema,
+  clickHouseSchemaProvider,
+  computeFingerprint,
+  DEFAULT_CLICKHOUSE_CONTAINER,
+  DEFAULT_CLICKHOUSE_DATABASE,
+  DEFAULT_CLICKHOUSE_PASSWORD_ENV,
+  DEFAULT_CLICKHOUSE_PORT,
+  DEFAULT_CLICKHOUSE_USER,
+  DEFAULT_STATEMENT_TIMEOUT_MS,
+  DEFAULT_WAIT_FOR_POD_TIMEOUT_MS,
+  deleteClickHouseSchema,
+  KubeExecClickHouseExecutor,
+  needsApply,
+  parseClickHouseErrorCode,
+  redactClickHouseText,
+  renderClickHouseCommand,
+  runStatements,
+  selectReadyPod,
+} from './clickhouse-schema/index.js';
 // Deployer implementations
 export { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 export type { AlchemyPromise, AlchemyResolutionContext, AlchemyResource } from './resolver.js';
