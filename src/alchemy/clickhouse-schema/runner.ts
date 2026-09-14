@@ -517,7 +517,7 @@ async function runStatementsOnPod(
  * happens to contain the delimiter from colliding with a UID.
  */
 function podKey(pod: ClickHousePodSummary | ClickHouseSchemaAppliedPod): string {
-  return `${pod.name} ${pod.uid ?? ''}`;
+  return `${pod.name}\u0000${pod.uid ?? ''}`;
 }
 
 /** What goes into state for one applied pod. */

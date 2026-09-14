@@ -59,9 +59,9 @@ const WORD_BODY = /[A-Za-z0-9_$]/;
  * @see https://clickhouse.com/docs/sql-reference/syntax#string
  */
 const CLICKHOUSE_ESCAPES: ReadonlyArray<readonly [escape: string, decoded: string]> = [
-  ['a', ''], // alert
+  ['a', '\x07'], // alert
   ['b', '\b'], // backspace
-  ['e', ''], // escape character
+  ['e', '\x1b'], // escape character
   ['f', '\f'], // form feed
   ['n', '\n'], // line feed
   ['r', '\r'], // carriage return
@@ -87,7 +87,7 @@ const ESCAPE_DECODE = new Map(CLICKHOUSE_ESCAPES);
  */
 const ESCAPE_ENCODE = new Map(
   CLICKHOUSE_ESCAPES.filter(
-    ([, decoded]) => decoded === '\\' || decoded === "'" || decoded <= ''
+    ([, decoded]) => decoded === '\\' || decoded === "'" || decoded <= '\x1f'
   ).map(([escape, decoded]): readonly [string, string] => [decoded, `\\${escape}`])
 );
 
