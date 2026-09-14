@@ -64,6 +64,24 @@ describe('KRO string pattern serialization', () => {
     );
   });
 
+  it('keeps the KRO constraint when a factory configures a custom message', () => {
+    // ArkType serializes a constraint carrying `.configure({ message })` as
+    // `{ rule, meta }` rather than as the bare rule. Reading the field without
+    // unwrapping that silently DROPS the constraint, so a factory explaining
+    // its limit to the caller would stop enforcing that limit at admission —
+    // the one place the explanation cannot reach.
+    const schema = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and(
+      type.string.atMostLength(46).configure({ message: 'at most 46 characters, because a Pod name reserves 17' }),
+    );
+
+    expect(rgd(schema)).toContain(
+      'name: string | maxLength=46 pattern="^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"'
+    );
+    expect(String(schema('a'.repeat(47)))).toBe(
+      'at most 46 characters, because a Pod name reserves 17'
+    );
+  });
+
   it('preserves constraints on array elements and on the array itself', () => {
     const schema = type({ names: 'string > 0[] > 0' });
 

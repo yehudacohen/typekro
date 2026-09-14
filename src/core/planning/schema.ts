@@ -1,4 +1,5 @@
 import { TypeKroError } from '../errors.js';
+import { arkConstraintRule } from '../serialization/arktype-ast.js';
 
 import { canonicalDigest, canonicalStringify } from './canonical.js';
 import type {
@@ -144,7 +145,7 @@ function lowerSchemaNode(value: unknown, path: string, state: SchemaLoweringStat
     };
   }
 
-  const domain = Reflect.get(value, 'domain');
+  const domain = arkConstraintRule(Reflect.get(value, 'domain'));
   if (domain === 'object') {
     const properties = [
       ...schemaProperties(Reflect.get(value, 'required'), true, `${path}.required`, state),
@@ -165,8 +166,11 @@ function lowerSchemaNode(value: unknown, path: string, state: SchemaLoweringStat
   if (domain === 'string' || domain === 'number' || domain === 'boolean') {
     const constraints: Record<string, SchemaConstraintValue> = {};
     for (const key of Object.keys(value).sort()) {
-      if (key === 'domain') continue;
-      const constraint = Reflect.get(value, key);
+      // `meta` is the custom error message a schema attaches for humans, not a
+      // constraint on the value. It carries no planning semantics, and the
+      // rules it decorates are unwrapped below.
+      if (key === 'domain' || key === 'meta') continue;
+      const constraint = arkConstraintRule(Reflect.get(value, key));
       if (portableConstraintValue(constraint)) {
         constraints[key] = constraint;
       } else {

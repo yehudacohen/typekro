@@ -96,6 +96,7 @@ export default withMermaid(
               { text: 'Kro', link: '/api/kro/' },
               { text: 'Kro Runtime Bootstrap', link: '/api/kro/compositions/runtime' },
               { text: 'APISix', link: '/api/apisix/' },
+              { text: 'Traefik', link: '/api/traefik/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
               { text: 'ClickStack (HyperDX)', link: '/api/clickstack/' },

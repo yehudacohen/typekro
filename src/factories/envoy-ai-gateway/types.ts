@@ -1,5 +1,6 @@
 import { type } from 'arktype';
 import type { TypeKroChartValue, TypeKroValue } from '../../core/types/common.js';
+import type { GatewayClassSpec as GatewayApiGatewayClassSpec } from '../gateway-api/types.js';
 import type { HelmReleaseValuesFromSource } from '../helm/types.js';
 
 const kubernetesName = type(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/).and('string <= 40');
@@ -269,32 +270,20 @@ export const EnvoyAIGatewayStatusSchema = type({
 
 export type EnvoyAIGatewayStatus = typeof EnvoyAIGatewayStatusSchema.infer;
 
-export interface KubernetesCondition {
-  readonly type: string;
-  readonly status: string;
-  readonly reason?: string;
-  readonly message?: string;
-  readonly observedGeneration?: number;
-}
-
-export interface AcceptedResourceStatus {
-  readonly conditions?: readonly KubernetesCondition[];
-}
-
-export interface GatewayObservedStatus {
-  readonly addresses?: readonly {
-    readonly type?: string;
-    readonly value: string;
-  }[];
-  readonly conditions?: readonly KubernetesCondition[];
-}
-
-export interface GatewayPolicyObservedStatus {
-  readonly ancestors?: readonly {
-    readonly controllerName?: string;
-    readonly conditions?: readonly KubernetesCondition[];
-  }[];
-}
+/**
+ * Upstream Gateway API shapes now live in `src/factories/gateway-api` so that
+ * Envoy AI Gateway, Traefik and any future Gateway API implementation share one
+ * definition (#176). They are re-exported here unchanged for backward
+ * compatibility — prefer importing them from `typekro/gateway-api`.
+ */
+export type {
+  AcceptedResourceStatus,
+  BackendTLSPolicySpec,
+  GatewayObservedStatus,
+  GatewayPolicyObservedStatus,
+  GatewaySpec,
+  KubernetesCondition,
+} from '../gateway-api/types.js';
 
 export interface GatewayConfigSpec {
   readonly extProc?: {
@@ -312,18 +301,14 @@ export interface GatewayConfigSpec {
   readonly globalLLMRequestCosts?: readonly EnvoyAILLMRequestCost[];
 }
 
-export interface GatewayClassSpec {
-  readonly controllerName: 'gateway.envoyproxy.io/gatewayclass-controller';
-}
-
-export interface GatewaySpec {
-  readonly gatewayClassName: string;
-  readonly listeners: readonly {
-    readonly name: string;
-    readonly protocol: 'HTTP' | 'HTTPS';
-    readonly port: number;
-  }[];
-}
+/**
+ * Envoy Gateway's specialization of the shared Gateway API `GatewayClass` spec.
+ *
+ * The controller name stays pinned as a literal so an Envoy AI Gateway
+ * installation cannot accidentally claim another implementation's class.
+ */
+export type GatewayClassSpec =
+  GatewayApiGatewayClassSpec<'gateway.envoyproxy.io/gatewayclass-controller'>;
 
 export interface EnvoyBackendSpec {
   readonly endpoints: readonly {
@@ -388,20 +373,6 @@ export type BackendSecurityPolicySpec =
         };
       };
     };
-
-export interface BackendTLSPolicySpec {
-  readonly targetRefs: readonly [
-    {
-      readonly group: 'gateway.envoyproxy.io';
-      readonly kind: 'Backend';
-      readonly name: string;
-    },
-  ];
-  readonly validation: {
-    readonly wellKnownCACertificates: 'System';
-    readonly hostname: string;
-  };
-}
 
 export interface AIGatewayRouteSpec {
   readonly parentRefs: readonly [
