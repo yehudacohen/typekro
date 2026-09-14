@@ -24,11 +24,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Statements are the author's contract: each must be individually idempotent
   (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE`, `ALTER ... IF EXISTS`), because a
   changed fingerprint re-runs the WHOLE ordered list. The fingerprint — sha256 over the
-  statements, the settings and the resolved client configuration — is what makes an
-  unchanged schema a true no-op: no pod lookup, no exec. It is recorded only after the
-  last statement succeeds, so a converge that dies partway re-runs from the beginning.
-  The `target` is compared separately, so re-pointing the resource at another server
-  re-applies there even though the SQL is byte-identical.
+  statements, the settings, the resolved client configuration and the execution model —
+  is what makes an unchanged schema a true no-op. It is recorded only after the last
+  statement succeeds, so a converge that dies partway re-runs from the beginning. The
+  `target` and the live pod set are compared outside the fingerprint, because they
+  describe WHERE the DDL landed rather than what it was.
+
+  DDL is made cluster-wide EXPLICITLY, through a validated `execution` model, because
+  standard ClickHouse DDL is server-local: a converge that touched one pod of a
+  multi-replica deployment would report success while the other servers had no schema,
+  and then no-op forever on the fingerprint. `{ mode: 'fanout' }` (the default) runs the
+  ordered list against every Ready server pod matching the selector and records the pod
+  set in state, so a scale-out or a replaced pod re-applies even though the statements
+  did not change; a single-replica installation is a one-pod fanout, so the default is
+  also correct there. `{ mode: 'onCluster', cluster }` runs the statements once and
+  requires every statement to prove it distributes itself — either by carrying
+  `ON CLUSTER <cluster>` (matched with a ClickHouse-aware lexer, so quoting, case and
+  string literals are handled) or by naming only databases on an optional
+  `replicatedDatabases` allow-list. A statement that cannot prove it is rejected at
+  declaration time, naming its index; TypeKro never rewrites the author's SQL to make the
+  promise true. See https://clickhouse.com/docs/sql-reference/distributed-ddl.
 
   `onDelete` defaults to `retain` and does not reach the cluster at all on delete — a
   schema resource must never drop data because a stack was torn down. `run` executes an

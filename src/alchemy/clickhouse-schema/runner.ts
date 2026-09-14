@@ -104,11 +104,16 @@ export function renderClickHouseCommand(config: ClickHouseSchemaConfig): readonl
 }
 
 /**
- * sha256 over the ordered statements, the settings and the client configuration.
+ * sha256 over the ordered statements, the settings, the client configuration and the
+ * execution model.
  *
  * The TARGET is deliberately NOT part of the fingerprint — it describes where to reach
  * the server, not what is applied — so {@link needsApply} compares it separately and a
  * re-pointed resource re-applies even though its DDL is byte-identical.
+ *
+ * The EXECUTION MODEL is part of it, because switching from `onCluster` to `fanout`
+ * changes which servers the identical statements reached, and that is a change to what is
+ * applied even though the SQL is untouched.
  */
 export function computeFingerprint(config: ClickHouseSchemaConfig): string {
   const canonical = JSON.stringify({
@@ -122,11 +127,37 @@ export function computeFingerprint(config: ClickHouseSchemaConfig): string {
       database: resolveDatabase(config),
       port: config.client?.port ?? DEFAULT_CLICKHOUSE_PORT,
     },
+    execution: config.execution,
+    replicatedDatabases: [...(config.replicatedDatabases ?? [])].sort(),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-/** Whether a converge must (re-)run the statements against this target. */
+/**
+ * Everything one converge needs, in one place.
+ *
+ * An options object rather than a parameter list: the execution model gives the runner
+ * several independent knobs, and threading them positionally through four exported
+ * entry points makes every call site unreadable at exactly the place correctness matters.
+ */
+export interface ClickHouseSchemaRunContext {
+  readonly executor: ClickHouseExecutor;
+  readonly config: ClickHouseSchemaConfig;
+  readonly resourceId: string;
+  readonly deps?: ClickHouseSchemaRuntimeDeps | undefined;
+  readonly abortSignal?: AbortSignal | undefined;
+}
+
+function runtimeDeps(context: ClickHouseSchemaRunContext): ClickHouseSchemaRuntimeDeps {
+  return context.deps ?? defaultRuntimeDeps;
+}
+
+/**
+ * Whether a converge must (re-)run the statements against this target.
+ *
+ * The live pod SET is deliberately not compared here: it needs an API call, so
+ * {@link applyClickHouseSchema} checks it separately and only under `fanout`.
+ */
 export function needsApply(
   config: ClickHouseSchemaConfig,
   previous: ClickHouseSchemaState | undefined
@@ -147,6 +178,12 @@ export function needsApply(
   );
 }
 
+function selectorText(config: ClickHouseSchemaConfig): string {
+  return Object.entries(config.target.podSelector)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(',');
+}
+
 /**
  * A pod whose container list is empty is a pod the transport could not describe, not a
  * pod without containers; exec'ing into it and letting the API server object is a better
@@ -157,10 +194,10 @@ function hasContainer(pod: ClickHousePodSummary, container: string): boolean {
 }
 
 /**
- * Poll until a usable Ready pod matching the selector exists, or the budget runs out.
+ * Poll until the server pods the execution model needs are Ready, or the budget runs out.
  *
- * A ClickHouse server accepts connections only once it is Ready, and a CHI rollout has
- * a window where pods exist but are still replaying logs — exec'ing then produces a
+ * A ClickHouse server accepts connections only once it is Ready, and a CHI rollout has a
+ * window where pods exist but are still replaying logs — exec'ing then produces a
  * connection-refused that looks like a SQL failure. Waiting for readiness first is what
  * makes "ordered after the instance is ready" true in practice as well as in the
  * dependency graph.
@@ -168,33 +205,35 @@ function hasContainer(pod: ClickHousePodSummary, container: string): boolean {
  * EVERY Ready pod is considered, not just the first. A CHI rollout can leave a Ready pod
  * whose container set does not match — a sidecar-injected replica, a pod from an older
  * template — and rejecting the whole converge because the FIRST Ready pod happened to be
- * that one throws away perfectly good candidates standing right behind it. Candidates are
- * ordered by name so the choice is stable across converges.
+ * that one throws away perfectly good candidates. Pods are returned sorted by name, so
+ * the recorded pod set and the execution order are both stable.
  */
-export async function selectReadyPod(
-  executor: ClickHouseExecutor,
-  config: ClickHouseSchemaConfig,
-  resourceId: string,
-  deps: ClickHouseSchemaRuntimeDeps = defaultRuntimeDeps,
-  abortSignal?: AbortSignal
-): Promise<ClickHousePodSummary> {
+export async function selectExecutionPods(
+  context: ClickHouseSchemaRunContext
+): Promise<readonly ClickHousePodSummary[]> {
+  const { config, resourceId } = context;
+  const deps = runtimeDeps(context);
   const timeoutMs = config.waitForPod?.timeoutMs ?? DEFAULT_WAIT_FOR_POD_TIMEOUT_MS;
   const container = resolveContainer(config);
   const deadline = deps.now() + timeoutMs;
   let lastSeen = 0;
 
   for (;;) {
-    const pods = await executor.listPods(
+    const pods = await context.executor.listPods(
       config.target.namespace,
       config.target.podSelector,
-      abortSignal
+      context.abortSignal
     );
     lastSeen = pods.length;
     const ready = [...pods]
       .filter((pod) => pod.ready)
       .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-    const usable = ready.find((pod) => hasContainer(pod, container));
-    if (usable) return usable;
+    const usable = ready.filter((pod) => hasContainer(pod, container));
+
+    if (usable.length > 0) {
+      // `fanout` needs all of them; `onCluster` distributes from whichever one it starts on.
+      return config.execution.mode === 'fanout' ? usable : [usable[0] as ClickHousePodSummary];
+    }
     if (ready.length > 0) {
       throw new ClickHouseSchemaError(
         `ClickHouseSchema '${resourceId}': no Ready pod in namespace ` +
@@ -216,14 +255,8 @@ export async function selectReadyPod(
   }
 }
 
-function selectorText(config: ClickHouseSchemaConfig): string {
-  return Object.entries(config.target.podSelector)
-    .map(([key, value]) => `${key}=${value}`)
-    .join(',');
-}
-
 /**
- * Run one statement, retrying only TRANSIENT transport failures.
+ * Run one statement on one pod, retrying only TRANSIENT transport failures.
  *
  * The two failure modes are kept strictly apart (see {@link ClickHouseExecutor}): a
  * rejected exec is the transport, a non-zero exit code is the server. Re-issuing a
@@ -231,15 +264,13 @@ function selectorText(config: ClickHouseSchemaConfig): string {
  * perfectly idempotent, can compound the damage.
  */
 async function runStatement(
-  executor: ClickHouseExecutor,
-  config: ClickHouseSchemaConfig,
-  resourceId: string,
+  context: ClickHouseSchemaRunContext,
   podName: string,
   statement: string,
-  index: number,
-  deps: ClickHouseSchemaRuntimeDeps,
-  abortSignal?: AbortSignal
+  index: number
 ): Promise<void> {
+  const { config, resourceId } = context;
+  const deps = runtimeDeps(context);
   const maxAttempts = config.retry?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const backoffMs = config.retry?.backoffMs ?? DEFAULT_BACKOFF_MS;
   const command = {
@@ -255,7 +286,7 @@ async function runStatement(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let result: Awaited<ReturnType<ClickHouseExecutor['exec']>>;
     try {
-      result = await executor.exec(command, abortSignal);
+      result = await context.executor.exec(command, context.abortSignal);
     } catch (error) {
       lastTransport = error instanceof Error ? error : new Error(String(error));
       if (attempt === maxAttempts) break;
@@ -269,7 +300,7 @@ async function runStatement(
     const output = redactClickHouseText(`${result.stderr}\n${result.stdout}`.trim());
     const code = parseClickHouseErrorCode(output);
     throw new ClickHouseSchemaError(
-      `ClickHouseSchema '${resourceId}': statement ${index} failed` +
+      `ClickHouseSchema '${resourceId}': statement ${index} failed on pod ${podName}` +
         `${code === undefined ? '' : ` with ClickHouse code ${code}`} ` +
         `(exit ${result.exitCode}).`,
       resourceId,
@@ -280,8 +311,9 @@ async function runStatement(
   }
 
   throw new ClickHouseSchemaError(
-    `ClickHouseSchema '${resourceId}': exec transport failed for statement ${index} after ` +
-      `${maxAttempts} attempt(s): ${redactClickHouseText(lastTransport?.message ?? 'unknown error')}`,
+    `ClickHouseSchema '${resourceId}': exec transport failed for statement ${index} on pod ` +
+      `${podName} after ${maxAttempts} attempt(s): ` +
+      redactClickHouseText(lastTransport?.message ?? 'unknown error'),
     resourceId,
     index,
     undefined,
@@ -290,20 +322,30 @@ async function runStatement(
   );
 }
 
-/** Run an ordered statement list against one Ready pod, stopping at the first failure. */
+/**
+ * Run an ordered statement list against every selected pod, stopping at the first failure.
+ *
+ * Per POD, not per statement: each server receives the whole list in order, because the
+ * order is what makes the list meaningful (a table cannot be created before its database)
+ * and interleaving across pods would only make a partial failure harder to read.
+ */
 export async function runStatements(
-  executor: ClickHouseExecutor,
-  config: ClickHouseSchemaConfig,
-  resourceId: string,
-  statements: readonly string[],
-  deps: ClickHouseSchemaRuntimeDeps = defaultRuntimeDeps,
-  abortSignal?: AbortSignal
-): Promise<{ readonly podName: string }> {
-  const pod = await selectReadyPod(executor, config, resourceId, deps, abortSignal);
-  for (const [index, statement] of statements.entries()) {
-    await runStatement(executor, config, resourceId, pod.name, statement, index, deps, abortSignal);
+  context: ClickHouseSchemaRunContext,
+  statements: readonly string[]
+): Promise<{ readonly podNames: readonly string[] }> {
+  const pods = await selectExecutionPods(context);
+  for (const pod of pods) {
+    for (const [index, statement] of statements.entries()) {
+      await runStatement(context, pod.name, statement, index);
+    }
   }
-  return { podName: pod.name };
+  return { podNames: pods.map((pod) => pod.name) };
+}
+
+/** Set equality over two sorted-on-write pod name lists. */
+function samePodSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((name, index) => name === right[index]);
 }
 
 /**
@@ -313,25 +355,27 @@ export async function runStatements(
  * which is only correct because every statement is required to be idempotent — and it is
  * also what makes a failed converge recoverable: the fingerprint is recorded only after
  * the last statement succeeds, so a run that dies at statement 7 re-runs 0..6 next time.
+ *
+ * Under `fanout` the POD SET is part of what "nothing changed" means. A statement list
+ * applied to two replicas is not applied to the third one that a scale-out added, and the
+ * fingerprint cannot see that — so an otherwise-unchanged converge still lists pods and
+ * re-applies when the set moved. That listing is one API call and no exec, so an
+ * unchanged, unchanged-topology converge stays free.
  */
 export async function applyClickHouseSchema(
-  executor: ClickHouseExecutor,
-  config: ClickHouseSchemaConfig,
-  resourceId: string,
-  previous: ClickHouseSchemaState | undefined,
-  deps: ClickHouseSchemaRuntimeDeps = defaultRuntimeDeps,
-  abortSignal?: AbortSignal
+  context: ClickHouseSchemaRunContext,
+  previous: ClickHouseSchemaState | undefined
 ): Promise<ClickHouseSchemaState> {
-  if (!needsApply(config, previous) && previous) return previous;
+  const { config } = context;
+  const deps = runtimeDeps(context);
 
-  const { podName } = await runStatements(
-    executor,
-    config,
-    resourceId,
-    config.statements,
-    deps,
-    abortSignal
-  );
+  if (previous && !needsApply(config, previous)) {
+    if (config.execution.mode !== 'fanout') return previous;
+    const liveNames = (await selectExecutionPods(context)).map((pod) => pod.name);
+    if (samePodSet(liveNames, previous.podNames)) return previous;
+  }
+
+  const { podNames } = await runStatements(context, config.statements);
 
   return {
     fingerprint: computeFingerprint(config),
@@ -339,7 +383,7 @@ export async function applyClickHouseSchema(
     statementCount: config.statements.length,
     database: resolveDatabase(config),
     target: config.target,
-    podName,
+    podNames,
   };
 }
 
@@ -347,15 +391,8 @@ export async function applyClickHouseSchema(
  * Teardown. `retain` touches nothing at all — not even the cluster — so a destroyed
  * stack leaves the data and the schema exactly as they were.
  */
-export async function deleteClickHouseSchema(
-  executor: ClickHouseExecutor,
-  config: ClickHouseSchemaConfig,
-  resourceId: string,
-  deps: ClickHouseSchemaRuntimeDeps = defaultRuntimeDeps,
-  abortSignal?: AbortSignal
-): Promise<void> {
-  if (config.onDelete !== 'run') return;
-  const statements = config.deleteStatements ?? [];
-  if (statements.length === 0) return;
-  await runStatements(executor, config, resourceId, statements, deps, abortSignal);
+export async function deleteClickHouseSchema(context: ClickHouseSchemaRunContext): Promise<void> {
+  const statements = context.config.deleteStatements ?? [];
+  if (context.config.onDelete !== 'run' || statements.length === 0) return;
+  await runStatements(context, statements);
 }

@@ -13,6 +13,7 @@
 import { type } from 'arktype';
 import { TypeKroError } from '../../core/errors.js';
 import type { SerializableKubeConfigOptions } from '../types.js';
+import { validateOnClusterStatement } from './sql.js';
 
 /**
  * Accepted shape for a ClickHouse user or database name.
@@ -79,8 +80,11 @@ export const ClickHouseSchemaTargetSchema = type({
   namespace: 'string > 0',
   /**
    * Label selector for the server pods — e.g. the Altinity CHI label
-   * `{ 'clickhouse.altinity.com/chi': 'orders' }`. The first READY pod matching it is
-   * used; ClickHouse replicas share the schema, so any healthy replica will do.
+   * `{ 'clickhouse.altinity.com/chi': 'orders' }`.
+   *
+   * Which of the matching pods are used is the execution model's business, not the
+   * selector's: `fanout` executes against every Ready pod that has the container,
+   * `onCluster` against the first. See {@link ClickHouseSchemaExecutionSchema}.
    */
   podSelector: 'Record<string, string>',
   /** Container to exec into. Defaults to the CHI server container, `clickhouse`. */
@@ -113,6 +117,40 @@ export const ClickHouseSchemaRetrySchema = type({
 });
 
 /**
+ * How the statements reach EVERY server, not just the one the exec landed on.
+ *
+ * ClickHouse DDL is server-local by default. `CREATE TABLE …` executed on one pod creates
+ * that table on that pod and nowhere else, so on a multi-replica or multi-shard
+ * deployment a converge that touches a single pod reports success while the rest of the
+ * cluster has no schema — and then never tries again, because the fingerprint says the
+ * work is done. Two mechanisms make DDL cluster-wide, and this resource requires one of
+ * them to be chosen explicitly:
+ *
+ * - `fanout` (the default) — TypeKro runs the ordered statement list against EVERY Ready
+ *   server pod matching the selector, in turn. It needs nothing from the cluster (no
+ *   Keeper, no `Replicated` database engine) and leans on exactly the idempotence the
+ *   statements already promise. The pod set is recorded in state, so a scale-out or a
+ *   replaced pod re-applies even though the statements did not change. A single-replica
+ *   installation is a one-pod fanout — which is why the default is also the correct
+ *   setting there.
+ * - `onCluster` — the statements distribute themselves and TypeKro runs them ONCE, on the
+ *   first Ready pod. That is only true if each statement actually says so, so every
+ *   statement is validated at construction; see {@link ClickHouseSchemaConfigSchema}.
+ *
+ * @see https://clickhouse.com/docs/sql-reference/distributed-ddl
+ */
+export const ClickHouseSchemaExecutionSchema = type({ mode: "'fanout'" }).or({
+  mode: "'onCluster'",
+  /** The `ON CLUSTER` target — a CHI's `clusterName`, which defaults to `cluster`. */
+  cluster: 'string > 0',
+});
+
+export type ClickHouseSchemaExecution = typeof ClickHouseSchemaExecutionSchema.infer;
+
+/** Applied when an author declares no execution model. */
+export const DEFAULT_EXECUTION: ClickHouseSchemaExecution = { mode: 'fanout' };
+
+/**
  * The configurable (serializable) surface of a `ClickHouseSchema` resource.
  *
  * IDEMPOTENCE IS THE AUTHOR'S CONTRACT. Every statement is re-run whenever the
@@ -141,6 +179,18 @@ export const ClickHouseSchemaConfigSchema = type({
   /** Per-statement exec timeout. A long `CREATE MATERIALIZED VIEW ... POPULATE` may need more. */
   'statementTimeoutMs?': 'number.integer > 0',
   'retry?': ClickHouseSchemaRetrySchema,
+  /** How the DDL reaches every server. Defaults to `fanout`. */
+  execution: ClickHouseSchemaExecutionSchema.default(() => DEFAULT_EXECUTION),
+  /**
+   * Databases created with the `Replicated` engine, which replicates DDL issued against
+   * it without an `ON CLUSTER` clause.
+   *
+   * An ALLOW-LIST, not a description: TypeKro cannot see a database's engine from here,
+   * so naming one is the author asserting it, and the assertion is only ever used to
+   * ACCEPT a statement under `execution.mode: 'onCluster'` that would otherwise be
+   * rejected. It has no effect under `fanout`.
+   */
+  'replicatedDatabases?': 'string[]',
 }).narrow((config, ctx) => {
   const blank = config.statements.findIndex((statement) => statement.trim().length === 0);
   if (blank !== -1) {
@@ -165,6 +215,29 @@ export const ClickHouseSchemaConfigSchema = type({
     }
     if (!SETTING_VALUE_PATTERN.test(String(value))) {
       return ctx.mustBe(`a scalar setting value for '${name}'`);
+    }
+  }
+  // `onCluster` is a PROMISE that one execution reaches every server. It is checked here,
+  // at construction, rather than at converge time: a statement that cannot keep the
+  // promise would otherwise apply to one replica, record a fingerprint, and never be
+  // retried. TypeKro validates and refuses — it never edits the author's SQL to make the
+  // promise true.
+  if (config.execution.mode === 'onCluster') {
+    const cluster = config.execution.cluster;
+    const replicated = config.replicatedDatabases ?? [];
+    const lists: ReadonlyArray<readonly [string, readonly string[]]> = [
+      ['statements', config.statements],
+      ['deleteStatements', config.deleteStatements ?? []],
+    ];
+    for (const [field, statements] of lists) {
+      for (const [index, statement] of statements.entries()) {
+        const reason = validateOnClusterStatement(statement, cluster, replicated);
+        if (reason !== undefined) {
+          return ctx.mustBe(
+            `cluster-wide under execution.mode 'onCluster' (${field} ${index} ${reason})`
+          );
+        }
+      }
     }
   }
   return true;
@@ -231,8 +304,15 @@ export interface ClickHouseSchemaState {
   readonly database: string;
   /** Where the statements ran, so a target change is visible in state and forces a re-apply. */
   readonly target: ClickHouseSchemaTarget;
-  /** The pod the last apply used. Informational — a later apply may pick another replica. */
-  readonly podName: string;
+  /**
+   * Sorted names of EVERY pod the last apply executed against.
+   *
+   * Load-bearing under `execution.mode: 'fanout'`, not informational: a converge compares
+   * the live Ready pod set against this one, so a scale-out or a replaced pod re-applies
+   * the statements even though the fingerprint is unchanged. Under `onCluster` it records
+   * the single initiating pod.
+   */
+  readonly podNames: readonly string[];
 }
 
 /** One `clickhouse-client` invocation inside a server container. */

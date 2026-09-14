@@ -60,13 +60,96 @@ the next converge.
 
 | Phase | Behaviour |
 | --- | --- |
-| **create** | Wait for a Ready pod matching `target.podSelector`, then run every statement in array order. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podName`. |
-| **update** | If the fingerprint *and* the target are unchanged, do nothing — no pod lookup, no exec. Otherwise re-run every statement and record the new fingerprint. |
+| **create** | Wait for the Ready server pods matching `target.podSelector`, then run every statement in array order against each pod the execution model selects. Record `fingerprint`, `appliedAt`, `statementCount`, `database`, `target`, `podNames`. |
+| **update** | If the fingerprint, the target *and* (under `fanout`) the live pod set are unchanged, do nothing. Otherwise re-run every statement and record the new state. |
 | **delete** | Per `onDelete` (see below). |
 
-The fingerprint is a sha256 over the ordered `statements`, the `settings`, and the resolved
-`client` configuration. The `target` is compared separately: re-pointing the resource at another
-server re-applies the DDL there even though the statements are byte-identical.
+The fingerprint is a sha256 over the ordered `statements`, the `settings`, the resolved `client`
+configuration and the `execution` model. Three things are compared *outside* the fingerprint,
+because they describe *where* the DDL landed rather than *what* it was:
+
+- **the target** — re-pointing the resource at another namespace, selector or container
+  re-applies the DDL there even though the statements are byte-identical;
+- **the pod set**, under `fanout` — see [Execution model](#execution-model).
+
+## Execution model
+
+**ClickHouse DDL is server-local by default.** `CREATE TABLE …` executed on one pod creates that
+table on that pod and nowhere else. On a multi-replica or multi-shard deployment, a converge
+that touches a single pod would report success while the rest of the cluster has no schema — and
+would then never try again, because the fingerprint says the work is done.
+
+Two mechanisms make DDL cluster-wide, and `execution` requires you to pick one. See ClickHouse's
+[Distributed DDL](https://clickhouse.com/docs/sql-reference/distributed-ddl) reference.
+
+### `{ mode: 'fanout' }` — the default
+
+```typescript
+execution: { mode: 'fanout' }   // default; may be omitted
+```
+
+TypeKro runs the ordered statement list against **every Ready server pod** matching the
+selector, one pod after another, each pod receiving the list in statement order. It needs
+nothing from the cluster — no Keeper, no `Replicated` database engine — and leans on exactly the
+idempotence the statements already promise.
+
+The pod set is recorded in `podNames`, and an otherwise-unchanged converge compares the live set
+against it. A **scale-out** gets the schema; so does a **replaced pod**. That check costs one
+`list pods` call and no exec, so an unchanged schema on an unchanged topology is still free.
+
+**A single-replica installation is a one-pod fanout**, which is why the default is also the
+correct setting there — you do not need to configure anything for the common case.
+
+### `{ mode: 'onCluster', cluster: '<clusterName>' }`
+
+```typescript
+execution: { mode: 'onCluster', cluster: 'cluster' },
+statements: [
+  "CREATE DATABASE IF NOT EXISTS orders ON CLUSTER 'cluster'",
+  `CREATE TABLE IF NOT EXISTS orders.events ON CLUSTER 'cluster' (id UUID, at DateTime)
+   ENGINE = ReplicatedMergeTree ORDER BY at`,
+],
+settings: { distributed_ddl_task_timeout: 300 },
+```
+
+The statements distribute themselves through Keeper's DDL queue, so TypeKro runs them **once**,
+on the first Ready pod.
+
+That is only true if each statement actually says so, so **every statement is validated at
+declaration time** and a statement that cannot keep the promise is rejected, naming its index:
+
+```
+Invalid ClickHouseSchema configuration for 'orders-schema': … must be cluster-wide under
+execution.mode 'onCluster' (statements 1 carries no 'ON CLUSTER cluster' clause, and no
+'replicatedDatabases' allow-list was declared to prove it targets a Replicated database)
+```
+
+A statement passes validation if **either**:
+
+- it carries `ON CLUSTER <cluster>` naming exactly the configured cluster. Keyword matching is
+  case-insensitive and the name may be bare, backtick-, double- or single-quoted; a clause that
+  only appears inside a string literal does not count; **or**
+- every database it names explicitly is on the optional `replicatedDatabases` allow-list, whose
+  `Replicated` engine replicates DDL on its own. A statement that names no database (its target
+  depends on the session) is rejected, as is one starting with `USE` or `SET`, which changes what
+  later statements mean.
+
+```typescript
+execution: { mode: 'onCluster', cluster: 'cluster' },
+replicatedDatabases: ['orders'],
+statements: [
+  // Accepted without a clause: `orders` is declared Replicated.
+  'CREATE TABLE IF NOT EXISTS orders.events (id UUID) ENGINE = MergeTree ORDER BY id',
+],
+```
+
+`replicatedDatabases` is an **assertion, not a description**: TypeKro cannot see a database's
+engine, so naming one is you vouching for it, and it is only ever used to *accept* a statement
+that would otherwise be rejected. It has no effect under `fanout`.
+
+**TypeKro never rewrites your SQL.** Adding `ON CLUSTER` on your behalf would change the
+semantics of DDL TypeKro did not write, and getting that wrong on a production cluster is not
+recoverable. Validation refuses; it does not repair.
 
 ### `onDelete`
 
@@ -100,13 +183,15 @@ never run are a silent footgun.
 | Prop | Type | Notes |
 | --- | --- | --- |
 | `target.namespace` | `string` | Namespace holding the server pods. |
-| `target.podSelector` | `Record<string, string>` | Label selector. The **first Ready** pod is used. Validated as real label keys/values. |
+| `target.podSelector` | `Record<string, string>` | Label selector. Which matching pods are used is the [execution model](#execution-model)'s business. Validated as real label keys/values. |
 | `target.container` | `string?` | Defaults to `clickhouse`, the Altinity CHI server container. |
 | `client.user` | `string?` | Defaults to `default`. |
 | `client.passwordEnv` | `string?` | Name of the env var **inside the container** holding the password. Defaults to `CLICKHOUSE_PASSWORD`. |
 | `client.database` | `string?` | Defaults to `default`. |
 | `client.port` | `number?` | Native protocol port. Defaults to `9000`. |
 | `statements` | `string[]` | Ordered, non-empty. Each must be idempotent. |
+| `execution` | `{ mode: 'fanout' } \| { mode: 'onCluster', cluster: string }?` | How the DDL reaches every server. Defaults to `{ mode: 'fanout' }`. See [Execution model](#execution-model). |
+| `replicatedDatabases` | `string[]?` | Allow-list of `Replicated`-engine databases, used only to accept clause-free statements under `onCluster`. |
 | `settings` | `Record<string, string \| number>?` | Rendered as `--<setting>=<value>`. Names and values are validated as identifiers/scalars. |
 | `onDelete` | `'retain' \| 'run'` | Defaults to `retain`. |
 | `deleteStatements` | `string[]?` | Required — and only allowed — when `onDelete` is `'run'`. |
@@ -170,11 +255,11 @@ rules:
 
 ## Errors
 
-A failure raises `ClickHouseSchemaError` carrying `statementIndex` and, when the server produced
-one, ClickHouse's own `clickHouseCode`:
+A failure raises `ClickHouseSchemaError` carrying `statementIndex`, the pod it failed on and,
+when the server produced one, ClickHouse's own `clickHouseCode`:
 
 ```
-ClickHouseSchema: statement 3 failed with ClickHouse code 62 (exit 62).
+ClickHouseSchema: statement 3 failed on pod chi-orders-0-1-0 with ClickHouse code 62 (exit 62).
 ```
 
 **The failing statement's text is never on the error** — only its index. Statements should not
@@ -281,21 +366,23 @@ const stack = Alchemy.Stack(
 
 ::: warning S3Queue and `ON CLUSTER`
 `S3Queue` coordinates its ordered mode through Keeper, and a multi-replica topology needs the
-table created on every replica. Write those statements with `ON CLUSTER '<clusterName>'` and
-raise `settings.distributed_ddl_task_timeout` accordingly; the resource passes the setting
-through but does not add the clause for you.
+table created on every replica. Under the `fanout` default TypeKro creates it on each server for
+you. If you prefer Keeper to distribute the DDL instead, set
+`execution: { mode: 'onCluster', cluster: '<clusterName>' }`, write every statement with
+`ON CLUSTER '<clusterName>'` — the resource validates this and refuses rather than adding the
+clause for you — and raise `settings.distributed_ddl_task_timeout` accordingly.
 :::
 
 ## Outputs
 
 ```typescript
 {
-  fingerprint: string;    // sha256 over statements + settings + client
+  fingerprint: string;    // sha256 over statements + settings + client + execution
   appliedAt: string;      // ISO-8601
   statementCount: number;
   database: string;
   target: { namespace: string; podSelector: Record<string, string>; container?: string };
-  podName: string;        // the pod the last apply used
+  podNames: string[];     // sorted; every pod the last apply executed against
 }
 ```
 

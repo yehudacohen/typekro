@@ -87,25 +87,26 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
         try: async (abortSignal) => {
           const logger = getComponentLogger('alchemy-clickhouse-schema');
           if (!needsApply(news, output)) {
-            logger.debug('ClickHouse schema unchanged; skipping DDL', {
+            logger.debug('ClickHouse schema unchanged; verifying the server set', {
               fingerprint: output?.fingerprint,
               statementCount: news.statements.length,
             });
-            // `needsApply` returning false guarantees a persisted output exists.
-            return output as ClickHouseSchemaState;
+          } else {
+            logger.info('Applying ClickHouse schema', {
+              namespace: news.target.namespace,
+              statementCount: news.statements.length,
+              fingerprint: computeFingerprint(news),
+              executionMode: news.execution.mode,
+            });
           }
-          logger.info('Applying ClickHouse schema', {
-            namespace: news.target.namespace,
-            statementCount: news.statements.length,
-            fingerprint: computeFingerprint(news),
-          });
           return await applyClickHouseSchema(
-            resolveExecutor(news),
-            news,
-            CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
-            output,
-            undefined,
-            abortSignal
+            {
+              executor: resolveExecutor(news),
+              config: news,
+              resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+              abortSignal,
+            },
+            output
           );
         },
         catch: ensureError,
@@ -118,13 +119,12 @@ export const clickHouseSchemaProvider = ProviderMod.effect(
       if (!olds || olds.onDelete !== 'run') return;
       yield* Effect.tryPromise({
         try: (abortSignal) =>
-          deleteClickHouseSchema(
-            resolveExecutor(olds),
-            olds,
-            CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
-            undefined,
-            abortSignal
-          ),
+          deleteClickHouseSchema({
+            executor: resolveExecutor(olds),
+            config: olds,
+            resourceId: CLICKHOUSE_SCHEMA_RESOURCE_TYPE,
+            abortSignal,
+          }),
         catch: ensureError,
       });
     }),

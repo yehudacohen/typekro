@@ -28,9 +28,17 @@ export {
   needsApply,
   renderClickHouseCommand,
   runStatements,
-  selectReadyPod,
+  selectExecutionPods,
 } from './runner.js';
-export type { ClickHouseSchemaRuntimeDeps } from './runner.js';
+export type { ClickHouseSchemaRunContext, ClickHouseSchemaRuntimeDeps } from './runner.js';
+export {
+  type ClickHouseSqlToken,
+  leadingKeyword,
+  referencedDatabases,
+  statementTargetsCluster,
+  tokenizeClickHouseSql,
+  validateOnClusterStatement,
+} from './sql.js';
 export {
   type ClickHouseExecCommand,
   type ClickHouseExecResult,
@@ -42,11 +50,14 @@ export {
   type ClickHouseSchemaConfigInput,
   ClickHouseSchemaConfigSchema,
   ClickHouseSchemaError,
+  type ClickHouseSchemaExecution,
+  ClickHouseSchemaExecutionSchema,
   type ClickHouseSchemaProps,
   type ClickHouseSchemaResourceProps,
   type ClickHouseSchemaState,
   type ClickHouseSchemaTarget,
   ClickHouseSchemaTargetSchema,
+  DEFAULT_EXECUTION,
   parseClickHouseErrorCode,
   redactClickHouseText,
 } from './types.js';
