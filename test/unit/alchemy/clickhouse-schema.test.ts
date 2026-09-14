@@ -32,7 +32,6 @@ import {
   parseClickHouseExceptionName,
   redactClickHouseOutput,
   redactClickHouseText,
-  referencedDatabases,
   renderClickHouseCommand,
   selectExecutionPods,
   statementTargetsCluster,
@@ -330,44 +329,40 @@ describe("ClickHouseSchema — execution.mode 'onCluster' validation", () => {
     expect(String(result)).toContain('deleteStatements 0');
   });
 
-  it('accepts a clause-free statement that targets a declared Replicated database', () => {
-    const result = onCluster(
-      ['CREATE TABLE IF NOT EXISTS orders.events (id UUID) ENGINE = MergeTree ORDER BY id'],
-      { replicatedDatabases: ['orders'] }
-    );
-    expect(result instanceof type.errors).toBe(false);
-  });
-
-  it('rejects a clause-free statement touching a database outside the allow-list', () => {
-    const result = onCluster(
-      ['CREATE TABLE IF NOT EXISTS billing.invoices (id UUID) ENGINE = MergeTree ORDER BY id'],
-      { replicatedDatabases: ['orders'] }
-    );
+  it('rejects the DDL target the old reference-based inference let through', () => {
+    // `events` is created LOCALLY; `analytics.source` is only read from. Keying acceptance
+    // on the dotted references rather than on the DDL target passed this statement and
+    // left `events` on one server.
+    const result = onCluster(['CREATE TABLE events AS analytics.source']);
     expect(result instanceof type.errors).toBe(true);
-    expect(String(result)).toContain("'billing'");
+    expect(String(result)).toContain("carries no 'ON CLUSTER cluster' clause");
   });
 
-  it('rejects a clause-free statement that names no database at all', () => {
-    const result = onCluster(['CREATE TABLE IF NOT EXISTS events (id UUID) ENGINE = MergeTree'], {
+  it('rejects a clause-free statement whatever databases it names', () => {
+    for (const statement of [
+      'CREATE TABLE IF NOT EXISTS orders.events (id UUID) ENGINE = MergeTree ORDER BY id',
+      'CREATE TABLE IF NOT EXISTS billing.invoices (id UUID) ENGINE = MergeTree ORDER BY id',
+      'CREATE TABLE IF NOT EXISTS events (id UUID) ENGINE = MergeTree',
+    ]) {
+      const result = onCluster([statement]);
+      expect(result instanceof type.errors).toBe(true);
+      expect(String(result)).toContain("execution.mode 'fanout'");
+    }
+  });
+
+  it('rejects USE and SET, pointing at the mode that can run them', () => {
+    const result = onCluster(['USE orders']);
+    expect(result instanceof type.errors).toBe(true);
+    expect(String(result)).toContain('session-scoped');
+    expect(String(result)).toContain("execution.mode 'fanout'");
+  });
+
+  it("rejects the retired 'replicatedDatabases' prop rather than ignoring it", () => {
+    const result = onCluster(['CREATE DATABASE IF NOT EXISTS orders ON CLUSTER cluster'], {
       replicatedDatabases: ['orders'],
     });
     expect(result instanceof type.errors).toBe(true);
-    expect(String(result)).toContain('names no database');
-  });
-
-  it('rejects USE and SET even against an allow-listed database', () => {
-    const result = onCluster(['USE orders'], { replicatedDatabases: ['orders'] });
-    expect(result instanceof type.errors).toBe(true);
-    expect(String(result)).toContain('session-scoped');
-  });
-
-  it('reads the databases a statement names', () => {
-    expect(referencedDatabases('CREATE DATABASE IF NOT EXISTS orders')).toEqual(['orders']);
-    expect(referencedDatabases('INSERT INTO orders.events SELECT * FROM staging.events')).toEqual([
-      'orders',
-      'staging',
-    ]);
-    expect(referencedDatabases('CREATE TABLE events (id UUID)')).toEqual([]);
+    expect(String(result)).toContain('replicatedDatabases');
   });
 
   it('leaves fanout statements unvalidated — nothing is promised about distribution', () => {

@@ -153,32 +153,34 @@ declaration time** and a statement that cannot keep the promise is rejected, nam
 
 ```
 Invalid ClickHouseSchema configuration for 'orders-schema': … must be cluster-wide under
-execution.mode 'onCluster' (statements 1 carries no 'ON CLUSTER cluster' clause, and no
-'replicatedDatabases' allow-list was declared to prove it targets a Replicated database)
+execution.mode 'onCluster' (statements 1 carries no 'ON CLUSTER cluster' clause, which is
+the only thing that makes a single execution reach every server; add the clause, or use
+execution.mode 'fanout')
 ```
 
-A statement passes validation if **either**:
+**Every statement must carry `ON CLUSTER <cluster>`, naming exactly the configured cluster.**
+That is the only accepted proof. Keyword matching is case-insensitive and the name may be bare,
+backtick-, double- or single-quoted; a clause that only appears inside a string literal does not
+count, because the check runs on a ClickHouse-aware lexer rather than a regex.
 
-- it carries `ON CLUSTER <cluster>` naming exactly the configured cluster. Keyword matching is
-  case-insensitive and the name may be bare, backtick-, double- or single-quoted; a clause that
-  only appears inside a string literal does not count; **or**
-- every database it names explicitly is on the optional `replicatedDatabases` allow-list, whose
-  `Replicated` engine replicates DDL on its own. A statement that names no database (its target
-  depends on the session) is rejected, as is one starting with `USE` or `SET`, which changes what
-  later statements mean.
+Nothing is **inferred** from a statement's shape. The alternative — accepting a clause-free
+statement whose references all live in databases you declare `Replicated` — keys on the
+*references* rather than on the *DDL target*, and so waves through
 
-```typescript
-execution: { mode: 'onCluster', cluster: 'cluster' },
-replicatedDatabases: ['orders'],
-statements: [
-  // Accepted without a clause: `orders` is declared Replicated.
-  'CREATE TABLE IF NOT EXISTS orders.events (id UUID) ENGINE = MergeTree ORDER BY id',
-],
+```sql
+CREATE TABLE events AS analytics.source   -- `events` is created LOCALLY
 ```
 
-`replicatedDatabases` is an **assertion, not a description**: TypeKro cannot see a database's
-engine, so naming one is you vouching for it, and it is only ever used to *accept* a statement
-that would otherwise be rejected. It has no effect under `fanout`.
+Getting that right means parsing the target of every DDL form ClickHouse accepts, and a parser
+that is subtly wrong here half-applies a schema in silence. So the rule is the explicit one.
+
+### Statements that cannot take `ON CLUSTER`
+
+`SET`, `USE`, a single-node `SYSTEM …`, `INSERT` — these have no cluster-wide form, so they do
+not belong under `onCluster` and are rejected there (`USE` and `SET` by name, the rest for
+carrying no clause). **`fanout` is where they go**: it runs the ordered list on every server
+itself, so reaching every server is a property of the mode rather than a promise the statement
+has to make. Whether running them on every server is what you meant is then yours to decide.
 
 **TypeKro never rewrites your SQL.** Adding `ON CLUSTER` on your behalf would change the
 semantics of DDL TypeKro did not write, and getting that wrong on a production cluster is not
@@ -245,7 +247,6 @@ never run are a silent footgun.
 | `client.port` | `number?` | Native protocol port. Defaults to `9000`. |
 | `statements` | `string[]` | Ordered, non-empty. Each must be idempotent. |
 | `execution` | `{ mode: 'fanout' } \| { mode: 'onCluster', cluster: string }?` | How the DDL reaches every server. Defaults to `{ mode: 'fanout' }`. See [Execution model](#execution-model). |
-| `replicatedDatabases` | `string[]?` | Allow-list of `Replicated`-engine databases, used only to accept clause-free statements under `onCluster`. |
 | `settings` | `Record<string, string \| number>?` | Rendered as `--<setting>=<value>`. Names and values are validated as identifiers/scalars. |
 | `onDelete` | `'retain' \| 'run'` | Defaults to `retain`. |
 | `deleteStatements` | `string[]?` | Required — and only allowed — when `onDelete` is `'run'`. |

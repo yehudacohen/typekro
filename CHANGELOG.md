@@ -47,13 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always rolling, `onCluster` is the mode to use. `podNames` always records the set the
   statements ACTUALLY reached rather than the set that was live when the run finished, so
   a replica that appears mid-apply is never claimed as covered and the next converge
-  re-applies. `{ mode: 'onCluster', cluster }` runs the statements once and
-  requires every statement to prove it distributes itself — either by carrying
-  `ON CLUSTER <cluster>` (matched with a ClickHouse-aware lexer, so quoting, case and
-  string literals are handled) or by naming only databases on an optional
-  `replicatedDatabases` allow-list. A statement that cannot prove it is rejected at
-  declaration time, naming its index; TypeKro never rewrites the author's SQL to make the
-  promise true. See https://clickhouse.com/docs/sql-reference/distributed-ddl.
+  re-applies. `{ mode: 'onCluster', cluster }` runs the statements once and requires EVERY
+  statement to carry an explicit `ON CLUSTER <cluster>` clause naming that cluster —
+  matched with a ClickHouse-aware lexer, so quoting, case and string literals are handled.
+  Nothing is inferred from a statement's shape: cluster-wideness is a property of the DDL
+  TARGET, and a check keyed on a statement's references instead would wave through
+  `CREATE TABLE events AS analytics.source`, which creates `events` locally. A statement
+  that carries no clause is rejected at declaration time, naming its index, and TypeKro
+  never rewrites the author's SQL to make the promise true. Statements with no
+  cluster-wide form (`SET`, `USE`, a single-node `SYSTEM …`, `INSERT`) belong under
+  `fanout`, which reaches every server itself. See
+  https://clickhouse.com/docs/sql-reference/distributed-ddl.
 
   State also records a credential-free identity of the CLUSTER the statements reached —
   sha256 over the current context's cluster name, server URL and CA material, reusing the
@@ -69,8 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deleteStatements` under `retain`, are both rejected at declaration time rather than
   silently doing nothing.
 
-  A plaintext password is not representable: the `client` object rejects undeclared
-  keys, so `password` fails validation instead of being persisted to Alchemy state. The
+  A plaintext password is not representable: both the config object and its `client`
+  object reject undeclared keys, so `password` fails validation instead of being
+  persisted to Alchemy state, and a misunderstood option fails loudly instead of being
+  silently dropped while the author believes they configured something. The
   password is read inside the pod from the container's own environment
   (`--password "${CLICKHOUSE_PASSWORD:-}"` under `sh -c`, the variable name
   configurable via `client.passwordEnv`), matching what the retention CronJob and

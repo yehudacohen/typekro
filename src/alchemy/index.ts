@@ -54,7 +54,6 @@ export {
   parseClickHouseExceptionName,
   redactClickHouseOutput,
   redactClickHouseText,
-  referencedDatabases,
   renderClickHouseCommand,
   runStatements,
   selectExecutionPods,

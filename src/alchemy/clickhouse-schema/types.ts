@@ -188,67 +188,64 @@ export const ClickHouseSchemaConfigSchema = type({
   'retry?': ClickHouseSchemaRetrySchema,
   /** How the DDL reaches every server. Defaults to `fanout`. */
   execution: ClickHouseSchemaExecutionSchema.default(() => DEFAULT_EXECUTION),
-  /**
-   * Databases created with the `Replicated` engine, which replicates DDL issued against
-   * it without an `ON CLUSTER` clause.
-   *
-   * An ALLOW-LIST, not a description: TypeKro cannot see a database's engine from here,
-   * so naming one is the author asserting it, and the assertion is only ever used to
-   * ACCEPT a statement under `execution.mode: 'onCluster'` that would otherwise be
-   * rejected. It has no effect under `fanout`.
-   */
-  'replicatedDatabases?': 'string[]',
-}).narrow((config, ctx) => {
-  const blank = config.statements.findIndex((statement) => statement.trim().length === 0);
-  if (blank !== -1) {
-    return ctx.mustBe(`non-empty statements (statement ${blank} is blank)`);
-  }
-  if (config.onDelete === 'run') {
-    if (config.deleteStatements === undefined || config.deleteStatements.length === 0) {
-      return ctx.mustBe("accompanied by a non-empty 'deleteStatements' when onDelete is 'run'");
+})
+  // Undeclared keys are REJECTED, for the same reason `client` rejects them: a
+  // misunderstood option that is silently dropped leaves the author believing they
+  // configured something. It is also what retires `replicatedDatabases` — an allow-list
+  // that used to accept clause-free `onCluster` statements, and did so by inspecting a
+  // statement's references rather than its DDL target — loudly rather than by ignoring it.
+  .onUndeclaredKey('reject')
+  .narrow((config, ctx) => {
+    const blank = config.statements.findIndex((statement) => statement.trim().length === 0);
+    if (blank !== -1) {
+      return ctx.mustBe(`non-empty statements (statement ${blank} is blank)`);
     }
-    const blankDelete = config.deleteStatements.findIndex((s) => s.trim().length === 0);
-    if (blankDelete !== -1) {
-      return ctx.mustBe(`non-empty deleteStatements (statement ${blankDelete} is blank)`);
+    if (config.onDelete === 'run') {
+      if (config.deleteStatements === undefined || config.deleteStatements.length === 0) {
+        return ctx.mustBe("accompanied by a non-empty 'deleteStatements' when onDelete is 'run'");
+      }
+      const blankDelete = config.deleteStatements.findIndex((s) => s.trim().length === 0);
+      if (blankDelete !== -1) {
+        return ctx.mustBe(`non-empty deleteStatements (statement ${blankDelete} is blank)`);
+      }
+    } else if (config.deleteStatements !== undefined) {
+      // Rejected rather than ignored: statements that can never run are a silent footgun,
+      // and the author who wrote them believes teardown is covered.
+      return ctx.mustBe("declared without 'deleteStatements' when onDelete is 'retain'");
     }
-  } else if (config.deleteStatements !== undefined) {
-    // Rejected rather than ignored: statements that can never run are a silent footgun,
-    // and the author who wrote them believes teardown is covered.
-    return ctx.mustBe("declared without 'deleteStatements' when onDelete is 'retain'");
-  }
-  for (const [name, value] of Object.entries(config.settings ?? {})) {
-    if (!SETTING_NAME_PATTERN.test(name)) {
-      return ctx.mustBe(`a ClickHouse setting name matching [a-z_][a-z0-9_]* (got '${name}')`);
+    for (const [name, value] of Object.entries(config.settings ?? {})) {
+      if (!SETTING_NAME_PATTERN.test(name)) {
+        return ctx.mustBe(`a ClickHouse setting name matching [a-z_][a-z0-9_]* (got '${name}')`);
+      }
+      if (!SETTING_VALUE_PATTERN.test(String(value))) {
+        return ctx.mustBe(`a scalar setting value for '${name}'`);
+      }
     }
-    if (!SETTING_VALUE_PATTERN.test(String(value))) {
-      return ctx.mustBe(`a scalar setting value for '${name}'`);
-    }
-  }
-  // `onCluster` is a PROMISE that one execution reaches every server. It is checked here,
-  // at construction, rather than at converge time: a statement that cannot keep the
-  // promise would otherwise apply to one replica, record a fingerprint, and never be
-  // retried. TypeKro validates and refuses — it never edits the author's SQL to make the
-  // promise true.
-  if (config.execution.mode === 'onCluster') {
-    const cluster = config.execution.cluster;
-    const replicated = config.replicatedDatabases ?? [];
-    const lists: ReadonlyArray<readonly [string, readonly string[]]> = [
-      ['statements', config.statements],
-      ['deleteStatements', config.deleteStatements ?? []],
-    ];
-    for (const [field, statements] of lists) {
-      for (const [index, statement] of statements.entries()) {
-        const reason = validateOnClusterStatement(statement, cluster, replicated);
-        if (reason !== undefined) {
-          return ctx.mustBe(
-            `cluster-wide under execution.mode 'onCluster' (${field} ${index} ${reason})`
-          );
+    // `onCluster` is a PROMISE that one execution reaches every server, and the ONLY thing
+    // accepted as proof is an explicit `ON CLUSTER <cluster>` clause. It is checked here,
+    // at construction, rather than at converge time: a statement that cannot keep the
+    // promise would otherwise apply to one replica, record a fingerprint, and never be
+    // retried. TypeKro validates and refuses — it never edits the author's SQL to make the
+    // promise true, and it never infers cluster-wideness from a statement's shape.
+    if (config.execution.mode === 'onCluster') {
+      const cluster = config.execution.cluster;
+      const lists: ReadonlyArray<readonly [string, readonly string[]]> = [
+        ['statements', config.statements],
+        ['deleteStatements', config.deleteStatements ?? []],
+      ];
+      for (const [field, statements] of lists) {
+        for (const [index, statement] of statements.entries()) {
+          const reason = validateOnClusterStatement(statement, cluster);
+          if (reason !== undefined) {
+            return ctx.mustBe(
+              `cluster-wide under execution.mode 'onCluster' (${field} ${index} ${reason})`
+            );
+          }
         }
       }
     }
-  }
-  return true;
-});
+    return true;
+  });
 
 /** Author-facing (pre-validation) config: schema defaults are still optional here. */
 export type ClickHouseSchemaConfigInput = typeof ClickHouseSchemaConfigSchema.inferIn;

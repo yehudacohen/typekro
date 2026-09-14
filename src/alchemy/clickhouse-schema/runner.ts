@@ -130,7 +130,6 @@ export function computeFingerprint(config: ClickHouseSchemaConfig): string {
       port: config.client?.port ?? DEFAULT_CLICKHOUSE_PORT,
     },
     execution: config.execution,
-    replicatedDatabases: [...(config.replicatedDatabases ?? [])].sort(),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }

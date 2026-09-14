@@ -35,7 +35,6 @@ export {
   type ClickHouseSqlToken,
   extractStatementSecrets,
   leadingKeyword,
-  referencedDatabases,
   statementTargetsCluster,
   tokenizeClickHouseSql,
   validateOnClusterStatement,

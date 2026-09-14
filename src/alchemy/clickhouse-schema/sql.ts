@@ -130,7 +130,7 @@ export function statementTargetsCluster(statement: string, cluster: string): boo
   return false;
 }
 
-/** Statement keywords that make the target database implicit for everything after them. */
+/** Statement keywords that are session-scoped, and so can never be cluster-wide. */
 const SESSION_SCOPE_KEYWORDS = new Set(['use', 'set']);
 
 /**
@@ -142,113 +142,43 @@ export function leadingKeyword(statement: string): string | undefined {
   return first?.kind === 'word' ? first.value.toLowerCase() : undefined;
 }
 
-const DATABASE_STATEMENT_KEYWORDS = new Set(['create', 'attach', 'drop', 'rename', 'alter']);
-
-/**
- * Every database this statement names EXPLICITLY.
- *
- * Two shapes carry one: a qualified object (`orders.events`) and a database-level
- * statement (`CREATE DATABASE IF NOT EXISTS orders`). An unqualified object name is
- * deliberately NOT resolved against `client.database` — the point of the caller is to
- * prove which database a statement lands in, and an implicit one proves nothing.
- */
-export function referencedDatabases(statement: string): readonly string[] {
-  const tokens = tokenizeClickHouseSql(statement);
-  const databases = new Set<string>();
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    // `<db> . <object>` — a qualified reference.
-    const dotted = identifierValue(tokens[index]);
-    if (
-      dotted !== undefined &&
-      tokens[index]?.kind !== 'punct' &&
-      tokens[index + 1]?.kind === 'punct' &&
-      tokens[index + 1]?.value === '.' &&
-      identifierValue(tokens[index + 2]) !== undefined
-    ) {
-      databases.add(dotted);
-      continue;
-    }
-    // `CREATE|ATTACH|DROP|RENAME|ALTER DATABASE [IF NOT EXISTS] <db>`
-    const keyword = tokens[index];
-    if (
-      keyword?.kind === 'word' &&
-      DATABASE_STATEMENT_KEYWORDS.has(keyword.value.toLowerCase()) &&
-      isWord(tokens[index + 1], 'database')
-    ) {
-      let cursor = index + 2;
-      // Skip `IF NOT EXISTS` / `IF EXISTS`.
-      if (isWord(tokens[cursor], 'if')) {
-        cursor += 1;
-        if (isWord(tokens[cursor], 'not')) cursor += 1;
-        if (isWord(tokens[cursor], 'exists')) cursor += 1;
-      }
-      const name = identifierValue(tokens[cursor]);
-      if (name !== undefined) databases.add(name);
-    }
-  }
-
-  return [...databases];
-}
-
-/** Why a statement is not provably cluster-wide, or `undefined` when it is. */
-export interface OnClusterRejection {
-  readonly statementIndex: number;
-  readonly reason: string;
-}
-
 /**
  * Prove that a statement applies to every server, under `execution.mode: 'onCluster'`.
  *
- * Two proofs are accepted, and nothing else:
+ * EXACTLY ONE proof is accepted: the statement carries `ON CLUSTER <cluster>`, naming the
+ * configured cluster, so the initiating server distributes it through Keeper's DDL queue.
  *
- * - the statement carries `ON CLUSTER <cluster>`, so the initiating server distributes it
- *   through Keeper's DDL queue;
- * - every database it names is on the `replicatedDatabases` allow-list, so the
- *   `Replicated` database engine replicates the DDL itself. A statement that names NO
- *   database cannot be checked (its target depends on the session) and is rejected, as is
- *   one starting with `USE` or `SET`, which changes what later statements mean.
+ * Nothing is INFERRED from the statement's shape. An earlier version accepted a clause-free
+ * statement whose dotted references were all on a `replicatedDatabases` allow-list, which
+ * keyed on the references rather than on the DDL TARGET: `CREATE TABLE events AS
+ * analytics.source` passed the check while creating `events` on one server only. Deciding
+ * this properly means parsing the target of every DDL form ClickHouse accepts, and a
+ * parser that is subtly wrong here silently half-applies a schema — so the safe rule is
+ * the explicit one, and the author writes the clause.
  *
  * The statement is never rewritten. Adding `ON CLUSTER` on the author's behalf would
  * change the semantics of DDL TypeKro did not write, and getting that wrong on a
  * production cluster is not recoverable.
+ *
+ * Statements that legitimately cannot carry the clause — `SET`, `USE`, a single-node
+ * `SYSTEM …`, `INSERT` — do not belong under `onCluster` at all; `fanout` runs them on
+ * every server itself, and reaching every server is then the author's business.
  */
-export function validateOnClusterStatement(
-  statement: string,
-  cluster: string,
-  replicatedDatabases: readonly string[]
-): string | undefined {
+export function validateOnClusterStatement(statement: string, cluster: string): string | undefined {
   if (statementTargetsCluster(statement, cluster)) return undefined;
 
   const keyword = leadingKeyword(statement);
   if (keyword !== undefined && SESSION_SCOPE_KEYWORDS.has(keyword)) {
     return (
       `starts with '${keyword.toUpperCase()}', which is session-scoped and applies only to ` +
-      `the one server it runs on`
+      `the one server it runs on; statements that cannot carry an 'ON CLUSTER' clause ` +
+      `belong under execution.mode 'fanout'`
     );
   }
 
-  const allowed = new Set(replicatedDatabases);
-  if (allowed.size > 0) {
-    const referenced = referencedDatabases(statement);
-    if (referenced.length > 0 && referenced.every((database) => allowed.has(database))) {
-      return undefined;
-    }
-    if (referenced.length === 0) {
-      return (
-        `names no database explicitly, so it cannot be shown to target one of the ` +
-        `Replicated databases in 'replicatedDatabases'`
-      );
-    }
-    const outside = referenced.filter((database) => !allowed.has(database));
-    return `carries no 'ON CLUSTER ${cluster}' clause and names ${outside
-      .map((database) => `'${database}'`)
-      .join(', ')}, which is not in 'replicatedDatabases'`;
-  }
-
   return (
-    `carries no 'ON CLUSTER ${cluster}' clause, and no 'replicatedDatabases' allow-list ` +
-    `was declared to prove it targets a Replicated database`
+    `carries no 'ON CLUSTER ${cluster}' clause, which is the only thing that makes a ` +
+    `single execution reach every server; add the clause, or use execution.mode 'fanout'`
   );
 }
 
